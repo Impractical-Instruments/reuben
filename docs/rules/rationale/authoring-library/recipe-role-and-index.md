@@ -24,8 +24,8 @@ staleness-tested like every generated artifact. There is **no curated list**: cu
 into *quality* (authoring — give the instrument a face and a role line worth reusing) and
 *availability* (delivery — which documents a session can reference, a separate concern). A hand-kept
 curated list was rejected as a drift pair with the documents it describes plus an admission process
-nobody owns; shipping full documents in grounding was rejected because the ~30–60-token index line
-grounds everything selection needs against ~500–2,000 tokens of body that grounds nothing the face
-does not — the full document stays fetchable on demand as the fallback when a role seems off.
+nobody owns; shipping full documents in grounding was rejected because the index line grounds
+everything selection needs against a body ten to a hundred times longer that grounds nothing the
+face does not — the full document stays fetchable on demand as the fallback when a role seems off.
 
 Distilled from: ADR-0057

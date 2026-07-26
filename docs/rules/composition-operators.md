@@ -10,9 +10,7 @@ if it were an operator; a **Rig** is just the outermost graph played at the top.
 model, one port model, one connection rule, and one file schema from operator to rig — learn it once,
 apply it at every scale. An operator is authored the simplest possible way: a single-voice,
 single-channel stream, one block at a time — "given one input block and my state, produce one output
-block." It never sees the fan-out matrix. Cross-cutting work (voicing, mixing, panning) lives *above*
-the operator layer as structural constructs, so an operator stays small and cannot botch the parts
-the engine owns.
+block."
 
 An operator's contract is **single-sourced and self-registering**. `register_operator!` submits each
 built-in at its own definition site — `inventory` gathers them at link time, so there is no central
@@ -22,10 +20,9 @@ metadata and emits both the runtime `Descriptor` and a **typed port handle** per
 handle, whose type fixes the port's form and carries its declared default, so a wrong-form read does
 not compile and no default can drift. The stateless-pointwise math family goes one level further —
 `number_operator_contract!` generates a whole value/signal operator family from a single scalar
-function — and the same census-macro idea gives every **product vocab type** its field-destructure
-operator: one `unpack_op!(vocab::Note)` line mints `unpack_note`, which reads a `Note` **event** stream
-on `in` and emits each field (`pitch`, `velocity`) as a held Value that defaults to the type's
-`Default`, so a mono voice can be wired as a patch instead of hidden inside the Voicer.
+function — and the same census-macro idea gives a product vocab type its field-destructure
+operator: one `unpack_op!(Note { pitch, velocity })` census entry mints `unpack_note`, so a mono
+voice can be wired as a patch instead of hidden inside the Voicer.
 
 All data on the graph is **one substrate**: a `Message = { address, frame, Arg }` carrying exactly
 one `Arg` (OSC primitives, shared vocab types like `Note`/`Harmony`, an all-unit enum's erased index,
@@ -38,9 +35,9 @@ route by wired port, never by name. Every port declares one of three **forms** b
 **Value** (`f32`/`enum`/`harmony`/`i32` — latched, held, sparse), **Event** (`note` — unlatched,
 frame-stamped), or **Signal** (`f32_buffer` — dense per-sample). The planner does no propagation: it
 checks each wire locally, materializing Value→Signal and widening `i32`→`f32` as the only implicit
-coercions and hard-erroring every other crossing (the sanctioned bridge is an explicit converter
-operator). A node's whole surface is inputs, outputs, **constants**, and resources — a Constant is a
-plan-time immutable port (changing it rebuilds the graph); the old "param" concept is gone.
+coercions and hard-erroring every other crossing — `f32`→`i32` has four explicit converter operators
+that name the rounding decision; Signal→Value has no shipped converter yet and is simply refused. A
+node's whole surface is inputs, outputs, **constants**, and resources.
 
 Composition nests two ways, split on **cardinality**. A statically-nested instrument (fixed
 build-time count) is referenced by a `subpatch` node and **inlined**: at build its nodes splice into
@@ -141,7 +138,7 @@ the patch — maps onto the rig.
 [why](rationale/composition-operators/payload-enum-arg-leaves.md)
 
 <a id="product-type-unpack-operators"></a>
-### Each product vocab type gets a generated `unpack_<type>` operator from a one-line `unpack_op!` census entry that reuses the shared contract internals and self-registers through inventory, emitting every field as a ZOH-held Value defaulting to the type's `Default`.
+### A product vocab type gets a generated `unpack_<type>` operator from an `unpack_op!` census entry that reuses the shared contract internals and self-registers through inventory, emitting every field as a ZOH-held Value defaulting to the type's `Default`.
 
 [why](rationale/composition-operators/product-type-unpack-operators.md)
 
@@ -169,3 +166,6 @@ the patch — maps onto the rig.
 - **interface pipe** — a named boundary entry, the one boundary mechanism at every graph level: an input pipe mints an address, an output pipe is fed from an internal port.
 - **subpatch** — a node referencing a nested instrument, inlined and dissolved into the parent graph at build.
 - **logical channel** — the device-independent channel index a signal pipe binds; a device profile, not the patch, maps it to hardware.
+- **Voice** — one instance of a voice instrument the Voicer runs; what sounds a note, distinct from the note Message itself.
+- **Voicer** — the sole runtime host: it builds N standalone voice patches and renders only the active ones per block.
+- **Voice instrument** — an ordinary instrument whose interface makes it hostable by a Voicer; a role read off the interface, never a separate kind.

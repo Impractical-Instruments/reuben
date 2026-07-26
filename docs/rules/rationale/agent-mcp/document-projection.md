@@ -20,16 +20,16 @@ is why anything a view ought to show and cannot gets a note saying why, and why 
 to load still projects, flagged not-loadable: going blind exactly when the agent needs to see is the
 worst possible failure.
 
-**Reverse edges are load-bearing, and were nearly missed.** A node's zoom carries its consumers, not
-just its sources, because without them the agent is blind to the blast radius of every destructive
-verb. That requirement surfaced by accident while working through removal — weak evidence that more
-gaps hide, which is why the projection is measured by the authoring harness rather than assumed
-complete. Interface pipes get their own view for the plain reason that they are bulky (90 pipes in a
+**Reverse edges are load-bearing.** A node's zoom carries its consumers, not just its sources,
+because without them the agent is blind to the blast radius of every destructive verb. The
+projection is measured by the authoring harness rather than assumed complete. Interface pipes get
+their own view for the plain reason that they are bulky (90 pipes in a
 ~6 KB `interface` block on a real instrument) and orthogonal to the node graph.
 
-The projection lives in `reuben-core`, so what the CLI, the sidecar, and the web in-page layer show an
-agent cannot drift — cross-door divergence is a compile error rather than a runtime surprise
-([portable-tool-contracts](portable-tool-contracts.md)). It judges nothing: validate remains the
+The projection lives in `reuben-core`, so what the CLI and the sidecar show an agent cannot drift —
+cross-door divergence is a compile error rather than a runtime surprise
+([portable-tool-contracts](portable-tool-contracts.md)). The web in-page layer still serves the older
+by-value boundary view; converging it is designed, not built. It judges nothing: validate remains the
 single authority on whether a document loads ([loader-single-authority](loader-single-authority.md)).
 
 Distilled from: ADR-0066

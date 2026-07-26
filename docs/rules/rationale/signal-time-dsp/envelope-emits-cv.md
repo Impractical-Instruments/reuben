@@ -2,13 +2,10 @@
 
 [Rule](../../signal-time-dsp.md#envelope-emits-cv)
 
-The `envelope` used to do two jobs at once — generate a linear ADSR contour **and** apply it as a VCA
-(`out = audio_in * level`) — and that coupling caused two problems. The gain was **linear amplitude**,
-not perceptual: the ear hears loudness roughly logarithmically, so a linear decay spends almost no time
-in the quiet region (0.5 = −6 dB, 0.01 = −40 dB) and reads as an abrupt cutoff rather than a natural
-tail — and every instrument inherited that one baked-in curve. And because the envelope was an
-`audio in → audio out` node, its contour could not drive anything *other* than amplitude (a pitch
-sweep, filter motion) without abusing the audio path.
+Coupling contour generation to VCA application costs two things at once. The gain is **linear
+amplitude**, not perceptual, so a linear decay reads as an abrupt cutoff and every instrument
+inherits that one baked-in curve; and an `audio in → audio out` node's contour cannot drive anything
+*other* than amplitude without abusing the audio path.
 
 The fix mirrors how modular synths work: **an EG emits CV, and downstream ops decide how to interpret
 it.** The envelope becomes a pure generator emitting its ADSR level as **linear CV in `[0, 1]`** on a

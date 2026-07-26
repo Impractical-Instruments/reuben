@@ -1,4 +1,4 @@
-# Why: The tonal-context node owns pitch resolution and snap as a deep module — degree to step via the symbolic Scale, step to Hz via the Tuning — so followers read Hz through io.context() rather than composing the chain themselves.
+# Why: The tonal-context node owns pitch resolution and snap as a deep module — degree to step via the symbolic Scale, step to Hz via the Tuning — so a follower reads Hz off the `Harmony` value it latches (`io.read(IN_HARMONY).hz(p)`) rather than composing the chain itself.
 
 [Rule](../../signal-time-dsp.md#context-owns-resolution)
 
@@ -6,7 +6,7 @@ If every follower composed degree→step→Hz itself, each author would re-imple
 would drift — different snap, different rounding, subtle bugs, and lost AI-authorability. So the
 context is a **deep module**: it exposes the resolver — `hz(pitch)`, `snap(pitch, policy)`,
 `chord_tone(n)` — and the Scale∘Tuning composition lives in that one correct place. A follower stays
-dumb, reading `io.context().hz(p)` exactly as it would read a param, which keeps single-lane authoring
+dumb, reading `io.read(IN_HARMONY).hz(p)` exactly as it would read any held input, which keeps single-lane authoring
 simple and makes "always in key" a single shared implementation.
 
 The representation is a two-stage pipeline: `degree --[Scale: degree→step]--> step --[Tuning: step→Hz]

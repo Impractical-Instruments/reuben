@@ -6,12 +6,14 @@ The pieces an agent needs to author already exist as data — the registry itera
 descriptor in deterministic order (the same source the grounding is projected from) and the load
 path already type-checks a document. The gap was never *capability*; it was **a closed feedback loop
 the agent can drive**: inspect one operator without grepping Rust, and check a draft without
-launching the audio player (which binds a device and makes sound). So the surface is two thin things
+launching the audio player (which binds a device and makes sound). So the surface is thin functions
 over static data and the real load path:
 
 - **describe** — with no argument lists every registered operator; with one, dumps that operator's
   ports and params. It reads the live registry, so it can never drift from the operators actually
   compiled in.
+- **describe (patch)** — cuts an instrument document's boundary and structural views, inheriting each
+  inner port's metadata.
 - **validate** — runs the engine's own load + `Plan::instantiate` against a synthetic default audio
   config, catching structural, wiring, kind-mismatch, and cycle errors with **no device opened and
   nothing rendered**.

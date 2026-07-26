@@ -2,13 +2,11 @@
 
 [Rule](../../authoring-library.md#surface-docs)
 
-The surface layer converged after two competing playable-surface mechanisms had accreted: inline
-`control` blocks scattered per node (read by the web auto-UI *and* the TouchOSC generator, in two
-languages that drifted), and the named `interface` input pipes (the engine-enforced boundary, read
-by TouchOSC but not the web player). Worse, both control-block readers reverse-engineered ranges
-from `map` instance literals and sniffed sequencer gate steps, because a `control` block carried no
-contract of its own. The enabling fact was that `NodeDoc.control` was an **opaque passthrough the
-engine never read**, so removing it is render-safe by construction.
+Two playable-surface mechanisms had accreted — inline per-node `control` blocks and the named
+`interface` input pipes — read by two resolvers in two languages that drifted, both
+reverse-engineering ranges from `map` instance literals and sniffing sequencer gate steps because a
+`control` block carried no contract of its own. `NodeDoc.control` was an **opaque passthrough the
+engine never read**, so retiring it was render-safe by construction.
 
 The resolution picks **one boundary**: every player-facing control is an `interface` **input pipe**
 — a named entry with a declared type, engine-enforced against every consumer wire (the pipe/device
@@ -30,10 +28,5 @@ collapses to *read the pipe, merge the surface overrides, pick a widget*, and th
 and gate-step sniffing in both resolvers go away. A sequencer's N gate steps become N ordinary pipes
 (`kick_step1..16`), each defaulting to the old inline literal so the rest state is unchanged — no
 new lane/indexed-pipe machinery, just the honest, discoverable, engine-validated place.
-
-(This retires the old per-node `control` block, the `NodeDoc.control` passthrough, and the
-infer→write-back generator, and supersedes the earlier carrier-era surface metadata; the pieces of
-those that survive — the disposable TouchOSC projection and the shared two-target format — are the
-[surface-format-two-targets](surface-format-two-targets.md) rule.)
 
 Distilled from: ADR-0043, ADR-0018, ADR-0017

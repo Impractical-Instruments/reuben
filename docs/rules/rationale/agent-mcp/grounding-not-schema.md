@@ -11,12 +11,10 @@ schema but *a registry truth independent of the artifact under test*, and both g
 the web boundary's silent-drop tripwire becomes **same-commit parity** — native `describe --json`
 output ≡ wasm introspection output, compared structurally at CI time, fresh-vs-fresh so nothing can go
 stale — and the web live-eval reads fresh native describe output. With both consumers re-homed, the
-schema is deleted outright: the committed file, the generator example, the staleness test, the MCP
-drift test, the web artifact key, and the `reuben://schema/instrument` resource. The decision hardened
-further — even the generator *source* was later retired as YAGNI, since carrying hundreds of lines of
-dead-but-regenerable code plus its parity test wasn't worth it; the serde field types are now the sole
-authority, and a future constrained-decoding experiment would re-derive `Descriptor → JSON-Schema`
-from scratch.
+schema is deleted outright: the committed file, the generator and its source, the staleness test, the
+MCP drift test, the web artifact key, and the `reuben://schema/instrument` resource. The serde field
+types are the sole authority; a future constrained-decoding experiment would re-derive
+`Descriptor → JSON-Schema` from scratch.
 
 Keeping the file as the pin's carrier was rejected: any committed witness recreates the
 staleness-guard machinery for less value than a fresh comparison. The durable point is the negative

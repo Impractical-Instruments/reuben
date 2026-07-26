@@ -3,7 +3,7 @@
 [Rule](../../authoring-library.md#library-resolution)
 
 Once one instrument can reference another, *how* the reference is named, found, and versioned
-becomes real. Three problems drove the resolution model. The cycle guard and per-load caches keyed
+becomes real. Two problems drove the resolution model. The cycle guard and per-load caches keyed
 on the **raw source string**, so `a.json` and `./a.json` were two identities — a diamond fetched
 twice, a cycle spelled two ways slipped the guard. Every reference resolved against **one base
 directory** (the top-level instrument's), so a nested patch could not bundle a private sub-patch or

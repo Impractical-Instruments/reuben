@@ -2,11 +2,9 @@
 
 [Rule](../../execution-runtime.md#swap-announces-what-changed)
 
-A [Swap](plan-lifecycle.md) is the moment an edit becomes sound, and it is the moment with the worst
-feedback loop in the system: the thing that tells you what happened is the music, and music is a
-slow and ambiguous debugger. A note that stopped sustaining, a filter that lost its resonance, a
-voice that went silent — each has a dozen possible causes, and "the swap did something structural
-you did not intend" is the one hardest to distinguish from "the edit sounded worse than you hoped."
+A [Swap](plan-lifecycle.md) is the moment an edit becomes sound, and its only feedback channel is
+the music — which cannot distinguish "the swap did something structural you did not intend" from
+"the edit sounded worse than you hoped."
 
 So the swap reports its own structural outcome, keyed by the survivor fingerprint. **`survived`** is
 how many nodes kept their state. **`state_reset`** lists addresses present in *both* documents whose
@@ -22,11 +20,9 @@ fix, rather than after a session of wondering where the voice went. This is the 
 document-level diff would not catch either, because the document *is* internally consistent; only
 the comparison against what is currently playing reveals it.
 
-The rule extends past the gapless case on purpose. The web door's restart-swap rebuilds every node
-cold — it has no survivor migration at all — and it reports `survived: 0` behind this same shape
-rather than omitting the field or inventing a number. That honesty is the point: one report shape
-across doors means a client reads structural outcome the same way everywhere, and a door with weaker
-swap semantics is *visible* as weaker instead of indistinguishable from one where nothing happened
-to survive.
+The shape extends past the gapless case on purpose: a door that rebuilds every node cold reports
+`survived: 0` rather than omitting the field or inventing a number, so a client reads structural
+outcome the same way everywhere and weaker swap semantics are *visible* as weaker instead of
+indistinguishable from nothing having survived.
 
 Decided in: issue #639 — settled directly, no ADR.

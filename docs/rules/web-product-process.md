@@ -7,42 +7,38 @@
 reuben is an engine, never an app — always driven by something else (a script, TouchOSC, a
 consuming application), and its product surface is its I/O contract, not pixels. That principle
 draws the outer boundary of this repo: **this repo is the reuben SDK**, BSD-3-Clause — the engine
-core, the native CLI and its audio/OSC/filesystem host, the stdio MCP sidecar, and the
+core, `reuben-api` (the one window every consumer goes through, including the filesystem
+resolver), the native CLI and its audio/OSC host, the stdio MCP sidecar, and the
 instrument/surface library those tests load. The actual **product** — the browser player, its app
 shell, the WASM C-ABI shell, the share-link codec, and the chat-authoring agent — lives in a
 separate **private, AGPL** repo that pins this one as a git submodule and builds against
-`reuben-core` through a path dependency. The seam was drawn there not by licence but by *support
-surface*: we decline to maintain a public browser SDK we have no second consumer for; the AGPL and
-support boundaries simply coincide. The submodule pin is the version boundary — the engine version
-is a property of a cross-repo SHA, adopted when the product bumps its pin.
+`reuben-core` through a path dependency. The seam was drawn by support surface, not licence; the
+two boundaries simply coincide. The submodule pin is the version boundary — the engine version is
+a property of a cross-repo SHA, adopted when the product bumps its pin.
 
 Because the shell left, the browser story this repo tells is a **contract, not a binding**:
 `reuben-core` compiles to `wasm32-unknown-unknown` untouched, and the documented raw C-ABI worklet
 boundary (one `Engine::fill` per audio quantum, `(ptr, len)` byte regions through linear memory,
 fetch-on-miss resource staging, a flat tagged control channel, no `wasm-bindgen`) is the reference
-a third party rebuilds their own binding from. Two obligations outlive the extracted product and
-stay owed by public core: any statically-linked or wasm embedder must build core at
-`codegen-units = 1` or operator self-registration constructors are silently dropped by the linker;
-and externally-sourced sample bytes are untrusted, so the WAV decoder must bounds-check its declared
+a third party rebuilds their own binding from. Two obligations outlive the extracted product: any
+statically-linked or wasm embedder must build core at `codegen-units = 1` or operator
+self-registration constructors are silently dropped by the linker; and externally-sourced sample
+bytes are untrusted, so the one WAV decoder this repo ships must bounds-check its declared
 data-chunk length before any sample-bearing share bundle can carry a stranger's bytes.
 
-The dev process that governs the repo is deliberately small and self-verifying. One
-`rust-toolchain.toml` pins the exact toolchain so a contributor's local fmt/clippy verdict equals
-CI's, with the workspace MSRV held in lockstep and a CI job failing on drift; version-controlled
-`.githooks/` (pre-commit fmt, pre-push clippy) catch failures early as a convenience ahead of the
-real gate, which is always CI. `dev` is the default long-lived integration branch every PR targets;
-production ships only by **fast-forward-only promotion** of `dev` onto `main`, run as a workflow (a
-true ff preserves SHAs so the branches never diverge) authored by a GitHub App token, with no direct
-commits to `main`. And the render hot path is fenced by a perf gate: an instruction-count
-(iai-callgrind) CI check that diffs HEAD against its base ref and fails a PR on a >10% regression,
-with noisy wall-clock benchmarking left to local runs. The engine itself ships headless — the SDK
-crate is the primary product, the CLI binary a secondary convenience shipped as versioned,
-installer-free release archives cut from a `v*` tag.
+The dev process that governs the repo is deliberately small and self-verifying, and the rules below
+state it: one pinned toolchain so a local verdict equals CI's, shared hooks as a convenience ahead
+of the authoritative CI gate, `dev` as the integration branch that fast-forwards onto `main` to
+ship, an instruction-count perf gate over the render hot path, and versioned release archives for a
+headless CLI whose primary product is the crate.
 
 ## Rules
 
+**Where this repo ends** — the five rules that answer what is in the SDK and what it owes across the
+boundary.
+
 <a id="sdk-product-split"></a>
-### This repo is the reuben SDK — engine core, native CLI, MCP sidecar, and the instrument/surface library — while the browser shell, player app, and authoring agent live in a separate private product repo that consumes this one as a submodule.
+### This repo is the reuben SDK — engine core, the `reuben-api` window, native CLI, MCP sidecar, and the instrument/surface library — while the browser shell, player app, and authoring agent live in a separate private product repo that consumes this one as a submodule.
 
 [why](rationale/web-product-process/sdk-product-split.md)
 
@@ -67,6 +63,8 @@ Superseded by: ADR-0067 (pending absorption)
 ### Externally-sourced sample bytes are untrusted: the WAV decoder must bounds-check its declared data-chunk length before any sample-bearing share bundle can carry them.
 
 [why](rationale/web-product-process/sample-bytes-trust-boundary.md)
+
+**How a change lands** — the seven rules that answer how work is integrated, gated, and shipped.
 
 <a id="dev-integration-branch"></a>
 ### `dev` is the default long-lived integration branch that every PR targets, and every push to it runs the full CI suite.
@@ -109,6 +107,6 @@ Superseded by: ADR-0067 (pending absorption)
 - **product repo** — the separate private AGPL repo holding the browser shell, player app, share-link codec, and chat-authoring agent, which pins this repo as a submodule.
 - **C-ABI worklet boundary** — the documented raw `extern "C"`, `(ptr, len)`-over-linear-memory interface a browser host drives per audio quantum, carrying no `wasm-bindgen` glue and shipped as a contract to rebuild against, not a maintained binding.
 - **share link** — an origin-independent encoded bundle that boots an instrument in the browser; a product-repo feature whose residue here is the sample-bytes trust obligation.
-- **promotion** — the fast-forward-only advance of `dev` onto `main` that ships production, run as a workflow so commit SHAs are preserved and the branches never diverge.
+- **promotion** — the fast-forward-only advance of `dev` onto `main` that ships production.
 - **toolchain pin** — the exact-version `rust-toolchain.toml` that local dev and CI share so their fmt/clippy verdicts are identical, kept in lockstep with the workspace MSRV.
-- **perf gate** — the CI iai-callgrind instruction-count check that fails a PR on a >10% regression of the render hot path, base-ref-relative so toolchain drift cancels.
+- **perf gate** — the CI iai-callgrind instruction-count check over the render hot path, measured base-ref-relative so toolchain drift cancels.

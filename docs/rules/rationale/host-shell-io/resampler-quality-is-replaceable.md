@@ -29,8 +29,6 @@ What makes the decision cheap to revisit is that the resampler is **one componen
 not a design assumption threaded through the input path. The ring, the servo, the degrade policies,
 and the latency budget all treat it as "something that consumes input frames and produces engine
 frames at a ratio." Swapping in windowed-sinc changes the component and the lookahead term of the
-[latency budget](ring-capacity-is-not-latency.md), and nothing else. Keeping that seam intact is the
-obligation this rule actually imposes — the starting quality is allowed to be modest precisely
-because the upgrade path stayed open.
+[latency budget](ring-capacity-is-not-latency.md), and nothing else.
 
 Decided in: issue #639 — settled directly, no ADR.

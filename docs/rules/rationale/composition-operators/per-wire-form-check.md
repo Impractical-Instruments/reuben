@@ -19,16 +19,16 @@ control range is a distinct `f32`, and the read already goes through `Arg::as_f3
 `int_to_float` node would be pure boilerplate on every integer-control patch. It is **directional**,
 mirroring Value→Signal exactly: `f32`→`i32` stays rejected because it forces a rounding *decision*,
 and a decision is exactly what an operator can name where a coercion cannot. The four that name it
-ship: `round_f32_i32_value`, `floor_f32_i32_value`, `ceil_f32_i32_value`, `trunc_f32_i32_value`
-([round.rs](../../../../crates/reuben-core/src/operators/round.rs)) — so the asymmetry is now a
-*choice presented to the author*, not a gap. (The Signal→Value envelope follower is still the
-documented gap.) This lets an
-operator keep its modulatable `f32` ports while an integer *source* still wires in without a
-converter. euclid's `steps`/`pulses`/`rotation` were the original example — `i32` pipes widening into
-`f32` ports — but #556 PR 2 made those ports (and `harmony.root`/`degrees`, `clock.division`,
-`chord.size`, the sampler/granulator `channel`) `i32` outright, so those wires are now `i32 → i32`
-and the widening serves the remaining case: an `i32` count into a port that genuinely stays `f32`
-for continuous modulation.
+ship: `round_f32_i32_value`, `floor_f32_i32_value`, `ceil_f32_i32_value`, `trunc_f32_i32_value`, all
+four over the shared
+[`RoundInto`](../../../../crates/reuben-core/src/operators/rounding.rs) trait — so the asymmetry is
+now a *choice presented to the author*, not a gap. (The Signal→Value envelope follower is still the
+documented gap.) This lets an operator keep its modulatable `f32` ports while an integer *source*
+still wires in without a converter. Every integer control port is now `i32` outright
+(`euclid.steps`/`pulses`/`rotation`, `harmony.root`/`degrees`, `clock.division`, `chord.size`, the
+sampler/granulator `channel` — pinned by `the_converted_integer_control_ports_are_i32` in
+[registry.rs](../../../../crates/reuben-core/src/registry.rs)), so the widening serves the remaining
+case: an `i32` count into a port that genuinely stays `f32` for continuous modulation.
 
 Two properties keep the check honest. It is **local, no propagation** — one arm in the pass-2 wire
 check ([format/mod.rs](../../../../crates/reuben-core/src/format/mod.rs)), in the spirit of the

@@ -12,12 +12,10 @@ A `send`-survives-swap rule was rejected because render state would then win ove
 and the sound would quietly drift from the file that is supposed to be true. The document is the save
 source; anything that outranks it makes "what is playing" unanswerable from the file.
 
-The split survived the move to incremental document verbs ([document-verbs](document-verbs.md)),
-where folding `send` into the document became newly tempting — it would collapse two gestures into
-one. It was **rejected on cost**: every auditioned value would then become validate + write + gapless
-swap, making the cheap exploratory gesture exactly as expensive as the durable one, which is the whole
-distinction being paid for. `send` therefore takes no `source` and stays live-only. If the authoring
-harness ever shows small models thrashing on the split — "why did my change vanish?" — that is worth
-revisiting as a *measurement*, not a guess.
+Folding `send` into the document ([document-verbs](document-verbs.md)) is rejected on cost: every
+auditioned value would become validate + write + gapless swap, making the cheap exploratory gesture
+exactly as expensive as the durable one — which is the whole distinction being paid for. `send`
+takes no `source` and stays live-only. If the authoring harness ever shows small models thrashing on
+the split, that is worth revisiting as a *measurement*, not a guess.
 
 Distilled from: ADR-0045, ADR-0066

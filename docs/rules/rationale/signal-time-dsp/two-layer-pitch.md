@@ -11,8 +11,7 @@ is what oscillators consume. 12-TET is just the default Tuning.
 
 Scale-degree-primary (rather than float-MIDI-primary or Hz-primary) is the load-bearing choice: it
 gives **free transposition** and the "always in key" snap for free, which raw Hz loses (no musical
-meaning, no snap) and which a MIDI-note primary blunts. The degree is symbolic and re-spells live when
-the key/scale changes, precisely because it is *not* a frequency until the Tuning resolves it. In the
+meaning, no snap) and which a MIDI-note primary blunts. In the
 engine `Pitch` is an enum — `Degree(i32)` **or** `Absolute(f32)`, never both and never neither (the
 old `{ degree: Option, midi }` struct had invalid states) — and `Pitch` never holds a frequency
 itself; `Tuning::hz` (or the tonal context's `hz`) is the only place Hz appears. A bare degree with

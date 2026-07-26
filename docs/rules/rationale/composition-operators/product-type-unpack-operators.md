@@ -1,4 +1,4 @@
-# Why: Each product vocab type gets a generated `unpack_<type>` operator from a one-line `unpack_op!` census entry that reuses the shared contract internals and self-registers through inventory, emitting every field as a ZOH-held Value defaulting to the type's `Default`.
+# Why: A product vocab type gets a generated `unpack_<type>` operator from an `unpack_op!` census entry that reuses the shared contract internals and self-registers through inventory, emitting every field as a ZOH-held Value defaulting to the type's `Default`.
 
 [Rule](../../composition-operators.md#product-type-unpack-operators)
 
@@ -13,11 +13,12 @@ without an explicit latch ([per-wire-form-check](per-wire-form-check.md)), and n
 existed.
 
 The shape of the fix follows the guiding principle *low-effort-to-extend, no per-type hacks*: whatever
-gives one product type its field operators must give **every** product type theirs at near-zero
-marginal cost — the way [`number_operator_contract!`](pointwise-number-operators.md) mints a whole
-family from one declaration and `inventory` discovers them with no central match. So a **one-line
-census macro** `unpack_op!(vocab::Note);`, invoked once per product type in a single greppable census
-file, reuses the shared contract-rendering internals (`render_contract`/`Port`/`Descriptor`, the
+gives one product type its field operators must extend to the next by a census entry, not a new
+operator — though a type carried on a non-`note` event still has to teach the macro its input form
+first. That is the way [`number_operator_contract!`](pointwise-number-operators.md) mints a whole
+family from one declaration and `inventory` discovers them with no central match. So a **census
+macro** `unpack_op!(Note { pitch, velocity })`, invoked once per product type in a single greppable
+census file, reuses the shared contract-rendering internals (`render_contract`/`Port`/`Descriptor`, the
 `naming` helpers) so a generated `unpack_note` is identical in shape to a hand-written operator — same
 typed `IN_*`/`OUT_*` handles, same `Descriptor` — and self-registers through `inventory`, no central
 match to edit. A `#[derive(Unpack)]` on the vocab struct was rejected: it lands the operator's

@@ -16,10 +16,10 @@ structural edits on a command queue to the Coordinator, which instantiates a new
 to Render for the atomic install, then reclaims the retired Plan off-thread; and a Render→outside
 queue for metering, levels, emitted Messages, and introspection — so agents observe a live system
 *without reaching into Render*. No shared mutable state crosses the boundary, a discipline Rust's
-`Send`/`Sync` enforces. This same boundary is the **removable-native-layer line**: the I/O region
-and the executor pool are native and removable; the Render core and Coordinator are portable, so an
-embedder swaps the device callback for its tick and the worker pool for its job system while the
-Coordinator and queues are unchanged ([embed-surface](embed-surface.md),
+`Send`/`Sync` enforces. This same boundary is the **removable-native-layer line**: the I/O region is
+native and removable; the Render core and Coordinator are portable, so an embedder swaps the device
+callback for its tick while the Coordinator and queues are unchanged
+([embed-surface](embed-surface.md),
 [pluggable-executor](pluggable-executor.md)). The Coordinator is a passive, OS-free
 `reuben_core::coordinator` — no clock, no threads, no I/O — and single-writer discipline is enforced
 simply by `&mut self`; the native shell holds it behind one mutex so an `expect`-compare → swap →

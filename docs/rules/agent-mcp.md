@@ -8,50 +8,33 @@ reuben is built to be authored by AI agents, and that is a **first-class design 
 bolted-on feature: operators are self-describing, the instrument is one recursive JSON graph, the
 library is composed by reference, and a suite of **authoring skills** is a product deliverable. The
 constraint pays off through a closed feedback loop the agent can drive without ears or a running
-engine. Two pure functions in `reuben_core::introspect` are the whole introspection surface —
-**describe** an operator's ports and params from the live registry, and **validate** a drafted
-document by running the engine's own load-plus-instantiate path with no audio device opened. That
-loader is the **single validation authority**: validate means "does the engine itself accept this?",
-so there is no second, drifting schema gate. What the loop cannot catch — that a validated patch is
-actually *audible*, that a compiled operator actually *sounds right* — is the skills' job, carried as
-moderate semantic guidance. The mechanical, error-prone half of authoring (new-operator boilerplate
-across Rust files, the required top-level fields of a fresh document) is **deterministic codegen**
-behind `reuben scaffold-operator` / `new_instrument`, so the author is left only the creative half and
-starts from a guaranteed-valid or compiling frame.
+engine. The pure contracts behind the `reuben-api` window are the whole introspection surface —
+**describe** an operator's ports and params from the live registry, **describe** a drafted document's
+boundary and structure, and **validate** it by running the engine's own load-plus-instantiate path
+with no audio device opened. That loader is the **single validation authority**, so there is no
+second, drifting schema gate; what it cannot catch — that a validated patch is actually *audible* —
+is the skills' job, carried as moderate semantic guidance. The mechanical half of authoring is
+**deterministic codegen** behind `reuben scaffold-operator` / `reuben new-instrument`, leaving the
+author only the creative half.
 
 Conversational authoring rides an **MCP sidecar**: a disposable per-conversation stdio process the
-client spawns, hosting the pure tools in-process and forwarding the engine tools to a long-lived,
-**user-owned** `reuben play` — so the sound survives conversation death and the shim never spawns or
-kills the engine. rmcp and tokio are fenced in that one crate; the rest of the workspace stays
-std-only. The tool surface is a fixed roster of three kinds: pure tools and engine-free **document
-verbs**, both always available, plus engine tools that fail fast with "start `reuben play`" when it is
-absent — all returning structured `Report`/`Diag` results under a strict error-layer discipline —
-**a failed validation is a successful call**, and `isError` is reserved for the tool that could not do
-its job. The edit contract is that closed **document vocabulary**: path-addressed, stateless verbs
-that each apply one surgical edit to a named `source`, re-validate the *whole* document through the
-loader, and write only if it is valid — never the whole document in and out, which cost a model every
-byte it was not changing. The read side matches: the agent's whole view is a set of partial
-**structural projections** (index, node zoom carrying reverse edges, pipes, resources), lossless only
-in aggregate, so a turn pays for the nodes it touches rather than the file. `send` stays ephemeral
-audition (clobbered at the next swap) against a document that is durable truth — try-then-commit. **No
-reuben-owned bytes ride the agent's context** on any lane: a sample is a filesystem gesture, a document
-is named by an opaque source the door's resolver moves. Where a door's clients can race, the door
-carries its own optimistic `expect` guard — a content-hash compare it makes before calling in,
-answered in its own shape — since core's swap is unguarded last-write-wins.
+client spawns, hosting the pure tools and the engine-free **document verbs** in-process and
+forwarding the engine tools to a long-lived, **user-owned** `reuben play`, so the sound survives
+conversation death and the shim never spawns or kills the engine. rmcp and tokio are fenced in that
+one crate; the rest of the workspace stays std-only. The edit contract is a closed, path-addressed
+**document vocabulary** and the read side is a set of partial **structural projections**, so no
+reuben-owned bytes ride the agent's context — though not yet on every lane: the web door defers the
+whole document vocabulary and still takes documents by value, so its verbs there are designed, not
+built.
 
 The load-bearing invariant under all of this is **one source, many doors**: the contract types and
 introspection live OS-free in `reuben-core`, so the native CLI, the MCP sidecar, the web in-page tool
 layer, and the web proxy all generate their schemas from that one source and no verb means different
-things behind different doors. MCP is one door, not the contract — web parity ports the contracts,
+things behind different doors. *(ADR-0068 moves that one source to `reuben-api`, which already
+declares its own authoring types; pending absorption, the two rules below carry the marker.)* MCP is one door, not the contract — web parity ports the contracts,
 not the protocol. Grounding is **single-sourced** the same way: normative prose lives once (the
 authoring guide, the intent vocabulary, the library index), and code, skills, and server
-`instructions` **gist-and-point** at it rather than restating it. Grounding also splits by
-**direction**: input handling (reading "warmer / busier / sadder" as parameter moves, via one
-curated registry-keyed word→move table) is shared base sauce delivered to every lane, while output
-filtering (the sound-not-machine persona) is host-owned flavor. There is deliberately **no instrument
-JSON Schema** in that grounding — an agent grounds on prose rules, ports, and the validator loop —
-and the conversational loop is proven by a fixed menu of tests, from live-channel
-integration tests down to scripted human rituals for the perceptual judgments automation cannot reach.
+`instructions` **gist-and-point** at it rather than restating it.
 
 ## Rules
 
@@ -162,7 +145,7 @@ Superseded by: ADR-0068 (pending absorption)
 [why](rationale/agent-mcp/grounding-not-schema.md)
 
 <a id="grounding-budget-is-relative"></a>
-### A grounding projection's size is gated relative to the full view it compresses, never as a flat per-item cap — so the lever on a budget the registry has outgrown is the projection's own compression, not the number of operators.
+### A grounding projection's size is gated relative to the full view it compresses, never as a flat per-item cap — so the lever on a budget the registry has outgrown is the projection's own compression, not the number of operators — **not built: the only gate is an `#[ignore]`d test, so nothing currently watches the listing's size.**
 
 [why](rationale/agent-mcp/grounding-budget-is-relative.md)
 

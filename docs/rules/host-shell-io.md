@@ -13,32 +13,15 @@ it does not control the timing of, and reconciles clocks the engine is entitled 
 clock. None of that is engine behavior, and all of it is load-bearing: a shell that gets it wrong
 produces a system that is deterministic and correct and still sounds broken.
 
-The hardest of those obligations is that **two devices are two clocks**. The engine renders at the
-output device's rate, which is the clock anchor. An input device runs its own callback on its own
-crystal, and even at the same nominal rate the two drift, so any fixed resample ratio eventually
-starves or floods the buffer between them. They meet at a lock-free SPSC ring: the input callback
-maps device frames onto the instrument's *logical* input channels and commits whole frames, and the
-output callback drains them, resampling to the engine rate at a ratio a servo steers continuously.
-Both sides stay RT-safe after startup — the ring is preallocated, the resampler's state is two
-frames, and every policy decision is arithmetic on values already in cache.
-
-Reconciling clocks costs latency, and the shell **budgets** it rather than discovering it: a ring
-floor deep enough to ride out the input device's delivery granularity, the resampler's one-frame
-lookahead, and one core block of staging that makes the engine's pull causal. That budget is a
-different quantity from the ring's *capacity*, which is much larger and is headroom rather than
-delay — conflating the two is the standard way a live-input path acquires latency nobody chose.
-
-What ties the edges together is that every one of them **degrades in the open**. A missed render
-deadline, an empty ring, a full ring, an input channel the device cannot supply, a swap to an
-input-binding engine with no input stream: each has one fixed answer — defined silence — and each is
-counted through a single diagnostics surface a non-RT thread can snapshot. None of it is
-configurable and none of it is silent, because the alternative is a shell that improvises under
-pressure and a musician who has to diagnose it by ear.
+Three obligations carry the weight, and each has its own rule below: an input device is a second
+clock the shell must servo against, the latency that costs is a stated budget rather than whatever
+the buffers happened to be, and every edge degrades to defined silence in the open rather than
+improvising under pressure.
 
 ## Rules
 
 <a id="degradation-is-fixed-and-counted"></a>
-### Every failure at a shell edge degrades to defined silence, is counted on the one diagnostics surface, and is never configurable — the shell knows and says rather than improvising.
+### Every failure at a shell edge degrades to defined silence, is accounted for — counted if it can recur, warned once if it cannot — and is never configurable: the shell knows and says rather than improvising.
 
 [why](rationale/host-shell-io/degradation-is-fixed-and-counted.md)
 
@@ -59,6 +42,6 @@ pressure and a musician who has to diagnose it by ear.
 
 ## Terms
 
-- **Host shell** — the removable per-platform layer wrapping the embed surface: it owns devices, foreign protocols, and the callback that hosts Render, and owes the engine blocks on time and an honest account when it cannot deliver them.
-- **Dark degrade** — a shell edge's fixed response to a reality mismatch: play defined silence, count it, warn once, never fail and never improvise.
+- **Host shell** — the removable per-platform layer wrapping the embed surface; it owns devices, foreign protocols, and the callback that hosts Render.
+- **Dark degrade** — a shell edge's fixed response to a reality mismatch: play defined silence, then count it if it can recur or warn once if it cannot; never fail and never improvise.
 - **Drift servo** — the control loop steering the input resample ratio to hold the ring's post-drain residual at a fixed floor, so the loop is independent of the host's variable callback size.

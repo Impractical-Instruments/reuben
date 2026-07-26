@@ -11,9 +11,8 @@ into the render callback carries the batch, not the message, and it is pushed **
 push is what makes three promises true rather than aspirational: concurrent handler threads cannot
 interleave into each other's gestures, the callback cannot apply half a gesture to one block and half
 to the next, and there is no partial-failure window where some messages are queued but the client is
-told the batch failed. The external OSC producer gets the same treatment, which incidentally fixes a
-latent oddity — an OSC **bundle** means "these are simultaneous", and its messages used to be pushed
-one at a time and could straddle a block.
+told the batch failed. The external OSC producer gets the same treatment — an OSC **bundle** means
+"these are simultaneous", so it crosses as one batch.
 
 A batch therefore lands in a **single render callback**, which makes its size an RT property rather
 than a request-size preference: unbounded, one authoring gesture could blow a render deadline, and

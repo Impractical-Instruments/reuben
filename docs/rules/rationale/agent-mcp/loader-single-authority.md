@@ -12,12 +12,8 @@ authoring aid an agent *reads*, never a gate — and it was ultimately dropped f
 Concretely, `ok` ⟺ the load succeeds *and* instantiate finds no cycle; errors carry the loader's
 human message verbatim plus the node/port it already localized, lifted into structured fields so an
 agent jumps straight to the offending node; warnings are advisory and never flip `ok` (an
-unresolved sample plays silence — still valid). This single-authority stance is what let an
-incremental edit surface land without per-command validation semantics: every verb resolves to
-apply-to-document → re-validate the whole document → write, so the loader stays the
-one authority ([document-verbs](document-verbs.md)). It is also load-bearing for every
-door — the CLI and the sidecar descend to the same loader, so they cannot disagree about facts, and
-prose drift, not fact drift, becomes the whole battle
-([grounding-single-source](grounding-single-source.md)).
+unresolved sample plays silence — still valid). Every verb resolves to apply-to-document →
+re-validate the whole document → write, so the loader stays the one authority
+([document-verbs](document-verbs.md), [grounding-single-source](grounding-single-source.md)).
 
 Distilled from: ADR-0020, ADR-0045

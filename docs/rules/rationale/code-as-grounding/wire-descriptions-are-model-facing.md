@@ -6,9 +6,9 @@ The [comment sweep](comments-never-restate-code.md) split comment prose three wa
 to a topic, mechanics stays, restatement is deleted — and then hit a case the split could not
 classify. A doc comment on a field of a `JsonSchema`-deriving type is not only read by whoever opens
 the file. It **is** that field's advertised schema `description`, handed to a model in every turn
-that loads the tool. The sweep's own linter had to carve it out: `///` was put out of
-`check_rules_refs.py`'s reach precisely because a field doc and a comment are textually identical and
-governed differently.
+that loads the tool. The sweep's own linter had to carve it out: its issue-citation check was put out
+of reach of `///` precisely because a field doc and a comment are textually identical and governed
+differently.
 
 Dumping the real `tools/list` from the sidecar is what made the size of it visible. Across the whole
 advertised roster, eight descriptions carried markup written for a Rust reader and shipped to a model:
@@ -31,23 +31,19 @@ split that is the comment rule's whole value.
 
 Unlike comment prose, this **is** mechanically checkable, because the advertised surface can be
 dumped. That decides where the guard reads from: not the declarations, which would mean
-re-implementing which doc comments reach the wire and getting it wrong the way the sweep's blanket
-`///` exclusion did — it presumed every `///` on a `JsonSchema` type was wire surface, when a
-struct-level doc on a tool's `…Params` is replaced by the `#[tool(description = …)]` string and never
-ships. The guard spawns the real shim and scans what comes back. A surface the door does not
-advertise cannot fail it, and a surface it does advertise cannot escape it.
+re-implementing which doc comments reach the wire and getting it wrong — a struct-level doc on a
+tool's `…Params` is replaced by the `#[tool(description = …)]` string and never ships. The guard
+spawns the real shim and scans what comes back. A surface the door does not advertise cannot fail it,
+and a surface it does advertise cannot escape it.
 
 It scans **all three** advertised surfaces — `tools/list`, `resources/list`, and the server
-`instructions` — though only `tools/list` had offenders. A rule that says "an advertised description"
-and a guard that checks one of the three places descriptions are advertised is a guard that does not
-test its claim; the other two were clean on the day the rule landed, which makes covering them a
-ratchet rather than a sweep. The same reasoning bounds it: the guard reads advertised *metadata*
-only, never resource payload. `reuben://guide/authoring` is Markdown, and its links are the kind a
-model can follow.
+`instructions` — though only `tools/list` had offenders: a rule that says "an advertised description"
+and a guard checking one of three places is a guard that does not test its claim. The same reasoning
+bounds it: the guard reads advertised *metadata* only, never resource payload.
+`reuben://guide/authoring` is Markdown, and its links are the kind a model can follow. Every
+advertised description is grounding the model pays for on every turn — metric (a) in
+[`eval/`](../../../../eval/README.md) — and each rewrite is strictly shorter than what it replaced.
 
-The cost is counted rather than asserted. Every advertised description is grounding the model pays
-for on every turn, which is metric (a) in [`eval/`](../../../../eval/README.md); each of the eight
-rewrites is strictly shorter than what it replaced, so the gate tier can show the budget moved the
-right way before a token of inference is bought.
+Guarded by: crates/reuben-mcp/tests/stdio_tools_list.rs::advertised_prose_is_model_facing
 
 Decided in: issue #637 — settled directly, no ADR.

@@ -9,18 +9,16 @@ scratch, the emit pool, and the latch store are all sized and allocated before t
 installed, so Render against an already-allocated, immutable Plan reduces to "read the Plan, drain
 lock-free queues." That smallness is the point: Render correctness becomes auditable.
 
-It is why the swap **vessel is the whole Engine** and not a bare Plan — if the callback had to
-resize the Renderer's edge arena or the Engine's scratch when channel counts change, that resize
-would be allocation on the audio thread ([engine-swap-unit](engine-swap-unit.md)). It is why the
+It is why the swap **vessel is the whole Engine** and not a bare Plan
+([engine-swap-unit](engine-swap-unit.md)). It is why the
 per-block emit pool and per-node emit scratch are preallocated and *cleared*, not freed, each block
 ([operator-message-emission](operator-message-emission.md)). And it is why held context is a `Copy`
 struct with its heavy data in an immutable off-RT registry — snapshotting a `Vec`/`Box` would clone
 and allocate mid-render ([latch-service](latch-service.md)). The discipline is enforced in tests
 (`tests/rt_safe.rs`): steady state must stay allocation-free, including across message flow and
-context changes. Preallocated pools are sized to absorb a typical block (e.g. the emit pool) and
-only *cleared*, not freed, per block; growing past their cap allocates once, which steady-state
-graphs never reach. Allocation that genuinely belongs to Swap setup — the mailbox slot pair, the
-migration table — is done off the audio thread at Instantiate time.
+context changes. A pool sized to absorb a typical block grows once if a graph exceeds its cap —
+steady-state graphs never reach it. Allocation that genuinely belongs to Swap setup — the mailbox
+slot pair, the migration table — is done off the audio thread at Instantiate time.
 
 One honest current gap is recorded in the code rather than hidden: `render_block` is
 allocation-free, but `Engine::fill`'s message handoff (a `pending` Vec) still churns the heap when
