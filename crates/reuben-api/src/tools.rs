@@ -201,9 +201,10 @@ pub const CONTRACTS: &[Contract] = &[
 /// The roster's contract names, in [`CONTRACTS`] order — the ordered name-set a door advertises.
 /// A door builds its wire surface from this rather than a hand-typed list.
 ///
-/// The roster identity is verified end-to-end where it matters — `reuben-mcp`'s
-/// `advertises_the_declared_roster_over_stdio` asserts the real `tools/list` wire surface equals
-/// this derivation — so there is no hand-maintained literal duplicate of the names here to drift.
+/// A door is held to it at **construction**, not by a test observing the wire afterwards: the MCP
+/// door stamps each contract's sentence onto its built router and refuses to start unless the two
+/// name-sets match exactly, which is what keeps this derivation from needing a duplicate to check
+/// it against. A door that cannot make the same refusal owes itself the equivalent check.
 pub fn names() -> Vec<&'static str> {
     CONTRACTS.iter().map(|c| c.name).collect()
 }

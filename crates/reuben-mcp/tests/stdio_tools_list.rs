@@ -99,9 +99,9 @@ fn every_tool_advertises_an_output_schema() {
 fn advertises_the_window_prose() {
     // The window owns every verb's sentence, and the door stamps it onto the built router
     // because rmcp's `#[tool]` takes only a literal. Left unstamped, the macro falls back to the
-    // method's rustdoc — prose written for a Rust reader, and a silent regression the roster and
-    // schema tests would both pass through. So this reads the real wire and demands the window's
-    // string exactly. see rules: agent-mcp
+    // method's rustdoc — prose written for a Rust reader, and a silent regression the schema test
+    // above passes straight through, since it iterates names and never reads a sentence. So this
+    // reads the real wire and demands the window's string exactly. see rules: agent-mcp
     let out = drive(&[TOOLS_LIST]);
     let response = response_with_id(&out, 2);
     let tools = response["result"]["tools"]
