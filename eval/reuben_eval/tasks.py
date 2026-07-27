@@ -1,6 +1,6 @@
 """The four task shapes, their reference solutions, and their structural assertions.
 
-The shapes are frozen by #592: from-scratch construction, single-value tweak, intent-word nudge,
+The shapes are frozen: from-scratch construction, single-value tweak, intent-word nudge,
 repair-from-broken. Each is bound to a committed `instruments/` fixture where one fits, so the
 workload moves with the engine rather than rotting in a private copy.
 
@@ -86,7 +86,7 @@ def _upstream(document: dict[str, Any], address: str) -> set[str]:
 def assert_reaches_output(document: dict[str, Any], generator_type: str) -> None:
     """A node of `generator_type` must actually feed an `output` node.
 
-    The reachability check #577 proposes folding into `validate`. Until it lands there, the harness
+    The reachability check is proposed for folding into `validate`. Until it lands there, the harness
     asserts it independently — a disconnected oscillator is legal today and silent in practice.
     """
     nodes = _nodes(document)
@@ -199,7 +199,7 @@ def _assert_nudge(document: dict[str, Any]) -> None:
     if not isinstance(value, (int, float)):
         raise AssertionError(f"`/filter.cutoff` is {value!r}, expected a number")
     # `warmer` is filter.cutoff *down* per the intent vocabulary. Direction is the assertion; the
-    # size of the step is #575's question, not this harness's.
+    # size of the step is the intent vocabulary's question, not this harness's.
     if not 0.0 < float(value) < ORIGINAL_CUTOFF:
         raise AssertionError(
             f"`warmer` must lower `/filter.cutoff` below {ORIGINAL_CUTOFF}; got {value}"
@@ -297,8 +297,8 @@ def _finish_reference_solutions() -> None:
 
     Written here rather than inline so each reference is unmistakably *the ideal sequence*: read
     once, emit the corrected document once, validate by source. That is the surface's cost floor, and
-    metric (c) prices it at one full document — which is exactly the number #576 and #583 exist to
-    move.
+    metric (c) prices it at one full document — which is exactly the number the surface
+    work exists to move.
     """
     tweaked = copy.deepcopy(VOICE_DOCUMENT)
     _nodes(tweaked)["/filter"]["inputs"]["cutoff"] = 800.0

@@ -14,20 +14,51 @@ Six checks:
   3. A `//!` module doc longer than MAX_UNPOINTED_MODULE_DOC lines names a topic. Length is a
      proxy for carrying rationale: a doc that long is arguing something, and an argument in code
      has to point at the rule it belongs to.
-  4. No `//` or `//!` comment cites an issue (`#123`, `reuben#123`) or a rule anchor
-     (`agent-mcp.md#some-rule`). An issue number is provenance, and provenance lives in a rationale
-     file's `Decided in:` / `Distilled from:` line — the same reason check 1 bans `ADR-<n>`. In code
-     it is an unresolvable pointer to a closed argument, and it reliably marks a comment that is
-     retelling history rather than stating mechanics. A rule anchor is the deeper half of the same
-     mistake: code points at topics only.
+  4. No COMMENT cites an issue (`#<nn>`, `reuben#<nn>`) or a rule anchor (`agent-mcp.md#some-rule`).
+     An issue number is provenance, and provenance lives in a rationale file's `Decided in:` /
+     `Distilled from:` line — the same reason check 1 bans `ADR-<n>`. In code it is an unresolvable
+     pointer to a closed argument, and it reliably marks a comment that is retelling history rather
+     than stating mechanics. A rule anchor is the deeper half of the same mistake: code points at
+     topics only. (The examples above are written with a placeholder because this file is scanned by
+     its own check, the same reason check 1 spells `ADR-<n>` that way.)
 
-     `///` is deliberately out of reach here: this linter cannot tell a comment from an advertised
-     description textually, and the two are governed differently — see rules: code-as-grounding.
-     The wire half is guarded from the door's own output, in reuben-mcp's stdio integration test.
+     The rule is about prose, not about a language, so this runs over every lane in CODE_EXTS. What
+     it does NOT reach is decided by ONE test, applied per lane: **does the language generate this
+     comment into something a model or a user reads?** Where it does, the text is not only a comment,
+     a second rule governs it, and a linter reading source cannot tell the two apart — so this check
+     stands off. Where nothing generates prose out of comments, every comment is only a comment and
+     all of it is in reach. Nothing here turns on the comment's SHAPE.
+
+     RUST — `///`, `/** … */` and `/*! … */` are out of reach. A doc comment on a `JsonSchema` type
+     is generated into the advertised `description` a model reads over the wire; this linter cannot
+     tell which ones are, and an advertised description is governed by its own rule — see rules:
+     code-as-grounding. That half is guarded from the door's own OUTPUT instead, in reuben-mcp's
+     stdio integration test, which is the only place the distinction is decidable. `//` and `//!`
+     are in reach: nothing generates those.
+
+     JS/TS — everything is in reach, `//`, `///`, `/* … */` and `/** … */` alike. The premise the
+     Rust carve-out needs is simply absent here: this repo has no `tsconfig.json`, no
+     `jsconfig.json`, no `checkJs`, and no typedoc or jsdoc dependency, and the tool schemas the
+     model reads are imported from a GENERATED JSON artifact built on the Rust side — so not one
+     character of a JS comment reaches a model or a user. There is no second regime to be unable to
+     distinguish. The corpus says the same thing from the other direction: JS block comments here
+     carry argument, not description ("**THE SEAM HAS BEEN TAKEN** … This used to read: …"), which
+     is exactly what this check exists to keep out of code.
+
+     The `#` lanes — shell, YAML, TOML, Python — are in reach whole, for the same reason: nothing in
+     a workflow file, a manifest or a shell script is ever generated into consumed prose. Python
+     DOCSTRINGS are the one ragged edge, and they are ragged by accident rather than by decision: a
+     docstring line is reached only when it happens to carry no quote character, so the guard sees
+     some of a docstring and not the rest. Bringing them in deliberately is a separate change, and
+     the mirrored-guard pointer question has to be settled before it, not after.
+
+     A note on scope, since a lane table invites the question: `.go`, `.c`, `.java` and friends sit
+     in CODE_EXTS and are read as JS is. Neither repo contains one. If a Javadoc'd Java file ever
+     lands, it fails the test above — javadoc IS a generator — and earns its own row.
   5. A `see rules: <topic>` pointer stops at the topic. Check 4's `RULE_ANCHOR_RE` only sees the
      `<file>.md#<rule>` spelling; prose reaches a rule three other ways — `<topic>#<rule>`,
      a parenthesised `(<rule>, <rule>)` trailing the topic, and a comma-continued list — and
-     `///` is out of check 4's reach entirely. Check 5 reads the pointer's own tail instead, so
+     a Rust `///` is out of check 4's reach entirely. Check 5 reads the pointer's own tail instead, so
      every spelling resolves or is reported. It also rejects a capitalised `see`, which the
      grammar does not admit and which therefore slips past checks 2 and 3 unvalidated.
 
@@ -46,13 +77,12 @@ Six checks:
      at all — a detector with that ratio is one people learn to filter out. The reason is demanded
      at writing time instead, while the author still knows whether generation was tried.
 
-Exit non-zero on any violation. Stdlib only. Wired into CI in both repos (S19, epic #165) now
-that the code is clean.
+Exit non-zero on any violation. Stdlib only. Wired into CI in both repos.
 
 Usage: python3 scripts/check_rules_refs.py [root=.]
 """
 from __future__ import annotations
-import re, sys
+import bisect, re, sys
 from pathlib import Path
 
 CODE_EXTS = {".rs", ".py", ".mjs", ".js", ".ts", ".jsx", ".tsx", ".go", ".c", ".h",
@@ -82,10 +112,12 @@ SEE_ANYCASE_RE = re.compile(r"\bsee (engine )?rules:[ \t]*", re.IGNORECASE)
 # rationale accumulated.
 MAX_UNPOINTED_MODULE_DOC = 10
 
-# An issue citation in a comment: `#123`, or the cross-repo `reuben#123`. Two digits minimum, so
-# `#3` in prose and a commented-out `#[derive(…)]` cannot trip it.
+# An issue citation in a comment: a bare hash-and-number, or the cross-repo `reuben#<nn>`. Two
+# digits minimum, so `#3` in prose and a commented-out `#[derive(…)]` cannot trip it. The examples
+# are placeholders because this file is scanned by its own check.
 ISSUE_RE = re.compile(r"(?<![\w#])(?:[a-z][\w.-]*)?#\d{2,4}\b")
-# A rule-level pointer: `agent-mcp.md#expect-guard-is-a-door-concern`. Code points at TOPICS only
+# A rule-level pointer: `<topic>.md#<rule>`, spelled with placeholders because this file is scanned
+# by its own check. Code points at TOPICS only
 # (docs/rules/README.md, Conventions) — a rule slug is the deepest rung and reworded freely, so a
 # comment naming one is a link that breaks silently.
 RULE_ANCHOR_RE = re.compile(r"\b[a-z0-9-]+\.md#[a-z0-9-]+")
@@ -110,21 +142,52 @@ MIN_PARITY_REASON_WORDS = 5
 # `#` opens a comment in the shell/Python half and is an attribute (`#[…]`) or a raw-string delimiter
 # (`r#"…"#`) in Rust, and guessing wrong turns code into prose.
 HASH_EXTS = {".py", ".sh", ".rb", ".toml", ".yml", ".yaml"}
+# The three lanes, by suffix. `rust` and `curly` share the `//` opener and differ on what a comment
+# may also be: see the module docstring's check 4.
+RUST_EXTS = {".rs"}
+# What delimits a string, per lane. Not one set: in Rust a lone `'` is a LIFETIME (`&'a str`), and
+# treating it as an open string swallows the rest of the line — which is why Rust tracks `"` only.
+# Everywhere else the apostrophe really is a delimiter, and in the JS family so is the backtick;
+# missing them makes the guard red on a URL held in an ordinary single-quoted string.
+RUST_QUOTES = '"'
+CURLY_QUOTES = "\"'`"
+HASH_QUOTES = "\"'"
+# Where a `#` may open a comment, and where a quote may open a string, in the `#` lanes. YAML's rule
+# is that `#` comments only at line start or after whitespace — a bare URL's fragment is data, not
+# prose — and shell agrees (a `#` mid-word is literal). TOML and Python are laxer, so this is a
+# deliberate NARROWING there: an unspaced `x=1#<n>` is missed, which is rarer than the URL it
+# stops flagging.
+# The quote rule is the same idea one level down: a quote opens a scalar only at a token start, so
+# the apostrophe in `name: Charlie's step` stays literal instead of swallowing the comment after it.
+HASH_OPENER_BEFORE = " \t"
+HASH_QUOTE_BEFORE = " \t[{(,:=-"
 # A continuation line's opener, stripped so a comment reads as one string across the line break
 # rustfmt (or a human) put in it. `*` and `--` cover a `/* … */` block and SQL-ish comments.
 CONT_MARKER_RE = re.compile(r"^(///|//!|//|#|\*|--)[ \t]?")
 
 
-def comment_body(line: str, opener: str = "//", reach_docs: bool = True) -> tuple[int, str] | None:
+def lane_of(suffix: str) -> str:
+    """Which comment grammar a file is read with. Three, not one per language: what matters is the
+    comment syntax and whether a comment can also be something else."""
+    if suffix in RUST_EXTS:
+        return "rust"
+    return "hash" if suffix in HASH_EXTS else "curly"
+
+
+def comment_body(line: str, opener: str = "//", reach_docs: bool = True,
+                 quotes: str | None = None) -> tuple[int, str] | None:
     """(index just past the opener, body) of the line's comment, or None if it has none.
 
     A hand-rolled scan rather than a regex because the opener has to be outside string literals:
     the `//` in `"https://…"` is data, and a regex cannot see the quote that precedes it. With
-    `reach_docs` false, a `///` doc comment returns None — check 4 deliberately does not reach one.
+    `reach_docs` false, a `///` doc comment returns None — check 4 does not reach one IN RUST.
+
+    `quotes` is the lane's string delimiters (see RUST_QUOTES / CURLY_QUOTES / HASH_QUOTES); the
+    `#` lane additionally requires an opener to start a word and a quote to start a token.
     """
-    # Single quotes count as a literal only where `#` opens comments: in Rust a lone `'` is a
-    # lifetime, and treating it as an open string would swallow the rest of the line.
-    quotes = "\"'" if opener == "#" else '"'
+    if quotes is None:
+        quotes = HASH_QUOTES if opener == "#" else RUST_QUOTES
+    hashes = opener == "#"
     i, n, in_str = 0, len(line), ""
     while i < n:
         c = line[i]
@@ -134,9 +197,9 @@ def comment_body(line: str, opener: str = "//", reach_docs: bool = True) -> tupl
                 continue
             if c == in_str:
                 in_str = ""
-        elif c in quotes:
+        elif c in quotes and not (hashes and i and line[i - 1] not in HASH_QUOTE_BEFORE):
             in_str = c
-        elif line.startswith(opener, i):
+        elif line.startswith(opener, i) and not (hashes and i and line[i - 1] not in HASH_OPENER_BEFORE):
             j = i + len(opener)
             if opener == "//":
                 if line.startswith("///", i) and not reach_docs:
@@ -148,7 +211,91 @@ def comment_body(line: str, opener: str = "//", reach_docs: bool = True) -> tupl
     return None
 
 
-def fold_comments(text: str, opener: str = "//") -> tuple[str, list[int]]:
+def curly_comments(text: str) -> list[tuple[int, str]]:
+    """Every comment in a C-family file as `(offset of the prose, prose)`, one entry per line.
+
+    A whole-file scan rather than a per-line one, because `/* … */` is the only comment form here
+    that a line cannot decide on its own: whether a line is prose depends on a `/*` above it. That
+    is also what makes the block form reachable at all — reading it line by line is how a `//`
+    inside a URL inside a block comment came to be the only thing that made a block comment
+    visible. String state is per line except for a backtick, which is the one delimiter JS lets
+    span lines.
+    """
+    out: list[tuple[int, str]] = []
+    in_block = False
+    in_str = ""
+    pos = 0
+    for raw in text.splitlines(True):
+        line = raw.rstrip("\n")
+        n = len(line)
+        i = 0
+        start = 0 if in_block else None
+        while i < n:
+            c = line[i]
+            if in_block:
+                if line.startswith("*/", i):
+                    out.append((pos + start, line[start:i]))
+                    in_block, start, i = False, None, i + 2
+                    continue
+                i += 1
+                continue
+            if in_str:
+                if c == "\\":
+                    i += 2
+                    continue
+                if c == in_str:
+                    in_str = ""
+                i += 1
+                continue
+            if c in CURLY_QUOTES:
+                in_str = c
+                i += 1
+                continue
+            if line.startswith("//", i):
+                out.append((pos + i + 2, line[i + 2:]))
+                i = n
+                break
+            if line.startswith("/*", i):
+                in_block, start, i = True, i + 2, i + 2
+                continue
+            i += 1
+        if in_block and start is not None:
+            out.append((pos + start, line[start:]))
+        if in_str != "`":
+            in_str = ""                    # only a template literal survives the line break
+        pos += len(raw)
+    return out
+
+
+def fold_curly_comments(text: str) -> tuple[str, list[int]]:
+    """`fold_comments` for the JS family, over `curly_comments` so a `/* … */` block is prose too.
+
+    Same folding rule as the line-by-line version — consecutive lines are one comment and join with
+    a space, a gap starts a new one — but the pieces come from the whole-file scan, so a pointer
+    wrapped inside a block comment is read whole instead of not at all.
+    """
+    line_starts = [0] + [i + 1 for i, c in enumerate(text) if c == "\n"]
+    out: list[str] = []
+    idx: list[int] = []
+    prev_line = None
+    for off, piece in curly_comments(text):
+        line = bisect.bisect_right(line_starts, off)
+        stripped = piece.lstrip()
+        lead = len(piece) - len(stripped)
+        cont = CONT_MARKER_RE.match(stripped) if prev_line == line - 1 else None
+        start = off + lead + (cont.end() if cont else 0)
+        body = piece[lead + (cont.end() if cont else 0):]
+        if out:
+            out.append(" " if prev_line == line - 1 else "\n")
+            idx.append(start)
+        for k, ch in enumerate(body):
+            out.append(ch)
+            idx.append(start + k)
+        prev_line = line
+    return "".join(out), idx
+
+
+def fold_comments(text: str, opener: str = "//", quotes: str | None = None) -> tuple[str, list[int]]:
     """The file's comment prose alone, line breaks inside one comment folded to a space.
 
     Two things a line-by-line scan gets wrong, fixed in one pass. A pointer is a sentence and gets
@@ -170,7 +317,7 @@ def fold_comments(text: str, opener: str = "//") -> tuple[str, list[int]]:
         if cont:
             start, prose = lead + cont.end(), " "
         else:
-            found = comment_body(body, opener)
+            found = comment_body(body, opener, quotes=quotes)
             if not found:
                 open_comment = False
                 continue
@@ -227,18 +374,43 @@ def module_doc_problems(rel: str, text: str) -> list[str]:
             f"(<={MAX_UNPOINTED_MODULE_DOC} lines)"]
 
 
-def comment_ref_problems(rel: str, text: str) -> list[str]:
-    """Check 4 for one Rust file: a `//` or `//!` comment cites no issue and no rule anchor.
+def comment_ref_problems(rel: str, text: str, lane: str = "rust") -> list[str]:
+    """Check 4 for one file: no comment cites an issue or a rule anchor.
 
-    Reads the comment body only, so an issue number inside a string literal (a test fixture, a
-    URL) is not a violation — the target is prose that retells history, not data.
+    Reads comment prose only, so an issue number inside a string literal (a test fixture, a URL)
+    is not a violation — the target is prose that retells history, not data. `lane` selects the
+    grammar and, with it, what is out of reach; the module docstring's check 4 argues each.
     """
+    line_starts = [0] + [i + 1 for i, c in enumerate(text) if c == "\n"]
+
+    def line_at(off: int) -> int:
+        lo, hi = 0, len(line_starts) - 1
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            lo, hi = (mid, hi) if line_starts[mid] <= off else (lo, mid - 1)
+        return lo + 1
+
+    pieces: list[tuple[int, str]] = []
+    if lane == "curly":
+        pieces = curly_comments(text)
+    else:
+        opener = "#" if lane == "hash" else "//"
+        quotes = HASH_QUOTES if lane == "hash" else RUST_QUOTES
+        pos = 0
+        for raw in text.splitlines(True):
+            found = comment_body(raw.rstrip("\n"), opener, reach_docs=False, quotes=quotes)
+            if found:
+                # The opener goes back on the front before the scan. In a `#` lane the FIRST
+                # citation on a line is the thing that opens the comment, as far as the scanner is
+                # concerned — its own hash IS the opener — so the body starts one character too
+                # late and the citation arrives as a bare number. Re-attaching costs Rust nothing:
+                # neither pattern can match into a `//`.
+                pieces.append((pos + found[0], opener + found[1]))
+            pos += len(raw)
+
     problems = []
-    for i, line in enumerate(text.splitlines(), 1):
-        found = comment_body(line, reach_docs=False)
-        if not found:
-            continue
-        body = found[1]
+    for off, body in pieces:
+        i = line_at(off)
         for ref in ISSUE_RE.findall(body):
             problems.append(f"{rel}:{i}: issue citation `{ref}` in a comment — provenance belongs "
                             f"in a rationale file, not in code; point at a topic instead")
@@ -248,10 +420,15 @@ def comment_ref_problems(rel: str, text: str) -> list[str]:
     return problems
 
 
-def folded_with_lines(text: str, opener: str = "//"):
+def folded_with_lines(text: str, lane: str = "rust"):
     """`(folded prose, line_at)` — the comment-folded view plus a resolver from a folded offset
     back to the 1-based source line, so a problem names the line a reader has to go edit."""
-    folded, idx = fold_comments(text, opener)
+    if lane == "curly":
+        folded, idx = fold_curly_comments(text)
+    else:
+        opener = "#" if lane == "hash" else "//"
+        folded, idx = fold_comments(text, opener,
+                                    HASH_QUOTES if lane == "hash" else RUST_QUOTES)
     line_starts = [0] + [i + 1 for i, c in enumerate(text) if c == "\n"]
 
     def line_at(pos: int) -> int:
@@ -265,7 +442,7 @@ def folded_with_lines(text: str, opener: str = "//"):
     return folded, line_at
 
 
-def parity_problems(rel: str, text: str, opener: str = "//") -> list[str]:
+def parity_problems(rel: str, text: str, lane: str = "rust") -> list[str]:
     """Check 6 for one file: every parity marker that exists records a substantive reason.
 
     Runs over the comment-folded view for the same two reasons checks 2 and 5 do — a reason
@@ -273,7 +450,7 @@ def parity_problems(rel: str, text: str, opener: str = "//") -> list[str]:
     guard's own fixtures) is data rather than prose.
     """
     problems = []
-    folded, line_at = folded_with_lines(text, opener)
+    folded, line_at = folded_with_lines(text, lane)
     for m in PARITY_ANYCASE_RE.finditer(folded):
         i = line_at(m.start())
         marker = folded[m.start():m.end()].strip()
@@ -290,7 +467,7 @@ def parity_problems(rel: str, text: str, opener: str = "//") -> list[str]:
     return problems
 
 
-def pointer_problems(rel: str, text: str, is_topic, opener: str = "//") -> list[str]:
+def pointer_problems(rel: str, text: str, is_topic, lane: str = "rust") -> list[str]:
     """Checks 2 and 5 for one file: every `see rules:` pointer resolves, and stops at its topic.
 
     Both run over the comment-folded view (`fold_comments`), so a pointer wrapped across a line
@@ -298,7 +475,7 @@ def pointer_problems(rel: str, text: str, is_topic, opener: str = "//") -> list[
     resolves to a topic doc; the two checks share it so they agree on what a topic is.
     """
     problems = []
-    folded, line_at = folded_with_lines(text, opener)
+    folded, line_at = folded_with_lines(text, lane)
 
     for m in SEE_ANYCASE_RE.finditer(folded):
         i = line_at(m.start())
@@ -362,10 +539,10 @@ def main(root_arg: str = ".") -> int:
             continue
         if path.suffix == ".rs":
             errors.extend(module_doc_problems(rel, text))
-            errors.extend(comment_ref_problems(rel, text))
-        opener = "#" if path.suffix in HASH_EXTS else "//"
-        errors.extend(pointer_problems(rel, text, is_topic, opener))
-        errors.extend(parity_problems(rel, text, opener))
+        lane = lane_of(path.suffix)
+        errors.extend(comment_ref_problems(rel, text, lane))
+        errors.extend(pointer_problems(rel, text, is_topic, lane))
+        errors.extend(parity_problems(rel, text, lane))
         for i, line in enumerate(text.splitlines(), 1):
             if ADR_RE.search(line):
                 errors.append(f"{rel}:{i}: ADR reference in code — point at a topic: `see rules: <topic>`")

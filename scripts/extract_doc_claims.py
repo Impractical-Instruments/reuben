@@ -295,7 +295,7 @@ def extract(path: Path, root: Path, idx: Index) -> list[Claim]:
                 claims.append(Claim("count", rel, lineno, m.group(0), False, "needs-review",
                                     "counts something the line names"))
 
-    # Only a RULE makes a normative single-sourcing claim, and that set is what #634 asks to audit
+    # Only a RULE makes a normative single-sourcing claim, and that set is what this ledger audits
     # for a nameable guard. A rationale re-argues the claim and a skill repeats it; routing those
     # buries the handful that matter under eighty that do not.
     if is_topic:

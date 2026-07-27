@@ -1,6 +1,7 @@
-"""The forcing function for #612: prove roster growth is *visible* but never a verdict.
+"""The forcing function for the visibility tiers: prove roster growth is *visible* but never a
+verdict.
 
-The gate's whole point after #612 is that a bigger agent surface annotates and rides the trend
+The gate's whole point is that a bigger agent surface annotates and rides the trend
 without breaking the build — only a broken reference solution or an uncomputable metric fails it. A
 test that let a metric regression flip `failed` back to True would silently restore the brake the
 map spent a grilling removing, so these assert the demotion head-on, plus the density readout that
@@ -43,7 +44,7 @@ def _report(result: dict) -> dict:
 
 class TestVisibilityNotVerdict(unittest.TestCase):
     def test_a_large_grounding_jump_does_not_fail_the_gate(self) -> None:
-        """~19 new arms is a >10% fixed-grounding jump — the exact case that must NOT break #603."""
+        """~19 new arms is a >10% fixed-grounding jump — the exact case that must NOT break the build."""
         baseline = _report(_result(total=5000, fixed=4767, tools=8, schema_bytes=8000))
         head = _report(_result(total=6500, fixed=6200, tools=27, schema_bytes=20000))
         summary, failed = gate.render(head, baseline)

@@ -22,7 +22,7 @@
 # did not compile against its baseline, so no comparison ran. That is an honest gap in the series,
 # not a fabricated point.
 #
-# It carries TWO series on the same branch (#598): `bench-history.jsonl` (what the engine costs the
+# It carries TWO series on the same branch: `bench-history.jsonl` (what the engine costs the
 # CPU) and `eval-history.jsonl` (what the agent surface costs a model). One place to look — a PR
 # trading engine instructions for grounding tokens is visible in a single view — and the record
 # shapes stay distinct, so `ir` never holds a token count. Either input may be absent independently:

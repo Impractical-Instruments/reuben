@@ -256,8 +256,8 @@ def find_surface_doc(surfaces_dir: Path, stem: str, target: str = "touchosc") ->
 # --- interface boundary (interface input pipes) -----------------------------------------
 
 # The boundary port kinds that map to a fader: a held scalar knob (`value`), a swept scalar
-# (`signal`), or a ranged integer (`int`). `reuben describe --json` reports the kind (issue #176:
-# a held `f32` Value is `value`, a dense `f32_buffer` Signal is `signal`). Everything else — a
+# (`signal`), or a ranged integer (`int`). `reuben describe --json` reports the kind: a held
+# `f32` Value is `value`, a dense `f32_buffer` Signal is `signal`. Everything else — a
 # bare audio buffer (a `signal` with no range), an `enum` (needs a selector widget), a
 # `message`/`harmony`/`arg`/`string` — is not a fader and is skipped (matching the operator-param
 # scope: enums out today).
@@ -328,8 +328,8 @@ def run_describe(reuben_bin: str, inst_path: Path) -> dict:
     """Invoke `reuben describe <instrument> --view boundary --json` and parse it. Raises with the
     binary's own stderr on failure so a bad patch reads the same as it would on the CLI.
 
-    `--view boundary` is explicit because #604 gave `describe <path>` the structural projection
-    views and made the node index its default. A surface binds widgets to the *resolved face* — an
+    `--view boundary` is explicit because `describe <path>` carries the structural projection
+    views and defaults to the node index. A surface binds widgets to the *resolved face* — an
     output pipe's inherited type, a nested child's dark markers — which only the boundary carries;
     the projection reports what the document declares.
     """

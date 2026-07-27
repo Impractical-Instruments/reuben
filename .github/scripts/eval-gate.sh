@@ -6,15 +6,15 @@
 # currently invisible regression — anyone adding a paragraph to a tool description or the authoring
 # guide makes every turn of every task more expensive, and no existing check sees it.
 #
-# What it measures (#592's yardstick): (a) grounding tokens the sidecar hands back, (b) failed
+# What it measures: (a) grounding tokens the sidecar hands back, (b) failed
 # `validate` rounds, (c) freehand-JSON characters the model must emit. Each task carries a
 # hand-written REFERENCE SOLUTION — the ideal call sequence a perfect model would make — replayed
 # against the real sidecar with NO inference. So this is the surface's COST FLOOR, and a prototype's
-# claim on the #574 map is checkable before a single token is bought.
+# claim on the wayfinder map is checkable before a single token is bought.
 #
 #   FAIL (exit 1): a reference solution stops passing (a real engine/fixture break), or a metric the
 #                  harness cannot compute (a broken gate). Roster SIZE never fails the build — a gate
-#                  that FAILs on growth encodes "the library must not grow", a non-goal. #612.
+#                  that FAILs on growth encodes "the library must not grow", a non-goal.
 #   WARN:          any grounding metric regresses vs the baseline — job summary + GH annotation +
 #                  trend, non-blocking. Growth is a decision to make with eyes open; the per-tool
 #                  schema-density number tells capability growth (more tools) apart from bloat.
