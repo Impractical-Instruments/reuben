@@ -12,7 +12,7 @@ use reuben_core::edit::{self as core_edit, EditError};
 use reuben_core::introspect::{self as core_introspect, PatchBoundary};
 use reuben_core::projection::{Projector, Selection};
 use reuben_core::resources::ResourceResolver;
-use reuben_core::{content_hash, NormalizedDoc, Registry};
+use reuben_core::{content_hash, LoadError, NormalizedDoc, Registry};
 
 use super::args::*;
 use super::result::{Boundary, Diag, DocumentView, EditResult, OperatorInfo, Operators, Report};
@@ -214,6 +214,21 @@ pub fn library_index_line(source: &str, resources: &dyn Resources) -> Result<Str
     let json = read_document(source, resources)?;
     core_introspect::library_index_line(&json, &Registry::builtin(), &resolver)
         .map_err(Refusal::new)
+}
+
+/// The content identity of a document a host is **holding** — the same opaque token a document
+/// verb hands back after writing, minted standing alone rather than as the by-product of an edit.
+///
+/// By value, because the bytes are the question. A door needs this for a document sitting at no
+/// source it can name — the one it has installed, say, while the store's copy at that key has moved
+/// on under an unshipped edit. Hashing what a source reads back *now* composes from `read_text` and
+/// this.
+///
+/// Not a roster verb: no door serves it to a caller. `resources` is here because normalizing a
+/// document resolves the references it makes.
+pub fn hash_instrument(json: &str, resources: &dyn Resources) -> Result<String, Refusal> {
+    let resolver = Adapter(resources);
+    hash_document(json, &Registry::builtin(), &resolver).map_err(|e| Refusal::new(e.to_string()))
 }
 
 // --- document verbs -------------------------------------------------------------------------------
@@ -534,9 +549,7 @@ fn expect_conflict(
 ) -> Option<Answer<EditResult>> {
     let expected = expect.as_ref()?;
     let json = resolver.resolve_text(source).ok()?;
-    let actual = NormalizedDoc::from_json(&json, registry, Some(resolver))
-        .ok()
-        .map(|doc| content_hash(&doc))?;
+    let actual = hash_document(&json, registry, resolver).ok()?;
     if actual == *expected {
         return None;
     }
@@ -566,6 +579,17 @@ fn expect_conflict(
         },
         summary: "write rejected by the expect guard — nothing changed".to_string(),
     })
+}
+
+/// Normalize a document and hash its canonical bytes — the one path both the standing
+/// [`hash_instrument`] verb and the `expect` guard mint through, so the token a door quotes back
+/// and the token the guard compares it against cannot be arrived at differently.
+fn hash_document(
+    json: &str,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+) -> Result<String, LoadError> {
+    NormalizedDoc::from_json(json, registry, Some(resolver)).map(|doc| content_hash(&doc))
 }
 
 /// Read a document's text through the host's store, naming the source the caller used when it is
@@ -896,5 +920,66 @@ mod tests {
         )
         .expect_err("nothing to validate");
         assert!(refusal.message.contains("nope.json"), "{refusal}");
+    }
+
+    /// The standing verb and the write's by-product are the same token for the same content — the
+    /// property that lets a door quote one into an `expect` guard that compares the other.
+    #[test]
+    fn the_standing_hash_equals_the_hash_an_edit_hands_back() {
+        let store = MemoryStore::with("inst.json", SEED);
+        let written = set_instrument_input(&set_freq("inst.json", 440.0, None), &store)
+            .expect("an edit to a real node is not a refusal")
+            .output
+            .hash;
+
+        let standing =
+            hash_instrument(&store.read("inst.json"), &store).expect("a written document hashes");
+        assert_eq!(standing, written);
+    }
+
+    /// Content identity, not text identity: reformatting the source moves neither.
+    #[test]
+    fn the_standing_hash_is_stable_across_formatting_and_moves_on_a_changed_value() {
+        let store = MemoryStore::default();
+        let pretty = hash_instrument(SEED, &store).expect("the seed hashes");
+        let compact = hash_instrument(
+            &SEED.split_whitespace().collect::<Vec<_>>().join(" "),
+            &store,
+        )
+        .expect("the reflowed seed hashes");
+        let changed = hash_instrument(&SEED.replace("220.0", "440.0"), &store)
+            .expect("the retuned seed hashes");
+
+        assert_eq!(pretty, compact);
+        assert_ne!(pretty, changed);
+    }
+
+    /// A document that will not normalize has no identity to report — a refusal that says why, not
+    /// an empty token. Both stages, because they fail in different places: bytes that are not JSON
+    /// never reach the loader, and a format version from the future parses fine and is refused
+    /// inside it.
+    #[test]
+    fn a_document_that_will_not_normalize_is_a_refusal() {
+        let store = MemoryStore::default();
+        for (why, json) in [
+            ("unparseable", r#"{"format_version": 3"#.to_string()),
+            (
+                "from the future",
+                SEED.replace("\"format_version\": 3", "\"format_version\": 99"),
+            ),
+        ] {
+            let refusal = hash_instrument(&json, &store).expect_err(why);
+            assert!(!refusal.message.is_empty(), "{why} says why it has no hash");
+        }
+    }
+
+    /// Identity is not validity: a document naming an operator the registry does not hold still
+    /// hashes. Normalization is structural, and a door that refused here would leave a caller
+    /// unable to name the very document it is trying to repair.
+    #[test]
+    fn a_document_that_will_not_load_still_has_an_identity() {
+        let store = MemoryStore::default();
+        hash_instrument(&SEED.replace("oscillator", "nosuchoperator"), &store)
+            .expect("an unloadable document is still some particular document");
     }
 }
