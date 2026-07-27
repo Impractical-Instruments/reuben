@@ -12,6 +12,11 @@ target/
 # Git's object store. Use git commands; the packfiles are not readable text.
 .git/
 
+# Agent worktrees: a full second checkout of this repo. Every hit in one is a stale duplicate of a
+# hit already in the tree, at a path indistinguishable from a real one. .gitignore keeps it out of
+# commits; only this keeps it out of a search.
+/.claude/worktrees/
+
 # Python bytecode and test caches dropped by the skills' own test suites.
 __pycache__/
 .pytest_cache/

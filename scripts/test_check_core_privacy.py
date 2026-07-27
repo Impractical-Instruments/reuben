@@ -132,6 +132,16 @@ class CorePrivacyGuardTest(unittest.TestCase):
         })
         self.assertEqual(problems, [])
 
+    def test_a_nested_checkout_is_skipped(self):
+        # An agent worktree carries a full copy of every workspace manifest; judging it means
+        # reporting the same dependency edge twice, once at a path that is about to be discarded.
+        problems = self._problems({
+            ".claude/worktrees/agent-abc123/crates/reuben-native/Cargo.toml":
+                '[package]\nname = "reuben-native"\n\n'
+                '[dependencies]\nreuben-core = { path = "../reuben-core" }\n',
+        })
+        self.assertEqual(problems, [])
+
     def test_an_unreadable_manifest_is_reported_rather_than_passed(self):
         problems = self._problems({"crates/broken/Cargo.toml": "[dependencies\n"})
         self.assertEqual(len(problems), 1)
