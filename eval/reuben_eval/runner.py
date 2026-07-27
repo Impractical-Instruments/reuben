@@ -4,7 +4,7 @@ Both tiers share this. The gate tier replays a reference solution through it wit
 live tier lets a model choose the calls. Identical accounting either way, which is what makes the
 floor and the live number comparable.
 
-The three numbers (#592's yardstick):
+The three numbers the ladder is measured in:
 
 - **(a) tokens/turn** — everything the sidecar hands back, tokenized with the pinned vendored
   cl100k_base: server `instructions`, tool schemas, resources read, every tool result. Counted off

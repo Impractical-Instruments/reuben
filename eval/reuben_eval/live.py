@@ -30,7 +30,8 @@ from . import tasks as task_module
 from .runner import Session
 from .tokenizer import cl100k
 
-# Frozen by #592: capped-out counts as a fail, and 3 repeats at temperature 0 absorb some of the
+# Frozen by the ladder's own definition, so a re-run is comparable: capped-out counts as a fail,
+# and 3 repeats at temperature 0 absorb some of the
 # sampling noise the ladder is deliberately parked in.
 ROUND_CAP = 12
 REPEATS = 3
@@ -46,7 +47,7 @@ DEFAULT_CONTEXT_LENGTH = 32768
 
 @dataclass(frozen=True)
 class Rung:
-    """One hardware band, pinned by #597 to IBM Granite 4.1 (Apache-2.0, dense at all three sizes).
+    """One hardware band, pinned to IBM Granite 4.1 (Apache-2.0, dense at all three sizes).
 
     Dense on purpose: the band is decided by *resident* footprint, so a sparse MoE buys a lower band
     in latency and a **higher** one in memory — a net loss for a memory-banded ladder.

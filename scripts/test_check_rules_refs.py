@@ -136,6 +136,124 @@ class CommentRefGuard(unittest.TestCase):
         self.assertIn("rule-level pointer", problems[0])
 
 
+class CommentRefGuardJs(unittest.TestCase):
+    """Check 4 in the JS lane: every comment form is in reach, because nothing in this repo
+    generates prose out of a JS comment (no tsconfig, no checkJs, no typedoc/jsdoc; the tool
+    schemas a model reads are a generated artifact built on the Rust side)."""
+
+    def problems(self, text: str) -> list[str]:
+        return check_rules_refs.comment_ref_problems("a.mjs", text + "\n", "curly")
+
+    def test_a_line_comment_citing_an_issue_is_flagged(self):
+        self.assertEqual(len(self.problems("// the compactHistory obituary (#107)")), 1)
+
+    def test_the_cross_repo_spelling_is_flagged(self):
+        problems = self.problems("  // source addressing landed in reuben-web#239")
+        self.assertEqual(len(problems), 1)
+        self.assertIn("reuben-web#239", problems[0])
+
+    def test_a_triple_slash_is_in_reach_here(self):
+        # The `///` carve-out is Rust's, and it is about generation, not about slashes: there a doc
+        # comment becomes an advertised description. In JS `///` becomes nothing.
+        self.assertEqual(len(self.problems("/// retired with #604")), 1)
+
+    def test_a_block_comment_is_in_reach(self):
+        # The decision this pins: JSDoc is not an advertised description HERE — nothing reads it —
+        # so a block comment is only a comment, and the corpus uses it to argue.
+        self.assertEqual(len(self.problems("/* superseded by #604 */")), 1)
+        self.assertEqual(len(self.problems("/** @returns the shape #604 froze */")), 1)
+        self.assertEqual(len(self.problems("/**\n * superseded by #604\n */")), 1)
+
+    def test_a_block_comment_is_reached_the_same_way_with_or_without_a_url(self):
+        # The regression that exposed the old carve-out as an accident: a block comment was
+        # invisible UNLESS it happened to contain a `//`, at which point the URL — not the block —
+        # was what the scanner saw. Both forms must now report identically.
+        plain = self.problems("/**\n * a b #264 c\n */")
+        urly = self.problems("/**\n * a https://ex.com/x/#264 b\n */")
+        self.assertEqual(len(plain), 1)
+        self.assertEqual(len(urly), 1)
+        self.assertEqual(plain[0].split(":")[1], urly[0].split(":")[1])   # same line reported
+
+    def test_a_string_literal_is_not_a_comment(self):
+        # All three delimiters, because a guard that reds on a URL in a single-quoted string makes
+        # ordinary
+        # code unwritable and lands on somebody who has no idea why.
+        self.assertEqual(self.problems('const s = "regression for #604";'), [])
+        self.assertEqual(self.problems("const s = 'https://example.com/guide#604';"), [])
+        self.assertEqual(self.problems("const s = `https://example.com/guide#604`;"), [])
+
+    def test_a_comment_behind_a_string_is_still_reached(self):
+        # The converse: skipping literals must not skip the comment behind one.
+        self.assertEqual(len(self.problems("const s = 'x'; // fixed in #604")), 1)
+
+    def test_a_template_literal_spanning_lines_is_not_prose(self):
+        # A backtick is the one JS delimiter that survives a line break, so its continuation lines
+        # are code — including any `//` in a URL on them.
+        self.assertEqual(self.problems("const t = `line1\nhttps://x/#264`;"), [])
+
+
+class CommentRefGuardRustBlocks(unittest.TestCase):
+    """The other half of the same decision: in Rust a block comment CAN be a doc comment, and a doc
+    comment can be generated into an advertised description, so it stays out of reach."""
+
+    def problems(self, text: str) -> list[str]:
+        return check_rules_refs.comment_ref_problems("a.rs", text + "\n", "rust")
+
+    def test_a_rust_block_doc_comment_is_out_of_reach(self):
+        self.assertEqual(self.problems("/** retired with #604 */"), [])
+        self.assertEqual(self.problems("/*! module-level, retired with #604 */"), [])
+
+    def test_a_rust_line_comment_is_in_reach(self):
+        self.assertEqual(len(self.problems("// fixed in #604")), 1)
+
+    def test_a_lifetime_does_not_swallow_the_comment(self):
+        # `'` is a lifetime in Rust, which is why this lane tracks `"` only — treating it as a
+        # string opener would hide every comment behind one.
+        self.assertEqual(len(self.problems("fn f<'a>(x: &'a str) {} // fixed in #604")), 1)
+
+
+class CommentRefGuardHash(unittest.TestCase):
+    """Check 4 in the `#` lanes — shell, YAML, TOML, Python. Nothing here is generated into prose
+    anyone reads, so the lane is in reach whole."""
+
+    def problems(self, text: str, rel: str = "a.yml") -> list[str]:
+        return check_rules_refs.comment_ref_problems(rel, text + "\n", "hash")
+
+    def test_a_hash_comment_citing_an_issue_is_flagged(self):
+        self.assertEqual(len(self.problems("  # fixed in reuben#604, see there")), 1)
+
+    def test_a_citation_that_opens_the_comment_is_found(self):
+        # Regression: where the citation's own hash IS the comment opener, the body starts one
+        # character too late and the citation arrives as a bare number. Reading the body alone is
+        # blind to it, and blind only in the lanes the ban was just widened to reach.
+        self.assertEqual(len(self.problems("#604 fixed this")), 1)
+
+    def test_every_citation_on_the_line_is_found(self):
+        # The same bug's common shape: the first of two goes missing and the report reads as if
+        # there were one, which is worse than missing both.
+        self.assertEqual(len(self.problems("access. #603 and #604 removed that")), 2)
+
+    def test_a_shebang_is_not_an_issue_ref(self):
+        self.assertEqual(self.problems("#!/usr/bin/env bash"), [])
+
+    def test_a_quoted_scalar_is_not_a_comment(self):
+        self.assertEqual(self.problems("  note: 'regression for #604'"), [])
+        self.assertEqual(self.problems("  - run: echo 'a # b #604'"), [])
+
+    def test_a_bare_url_fragment_is_not_a_comment(self):
+        # YAML and shell both open a comment at `#` only after whitespace, so a fragment inside a
+        # bare URL is data. Without this the guard reds on an ordinary `curl`.
+        self.assertEqual(self.problems("      - run: curl -sS https://example.com/spec#604"), [])
+
+    def test_an_apostrophe_in_a_plain_scalar_does_not_hide_the_comment(self):
+        # The blind spot that came with the same defect: a quote only opens a scalar at a TOKEN
+        # start, so `Charlie's` is literal and the comment after it is still prose.
+        self.assertEqual(len(self.problems("  - name: Charlie's step  # retired in #604")), 1)
+
+    def test_a_single_digit_reference_is_not_an_issue_ref(self):
+        self.assertEqual(self.problems("# step #3 of the handshake"), [])
+
+
 class PointerGuard(unittest.TestCase):
     """Checks 2 + 5: a pointer resolves to a topic doc, and names nothing deeper than one."""
 
@@ -204,7 +322,7 @@ class PointerGuard(unittest.TestCase):
         text = "s = '// see rules: no-such-topic'\n# see rules: code-as-grounding"
         self.assertEqual(
             check_rules_refs.pointer_problems(
-                "a.py", text + "\n", lambda cross, slug: slug == "code-as-grounding", "#"
+                "a.py", text + "\n", lambda cross, slug: slug == "code-as-grounding", "hash"
             ),
             [],
         )
@@ -272,10 +390,39 @@ class WholeTree(unittest.TestCase):
         self.assertEqual(self.run_main({"crates/reuben-mcp/src/lib.rs": over}), 1)
 
     def test_a_non_rust_file_is_not_module_doc_checked(self):
-        # Checks 3 and 4 read Rust comment syntax; the same leading `//!` run in a .ts file is not
-        # a module doc, and checks 1 and 2 still scan it.
+        # Check 3 reads Rust comment syntax; the same leading `//!` run in a .ts file is not a
+        # module doc. Checks 1, 2 and 4 still scan it.
         over = doc(BUDGET + 5)
         self.assertEqual(self.run_main({"web/src/app.ts": over}), 0)
+
+    def test_a_js_file_citing_an_issue_is_flagged(self):
+        # The reach the ban was missing: a `.mjs` line comment was checked for pointer grammar but
+        # never for provenance, so an issue number in one was unpoliced.
+        self.assertEqual(self.run_main({"js/agent-host.mjs": "// see #107\n"}), 1)
+
+    def test_a_js_block_comment_is_flagged(self):
+        # The scope decision at the tree level. JSDoc is not an advertised description in this
+        # repo — nothing reads it — so a block comment is prose like any other.
+        self.assertEqual(self.run_main({"js/agent-host.mjs": "/** see #107 */\n"}), 1)
+
+    def test_a_rust_doc_comment_is_still_not_flagged(self):
+        # The carve-out survives the widening, in the one lane whose argument it is — and it is
+        # about GENERATION, so it covers the block form there too.
+        self.assertEqual(self.run_main({"src/lib.rs": "/// see #107\n"}), 0)
+        self.assertEqual(self.run_main({"src/lib.rs": "/** see #107 */\n"}), 0)
+
+    def test_a_pointer_inside_a_js_block_comment_is_validated(self):
+        # Checks 2/5 read the same scan, so a topic named inside a block comment resolves or is
+        # reported. 72 pointers in this corpus lived in that gap.
+        self.assertEqual(self.run_main({"js/a.mjs": "/**\n * see rules: no-such-topic\n */\n"}), 1)
+        self.assertEqual(
+            self.run_main({"js/a.mjs": "/**\n * see rules: code-as-grounding\n */\n"}), 0)
+
+    def test_a_hash_lane_citing_an_issue_is_flagged(self):
+        # Workflow, shell and manifest prose: no advertised description anywhere, so no carve-out.
+        for rel in (".github/workflows/ci.yml", "scripts/gate.sh", "Cargo.toml"):
+            with self.subTest(rel=rel):
+                self.assertEqual(self.run_main({rel: "# see #107\n"}), 1)
 
     def test_a_nested_checkout_is_not_repo_content(self):
         # An agent worktree is a full second copy of the tree, and a stale one by design. Every

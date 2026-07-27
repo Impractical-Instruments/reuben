@@ -648,7 +648,7 @@ class BoundaryTest(unittest.TestCase):
     OSC address is the pipe's `/<name>/in` port."""
 
     # The `describe --json` boundary: kinds/ranges as core would report them for space.json-style
-    # input pipes. issue #176 splits the numeric kinds into `value` (held f32) vs `signal` (dense
+    # input pipes. Core splits the numeric kinds into `value` (held f32) vs `signal` (dense
     # f32_buffer); both fader. `in` is a bare audio pipe (no range); `mode` an enum.
     BOUNDARY = {"inputs": [
         {"name": "freq", "kind": "signal", "default": 440.0, "min": 20.0, "max": 20000.0, "unit": "Hz", "curve": "exponential"},
@@ -707,8 +707,8 @@ class BoundaryTest(unittest.TestCase):
 class LiveEngineBoundaryTest(unittest.TestCase):
     """Bind the boundary path to the **live engine**, not a hand-written fixture. `BoundaryTest`
     above feeds `boundary_controls` a describe view *we* wrote, so it stays green even if the real
-    `describe --json` shape flips under it — exactly the blind spot that let issue #233 rot (the
-    interface `target`→pipe direction flip silently retired the v1 shape this script
+    `describe --json` shape flips under it — exactly the blind spot the last format flip rotted in
+    (the interface `target`→pipe direction flip silently retired the v1 shape this script
     hand-decoded). This test runs the real `reuben describe` on the committed v3 instrument
     `instruments/patches/space.json` and asserts the surface, so a future breaking format change
     breaks *here* instead of drifting silently.
@@ -757,7 +757,7 @@ class LiveEngineBoundaryTest(unittest.TestCase):
 
     def test_live_describe_surfaces_v2_pipe_addresses(self):
         by_addr = {c["address"]: c for c in g.boundary_controls(self._live_describe())}
-        # The two regressions #233 fixed, asserted against *real* engine output:
+        # The two v1-decoding regressions, asserted against *real* engine output:
         #  - non-empty (v1-decoding produced zero controls on a v2 doc), and
         #  - addressed by the pipe's own `/<name>/in` port, not a v1 inner target.
         # space.json's ranged pipes `space` (0..1 value) + `tone` (20..20000 signal) surface;

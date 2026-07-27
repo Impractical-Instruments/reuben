@@ -1,9 +1,9 @@
 """The harness's forcing function: prove the assertions actually reject the degenerate passes.
 
 A structural assertion that never fails is worse than no assertion — it reports a green ladder while
-measuring nothing. #592 named the specific trap: `new_instrument` already lands a valid document,
-so "change nothing" would score as success on the from-scratch task unless something checks the
-asked-for thing happened.
+measuring nothing. The specific trap this harness was built around: `new_instrument` already lands
+a valid document, so "change nothing" would score as success on the from-scratch task unless
+something checks the asked-for thing happened.
 
 So every test here is the *negative*: feed the assertion a document that a lazy or damaging model
 would plausibly produce, and require it to raise.
@@ -73,7 +73,7 @@ class TestReferenceSolutions(unittest.TestCase):
 
     @unittest.skipUnless(sidecar_available(), "reuben-mcp not built")
     def test_tweak_floor_re_emits_the_whole_document(self) -> None:
-        """The number #576 and #583 exist to move: a one-value change costs a full document."""
+        """The number the surface work exists to move: a one-value change costs a full document."""
         outcome = run_reference(tasks.BY_KEY["tweak"])
         self.assertGreater(
             outcome.payload_characters,
@@ -85,13 +85,13 @@ class TestReferenceSolutions(unittest.TestCase):
 
 class TestFromScratchAssertion(unittest.TestCase):
     def test_scaffold_alone_is_not_a_pass(self) -> None:
-        """The degenerate pass #592 called out: a valid but empty document — what
+        """The degenerate pass: a valid but empty document — what
         `new_instrument` lands, unchanged."""
         with self.assertRaises(AssertionError):
             tasks._assert_from_scratch({"format_version": 3, "instrument": "tone", "nodes": []})
 
     def test_disconnected_oscillator_is_not_a_pass(self) -> None:
-        """Every node present, none of them wired — legal today, silent in practice (#577)."""
+        """Every node present, none of them wired — legal today, silent in practice."""
         document = {
             "format_version": 3,
             "instrument": "tone",
@@ -200,8 +200,8 @@ class TestPayloadLedger(unittest.TestCase):
     """Metric (c): echoes count, small structured arguments cost nothing."""
 
     def test_echoes_are_charged(self) -> None:
-        # An echo is a model writing a document it has already emitted once — the re-emit #583
-        # exists to kill. Both writes are charged: the second is not free for being a repeat.
+        # An echo is a model writing a document it has already emitted once — the re-emit this
+        # metric exists to kill. Both writes are charged: the second is not free for being a repeat.
         ledger = PayloadLedger()
         ledger.charge("write_file", {"path": "a.json", "content": tasks.VOICE})
         ledger.charge("write_file", {"path": "a.json", "content": tasks.VOICE})
@@ -238,7 +238,7 @@ class TestPayloadLedger(unittest.TestCase):
 
 class TestTaskRoster(unittest.TestCase):
     def test_the_four_shapes_are_all_present(self) -> None:
-        """#592 froze the shapes; losing one silently narrows what the gate can see."""
+        """The shapes are frozen; losing one silently narrows what the gate can see."""
         self.assertEqual(
             {task.key for task in tasks.TASKS}, {"from_scratch", "tweak", "nudge", "repair"}
         )

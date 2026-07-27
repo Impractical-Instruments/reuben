@@ -6,7 +6,7 @@
 # on the baseline commit still works (we never swap the benches). Deterministic instruction
 # counts mean no wall-clock flake on the shared runner.
 #
-# TWO LAYERS (#30), each gated independently so one can't mask the other:
+# TWO LAYERS, each gated independently so one can't mask the other:
 #   - macro_iai: end-to-end `render_block` per instrument.
 #   - micro_iai: per-operator `process` (needs the `bench` feature's crate-private bridge).
 # Each layer runs its own baseline/compare cycle. If a layer's harness postdates the baseline
@@ -58,7 +58,7 @@ set -uo pipefail
 
 BASE_SHA="${1:-}"
 PKG="reuben-core"
-# Both iai layers (#30). macro_iai needs no features; micro_iai needs `bench` for the
+# Both iai layers. macro_iai needs no features; micro_iai needs `bench` for the
 # crate-private `Io` bridge. The feature only compiles `bench_support` (dead code for macro_iai),
 # so it leaves macro Ir byte-stable — safe to pass on both runs.
 BENCHES=("macro_iai" "micro_iai")
@@ -165,19 +165,19 @@ note ""
 
 # PR-new operators have no baseline counterpart: the baseline commit's swapped-in src/ doesn't
 # register them, so the HEAD micro harness would panic building their driver and abort the WHOLE
-# micro layer — the masking bug on #104, where renaming `map` -> `map_f32_signal` (+ adding
+# micro layer — the masking bug where renaming `map` -> `map_f32_signal` (+ adding
 # `map_f32_value`) skipped every operator's gate and CI stayed green. Compute those kinds as HEAD's
 # micro census minus the baseline's, and hand the list to the bench via REUBEN_MICRO_BENCH_SKIP. The
 # harness skips exactly these, symmetrically on BOTH the baseline and PR runs, so a brand-new operator
 # is excluded from the comparison (nothing to compare it against) while every operator that existed at
-# the base is still benched and gated. `WORKLOADS` mirrors the registry (forcing function #30), so
+# the base is still benched and gated. `WORKLOADS` mirrors the registry (a forcing function), so
 # it's an exact, build-free census of each side's operators. macro_iai ignores the var.
 #
-# Read from `WORKLOADS`, NOT the micro census: #568 deleted the `MICRO_IAI_KINDS` const this used to
-# scan and moved the iai census into `benches/micro_iai.rs`, leaving this scan matching nothing. An
-# empty census silently produced an empty skip list, so the first PR to add an operator afterwards
-# (#571) panicked the baseline run with `unknown operator kind`. `WORKLOADS` is the marker that
-# survived that refactor, lives in the file this already reads from both sides, and is the registry
+# Read from `WORKLOADS`, NOT the micro census: the `MICRO_IAI_KINDS` const this used to scan was
+# deleted when the iai census moved into `benches/micro_iai.rs`, leaving this scan matching nothing.
+# An empty census silently produced an empty skip list, so the next PR to add an operator panicked
+# the baseline run with `unknown operator kind`. `WORKLOADS` is the marker that survived that
+# refactor, lives in the file this already reads from both sides, and is the registry
 # itself by forcing function — which is what actually decides whether `for_kind` panics.
 #
 # First range only (awk exits at the const's closing `];` at column 0): sed's restarting /a/,/b/

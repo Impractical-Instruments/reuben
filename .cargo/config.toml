@@ -7,14 +7,18 @@
 #
 # Scoped to x86_64 so it never reaches aarch64/etc. (where `x86-64-v2` is not a valid `target-cpu`,
 # and `floor` already inlines to a native rounding instruction). Going further to `x86-64-v3`
-# (AVX2/FMA, Haswell 2013+) buys more but raises the minimum CPU — tracked in #136.
+# (AVX2/FMA, Haswell 2013+) buys more but raises the minimum CPU again, which is an open call
+# nobody has made — the hardware floor is a product decision, not a build one.
+# NOTE: the `rustflags` line below sets v3 while this whole comment argues for v2.
+# That disagreement predates this file's last edit and is NOT resolved here: whichever is wrong,
+# fixing it changes either the shipped codegen or the stated hardware floor.
 [target.'cfg(target_arch = "x86_64")']
 rustflags = ["-C", "target-cpu=x86-64-v3"]
 
 # Cargo aliases for this workspace.
 [alias]
 # Run the full benchmark suite — both the macro (render_block) layer and the per-operator micro
-# layer — with the `bench` feature the micro `[[bench]]` targets require (#30). A bare
+# layer — with the `bench` feature the micro `[[bench]]` targets require. A bare
 # `cargo bench` still runs the macro layer; the micro targets declare `required-features = ["bench"]`
 # so they're skipped (not errored) without this flag. Use this alias to get everything in one word.
 reuben-core-bench = "bench -p reuben-core --features bench"

@@ -87,7 +87,7 @@ def load(path):
     return order, series
 
 
-# The agent-surface eval trend (#598), harvested beside the bench trend by the same append job.
+# The agent-surface eval trend, harvested beside the bench trend by the same append job.
 # Deliberately a SEPARATE record shape read by a separate loader: `ir` never holds a token count,
 # so the two series can never be plotted on one axis by accident.
 EVAL_FILE = "eval-history.jsonl"
@@ -552,7 +552,7 @@ def main():
         lines += ["", "</details>"]
     else:
         lines.append("_No micro data recorded yet._")
-    # The second series, harvested beside this one on the same trend branch (#598). Absent on a
+    # The second series, harvested beside this one on the same trend branch. Absent on a
     # branch that predates the eval gate, or on a commit where it skipped — the section drops.
     eval_jsonl = os.path.join(os.path.dirname(jsonl) or ".", EVAL_FILE)
     if os.path.isfile(eval_jsonl):

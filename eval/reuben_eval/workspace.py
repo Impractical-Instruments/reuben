@@ -2,16 +2,16 @@
 
 **Why the harness ships file tools at all.** It used to be a necessity: `swap` was path-only and the
 roster had no document-read tool, so a real authoring client necessarily brought its own filesystem
-access. #603 and #604 removed that necessity — the roster now reads a document (`describe_instrument`)
+access. The document verbs removed that necessity — the roster now reads a document (`describe_instrument`)
 and writes one (the document verbs) without the model ever seeing its bytes. They stay for the
 opposite reason: a real client *still has* `Read`/`Write`, so leaving them on the namespace is what
 lets the harness see a model reach for them anyway. Their presence is now a measurement, not a
-crutch — and #624 carries the open call about whether the reference solutions should still use them.
+crutch — and whether the reference solutions should still use them is an open call.
 
 **Metric (c) is collected here.** Document-payload characters are counted on every argument that
 carries an instrument document or a fragment of one, **including echoes**. A model that copies a
 document out of a tool result and back into the next call pays full price, because killing that
-re-emit is the single largest win #576 and #583 claim.
+re-emit is the single largest win on the table.
 """
 
 from __future__ import annotations
@@ -32,9 +32,9 @@ from typing import Any
 # error only ever runs one way (a stray scratch write makes the surface look MORE expensive, never
 # less), so it cannot flatter a prototype's claim — the direction the metric must never be fooled in.
 #
-# Only `write_file` remains after #604: the sidecar's inline `document` arms — `validate(document=…)`
+# Only `write_file` remains: the sidecar's inline `document` arms — `validate(document=…)`
 # and `describe_instrument(document=…)` — are gone, so the roster no longer offers *any* way to send
-# a document to reuben. That is the point of #583, and it means metric (c) now measures exactly one
+# a document to reuben. That is the point, and it means metric (c) now measures exactly one
 # thing: whether the model still routes a document through the host's file tools instead of the
 # verbs. A run that reaches zero here has stopped emitting instrument JSON altogether.
 DOCUMENT_ARGUMENTS: dict[str, tuple[str, ...]] = {

@@ -8,7 +8,7 @@ repository.workspace = true
 description = "Portable, OS-free realtime core for reuben: graph, plan, render."
 
 [features]
-# Exposes `bench_support` (the per-operator micro-bench `Io` bridge, #30). Non-default
+# Exposes `bench_support` (the per-operator micro-bench `Io` bridge). Non-default
 # so the bridge never ships in a normal build/publish; the micro `[[bench]]` targets below declare
 # `required-features = ["bench"]`, and CI runs the micro layer + its forcing-function test with
 # `--features bench` (locally: `cargo reuben-core-bench`, see .cargo/config.toml).
@@ -30,7 +30,7 @@ schemars = { workspace = true, optional = true }
 inventory.workspace = true
 # The operator_contract! macro: single-sources each operator's index consts + Descriptor.
 reuben-macros = { path = "../reuben-macros" }
-# The type-wide NUMBER_MIN/NUMBER_MAX sentinels (issue #127): interface pipes default
+# The type-wide NUMBER_MIN/NUMBER_MAX sentinels: interface pipes default
 # their declared range to the same one definition the contract macro uses.
 reuben-contract = { path = "../reuben-contract" }
 
@@ -53,7 +53,7 @@ harness = false
 name = "macro_iai"
 harness = false
 
-# Per-operator micro benches (#30). `required-features = ["bench"]` ⇒ cargo SKIPS these (no error)
+# Per-operator micro benches. `required-features = ["bench"]` ⇒ cargo SKIPS these (no error)
 # unless the bridge feature is on, so a bare `cargo bench` runs only the macro layer while the full
 # run (`cargo reuben-core-bench`) covers both. Same two layers as the macro set.
 [[bench]]

@@ -27,7 +27,7 @@ from .runner import run_reference, verify_tokenizer_pins
 # Two VISIBILITY tiers, not verdicts: a grounding metric that regresses annotates and lands on the
 # trend, but never fails the build. A gate that FAILs on roster growth encodes "the library must not
 # grow" — a non-goal — so only a broken reference solution or an uncomputable metric fails here (see
-# `render`). #612. Boundaries are inclusive at `delta >= PCT`, matching perf-gate's awk — hence "≥".
+# `render`). Boundaries are inclusive at `delta >= PCT`, matching perf-gate's awk — hence "≥".
 JUMP_PCT = 10.0
 CREEP_PCT = 3.0
 
@@ -63,7 +63,7 @@ def _delta(current: float, baseline: float) -> float | None:
 def _classify(delta: float | None) -> str:
     """Visibility tier for a metric delta — never a verdict. `jump` and `creep` both annotate and
     ride the trend; neither fails the build. Only a broken reference solution or an uncomputable
-    metric does that (`render`). #612."""
+    metric does that (`render`)."""
     if delta is None or math.isnan(delta):  # no ratio (zero baseline), or NaN
         return "ok"
     if delta >= JUMP_PCT:
@@ -78,7 +78,7 @@ def _density_lines(report: dict[str, Any], baseline: dict[str, Any] | None) -> l
 
     The one line that separates roster GROWTH (more tools, flat density — a capability decision) from
     schema BLOAT (denser schemas, no new tool — the invisible regression). It is constant across
-    tasks (one roster, one sidecar), so it is read from any one of them. #612.
+    tasks (one roster, one sidecar), so it is read from any one of them.
     """
     tasks = report.get("tasks", {})
     if not tasks:
@@ -145,7 +145,7 @@ def render(report: dict[str, Any], baseline: dict[str, Any] | None) -> tuple[str
             delta = _delta(value, base_value)
             status = _classify(delta)
             # Both tiers are non-blocking: a bigger surface is a decision to make with eyes open, not
-            # a build to break. They annotate and ride the trend; `failed` is untouched here. #612.
+            # a build to break. They annotate and ride the trend; `failed` is untouched here.
             icon = {"jump": "🔺", "creep": "⚠️", "ok": "✅"}[status]
             if status in ("jump", "creep"):
                 warned = True

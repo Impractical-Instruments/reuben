@@ -18,7 +18,7 @@ reuben-api = { path = "../reuben-api", features = ["fs-resolver"] }
 reuben-contract = { path = "../reuben-contract" }
 cpal.workspace = true
 rosc.workspace = true
-# Input-callback -> render-thread SPSC ring (P5/#182).
+# Input-callback -> render-thread SPSC ring.
 rtrb.workspace = true
 serde.workspace = true
 serde_json.workspace = true

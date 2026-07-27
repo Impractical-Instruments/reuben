@@ -64,7 +64,7 @@ class Ledger:
 
     `schemas_bytes` and `tool_count` are the same schema payload measured two ways, kept so a report
     can derive `schema_density` — the number that tells roster GROWTH (more tools, flat density)
-    apart from schema BLOAT (a wordier schema, no new tool). #612.
+    apart from schema BLOAT (a wordier schema, no new tool).
     """
 
     instructions: int = 0
@@ -252,7 +252,7 @@ class Sidecar:
         schema_json = json.dumps(listed, separators=(",", ":"), sort_keys=True)
         self.ledger.schemas = cl100k.count(schema_json)
         # The same payload in bytes, plus the roster size: the pair a report divides into
-        # per-tool density, so a wordier schema reads differently from one more verb. #612.
+        # per-tool density, so a wordier schema reads differently from one more verb.
         self.ledger.schemas_bytes = len(schema_json.encode("utf-8"))
         self.ledger.tool_count = len(listed)
 
