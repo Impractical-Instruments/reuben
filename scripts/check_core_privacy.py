@@ -31,6 +31,9 @@ PRIVATE_CRATE = "reuben-core"
 WINDOW_MANIFEST = "crates/reuben-api/Cargo.toml"
 
 SKIP_DIRS = {".git", "target", "node_modules", "dist", "build"}
+# A nested checkout carries a full copy of every workspace manifest, so a walk that reads it judges
+# the same dependency edge twice — once at a path that is real and once at one that is discarded.
+SKIP_PREFIXES = {(".claude", "worktrees")}
 
 # Every table a build edge can be declared in. `target` and `workspace` are containers whose
 # leaves are dependency tables, so they are walked rather than matched.
@@ -66,10 +69,13 @@ def _renamed_package(spec: object) -> str | None:
 def collect_problems(root_arg: str = ".") -> list[str]:
     root = Path(root_arg)
     problems: list[str] = []
-    manifests = sorted(
-        p for p in root.rglob("Cargo.toml")
-        if not any(part in SKIP_DIRS for part in p.relative_to(root).parts)
-    )
+
+    def reachable(p: Path) -> bool:
+        parts = p.relative_to(root).parts
+        return not (set(parts) & SKIP_DIRS
+                    or any(parts[:len(pre)] == pre for pre in SKIP_PREFIXES))
+
+    manifests = sorted(p for p in root.rglob("Cargo.toml") if reachable(p))
     for path in manifests:
         rel = path.relative_to(root).as_posix()
         if rel == WINDOW_MANIFEST:

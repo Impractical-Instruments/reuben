@@ -58,6 +58,12 @@ from pathlib import Path
 CODE_EXTS = {".rs", ".py", ".mjs", ".js", ".ts", ".jsx", ".tsx", ".go", ".c", ".h",
              ".cpp", ".hpp", ".java", ".rb", ".sh", ".toml", ".yml", ".yaml"}
 SKIP_DIRS = {".git", "target", "node_modules", "dist", "build", "engine"}
+# A nested checkout is a second copy of the repo, not repo content: the agent worktree tool checks
+# a full tree out under `.claude/worktrees/<id>/`, so a plain walk reads every file twice and
+# reports the stale copy's violations at paths that look real. Matched as a root-anchored PAIR
+# rather than by skipping all of `.claude`, because the rest of that directory is tracked source —
+# SKILL_ALLOWLIST below exists precisely because a skill under it is scanned today.
+SKIP_PREFIXES = {(".claude", "worktrees")}
 # The absorb-adrs skill is the one sanctioned home of ADR-NNNN tokens in code: it distils ADRs
 # into rules and writes each rationale's `Distilled from:` line, so its scaffolder + tests name
 # ADRs by design. Exempt the skill directory (lives in the engine repo; harmless where absent).
@@ -344,8 +350,10 @@ def main(root_arg: str = ".") -> int:
     for path in root.rglob("*"):
         if not path.is_file() or path.suffix not in CODE_EXTS:
             continue
-        parts = set(path.relative_to(root).parts)
-        if parts & SKIP_DIRS or parts & SKILL_ALLOWLIST:
+        parts = path.relative_to(root).parts
+        if set(parts) & SKIP_DIRS or set(parts) & SKILL_ALLOWLIST:
+            continue
+        if any(parts[:len(pre)] == pre for pre in SKIP_PREFIXES):
             continue
         rel = path.relative_to(root).as_posix()
         try:

@@ -29,10 +29,13 @@ import re
 import sys
 from pathlib import Path
 
-# Same code surface + build-dir skips as the reference-linter.
+# Same code surface + build-dir skips as the reference-linter, nested checkouts included: an agent
+# worktree under `.claude/worktrees/<id>/` is a second copy of the tree, and every finding in it
+# names a path that looks real but is discarded.
 CODE_EXTS = {".rs", ".py", ".mjs", ".js", ".ts", ".jsx", ".tsx", ".go", ".c", ".h",
              ".cpp", ".hpp", ".java", ".rb", ".sh", ".toml", ".yml", ".yaml"}
 SKIP_DIRS = {".git", "target", "node_modules", "dist", "build", "engine"}
+SKIP_PREFIXES = {(".claude", "worktrees")}
 
 # The one place the audio element type is named — exempt by definition.
 NAMING_SITE = "crates/reuben-core/src/signal.rs"
@@ -99,8 +102,10 @@ def collect_problems(root_arg: str = ".") -> list[str]:
     for path in root.rglob("*"):
         if not path.is_file() or path.suffix not in CODE_EXTS:
             continue
-        parts = set(path.relative_to(root).parts)
-        if parts & SKIP_DIRS:
+        parts = path.relative_to(root).parts
+        if set(parts) & SKIP_DIRS:
+            continue
+        if any(parts[:len(pre)] == pre for pre in SKIP_PREFIXES):
             continue
         rel = path.relative_to(root).as_posix()
         if _allowed(rel):

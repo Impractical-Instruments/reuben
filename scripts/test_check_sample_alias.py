@@ -87,6 +87,16 @@ class SampleAliasGuardTest(unittest.TestCase):
         p = self._problems({"target/debug/build/x.rs": f"fn f(x: {SLICE}) {{}}\n"})
         self.assertEqual(p, [])
 
+    def test_a_nested_checkout_is_not_scanned(self):
+        # An agent worktree holds a full, deliberately stale copy of the tree; a finding in it
+        # names a path that reads as real and is about to be discarded.
+        nested = ".claude/worktrees/agent-abc123/crates/reuben-core/src/graph.rs"
+        self.assertEqual(self._problems({nested: f"fn f(x: {SLICE}) {{}}\n"}), [])
+
+    def test_the_rest_of_dot_claude_is_still_scanned(self):
+        p = self._problems({".claude/skills/patcher/helper.rs": f"fn f(x: {SLICE}) {{}}\n"})
+        self.assertEqual(len(p), 1)
+
     def test_non_code_extension_is_ignored(self):
         # Markdown is not code — a doc example is not a naming site violation.
         p = self._problems({"docs/notes.md": f"an example: {SLICE}\n"})

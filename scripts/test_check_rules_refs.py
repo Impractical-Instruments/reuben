@@ -277,6 +277,23 @@ class WholeTree(unittest.TestCase):
         over = doc(BUDGET + 5)
         self.assertEqual(self.run_main({"web/src/app.ts": over}), 0)
 
+    def test_a_nested_checkout_is_not_repo_content(self):
+        # An agent worktree is a full second copy of the tree, and a stale one by design. Every
+        # finding in it names a path that reads as real and is about to be discarded.
+        nested = ".claude/worktrees/agent-abc123/crates/reuben-core/src/lib.rs"
+        self.assertEqual(self.run_main({nested: "//! see rules: no-such-topic\n"}), 0)
+
+    def test_the_rest_of_dot_claude_is_still_scanned(self):
+        # The converse, and the reason the skip is a root-anchored pair rather than all of
+        # `.claude`: hooks, skills and settings are tracked source, governed like any other file.
+        skill = ".claude/skills/control-surface/emit.py"
+        self.assertEqual(self.run_main({skill: "# see rules: no-such-topic\n"}), 1)
+
+    def test_a_worktrees_dir_elsewhere_is_not_a_nested_checkout(self):
+        # The pair is anchored at the root: `worktrees` is not a reserved name further down, and a
+        # source dir that happens to carry it stays in reach.
+        self.assertEqual(self.run_main({"crates/worktrees/src/lib.rs": "//! see rules: nope\n"}), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
