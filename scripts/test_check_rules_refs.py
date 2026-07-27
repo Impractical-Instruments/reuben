@@ -212,6 +212,60 @@ class CommentRefGuardRustBlocks(unittest.TestCase):
         self.assertEqual(len(self.problems("fn f<'a>(x: &'a str) {} // fixed in #604")), 1)
 
 
+class CommentRefGuardCss(unittest.TestCase):
+    """Check 4 in the CSS lane. `/* … */` is the only comment form CSS has and nothing generates
+    prose out of one, so the lane is in reach whole — with one lane fact the JS family does not
+    share: `//` opens nothing here."""
+
+    def problems(self, text: str) -> list[str]:
+        return check_rules_refs.comment_ref_problems("a.css", text + "\n", "css")
+
+    def test_a_block_comment_citing_an_issue_is_flagged(self):
+        self.assertEqual(len(self.problems("/* the dismissible banner (#228) */")), 1)
+
+    def test_a_block_comment_spanning_lines_is_flagged(self):
+        self.assertEqual(len(self.problems("/* the co-presence spine\n   landed in #355 */")), 1)
+
+    def test_the_cross_repo_spelling_is_flagged(self):
+        problems = self.problems("/* reuben-web#239 moved this */")
+        self.assertEqual(len(problems), 1)
+        self.assertIn("reuben-web#239", problems[0])
+
+    def test_a_double_slash_opens_no_comment(self):
+        # The lane fact CSS does not share with JS: `//` is the authority slashes of a URL, never a
+        # comment opener. Reading it as one turns the tail of every URL into prose.
+        self.assertEqual(self.problems("  background: url(https://cdn.example.com/a#264);"), [])
+
+    def test_a_protocol_relative_url_opens_no_comment(self):
+        self.assertEqual(self.problems("  background: url(//cdn.example.com/a#264);"), [])
+
+    def test_a_quoted_url_is_not_a_comment(self):
+        self.assertEqual(self.problems("  background: url('https://x/a#264');"), [])
+        self.assertEqual(self.problems('  background: url("https://x/a#264");'), [])
+
+    def test_a_comment_behind_a_string_is_still_reached(self):
+        self.assertEqual(len(self.problems("  content: 'x'; /* retired in #604 */")), 1)
+
+    def test_a_stray_backtick_does_not_swallow_the_rest_of_the_file(self):
+        # CSS has no template literal, so a backtick is not a delimiter here. The JS lane must track
+        # one — it is the single delimiter that survives a line break — and carrying that over would
+        # put every comment below a stray backtick out of reach.
+        self.assertEqual(len(self.problems("  --x: `;\n/* retired in #604 */")), 1)
+
+    def test_a_hex_colour_in_a_declaration_is_not_prose(self):
+        # A colour is a declaration, and this check reads comment prose only.
+        self.assertEqual(self.problems("  --moss: #719; color: #0088;"), [])
+
+    def test_a_short_hex_colour_in_a_comment_is_flagged_deliberately(self):
+        # The collision this lane brings and no other does: an all-digit three- or four-digit colour
+        # is spelled exactly like an issue citation, and nothing around it decides which. The strict
+        # reading is the chosen one — a colour restated in a comment is restatement anyway.
+        self.assertEqual(len(self.problems("/* was #333 before */")), 1)
+
+    def test_a_rules_pointer_is_clean(self):
+        self.assertEqual(self.problems("/* see rules: code-as-grounding */"), [])
+
+
 class CommentRefGuardHash(unittest.TestCase):
     """Check 4 in the `#` lanes — shell, YAML, TOML, Python. Nothing here is generated into prose
     anyone reads, so the lane is in reach whole."""
@@ -423,6 +477,20 @@ class WholeTree(unittest.TestCase):
         for rel in (".github/workflows/ci.yml", "scripts/gate.sh", "Cargo.toml"):
             with self.subTest(rel=rel):
                 self.assertEqual(self.run_main({rel: "# see #107\n"}), 1)
+
+    def test_a_css_file_citing_an_issue_is_flagged(self):
+        # The lane the guard could not READ: `.css` had no row in CODE_EXTS, so a stylesheet comment
+        # was unpoliced rather than exempt — the failure mode that decided the lane list's shape.
+        self.assertEqual(self.run_main({"web/src/app.css": "/* the banner (#228) */\n"}), 1)
+
+    def test_a_css_url_is_not_a_css_comment(self):
+        self.assertEqual(
+            self.run_main({"web/src/app.css": "a { background: url(https://x/y#264); }\n"}), 0)
+
+    def test_a_pointer_inside_a_css_comment_is_validated(self):
+        self.assertEqual(self.run_main({"web/src/a.css": "/* see rules: no-such-topic */\n"}), 1)
+        self.assertEqual(
+            self.run_main({"web/src/a.css": "/* see rules: code-as-grounding */\n"}), 0)
 
     def test_a_nested_checkout_is_not_repo_content(self):
         # An agent worktree is a full second copy of the tree, and a stale one by design. Every

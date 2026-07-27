@@ -29,6 +29,25 @@ Six checks:
      stands off. Where nothing generates prose out of comments, every comment is only a comment and
      all of it is in reach. Nothing here turns on the comment's SHAPE.
 
+     THE SHAPE OF THE LANE LIST, decided rather than left implicit: first-party source is in reach BY
+     DEFAULT, and the only per-lane fact is the comment OPENER. CODE_EXTS is an opener table, not a
+     permission list — a suffix missing from it is a lane the guard cannot yet READ, not a lane that
+     is exempt, and that is how the gap should be described when one is found. The alternative shape,
+     an allow-list of languages the guard understands, was rejected on its FAILURE MODE: it fails
+     silently. A lane nobody added is a lane nobody is told about, and the stylesheet corpus is the
+     proof — the consuming repo had 21 issue citations sitting in CSS comments while this guard
+     reported its tree clean, because `.css` had never been a row. Under default-on the same gap is a
+     missing opener, which is a statement about the guard rather than a verdict about the code.
+
+     Two things the default does not license. It is not permission to GUESS at a lane's comment
+     syntax: guessing wrong turns code into prose (the reason HASH_EXTS is keyed off the suffix
+     rather than sniffed), so a lane still earns its row before it is scanned — the row is what
+     reading costs, not what reach costs. And it is not a claim that nothing is ever out. Markdown is
+     out because provenance's one sanctioned home IS a Markdown file — a rationale's `Distilled from:`
+     / `Decided in:` line, and the live ADRs — so scanning it would red on the very text the rule
+     points at. A lane is out when another rule already governs the same text; never merely because
+     no one got to it.
+
      RUST — `///`, `/** … */` and `/*! … */` are out of reach. A doc comment on a `JsonSchema` type
      is generated into the advertised `description` a model reads over the wire; this linter cannot
      tell which ones are, and an advertised description is governed by its own rule — see rules:
@@ -51,6 +70,22 @@ Six checks:
      docstring line is reached only when it happens to carry no quote character, so the guard sees
      some of a docstring and not the rest. Bringing them in deliberately is a separate change, and
      the mirrored-guard pointer question has to be settled before it, not after.
+
+     CSS — in reach whole, and "whole" is the entire lane: `/* … */` is the only comment form CSS
+     has, there is no doc-comment analogue to carve out, and nothing generates a stylesheet comment
+     into anything a model or a user reads. The one lane fact it does NOT share with the JS family is
+     that `//` opens nothing here — it is the authority slashes of a URL inside `url(…)`, and
+     anywhere else a syntax error — so reading CSS with the JS scanner would take the tail of a URL
+     for prose and red on its fragment. That is why it is a lane of its own (BLOCK_LANES) rather than
+     one more suffix on the curly one. A backtick is likewise not a delimiter here, so CSS tracks
+     `"` and `'` only.
+
+     One collision CSS brings that no other lane does, left STRICT on purpose: an all-digit hex
+     colour of three or four digits is spelled exactly like an issue citation, so a bare one written
+     inside a comment reds. It cannot be narrowed away — those two are the same token, and no context
+     around them decides it — and the loss is small, because a colour named in a comment is nearly
+     always restating the declaration under it. Write six digits or `hsl(…)`, or say what the colour
+     is FOR. A colour in a DECLARATION is untouched: this check reads comment prose only.
 
      A note on scope, since a lane table invites the question: `.go`, `.c`, `.java` and friends sit
      in CODE_EXTS and are read as JS is. Neither repo contains one. If a Javadoc'd Java file ever
@@ -85,8 +120,10 @@ from __future__ import annotations
 import bisect, re, sys
 from pathlib import Path
 
+# The opener table, NOT a permission list: first-party source is in reach by default and a suffix
+# earns its row here so the guard knows how to READ it. See the module docstring's check 4.
 CODE_EXTS = {".rs", ".py", ".mjs", ".js", ".ts", ".jsx", ".tsx", ".go", ".c", ".h",
-             ".cpp", ".hpp", ".java", ".rb", ".sh", ".toml", ".yml", ".yaml"}
+             ".cpp", ".hpp", ".java", ".rb", ".sh", ".toml", ".yml", ".yaml", ".css"}
 SKIP_DIRS = {".git", "target", "node_modules", "dist", "build", "engine"}
 # A nested checkout is a second copy of the repo, not repo content: the agent worktree tool checks
 # a full tree out under `.claude/worktrees/<id>/`, so a plain walk reads every file twice and
@@ -142,9 +179,11 @@ MIN_PARITY_REASON_WORDS = 5
 # `#` opens a comment in the shell/Python half and is an attribute (`#[…]`) or a raw-string delimiter
 # (`r#"…"#`) in Rust, and guessing wrong turns code into prose.
 HASH_EXTS = {".py", ".sh", ".rb", ".toml", ".yml", ".yaml"}
-# The three lanes, by suffix. `rust` and `curly` share the `//` opener and differ on what a comment
-# may also be: see the module docstring's check 4.
+# The four lanes, by suffix. `rust` and `curly` share the `//` opener and differ on what a comment
+# may also be; `css` shares `curly`'s block form and differs on whether `//` opens anything at all:
+# see the module docstring's check 4.
 RUST_EXTS = {".rs"}
+CSS_EXTS = {".css"}
 # What delimits a string, per lane. Not one set: in Rust a lone `'` is a LIFETIME (`&'a str`), and
 # treating it as an open string swallows the rest of the line — which is why Rust tracks `"` only.
 # Everywhere else the apostrophe really is a delimiter, and in the JS family so is the backtick;
@@ -152,6 +191,13 @@ RUST_EXTS = {".rs"}
 RUST_QUOTES = '"'
 CURLY_QUOTES = "\"'`"
 HASH_QUOTES = "\"'"
+# CSS has no template literal, so a backtick is not a delimiter and must not be read as one: an
+# unpaired one would otherwise open a string that swallows every comment below it.
+CSS_QUOTES = "\"'"
+# The block-comment lanes and how each is read: `(string delimiters, does `//` open a comment)`.
+# CSS says no — there `//` is the authority slashes of a `url(…)`, and reading it as an opener turns
+# the rest of the URL into prose.
+BLOCK_LANES = {"curly": (CURLY_QUOTES, True), "css": (CSS_QUOTES, False)}
 # Where a `#` may open a comment, and where a quote may open a string, in the `#` lanes. YAML's rule
 # is that `#` comments only at line start or after whitespace — a bare URL's fragment is data, not
 # prose — and shell agrees (a `#` mid-word is literal). TOML and Python are laxer, so this is a
@@ -167,10 +213,12 @@ CONT_MARKER_RE = re.compile(r"^(///|//!|//|#|\*|--)[ \t]?")
 
 
 def lane_of(suffix: str) -> str:
-    """Which comment grammar a file is read with. Three, not one per language: what matters is the
+    """Which comment grammar a file is read with. Four, not one per language: what matters is the
     comment syntax and whether a comment can also be something else."""
     if suffix in RUST_EXTS:
         return "rust"
+    if suffix in CSS_EXTS:
+        return "css"
     return "hash" if suffix in HASH_EXTS else "curly"
 
 
@@ -211,8 +259,9 @@ def comment_body(line: str, opener: str = "//", reach_docs: bool = True,
     return None
 
 
-def curly_comments(text: str) -> list[tuple[int, str]]:
-    """Every comment in a C-family file as `(offset of the prose, prose)`, one entry per line.
+def curly_comments(text: str, quotes: str = CURLY_QUOTES,
+                   line_comments: bool = True) -> list[tuple[int, str]]:
+    """Every comment in a block-comment file as `(offset of the prose, prose)`, one entry per line.
 
     A whole-file scan rather than a per-line one, because `/* … */` is the only comment form here
     that a line cannot decide on its own: whether a line is prose depends on a `/*` above it. That
@@ -220,6 +269,9 @@ def curly_comments(text: str) -> list[tuple[int, str]]:
     inside a URL inside a block comment came to be the only thing that made a block comment
     visible. String state is per line except for a backtick, which is the one delimiter JS lets
     span lines.
+
+    `quotes` and `line_comments` are the whole difference between the two lanes that use this
+    scanner (BLOCK_LANES): CSS has neither a `//` opener nor a backtick.
     """
     out: list[tuple[int, str]] = []
     in_block = False
@@ -247,11 +299,11 @@ def curly_comments(text: str) -> list[tuple[int, str]]:
                     in_str = ""
                 i += 1
                 continue
-            if c in CURLY_QUOTES:
+            if c in quotes:
                 in_str = c
                 i += 1
                 continue
-            if line.startswith("//", i):
+            if line_comments and line.startswith("//", i):
                 out.append((pos + i + 2, line[i + 2:]))
                 i = n
                 break
@@ -267,8 +319,9 @@ def curly_comments(text: str) -> list[tuple[int, str]]:
     return out
 
 
-def fold_curly_comments(text: str) -> tuple[str, list[int]]:
-    """`fold_comments` for the JS family, over `curly_comments` so a `/* … */` block is prose too.
+def fold_curly_comments(text: str, quotes: str = CURLY_QUOTES,
+                        line_comments: bool = True) -> tuple[str, list[int]]:
+    """`fold_comments` for the block-comment lanes, over `curly_comments` so a `/* … */` is prose too.
 
     Same folding rule as the line-by-line version — consecutive lines are one comment and join with
     a space, a gap starts a new one — but the pieces come from the whole-file scan, so a pointer
@@ -278,7 +331,7 @@ def fold_curly_comments(text: str) -> tuple[str, list[int]]:
     out: list[str] = []
     idx: list[int] = []
     prev_line = None
-    for off, piece in curly_comments(text):
+    for off, piece in curly_comments(text, quotes, line_comments):
         line = bisect.bisect_right(line_starts, off)
         stripped = piece.lstrip()
         lead = len(piece) - len(stripped)
@@ -391,8 +444,8 @@ def comment_ref_problems(rel: str, text: str, lane: str = "rust") -> list[str]:
         return lo + 1
 
     pieces: list[tuple[int, str]] = []
-    if lane == "curly":
-        pieces = curly_comments(text)
+    if lane in BLOCK_LANES:
+        pieces = curly_comments(text, *BLOCK_LANES[lane])
     else:
         opener = "#" if lane == "hash" else "//"
         quotes = HASH_QUOTES if lane == "hash" else RUST_QUOTES
@@ -423,8 +476,8 @@ def comment_ref_problems(rel: str, text: str, lane: str = "rust") -> list[str]:
 def folded_with_lines(text: str, lane: str = "rust"):
     """`(folded prose, line_at)` — the comment-folded view plus a resolver from a folded offset
     back to the 1-based source line, so a problem names the line a reader has to go edit."""
-    if lane == "curly":
-        folded, idx = fold_curly_comments(text)
+    if lane in BLOCK_LANES:
+        folded, idx = fold_curly_comments(text, *BLOCK_LANES[lane])
     else:
         opener = "#" if lane == "hash" else "//"
         folded, idx = fold_comments(text, opener,
