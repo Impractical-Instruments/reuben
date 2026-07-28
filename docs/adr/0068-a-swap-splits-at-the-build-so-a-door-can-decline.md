@@ -40,6 +40,22 @@ table, and the commit diffs against whatever is installed at that moment. This i
 prepared swap be held, queued, or committed after another one without a generation stamp policing
 it.
 
+**The commit refuses a swap prepared against a different `AudioConfig`.** The one-call form could
+not get this wrong — it always built with its own config. Splitting the verb makes "prepare on one
+Coordinator, commit on another" expressible, and the door this ADR exists for already runs two
+Coordinators, so it is the first thing a caller will try. An Engine instantiated at one rate and
+committed into a Coordinator running another renders at the wrong speed under a declick ramp sized
+for a rate it does not run at, and nothing in the document can detect it after the fact. So the
+commit compares the prepared Engine's rate and block size against its own and rejects with a real
+diagnostic. Two Coordinators that *share* a config remain free to hand prepared swaps to each
+other: the Engine is self-consistent by then, and the table is diffed by the committing side.
+
+**The one-call form still reclaims before it builds.** `swap_document` is prepare + commit, and the
+commit reclaims — but reclaiming only there would hold the retiree alive across the build, raising
+the call's peak from live + new to live + retiree + new. A whole extra Engine is a real cost to a
+wasm door under a memory cap, which is the same door this ADR is for. So `swap_document` keeps its
+own reclaim as its first statement and the commit's becomes a no-op load on an empty slot.
+
 **The structure channel keeps calling the single-call form.** A host serving that channel has
 already accepted whatever width arrives — the device-map republish is part of the seam it fills —
 so splitting the verb there would be a decision no one at that seam is positioned to make.
@@ -54,16 +70,24 @@ rather than inverting it.
 
 - The property holds at the seam that needs it: no door is handed an Engine it has not had the
   chance to refuse.
-- Additive. `swap_document` compiles and behaves as before, so no consumer has to move, and a door
-  that adopts the split does so when its own workaround becomes worth retiring.
+- Additive at the type level and at the call: `swap_document` keeps its signature, its ordering
+  (reclaim, build, install) and its peak memory, so no consumer has to move, and a door that adopts
+  the split does so when its own workaround becomes worth retiring. The equivalence is not free — it
+  is held by `swap_document` reclaiming before it delegates, which is a line that exists only to
+  preserve it and would be easy to delete as redundant.
 - The rejection report is the `Err` half of `prepare_document`, so a declining door still has the
   same report vocabulary to answer its client in — including the hash of what keeps playing.
-- A commit refused because the previous swap is still in flight consumes the prepared swap, exactly
-  as the single-call form drops what it built. A door for which the build is expensive reclaims
-  first; with the slot open the refusal is unreachable.
+- A commit refused — for a swap in flight, or for a foreign audio config — consumes the prepared
+  swap, exactly as the single-call form drops what it built. A door for which the build is expensive
+  reclaims first; with the slot open the in-flight refusal is unreachable.
 - Two verbs now do what one did, and the two-call form has a state the one-call form did not: a
   built Engine alive on the caller's side. It is inert — no thread has seen it — but it is real
-  memory, and a door that prepares without ever committing holds a whole Plan.
+  memory, and a door that prepares without ever committing holds a whole Plan. In the two-call form
+  that Engine is also alive across the caller's own decision, so a door that prepares while a
+  retiree is still out does briefly hold three.
+- A new pairing constraint exists that did not before: a `PreparedSwap` is only valid at its own
+  audio config. The commit enforces it rather than the type system — encoding the config in the type
+  would put a parameter on `Coordinator` that every consumer would carry for one refusal.
 
 ## Open
 
