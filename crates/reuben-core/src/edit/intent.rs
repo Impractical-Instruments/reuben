@@ -10,7 +10,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::descriptor::Port;
+use crate::descriptor::{Port, PortType};
 use crate::format::{
     parse_wire, pipe_descriptor, ConfigValue, InputPipeDoc, InputValue, InstrumentDoc,
     InterfaceEntry, PipeDefault, PIPE_INPUT_PORT,
@@ -24,13 +24,6 @@ use super::{address_target, input_pipe_mut, AddressTarget, EditError};
 
 // --- the step rule ---------------------------------------------------------------------------
 
-// Per **curve class**, not per range. A fraction of the declared range is right only where the
-// declared range *is* the musical range; on a wide port it is a safety envelope, and a fraction of
-// it produces nonsense (a *slightly faster* clock reading 120 -> 220 BPM). A ratio is the right
-// geometry for a port declared exponential, and one is the smallest musical unit on a count — so
-// `slightly` and the default step collapse there. Frozen first guesses, not tunable.
-// see rules: agent-mcp
-
 /// The small step on a linear port, as a fraction of its declared range.
 const SLIGHT_FRACTION: f64 = 0.10;
 /// The default step on a linear port, as a fraction of its declared range.
@@ -39,7 +32,8 @@ const DEFAULT_FRACTION: f64 = 0.25;
 const SLIGHT_RATIO: f64 = 1.2;
 /// The default step on an exponential port, as a ratio.
 const DEFAULT_RATIO: f64 = 1.5;
-/// The step on an integer port, in whole counts.
+/// The step on an integer port, in whole counts — one is the smallest musical unit on a count, so
+/// `slightly` and the default step are the same move there.
 const INT_STEP: i64 = 1;
 
 /// Round away binary-fraction noise without inventing precision. Six significant digits is far more
@@ -52,6 +46,22 @@ fn tidy(v: f64) -> f64 {
     let digits = 5 - v.abs().log10().floor() as i32;
     let scale = 10f64.powi(digits.clamp(-30, 30));
     (v * scale).round() / scale
+}
+
+/// Land a computed number: tidy it, then hold it inside the declared range — refusing anything that
+/// is not a finite value inside a finite range.
+///
+/// The finiteness check is not defensive tidiness. JSON has no spelling for an infinity, so serde
+/// writes one as `null`: an unguarded `inf` would *erase* the slot on the way to disk, and a null
+/// seed is legal, so write-iff-valid would report the erasure as a successful edit.
+fn land(moved: f64, min: f64, max: f64) -> Result<Scalar, String> {
+    if !(moved.is_finite() && min.is_finite() && max.is_finite() && min <= max) {
+        return Err(format!(
+            "would move to {moved} within [{min}..{max}], which is not a finite value in a finite \
+             range — check the declared min/max"
+        ));
+    }
+    Ok(Scalar::Number(tidy(moved).clamp(min, max)))
 }
 
 /// The port's own unwired value — what a slot holds when the document has written nothing into it.
@@ -69,7 +79,10 @@ fn port_default(class: PortClass<'_>) -> Option<Scalar> {
 fn step(class: PortClass<'_>, from: &Scalar, m: &Move) -> Result<Scalar, String> {
     let number = |s: &Scalar| -> Result<f64, String> {
         match s {
-            Scalar::Number(n) => Ok(*n),
+            Scalar::Number(n) if n.is_finite() => Ok(*n),
+            Scalar::Number(n) => Err(format!(
+                "holds {n}, which is not a finite value to move from"
+            )),
             Scalar::Symbol(sym) => Err(format!(
                 "holds the symbol {sym:?}, which is not a number this move can arrive at"
             )),
@@ -95,24 +108,23 @@ fn step(class: PortClass<'_>, from: &Scalar, m: &Move) -> Result<Scalar, String>
             Ok(Scalar::Symbol(s.clone()))
         }
         (PortClass::Scalar(meta), Direction::Set, Some(Magnitude::Absolute(v))) => {
-            Ok(Scalar::Number(v.clamp(widen(meta.min), widen(meta.max))))
+            land(*v, widen(meta.min), widen(meta.max))
         }
-        (PortClass::Int(meta), Direction::Set, Some(Magnitude::Absolute(v))) => Ok(Scalar::Number(
-            v.round().clamp(f64::from(meta.min), f64::from(meta.max)),
-        )),
+        (PortClass::Int(meta), Direction::Set, Some(Magnitude::Absolute(v))) => {
+            land(v.round(), f64::from(meta.min), f64::from(meta.max))
+        }
 
-        // A count: one is the smallest musical unit, so `slightly` and the default are one move.
         (PortClass::Int(meta), _, magnitude) => {
             let steps = match magnitude {
                 None | Some(Magnitude::Slightly) => INT_STEP,
-                Some(Magnitude::Steps(n)) => *n,
-                Some(other) => return Err(format!("is a count and cannot move by ({other})")),
+                Some(other) => match other {
+                    Magnitude::Steps(n) => *n,
+                    _ => return Err(format!("is a count and cannot move by ({other})")),
+                },
             };
             let signed = if up { steps } else { -steps };
             let moved = number(from)?.round() as i64 + signed;
-            Ok(Scalar::Number(
-                (moved as f64).clamp(f64::from(meta.min), f64::from(meta.max)),
-            ))
+            land(moved as f64, f64::from(meta.min), f64::from(meta.max))
         }
 
         // A swept scalar: a ratio where the port declares an exponential response, a fraction of
@@ -162,9 +174,7 @@ fn step(class: PortClass<'_>, from: &Scalar, m: &Move) -> Result<Scalar, String>
                 }
                 Some(other) => return Err(format!("cannot move by ({other})")),
             };
-            Ok(Scalar::Number(
-                tidy(moved).clamp(widen(meta.min), widen(meta.max)),
-            ))
+            land(moved, widen(meta.min), widen(meta.max))
         }
 
         (PortClass::Enum(_), _, _) => Err("is a closed set with no direction to push".to_string()),
@@ -174,8 +184,7 @@ fn step(class: PortClass<'_>, from: &Scalar, m: &Move) -> Result<Scalar, String>
 
 // --- the report ------------------------------------------------------------------------------
 
-/// One move that landed: where, what was there, and what is there now — plus the row's own hedge,
-/// so the curated caveat arrives *after* the act rather than as a branch before it.
+/// One move that landed: where, what was there, and what is there now — plus the row's own hedge.
 pub(super) struct AppliedMove {
     address: String,
     input: String,
@@ -192,8 +201,9 @@ pub(super) struct SkippedMove {
     reason: String,
 }
 
-/// The whole batch's effect. Not a projection: a value edit's echo is the change, and nine node
-/// zooms would be larger than the document read this verb exists to avoid.
+/// The whole batch's effect: what moved, what did not, and the two things the caller might have
+/// meant differently — a reading passed over, and a `target` term that named nothing.
+/// see rules: agent-mcp
 pub(super) struct IntentReport {
     word: String,
     section: Section,
@@ -203,6 +213,8 @@ pub(super) struct IntentReport {
     skipped: Vec<SkippedMove>,
     /// `target` terms that named nothing this row could move.
     unmatched: Vec<String>,
+    /// Caveats about a move that *did* land, for the edit's cascade notes.
+    pub(super) notes: Vec<String>,
 }
 
 impl IntentReport {
@@ -248,7 +260,7 @@ impl IntentReport {
 
 // --- resolution ------------------------------------------------------------------------------
 
-/// Where a move's value actually lives, once the wire is followed.
+/// Where a move's value lives, once the wire is followed.
 enum Slot {
     /// A literal on the node itself: an input, or a plan-time constant in its `config` block.
     Node { idx: usize, constant: bool },
@@ -257,13 +269,71 @@ enum Slot {
     Pipe { name: String },
 }
 
-/// Does this node pass the caller's narrowing? The row's `op` is already the type predicate, so an
-/// empty `target` is the whole match set.
-fn selected(sel: &Selection, address: &str, type_name: &str) -> bool {
+/// One resolved target: everything the narrowing, the arithmetic and the report need, worked out
+/// before the document is touched.
+struct Target {
+    slot: Slot,
+    /// The address the report names — the node's, or the pipe's when the wire was followed.
+    address: String,
+    input: String,
+    /// The quantity contract to move against, already merged for a pipe.
+    port: Port,
+    /// What the document currently holds in the slot, if anything.
+    held: Option<Scalar>,
+    /// The logical input channel a pipe binds, when it binds one.
+    channel: Option<usize>,
+}
+
+/// The quantity contract an intent move sizes a pipe's seed against: what the pipe **declares**,
+/// falling back field by field to the port it feeds.
+///
+/// An omitted `min`/`max` is not a range — the loader fills it with the type-wide ±1e6 sentinel, and
+/// a quarter of that is ±500,000 written into the document. An omitted `curve` is not an assertion
+/// of linearity either. What the pipe says wins, because that is the range a human authored; what it
+/// does not say, the port it feeds already knows. see rules: agent-mcp
+fn pipe_contract(pipe: &InputPipeDoc, mut declared: Port, fed: &Port) -> Port {
+    let bare_range = pipe.min.is_none() || pipe.max.is_none();
+    // Neither side declares a span to take a fraction of, so there is no contract to move against.
+    // Clearing the meta is what turns that into a reported skip instead of a number.
+    if bare_range && declared.meta.is_some() && fed.meta.is_none() {
+        declared.meta = None;
+        return declared;
+    }
+    if let (Some(meta), Some(port)) = (declared.meta.as_mut(), fed.meta.as_ref()) {
+        if pipe.min.is_none() {
+            meta.min = port.min;
+        }
+        if pipe.max.is_none() {
+            meta.max = port.max;
+        }
+        if pipe.curve.is_none() {
+            meta.curve = port.curve;
+        }
+    }
+    if let (PortType::I32 { meta: Some(meta) }, PortType::I32 { meta: Some(port) }) =
+        (&mut declared.ty, &fed.ty)
+    {
+        if pipe.min.is_none() {
+            meta.min = port.min;
+        }
+        if pipe.max.is_none() {
+            meta.max = port.max;
+        }
+    }
+    declared
+}
+
+/// Does one of the addresses this target is reachable through pass the caller's narrowing?
+///
+/// A pipe address counts, because it is the address the report hands back: narrowing by an address
+/// this verb just echoed has to reach the same slot. see rules: agent-mcp
+fn selected(sel: &Selection, addresses: &[&str]) -> bool {
     match sel {
         Selection::All => true,
-        Selection::Names(names) => names.iter().any(|n| n == address),
-        Selection::Type(ty) => ty == type_name,
+        Selection::Names(names) => names.iter().any(|n| addresses.contains(&n.as_str())),
+        // The row's `op` is the type predicate, so the verb exposes no second one and
+        // `Selection::from_terms` cannot build this arm from the arguments it is handed.
+        Selection::Type(_) => false,
     }
 }
 
@@ -282,8 +352,10 @@ pub(super) fn apply(
 
     let mut applied: Vec<AppliedMove> = Vec::new();
     let mut skipped: Vec<SkippedMove> = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
     // The destination, not the address the caller reached it through: `/clock.tempo` and
-    // `/pad_clock.tempo` are one pipe seed, so they are one edit reported once.
+    // `/pad_clock.tempo` are one pipe seed, so they are one edit reported once. Only a slot that was
+    // actually *written* lands here, so a slot a later move could still move is never swallowed.
     let mut written: BTreeSet<(String, String)> = BTreeSet::new();
     let mut matched_terms: BTreeSet<String> = BTreeSet::new();
 
@@ -316,30 +388,36 @@ pub(super) fn apply(
             .nodes
             .iter()
             .enumerate()
-            .filter(|(_, n)| n.type_name == m.op && selected(&selection, &n.address, &n.type_name))
+            .filter(|(_, n)| n.type_name == m.op)
             .map(|(i, _)| i)
             .collect();
-        for &idx in &candidates {
-            matched_terms.insert(doc.nodes[idx].address.clone());
-        }
-        if candidates.is_empty() {
-            skipped.push(SkippedMove {
-                op: m.op.clone(),
-                input: m.input.clone(),
-                reason: match &selection {
-                    Selection::All => format!("no `{}` node in the document", m.op),
-                    _ => format!("no `{}` node inside the given target", m.op),
-                },
-            });
-            continue;
-        }
 
         // The row's hedge belongs to the *move*, not to each target it reaches, so it is said once.
         // Eight copies of one curated sentence is what a per-target echo of it costs on the widest
         // fan-out in the library.
         let mut said = false;
-        for idx in candidates {
-            match one(doc, idx, port, constant, m, &mut written) {
+        let mut narrowed = 0usize;
+        for idx in candidates.iter().copied() {
+            let node_address = doc.nodes[idx].address.clone();
+            // Resolved *before* narrowing, because the address the caller narrows by may be the
+            // pipe's rather than the node's — and the pipe's is the one the report handed back.
+            let resolved = resolve(doc, idx, port, constant, m);
+            let mut reach = vec![node_address.as_str()];
+            if let Ok(t) = &resolved {
+                reach.push(t.address.as_str());
+            }
+            for address in &reach {
+                matched_terms.insert((*address).to_string());
+            }
+            if !selected(&selection, &reach) {
+                continue;
+            }
+            narrowed += 1;
+            let outcome = match resolved {
+                Err(reason) => Err(reason),
+                Ok(target) => write_target(doc, target, m, &mut written, &mut notes),
+            };
+            match outcome {
                 Ok(Some(mut landed)) => {
                     if std::mem::replace(&mut said, true) {
                         landed.description = None;
@@ -354,6 +432,17 @@ pub(super) fn apply(
                     reason,
                 }),
             }
+        }
+        if narrowed == 0 {
+            skipped.push(SkippedMove {
+                op: m.op.clone(),
+                input: m.input.clone(),
+                reason: if candidates.is_empty() {
+                    format!("no `{}` node in the document", m.op)
+                } else {
+                    format!("no `{}` node inside the given target", m.op)
+                },
+            });
         }
     }
 
@@ -373,19 +462,18 @@ pub(super) fn apply(
         applied,
         skipped,
         unmatched,
+        notes,
     })
 }
 
-/// Move one node's slot: follow the wire, size the step against whatever contract the slot's own
-/// port declares, and write it. `Ok(None)` is the dedupe — this destination was already moved.
-fn one(
-    doc: &mut InstrumentDoc,
+/// Follow the wire and work out what this node's move actually addresses, writing nothing.
+fn resolve(
+    doc: &InstrumentDoc,
     idx: usize,
     port: &Port,
     constant: bool,
     m: &Move,
-    written: &mut BTreeSet<(String, String)>,
-) -> Result<Option<AppliedMove>, String> {
+) -> Result<Target, String> {
     let node_address = doc.nodes[idx].address.clone();
     let slot = match (constant, doc.nodes[idx].inputs.get(&m.input)) {
         (false, Some(InputValue::Wire { from })) => {
@@ -404,46 +492,79 @@ fn one(
         _ => Slot::Node { idx, constant },
     };
 
-    // The slot's own quantity contract: an operator port's declared meta, or — for a pipe — the
-    // range and curve a human authored on the boundary, which is the range that means something
-    // musically. Both arms hand back the same shape, so the arithmetic below sees one.
-    let (address, input, slot_port, held) = match &slot {
+    match slot {
         Slot::Node { idx, constant } => {
-            let node = &doc.nodes[*idx];
-            let held = if *constant {
+            let node = &doc.nodes[idx];
+            let held = if constant {
                 node.config.get(&m.input).map(super::config_scalar)
             } else {
                 node.inputs.get(&m.input).and_then(super::input_scalar)
             };
-            (node_address, m.input.clone(), port.clone(), held)
+            Ok(Target {
+                slot: Slot::Node { idx, constant },
+                address: node_address,
+                input: m.input.clone(),
+                port: port.clone(),
+                held,
+                channel: None,
+            })
         }
         Slot::Pipe { name } => {
-            let pipe = input_pipe(doc, name);
-            let (descriptor, _) = pipe_descriptor(name, pipe).map_err(|e| e.to_string())?;
-            let in_port = descriptor
+            let pipe = input_pipe(doc, &name);
+            let (descriptor, _) = pipe_descriptor(&name, pipe).map_err(|e| e.to_string())?;
+            let declared = descriptor
                 .inputs
                 .into_iter()
                 .find(|p| p.name == PIPE_INPUT_PORT)
                 .expect("a pipe descriptor declares its one input port");
-            (
-                format!("/{name}"),
-                PIPE_INPUT_PORT.to_string(),
-                in_port,
-                pipe.default.as_ref().map(super::seed_scalar),
-            )
+            Ok(Target {
+                address: format!("/{name}"),
+                input: PIPE_INPUT_PORT.to_string(),
+                port: pipe_contract(pipe, declared, port),
+                held: pipe.default.as_ref().map(super::seed_scalar),
+                channel: pipe.channel,
+                slot: Slot::Pipe { name },
+            })
         }
-    };
+    }
+}
 
-    if !written.insert((address.clone(), input.clone())) {
+/// Size the step and write it. `Ok(None)` is the dedupe — this destination was already moved.
+fn write_target(
+    doc: &mut InstrumentDoc,
+    target: Target,
+    m: &Move,
+    written: &mut BTreeSet<(String, String)>,
+    notes: &mut Vec<String>,
+) -> Result<Option<AppliedMove>, String> {
+    let Target {
+        slot,
+        address,
+        input,
+        port,
+        held,
+        channel,
+    } = target;
+    if written.contains(&(address.clone(), input.clone())) {
         return Ok(None);
     }
-    let class = PortClass::of(&slot_port);
+    let class = PortClass::of(&port);
     let Some(from) = held.or_else(|| port_default(class)) else {
         return Err(format!(
             "`{address}.{input}` carries no value an intent move can move"
         ));
     };
     let to = step(class, &from, m).map_err(|why| format!("`{address}.{input}` {why}"))?;
+    // A move that arrives where it started is not a move. This is the one thing the report cannot
+    // afford to get wrong: it is the only account of the edit there is, so "3 applied" over a
+    // byte-identical document has the agent telling someone it changed the sound.
+    // see rules: agent-mcp
+    if to == from {
+        return Err(format!(
+            "`{address}.{input}` is already {}, so this move changes nothing",
+            to.render()
+        ));
+    }
 
     match slot {
         Slot::Node {
@@ -456,6 +577,16 @@ fn one(
             doc.nodes[idx].inputs.insert(input.clone(), literal_of(&to));
         }
         Slot::Pipe { name } => input_pipe_mut(doc, &name).default = Some(seed_of(&to)),
+    }
+    written.insert((address.clone(), input.clone()));
+    // A seed on a channel-bound pipe materializes only when nothing feeds that channel, so on a
+    // live rig this edit can be silent. The caller never named this pipe — the wire led here — so
+    // saying it is the difference between an honest report and a false claim of audibility.
+    if let Some(ch) = channel {
+        notes.push(format!(
+            "`{address}` is bound to input channel {ch}: its value applies only when nothing feeds \
+             that channel"
+        ));
     }
     Ok(Some(AppliedMove {
         address,

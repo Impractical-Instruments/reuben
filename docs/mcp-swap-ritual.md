@@ -87,7 +87,7 @@ You should hear a steady tone. Leave it ringing.
 
 Prepare a **lightly edited copy** of the default rig that keeps a node's address, type, `config`
 constants, and resolved resources unchanged (so it stays a **survivor**) — e.g. copy the
-played instrument and nudge a filter cutoff or a level:
+played instrument and move a filter cutoff or a level:
 
 ```sh
 # In another shell: dump what's playing, edit, save as edited.json (or hand-write a tweaked copy).

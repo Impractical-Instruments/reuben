@@ -58,5 +58,5 @@ Unsatisfiable ask → apply the nearest achievable move and state the gap plainl
 - Fatness words (fatter, thicker) → saturator warmth up and drive up slightly; there is no detune / sub-oscillator seat, so state that the body is coming from saturation.
 - Mood words beyond the table (moody, ominous, mysterious) → the minor-mode family (see sadder), plus filter cutoff down slightly.
 - Material words (clickier, woodier, metallic) → resonator structure, brightness, and damping, when a resonator is in the voice.
-- Swing words (swung, shuffled, groovy) → no direct seat today; the nearest is nudging euclid rotation off the grid — apply it and state the gap.
+- Swing words (swung, shuffled, groovy) → no direct seat today; the nearest is stepping euclid rotation off the grid — apply it and state the gap.
 - Nothing fits → name what the document lacks and offer the nearest table move rather than refusing.

@@ -343,9 +343,8 @@ pub fn set_instrument_input(
 }
 
 /// Apply one intent word as a batch of value edits. The one place a `section` word becomes a
-/// section: an unknown one is a refusal, because a caller that meant a reading the table does not
-/// have has not asked a coherent question — and silently broadcasting every reading instead would
-/// be the worse answer.
+/// section, and an unknown one is a refusal rather than a broadened search.
+/// see rules: agent-mcp
 pub fn set_instrument_inputs_by_intent(
     args: &SetInstrumentInputsByIntent,
     resources: &dyn Resources,

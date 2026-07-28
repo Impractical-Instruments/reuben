@@ -600,7 +600,8 @@ fn seed_for_intent() -> String {
         ],
         "interface": {
             "inputs": {
-                "cutoff": { "type": "f32_buffer", "min": 200.0, "max": 4000.0, "default": 1000.0 },
+                "cutoff": { "type": "f32_buffer", "min": 200.0, "max": 4000.0,
+                            "curve": "lin", "default": 1000.0 },
                 "tempo": { "type": "f32", "min": 60.0, "max": 180.0, "default": 130.0, "unit": "BPM" }
             },
             "outputs": { "main": { "from": "/amp" } }
@@ -794,4 +795,235 @@ fn a_word_outside_the_table_is_a_precondition_error() {
         set_instrument_inputs_by_intent(SRC, "shinier", None, &[], &Registry::builtin(), &resolver)
             .expect_err("not a word in the table");
     assert!(err.to_string().contains("shinier"), "{err}");
+}
+
+/// A pipe-fed graph shaped by its interface block: one instrument, one wired consumer per pipe, so
+/// each test declares exactly the pipe contract it is about.
+fn seed_piped(pipes: serde_json::Value, nodes: serde_json::Value) -> String {
+    json!({
+        "format_version": 3,
+        "instrument": "piped",
+        "nodes": nodes,
+        "interface": { "inputs": pipes, "outputs": { "main": { "from": "/amp" } } }
+    })
+    .to_string()
+}
+
+/// A pipe that declares no range has no range: the loader fills the gap with the type-wide ±1e6
+/// sentinel, and a quarter of *that* is half a million written into the document. The contract falls
+/// back to the port the pipe feeds, which is the only side that knows the musical span.
+#[test]
+fn a_pipe_with_no_declared_range_is_sized_by_the_port_it_feeds() {
+    let resolver = resolver_with(&seed_piped(
+        json!({ "wet": { "type": "f32", "default": 0.3 } }),
+        json!([
+            { "type": "oscillator", "address": "/osc" },
+            { "type": "reverb", "address": "/rv",
+              "inputs": { "audio": { "from": "/osc" }, "mix": { "from": "/wet" } } },
+            { "type": "mul_f32_signal", "address": "/amp",
+              "inputs": { "a": { "from": "/rv" }, "b": 0.5 } }
+        ]),
+    ));
+    let result = by_intent(&resolver, "wetter", None, &[]);
+
+    // `reverb.mix` is 0..1 linear, so the default step is a quarter of one — not of two million.
+    assert_eq!(
+        readback(&resolver)["interface"]["inputs"]["wet"]["default"],
+        json!(0.55)
+    );
+    assert!(
+        result.zoom.contains("/wet.in 0.3 → 0.55"),
+        "{}",
+        result.zoom
+    );
+}
+
+/// A non-finite bound must never reach the arithmetic. JSON cannot spell an infinity, so serde
+/// writes one as `null` — the seed would be *erased* while the report claimed the move landed, and
+/// a null seed is legal so nothing downstream would catch it.
+#[test]
+fn a_non_finite_range_is_skipped_rather_than_written() {
+    let resolver = resolver_with(&seed_piped(
+        // `1e40` is finite as an `f64` and infinite as the `f32` the pipe contract is built in.
+        json!({ "cut": { "type": "f32", "min": 20.0, "max": 1e40, "curve": "lin",
+                         "default": 1000.0 } }),
+        json!([
+            { "type": "oscillator", "address": "/osc" },
+            { "type": "filter", "address": "/f",
+              "inputs": { "audio": { "from": "/osc" }, "cutoff": { "from": "/cut" } } },
+            { "type": "mul_f32_signal", "address": "/amp",
+              "inputs": { "a": { "from": "/f" }, "b": 0.5 } }
+        ]),
+    ));
+    let result = by_intent(&resolver, "brighter", None, &[]);
+
+    let seed = &readback(&resolver)["interface"]["inputs"]["cut"]["default"];
+    assert_eq!(seed, &json!(1000.0), "the seed survives: {seed}");
+    assert!(
+        result.zoom.contains("not a finite value"),
+        "the skip says why: {}",
+        result.zoom
+    );
+    assert!(result.zoom.starts_with("brighter (timbral): 0 applied"));
+}
+
+/// A move that lands where it started is not a move. The report is the only account of the edit
+/// there is, so "applied" over a byte-identical document is the one thing it cannot say.
+#[test]
+fn a_move_that_clamps_to_where_it_started_is_a_skip() {
+    let resolver = resolver_with(
+        &json!({
+            "format_version": 3,
+            "instrument": "at-the-edge",
+            "nodes": [
+                { "type": "oscillator", "address": "/osc" },
+                { "type": "filter", "address": "/f",
+                  "inputs": { "audio": { "from": "/osc" }, "cutoff": 20000.0 } },
+                { "type": "reverb", "address": "/rv",
+                  "inputs": { "audio": { "from": "/f" }, "mix": 1.0, "damp": 0.0 } },
+                { "type": "mul_f32_signal", "address": "/amp",
+                  "inputs": { "a": { "from": "/rv" }, "b": 0.5 } }
+            ],
+            "interface": { "outputs": { "main": { "from": "/amp" } } }
+        })
+        .to_string(),
+    );
+    let result = by_intent(&resolver, "airier", None, &[]);
+
+    assert!(
+        result
+            .zoom
+            .starts_with("airier (timbral): 0 applied, 3 skipped"),
+        "{}",
+        result.zoom
+    );
+    assert!(result.zoom.contains("is already 1"), "{}", result.zoom);
+    let after = readback(&resolver);
+    assert_eq!(after["nodes"][2]["inputs"]["mix"], json!(1.0));
+    assert_eq!(after["nodes"][2]["inputs"]["damp"], json!(0.0));
+    assert_eq!(after["nodes"][1]["inputs"]["cutoff"], json!(20000.0));
+}
+
+/// Omitting `curve` is not an assertion of linearity — the loader's default is, and taking it would
+/// put a fraction-of-range step on a port whose response is a ratio.
+#[test]
+fn a_pipe_with_no_declared_curve_inherits_the_ports_response() {
+    let resolver = resolver_with(&seed_piped(
+        json!({ "glide": { "type": "f32", "min": 0.0, "max": 0.5, "default": 0.06 } }),
+        json!([
+            { "type": "oscillator", "address": "/osc" },
+            { "type": "m2s", "address": "/m", "inputs": { "time": { "from": "/glide" } } },
+            { "type": "mul_f32_signal", "address": "/amp",
+              "inputs": { "a": { "from": "/osc" }, "b": 0.5 } }
+        ]),
+    ));
+    let result = by_intent(&resolver, "looser", None, &[]);
+
+    // `m2s.time` is exponential: ×1.5, not a quarter of the pipe's own 0..0.5 span (which would be
+    // 0.185 — a 185 ms glide where the port's own geometry says 90.
+    assert_eq!(
+        readback(&resolver)["interface"]["inputs"]["glide"]["default"],
+        json!(0.09)
+    );
+    assert!(
+        result.zoom.contains("/glide.in 0.06 → 0.09"),
+        "{}",
+        result.zoom
+    );
+}
+
+/// A channel-bound pipe still moves — its seed is what a nested or unfed instrument plays — but the
+/// caller never named it, the wire led here, so the note says when the move is inaudible.
+#[test]
+fn moving_a_channel_bound_pipe_is_noted() {
+    let resolver = resolver_with(&seed_piped(
+        json!({ "cut": { "type": "f32_buffer", "channel": 0, "min": 200.0, "max": 4000.0,
+                         "curve": "lin", "default": 1000.0 } }),
+        json!([
+            { "type": "oscillator", "address": "/osc" },
+            { "type": "filter", "address": "/f",
+              "inputs": { "audio": { "from": "/osc" }, "cutoff": { "from": "/cut" } } },
+            { "type": "mul_f32_signal", "address": "/amp",
+              "inputs": { "a": { "from": "/f" }, "b": 0.5 } }
+        ]),
+    ));
+    let result = by_intent(&resolver, "warmer", None, &[]);
+
+    assert!(
+        result.zoom.contains("/cut.in 1000 → 620"),
+        "{}",
+        result.zoom
+    );
+    assert!(
+        result.notes.iter().any(|n| n.contains("input channel 0")),
+        "the caveat rides the edit: {:?}",
+        result.notes
+    );
+}
+
+/// `target` takes the addresses the report hands back. The wire-followed address is a pipe's, so
+/// narrowing by the address just echoed has to reach the same slot — one address space or none.
+#[test]
+fn target_accepts_the_pipe_address_the_report_echoes() {
+    let seed = seed_piped(
+        json!({ "cut": { "type": "f32", "min": 200.0, "max": 4000.0, "curve": "lin",
+                         "default": 1000.0 } }),
+        json!([
+            { "type": "oscillator", "address": "/osc" },
+            { "type": "filter", "address": "/f",
+              "inputs": { "audio": { "from": "/osc" }, "cutoff": { "from": "/cut" } } },
+            { "type": "mul_f32_signal", "address": "/amp",
+              "inputs": { "a": { "from": "/f" }, "b": 0.5 } }
+        ]),
+    );
+    let resolver = resolver_with(&seed);
+    let broadcast = by_intent(&resolver, "warmer", None, &[]);
+    assert!(broadcast.zoom.contains("/cut.in"), "{}", broadcast.zoom);
+
+    // The same word again, narrowed by the address that echo just named.
+    let resolver = resolver_with(&seed);
+    let narrowed = by_intent(&resolver, "warmer", None, &["/cut"]);
+    assert_eq!(
+        readback(&resolver)["interface"]["inputs"]["cut"]["default"],
+        json!(620.0)
+    );
+    assert!(
+        !narrowed.zoom.contains("unmatched"),
+        "the echoed address matched: {}",
+        narrowed.zoom
+    );
+}
+
+/// The dedupe is on a slot that was *written*. A slot a first move could not move is still a slot a
+/// second move can — the two arrive with different contracts, because they are fed by different
+/// ports — so blocking it on the first attempt loses the second entirely.
+#[test]
+fn a_slot_a_move_could_not_write_stays_open_to_the_next_move() {
+    let resolver = resolver_with(&seed_piped(
+        json!({ "p": { "type": "f32", "default": 20000.0 } }),
+        json!([
+            { "type": "oscillator", "address": "/osc" },
+            { "type": "filter", "address": "/f",
+              "inputs": { "audio": { "from": "/osc" }, "cutoff": { "from": "/p" },
+                          "resonance": { "from": "/p" } } },
+            { "type": "mul_f32_signal", "address": "/amp",
+              "inputs": { "a": { "from": "/f" }, "b": 0.5 } }
+        ]),
+    ));
+    // `harsher` is saturator.drive up; filter.cutoff up; filter.resonance up. Against `cutoff`'s
+    // 20..20000 the seed is already at the ceiling — a skip; against `resonance`'s 0..1 it is not.
+    let result = by_intent(&resolver, "harsher", None, &[]);
+
+    assert!(
+        result.zoom.contains("/p.in 20000 → 1"),
+        "the second move still reached the slot: {}",
+        result.zoom
+    );
+    assert!(
+        result
+            .zoom
+            .starts_with("harsher (timbral): 1 applied, 2 skipped"),
+        "{}",
+        result.zoom
+    );
 }

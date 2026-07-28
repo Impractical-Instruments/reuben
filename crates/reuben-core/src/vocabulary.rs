@@ -189,40 +189,72 @@ impl fmt::Display for Magnitude {
     }
 }
 
+/// The object forms, for the error text: named once so the message and the match cannot drift.
+const MAGNITUDE_FORMS: &str = "steps, absolute, symbol, by, ratio";
+
 impl<'de> Deserialize<'de> for Magnitude {
     /// Two source spellings, one flat enum: the bare word `"slightly"`, or a single-key object
-    /// naming the amount. Hand-written rather than `#[serde(untagged)]` so a mistyped form fails
-    /// with the key it did not recognize instead of "data did not match any variant".
+    /// naming the amount.
+    ///
+    /// A visitor rather than `#[serde(untagged)]`, and the difference is the whole point: untagged
+    /// collapses every object mistake — an unknown key, an empty object, two keys, a value of the
+    /// wrong type — into one "data did not match any variant". Each of those is a distinct curation
+    /// mistake and says so here.
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Magnitude, D::Error> {
-        // The object forms are an externally-tagged enum: `{"steps": 1}` *is* the variant syntax.
-        #[derive(Deserialize)]
-        #[serde(rename_all = "lowercase")]
-        enum Amount {
-            Steps(i64),
-            Absolute(f64),
-            Symbol(String),
-            By(f64),
-            Ratio(f64),
+        struct Form;
+
+        impl<'de> de::Visitor<'de> for Form {
+            type Value = Magnitude;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(
+                    f,
+                    "\"slightly\", or an object naming one of: {MAGNITUDE_FORMS}"
+                )
+            }
+
+            fn visit_str<E: de::Error>(self, word: &str) -> Result<Magnitude, E> {
+                match word {
+                    "slightly" => Ok(Magnitude::Slightly),
+                    other => Err(E::custom(format!(
+                        "magnitude {other:?} is not a word this table knows — the only word form \
+                         is \"slightly\"; every other amount is an object naming one of: \
+                         {MAGNITUDE_FORMS}"
+                    ))),
+                }
+            }
+
+            fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<Magnitude, A::Error> {
+                let Some(form) = map.next_key::<String>()? else {
+                    return Err(de::Error::custom(format!(
+                        "magnitude is an empty object — name one of: {MAGNITUDE_FORMS}"
+                    )));
+                };
+                // Each `next_value` carries serde's own type error, so a `{"steps": 1.5}` says
+                // which key was being read and what it wanted there.
+                let magnitude = match form.as_str() {
+                    "steps" => Magnitude::Steps(map.next_value()?),
+                    "absolute" => Magnitude::Absolute(map.next_value()?),
+                    "symbol" => Magnitude::Symbol(map.next_value()?),
+                    "by" => Magnitude::By(map.next_value()?),
+                    "ratio" => Magnitude::Ratio(map.next_value()?),
+                    other => {
+                        return Err(de::Error::custom(format!(
+                            "magnitude has no `{other}` form — name one of: {MAGNITUDE_FORMS}"
+                        )))
+                    }
+                };
+                if let Some(extra) = map.next_key::<String>()? {
+                    return Err(de::Error::custom(format!(
+                        "magnitude names both `{form}` and `{extra}` — a magnitude is exactly one \
+                         of: {MAGNITUDE_FORMS}"
+                    )));
+                }
+                Ok(magnitude)
+            }
         }
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Wire {
-            Word(String),
-            Amount(Amount),
-        }
-        match Wire::deserialize(d)? {
-            Wire::Word(w) if w == "slightly" => Ok(Magnitude::Slightly),
-            Wire::Word(w) => Err(de::Error::custom(format!(
-                "magnitude {w:?} is not a word this table knows — the only word form is \
-                 \"slightly\"; everything else is an object ({{\"steps\": N}}, \
-                 {{\"absolute\": N}}, {{\"symbol\": \"…\"}}, {{\"by\": N}}, {{\"ratio\": R}})"
-            ))),
-            Wire::Amount(Amount::Steps(n)) => Ok(Magnitude::Steps(n)),
-            Wire::Amount(Amount::Absolute(n)) => Ok(Magnitude::Absolute(n)),
-            Wire::Amount(Amount::Symbol(s)) => Ok(Magnitude::Symbol(s)),
-            Wire::Amount(Amount::By(n)) => Ok(Magnitude::By(n)),
-            Wire::Amount(Amount::Ratio(r)) => Ok(Magnitude::Ratio(r)),
-        }
+
+        d.deserialize_any(Form)
     }
 }
 
@@ -343,6 +375,20 @@ fn coherence(at: &str, m: &Move, port: &Port) -> Vec<String> {
                 (Some(Magnitude::By(_) | Magnitude::Ratio(_)), PortClass::Int(_)) => {
                     errs.push(format!(
                         "{at}{where_} is an integer port moved by a scalar amount — use `steps`"
+                    ))
+                }
+                // The escape hatches' own degenerate values. `by 0` and `ratio 1` move nothing, and
+                // a non-positive ratio is worse than nothing: `down` divides by it, so `ratio 0`
+                // is a non-finite value heading for a document that has no spelling for one.
+                (Some(Magnitude::Ratio(r)), _) if !(r.is_finite() && *r > 0.0 && *r != 1.0) => errs
+                    .push(format!(
+                        "{at}{where_} moves by a ratio of {r} — a ratio is a finite multiplier \
+                         above zero and not 1, and the direction says which way it applies"
+                    )),
+                (Some(Magnitude::By(by)), _) if !(by.is_finite() && *by != 0.0) => {
+                    errs.push(format!(
+                        "{at}{where_} moves by {by} — `by` is a finite non-zero amount, and the \
+                         direction says which way it applies"
                     ))
                 }
                 _ => {}
@@ -662,14 +708,54 @@ Act on the most likely reading.
         assert_eq!(form(r#"{ "ratio": 1.5 }"#), Magnitude::Ratio(1.5));
     }
 
+    /// Each object mistake is a different curation mistake and says which one it is — the whole
+    /// reason this is a visitor rather than `#[serde(untagged)]`, which collapses all four into one
+    /// "data did not match any variant".
     #[test]
     fn rejects_a_magnitude_form_the_table_does_not_know() {
-        for bad in [r#""a lot""#, r#"{ "octaves": 1 }"#, "12"] {
+        let rejected = |bad: &str| -> String {
             let source = GOOD.replace(
                 r#""magnitude": { "steps": 2 }"#,
                 &format!(r#""magnitude": {bad}"#),
             );
-            Vocabulary::parse(&source).expect_err("an unknown magnitude form must fail");
+            Vocabulary::parse(&source).expect_err("an unknown magnitude form must fail")
+        };
+        for (bad, expected) in [
+            (r#""a lot""#, "\"a lot\""),
+            (r#"{ "octaves": 1 }"#, "no `octaves` form"),
+            (r#"{}"#, "empty object"),
+            (r#"{ "steps": 1, "by": 2 }"#, "both `steps` and `by`"),
+            (r#"{ "steps": 1.5 }"#, "1.5"),
+            ("12", "integer"),
+        ] {
+            let err = rejected(bad);
+            assert!(err.contains(expected), "{bad} -> {err}");
+        }
+    }
+
+    /// The escape hatches carry their own degenerate values: `by 0` and `ratio 1` move nothing, and
+    /// `ratio 0` is worse — `down` divides by it, so it is a non-finite value heading for a document
+    /// that has no way to spell one.
+    #[test]
+    fn sweep_flags_a_degenerate_escape_hatch() {
+        let registry = Registry::builtin();
+        for (bad, expected) in [
+            (r#"{ "ratio": 0 }"#, "ratio of 0"),
+            (r#"{ "ratio": -2 }"#, "ratio of -2"),
+            (r#"{ "ratio": 1 }"#, "ratio of 1"),
+            (r#"{ "by": 0 }"#, "moves by 0"),
+        ] {
+            let json = GOOD.replace(
+                r#"{ "op": "filter", "input": "cutoff", "direction": "up" }"#,
+                &format!(
+                    r#"{{ "op": "filter", "input": "cutoff", "direction": "up", "magnitude": {bad} }}"#
+                ),
+            );
+            let errs = Vocabulary::parse(&json)
+                .expect("shape is still valid")
+                .sweep(&registry);
+            assert_eq!(errs.len(), 1, "{bad} -> {errs:?}");
+            assert!(errs[0].contains(expected), "{bad} -> {}", errs[0]);
         }
     }
 

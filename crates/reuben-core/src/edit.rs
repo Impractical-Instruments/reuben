@@ -755,18 +755,14 @@ pub fn set_instrument_input(
 }
 
 /// Apply one **intent word** from the curated vocabulary — *warmer*, *looser*, *sadder* — as a
-/// batch of value edits, so the caller emits intent and this emits the JSON.
+/// batch of value edits.
 ///
-/// The word's row names operator types and inputs, never addresses, so it broadcasts: every node of
-/// the row's type that exposes the row's input is a target, narrowed by `target` through the
-/// projection's own selection grammar. `section` picks a reading when a word has more than one; the
-/// report names the reading it passed over. A move with nothing to move is a **skip**, not a
-/// failure — the whole point of an instrument-blind table is that most rows miss most documents.
-///
-/// A wired input is followed, never severed: the arithmetic moves the seed of the interface input
-/// pipe feeding it, against that pipe's own declared range — and targets that arrive at the same
-/// pipe are one edit. A real modulation source has no scalar to move, so it is skipped and said.
-/// see rules: agent-mcp
+/// The word's row names operator types and inputs, never addresses, so it broadcasts to every node
+/// of the row's type exposing the row's input; `target` narrows through the projection's own
+/// selection grammar, and `section` picks a reading when a word has more than one. A wired input is
+/// followed rather than severed — the seed of the interface input pipe feeding it moves instead,
+/// sized against that pipe's own declared range — and targets arriving at the same pipe are one
+/// edit. A move with nothing to move is a **skip**, not a failure. see rules: agent-mcp
 pub fn set_instrument_inputs_by_intent(
     source: &str,
     word: &str,
@@ -776,8 +772,12 @@ pub fn set_instrument_inputs_by_intent(
     resolver: &dyn ResourceResolver,
 ) -> Result<EditResult, EditError> {
     edit_existing(source, registry, resolver, |doc| {
-        let report = intent::apply(doc, registry, word, section, target)?;
-        Ok(Applied::clean(Echo::Intent(report)))
+        let mut report = intent::apply(doc, registry, word, section, target)?;
+        let notes = std::mem::take(&mut report.notes);
+        Ok(Applied {
+            echo: Echo::Intent(report),
+            notes,
+        })
     })
 }
 
