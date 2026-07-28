@@ -24,7 +24,14 @@ from typing import Any
 from . import tasks as task_module
 from .mcp import Sidecar
 from .tokenizer import cl100k
-from .workspace import GUIDE_URIS, HOST_TOOLS, Workspace
+from .workspace import (
+    FILE_ACCESS,
+    GUIDE_URIS,
+    HOST_TOOLS,
+    Workspace,
+    file_access_failure,
+    looks_like_file_access,
+)
 
 
 @dataclass
@@ -60,6 +67,10 @@ class Outcome:
     payload_characters: int
     payload_per_tool: dict[str, int]
     failure: str | None = None
+    # How the run failed, when the harness can classify it: `FILE_ACCESS` for a reach at the retired
+    # file tools, `None` for everything else. Carried apart from `failure` so a report can group by
+    # it without matching on prose.
+    failure_mode: str | None = None
     trace: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -73,6 +84,7 @@ class Outcome:
             "payload_characters": self.payload_characters,
             "payload_per_tool": self.payload_per_tool,
             "failure": self.failure,
+            "failure_mode": self.failure_mode,
         }
 
 
@@ -86,6 +98,7 @@ class Session:
         self.trace = Trace()
         self.repair_rounds = 0
         self.rounds = 0
+        self.file_access_reaches: list[str] = []
 
     def __enter__(self) -> Session:
         self.sidecar.__enter__()
@@ -95,7 +108,7 @@ class Session:
         self.sidecar.__exit__(*exc)
 
     def tool_definitions(self) -> list[dict[str, Any]]:
-        """The model's whole namespace: the sidecar's roster plus the host's file tools."""
+        """The model's whole namespace: the sidecar's roster plus the host's `read_guide`."""
         return self.sidecar.openai_tools() + HOST_TOOLS
 
     def call(self, name: str, arguments: dict[str, Any]) -> str:
@@ -109,21 +122,32 @@ class Session:
                 result = self.sidecar.read_resource(uri)
             self.trace.record("resource", name, arguments, result)
             return result
-        if name in {"read_file", "write_file"}:
-            result = self.workspace.call(name, arguments)
-        elif name in self.sidecar.tools:
-            self.workspace.payloads.charge(name, arguments)
+        # The roster gets first claim on every name, so nothing below can shadow a real verb — and
+        # the ledger needs the same answer, because a refused call is bound by no schema and has to
+        # be priced by argument shape rather than by name.
+        on_roster = name in self.sidecar.tools
+        # Charged before dispatch, so a document emitted at a tool that refuses it is priced rather
+        # than refunded by the error — the reach costs what taking it would have cost.
+        self.workspace.payloads.charge(name, arguments, on_roster=on_roster)
+        surface = "mcp"
+        if on_roster:
             answer = self.sidecar.call_tool(name, arguments)
             result = answer.rendered()
             # Metric (b). Read off the structured report, never the prose: "invalid: 1 error(s)" is
             # a human string a wording change could silently stop matching.
             if name == "validate_instrument" and (answer.structured or {}).get("ok") is False:
                 self.repair_rounds += 1
+        elif looks_like_file_access(name):
+            # Classified apart from a malformed call: this one is a model asking for the retired
+            # path, which is the behaviour the tier exists to detect. `judge` names it.
+            self.file_access_reaches.append(name)
+            surface = "host"
+            result = f"error: no such tool `{name}`"
         else:
             # An invented tool name still costs a round — that is a real failure mode of small
             # models on a wide surface, and hiding it would flatter the measurement.
             result = f"error: no such tool `{name}`"
-        self.trace.record("host" if name in {"read_file", "write_file"} else "mcp", name, arguments, result)
+        self.trace.record(surface, name, arguments, result)
         return result
 
     def read_resource(self, uri: str) -> str:
@@ -133,7 +157,7 @@ class Session:
         return text
 
     def judge(self) -> Outcome:
-        """Score the run: `validate_instrument` clean on the produced document, then the structural assertion.
+        """Score the run: no reach for a file, `validate_instrument` clean, then the assertion.
 
         `validate_instrument` is called here by the harness itself, not trusted from the transcript — a model
         that validated an earlier draft and then broke the file must not score a pass.
@@ -154,16 +178,22 @@ class Session:
         except Exception as error:  # a crash is a failed run, not a crashed harness
             failure = f"{type(error).__name__}: {error}"
 
+        # Outranks whatever the document ended up looking like: a run that reached for a file tool
+        # has failed the thing this tier guarantees even when what it left behind validates, and
+        # reporting the downstream symptom instead would send the reader to the wrong place.
+        reach = file_access_failure(self.file_access_reaches)
+
         return Outcome(
             task=self.task.key,
             shape=self.task.shape,
-            passed=failure is None,
+            passed=failure is None and reach is None,
             rounds=self.rounds,
             tokens=tokens,
             repair_rounds=self.repair_rounds,
             payload_characters=self.workspace.payloads.characters,
             payload_per_tool=self.workspace.payloads.as_dict()["per_tool"],
-            failure=failure,
+            failure=reach or failure,
+            failure_mode=FILE_ACCESS if reach else None,
             trace=self.trace.calls,
         )
 

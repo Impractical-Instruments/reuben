@@ -57,8 +57,19 @@ class TestVisibilityNotVerdict(unittest.TestCase):
             _result(passed=False, total=5000, fixed=4767, tools=8, schema_bytes=8000,
                     failure="validate rejected the produced document")
         )
-        _, failed = gate.render(head, None)
+        summary, failed = gate.render(head, None)
         self.assertTrue(failed)
+        self.assertNotIn(gate.FILE_ACCESS, summary)
+
+    def test_a_reach_outside_the_roster_gets_its_own_line(self) -> None:
+        """Reported apart from an engine break: it is a rule the reference broke, not the loader."""
+        result = _result(passed=False, total=5000, fixed=4767, tools=8, schema_bytes=8000,
+                         failure="file-access: an agent reached outside the roster (`read_file`)")
+        result["failure_mode"] = gate.FILE_ACCESS
+        summary, failed = gate.render(_report(result), None)
+        self.assertTrue(failed)
+        self.assertIn("reached outside the roster", summary)
+        self.assertNotIn("no longer passes", summary)
 
     def test_classify_never_returns_a_blocking_tier(self) -> None:
         self.assertEqual(gate._classify(50.0), "jump")
@@ -91,6 +102,30 @@ class TestSchemaDensity(unittest.TestCase):
         self.assertIn("1000 B/tool", summary)
 
 
+class TestReferenceRewriteIsNamed(unittest.TestCase):
+    """A rewritten reference moves every metric at once, which reads exactly like a regression.
+
+    The gate has to say which it was; leaving the reader to infer one from the shape gets it wrong
+    half the time, because the two shapes are the same.
+    """
+
+    def test_a_revision_change_is_called_a_rewrite_and_still_does_not_fail(self) -> None:
+        baseline = {**_report(_result(total=5000, fixed=4767, tools=27, schema_bytes=27000)),
+                    "references": {"revision": 1, "note": "the whole-document procedure"}}
+        head = {**_report(_result(total=6500, fixed=6200, tools=27, schema_bytes=27000)),
+                "references": {"revision": 2, "note": "the document verbs"}}
+        summary, failed = gate.render(head, baseline)
+        self.assertFalse(failed)
+        self.assertIn("Reference solutions rewritten", summary)
+        self.assertIn("the document verbs", summary)
+
+    def test_a_matching_revision_says_nothing(self) -> None:
+        report = {**_report(_result(total=5000, fixed=4767, tools=27, schema_bytes=27000)),
+                  "references": {"revision": 2, "note": "the document verbs"}}
+        summary, _ = gate.render(report, report)
+        self.assertNotIn("Reference solutions rewritten", summary)
+
+
 class TestHistoryRecords(unittest.TestCase):
     def test_density_fields_ride_the_trend(self) -> None:
         report = _report(_result(total=5000, fixed=4767, tools=27, schema_bytes=27000))
@@ -98,6 +133,13 @@ class TestHistoryRecords(unittest.TestCase):
         self.assertEqual(record["tool_count"], 27)
         self.assertEqual(record["schemas_bytes"], 27000)
         self.assertEqual(record["schema_density"], 1000.0)
+
+    def test_the_reference_revision_rides_the_trend(self) -> None:
+        """Without it the dashboard cannot name the commit where the series re-baselined."""
+        report = {**_report(_result(total=5000, fixed=4767, tools=27, schema_bytes=27000)),
+                  "references": {"revision": 2, "note": "the document verbs"}}
+        (record,) = gate.history_records(report, {"sha": "abc"})
+        self.assertEqual(record["reference_revision"], 2)
 
 
 if __name__ == "__main__":

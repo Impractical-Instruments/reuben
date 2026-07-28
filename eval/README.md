@@ -41,6 +41,11 @@ derived **per-tool schema density** (schema bytes ÷ tool count) sits beside the
 growth (more tools, flat density) reads differently from bloat (denser schemas, no new tool) — the
 one genuinely invisible regression.
 
+Rewriting a reference is itself a **re-baseline**, not a regression: every metric for that task moves
+at once, which looks identical to the surface getting dearer or cheaper. So `tasks.py` carries a
+`REFERENCE_REVISION`, the gate says so when two compared reports disagree on it, and the number rides
+`eval-history.jsonl` so the dashboard names the commit where the trend steps.
+
 **The live tier is a ladder anchored to hardware bands** — 8 / 16 / 32 GB of unified memory. The
 question is not "does it pass" but **where the pass line sits**; a prototype earns its place by
 moving that line down a band. Run on demand, never in CI.
@@ -76,22 +81,87 @@ score as success. `tests/test_tasks.py` is the forcing function; every test in i
 proving the assertions reject the degenerate passes.
 
 The assertions are strict about **collateral damage**: a one-value tweak that also drops the
-document's `doc` prose fails. That damage is what whole-document re-emission causes, and a metric
-blind to it would miss the thing the map is chasing.
+document's `doc` prose fails. Two different mechanisms produce that damage — a whole-document
+re-emit, and a second, unasked-for verb call — so the failure reports **what** moved
+(``also changed /filter.doc``) and leaves the cause to the trace. A metric blind to either would miss
+the thing the map is chasing.
 
-## Why the harness ships file tools
+## Why the harness ships no file tool
 
-It used to be a necessity: `swap` was path-only and the roster had no document-read tool, so a real
-authoring client necessarily brought its own filesystem access.
-[#603](https://github.com/Impractical-Instruments/reuben/issues/603) and
-[#604](https://github.com/Impractical-Instruments/reuben/issues/604) removed that necessity — the
-roster now reads a document (`describe_instrument`) and writes one (the document verbs) without the
-model ever seeing its bytes. `read_file` / `write_file` / `read_guide` stay for the opposite reason:
-a real client *still has* them, so leaving them on the namespace is what lets the harness see a model
-reach for them anyway. Their presence is a measurement now, not a crutch — and
-[#624](https://github.com/Impractical-Instruments/reuben/issues/624) carries the open call about
-whether the reference solutions should still use them. This is modelling the client, not inventing a
-fourth door: the reuben surface under measurement is still exactly the sidecar's roster.
+It shipped `read_file` / `write_file` for a good reason, and that reason was **a measurement, not a
+crutch**: a real client still has `Read`/`Write`, so leaving them on the namespace was what let the
+harness watch a model reach for them anyway. Their absence would have hidden a real behaviour rather
+than fixing it.
+
+That observation has been deliberately traded for a **stronger one**. The roster reads a document
+(`describe_instrument`) and writes one (the document verbs) without the model ever seeing its bytes,
+so a conforming client has no reason to touch instrument JSON at all. The tools come off, and on both
+tiers **`file-access` — an agent reached outside the roster for the document — becomes a named
+failure mode**: the run fails and the report says so on its own line, classified apart from a
+malformed call so it is legible at a glance rather than looking like a typo. The message names the
+call reached for and stops there; asserting a read or a write would over-claim, since a shell and an
+interpreter are classified on the same evidence and neither operation is ever observed.
+
+What that detects is the **reach**, not a completed operation — nothing in the harness can complete
+one any more. That distinction is what keeps the check live rather than trivially green forever.
+Removing the tools from reuben's roster does not remove them from the world: `source` is still a
+filesystem path on the native and sidecar doors, and a real host — Claude Code, say — brings its own
+Read and Write that reuben cannot take away, so the old path stays walkable outside the harness. The
+new arrangement is therefore strictly better than "leave the tools on and watch", because it
+separates what a model *wants* from what the surface happens to offer it.
+
+The classification matches a name rather than enumerating two, since the whole point is to catch the
+reach *after* `read_file` is gone and whatever a model's priors call the same move arrives instead.
+It is a **union** of four cheap rules: a filesystem noun in any word (`readFile`, `move_file`,
+`directory_tree`), a shell or editing word in any word (`execute_command`, `run_terminal_cmd`,
+`apply_patch`), a whole-name match for the bare verbs (`Read`, `Write`, `Edit`, `cat`), and a
+fragment match for the editor family whose spelling keeps moving (`str_replace_based_edit_tool`).
+
+Every one of those rules exists because a narrower one missed something real. An AND of
+action-and-noun would be *stricter* than the two literal names it replaced — `Read` and `Write` are
+bare verbs with no noun. A whole-name shell set catches the category words and misses every product:
+`execute_command` (Cline), `run_shell_command` (Gemini CLI), `run_terminal_cmd` (Cursor),
+`execute_bash` (OpenHands), `local_shell` (OpenAI) are what agents actually ship. A miss there is a
+model falling back to the old path and being reported as having stopped wanting it.
+
+Being generous is safe because the matcher is only ever consulted on a name the roster already
+refused — it cannot shadow a verb, and a test walks the live roster to prove none of them trips it. A
+check that cannot be made to fail is not a check, so `tests/test_tasks.py` also drives a run that
+emits `read_file` after an otherwise-perfect edit and asserts the run fails with the mode named.
+
+Two things are deliberately outside this:
+
+- **`read_guide` stays.** It reads grounding prose that is *meant* for the model's context, not a
+  reuben-owned document. Reading a guide is not reading a file.
+- **Seeding survives, harness-side.** The `repair` task needs its broken document on disk, and
+  `Workspace` writes it at construction — the harness's own side of the wire. The separation is
+  structural rather than conventional: nothing in the model-facing roster can read or write a file,
+  and there is no host dispatch left for one to route to.
+
+Metric (c) is priced in two halves, on the same principle. A **roster** call is charged **by name**:
+it is bound by a schema, so what carries a document is a fact known in advance — and that table is
+now empty, because no arm takes one by value any more. An **invented** call is charged **by value**:
+read the argument, never its label. It qualifies if its serialisation runs past ~200 characters,
+which is where an argument stops being communication whatever it is called, or if it parses as JSON
+carrying an instrument's keys, which catches a near-empty document that slips under the size floor.
+
+Reading the value rather than the name is what makes this hold. Any list of argument names is one
+agent product behind the next one shipped: `patch` is OpenAI Codex's `apply_patch`, `file_text` is
+Anthropic's text editor, and a model inventing a call is bound by neither. `Write(content=…)`,
+`write_file(text=…)` and `apply_patch(patch=…)` are one emission in three spellings, and are priced
+identically. A false zero is the one direction this metric must never be fooled in now that it is a
+floor and a tripwire rather than a spread of values.
+
+A verb argument is not a document even when it is structured: `add_instrument_node(inputs=…)` and
+`send_live_controls(messages=…)` cost nothing. (c) prices **freehand JSON** — the document the model
+had to compose and hold — not communication, and a node's inputs map is the thing the verbs exist to
+make cheap. The name-keyed roster half is what structurally keeps the value rule from reaching one.
+
+The practical consequence: a passing gate-tier run prices at **zero**, and a non-zero number means
+bytes were emitted somewhere — usually a document, sometimes long prose at an invented call. The
+200-character floor is a size heuristic, so it cannot tell the two apart, and it is not trying to:
+the error runs only toward *more* expensive, which is the direction a cost metric may never be fooled
+in. It is a tripwire, not a proof.
 
 ## The tokenizer is pinned, and that is the point
 
@@ -133,7 +203,7 @@ python3 eval/tools/gen_unicode_classes.py    # then refresh pins.json, and say s
 
 ```
 reuben_eval/mcp.py         MCP stdio client + the token ledger
-reuben_eval/workspace.py   host file tools + the document-payload ledger (metric c)
+reuben_eval/workspace.py   the host roster, task seeding, the document-payload ledger (metric c)
 reuben_eval/tasks.py       the five tasks, reference solutions, structural assertions
 reuben_eval/runner.py      one task run, scored
 reuben_eval/gate.py        deterministic tier + the CI gate

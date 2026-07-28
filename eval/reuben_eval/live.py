@@ -29,6 +29,7 @@ from typing import Any
 from . import tasks as task_module
 from .runner import Session
 from .tokenizer import cl100k
+from .workspace import FILE_ACCESS
 
 # Frozen by the ladder's own definition, so a re-run is comparable: capped-out counts as a fail,
 # and 3 repeats at temperature 0 absorb some of the
@@ -177,7 +178,12 @@ def run_once(task: task_module.Task, rung: Rung, base_url: str) -> dict[str, Any
             record = outcome.as_dict()
             if capped:
                 record["passed"] = False
-                record["failure"] = f"hit the {ROUND_CAP}-round cap without finishing"
+                # The cap never overwrites a failure `judge` already named. A capped run that also
+                # reached for a file is counted as a reach, so prose saying it merely ran out of
+                # rounds would contradict the number beside it.
+                record["failure"] = (
+                    record["failure"] or f"hit the {ROUND_CAP}-round cap without finishing"
+                )
             record["capped"] = capped
             record["sampling"] = sampling
             record["trace"] = outcome.trace
@@ -198,6 +204,12 @@ def run_rung(rung: Rung, base_url: str, context_length: int) -> dict[str, Any]:
         tasks[task.key] = {
             "shape": task.shape,
             "pass_rate": len(passing) / len(runs),
+            # Counted apart from the pass rate: the roster no longer offers a file tool, so this is
+            # how often the model still *wanted* one. That is the behaviour the removal exists to
+            # surface, and it would be invisible inside a bare "failed".
+            "file_access_reaches": sum(
+                1 for run in runs if run.get("failure_mode") == FILE_ACCESS
+            ),
             "runs": runs,
             "median": {
                 metric: statistics.median(extract(run) for run in passing)
@@ -241,8 +253,9 @@ def render(report: dict[str, Any]) -> str:
         f"{report['discipline']['temperature']} · {report['discipline']['repeats']} repeats · "
         f"round cap {report['discipline']['round_cap']}",
         "",
-        "| Task | Pass rate | Median tokens | Median rounds | Median repairs | Median doc chars |",
-        "|---|---:|---:|---:|---:|---:|",
+        "| Task | Pass rate | Median tokens | Median rounds | Median repairs | Median doc chars | "
+        "`file-access` |",
+        "|---|---:|---:|---:|---:|---:|---:|",
     ]
     for key, result in report["tasks"].items():
         median = result["median"]
@@ -256,8 +269,18 @@ def render(report: dict[str, Any]) -> str:
             if median
             else ["—", "—", "—", "—"]
         )
+        cells.append(f"{result.get('file_access_reaches', 0)}/{len(result['runs'])}")
         lines.append(f"| `{key}` | {result['pass_rate']:.0%} | " + " | ".join(cells) + " |")
     lines.append("")
+    reaches = sum(r.get("file_access_reaches", 0) for r in report["tasks"].values())
+    if reaches:
+        lines.append(
+            f"> ⚠️ `{FILE_ACCESS}`: {reaches} run(s) reached outside the roster for the document — a "
+            "file tool, a shell or an interpreter. It is read with `describe_instrument` and written "
+            "with the document verbs, so this is the model still preferring the retired path rather "
+            "than a missing tool. The trace names the call each run reached for."
+        )
+        lines.append("")
     if rung["band"] == WEAKEST_RUNG and all(r["pass_rate"] == 0 for r in report["tasks"].values()):
         lines.append(
             f"> ⚠️ The `{WEAKEST_RUNG}` rung is the weakest pin on the ladder — nothing in the "

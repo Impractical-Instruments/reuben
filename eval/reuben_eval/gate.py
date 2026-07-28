@@ -23,6 +23,7 @@ from typing import Any
 
 from . import tasks as task_module
 from .runner import run_reference, verify_tokenizer_pins
+from .workspace import FILE_ACCESS
 
 # Two VISIBILITY tiers, not verdicts: a grounding metric that regresses annotates and lands on the
 # trend, but never fails the build. A gate that FAILs on roster growth encodes "the library must not
@@ -49,6 +50,10 @@ def measure() -> dict[str, Any]:
     return {
         "tier": "gate",
         "tokenizer": {"encoding": "cl100k_base", "pins": pins},
+        "references": {
+            "revision": task_module.REFERENCE_REVISION,
+            "note": task_module.REFERENCE_REVISION_NOTE,
+        },
         "tasks": {result["task"]: result for result in results},
     }
 
@@ -106,19 +111,66 @@ def _density_lines(report: dict[str, Any], baseline: dict[str, Any] | None) -> l
     return ["", line, ""]
 
 
+def _reference_rewrite_lines(report: dict[str, Any], baseline: dict[str, Any]) -> list[str]:
+    """Say so when the two sides do not share a reference revision.
+
+    A reference solution is the ideal call sequence, so rewriting one moves every metric at once —
+    which reads exactly like a surface regression and is the opposite of one.
+
+    **This cannot fire in CI, by construction.** `eval-gate.sh` never swaps `eval/`, so both sides of
+    a PR comparison are always measured by the PR's own harness and always carry the same revision.
+    It fires on exactly one path: a manual `--compare` against a report saved before a rewrite. The
+    trend is where the step actually lands, and `history_records` carries the revision there so the
+    dashboard names the commit — that is the half a human reads.
+    """
+    current = report.get("references", {}).get("revision")
+    before = baseline.get("references", {}).get("revision")
+    if current == before:
+        return []
+    note = report.get("references", {}).get("note", "")
+    print(
+        f"::notice title=Agent-surface reference rewrite::reference revision {before} -> {current}: "
+        f"{note}"
+    )
+    return [
+        f"🔁 **Reference solutions rewritten** (revision {before} → {current}) — {note}.",
+        "",
+    ]
+
+
 def render(report: dict[str, Any], baseline: dict[str, Any] | None) -> tuple[str, bool]:
     """Job-summary markdown plus the gate verdict (True = failed)."""
     lines = ["## Agent-surface eval gate — deterministic tier", ""]
     failed = False
 
     unpassed = [key for key, result in report["tasks"].items() if not result["passed"]]
-    if unpassed:
+    # Split out ahead of the rest: a reference that reached outside the roster failed a rule, not the
+    # engine, and folding the two together sends the reader looking for a break that is not there.
+    reaches = [
+        key for key in unpassed if report["tasks"][key].get("failure_mode") == FILE_ACCESS
+    ]
+    broken = [key for key in unpassed if key not in reaches]
+    if reaches:
+        failed = True
+        lines.append(
+            f"❌ `{FILE_ACCESS}` — a reference solution reached outside the roster: "
+            + ", ".join(f"`{key}`" for key in reaches)
+        )
+        for key in reaches:
+            lines.append(f"  - `{key}`: {report['tasks'][key]['failure']}")
+        lines.append("")
+        lines.append(
+            "_A document is read with `describe_instrument` and written with the document verbs. "
+            "The reference has to model a conforming client._"
+        )
+        lines.append("")
+    if broken:
         failed = True
         lines.append(
             "❌ The reference solution no longer passes for: "
-            + ", ".join(f"`{key}`" for key in unpassed)
+            + ", ".join(f"`{key}`" for key in broken)
         )
-        for key in unpassed:
+        for key in broken:
             lines.append(f"  - `{key}`: {report['tasks'][key]['failure']}")
         lines.append("")
         lines.append(
@@ -131,6 +183,7 @@ def render(report: dict[str, Any], baseline: dict[str, Any] | None) -> tuple[str
         lines += ["_No baseline — absolute numbers only._", ""]
     else:
         lines += [f"Baseline compared · reported for visibility · jump ≥ {JUMP_PCT:g}% · creep ≥ {CREEP_PCT:g}%", ""]
+        lines += _reference_rewrite_lines(report, baseline)
 
     lines += ["| Task | Metric | Value | Baseline | Δ% | |", "|---|---|---:|---:|---:|:---:|"]
     warned = False
@@ -161,7 +214,12 @@ def render(report: dict[str, Any], baseline: dict[str, Any] | None) -> tuple[str
 
     lines.append("")
     if failed:
-        lines.append("**Result: ❌ a reference solution no longer passes — the surface is broken, not merely bigger.**")
+        verdict = (
+            f"a reference solution reached outside the roster (`{FILE_ACCESS}`)"
+            if reaches and not broken
+            else "a reference solution no longer passes — the surface is broken, not merely bigger"
+        )
+        lines.append(f"**Result: ❌ {verdict}.**")
     elif warned:
         lines.append("**Result: ⚠️ the agent surface grew — recorded on the trend, not blocked. See annotations.**")
     else:
@@ -181,6 +239,7 @@ def history_records(report: dict[str, Any], identity: dict[str, str]) -> list[di
             **identity,
             "tier": "gate",
             "task": key,
+            "reference_revision": report.get("references", {}).get("revision"),
             "passed": result["passed"],
             "tokens_total": result["tokens"]["total"],
             "tokens_fixed": result["tokens"]["fixed"],

@@ -119,7 +119,10 @@ def load_eval(path):
             r = json.loads(line)
             if r["sha"] not in seen:
                 seen[r["sha"]] = len(order)
-                order.append({"sha": r["sha"], "date": r["date"]})
+                # `reference_revision` rides the commit, not the metric: a rewrite moves every task's
+                # series at once, which is what tells its step apart from a surface regression.
+                order.append({"sha": r["sha"], "date": r["date"],
+                              "reference_revision": r.get("reference_revision")})
             for metric, _, _, _ in EVAL_METRICS:
                 if metric in r:
                     series[(metric, r["task"])][seen[r["sha"]]] = r[metric]
@@ -397,9 +400,45 @@ def eval_section(outdir, eval_jsonl, label, charts_written):
         "- **Document chars** is freehand JSON the model had to emit, **echoes included** — a "
         + "whole-document re-emit for a one-value tweak costs full price here, which is exactly "
         + "the cost the surface work is chasing.",
-        "",
     ]
+    lines += eval_rewrite_note(order)
+    lines += [""]
     return lines
+
+
+def eval_rewrite_note(order):
+    """Name the commits where the reference solutions were rewritten, if any are in range.
+
+    Every series steps at once on such a commit, and the step is the harness asking for a different
+    ideal call sequence — not the surface getting dearer or cheaper. Without this the reader has only
+    the shape to go on, and the shape of a rewrite and the shape of a regression are the same.
+
+    A record with no revision at all says *nothing* and is skipped rather than treated as a value.
+    `eval-history.jsonl` accumulates across trend branches, so a branch cut before the field existed
+    appends a gap in the middle of the series; comparing across it would announce a second rewrite
+    that never happened — which is the exact misreading this note exists to prevent. The one place a
+    missing revision is informative is the field's *first* appearance after commits that predate it:
+    those ran an older harness, so that commit is the rewrite.
+    """
+    steps, last = [], None
+    for index, entry in enumerate(order):
+        revision = entry.get("reference_revision")
+        if revision is None:
+            continue
+        if last is None:
+            if index > 0:
+                steps.append(entry["sha"])
+        elif revision != last:
+            steps.append(entry["sha"])
+        last = revision
+    if not steps:
+        return []
+    return [
+        "- A **reference-solution rewrite** landed at "
+        + ", ".join(f"`{sha}`" for sha in steps)
+        + ". Every series steps there at once because the ideal call sequence itself changed; read "
+        + "that discontinuity as a re-baseline, not as the surface moving."
+    ]
 
 
 def main():

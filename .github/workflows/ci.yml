@@ -43,6 +43,7 @@ jobs:
       bench: ${{ steps.filter.outputs.bench }}
       rules: ${{ steps.filter.outputs.rules }}
       eval: ${{ steps.filter.outputs.eval }}
+      dashboard: ${{ steps.filter.outputs.dashboard }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
@@ -104,6 +105,14 @@ jobs:
               - 'docs/agents/**'
               - 'eval/**'
               - '.github/scripts/eval-gate.sh'
+            # The dashboard renders both trends and is the half a human actually reads. Its own
+            # filter rather than riding `eval`'s: that job builds `reuben-mcp` twice and swaps the
+            # measured surface to a baseline commit, and a one-line edit to a charting script has no
+            # business paying for that. Same guarantee, a fraction of the minutes.
+            dashboard:
+              - '.github/scripts/bench-dashboard.py'
+              - '.github/scripts/test_bench_dashboard.py'
+              - '.github/workflows/ci.yml'
             rules:
               - 'docs/rules/**'
               # The supersession gate reads the ADRs: an ADR overturning a rule must mark it in the
@@ -382,6 +391,24 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # The trend dashboard's own suite. Stdlib-only, seconds, no build — deliberately NOT folded into
+  # `eval-gate`, which builds `reuben-mcp` twice and swaps the measured surface to a baseline commit.
+  # What it guards is the consuming half of the reference-rewrite annotation: `reference_revision` is
+  # produced by the eval gate and only means anything if the dashboard reads it correctly, and its
+  # one job is to tell a re-baseline apart from a regression. A wrong call there tells the reader to
+  # discount a real regression, which is worse than saying nothing.
+  dashboard:
+    name: trend dashboard tests
+    runs-on: ubuntu-latest
+    needs: changes
+    if: >-
+      needs.changes.outputs.dashboard == 'true'
+      && (github.event_name == 'push' || github.event.pull_request.draft == false)
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Dashboard eval-trend tests
+        run: cd .github/scripts && python3 -m unittest test_bench_dashboard -v
+
   # Rules-doc guards (S01). The rules-doc system's derive + links guards are stdlib-only Python. Same
   # draft-skip as the Rust jobs; `python3` is preinstalled on ubuntu-latest, so no setup step. Gated on
   # the `rules` path filter (see the `changes` job) — a docs-only rules change moves none of the
@@ -500,8 +527,8 @@ jobs:
     name: ci-passed
     runs-on: ubuntu-latest
     needs:
-      [changes, lockstep, check, windows, bench, eval-gate, rules-guards, ref-guard, sample-guard,
-       doc-claims, core-privacy]
+      [changes, lockstep, check, windows, bench, eval-gate, dashboard, rules-guards, ref-guard,
+       sample-guard, doc-claims, core-privacy]
     if: always()
     steps:
       - name: Fail if any required job failed or was cancelled (skipped is OK)
