@@ -1,7 +1,8 @@
 //! Integration test for the MCP stdio wire surface: spawn the real shim binary, complete the
 //! `initialize` handshake, and read `tools/list` over newline-delimited JSON-RPC to assert what only
-//! the wire can answer — every roster verb carries an `outputSchema` and the window's own sentence —
-//! then scan every advertised description for markup that only a Rust reader can resolve.
+//! the wire can answer — every roster verb carries an `outputSchema` and the window's own sentence,
+//! and every argument slot it advertises constrains its value — then scan every advertised
+//! description for markup that only a Rust reader can resolve.
 //!
 //! There is no roster check here: `stamp_window_prose` refuses to construct the server unless the
 //! router and the roster are the same name-set, so a surface that is not the roster never reaches
@@ -193,6 +194,203 @@ fn the_value_verb_owns_the_seed_and_the_meta_verb_is_the_quantity_contract() {
             "`{name}` must advertise a closed argument surface"
         );
     }
+}
+
+/// The keywords that make a schema say something about the value in the slot. A slot carrying none
+/// of them admits anything, which is indistinguishable from admitting nothing.
+const CONSTRAINTS: [&str; 7] = ["type", "enum", "const", "anyOf", "oneOf", "allOf", "$ref"];
+
+/// One tool's schema walk: the root to resolve `$ref` against, plus the two accumulators — what the
+/// walk found, and how many slots it looked at (a count with a floor, so an empty walk cannot pass).
+struct SlotWalk<'a> {
+    tool: &'a str,
+    root: &'a serde_json::Value,
+    offenders: Vec<String>,
+    visited: usize,
+}
+
+impl<'a> SlotWalk<'a> {
+    fn new(tool: &'a str, root: &'a serde_json::Value) -> Self {
+        Self {
+            tool,
+            root,
+            offenders: Vec::new(),
+            visited: 0,
+        }
+    }
+
+    fn report(&mut self, path: &str, why: &str, consequence: &str) {
+        let tool = self.tool;
+        self.offenders.push(format!(
+            "  tool `{tool}`: property `{path}` {why}\n    ({consequence})"
+        ));
+    }
+
+    /// Check one value slot and everything reachable below it. `seen` carries the `$defs` names
+    /// already entered along this path, so a self-referential definition terminates.
+    ///
+    /// Path notation: `a.b` a property, `[]`/`[i]` an array item, `.*` a map value, `~>Name` a
+    /// `$defs` hop.
+    fn slot(&mut self, node: &'a serde_json::Value, path: &str, seen: &[&'a str]) {
+        self.visited += 1;
+        let map = match node {
+            // The boolean schema forms. `false` admits nothing, which is how the closed argument
+            // surface spells `additionalProperties`; `true` admits anything, which is the defect.
+            serde_json::Value::Bool(false) => return,
+            serde_json::Value::Bool(true) => {
+                self.report(
+                    path,
+                    "advertises no type constraint",
+                    "a schema-coercing client has nothing to coerce to and will send a string",
+                );
+                return;
+            }
+            serde_json::Value::Object(map) => map,
+            other => {
+                self.report(
+                    path,
+                    &format!("is not a schema: {other}"),
+                    "a client cannot read a constraint out of it",
+                );
+                return;
+            }
+        };
+
+        if !CONSTRAINTS.iter().any(|k| map.contains_key(*k)) {
+            self.report(
+                path,
+                "advertises no type constraint",
+                "a schema-coercing client has nothing to coerce to and will send a string",
+            );
+        }
+
+        if let Some(reference) = map.get("$ref").and_then(|r| r.as_str()) {
+            self.follow(reference, path, seen);
+        }
+        if let Some(properties) = map.get("properties").and_then(|p| p.as_object()) {
+            for (name, child) in properties {
+                let dot = if path.is_empty() { "" } else { "." };
+                self.slot(child, &format!("{path}{dot}{name}"), seen);
+            }
+        }
+        // Required, not optional: for a map-shaped argument schemars puts the value schema here and
+        // leaves `properties` empty, so skipping it would walk straight past `inputs` and `config`.
+        if let Some(values) = map.get("additionalProperties") {
+            self.slot(values, &format!("{path}.*"), seen);
+        }
+        match map.get("items") {
+            Some(serde_json::Value::Array(tuple)) => {
+                for (i, child) in tuple.iter().enumerate() {
+                    self.slot(child, &format!("{path}[{i}]"), seen);
+                }
+            }
+            Some(single) => self.slot(single, &format!("{path}[]"), seen),
+            None => {}
+        }
+        // A union is only as constrained as its loosest branch.
+        for keyword in ["anyOf", "oneOf", "allOf"] {
+            if let Some(branches) = map.get(keyword).and_then(|b| b.as_array()) {
+                for (i, child) in branches.iter().enumerate() {
+                    self.slot(child, &format!("{path}|{keyword}[{i}]"), seen);
+                }
+            }
+        }
+    }
+
+    /// Resolve a `#/$defs/<name>` pointer against this tool's own root and keep walking. Skipping
+    /// the hop would let a typeless leaf hide one indirection down and the whole guard pass.
+    fn follow(&mut self, reference: &'a str, path: &str, seen: &[&'a str]) {
+        let Some((name, target)) = reference
+            .strip_prefix("#/$defs/")
+            .and_then(|name| Some((name, self.root.get("$defs")?.get(name)?)))
+        else {
+            self.report(
+                path,
+                &format!("references `{reference}`, which its own schema does not define"),
+                "a client cannot resolve it, so the slot constrains nothing it can read",
+            );
+            return;
+        };
+        if seen.contains(&name) {
+            return;
+        }
+        let mut seen = seen.to_vec();
+        seen.push(name);
+        self.slot(target, &format!("{path}~>{name}"), &seen);
+    }
+}
+
+#[test]
+fn every_advertised_property_constrains_its_value() {
+    // A property typed `serde_json::Value` renders as a schema with no keywords at all. A client
+    // that coerces arguments against the advertised schema then has nothing to coerce to and sends
+    // a number as a string, which the engine correctly refuses — a whole verb dead on the wire while
+    // every hand-built request in the test suite stays green. So this reads the schemas as a client
+    // does. see rules: agent-mcp
+
+    // Teeth first: the walker on a planted schema that hides one bare property behind a `$defs`
+    // hop, one `items: true`, and one `additionalProperties: true`. Three offenders and no more
+    // also pins `additionalProperties: false` — the closed argument surface, on most of the roster
+    // — as a pass, so the guard cannot be red everywhere for the wrong reason.
+    let planted = serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "$defs": {
+            "Hop": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": { "bare": { "description": "a leaf one indirection down" } }
+            }
+        },
+        "properties": {
+            "typed": { "type": "string" },
+            "hop": { "$ref": "#/$defs/Hop" },
+            "list": { "type": "array", "items": true },
+            "map": { "type": "object", "additionalProperties": true }
+        }
+    });
+    let mut teeth = SlotWalk::new("planted", &planted);
+    teeth.slot(&planted, "", &[]);
+    let found: Vec<&str> = teeth
+        .offenders
+        .iter()
+        .filter_map(|o| o.split('`').nth(3))
+        .collect();
+    assert_eq!(
+        found,
+        ["hop~>Hop.bare", "list[]", "map.*"],
+        "the walker must find a typeless leaf through a `$defs` hop, an item schema and a map \
+         value schema, and nothing else:\n{}",
+        teeth.offenders.join("\n")
+    );
+
+    let out = drive(&[TOOLS_LIST]);
+    let response = response_with_id(&out, 2);
+    let tools = response["result"]["tools"]
+        .as_array()
+        .unwrap_or_else(|| panic!("tools/list result missing a tools array:\n{response}"));
+
+    let mut offenders = Vec::new();
+    let mut visited = 0;
+    for tool in tools {
+        let name = tool["name"].as_str().expect("a named tool");
+        let schema = &tool["inputSchema"];
+        let mut walk = SlotWalk::new(name, schema);
+        walk.slot(schema, "", &[]);
+        offenders.extend(walk.offenders);
+        visited += walk.visited;
+    }
+
+    // A roster whose schemas moved under another key would otherwise walk nothing and pass.
+    assert!(
+        visited > 100,
+        "expected the whole advertised argument surface, walked {visited} value slots"
+    );
+    assert!(
+        offenders.is_empty(),
+        "every advertised property must constrain its value:\n{}",
+        offenders.join("\n")
+    );
 }
 
 /// The banned markup, as (label, detector). Hand-rolled rather than a regex dependency: the three
