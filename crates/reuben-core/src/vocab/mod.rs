@@ -101,26 +101,42 @@ pub enum MapCurve {
     Exponential,
 }
 
-/// Resolve a vocab **enum** type by its `Arg`-variant name (`"FilterMode"`, `"SnapDir"`, …) to
-/// its [`EnumMeta`](crate::descriptor::EnumMeta) for port `port_name` — the central name→type
-/// table the **interface pipe** loader uses when an `interface.inputs` entry declares
-/// an enum type (`"type": "FilterMode"`). Operators never come through here (their contracts
-/// name the Rust type directly); only the document-declared pipe does, so this match is the one
-/// place a *string* names a vocab enum. `None` for an unknown name — the loader turns that into
-/// a pointed load error. Adding a vocab enum that should be pipeable = one arm here.
-pub fn enum_meta_by_type(
-    type_name: &str,
-    port_name: &'static str,
-) -> Option<crate::descriptor::EnumMeta> {
-    Some(match type_name {
-        "GateMode" => GateMode::enum_meta(port_name),
-        "FilterMode" => FilterMode::enum_meta(port_name),
-        "Waveform" => Waveform::enum_meta(port_name),
-        "GrainWindow" => GrainWindow::enum_meta(port_name),
-        "M2sMode" => M2sMode::enum_meta(port_name),
-        "MapCurve" => MapCurve::enum_meta(port_name),
-        "SnapDir" => SnapDir::enum_meta(port_name),
-        "SnapTarget" => SnapTarget::enum_meta(port_name),
-        _ => return None,
-    })
+/// Declare the name→type table [`enum_meta_by_type`] dispatches on and the
+/// [`PIPEABLE_ENUM_TYPES`] roster that names it, from one list — a test that has to enumerate the
+/// pipeable enums reads the roster instead of restating the arms, so the two cannot drift.
+macro_rules! pipeable_enums {
+    ($($name:literal => $ty:ty),+ $(,)?) => {
+        /// Every vocab **enum** type an `interface.inputs` entry may declare, in declaration
+        /// order. The roster half of the [`enum_meta_by_type`] table.
+        pub const PIPEABLE_ENUM_TYPES: &[&str] = &[$($name),+];
+
+        /// Resolve a vocab **enum** type by its `Arg`-variant name (`"FilterMode"`, `"SnapDir"`, …)
+        /// to its [`EnumMeta`](crate::descriptor::EnumMeta) for port `port_name` — the central
+        /// name→type table the **interface pipe** loader uses when an `interface.inputs` entry
+        /// declares an enum type (`"type": "FilterMode"`). Operators never come through here (their
+        /// contracts name the Rust type directly); only the document-declared pipe does, so this is
+        /// the one place a *string* names a vocab enum. `None` for an unknown name — the loader
+        /// turns that into a pointed load error. Adding a vocab enum that should be pipeable = one
+        /// entry in the [`pipeable_enums!`] list.
+        pub fn enum_meta_by_type(
+            type_name: &str,
+            port_name: &'static str,
+        ) -> Option<crate::descriptor::EnumMeta> {
+            Some(match type_name {
+                $($name => <$ty>::enum_meta(port_name),)+
+                _ => return None,
+            })
+        }
+    };
+}
+
+pipeable_enums! {
+    "GateMode" => GateMode,
+    "FilterMode" => FilterMode,
+    "Waveform" => Waveform,
+    "GrainWindow" => GrainWindow,
+    "M2sMode" => M2sMode,
+    "MapCurve" => MapCurve,
+    "SnapDir" => SnapDir,
+    "SnapTarget" => SnapTarget,
 }

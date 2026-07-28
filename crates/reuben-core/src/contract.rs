@@ -53,7 +53,8 @@ impl Diag {
             LoadError::DuplicateAddress(a) | LoadError::UnknownNode(a) => (Some(a.clone()), None),
             LoadError::UnknownPort { node, port } => (Some(node.clone()), Some(port.clone())),
             LoadError::UnknownInput { node, input } => (Some(node.clone()), Some(input.clone())),
-            LoadError::BadInputValue { node, input, .. } => {
+            LoadError::BadInputValue { node, input, .. }
+            | LoadError::BadInputLiteral { node, input, .. } => {
                 (Some(node.clone()), Some(input.clone()))
             }
             LoadError::UnknownConfig { node, .. }
