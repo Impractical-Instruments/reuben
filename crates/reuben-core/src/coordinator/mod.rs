@@ -17,4 +17,4 @@ pub use mailbox::{
 };
 pub use manifest::{build_manifest, Manifest, MigrationTable, NodeIdentity};
 pub use slot::RenderSlot;
-pub use swap::{Coordinator, InstallBundle, RenderSide};
+pub use swap::{Coordinator, InstallBundle, PreparedSwap, RenderSide};
