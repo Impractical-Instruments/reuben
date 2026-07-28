@@ -66,6 +66,15 @@ pub const SET_INSTRUMENT_INPUT: &str =
      address it `/name`, input `in`. Echoes from -> to. Refuses an input that is already wired: \
      unwire_instrument_input first, or wire_instrument_input to re-point it.";
 
+pub const SET_INSTRUMENT_INPUTS_BY_INTENT: &str =
+    "Apply one word from the intent vocabulary (warmer, looser, sadder…) as one batch of value \
+     edits — the engine does the word -> ports -> arithmetic join, so you spend a word instead of \
+     up to nine set_instrument_input calls and a range lookup each. Every node the word's moves \
+     match is moved; narrow with `target` (node addresses), and pass `section` only for a word \
+     with more than one reading. A wired input is followed to the interface pipe feeding it and \
+     that pipe's value moves, so the wire survives. Moves this document has no seat for are \
+     skipped, not errors. Echoes each address.input from -> to, plus what it skipped and why.";
+
 pub const WIRE_INSTRUMENT_INPUT: &str =
     "Wire a node input from a source port: `from` is `/node.port`, or `/node` for a sole-output \
      source. This document's own interface input pipes are fed from outside it, so they cannot be \

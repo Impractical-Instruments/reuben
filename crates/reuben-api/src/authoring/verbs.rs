@@ -12,6 +12,7 @@ use reuben_core::edit::{self as core_edit, EditError};
 use reuben_core::introspect::{self as core_introspect, PatchBoundary};
 use reuben_core::projection::{Projector, Selection};
 use reuben_core::resources::ResourceResolver;
+use reuben_core::vocabulary::Section;
 use reuben_core::{content_hash, LoadError, NormalizedDoc, Registry};
 
 use super::args::*;
@@ -338,6 +339,28 @@ pub fn set_instrument_input(
             reg,
             res,
         )
+    })
+}
+
+/// Apply one intent word as a batch of value edits. The one place a `section` word becomes a
+/// section: an unknown one is a refusal, because a caller that meant a reading the table does not
+/// have has not asked a coherent question — and silently broadcasting every reading instead would
+/// be the worse answer.
+pub fn set_instrument_inputs_by_intent(
+    args: &SetInstrumentInputsByIntent,
+    resources: &dyn Resources,
+) -> Result<Answer<EditResult>, Refusal> {
+    let section = match args.section.as_deref() {
+        None => None,
+        Some(word) => Some(Section::parse(word).ok_or_else(|| {
+            Refusal::new(format!(
+                "`{word}` is not a section of the intent vocabulary — the sections are timbral, \
+                 rhythmic and tonal, and most words need none"
+            ))
+        })?),
+    };
+    run_edit(&args.source, &args.expect, resources, |src, reg, res| {
+        core_edit::set_instrument_inputs_by_intent(src, &args.word, section, &args.target, reg, res)
     })
 }
 

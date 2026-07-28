@@ -142,6 +142,11 @@ pub const CONTRACTS: &[Contract] = &[
         description: authoring_prose::SET_INSTRUMENT_INPUT,
     },
     Contract {
+        name: "set_instrument_inputs_by_intent",
+        kind: ContractKind::Document,
+        description: authoring_prose::SET_INSTRUMENT_INPUTS_BY_INTENT,
+    },
+    Contract {
         name: "wire_instrument_input",
         kind: ContractKind::Document,
         description: authoring_prose::WIRE_INSTRUMENT_INPUT,

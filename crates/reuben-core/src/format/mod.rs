@@ -2377,7 +2377,10 @@ fn check_logical_channel(name: &str, ch: usize) -> Result<(), LoadError> {
 /// pipe materializes silence). Validation is local and pointed: unknown type, numeric metadata
 /// on a message pipe, an incoherent range, or a `channel` on anything but a signal pipe
 /// (hardware channels carry signals).
-fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<(Descriptor, PortKind), LoadError> {
+pub(crate) fn pipe_descriptor(
+    name: &str,
+    pipe: &InputPipeDoc,
+) -> Result<(Descriptor, PortKind), LoadError> {
     let err = |reason: String| LoadError::InterfacePipe {
         name: name.to_string(),
         reason,

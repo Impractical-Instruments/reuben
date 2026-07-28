@@ -22,9 +22,10 @@ sees, and the grounding budget is counted for free because it arrives over the w
 
 **The gate tier runs no inference.** Each task carries a hand-written *reference solution* — the
 ideal call sequence a perfect model would make — replayed against the sidecar. What it reports is
-the surface's **cost floor**, which is exactly what a new verb moves: `nudge("warmer")` collapses
-the floor for the nudge task whether or not any model is smart enough to use it. So a prototype's
-claim is checkable **before a single token of inference is bought**. This is the tier that gates CI.
+the surface's **cost floor**, which is exactly what a new verb moves: one intent word in collapses
+the floor for the intent-word tasks whether or not any model is smart enough to use it. So a
+prototype's claim is checkable **before a single token of inference is bought**. This is the tier
+that gates CI.
 
 ```sh
 cargo build -p reuben-mcp
@@ -49,17 +50,24 @@ OLLAMA_CONTEXT_LENGTH=32768 ollama serve      # NOT optional — see below
 cd eval && python3 -m reuben_eval.live --rung 16gb
 ```
 
-## The four tasks
+## The tasks
 
-Frozen by [#592](https://github.com/Impractical-Instruments/reuben/issues/592) and bound to
-committed `instruments/` fixtures, so the workload moves with the engine:
+The first four shapes are frozen by
+[#592](https://github.com/Impractical-Instruments/reuben/issues/592); all are bound to committed
+`instruments/` fixtures, so the workload moves with the engine:
 
 | task | shape | fixture |
 |---|---|---|
 | `from_scratch` | build a tone from nothing | — |
 | `tweak` | set one value | `voices/default-voice.json` |
-| `nudge` | apply an intent word ("warmer") | `voices/default-voice.json` |
+| `intent_word` | apply an intent word ("warmer") | `voices/default-voice.json` |
+| `intent_fan_out` | apply an intent word that reaches nine targets ("looser") | `acid-techno.json` + the voices it nests |
 | `repair` | fix a document that won't load | `voices/default-voice.json`, one edge dangled |
+
+`intent_fan_out` is a **new series**, added with the intent verb: `intent_word` exercises one target
+(`warmer` matches one of its three moves on that fixture), which is exactly the case where a fan-out
+claim is invisible. Adding a task rather than re-pointing one keeps the frozen four comparable
+across the whole trend.
 
 **Pass is `validate_instrument` clean AND a structural assertion.** It owns legality — the harness never
 re-implements it — and the assertion owns "did the asked-for thing actually happen". Both are

@@ -572,3 +572,226 @@ fn resource_add_then_remove() {
     remove_instrument_resource(SRC, "kick", &registry, &resolver).expect("remove res");
     assert!(readback(&resolver)["resources"].get("kick").is_none());
 }
+
+// --- the intent verb -----------------------------------------------------------------------------
+
+/// A document with everything the intent verb has to navigate: two nodes of one type (broadcast),
+/// two more sharing one interface input pipe (the dedupe), an input fed by a real modulation source
+/// (the skip), an input with nothing written on it at all (the descriptor default), and an enum
+/// port (the `set`).
+fn seed_for_intent() -> String {
+    json!({
+        "format_version": 3,
+        "instrument": "intent-test",
+        "nodes": [
+            { "type": "oscillator", "address": "/osc", "inputs": { "freq": 220.0 } },
+            { "type": "filter", "address": "/filter",
+              "inputs": { "audio": { "from": "/osc" }, "cutoff": { "from": "/cutoff" } } },
+            { "type": "filter", "address": "/mod_filter",
+              "inputs": { "audio": { "from": "/osc" }, "cutoff": { "from": "/env.cv" } } },
+            { "type": "envelope", "address": "/env" },
+            { "type": "snap", "address": "/snap" },
+            { "type": "clock", "address": "/clock",
+              "inputs": { "tempo": { "from": "/tempo" }, "division": 4.0 } },
+            { "type": "clock", "address": "/pad_clock",
+              "inputs": { "tempo": { "from": "/tempo" }, "division": 1.0 } },
+            { "type": "mul_f32_signal", "address": "/amp",
+              "inputs": { "a": { "from": "/filter" }, "b": 0.5 } }
+        ],
+        "interface": {
+            "inputs": {
+                "cutoff": { "type": "f32_buffer", "min": 200.0, "max": 4000.0, "default": 1000.0 },
+                "tempo": { "type": "f32", "min": 60.0, "max": 180.0, "default": 130.0, "unit": "BPM" }
+            },
+            "outputs": { "main": { "from": "/amp" } }
+        }
+    })
+    .to_string()
+}
+
+fn by_intent(
+    resolver: &MemoryResolver,
+    word: &str,
+    section: Option<Section>,
+    target: &[&str],
+) -> EditResult {
+    let target: Vec<String> = target.iter().map(|t| t.to_string()).collect();
+    set_instrument_inputs_by_intent(SRC, word, section, &target, &Registry::builtin(), resolver)
+        .expect("a word in the table is not a refusal")
+}
+
+/// The whole lever in one call: a wired input moves the *pipe's* seed against the *pipe's* declared
+/// range, an unmatched move is a skip rather than a failure, and a real modulation source is named
+/// rather than clobbered.
+#[test]
+fn an_intent_word_follows_the_wire_and_skips_what_it_cannot_move() {
+    let resolver = resolver_with(&seed_for_intent());
+    let result = by_intent(&resolver, "warmer", None, &[]);
+
+    assert!(result.written, "{:?}", result.report);
+    let after = readback(&resolver);
+    // `slightly` on a linear pipe is 10% of the range a human declared: 1000 - 0.10*3800.
+    assert_eq!(
+        after["interface"]["inputs"]["cutoff"]["default"],
+        json!(620.0)
+    );
+    // The wire itself is untouched — the knob turned, the cable stayed plugged in.
+    assert_eq!(
+        after["nodes"][1]["inputs"]["cutoff"],
+        json!({ "from": "/cutoff" })
+    );
+    assert!(
+        result.zoom.contains("/cutoff.in 1000 → 620"),
+        "the echo is the change: {}",
+        result.zoom
+    );
+    // Fed by an envelope, so there is no scalar to move.
+    assert!(
+        result
+            .zoom
+            .contains("/mod_filter.cutoff` is wired from `/env.cv`"),
+        "{}",
+        result.zoom
+    );
+    // And the two moves this document has no seat for.
+    for missing in ["skipped saturator.warmth", "skipped reverb.damp"] {
+        assert!(result.zoom.contains(missing), "{}", result.zoom);
+    }
+    assert!(result
+        .zoom
+        .starts_with("warmer (timbral): 1 applied, 3 skipped"));
+}
+
+/// Two consumers of one pipe are one edit, reported once — the compounding a naive broadcast would
+/// do is exactly what makes a batch untrustworthy.
+#[test]
+fn targets_resolving_to_the_same_pipe_dedupe() {
+    let resolver = resolver_with(&seed_for_intent());
+    let result = by_intent(&resolver, "faster", None, &[]);
+
+    // Linear 60..180, default step: 130 + 0.25*120.
+    assert_eq!(
+        readback(&resolver)["interface"]["inputs"]["tempo"]["default"],
+        json!(160.0)
+    );
+    assert!(
+        result
+            .zoom
+            .starts_with("faster (rhythmic): 1 applied, 0 skipped"),
+        "{}",
+        result.zoom
+    );
+}
+
+/// A count moves by one, whichever way, and every matching node moves.
+#[test]
+fn an_integer_port_moves_one_count_per_node() {
+    let resolver = resolver_with(&seed_for_intent());
+    let result = by_intent(&resolver, "busier", None, &[]);
+
+    let after = readback(&resolver);
+    assert_eq!(after["nodes"][5]["inputs"]["division"], json!(5.0));
+    assert_eq!(after["nodes"][6]["inputs"]["division"], json!(2.0));
+    assert!(
+        result.zoom.contains("/clock.division 4 → 5"),
+        "{}",
+        result.zoom
+    );
+    assert!(
+        result.zoom.contains("skipped euclid.pulses"),
+        "{}",
+        result.zoom
+    );
+}
+
+/// An input the document never wrote still has a value: the operator's own declared default. And an
+/// exponential port moves by a ratio, so its range never enters the arithmetic.
+#[test]
+fn an_unwritten_input_moves_from_its_descriptor_default() {
+    let resolver = resolver_with(&seed_for_intent());
+    let result = by_intent(&resolver, "softer", None, &[]);
+
+    // `envelope.attack` is exponential, default 0.01, default step ×1.5.
+    assert_eq!(
+        readback(&resolver)["nodes"][3]["inputs"]["attack"],
+        json!(0.015)
+    );
+    assert!(
+        result.zoom.contains("/env.attack 0.01 → 0.015"),
+        "{}",
+        result.zoom
+    );
+}
+
+/// A third of the table assigns rather than shoves, and an enum is assigned by symbol.
+#[test]
+fn a_set_move_assigns_an_enum_symbol() {
+    let resolver = resolver_with(&seed_for_intent());
+    let result = by_intent(&resolver, "more consonant", None, &[]);
+
+    assert_eq!(
+        readback(&resolver)["nodes"][4]["inputs"]["target"],
+        json!("Chord")
+    );
+    assert!(
+        result
+            .zoom
+            .contains("/snap.target Scale → Chord [snap to chord tones]"),
+        "the curated hedge arrives after the act: {}",
+        result.zoom
+    );
+}
+
+/// `target` is the projection's selection grammar, and a term that named nothing is reported rather
+/// than silently dropped.
+#[test]
+fn target_narrows_and_reports_what_it_did_not_match() {
+    let resolver = resolver_with(&seed_for_intent());
+    let result = by_intent(&resolver, "warmer", None, &["/mod_filter", "/nope"]);
+
+    // `/filter` was outside the target, so its pipe is untouched.
+    assert_eq!(
+        readback(&resolver)["interface"]["inputs"]["cutoff"]["default"],
+        json!(1000.0)
+    );
+    assert!(result.zoom.contains("unmatched: /nope"), "{}", result.zoom);
+}
+
+/// The one overloaded word: the most likely reading is applied, and the report names the reading it
+/// passed over — the table's own preamble, mechanized.
+#[test]
+fn an_overloaded_word_takes_a_reading_and_names_the_other() {
+    let resolver = resolver_with(&seed_for_intent());
+    let timbral = by_intent(&resolver, "darker", None, &[]);
+    assert!(
+        timbral.zoom.starts_with("darker (timbral)"),
+        "{}",
+        timbral.zoom
+    );
+    assert!(
+        timbral
+            .zoom
+            .contains("also a tonal word — pass section \"tonal\""),
+        "{}",
+        timbral.zoom
+    );
+
+    let tonal = by_intent(&resolver, "darker", Some(Section::Tonal), &[]);
+    assert!(tonal.zoom.starts_with("darker (tonal)"), "{}", tonal.zoom);
+    assert!(
+        !tonal.zoom.contains("also a"),
+        "nothing was passed over: {}",
+        tonal.zoom
+    );
+}
+
+/// A word the table does not carry is a precondition failure, not a batch of zero edits: there is
+/// nothing to report, and a `written: true` for it would be a lie.
+#[test]
+fn a_word_outside_the_table_is_a_precondition_error() {
+    let resolver = resolver_with(&seed_for_intent());
+    let err =
+        set_instrument_inputs_by_intent(SRC, "shinier", None, &[], &Registry::builtin(), &resolver)
+            .expect_err("not a word in the table");
+    assert!(err.to_string().contains("shinier"), "{err}");
+}

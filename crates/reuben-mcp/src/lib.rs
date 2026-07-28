@@ -502,6 +502,20 @@ impl ReubenServer {
     }
 
     #[tool(
+        name = "set_instrument_inputs_by_intent",
+        output_schema = edit_result_schema()
+    )]
+    async fn set_instrument_inputs_by_intent(
+        &self,
+        Parameters(p): Parameters<authoring::SetInstrumentInputsByIntent>,
+    ) -> Result<CallToolResult, McpError> {
+        answered(authoring::set_instrument_inputs_by_intent(
+            &p,
+            &store(&p.source),
+        ))
+    }
+
+    #[tool(
         name = "wire_instrument_input",
         output_schema = edit_result_schema()
     )]

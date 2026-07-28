@@ -119,7 +119,7 @@ fn message(s: &str) -> String {
 }
 
 /// Which members a view is cut for — one grammar shared by node zoom and the pipe view, because
-/// the verbs are both address-shaped and type-shaped (a nudge targets operator types; a
+/// the verbs are both address-shaped and type-shaped (an intent word targets operator types; a
 /// blast-radius read targets one address).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Selection {
@@ -538,7 +538,7 @@ pub struct PipeInfo {
     pub min: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max: Option<f64>,
-    /// `"lin"` or `"exp"` — the sweep hint a scripted nudge reads.
+    /// `"lin"` or `"exp"` — the sweep hint a scripted intent move sizes its step from.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub curve: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1470,7 +1470,7 @@ pub const FIELD_COVERAGE: &[(&str, &str)] = &[
     ("interface.inputs{}.type", "pipe-view"),
     ("interface.inputs{}.channel", "pipe-view"),
     ("interface.inputs{}.default", "pipe-view"),
-    // The range + curve a scripted nudge reads to size its step.
+    // The range + curve a scripted intent move sizes its step from.
     ("interface.inputs{}.min", "pipe-view"),
     ("interface.inputs{}.max", "pipe-view"),
     ("interface.inputs{}.curve", "pipe-view"),

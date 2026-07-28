@@ -24,6 +24,14 @@ fn committed_vocabulary_references_the_live_registry() {
     );
 }
 
+/// The table the verb applies is the table this file sweeps. Two `include_str!`s of one path is two
+/// places a path could be edited, and a drift there would leave CI proving a document the engine
+/// does not read.
+#[test]
+fn the_builtin_table_is_the_committed_source() {
+    assert_eq!(Vocabulary::builtin().render(), committed().render());
+}
+
 #[test]
 fn committed_rendered_view_is_in_sync() {
     assert_eq!(

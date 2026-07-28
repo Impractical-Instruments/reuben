@@ -235,6 +235,28 @@ pub struct SetInstrumentInput {
     pub expect: Option<String>,
 }
 
+/// Arguments for `set_instrument_inputs_by_intent`: apply one curated intent word as a batch of
+/// value edits.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetInstrumentInputsByIntent {
+    /// The document to edit.
+    pub source: String,
+    /// The intent word, exactly as the intent vocabulary spells it (`warmer`, `looser`,
+    /// `more consonant`).
+    pub word: String,
+    /// Which reading of an overloaded word to take: `timbral`, `rhythmic`, or `tonal`. Omit unless
+    /// the word has more than one row; the report names the reading it passed over.
+    #[serde(default)]
+    pub section: Option<String>,
+    /// Narrow the edit to these node addresses. Omit to move every node the word's moves match. A
+    /// term matching nothing is reported back, never silently dropped.
+    #[serde(default)]
+    pub target: Vec<String>,
+    #[serde(default)]
+    pub expect: Option<String>,
+}
+
 /// Arguments for `wire_instrument_input`: wire a node input from a source port.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
