@@ -299,6 +299,242 @@ class CommentRefGuardCss(unittest.TestCase):
         self.assertEqual(self.problems("/* see rules: code-as-grounding */"), [])
 
 
+class CommentRefGuardHtml(unittest.TestCase):
+    """Check 4 in the `.html` lane — the first lane whose comment syntax changes BY REGION inside
+    one file. The lane is a region finder, not a fourth grammar: it reads `<!-- … -->` itself and
+    hands `<style>` to css and `<script>` to curly, which are the scanners already tested above.
+    So what these tests are about is almost entirely where a region starts and stops.
+    """
+
+    def problems(self, text: str) -> list[str]:
+        return check_rules_refs.comment_ref_problems("a.html", text + "\n", "html")
+
+    def test_a_markup_comment_citing_an_issue_is_flagged(self):
+        self.assertEqual(len(self.problems("<!-- the reuben web player (#226, P4) -->")), 1)
+
+    def test_a_markup_comment_spanning_lines_reports_the_citing_line(self):
+        # One piece per line, so the reader is sent to the line carrying the citation rather than to
+        # the line the comment opened on.
+        problems = self.problems("<!--\n  the shell\n  landed in #226\n-->")
+        self.assertEqual(len(problems), 1)
+        self.assertTrue(problems[0].startswith("a.html:3:"))
+
+    def test_a_style_comment_is_read_as_css(self):
+        self.assertEqual(len(self.problems("<style>\n  /* the ramp (#253) */\n</style>")), 1)
+
+    def test_a_script_comment_is_read_as_js(self):
+        self.assertEqual(len(self.problems("<script>\n  // wired in #107\n</script>")), 1)
+        self.assertEqual(len(self.problems("<script>\n  /* wired in #107 */\n</script>")), 1)
+
+    def test_a_closing_script_tag_in_a_string_does_not_truncate_the_region(self):
+        # The classic. Naive matching ends the region at the `</script>` inside the literal, and
+        # everything after it is then read as MARKUP — where a `//` comment is invisible. The
+        # citation below is past that point and has to still be found.
+        text = ('<script>\n'
+                '  const s = "</script>";\n'
+                '  // wired in #107\n'
+                '</script>\n')
+        problems = self.problems(text)
+        self.assertEqual(len(problems), 1)
+        self.assertTrue(problems[0].startswith("a.html:3:"))
+
+    def test_the_region_still_ends_at_a_real_closing_tag(self):
+        # The converse, and the thing string-awareness could break: a comment BELOW the script must
+        # be read as markup, not swallowed by a region that never ended.
+        text = '<script>\n  const s = "x";\n</script>\n<!-- the shell (#226) -->\n'
+        problems = self.problems(text)
+        self.assertEqual(len(problems), 1)
+        self.assertTrue(problems[0].startswith("a.html:4:"))
+
+    def test_markup_is_not_comment_prose(self):
+        # A citation in page content is not a comment in any lane. Both shapes are live in this
+        # corpus — a `<title>` and a rendered `<div>` — and both are deliberately untouched.
+        self.assertEqual(self.problems("<title>prototype (THROWAWAY, #253)</title>"), [])
+        self.assertEqual(self.problems('<div class="x">PROTOTYPE · #253 · fake timing</div>'), [])
+
+    def test_a_hex_colour_in_an_attribute_is_not_prose(self):
+        self.assertEqual(self.problems('<meta name="theme-color" content="#6a9db1" />'), [])
+
+    def test_the_colour_hint_follows_the_region_not_the_file(self):
+        # The lane travels with the piece. Inside `<style>` a bare three-digit citation is genuinely
+        # ambiguous with a colour and earns the caveat; the same token in a markup comment is not
+        # ambiguous with anything, and a caveat there would be noise.
+        styled = self.problems("<style>\n  /* was #333 before */\n</style>")
+        self.assertEqual(len(styled), 1)
+        self.assertIn("hex COLOUR", styled[0])
+        marked = self.problems("<!-- was #333 before -->")
+        self.assertEqual(len(marked), 1)
+        self.assertNotIn("hex COLOUR", marked[0])
+
+    def test_a_double_slash_in_markup_opens_no_comment(self):
+        # Markup has one comment form. A `//` in an href is a URL's authority slashes, and reading
+        # it as an opener turns the tail of every link into prose.
+        self.assertEqual(self.problems('<a href="https://example.com/spec#264">x</a>'), [])
+
+    def test_a_double_slash_inside_style_opens_no_comment(self):
+        # The `<style>` region is handed to the CSS lane, which carries that lane fact with it.
+        self.assertEqual(
+            self.problems("<style>\n  a { background: url(https://x/y#264); }\n</style>"), [])
+
+    def test_a_script_url_in_a_string_is_not_prose(self):
+        self.assertEqual(
+            self.problems("<script>\n  const u = 'https://x/y#264';\n</script>"), [])
+
+    def test_a_region_tag_inside_a_markup_comment_opens_no_region(self):
+        # A commented-out block is markup, so the citation in it is a markup comment — and the `//`
+        # on the line below it must not become a JS line comment in a region that never opened.
+        text = '<!-- <script> was here until #107 </script> -->\n<a href="//x/y#264">z</a>\n'
+        problems = self.problems(text)
+        self.assertEqual(len(problems), 1)
+        self.assertTrue(problems[0].startswith("a.html:1:"))
+
+    def test_an_attribute_on_the_open_tag_does_not_hide_the_region(self):
+        self.assertEqual(
+            len(self.problems('<script type="module" src="./a.js">\n// see #107\n</script>')), 1)
+
+    def test_the_tag_match_is_case_insensitive(self):
+        self.assertEqual(len(self.problems("<STYLE>\n/* the ramp (#253) */\n</STYLE>")), 1)
+
+    def test_a_close_tag_name_has_to_end(self):
+        # `</scriptfoo>` closes nothing, per HTML5 — the character after the name has to be
+        # whitespace, `/` or `>`. A bare prefix match ends the region EARLY, and early is the one
+        # direction this lane's whole argument is against: the tail is then read as markup, where a
+        # `//` comment is invisible. Both lanes, because the closer is built from the tag name.
+        self.assertEqual(len(self.problems("<script>\n</scriptfoo>\n// see #807\n</script>")), 1)
+        self.assertEqual(len(self.problems("<style>\n</stylesheet>\n/* see #808 */\n</style>")), 1)
+
+    def test_the_forms_a_close_tag_may_actually_take_still_close(self):
+        # The converse, so the check is a real boundary rather than an exact-match tightening: `/`
+        # and whitespace end the tag name as surely as `>` does.
+        self.assertEqual(len(self.problems("<script>\n</script/>\n<!-- see #809 -->")), 1)
+        self.assertEqual(len(self.problems("<script>\n</script >\n<!-- see #810 -->")), 1)
+
+    def test_a_gt_inside_a_quoted_attribute_does_not_end_the_open_tag(self):
+        # This one costs the FILE, not a few characters: taking the `>` in `src="a>b"` for the end
+        # of the tag leaves a dangling quote at the head of the body, that quote opens a string, the
+        # string eats the close tag, and every comment below — the markup ones included — goes
+        # unread. The one-line form is the shape that bites, because there the stray quote and the
+        # close tag share a line and the string never gets reset by a newline.
+        one_line = '<script src="a>b">// see #801</script>\n<!-- see #802 -->'
+        self.assertEqual(len(self.problems(one_line)), 2)
+        spread = '<script src="a>b">\n// see #803\n</script>\n<!-- see #804 -->'
+        self.assertEqual(len(self.problems(spread)), 2)
+
+    def test_an_unclosed_attribute_quote_falls_back_to_the_first_gt(self):
+        # The quote-aware match is an alternation, and this is its second branch. A quote that never
+        # closes is a tag no browser agrees about either, so the guess is the same guess — what
+        # matters is that the region still opens and still ends, rather than the match failing and
+        # the whole script being read as markup.
+        text = '<script src="a>\n// see #805\n</script>\n<!-- see #806 -->'
+        self.assertEqual(len(self.problems(text)), 2)
+
+    def test_escapable_raw_text_is_page_content(self):
+        # `<textarea>` and `<title>` hold escapable raw text: a `<!--` inside one is rendered to the
+        # user literally, so reporting it is the reverse of what this check is for. This is the
+        # over-reporting direction, which is why it is a nit rather than a hole — but it is also
+        # what keeps `test_markup_is_not_comment_prose`'s claim true in general rather than only for
+        # a fixture that happens to contain no `<!--`.
+        self.assertEqual(self.problems("<body>\n<textarea>\n<!-- see #905 -->\n</textarea>"), [])
+        self.assertEqual(self.problems("<title>\n<!-- see #906 -->\n</title>"), [])
+        # Skipped, not handed to a lane: their content is what a user typed or reads, so a `//` in
+        # one opens nothing either. Giving them the JS lane would make this the false positive.
+        self.assertEqual(self.problems("<textarea>\n// see #914\n</textarea>"), [])
+        self.assertEqual(self.problems("<title>reuben // see #915</title>"), [])
+
+    def test_a_line_comment_does_not_hide_the_close_tag(self):
+        # The one place the lane sides with the TOKENIZER, and deliberately. `doIt(); // go</script>`
+        # is not a broken page — the tag ends the comment and the element together — so treating the
+        # `//` as cover would lose the region on markup that WORKS, and lose it by swallowing the
+        # rest of the file into the script. The markup comment below is the proof it did not.
+        problems = self.problems('<script>doIt(); // go</script>\n<!-- see #901 -->')
+        self.assertEqual(len(problems), 1)
+        self.assertTrue(problems[0].startswith("a.html:2:"))
+
+    def test_a_block_comment_does_hide_the_close_tag(self):
+        # The other half of that boundary, in both lanes. Unlike `//`, a close tag inside `/* … */`
+        # can only occur in a page a browser already reads as broken, so the departure costs nothing
+        # that works — and the citation past it has to still be reached.
+        self.assertEqual(
+            len(self.problems("<script>\n/* x </script> y */\n// see #903\n</script>")), 1)
+        self.assertEqual(
+            len(self.problems("<style>\n/* x </style> y */\n/* see #904 */\n</style>")), 1)
+
+    def test_a_style_region_ends_at_its_own_close_tag(self):
+        # The closer is built from the tag NAME. Hardcoding `</script` would leave a `<style>`
+        # region running to the end of the file, taking every markup comment below it along.
+        problems = self.problems("<style>\n  a { color: red; }\n</style>\n<!-- see #907 -->")
+        self.assertEqual(len(problems), 1)
+        self.assertTrue(problems[0].startswith("a.html:4:"))
+
+    def test_markup_resumes_immediately_after_a_close_tag(self):
+        # No separator between the close tag and the comment, so an off-by-one in where markup
+        # resumes swallows the `<!--` and reports nothing.
+        self.assertEqual(len(self.problems("<script></script><!-- see #908 -->")), 1)
+
+    def test_markup_on_both_sides_of_a_region_is_read_once_each(self):
+        # The walk carries a mark for where unscanned markup starts. Failing to move it re-reads the
+        # head of the file after every region; failing to read it at the end drops the tail. Exact
+        # count and exact lines, so a duplicate is a failure rather than a pass.
+        text = ("<!-- see #909 -->\n<script>\n// see #910\n</script>\n<!-- see #911 -->\n"
+                "<style>\n/* see #912 */\n</style>\n<!-- see #913 -->")
+        problems = self.problems(text)
+        self.assertEqual(len(problems), 5)
+        self.assertEqual([p.split(":")[1] for p in problems], ["1", "3", "5", "7", "9"])
+
+    def test_the_pieces_come_out_in_source_order(self):
+        # `fold_pieces` decides what joins to what by comparing each piece's line to the previous
+        # one, so checks 2, 5 and 6 read a shuffled file as a pile of one-line comments. Ordering is
+        # a contract of this function, not an accident of how it happens to walk.
+        text = "<!-- a -->\n<script>\n// b\n</script>\n<!-- c -->\n<style>\n/* d */\n</style>\n"
+        offsets = [off for off, _, _ in check_rules_refs.html_comments(text)]
+        self.assertEqual(offsets, sorted(offsets))
+
+    def test_an_attribute_value_is_markup_not_script_prose(self):
+        # An unquoted attribute value may hold `//`. It is part of the tag, so the region body has
+        # to start AFTER the tag rather than at it — otherwise the tag itself is handed to the JS
+        # scanner and its own attributes come back as comment prose.
+        self.assertEqual(self.problems("<script data-x=//#901>\n</script>"), [])
+
+    def test_an_unterminated_markup_comment_is_still_read(self):
+        # Matching how an unclosed `/*` is read: the comment runs to the end rather than vanishing,
+        # so a typo cannot exempt the rest of a file.
+        self.assertEqual(len(self.problems("<!-- the shell (#226)")), 1)
+
+    def test_a_doctype_is_not_a_comment(self):
+        self.assertEqual(self.problems("<!doctype html>"), [])
+
+    def test_a_pointer_inside_a_region_is_validated(self):
+        # Checks 2 and 5 run over the FOLDED view, which is a second path into the region finder —
+        # so a bad topic named inside `<style>` or `<script>` has to be reported there too, not only
+        # in a markup comment.
+        for text in ("<style>\n/* see rules: no-such-topic */\n</style>",
+                     "<script>\n// see rules: no-such-topic\n</script>",
+                     "<!-- see rules: no-such-topic -->"):
+            with self.subTest(text=text):
+                problems = check_rules_refs.pointer_problems(
+                    "a.html", text + "\n", lambda cross, slug: slug == "code-as-grounding", "html")
+                self.assertEqual(len(problems), 1)
+                self.assertIn("no-such-topic", problems[0])
+
+    def test_a_pointer_wrapped_across_lines_in_a_region_is_read_whole(self):
+        # What the folded view exists for, exercised inside a region rather than only in markup: the
+        # pointer is split by a line break and still has to resolve rather than read as a fragment.
+        problems = check_rules_refs.pointer_problems(
+            "a.html", "<script>\n// see rules:\n// code-as-grounding\n</script>\n",
+            lambda cross, slug: slug == "code-as-grounding", "html")
+        self.assertEqual(problems, [])
+
+    def test_a_parity_marker_inside_a_region_is_held_to_a_reason(self):
+        # Check 6 over the same folded view. A marker in an inline script is a marker.
+        for text in ("<script>\n// Parity: n/a\n</script>",
+                     "<style>\n/* Parity: n/a */\n</style>",
+                     "<!-- Parity: n/a -->"):
+            with self.subTest(text=text):
+                problems = check_rules_refs.parity_problems("a.html", text + "\n", "html")
+                self.assertEqual(len(problems), 1)
+                self.assertIn("records no reason", problems[0])
+
+
 class CommentRefGuardHash(unittest.TestCase):
     """Check 4 in the `#` lanes — shell, YAML, TOML, Python. Nothing here is generated into prose
     anyone reads, so the lane is in reach whole."""
@@ -610,11 +846,32 @@ class WholeTree(unittest.TestCase):
         # Found by check 7 rather than by anyone noticing, and carrying a real citation when it was.
         self.assertEqual(self.run_main({"web/.env.production": "# baked in by #107\n"}), 1)
 
-    def test_html_is_classified_out_rather_than_missing(self):
-        # The honest state: three comment regimes in one file, so it is not readable with a single
-        # opener and its comments are UNPOLICED — which is not the same sentence as exempt. The
-        # citation below is deliberately NOT flagged, and this test is where that gap is written down.
-        self.assertEqual(self.run_main({"web/index.html": "<!-- the shell (#107) -->\n"}), 0)
+    def test_an_html_comment_citing_an_issue_is_flagged(self):
+        # The lane that used to be classified OUT: three comment regimes in one file, now read by a
+        # region finder rather than by a fourth opener. This site was swept by hand and nothing
+        # verified it.
+        self.assertEqual(self.run_main({"web/index.html": "<!-- the shell (#107) -->\n"}), 1)
+
+    def test_a_style_comment_in_an_html_file_is_flagged(self):
+        # The one that stings: the CSS lane's own done-when — a stylesheet comment citing an issue
+        # reds — was false inside `<style>`, because the lane was keyed on the file.
+        self.assertEqual(
+            self.run_main({"web/a.html": "<style>\n/* the ramp (#253) */\n</style>\n"}), 1)
+
+    def test_a_script_comment_in_an_html_file_is_flagged(self):
+        self.assertEqual(
+            self.run_main({"web/a.html": "<script>\n// wired in #107\n</script>\n"}), 1)
+
+    def test_html_markup_is_not_comment_prose(self):
+        # The converse, and the reason the lane needs regions rather than a regex: a citation in a
+        # `<title>` or a rendered `<div>` is page CONTENT, which this check never reached in any lane.
+        self.assertEqual(self.run_main({"web/a.html": "<title>prototype (#253)</title>\n"}), 0)
+        self.assertEqual(self.run_main({"web/a.html": '<meta content="#6a9db1" />\n'}), 0)
+
+    def test_a_pointer_inside_an_html_comment_is_validated(self):
+        self.assertEqual(self.run_main({"web/a.html": "<!-- see rules: no-such-topic -->\n"}), 1)
+        self.assertEqual(
+            self.run_main({"web/a.html": "<!-- see rules: code-as-grounding -->\n"}), 0)
 
     def test_a_directory_named_engine_is_not_the_submodule(self):
         # The skip is about BEING the submodule, which only the root position says. As a bare
