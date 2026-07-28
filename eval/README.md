@@ -41,6 +41,11 @@ derived **per-tool schema density** (schema bytes ÷ tool count) sits beside the
 growth (more tools, flat density) reads differently from bloat (denser schemas, no new tool) — the
 one genuinely invisible regression.
 
+Rewriting a reference is itself a **re-baseline**, not a regression: every metric for that task moves
+at once, which looks identical to the surface getting dearer or cheaper. So `tasks.py` carries a
+`REFERENCE_REVISION`, the gate says so when two compared reports disagree on it, and the number rides
+`eval-history.jsonl` so the dashboard names the commit where the trend steps.
+
 **The live tier is a ladder anchored to hardware bands** — 8 / 16 / 32 GB of unified memory. The
 question is not "does it pass" but **where the pass line sits**; a prototype earns its place by
 moving that line down a band. Run on demand, never in CI.
@@ -76,22 +81,52 @@ score as success. `tests/test_tasks.py` is the forcing function; every test in i
 proving the assertions reject the degenerate passes.
 
 The assertions are strict about **collateral damage**: a one-value tweak that also drops the
-document's `doc` prose fails. That damage is what whole-document re-emission causes, and a metric
-blind to it would miss the thing the map is chasing.
+document's `doc` prose fails. Two different mechanisms produce that damage — a whole-document
+re-emit, and a second, unasked-for verb call — so the failure reports **what** moved
+(``also changed /filter.doc``) and leaves the cause to the trace. A metric blind to either would miss
+the thing the map is chasing.
 
-## Why the harness ships file tools
+## Why the harness ships no file tool
 
-It used to be a necessity: `swap` was path-only and the roster had no document-read tool, so a real
-authoring client necessarily brought its own filesystem access.
-[#603](https://github.com/Impractical-Instruments/reuben/issues/603) and
-[#604](https://github.com/Impractical-Instruments/reuben/issues/604) removed that necessity — the
-roster now reads a document (`describe_instrument`) and writes one (the document verbs) without the
-model ever seeing its bytes. `read_file` / `write_file` / `read_guide` stay for the opposite reason:
-a real client *still has* them, so leaving them on the namespace is what lets the harness see a model
-reach for them anyway. Their presence is a measurement now, not a crutch — and
-[#624](https://github.com/Impractical-Instruments/reuben/issues/624) carries the open call about
-whether the reference solutions should still use them. This is modelling the client, not inventing a
-fourth door: the reuben surface under measurement is still exactly the sidecar's roster.
+It shipped `read_file` / `write_file` for a good reason, and that reason was **a measurement, not a
+crutch**: a real client still has `Read`/`Write`, so leaving them on the namespace was what let the
+harness watch a model reach for them anyway. Their absence would have hidden a real behaviour rather
+than fixing it.
+
+That observation has been deliberately traded for a **stronger one**. The roster reads a document
+(`describe_instrument`) and writes one (the document verbs) without the model ever seeing its bytes,
+so a conforming client has no reason to touch instrument JSON at all. The tools come off, and on both
+tiers **`file-access` — an agent tried to read or write a file — becomes a named failure mode**: the
+run fails and the report says so on its own line, classified apart from a malformed call so it is
+legible at a glance rather than looking like a typo.
+
+What that detects is the **reach**, not a completed operation — nothing in the harness can complete
+one any more. That distinction is what keeps the check live rather than trivially green forever.
+Removing the tools from reuben's roster does not remove them from the world: `source` is still a
+filesystem path on the native and sidecar doors, and a real host — Claude Code, say — brings its own
+Read and Write that reuben cannot take away, so the old path stays walkable outside the harness. The
+new arrangement is therefore strictly better than "leave the tools on and watch", because it
+separates what a model *wants* from what the surface happens to offer it.
+
+The classification is shape-matched rather than a list of two names, since the whole point is to
+catch the reach *after* `read_file` is gone and whatever a model's priors call the same move
+(`readFile`, `fs_write`, `open_file`) arrives instead. It is consulted only once the real roster has
+failed to claim the name, so it can never shadow a verb. A check that cannot be made to fail is not a
+check, so `tests/test_tasks.py` drives a run that emits `read_file` and asserts the mode is reported.
+
+Two things are deliberately outside this:
+
+- **`read_guide` stays.** It reads grounding prose that is *meant* for the model's context, not a
+  reuben-owned document. Reading a guide is not reading a file.
+- **Seeding survives, harness-side.** The `repair` task needs its broken document on disk, and
+  `Workspace` writes it at construction — the harness's own side of the wire. The separation is
+  structural rather than conventional: nothing in the model-facing roster can read or write a file,
+  and there is no host dispatch left for one to route to.
+
+Metric (c) reads differently as a result. With no document-carrying argument left on the roster, a
+run that stays inside the surface prices at **zero** — which is now the only shape a passing gate-tier
+run has. The ledger still names `write_file`, because a model can *invent* the call: characters
+emitted at a tool that refuses them are priced, not refunded by the error.
 
 ## The tokenizer is pinned, and that is the point
 
@@ -133,7 +168,7 @@ python3 eval/tools/gen_unicode_classes.py    # then refresh pins.json, and say s
 
 ```
 reuben_eval/mcp.py         MCP stdio client + the token ledger
-reuben_eval/workspace.py   host file tools + the document-payload ledger (metric c)
+reuben_eval/workspace.py   the host roster, task seeding, the document-payload ledger (metric c)
 reuben_eval/tasks.py       the five tasks, reference solutions, structural assertions
 reuben_eval/runner.py      one task run, scored
 reuben_eval/gate.py        deterministic tier + the CI gate

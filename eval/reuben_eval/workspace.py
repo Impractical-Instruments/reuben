@@ -1,12 +1,25 @@
-"""The task workspace and the two host file tools. see rules: agent-mcp
+"""The task workspace and the host tools the model can reach. see rules: agent-mcp
 
-**Why the harness ships file tools at all.** It used to be a necessity: `swap` was path-only and the
-roster had no document-read tool, so a real authoring client necessarily brought its own filesystem
-access. The document verbs removed that necessity — the roster now reads a document (`describe_instrument`)
-and writes one (the document verbs) without the model ever seeing its bytes. They stay for the
-opposite reason: a real client *still has* `Read`/`Write`, so leaving them on the namespace is what
-lets the harness see a model reach for them anyway. Their presence is now a measurement, not a
-crutch — and whether the reference solutions should still use them is an open call.
+**Why there is no file tool here.** There was, and it was a measurement rather than a crutch: a real
+client still has `Read`/`Write`, so leaving them on the namespace was what let the harness watch a
+model reach for them anyway. That observation has been traded for a stronger one. The roster reads a
+document (`describe_instrument`) and writes one (the document verbs) without the model ever seeing
+its bytes, so a conforming client has no reason to touch instrument JSON at all — and the harness now
+detects the **reach** rather than the completed operation, which separates what a model *wants* from
+what the surface happens to offer it.
+
+That detector is live, not belt-and-braces on something already impossible. Removing the tools from
+this roster does not remove them from the world: `source` is still a filesystem path on the native
+and sidecar doors, and a real host brings its own read and write that reuben cannot take away. So the
+old path stays walkable outside the harness, and a model that still prefers it says so here.
+
+`read_guide` is not a file tool and is not part of that trade: it reads grounding prose that is meant
+for the model's context, not a reuben-owned document.
+
+**Seeding is not a tool.** A task's fixture — the `repair` task's broken document — is written by
+`Workspace` at construction, on the harness's side of the wire. It is structurally out of the model's
+reach rather than conventionally so: nothing in `HOST_TOOLS` can read or write a file, and there is
+no host dispatch for one to route to.
 
 **Metric (c) is collected here.** Document-payload characters are counted on every argument that
 carries an instrument document or a fragment of one, **including echoes**. A model that copies a
@@ -17,6 +30,7 @@ re-emit is the single largest win on the table.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,14 +46,59 @@ from typing import Any
 # error only ever runs one way (a stray scratch write makes the surface look MORE expensive, never
 # less), so it cannot flatter a prototype's claim — the direction the metric must never be fooled in.
 #
-# Only `write_file` remains: the sidecar's inline `document` arms — `validate(document=…)`
-# and `describe_instrument(document=…)` — are gone, so the roster no longer offers *any* way to send
-# a document to reuben. That is the point, and it means metric (c) now measures exactly one
-# thing: whether the model still routes a document through the host's file tools instead of the
-# verbs. A run that reaches zero here has stopped emitting instrument JSON altogether.
+# `write_file` is no longer on the roster, and the sidecar's inline `document` arms —
+# `validate(document=…)` and `describe_instrument(document=…)` — are gone, so nothing the model can
+# successfully call carries a document. It stays named here because a model can still *invent* the
+# call: an emission charged at a tool that refuses it is priced rather than refunded by the error, so
+# the reach costs what it would have cost. A run that reaches zero has stopped emitting instrument
+# JSON altogether, which is now the only outcome a passing run can have.
 DOCUMENT_ARGUMENTS: dict[str, tuple[str, ...]] = {
     "write_file": ("content",),
 }
+
+# The two names the harness used to offer. They must appear in no call — not on the roster, not in a
+# reference solution, not in a live model's trace.
+FILE_TOOLS = ("read_file", "write_file")
+
+# The `FILE_ACCESS` classification is a match on both halves: an action word and a filesystem noun.
+# Shape-matched rather than enumerated, because the point is to catch the reach *after* the names are
+# gone, and what a model emits then is whatever its priors call the same move — `readFile`,
+# `fs_write`, `open_file`, `list_files`. Consulted only once the real roster has failed to claim the
+# name, so it can never shadow a verb.
+_FILE_ACTIONS = frozenset(
+    {"read", "write", "open", "create", "edit", "save", "append", "delete", "list"}
+)
+_FILE_OBJECTS = frozenset({"file", "files", "path", "paths", "dir", "directory", "fs", "disk"})
+
+# The report's name for this outcome, kept out of the prose so a reader and a grep agree on it.
+FILE_ACCESS = "file-access"
+
+
+def looks_like_file_access(name: str) -> bool:
+    """Is this unrecognized tool name a reach for the filesystem?
+
+    Never asked about a name the roster claims, and never about `read_guide`: a guide is grounding
+    prose meant for the model's context, not a reuben-owned document.
+    """
+    words = set(re.split(r"[^a-z0-9]+", re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name).lower()))
+    return bool(words & _FILE_ACTIONS) and bool(words & _FILE_OBJECTS)
+
+
+def file_access_failure(reached: list[str]) -> str | None:
+    """The named failure: an agent tried to read or write a file. `None` when none did.
+
+    It is the *attempt* that fails a run, not a completed operation — nothing here can complete one.
+    Removing the tools from reuben's roster does not remove them from the world, so this stays a live
+    detector of whether a model still wants the old path once the surface stops offering it.
+    """
+    if not reached:
+        return None
+    names = ", ".join(f"`{name}`" for name in sorted(set(reached)))
+    return (
+        f"{FILE_ACCESS}: an agent tried to read or write a file ({names}) — a document is read with "
+        "`describe_instrument` and written with the document verbs; its bytes never reach the agent"
+    )
+
 
 # MCP resources are not tools, so a client has to surface them to the model somehow — Claude Code
 # offers them as an explicit fetch. Modelled the same way here, and routed straight to
@@ -68,52 +127,11 @@ HOST_TOOLS: list[dict[str, Any]] = [
             },
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "read_file",
-            "description": (
-                "Read a UTF-8 text file from the working directory. Use it to see an instrument "
-                "document before editing it."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Path relative to the working directory.",
-                    }
-                },
-                "required": ["path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "write_file",
-            "description": (
-                "Write a UTF-8 text file in the working directory, replacing it entirely. This is "
-                "how an edited instrument document becomes durable."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Path relative to the working directory.",
-                    },
-                    "content": {"type": "string", "description": "The complete new file contents."},
-                },
-                "required": ["path", "content"],
-            },
-        },
-    },
 ]
 
 
 class WorkspaceError(RuntimeError):
-    """A host file call that escaped the workspace or named a missing file."""
+    """A workspace path that escaped the root."""
 
 
 @dataclass
@@ -142,7 +160,7 @@ class PayloadLedger:
 
 
 class Workspace:
-    """A scratch directory seeded with a task's files, plus the host tools that reach into it."""
+    """A scratch directory seeded with a task's files. Nothing the model calls reaches into it."""
 
     def __init__(self, root: Path, seed: dict[str, str]) -> None:
         self.root = root
@@ -159,25 +177,6 @@ class Workspace:
         if candidate != self.root.resolve() and self.root.resolve() not in candidate.parents:
             raise WorkspaceError(f"path escapes the workspace: {relative}")
         return candidate
-
-    def call(self, name: str, arguments: dict[str, Any]) -> str:
-        """Run a host tool. Errors come back as text, the way a tool result would."""
-        self.payloads.charge(name, arguments)
-        try:
-            if name == "read_file":
-                return self._resolve(str(arguments["path"])).read_text(encoding="utf-8")
-            if name == "write_file":
-                target = self._resolve(str(arguments["path"]))
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(str(arguments["content"]), encoding="utf-8")
-                return f"wrote {arguments['path']}"
-        except FileNotFoundError:
-            return f"error: no such file: {arguments.get('path')}"
-        except WorkspaceError as error:
-            return f"error: {error}"
-        except KeyError as error:
-            return f"error: missing argument {error}"
-        raise WorkspaceError(f"unknown host tool: {name}")
 
     def read_document(self, relative: str) -> dict[str, Any]:
         """Parse the task's answer document. A missing or unparseable file is a task failure."""

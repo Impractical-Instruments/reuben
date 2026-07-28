@@ -22,8 +22,15 @@ import unittest
 
 from reuben_eval import tasks
 from reuben_eval.mcp import SidecarError, sidecar_binary
-from reuben_eval.runner import run_reference
-from reuben_eval.workspace import PayloadLedger
+from reuben_eval.runner import Session, run_reference
+from reuben_eval.workspace import (
+    FILE_ACCESS,
+    FILE_TOOLS,
+    HOST_TOOLS,
+    PayloadLedger,
+    file_access_failure,
+    looks_like_file_access,
+)
 
 
 def sidecar_available() -> bool:
@@ -72,14 +79,27 @@ class TestReferenceSolutions(unittest.TestCase):
         )
 
     @unittest.skipUnless(sidecar_available(), "reuben-mcp not built")
-    def test_tweak_floor_re_emits_the_whole_document(self) -> None:
-        """The number the surface work exists to move: a one-value change costs a full document."""
+    def test_the_tweak_floor_emits_no_document_at_all(self) -> None:
+        """The number the surface work existed to move, arrived: a one-value change is one call.
+
+        It used to be a whole document. `set_instrument_input` names the address, the port and the
+        value and nothing else, so metric (c) prices the ideal tweak at zero.
+        """
         outcome = run_reference(tasks.BY_KEY["tweak"])
-        self.assertGreater(
-            outcome.payload_characters,
-            0.9 * len(tasks.VOICE),
-            "the tweak floor should be roughly one whole document; if this dropped, a point-edit "
-            "path landed and the baseline moved on purpose",
+        self.assertEqual(outcome.payload_characters, 0)
+        self.assertEqual(len(tasks.BY_KEY["tweak"].reference), 1)
+
+    def test_the_from_scratch_reference_builds_the_document_it_declares(self) -> None:
+        """The verb sequence and `_from_scratch_document` must not drift apart."""
+        document = tasks._from_scratch_document()
+        added = [
+            step.arguments
+            for step in tasks.BY_KEY["from_scratch"].reference
+            if step.name == "add_instrument_node"
+        ]
+        self.assertEqual(
+            [(a["address"], a["type"], a["inputs"]) for a in added],
+            [(n["address"], n["type"], n["inputs"]) for n in document["nodes"]],
         )
 
 
@@ -122,11 +142,25 @@ class TestTweakAssertion(unittest.TestCase):
         tasks._assert_tweak(self._tweaked(800.0))
 
     def test_dropping_the_doc_prose_fails(self) -> None:
-        """Collateral damage from re-emitting the whole document is a failure, not a pass."""
+        """Collateral damage is a failure, not a pass — and the failure names what moved.
+
+        Two mechanisms produce it: a whole-document re-emit, and a second, unasked-for verb call.
+        Naming a cause would send the reader to the wrong one half the time, so the message reports
+        the address instead and leaves the cause to the trace.
+        """
         document = self._tweaked(800.0)
         document.pop("doc")
-        with self.assertRaises(AssertionError):
+        with self.assertRaises(AssertionError) as caught:
             tasks._assert_tweak(document)
+        self.assertIn("doc (dropped)", str(caught.exception))
+
+    def test_a_stray_second_edit_names_the_address_it_touched(self) -> None:
+        """The live-tier shape: the ideal one-call edit, plus one volunteered node description."""
+        document = self._tweaked(800.0)
+        tasks._nodes(document)["/filter"]["doc"] = "a gentler lowpass"
+        with self.assertRaises(AssertionError) as caught:
+            tasks._assert_tweak(document)
+        self.assertIn("/filter.doc", str(caught.exception))
 
     def test_losing_a_sibling_node_fails(self) -> None:
         document = self._tweaked(800.0)
@@ -212,7 +246,12 @@ class TestRepairAssertion(unittest.TestCase):
 
 
 class TestPayloadLedger(unittest.TestCase):
-    """Metric (c): echoes count, small structured arguments cost nothing."""
+    """Metric (c): echoes count, small structured arguments cost nothing.
+
+    `write_file` is off the roster, so every charge here is an *invented* call — which is exactly the
+    case the ledger still has to price. A model that emits a document at a tool that refuses it spent
+    the characters; the refusal does not refund them.
+    """
 
     def test_echoes_are_charged(self) -> None:
         # An echo is a model writing a document it has already emitted once — the re-emit this
@@ -239,9 +278,8 @@ class TestPayloadLedger(unittest.TestCase):
     def test_encoding_does_not_change_the_price(self) -> None:
         """A document costs the same whether emitted as a JSON string or a parsed object.
 
-        Still reachable with one door: a model can hand `write_file` a parsed object instead of the
-        string its schema asks for. Pricing that cheaper would make the wrong move look like the
-        cheap one.
+        A model inventing the call is not bound by any schema, so either encoding can arrive. Pricing
+        one cheaper would make the wrong move look like the cheap one.
         """
         compact = json.dumps(tasks.VOICE_DOCUMENT, separators=(",", ":"))
         as_string = PayloadLedger()
@@ -304,25 +342,80 @@ class TestTaskRoster(unittest.TestCase):
         )
 
     def test_every_task_has_a_reference_solution_that_writes_the_document(self) -> None:
-        """The document may be produced by a host write or by a document verb — but produced."""
+        """A reference must produce the answer document — through a verb, or by emitting it."""
         for task in tasks.TASKS:
             with self.subTest(task=task.key):
-                writes = [step for step in task.reference if step.name == "write_file"]
-                verbs = [
+                writes = [
                     step
                     for step in task.reference
-                    if step.surface == "mcp"
-                    and step.name != "validate_instrument"
-                    and step.arguments.get("source") == task.document
+                    if step.arguments.get("source") == task.document
+                    or step.arguments.get("path") == task.document
                 ]
-                self.assertTrue(
-                    writes or verbs, "a reference solution must produce the answer document"
-                )
-                for step in writes:
-                    self.assertTrue(
-                        step.arguments["content"].strip(),
-                        "reference payloads are filled in by _finish_reference_solutions",
-                    )
+                self.assertTrue(writes, "a reference solution must produce the answer document")
+
+
+class TestFileAccessIsANamedFailure(unittest.TestCase):
+    """`file-access`: an agent tried to read or write a file.
+
+    A conforming client has no reason to touch instrument JSON — the projection is the read, the
+    document verbs are the write — so the harness does not merely omit file tools, it fails the
+    **reach** for one. Detecting the attempt rather than a completed operation is what keeps this a
+    live signal after the tools are gone: reuben cannot take `Read`/`Write` away from a real host, so
+    what this measures is whether a model still wants the old path when the surface stops offering
+    it. A check that cannot be made to fail is not a check, so these fire it.
+    """
+
+    def test_the_model_facing_roster_has_no_file_tool(self) -> None:
+        offered = {tool["function"]["name"] for tool in HOST_TOOLS}
+        self.assertEqual(offered & set(FILE_TOOLS), set())
+
+    def test_read_guide_never_trips_it(self) -> None:
+        """Grounding prose is meant for the model's context; this decision does not touch it."""
+        self.assertIn("read_guide", {tool["function"]["name"] for tool in HOST_TOOLS})
+        self.assertFalse(looks_like_file_access("read_guide"))
+        self.assertIsNone(file_access_failure([]))
+
+    def test_the_retired_names_are_classified(self) -> None:
+        for name in FILE_TOOLS:
+            with self.subTest(tool=name):
+                self.assertTrue(looks_like_file_access(name))
+                message = file_access_failure([name])
+                self.assertIn(FILE_ACCESS, message)
+                self.assertIn("read or write a file", message)
+                self.assertIn(name, message)
+
+    def test_the_shape_survives_the_names_going_away(self) -> None:
+        """What a model emits once `read_file` is gone is whatever its priors call the same move."""
+        for name in ("readFile", "fs_write", "open_file", "list_files", "save-file", "edit_path"):
+            with self.subTest(tool=name):
+                self.assertTrue(looks_like_file_access(name))
+
+    def test_it_does_not_catch_a_document_verb(self) -> None:
+        """A near-miss on a real verb is a malformed call, not a reach for the filesystem."""
+        for name in ("describe_instrument", "set_instrument_input", "new_instrument", "swap"):
+            with self.subTest(tool=name):
+                self.assertFalse(looks_like_file_access(name))
+
+    def test_no_reference_solution_reaches_for_a_file(self) -> None:
+        for task in tasks.TASKS:
+            with self.subTest(task=task.key):
+                reached = [step.name for step in task.reference if looks_like_file_access(step.name)]
+                self.assertIsNone(file_access_failure(reached), file_access_failure(reached))
+
+    @unittest.skipUnless(sidecar_available(), "reuben-mcp not built")
+    def test_a_run_that_emits_read_file_fails_with_the_named_mode(self) -> None:
+        """The check driven end to end, through the same path a live model's call takes."""
+        task = tasks.BY_KEY["tweak"]
+        with tempfile.TemporaryDirectory(prefix="reuben-eval-reach-") as root:
+            with Session(task, pathlib.Path(root) / "workspace") as session:
+                for step in task.reference:
+                    session.call(step.name, dict(step.arguments))
+                session.call("read_file", {"path": tasks.DOCUMENT})
+                outcome = session.judge()
+        # The document is correct — only the reach failed the run, which is the point.
+        self.assertFalse(outcome.passed)
+        self.assertEqual(outcome.failure_mode, FILE_ACCESS)
+        self.assertIn("read_file", outcome.failure)
 
 
 if __name__ == "__main__":

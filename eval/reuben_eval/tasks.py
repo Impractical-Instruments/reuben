@@ -12,9 +12,10 @@ thing actually happen". Both are needed: `new_instrument` already lands a valid 
 "change nothing" would otherwise score as success on the from-scratch task.
 
 The assertions are deliberately strict about *collateral damage*. A single-value tweak that also
-drops the document's `doc` prose is a failure, not a pass — that damage is exactly what
-whole-document re-emission causes (see rules: agent-mcp), and a metric blind to it would let the
-thing this map is chasing pass unnoticed.
+drops the document's `doc` prose is a failure, not a pass (see rules: agent-mcp), and a metric blind
+to it would let the thing this map is chasing pass unnoticed. Two different mechanisms produce that
+damage — re-emitting the whole document, and a second, unasked-for verb call — so the failure names
+*what* moved and leaves the cause to the trace.
 """
 
 from __future__ import annotations
@@ -31,12 +32,25 @@ FIXTURES = REPO / "instruments"
 # Every task answers in this one file, so the harness always knows where to look for the result.
 DOCUMENT = "instrument.json"
 
+# Bumped whenever a reference solution is rewritten. A reference is the ideal call sequence, so
+# rewriting one is a deliberate step change in that task's trend series rather than a surface
+# regression — the gate and the history record carry this number so the reader who meets the
+# discontinuity is told which it was instead of inferring the wrong one.
+#
+# 1: the whole-document procedure — read the file, re-emit the corrected document, validate by path.
+# 2: the document verbs — a one-value edit is one `set_instrument_input` call.
+REFERENCE_REVISION = 2
+REFERENCE_REVISION_NOTE = (
+    "the reference solutions were rewritten to the document verbs, so a step in these series is the "
+    "harness asking for a different ideal call sequence — not the surface getting dearer or cheaper"
+)
+
 
 @dataclass(frozen=True)
 class Step:
     """One call in a reference solution.
 
-    `surface` is `host` for the client's own file tools and `mcp` for the sidecar's roster; a
+    `surface` is `mcp` for the sidecar's roster and `host` for a tool the client brings itself; a
     `resource` step reads a grounding document over `resources/read`.
     """
 
@@ -102,6 +116,39 @@ def assert_reaches_output(document: dict[str, Any], generator_type: str) -> None
     raise AssertionError(f"no `{generator_type}` node reaches an `output` node")
 
 
+def _changed_addresses(expected: dict[str, Any], produced: dict[str, Any]) -> list[str]:
+    """Name every place `produced` differs from `expected`, the way the document addresses it.
+
+    Reports *what* moved, never why: re-emitting the whole document and a second, unasked-for verb
+    call both land here, and a message that picked one would send the reader to the wrong place.
+    """
+    changes: list[str] = []
+    for key in sorted(set(expected) | set(produced)):
+        if key != "nodes" and expected.get(key) != produced.get(key):
+            changes.append(key if key in produced else f"{key} (dropped)")
+
+    before, after = _nodes(expected), _nodes(produced)
+    for node_address in sorted(set(before) | set(after)):
+        if node_address not in after:
+            changes.append(f"{node_address} (dropped)")
+            continue
+        if node_address not in before:
+            changes.append(f"{node_address} (added)")
+            continue
+        was, now = before[node_address], after[node_address]
+        for attribute in sorted(set(was) | set(now)):
+            if attribute == "inputs":
+                was_inputs, now_inputs = was.get("inputs", {}), now.get("inputs", {})
+                changes += [
+                    f"{node_address}.{name}"
+                    for name in sorted(set(was_inputs) | set(now_inputs))
+                    if was_inputs.get(name) != now_inputs.get(name)
+                ]
+            elif was.get(attribute) != now.get(attribute):
+                changes.append(f"{node_address}.{attribute}")
+    return changes
+
+
 def assert_only_changed(
     original: dict[str, Any], produced: dict[str, Any], address: str, port: str
 ) -> Any:
@@ -134,10 +181,9 @@ def assert_only_changed(
     if json.loads(json.dumps(expected, sort_keys=True)) != json.loads(
         json.dumps(produced, sort_keys=True)
     ):
-        raise AssertionError(
-            f"the edit changed more than `{address}.{port}` — collateral damage from re-emitting "
-            "the whole document"
-        )
+        moved = _changed_addresses(expected, produced)
+        detail = ", ".join(moved) if moved else "the node order"
+        raise AssertionError(f"the edit changed more than `{address}.{port}`: also changed {detail}")
     return value
 
 
@@ -207,6 +253,12 @@ ORIGINAL_GLIDE = float(ACID_DOCUMENT["interface"]["inputs"]["glide"]["default"])
 
 
 def _from_scratch_document() -> dict[str, Any]:
+    """The document the `from_scratch` reference assembles, node for node and pipe for pipe.
+
+    Kept beside the call sequence that builds it so the rewrite from whole-document emission to the
+    verbs changed the *procedure* without changing the artifact — the series stays comparable across
+    the step. `tests/test_tasks.py` holds the two in lockstep.
+    """
     return {
         "format_version": 3,
         "instrument": "tone",
@@ -221,6 +273,41 @@ def _from_scratch_document() -> dict[str, Any]:
             {"type": "output", "address": "/out", "inputs": {"audio": {"from": "/filter"}}},
         ],
     }
+
+
+def _from_scratch_reference() -> list[Step]:
+    """Build `_from_scratch_document()` one verb at a time — the ideal from-scratch sequence.
+
+    Derived from the target document rather than transcribed beside it, so the two cannot drift into
+    a procedure that no longer produces the artifact. `new_instrument` lands the valid seed; each
+    `add_instrument_node` carries the node's literals and wires in the same call; the output pipe is
+    the master tap. There is no closing `validate_instrument` — a verb re-validates the whole
+    document and writes only if it is valid, so the last one already answered the question.
+    """
+    document = _from_scratch_document()
+    steps = [Step("mcp", "new_instrument", {"source": DOCUMENT, "name": document["instrument"]})]
+    steps += [
+        Step(
+            "mcp",
+            "add_instrument_node",
+            {
+                "source": DOCUMENT,
+                "address": node["address"],
+                "type": node["type"],
+                "inputs": node["inputs"],
+            },
+        )
+        for node in document["nodes"]
+    ]
+    steps += [
+        Step(
+            "mcp",
+            "add_instrument_interface_output",
+            {"source": DOCUMENT, "name": name, "from": pipe["from"]},
+        )
+        for name, pipe in document["interface"]["outputs"].items()
+    ]
+    return steps
 
 
 def _assert_from_scratch(document: dict[str, Any]) -> None:
@@ -328,15 +415,7 @@ TASKS: list[Task] = [
             "oscillator running through a lowpass filter into the output. Make sure it validates."
         ),
         seed={},
-        reference=[
-            Step("mcp", "new_instrument", {"source": DOCUMENT, "name": "tone"}),
-            Step(
-                "host",
-                "write_file",
-                {"path": DOCUMENT, "content": json.dumps(_from_scratch_document(), indent=2) + "\n"},
-            ),
-            Step("mcp", "validate_instrument", {"source": DOCUMENT}),
-        ],
+        reference=_from_scratch_reference(),
         assertion=_assert_from_scratch,
     ),
     Task(
@@ -347,11 +426,15 @@ TASKS: list[Task] = [
             "it still validates."
         ),
         seed={DOCUMENT: VOICE},
+        # The whole task, in one call. The address and the port are named in the prompt, so nothing
+        # has to be read first, and the verb re-validates before it writes — which is the "make sure
+        # it still validates" half.
         reference=[
-            Step("host", "read_file", {"path": DOCUMENT}),
-            # The document payload is filled in by `_finish_reference_solutions` below.
-            Step("host", "write_file", {"path": DOCUMENT, "content": ""}),
-            Step("mcp", "validate_instrument", {"source": DOCUMENT}),
+            Step(
+                "mcp",
+                "set_instrument_input",
+                {"source": DOCUMENT, "address": "/filter", "input": "cutoff", "value": 800.0},
+            ),
         ],
         assertion=_assert_tweak,
     ),
@@ -401,45 +484,27 @@ TASKS: list[Task] = [
             "there now."
         ),
         seed={DOCUMENT: BROKEN},
+        # Validate is the diagnosis — it names the dangling reference `/env_curv` but not the node
+        # that was meant, so the index projection is the read that supplies `/env_curve`. Then one
+        # `wire_instrument_input` re-points the edge; a verb reaches a document that does not load,
+        # which is what makes repair expressible without touching its bytes.
         reference=[
             Step("mcp", "validate_instrument", {"source": DOCUMENT}),
-            Step("host", "read_file", {"path": DOCUMENT}),
-            Step("host", "write_file", {"path": DOCUMENT, "content": ""}),
-            Step("mcp", "validate_instrument", {"source": DOCUMENT}),
+            Step("mcp", "describe_instrument", {"source": DOCUMENT, "view": "index"}),
+            Step(
+                "mcp",
+                "wire_instrument_input",
+                {
+                    "source": DOCUMENT,
+                    "address": "/env_vca",
+                    "input": "b",
+                    "from": "/env_curve",
+                },
+            ),
         ],
         assertion=_assert_repair,
     ),
 ]
 
-
-def _finish_reference_solutions() -> None:
-    """Fill in the whole-document payloads the tweak/repair references must emit.
-
-    Written here rather than inline so each reference is unmistakably *the ideal sequence*: read
-    once, emit the corrected document once, validate by source. That is the surface's cost floor, and
-    metric (c) prices it at one full document — which is exactly the number the surface
-    work exists to move. The intent-word references emit nothing at all, so they are not here.
-    """
-    tweaked = copy.deepcopy(VOICE_DOCUMENT)
-    _nodes(tweaked)["/filter"]["inputs"]["cutoff"] = 800.0
-
-    repaired = copy.deepcopy(json.loads(BROKEN))
-    _nodes(repaired)["/env_vca"]["inputs"]["b"] = {"from": "/env_curve"}
-
-    payloads = {"tweak": tweaked, "repair": repaired}
-    for task in TASKS:
-        document = payloads.get(task.key)
-        if document is None:
-            continue
-        for index, step in enumerate(task.reference):
-            if step.name == "write_file":
-                task.reference[index] = Step(
-                    step.surface,
-                    step.name,
-                    {"path": DOCUMENT, "content": json.dumps(document, indent=2) + "\n"},
-                )
-
-
-_finish_reference_solutions()
 
 BY_KEY = {task.key: task for task in TASKS}
