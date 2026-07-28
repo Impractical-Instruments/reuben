@@ -30,6 +30,23 @@ fn envelope_doc(env_addr: &str) -> String {
     )
 }
 
+/// [`envelope_doc`]'s rig widened to four logical master channels: the same `/env` envelope and
+/// `/out` sink, but the interface also taps channel 3, so master width derives to 4. Swapping
+/// between the two documents changes the installed Engine's logical geometry.
+fn wide_envelope_doc() -> String {
+    r#"{ "format_version": 3, "instrument": "eg",
+         "interface": { "outputs": {
+             "front": { "from": "/out.audio", "channel": 0 },
+             "rear":  { "from": "/out.audio", "channel": 3 } } },
+         "nodes": [
+           { "type": "envelope", "address": "/env",
+              "inputs": { "gate": 1.0, "attack": 0.5, "decay": 0.01,
+                          "sustain": 0.8, "release": 0.5 } },
+           { "type": "output", "address": "/out",
+              "inputs": { "audio": { "from": "/env.cv" } } } ] }"#
+        .to_string()
+}
+
 /// A one-pipe mic passthrough bound to logical input channel 0: the rendered output
 /// *is* the logical input (one core block later), so a duplex `fill_duplex` drives real input into
 /// the render path — the fixture for the short-input dark-degrade regression below.
@@ -40,6 +57,20 @@ fn mic_doc() -> String {
            "outputs": { "main": { "from": "/out.audio" } } },
          "nodes": [
            { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/mic" } } } ] }"#
+        .to_string()
+}
+
+/// [`mic_doc`]'s passthrough widened to two bound input channels: the *input* width derives to 2
+/// while the master output width stays at the stereo floor, so a swap between the two changes the
+/// geometry a duplex caller's `input` buffer was sized against and nothing else.
+fn stereo_mic_doc() -> String {
+    r#"{ "format_version": 3, "instrument": "mic_through",
+         "interface": {
+           "inputs":  { "mic_l": { "type": "f32_buffer", "channel": 0 },
+                        "mic_r": { "type": "f32_buffer", "channel": 1 } },
+           "outputs": { "main": { "from": "/out.audio" } } },
+         "nodes": [
+           { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/mic_l" } } } ] }"#
         .to_string()
 }
 
@@ -189,6 +220,104 @@ fn a_non_survivor_is_cut_at_master_zero_and_stays_silent() {
         recovered < 0.15 && recovered < 0.3 * sustain,
         "a reset node stays cold after the cut: recovered {recovered} vs sustain {sustain}"
     );
+}
+
+#[test]
+fn an_install_that_changes_the_master_width_does_not_render_a_malformed_quantum() {
+    // REGRESSION: the ramp path read the Engine's logical width once, at the top of the callback,
+    // and kept using it across `install_at_zero` — so on the block where an install lands, the
+    // post-install segments were sliced at the *retiring* Engine's stride and handed to an Engine
+    // of a different width. In debug that trips Engine's "fill buffer must be a multiple of
+    // channels"; in release it renders one malformed quantum. The buffer the caller sized for the
+    // old width cannot describe the new one, so the honest answer for the rest of that block is
+    // silence — which is also nearly free, because the up-ramp is still at (or just off) zero.
+    let (mut coord, mut slot) = setup(&envelope_doc("/env"));
+    let ch = slot.channels();
+    assert_eq!(ch, 2, "the base rig is a stereo master");
+    warm_to_sustain(&mut slot);
+
+    let report = coord.swap_document(&wide_envelope_doc());
+    assert!(report.report.ok, "swap should install: {:?}", report.report);
+    assert_eq!(
+        coord.installed_channels(),
+        4,
+        "the swapped-in rig taps channel 3, so master width derives to 4"
+    );
+
+    // One frame past the install point: the down edge fills exactly `edge` frames, then the install
+    // lands and a single frame of the up edge remains — a remainder whose old-width sample count
+    // (2) is not a whole number of new-width frames (4).
+    let edge = slot.ramp_edge_frames();
+    let span = edge + 1;
+    let mut buf = vec![0.123f32; span * ch];
+    slot.fill(&mut buf);
+
+    // The post-install remainder is exact silence, not a smeared or unwritten quantum.
+    for f in edge..span {
+        assert_eq!(
+            frame_mag(&buf, ch, f),
+            0.0,
+            "the width-changing install silences the rest of the block at frame {f}"
+        );
+    }
+    assert!(
+        buf.iter().all(|s| s.is_finite()),
+        "a width-changing install must never render NaN/garbage"
+    );
+
+    // The ramp is not abandoned: the up edge resumes on the next callback, which the caller now
+    // sizes to the width the slot reports.
+    assert!(slot.is_ramping(), "the up edge is still owed");
+    assert_eq!(slot.channels(), 4, "the slot reports the installed width");
+    let wide_ch = slot.channels();
+    let mut wide = vec![0.0f32; 2 * edge * wide_ch];
+    slot.fill_duplex(&[], &mut wide);
+    assert!(!slot.is_ramping(), "the up edge completed at the new width");
+    assert!(wide.iter().all(|s| s.is_finite()));
+}
+
+#[test]
+fn an_install_that_changes_the_input_width_does_not_smear_the_callers_input() {
+    // The input half of the same stale-geometry read: the master output width is identical either
+    // side of this swap, so only the *input* stride moves. A duplex caller's `input` was
+    // de-interleaved at the retiring Engine's width, and the post-install segments were still
+    // slicing it at that width — one channel-smeared quantum, and Engine's duplex-stride
+    // debug_assert in a debug build.
+    let (mut coord, mut slot) = setup(&mic_doc());
+    let ch = slot.channels();
+    let in_ch = slot.input_channels();
+    assert_eq!(in_ch, 1, "the base rig binds one logical input channel");
+
+    let report = coord.swap_document(&stereo_mic_doc());
+    assert!(report.report.ok, "swap should install: {:?}", report.report);
+    assert_eq!(
+        coord.installed_input_channels(),
+        2,
+        "the swapped-in rig binds two logical input channels"
+    );
+    assert_eq!(
+        coord.installed_channels(),
+        ch,
+        "the output width is unchanged — only the input stride moves"
+    );
+
+    let edge = slot.ramp_edge_frames();
+    let span = edge + 1;
+    let mut out = vec![0.456f32; span * ch];
+    let input: Vec<f32> = (0..span * in_ch)
+        .map(|i| ((i % 89) as f32 / 89.0) - 0.5)
+        .collect();
+    slot.fill_duplex(&input, &mut out);
+
+    for f in edge..span {
+        assert_eq!(
+            frame_mag(&out, ch, f),
+            0.0,
+            "the width-changing install silences the rest of the block at frame {f}"
+        );
+    }
+    assert!(slot.is_ramping(), "the up edge is still owed");
+    assert_eq!(slot.input_channels(), 2, "the slot reports the new stride");
 }
 
 #[test]
