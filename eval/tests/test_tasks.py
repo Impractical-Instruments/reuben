@@ -139,6 +139,16 @@ class TestTweakAssertion(unittest.TestCase):
         document = json.loads(json.dumps(self._tweaked(800.0), sort_keys=True))
         tasks._assert_tweak(document)
 
+    def test_the_format_migration_is_not_collateral_damage(self) -> None:
+        """A document verb upgrades `format_version` on write, and the fixture is still on 2.
+
+        That edit is the engine's, not the model's. Counting it as damage made `tweak` and `nudge`
+        unpassable by anything that used the document verbs at all.
+        """
+        document = self._tweaked(800.0)
+        document["format_version"] = tasks.VOICE_DOCUMENT["format_version"] + 1
+        tasks._assert_tweak(document)
+
 
 class TestNudgeAssertion(unittest.TestCase):
     def _with_cutoff(self, cutoff: float) -> dict:
@@ -162,6 +172,11 @@ class TestNudgeAssertion(unittest.TestCase):
         """"Warmer" is a nudge, not a mute — a degenerate floor is not a pass."""
         with self.assertRaises(AssertionError):
             tasks._assert_nudge(self._with_cutoff(0.0))
+
+    def test_the_format_migration_is_not_collateral_damage(self) -> None:
+        document = self._with_cutoff(2000.0)
+        document["format_version"] = tasks.VOICE_DOCUMENT["format_version"] + 1
+        tasks._assert_nudge(document)
 
 
 class TestRepairAssertion(unittest.TestCase):
