@@ -121,6 +121,14 @@ def assert_only_changed(
     for node in expected.get("nodes", []):
         if node.get("address") == address:
             node.setdefault("inputs", {})[port] = value
+
+    # A document verb migrates `format_version` on write, and several committed fixtures are still
+    # on an older one — so the field moves under any model that edits through the roster rather than
+    # re-emitting the file. That is the engine's edit, not the model's, and whether the result is
+    # legal is `validate_instrument`'s to say, not this assertion's (see rules: agent-mcp).
+    expected.pop("format_version", None)
+    produced = {key: entry for key, entry in produced.items() if key != "format_version"}
+
     if json.loads(json.dumps(expected, sort_keys=True)) != json.loads(
         json.dumps(produced, sort_keys=True)
     ):
