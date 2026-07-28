@@ -173,7 +173,11 @@ and prose:
 - **Clock** — avoid: transport, master clock, conductor.
 - **Good Button** — avoid: meta param, meta-control, macro (all name the artifact — say Good Button).
 - **Signal** — avoid: audio buffer / control buffer (as distinct types), wire, carrier, read-view of a Float. (CV is a legitimate *use* of a Signal, not a competing type — see the glossary.)
-- **Value** — avoid: param, scalar, control (as a distinct type), Float.
+- **Value** — avoid: param, scalar, control (as a distinct type), Float. Near-collision: the
+  agent-facing word for what a value verb writes into an input or a pipe seed is lowercase
+  "value", and it is *not* the `Value` Arg type — a symbol on an enum input is a value in that
+  sense and no `Value` at all. Never write **`Value`-the-port-form**: say the input's value, or
+  the pipe's value.
 - **Event** — avoid: trigger, stream (as a type), notes (plural, as a type).
 - **Buffer** — avoid: arena, sample array, f32 slice (as the domain term).
 - **Message** — avoid: event, control, OSC packet (as a distinct internal type), typed args (plural — a Message holds exactly one Arg).

@@ -179,7 +179,7 @@ impl Scalar {
     /// `0.72` — never `4.0`), and a symbol renders bare, exactly as
     /// [`signature_fragment`](crate::introspect::PortInfo::signature_fragment) renders an enum
     /// default.
-    fn render(&self) -> String {
+    pub(crate) fn render(&self) -> String {
         match self {
             Scalar::Number(n) => n.to_string(),
             Scalar::Symbol(s) => token(s),
@@ -616,7 +616,15 @@ impl PipeView {
             if pipes.is_empty() {
                 continue;
             }
-            lines.push(format!("pipes {label} ({}):", pipes.len()));
+            // The input section names how a pipe is addressed as the node it already is, because
+            // nothing else in the view says where its value is set. Once per section rather than
+            // per pipe: this is the widest view in a real instrument.
+            let addressing = if label == "in" {
+                format!(" at /<name>.{}", crate::format::PIPE_INPUT_PORT)
+            } else {
+                String::new()
+            };
+            lines.push(format!("pipes {label} ({}){addressing}:", pipes.len()));
             lines.extend(pipes.iter().map(PipeInfo::render));
         }
         if !self.unmatched.is_empty() {
@@ -1405,6 +1413,7 @@ fn render_boundary(b: &PatchBoundary) -> String {
 ///
 /// The guard proves every field is *dispositioned*; that the code actually emits what a row claims
 /// is the golden-projection test's job (`tests/projection_golden.rs`).
+
 pub const FIELD_COVERAGE: &[(&str, &str)] = &[
     // --- the document itself: the header, which every view carries ---
     ("format_version", "doc-header"),
@@ -1652,12 +1661,15 @@ mod tests {
         assert!(z.render().ends_with("no match: /nope"));
     }
 
+    /// An input pipe **is a node**: it mints `/<name>` and its one input is `in`, which is how a
+    /// value verb addresses its seed. The view says so on the section line — once, not per pipe,
+    /// because this is the widest view in a real instrument.
     #[test]
     fn pipes_render_range_curve_unit_default_and_channel() {
         let p = projector(TINY);
         assert_eq!(
             p.pipes(&Selection::All).render(),
-            "pipes in (1):\nlevel:f32 dB exp 0..1=0.5\npipes out (1):\nout<-/amp ch0"
+            "pipes in (1) at /<name>.in:\nlevel:f32 dB exp 0..1=0.5\npipes out (1):\nout<-/amp ch0"
         );
         // The type predicate cuts input pipes (an output pipe declares no type of its own) — and
         // the render says how much it cut, so `pipes in (1):` is never read as the document total.

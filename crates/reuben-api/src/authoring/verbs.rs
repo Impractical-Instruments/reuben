@@ -323,7 +323,8 @@ pub fn set_instrument_node_description(
     })
 }
 
-/// Set a node input to a literal value — the point-edit.
+/// Set a node input — or an interface input pipe's seed, addressed as the node it mints — to a
+/// literal value. The point-edit.
 pub fn set_instrument_input(
     args: &SetInstrumentInput,
     resources: &dyn Resources,
@@ -439,7 +440,7 @@ pub fn remove_instrument_interface_output(
     })
 }
 
-/// Update an interface input pipe's metadata.
+/// Update an interface input pipe's quantity contract.
 pub fn set_instrument_interface_input_meta(
     args: &SetInstrumentInterfaceInputMeta,
     resources: &dyn Resources,
@@ -449,7 +450,6 @@ pub fn set_instrument_interface_input_meta(
             src,
             &args.name,
             args.channel,
-            args.default.clone(),
             args.min,
             args.max,
             args.curve.as_deref(),

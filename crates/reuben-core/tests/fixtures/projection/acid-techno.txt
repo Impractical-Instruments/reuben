@@ -86,7 +86,7 @@ in: degrees=7, root<-/key_up, s0=0, s1=2, s2=3, s3=5, s4=7, s5=8, s6=10
 out: harmony->/pad_v.harmony
 
 === pipes ===
-pipes in (90):
+pipes in (90) at /<name>.in:
 bass_step1:f32 degree -1..24=0
 bass_step10:f32 degree -1..24=7
 bass_step11:f32 degree -1..24=-1

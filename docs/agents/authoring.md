@@ -303,7 +303,10 @@ target-pointing form (no entry points inward anymore):
   *quantity* contract; presentation (`label`/`widget`) lives in a surface doc, not on the pipe. A
   defaulted pipe unfed materializes its default —
   a knob at rest, message-drivable at **`/<name>/in`** over OSC; an unfed *bare* signal pipe
-  renders silence (and warns at top level, where nothing can ever feed it).
+  renders silence (and warns at top level, where nothing can ever feed it). Because the pipe
+  **is** a node, its value is set through the same verb and the same address space as any node
+  input: `set_instrument_input` on the address `/<name>` with input `in`. The pipe's meta verb
+  owns only the quantity contract around it (`channel`/`min`/`max`/`curve`/`unit`).
 - An **output pipe is fed from an internal port**: `"main_l": { "from": "/pan.left" }`.
   Signal output pipes drive the logical master channels.
 - A **signal** pipe may carry an optional logical **`channel: <int>`** binding — **honored

@@ -25,7 +25,9 @@ one crate; the rest of the workspace stays std-only. The edit contract is a clos
 **document vocabulary** and the read side is a set of partial **structural projections**, so no
 reuben-owned bytes ride the agent's context — though not yet on every lane: the web door defers the
 whole document vocabulary and still takes documents by value, so its verbs there are designed, not
-built.
+built. The vocabulary addresses one namespace, not one per kind of slot: an interface input pipe is
+a node, so its value is written by the same verb that writes any node input, and what a verb echoes
+back is decided by whether it wrote anything the caller did not name.
 
 The load-bearing invariant under all of this is **one source, many doors**, and the source is the
 `reuben-api` **window**. It declares the argument and result types every door serializes, the one
@@ -121,6 +123,16 @@ authoring guide, the intent vocabulary, the library index), and code, skills, an
 ### The agent authors through a closed vocabulary of path-addressed, stateless, engine-free document verbs, each applying one surgical edit to the named source, re-validating the whole document through the loader, and writing only if it is valid.
 
 [why](rationale/agent-mcp/document-verbs.md)
+
+<a id="value-verbs-one-address-space"></a>
+### The value verbs write node inputs and interface-pipe seeds through one address space — a pipe is addressed as the node it mints, port `in` — and refuse a wired input rather than severing it.
+
+[why](rationale/agent-mcp/value-verbs-one-address-space.md)
+
+<a id="echo-change-not-state"></a>
+### A verb echoes the state when it wrote fields the caller did not specify, and echoes the change — from and to — when the caller specified exactly what changed.
+
+[why](rationale/agent-mcp/echo-change-not-state.md)
 
 <a id="document-projection"></a>
 ### The agent never loads a reuben-owned document into its context: its whole view is a set of partial structural projections — index, node zoom with reverse edges, pipes, resources — single-sourced in reuben-core and lossless only in aggregate.

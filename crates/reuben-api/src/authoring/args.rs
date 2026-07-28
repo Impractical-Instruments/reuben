@@ -204,14 +204,15 @@ pub struct SetInstrumentNodeDescription {
     pub expect: Option<String>,
 }
 
-/// Arguments for `set_instrument_input`: set a node input to a **literal** value.
+/// Arguments for `set_instrument_input`: set a node input, or an interface input pipe's seed, to a
+/// **literal** value.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SetInstrumentInput {
     /// The document to edit.
     pub source: String,
-    /// The address of the node.
+    /// The address of the node — or of an interface input pipe, which mints the address `/name`.
     pub address: String,
-    /// The input name.
+    /// The input name. An interface input pipe has exactly one, `in`.
     pub input: String,
     /// The literal value: a number, or an enum symbol string. (Wiring is `wire_instrument_input`.)
     pub value: serde_json::Value,
@@ -331,8 +332,9 @@ pub struct RemoveInstrumentInterfacePipe {
     pub expect: Option<String>,
 }
 
-/// Arguments for `set_instrument_interface_input_meta`: update an input pipe's metadata (each
-/// provided field is written; omitted fields are unchanged).
+/// Arguments for `set_instrument_interface_input_meta`: update an input pipe's quantity contract
+/// (each provided field is written; omitted fields are unchanged). The pipe's value is
+/// `set_instrument_input`'s, addressed `/name` with input `in`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SetInstrumentInterfaceInputMeta {
     /// The document to edit.
@@ -341,8 +343,6 @@ pub struct SetInstrumentInterfaceInputMeta {
     pub name: String,
     #[serde(default)]
     pub channel: Option<usize>,
-    #[serde(default)]
-    pub default: Option<serde_json::Value>,
     #[serde(default)]
     pub min: Option<f64>,
     #[serde(default)]

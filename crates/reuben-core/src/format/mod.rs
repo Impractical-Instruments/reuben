@@ -158,6 +158,11 @@ pub enum InterfaceEntry {
     Detailed(InterfaceMeta),
 }
 
+/// The single input port name every synthesized pipe descriptor carries — the port an author, a
+/// parent edge, a Voicer or external OSC lands on, and the one a value verb names when it addresses
+/// a pipe through the `/<name>` its entry mints.
+pub const PIPE_INPUT_PORT: &str = "in";
+
 /// A pipe's declared unwired/seed value: a number (`f32` / `f32_buffer` pipes) or a vocab-enum
 /// variant **symbol** (enum pipes) — mirroring [`InputValue`]'s literal forms.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1274,7 +1279,7 @@ impl InstrumentDoc {
                 // numeric pipes carry theirs inside the port's own meta.
                 if descriptor.inputs[0].enum_meta().is_some() {
                     if let Some(PipeDefault::Symbol(s)) = &pipe.default {
-                        graph.set_value(key, "in", &Arg::Str(s.as_str().into()));
+                        graph.set_value(key, PIPE_INPUT_PORT, &Arg::Str(s.as_str().into()));
                     }
                 }
                 by_addr.insert(address, (key, descriptor));
@@ -2494,14 +2499,14 @@ fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<(Descriptor, PortK
             if declared {
                 let meta = f32_meta()?;
                 (
-                    Port::f32_buffer_meta("in", meta.clone()),
+                    Port::f32_buffer_meta(PIPE_INPUT_PORT, meta.clone()),
                     Port::f32_buffer_meta("out", meta),
                     PortKind::Signal,
                 )
             } else {
                 // A bare signal pipe: unwired it materializes silence (the promise).
                 (
-                    Port::f32_buffer("in"),
+                    Port::f32_buffer(PIPE_INPUT_PORT),
                     Port::f32_buffer("out"),
                     PortKind::Signal,
                 )
@@ -2510,7 +2515,7 @@ fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<(Descriptor, PortK
         "f32" => {
             let meta = f32_meta()?;
             (
-                Port::f32("in", meta.clone()),
+                Port::f32(PIPE_INPUT_PORT, meta.clone()),
                 Port::f32("out", meta),
                 PortKind::Value,
             )
@@ -2518,26 +2523,38 @@ fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<(Descriptor, PortK
         "i32" => {
             let meta = i32_meta()?;
             (
-                Port::i32("in", meta.clone()),
+                Port::i32(PIPE_INPUT_PORT, meta.clone()),
                 Port::i32("out", meta),
                 PortKind::Value,
             )
         }
         "note" => {
             no_numeric_meta()?;
-            (Port::note("in"), Port::note("out"), PortKind::Event)
+            (
+                Port::note(PIPE_INPUT_PORT),
+                Port::note("out"),
+                PortKind::Event,
+            )
         }
         "harmony" => {
             no_numeric_meta()?;
-            (Port::harmony("in"), Port::harmony("out"), PortKind::Value)
+            (
+                Port::harmony(PIPE_INPUT_PORT),
+                Port::harmony("out"),
+                PortKind::Value,
+            )
         }
         "pitch" => {
             no_numeric_meta()?;
-            (Port::pitch("in"), Port::pitch("out"), PortKind::Value)
+            (
+                Port::pitch(PIPE_INPUT_PORT),
+                Port::pitch("out"),
+                PortKind::Value,
+            )
         }
         other => {
             let (Some(im), Some(om)) = (
-                crate::vocab::enum_meta_by_type(other, "in"),
+                crate::vocab::enum_meta_by_type(other, PIPE_INPUT_PORT),
                 crate::vocab::enum_meta_by_type(other, "out"),
             ) else {
                 return Err(err(format!(
