@@ -268,6 +268,12 @@ NO_LANE_KEY = ("the name declares no format and the first line declares no inter
 NOT_SOURCE_EXTS = {
     "": NO_LANE_KEY,
     ".json": NO_COMMENT_SYNTAX, ".txt": NO_COMMENT_SYNTAX, ".tiktoken": NO_COMMENT_SYNTAX,
+    # `.mcp.json` — the one file where the dot-prefixed leading segment is a NAME and the format
+    # is the suffix behind it, so `lane_key` keys it as `.mcp`. Classified rather than special-cased
+    # in `lane_key`: teaching that function to prefer a trailing suffix would have to except
+    # `.env.production`, whose `.production` names an environment and no syntax at all. The verdict
+    # is the same either way — JSON.
+    ".mcp": NO_COMMENT_SYNTAX,
     ".lock": GENERATED_OUTPUT, ".map": GENERATED_OUTPUT,
     ".tosc": BINARY_ASSET, ".wav": BINARY_ASSET, ".woff2": BINARY_ASSET, ".png": BINARY_ASSET,
     ".jpg": BINARY_ASSET, ".jpeg": BINARY_ASSET, ".gif": BINARY_ASSET, ".ico": BINARY_ASSET,

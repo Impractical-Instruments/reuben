@@ -28,8 +28,29 @@ Nesting is an authoring concept only; at runtime everything inlines into one fla
 
 ## The authoring loop: the document is truth, `send` is audition <!-- lanes: skills,mcp,web -->
 
-A conversational edit works on one thing: the **instrument document**. Its semantics
-([agent-mcp](../rules/agent-mcp.md)):
+A conversational edit works on one thing: the **instrument document**, and it walks the same
+steps every time. Each step names the verb that performs it — what that verb *takes* is the
+door's business, advertised where you call it and never restated here.
+
+1. **Introspect.** `describe_operators` for an operator's ports; `describe_instrument` for the
+   structure of the document you are about to change.
+2. **Seed.** Creating from scratch? `new_instrument` writes a guaranteed-valid minimal document
+   at the source you name and refuses to overwrite an existing one, so you never stall guessing
+   the required top-level shape ([#146](https://github.com/Impractical-Instruments/reuben/issues/146)).
+   Never a blank file, and never a document you compose yourself.
+3. **Shape.** One verb per change — `add_instrument_node`, `wire_instrument_input`,
+   `set_instrument_input`, `set_instrument_constant`, and the `interface` and resource verbs.
+4. **Keep the role true.** If the reshape changed what the instrument *is*, say so with
+   `set_instrument_description`.
+5. **Confirm it's audible.** Valid is not audible: check generator→output reach before reporting
+   done.
+6. **Swap.** `swap_instrument` installs the document — this is the step that makes the change heard.
+7. **Audition.** `send_live_controls` explores a value without committing it; fold a keeper back
+   into the document with `set_instrument_input`, then swap again.
+
+Steps 6 and 7 need a running engine; the rest do not.
+
+Why the steps are what they are ([agent-mcp](../rules/agent-mcp.md)):
 
 - **The document is durable truth.** What the document says is what plays after the next Swap —
   and what saves, shares, and reloads.
@@ -91,6 +112,35 @@ Two swap rules of thumb ([execution-runtime](../rules/execution-runtime.md)):
   lost and a surviving voice's gate stays high. Recoverable in-band: re-send the off (or
   re-trigger and release, or let voice stealing claim it). When notes were sounding, follow
   a swap with a corrective `send`.
+
+## Doors and preconditions <!-- lanes: skills,mcp -->
+
+A checkout holds **two doors at once** — the CLI in the shell and the MCP sidecar — and they do
+not serve the same steps. A tab holds one door, so this disambiguation is checkout-only.
+
+| | The sidecar (`reuben-mcp`) | The CLI (`cargo run -p reuben-native --bin reuben`) |
+|---|---|---|
+| Serves | the whole roster: the document verbs, the reads, the engine verbs | reads, plus `play` and `scaffold-operator` |
+| Over documents | **reads and writes** | **read-only**, except `new-instrument`, which writes a seed |
+| Needs | the sidecar reachable; its engine verbs also need a live `reuben play` | a build of `reuben-native` |
+
+**The document verbs are the sidecar's, and only the sidecar's.** If it is not reachable, the
+authoring loop's shape steps cannot be performed — **stop and say so**. Do not fall back to
+opening the file: a fallback would be the one place left in the repo telling an agent to write
+document bytes by hand, and it would rot from disuse.
+
+The two doors overlap on the reads, which is where routing collides in practice. `validate` is
+both a shelled `reuben validate <path>` and the `validate_instrument` tool, and `describe` is
+both `reuben describe` and `describe_instrument`/`describe_operators`. Same authority behind
+both — the engine's own load path — so the answer never differs; only the precondition does.
+Prefer the sidecar when you are already in the loop, and the CLI when you want a read without a
+sidecar or are checking the door itself.
+
+Two steps have no verb at all, and are checkout-only for that reason:
+
+- **Regenerate the library index** when the available set or an instrument's face changed — no
+  verb does it; *Recipe authoring* below has when and how.
+- **Hear it**: `reuben play <path>` — the engine the swap and audition steps talk to.
 
 <a id="type-system"></a>
 ## One `Input`, one `Arg` type ([composition-operators](../rules/composition-operators.md)) <!-- lanes: skills,mcp,web -->
@@ -199,14 +249,9 @@ top-level `connections` array** and **no per-node `params` map** (both fold into
 **no anonymous master `outputs` array** (v1-only — it dissolved into named `interface.outputs`
 entries; the loader migrates old documents).
 
-**Creating an instrument from scratch? Start with `new_instrument`, not a blank file** — every
-lane offers it (`reuben new-instrument <path>` on the CLI, the `new_instrument` tool on the MCP/web
-surfaces). It *writes* a guaranteed-valid minimal document (`{ "format_version": 3, "instrument":
-<name>, "nodes": [] }`) at the source you name, refusing to overwrite an existing one, and hands
-back its projection — so you never stall guessing the required top-level shape
-([#146](https://github.com/Impractical-Instruments/reuben/issues/146)). From there it is
-`add_instrument_node` and `wire_instrument_input` the rest of the way; the JSON below is what those
-verbs write, and is here so you can *read* a document, not so you can emit one.
+The loop's **seed** step writes exactly this shape — `{ "format_version": 3, "instrument": <name>,
+"nodes": [] }` — and the shape step grows it from there. The JSON below is what those verbs write,
+and is here so you can *read* a document, not so you can emit one.
 
 Each entry in a node's **`inputs`** map is one of:
 

@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "reuben": {
+      "type": "stdio",
+      "command": "./scripts/reuben-mcp.sh",
+      "args": [],
+      "env": {}
+    }
+  }
+}
