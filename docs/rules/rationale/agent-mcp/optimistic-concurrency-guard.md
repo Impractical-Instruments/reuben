@@ -23,10 +23,16 @@ door that has a Coordinator to compare against, so there is one implementation a
 "matches". The distinct conflict answer carrying both hashes is part of it: a wire choice, made once,
 by the side that owns the wire ([structure-channel-envelope](structure-channel-envelope.md)).
 
-**One implementation survives outside, for a stated reason.** The web lane runs a restart-swap with no
-Coordinator at all and writes its guard in JavaScript. It is not a door that lost an argument; it is a
-door with nothing to compare against, and saying so here is what keeps it from being rediscovered as
-drift.
+**One implementation survives outside, for a stated reason — and the reason has changed.** The web lane
+writes its guard in JavaScript. It used to be a lane with no Coordinator at all, running a restart-swap;
+that is no longer true, and the sentence that said it never would be was resting on a mechanism argument
+narrower than the claim. It now builds each new Engine off the render thread and installs through a
+mailbox, like every other door. What keeps its guard outside is narrower and structural: the door's
+*authoring* instance is a separate wasm instance from the one holding the Coordinator, and it never
+constructs, so there is no `installed_hash` there to ask. Hashing its own store instead would answer a
+different question — an unshipped edit at that key is not what is playing — and turn every guarded
+reshape into a spurious conflict. So the discriminator is not *has a Coordinator*, it is *can reach the
+hash the engine has installed*, and saying so here is what keeps it from being rediscovered as drift.
 
 Two guards now live at the window and they are not the same guard: the document verbs compare against
 the hash of the *source* they are about to rewrite, the swap verb against the hash the engine has
