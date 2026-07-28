@@ -698,7 +698,7 @@ fn edit_summary(result: &EditResult) -> String {
         let base = format!("written (content_hash {})", result.hash);
         match result.notes.len() {
             0 => base,
-            n => format!("{base}; {n} cascade note(s)"),
+            n => format!("{base}; {n} note(s)"),
         }
     } else {
         format!(

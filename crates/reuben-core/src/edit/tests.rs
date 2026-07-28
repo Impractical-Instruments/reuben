@@ -1027,3 +1027,73 @@ fn a_slot_a_move_could_not_write_stays_open_to_the_next_move() {
         result.zoom
     );
 }
+
+/// A `set` names a specific thing — a minor 3rd, a rotation of 0 — so a range that will not hold it
+/// has no smaller version of it to offer. Clamping would land a *different* interval and the row's
+/// own description would then label it: `s2 → 5` reported as "a minor 3rd" while being a 4th.
+#[test]
+fn a_set_the_range_cannot_hold_is_a_skip_not_a_clamp() {
+    let resolver = resolver_with(&seed_piped(
+        json!({ "iv": { "type": "i32", "min": 5.0, "max": 9.0, "default": 7.0 } }),
+        json!([
+            { "type": "oscillator", "address": "/osc" },
+            { "type": "harmony", "address": "/h", "inputs": { "s2": { "from": "/iv" } } },
+            { "type": "mul_f32_signal", "address": "/amp",
+              "inputs": { "a": { "from": "/osc" }, "b": 0.5 } }
+        ]),
+    ));
+    // `sadder` sets s2 to a minor 3rd, s5 to a minor 6th, s6 to a minor 7th. Only s2 is pinned
+    // behind a range that excludes the interval it names.
+    let result = by_intent(&resolver, "sadder", None, &[]);
+
+    let after = readback(&resolver);
+    assert_eq!(
+        after["interface"]["inputs"]["iv"]["default"],
+        json!(7.0),
+        "an unreachable interval leaves the value alone"
+    );
+    assert!(
+        result.zoom.contains("cannot be set to 3"),
+        "the skip names the value it could not reach: {}",
+        result.zoom
+    );
+    // The siblings it *can* reach still land — a batch is not all-or-nothing.
+    assert_eq!(after["nodes"][1]["inputs"]["s5"], json!(8.0));
+    assert_eq!(after["nodes"][1]["inputs"]["s6"], json!(10.0));
+    assert!(result
+        .zoom
+        .starts_with("sadder (tonal): 2 applied, 1 skipped"));
+}
+
+/// One slot reached through three consumers is one problem. The successful path already collapses
+/// those three to one applied line; three copies of one skip read as three distinct failures.
+#[test]
+fn skips_that_name_the_same_slot_and_reason_collapse() {
+    let resolver = resolver_with(&seed_piped(
+        json!({ "tempo": { "type": "f32", "min": 60.0, "max": 180.0, "curve": "lin",
+                           "default": 180.0 } }),
+        json!([
+            { "type": "oscillator", "address": "/osc" },
+            { "type": "clock", "address": "/c1", "inputs": { "tempo": { "from": "/tempo" } } },
+            { "type": "clock", "address": "/c2", "inputs": { "tempo": { "from": "/tempo" } } },
+            { "type": "clock", "address": "/c3", "inputs": { "tempo": { "from": "/tempo" } } },
+            { "type": "mul_f32_signal", "address": "/amp",
+              "inputs": { "a": { "from": "/osc" }, "b": 0.5 } }
+        ]),
+    ));
+    let result = by_intent(&resolver, "faster", None, &[]);
+
+    assert!(
+        result
+            .zoom
+            .starts_with("faster (rhythmic): 0 applied, 1 skipped"),
+        "{}",
+        result.zoom
+    );
+    assert_eq!(
+        result.zoom.matches("/tempo.in` is already 180").count(),
+        1,
+        "{}",
+        result.zoom
+    );
+}

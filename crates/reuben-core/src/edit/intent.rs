@@ -64,6 +64,23 @@ fn land(moved: f64, min: f64, max: f64) -> Result<Scalar, String> {
     Ok(Scalar::Number(tidy(moved).clamp(min, max)))
 }
 
+/// Assign the exact value a `set` names, refusing when the range will not hold it.
+///
+/// Clamping is right for a relative move — *warmer* just means as far down as this port goes — and
+/// wrong for an assignment, which names a specific thing: a minor 3rd, a rotation of 0. A clamped
+/// assignment is a *different* value, and the row's own description then labels it, so
+/// `s2 → 5` would be reported as "a minor 3rd" while being a perfect 4th. Out of range is not a
+/// smaller move here; it is another one. see rules: agent-mcp
+fn assign(asked: f64, min: f64, max: f64) -> Result<Scalar, String> {
+    match land(asked, min, max)? {
+        Scalar::Number(got) if got == asked => Ok(Scalar::Number(got)),
+        _ => Err(format!(
+            "cannot be set to {asked} — its range here is [{min}..{max}], and a clamped assignment \
+             would be a different value than the one this move names"
+        )),
+    }
+}
+
 /// The port's own unwired value — what a slot holds when the document has written nothing into it.
 fn port_default(class: PortClass<'_>) -> Option<Scalar> {
     match class {
@@ -108,10 +125,10 @@ fn step(class: PortClass<'_>, from: &Scalar, m: &Move) -> Result<Scalar, String>
             Ok(Scalar::Symbol(s.clone()))
         }
         (PortClass::Scalar(meta), Direction::Set, Some(Magnitude::Absolute(v))) => {
-            land(*v, widen(meta.min), widen(meta.max))
+            assign(*v, widen(meta.min), widen(meta.max))
         }
         (PortClass::Int(meta), Direction::Set, Some(Magnitude::Absolute(v))) => {
-            land(v.round(), f64::from(meta.min), f64::from(meta.max))
+            assign(v.round(), f64::from(meta.min), f64::from(meta.max))
         }
 
         (PortClass::Int(meta), _, magnitude) => {
@@ -201,6 +218,25 @@ pub(super) struct SkippedMove {
     reason: String,
 }
 
+/// Record a skip, unless the same op, input and reason are already on the list.
+///
+/// The reason carries the address it is about, so this is a slot-level dedupe: three consumers of
+/// one at-its-ceiling pipe are one problem, and three copies of it read as three. The successful
+/// path already collapses those same three to one applied line.
+fn note_skip(skipped: &mut Vec<SkippedMove>, op: &str, input: &str, reason: String) {
+    if skipped
+        .iter()
+        .any(|s| s.op == op && s.input == input && s.reason == reason)
+    {
+        return;
+    }
+    skipped.push(SkippedMove {
+        op: op.to_string(),
+        input: input.to_string(),
+        reason,
+    });
+}
+
 /// The whole batch's effect: what moved, what did not, and the two things the caller might have
 /// meant differently — a reading passed over, and a `target` term that named nothing.
 /// see rules: agent-mcp
@@ -213,7 +249,7 @@ pub(super) struct IntentReport {
     skipped: Vec<SkippedMove>,
     /// `target` terms that named nothing this row could move.
     unmatched: Vec<String>,
-    /// Caveats about a move that *did* land, for the edit's cascade notes.
+    /// Caveats about a move that *did* land, for the edit's notes.
     pub(super) notes: Vec<String>,
 }
 
@@ -361,11 +397,12 @@ pub(super) fn apply(
 
     for m in &row.moves {
         let Some(reg) = registry.get(&m.op) else {
-            skipped.push(SkippedMove {
-                op: m.op.clone(),
-                input: m.input.clone(),
-                reason: format!("`{}` is not a registered operator", m.op),
-            });
+            note_skip(
+                &mut skipped,
+                &m.op,
+                &m.input,
+                format!("`{}` is not a registered operator", m.op),
+            );
             continue;
         };
         let descriptor = &reg.descriptor;
@@ -375,11 +412,12 @@ pub(super) fn apply(
             .chain(descriptor.constants.iter())
             .find(|p| p.name == m.input)
         else {
-            skipped.push(SkippedMove {
-                op: m.op.clone(),
-                input: m.input.clone(),
-                reason: format!("`{}` has no input named `{}`", m.op, m.input),
-            });
+            note_skip(
+                &mut skipped,
+                &m.op,
+                &m.input,
+                format!("`{}` has no input named `{}`", m.op, m.input),
+            );
             continue;
         };
         let constant = descriptor.constants.iter().any(|p| p.name == m.input);
@@ -426,23 +464,20 @@ pub(super) fn apply(
                 }
                 // Already written through another address — the dedupe, not a skip.
                 Ok(None) => {}
-                Err(reason) => skipped.push(SkippedMove {
-                    op: m.op.clone(),
-                    input: m.input.clone(),
-                    reason,
-                }),
+                Err(reason) => note_skip(&mut skipped, &m.op, &m.input, reason),
             }
         }
         if narrowed == 0 {
-            skipped.push(SkippedMove {
-                op: m.op.clone(),
-                input: m.input.clone(),
-                reason: if candidates.is_empty() {
+            note_skip(
+                &mut skipped,
+                &m.op,
+                &m.input,
+                if candidates.is_empty() {
                     format!("no `{}` node in the document", m.op)
                 } else {
                     format!("no `{}` node inside the given target", m.op)
                 },
-            });
+            );
         }
     }
 

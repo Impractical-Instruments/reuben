@@ -55,8 +55,9 @@ pub struct EditResult {
     /// successful write, the unchanged prior document on a rejected one. The token a later
     /// `expect`-guarded write compares — opaque, compare-only.
     pub hash: String,
-    /// What the edit broke or degraded on the way — the cascade a `remove_instrument_node`
-    /// unwired, the refs a `rename_instrument_node` rewrote. Empty for a clean surgical edit.
+    /// What the edit broke, degraded, or qualified on the way — the cascade a removal unwired, the
+    /// refs a rename rewrote, a caveat on where a written value applies. Empty for a clean
+    /// surgical edit.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
     /// The rendered echo of what the verb did — the node zoom of an added node, the pipe view of a
@@ -139,7 +140,7 @@ impl ValueChange {
     }
 }
 
-/// A mutation's outcome: what to echo, and any cascade notes it produced.
+/// A mutation's outcome: what to echo, and any notes it produced.
 struct Applied {
     echo: Echo,
     notes: Vec<String>,
