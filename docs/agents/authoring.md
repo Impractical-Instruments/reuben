@@ -39,7 +39,11 @@ door's business, advertised where you call it and never restated here.
    the required top-level shape ([#146](https://github.com/Impractical-Instruments/reuben/issues/146)).
    Never a blank file, and never a document you compose yourself.
 3. **Shape.** One verb per change — `add_instrument_node`, `wire_instrument_input`,
-   `set_instrument_input`, `set_instrument_constant`, and the `interface` and resource verbs.
+   `set_instrument_input`, `set_instrument_constant`, and the `interface` and resource verbs. When
+   the ask is a *musical word* rather than a number — warmer, looser, sadder — one verb does the
+   whole thing: `set_instrument_inputs_by_intent` takes the word, finds every input the intent
+   vocabulary's row for it names, sizes each step against that input's own declared range, and
+   applies them as one edit. Don't hand-expand a table row into a pile of value edits.
 4. **Keep the role true.** If the reshape changed what the instrument *is*, say so with
    `set_instrument_description`.
 5. **Confirm it's audible.** Valid is not audible: check generator→output reach before reporting

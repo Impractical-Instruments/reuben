@@ -89,6 +89,7 @@ not by hope:
 - **Instantiate** — the off-thread construction of a Plan (topo sort, allocate the delta); the first half of every Swap, where all allocation lives. · [execution-runtime](execution-runtime.md)
 - **Instrument** — a named subgraph that exposes an interface and is reused inside another graph as if it were an operator, with its own identity and state per use. · [composition-operators](composition-operators.md)
 - **Intent vocabulary** — the one curated, registry-keyed word→move table that grounds musical/mood words (warmer, busier, sadder) as operator-type parameter moves. · [agent-mcp](agent-mcp.md)
+- **Intent word** — one word of that table, applied as the whole ordered batch of value edits its row names: the engine does the word→ports→arithmetic join, not the model. · [agent-mcp](agent-mcp.md)
 - **interface pipe** — a named boundary entry, the one boundary mechanism at every graph level: an input pipe mints an address, an output pipe is fed from an internal port. · [composition-operators](composition-operators.md)
 - **latch** — the engine-held per-port zero-order-hold of an input's last Message, read by an operator as its constant current value. · [execution-runtime](execution-runtime.md)
 - **library index** — the generated one-signature-line-per-instrument projection of the available-set (name + recipe-role + interface face). · [authoring-library](authoring-library.md)
@@ -189,6 +190,9 @@ and prose:
 - **Constant** — avoid: param, setting, option, config value.
 - **Delivery lane** — avoid: surface (that is a presentation doc), channel (that is signal I/O), bare "lane" without context.
 - **Input handling** — avoid: intent parsing, NLU.
+- **Intent word** — avoid: nudge. Retired: it is not a project term, and it misdescribes the ninth
+  of the table that **assigns** rather than shoves (*sadder* sets a minor 3rd, *straighter* sets a
+  rotation of 0, *more consonant* sets a snap policy). Also avoid: mood word, tweak word.
 - **Output filter** — avoid: persona (ambiguous), style gate (deleted — the filter is taught, not enforced).
 - **Push/pull delivery** — avoid: eager/lazy loading (runtime words for a prompt-architecture idea).
 

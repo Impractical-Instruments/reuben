@@ -142,41 +142,41 @@ class TestTweakAssertion(unittest.TestCase):
     def test_the_format_migration_is_not_collateral_damage(self) -> None:
         """A document verb upgrades `format_version` on write, and the fixture is still on 2.
 
-        That edit is the engine's, not the model's. Counting it as damage made `tweak` and `nudge`
-        unpassable by anything that used the document verbs at all.
+        That edit is the engine's, not the model's. Counting it as damage made the single-value and
+        intent-word tasks unpassable by anything that used the document verbs at all.
         """
         document = self._tweaked(800.0)
         document["format_version"] = tasks.VOICE_DOCUMENT["format_version"] + 1
         tasks._assert_tweak(document)
 
 
-class TestNudgeAssertion(unittest.TestCase):
+class TestIntentWordAssertion(unittest.TestCase):
     def _with_cutoff(self, cutoff: float) -> dict:
         document = copy.deepcopy(tasks.VOICE_DOCUMENT)
         tasks._nodes(document)["/filter"]["inputs"]["cutoff"] = cutoff
         return document
 
     def test_warmer_lowers_the_cutoff(self) -> None:
-        tasks._assert_nudge(self._with_cutoff(2000.0))
+        tasks._assert_intent_word(self._with_cutoff(2000.0))
 
     def test_wrong_direction_fails(self) -> None:
         """`warmer` is cutoff *down*; raising it is `brighter`, the opposite move."""
         with self.assertRaises(AssertionError):
-            tasks._assert_nudge(self._with_cutoff(6000.0))
+            tasks._assert_intent_word(self._with_cutoff(6000.0))
 
     def test_no_change_fails(self) -> None:
         with self.assertRaises(AssertionError):
-            tasks._assert_nudge(self._with_cutoff(tasks.ORIGINAL_CUTOFF))
+            tasks._assert_intent_word(self._with_cutoff(tasks.ORIGINAL_CUTOFF))
 
     def test_zeroing_the_filter_fails(self) -> None:
-        """"Warmer" is a nudge, not a mute — a degenerate floor is not a pass."""
+        """"Warmer" is a step, not a mute — a degenerate floor is not a pass."""
         with self.assertRaises(AssertionError):
-            tasks._assert_nudge(self._with_cutoff(0.0))
+            tasks._assert_intent_word(self._with_cutoff(0.0))
 
     def test_the_format_migration_is_not_collateral_damage(self) -> None:
         document = self._with_cutoff(2000.0)
         document["format_version"] = tasks.VOICE_DOCUMENT["format_version"] + 1
-        tasks._assert_nudge(document)
+        tasks._assert_intent_word(document)
 
 
 class TestRepairAssertion(unittest.TestCase):
@@ -251,18 +251,73 @@ class TestPayloadLedger(unittest.TestCase):
         self.assertEqual(as_string.characters, as_object.characters)
 
 
+class TestIntentFanOutAssertion(unittest.TestCase):
+    """`looser` on `acid-techno`: the shape where one word replaces nine edits."""
+
+    def _loosened(self) -> dict:
+        """The document the intent verb produces — every target raised, the wire intact."""
+        document = copy.deepcopy(tasks.ACID_DOCUMENT)
+        for node in document["nodes"]:
+            if node["type"] == "envelope":
+                node["inputs"]["attack"] = float(node["inputs"]["attack"]) * 1.2
+            elif node["type"] == "m2s" and not isinstance(node["inputs"].get("time"), dict):
+                node["inputs"]["time"] = float(node["inputs"]["time"]) * 1.5
+        document["interface"]["inputs"]["glide"]["default"] = tasks.ORIGINAL_GLIDE + 0.125
+        return document
+
+    def test_moving_every_target_passes(self) -> None:
+        tasks._assert_intent_fan_out(self._loosened())
+
+    def test_moving_only_some_of_them_fails(self) -> None:
+        """A batch that stopped early is the failure mode a per-node assertion exists to catch."""
+        document = self._loosened()
+        tasks._nodes(document)["/kick_trim"]["inputs"]["time"] = 0.02
+        with self.assertRaises(AssertionError):
+            tasks._assert_intent_fan_out(document)
+
+    def test_severing_the_wire_fails(self) -> None:
+        """A literal over `/bass_glide.time` unplugs the instrument's own glide control."""
+        document = self._loosened()
+        tasks._nodes(document)["/bass_glide"]["inputs"]["time"] = 0.2
+        with self.assertRaises(AssertionError):
+            tasks._assert_intent_fan_out(document)
+
+    def test_leaving_the_pipe_alone_fails(self) -> None:
+        document = self._loosened()
+        document["interface"]["inputs"]["glide"]["default"] = tasks.ORIGINAL_GLIDE
+        with self.assertRaises(AssertionError):
+            tasks._assert_intent_fan_out(document)
+
+    def test_collateral_damage_fails(self) -> None:
+        document = self._loosened()
+        document["nodes"] = [n for n in document["nodes"] if n["address"] != "/dsat"]
+        with self.assertRaises(AssertionError):
+            tasks._assert_intent_fan_out(document)
+
+
 class TestTaskRoster(unittest.TestCase):
-    def test_the_four_shapes_are_all_present(self) -> None:
+    def test_the_shapes_are_all_present(self) -> None:
         """The shapes are frozen; losing one silently narrows what the gate can see."""
         self.assertEqual(
-            {task.key for task in tasks.TASKS}, {"from_scratch", "tweak", "nudge", "repair"}
+            {task.key for task in tasks.TASKS},
+            {"from_scratch", "tweak", "intent_word", "intent_fan_out", "repair"},
         )
 
     def test_every_task_has_a_reference_solution_that_writes_the_document(self) -> None:
+        """The document may be produced by a host write or by a document verb — but produced."""
         for task in tasks.TASKS:
             with self.subTest(task=task.key):
                 writes = [step for step in task.reference if step.name == "write_file"]
-                self.assertTrue(writes, "a reference solution must produce the answer document")
+                verbs = [
+                    step
+                    for step in task.reference
+                    if step.surface == "mcp"
+                    and step.name != "validate_instrument"
+                    and step.arguments.get("source") == task.document
+                ]
+                self.assertTrue(
+                    writes or verbs, "a reference solution must produce the answer document"
+                )
                 for step in writes:
                     self.assertTrue(
                         step.arguments["content"].strip(),

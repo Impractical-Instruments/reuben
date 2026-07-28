@@ -9,39 +9,39 @@ Unsatisfiable ask → apply the nearest achievable move and state the gap plainl
 ## Timbral
 
 - **warmer** — filter.cutoff down (slightly); saturator.warmth up; reverb.damp up (slightly). ↔ brighter
-- **brighter** — filter.cutoff up; resonator.brightness up [if a resonator voices the tone]; reverb.damp down (slightly). ↔ warmer, darker
-- **darker** — filter.cutoff down [if the ask is about tone color; a mood/harmony 'darker' is the tonal darker below]; saturator.warmth up (slightly). ↔ brighter
+- **brighter** — filter.cutoff up; resonator.brightness up [a resonator voices the tone]; reverb.damp down (slightly). ↔ warmer, darker
+- **darker** — filter.cutoff down; saturator.warmth up (slightly). ↔ brighter
 - **dirtier** — saturator.drive up; filter.resonance up (slightly). ↔ cleaner
 - **cleaner** — saturator.drive down; reverb.mix down (slightly); delay.feedback down (slightly). ↔ dirtier
 - **harsher** — saturator.drive up; filter.cutoff up; filter.resonance up. ↔ softer
 - **softer** — envelope.attack up; saturator.drive down; filter.cutoff down (slightly). ↔ harsher, punchier
-- **punchier** — envelope.attack down; envelope.sustain down (slightly); saturator.drive up (slightly) [if synth-land punch — the registry has no compressor]. ↔ softer
-- **airier** — reverb.mix up (slightly); reverb.damp down; filter.cutoff up [if the filter is lowpass].
-- **wetter** — reverb.mix up; delay.mix up [if a delay is the space in the voice]. ↔ drier
+- **punchier** — envelope.attack down; envelope.sustain down (slightly); saturator.drive up (slightly) [synth-land punch — the registry has no compressor]. ↔ softer
+- **airier** — reverb.mix up (slightly); reverb.damp down; filter.cutoff up [opens the top only where the filter is lowpass].
+- **wetter** — reverb.mix up; delay.mix up [a delay is the space in the voice]. ↔ drier
 - **drier** — reverb.mix down; delay.mix down. ↔ wetter
 - **bigger** — reverb.room up; delay.time up (slightly); saturator.warmth up (slightly).
 
 ## Rhythmic
 
-- **busier** — euclid.pulses up [if a euclid drives the pattern]; clock.division up [if a clock sets the rate]. ↔ sparser
-- **sparser** — euclid.pulses down [if a euclid drives the pattern]; clock.division down [if a clock sets the rate]. ↔ busier
+- **busier** — euclid.pulses up [a euclid drives the pattern]; clock.division up [a clock sets the rate]. ↔ sparser
+- **sparser** — euclid.pulses down [a euclid drives the pattern]; clock.division down [a clock sets the rate]. ↔ busier
 - **faster** — clock.tempo up. ↔ slower
 - **slower** — clock.tempo down. ↔ faster
 - **longer** — envelope.release up; envelope.decay up. ↔ shorter
 - **shorter** — envelope.release down; envelope.decay down. ↔ longer
-- **tighter** — envelope.attack down; envelope.release down; reverb.mix down (slightly) [if smear is the complaint]. ↔ looser
-- **looser** — envelope.attack up (slightly); m2s.time up [if an m2s glides the pitch — the registry has no timing-jitter seat, so this is the laid-back feel, not literal swing]. ↔ tighter
-- **more syncopated** — euclid.rotation up (by 1) [if a euclid drives the pattern]. ↔ straighter
-- **straighter** — euclid.rotation set 0 [if a euclid drives the pattern]. ↔ more syncopated
+- **tighter** — envelope.attack down; envelope.release down; reverb.mix down (slightly) [only if smear is the complaint]. ↔ looser
+- **looser** — envelope.attack up (slightly); m2s.time up [an m2s glides the pitch — the registry has no timing-jitter seat, so this is the laid-back feel, not literal swing]. ↔ tighter
+- **more syncopated** — euclid.rotation up (by 1) [a euclid drives the pattern]. ↔ straighter
+- **straighter** — euclid.rotation set 0 [back onto the grid a euclid drives]. ↔ more syncopated
 
 ## Tonal
 
-- **sadder** — harmony.s2 set (3 (minor 3rd)); harmony.s5 set (8 (minor 6th)); harmony.s6 set (10 (minor 7th)). ↔ happier
-- **happier** — harmony.s2 set (4 (major 3rd)); harmony.s5 set (9 (major 6th)); harmony.s6 set (11 (major 7th)). ↔ sadder
-- **richer** — chord.size up (3 → 4, adds the 7th).
-- **more dissonant** — snap.target set Scale (off Chord — chord-snap is the most consonant policy); harmony.s1 set (1 (flat 2nd)) [if more spice is wanted]. ↔ more consonant
-- **more consonant** — snap.target set Chord (snap to chord tones). ↔ more dissonant
-- **darker** — harmony.s2 set (3 (minor 3rd)) [if the ask is about mood/harmony; a tone-color 'darker' is the timbral darker above]; harmony.s5 set (8 (minor 6th)). ↔ brighter
+- **sadder** — harmony.s2 set 3 [a minor 3rd]; harmony.s5 set 8 [a minor 6th]; harmony.s6 set 10 [a minor 7th]. ↔ happier
+- **happier** — harmony.s2 set 4 [a major 3rd]; harmony.s5 set 9 [a major 6th]; harmony.s6 set 11 [a major 7th]. ↔ sadder
+- **richer** — chord.size up [3 → 4, adds the 7th].
+- **more dissonant** — snap.target set Scale [off Chord — chord-snap is the most consonant policy]; harmony.s1 set 1 [a flat 2nd, when more spice is wanted]. ↔ more consonant
+- **more consonant** — snap.target set Chord [snap to chord tones]. ↔ more dissonant
+- **darker** — harmony.s2 set 3 [a minor 3rd]; harmony.s5 set 8 [a minor 6th]. ↔ brighter
 
 ## Fallback — direction-only
 
@@ -58,5 +58,5 @@ Unsatisfiable ask → apply the nearest achievable move and state the gap plainl
 - Fatness words (fatter, thicker) → saturator warmth up and drive up slightly; there is no detune / sub-oscillator seat, so state that the body is coming from saturation.
 - Mood words beyond the table (moody, ominous, mysterious) → the minor-mode family (see sadder), plus filter cutoff down slightly.
 - Material words (clickier, woodier, metallic) → resonator structure, brightness, and damping, when a resonator is in the voice.
-- Swing words (swung, shuffled, groovy) → no direct seat today; the nearest is nudging euclid rotation off the grid — apply it and state the gap.
+- Swing words (swung, shuffled, groovy) → no direct seat today; the nearest is stepping euclid rotation off the grid — apply it and state the gap.
 - Nothing fits → name what the document lacks and offer the nearest table move rather than refusing.

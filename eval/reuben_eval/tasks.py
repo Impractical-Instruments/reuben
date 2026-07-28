@@ -1,8 +1,10 @@
-"""The four task shapes, their reference solutions, and their structural assertions.
+"""The task shapes, their reference solutions, and their structural assertions.
 
-The shapes are frozen: from-scratch construction, single-value tweak, intent-word nudge,
-repair-from-broken. Each is bound to a committed `instruments/` fixture where one fits, so the
-workload moves with the engine rather than rotting in a private copy.
+The first four shapes are frozen: from-scratch construction, single-value tweak, intent-word
+application, repair-from-broken. The fifth is the same intent-word shape at fan-out, on a document
+big enough for one word to stand in for nine edits — a new series, so nothing on the frozen four
+moves. Each is bound to a committed `instruments/` fixture where one fits, so the workload moves
+with the engine rather than rotting in a private copy.
 
 **Pass is `validate_instrument` clean AND a structural assertion.** It owns legality — the harness
 never re-implements it (`#loader-single-authority`) — and the assertion owns "did the asked-for
@@ -167,8 +169,41 @@ def _broken_voice() -> str:
 BROKEN = _broken_voice()
 ORIGINAL_CUTOFF = float(_nodes(VOICE_DOCUMENT)["/filter"]["inputs"]["cutoff"])
 
+def _nested_seed(relative: str) -> dict[str, str]:
+    """Every document `relative` reaches by reference, keyed as the workspace must hold it.
 
-# -- the four tasks ---------------------------------------------------------------------------
+    References resolve sibling-first from the referring document's directory, then the library root
+    — so this walks the same two places the engine's resolver does, and keys each hit by its path
+    under `instruments/` so the seeded tree has the shape the committed library has.
+    """
+    seed: dict[str, str] = {}
+    frontier = [relative]
+    while frontier:
+        current = frontier.pop()
+        document = json.loads((FIXTURES / current).read_text(encoding="utf-8"))
+        directory = Path(current).parent
+        for source in document.get("resources", {}).values():
+            for candidate in (directory / source, Path(source)):
+                if (FIXTURES / candidate).is_file():
+                    key = candidate.as_posix()
+                    if key not in seed:
+                        seed[key] = _fixture(key)
+                        frontier.append(key)
+                    break
+    return dict(sorted(seed.items()))
+
+
+# The fan-out fixture: 53 nodes, and the library's densest target set for a single intent word.
+ACID = _fixture("acid-techno.json")
+ACID_DOCUMENT: dict[str, Any] = json.loads(ACID)
+# `acid-techno` nests five voice instruments, one of which nests again. The whole tree rides along
+# in the seed so the workspace copy loads exactly as the committed library does — a fixture that
+# only half resolves would measure a pile of dark-resource warnings instead of the surface.
+ACID_SEED: dict[str, str] = _nested_seed("acid-techno.json")
+ORIGINAL_GLIDE = float(ACID_DOCUMENT["interface"]["inputs"]["glide"]["default"])
+
+
+# -- the tasks --------------------------------------------------------------------------------
 
 
 def _from_scratch_document() -> dict[str, Any]:
@@ -202,7 +237,7 @@ def _assert_tweak(document: dict[str, Any]) -> None:
         raise AssertionError(f"`/filter.cutoff` is {value!r}, expected 800")
 
 
-def _assert_nudge(document: dict[str, Any]) -> None:
+def _assert_intent_word(document: dict[str, Any]) -> None:
     value = assert_only_changed(VOICE_DOCUMENT, document, "/filter", "cutoff")
     if not isinstance(value, (int, float)):
         raise AssertionError(f"`/filter.cutoff` is {value!r}, expected a number")
@@ -212,6 +247,61 @@ def _assert_nudge(document: dict[str, Any]) -> None:
         raise AssertionError(
             f"`warmer` must lower `/filter.cutoff` below {ORIGINAL_CUTOFF}; got {value}"
         )
+
+
+def _assert_intent_fan_out(document: dict[str, Any]) -> None:
+    """`looser` on `acid-techno`: nine targets, one of them reached through a wire.
+
+    Spelled out rather than counted from the vocabulary, because the fan-out *is* the claim — one
+    word standing in for nine `set_instrument_input` calls plus a range lookup each — and an
+    assertion that re-derived the targets from the same table would agree with any bug in it.
+    """
+    original, produced = _nodes(ACID_DOCUMENT), _nodes(document)
+    expected = copy.deepcopy(ACID_DOCUMENT)
+    moved: list[str] = []
+
+    def moved_up(address: str, port: str) -> None:
+        before = float(original[address]["inputs"][port])
+        after = produced.get(address, {}).get("inputs", {}).get(port)
+        if not isinstance(after, (int, float)) or float(after) <= before:
+            raise AssertionError(
+                f"`looser` must raise `{address}.{port}` above {before}; got {after!r}"
+            )
+        moved.append(f"{address}.{port}")
+        for node in expected["nodes"]:
+            if node["address"] == address:
+                node["inputs"][port] = after
+
+    # `looser` is envelope.attack up (slightly) plus m2s.time up.
+    for address, node in original.items():
+        if node["type"] == "envelope":
+            moved_up(address, "attack")
+        elif node["type"] == "m2s" and not isinstance(node["inputs"].get("time"), dict):
+            moved_up(address, "time")
+
+    # The wired target: `/bass_glide.time` is fed by the `glide` interface pipe, so the pipe's own
+    # value is what moves — and the wire is still there afterwards.
+    if produced["/bass_glide"]["inputs"]["time"] != {"from": "/glide"}:
+        raise AssertionError("`looser` severed `/bass_glide.time` instead of following it")
+    glide = document.get("interface", {}).get("inputs", {}).get("glide", {}).get("default")
+    if not isinstance(glide, (int, float)) or float(glide) <= ORIGINAL_GLIDE:
+        raise AssertionError(
+            f"`looser` must raise the `glide` pipe's value above {ORIGINAL_GLIDE}; got {glide!r}"
+        )
+    expected["interface"]["inputs"]["glide"]["default"] = glide
+    moved.append("/glide.in")
+
+    if len(moved) != 9:
+        raise AssertionError(f"`looser` on acid-techno is nine targets; moved {len(moved)}: {moved}")
+
+    # Same collateral-damage bar the single-value tasks hold, over nine slots instead of one. The
+    # `format_version` caveat on `assert_only_changed` applies here for the same reason.
+    expected.pop("format_version", None)
+    rest = {key: entry for key, entry in document.items() if key != "format_version"}
+    if json.loads(json.dumps(expected, sort_keys=True)) != json.loads(
+        json.dumps(rest, sort_keys=True)
+    ):
+        raise AssertionError("the batch changed more than the nine targets `looser` names")
 
 
 def _assert_repair(document: dict[str, Any]) -> None:
@@ -266,20 +356,42 @@ TASKS: list[Task] = [
         assertion=_assert_tweak,
     ),
     Task(
-        key="nudge",
-        shape="intent-word nudge",
+        key="intent_word",
+        shape="intent-word application",
         prompt=(
             "Make the instrument in `instrument.json` warmer. Apply the project's intent vocabulary "
             "and keep everything else as it is. Make sure it still validates."
         ),
         seed={DOCUMENT: VOICE},
+        # One call: the word goes in, the engine does the row → nodes → arithmetic join and
+        # re-validates before writing. No vocabulary read, no document read, no re-emission — the
+        # three things this shape used to cost. It exercises **one** target (`warmer` matches one of
+        # its three moves on this fixture); `intent_fan_out` below is where the fan-out shows.
         reference=[
-            Step("resource", "read", {"uri": "reuben://guide/vocabulary"}),
-            Step("host", "read_file", {"path": DOCUMENT}),
-            Step("host", "write_file", {"path": DOCUMENT, "content": ""}),
-            Step("mcp", "validate_instrument", {"source": DOCUMENT}),
+            Step(
+                "mcp",
+                "set_instrument_inputs_by_intent",
+                {"source": DOCUMENT, "word": "warmer"},
+            ),
         ],
-        assertion=_assert_nudge,
+        assertion=_assert_intent_word,
+    ),
+    Task(
+        key="intent_fan_out",
+        shape="intent-word fan-out",
+        prompt=(
+            "Make the instrument in `instrument.json` looser. Apply the project's intent vocabulary "
+            "everywhere it applies and keep everything else as it is. Make sure it still validates."
+        ),
+        seed={DOCUMENT: ACID, **ACID_SEED},
+        reference=[
+            Step(
+                "mcp",
+                "set_instrument_inputs_by_intent",
+                {"source": DOCUMENT, "word": "looser"},
+            ),
+        ],
+        assertion=_assert_intent_fan_out,
     ),
     Task(
         key="repair",
@@ -301,23 +413,20 @@ TASKS: list[Task] = [
 
 
 def _finish_reference_solutions() -> None:
-    """Fill in the whole-document payloads the tweak/nudge/repair references must emit.
+    """Fill in the whole-document payloads the tweak/repair references must emit.
 
     Written here rather than inline so each reference is unmistakably *the ideal sequence*: read
     once, emit the corrected document once, validate by source. That is the surface's cost floor, and
     metric (c) prices it at one full document — which is exactly the number the surface
-    work exists to move.
+    work exists to move. The intent-word references emit nothing at all, so they are not here.
     """
     tweaked = copy.deepcopy(VOICE_DOCUMENT)
     _nodes(tweaked)["/filter"]["inputs"]["cutoff"] = 800.0
 
-    warmed = copy.deepcopy(VOICE_DOCUMENT)
-    _nodes(warmed)["/filter"]["inputs"]["cutoff"] = 2000.0
-
     repaired = copy.deepcopy(json.loads(BROKEN))
     _nodes(repaired)["/env_vca"]["inputs"]["b"] = {"from": "/env_curve"}
 
-    payloads = {"tweak": tweaked, "nudge": warmed, "repair": repaired}
+    payloads = {"tweak": tweaked, "repair": repaired}
     for task in TASKS:
         document = payloads.get(task.key)
         if document is None:

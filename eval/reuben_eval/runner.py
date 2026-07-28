@@ -171,8 +171,9 @@ class Session:
 def run_reference(task: task_module.Task) -> Outcome:
     """Replay a task's reference solution with **no inference** — the surface's cost floor.
 
-    This is what makes a prototype's claim checkable before buying a token: `nudge("warmer")`
-    collapses the floor for the nudge task whether or not any model is smart enough to use it.
+    This is what makes a prototype's claim checkable before buying a token: one intent word in
+    collapses the floor for the intent-word tasks whether or not any model is smart enough to use
+    it.
     """
     with tempfile.TemporaryDirectory(prefix=f"reuben-eval-{task.key}-") as root:
         with Session(task, Path(root) / "workspace") as session:

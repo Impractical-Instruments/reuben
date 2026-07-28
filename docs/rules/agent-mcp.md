@@ -173,7 +173,7 @@ authoring guide, the intent vocabulary, the library index), and code, skills, an
 [why](rationale/agent-mcp/grounding-single-source.md)
 
 <a id="intent-vocabulary"></a>
-### Musical intent language grounds in one curated, registry-keyed word-to-move table delivered in-prompt and instrument-blind, joined to the concrete document in the agent's context, and kept referentially fresh by CI and musically fresh by evals.
+### Musical intent language grounds in one curated, registry-keyed word-to-move table — instrument-blind, delivered in-prompt for reading and applied by the engine as one atomic batch of value edits for writing — kept referentially fresh by CI and musically fresh by evals.
 
 [why](rationale/agent-mcp/intent-vocabulary.md)
 
@@ -204,6 +204,7 @@ authoring guide, the intent vocabulary, the library index), and code, skills, an
 - **Door** — one surface over the window's contract types (native CLI, MCP sidecar, web in-page layer, web proxy); no verb means different things behind different doors.
 - **Gist-and-point** — the anti-drift posture for prose that must live in code: carry the one-breath gist and point at the single canonical doc, never restate it.
 - **Intent vocabulary** — the one curated, registry-keyed word→move table that grounds musical/mood words (warmer, busier, sadder) as operator-type parameter moves.
+- **Intent word** — one word of that table, applied as the whole ordered batch of value edits its row names: the engine does the word→ports→arithmetic join, not the model.
 - **Input handling** — interpreting musical, mood, or abstract language as patching moves; the shared base grounding identical in every lane.
 - **Output filter** — the host-owned persona: what the person is shown (sound-not-machine subject, hidden diagnostics, register), maximal on web and absent at skills/MCP.
 - **Delivery lane** — a grounding consumer (repo skills, MCP clients, web chat), each reducing to transport bindings plus host furniture plus the shared base sauce, fed by push or pull.

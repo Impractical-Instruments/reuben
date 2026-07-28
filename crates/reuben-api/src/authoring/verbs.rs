@@ -12,6 +12,7 @@ use reuben_core::edit::{self as core_edit, EditError};
 use reuben_core::introspect::{self as core_introspect, PatchBoundary};
 use reuben_core::projection::{Projector, Selection};
 use reuben_core::resources::ResourceResolver;
+use reuben_core::vocabulary::Section;
 use reuben_core::{content_hash, LoadError, NormalizedDoc, Registry};
 
 use super::args::*;
@@ -338,6 +339,27 @@ pub fn set_instrument_input(
             reg,
             res,
         )
+    })
+}
+
+/// Apply one intent word as a batch of value edits. The one place a `section` word becomes a
+/// section, and an unknown one is a refusal rather than a broadened search.
+/// see rules: agent-mcp
+pub fn set_instrument_inputs_by_intent(
+    args: &SetInstrumentInputsByIntent,
+    resources: &dyn Resources,
+) -> Result<Answer<EditResult>, Refusal> {
+    let section = match args.section.as_deref() {
+        None => None,
+        Some(word) => Some(Section::parse(word).ok_or_else(|| {
+            Refusal::new(format!(
+                "`{word}` is not a section of the intent vocabulary — the sections are timbral, \
+                 rhythmic and tonal, and most words need none"
+            ))
+        })?),
+    };
+    run_edit(&args.source, &args.expect, resources, |src, reg, res| {
+        core_edit::set_instrument_inputs_by_intent(src, &args.word, section, &args.target, reg, res)
     })
 }
 
@@ -676,7 +698,7 @@ fn edit_summary(result: &EditResult) -> String {
         let base = format!("written (content_hash {})", result.hash);
         match result.notes.len() {
             0 => base,
-            n => format!("{base}; {n} cascade note(s)"),
+            n => format!("{base}; {n} note(s)"),
         }
     } else {
         format!(

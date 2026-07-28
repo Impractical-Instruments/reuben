@@ -36,7 +36,10 @@ use crate::format::{
 use crate::introspect::validate;
 use crate::projection::{Projector, Scalar, Selection};
 use crate::resources::{ResolveError, ResourceResolver};
+use crate::vocabulary::Section;
 use crate::Registry;
+
+mod intent;
 
 /// The shape every document-manipulation verb returns — internal, and not the shape a door
 /// advertises: the window declares its own, and only that one is serialized onto a wire.
@@ -52,8 +55,9 @@ pub struct EditResult {
     /// successful write, the unchanged prior document on a rejected one. The token a later
     /// `expect`-guarded write compares — opaque, compare-only.
     pub hash: String,
-    /// What the edit broke or degraded on the way — the cascade a `remove_instrument_node`
-    /// unwired, the refs a `rename_instrument_node` rewrote. Empty for a clean surgical edit.
+    /// What the edit broke, degraded, or qualified on the way — the cascade a removal unwired, the
+    /// refs a rename rewrote, a caveat on where a written value applies. Empty for a clean
+    /// surgical edit.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
     /// The rendered echo of what the verb did — the node zoom of an added node, the pipe view of a
@@ -105,6 +109,8 @@ enum Echo {
     Index,
     /// The one value the caller named, before and after.
     Change(ValueChange),
+    /// A whole batch of changes, plus the moves that had nowhere to land.
+    Intent(intent::IntentReport),
 }
 
 /// A value edit's whole effect: the slot the caller addressed, what was in it, and what is in it
@@ -134,7 +140,7 @@ impl ValueChange {
     }
 }
 
-/// A mutation's outcome: what to echo, and any cascade notes it produced.
+/// A mutation's outcome: what to echo, and any notes it produced.
 struct Applied {
     echo: Echo,
     notes: Vec<String>,
@@ -216,8 +222,10 @@ fn render_echo(
     echo: &Echo,
 ) -> String {
     // Before the projector is built, because a change echo needs no projection at all.
-    if let Echo::Change(change) = echo {
-        return change.render();
+    match echo {
+        Echo::Change(change) => return change.render(),
+        Echo::Intent(report) => return report.render(),
+        _ => {}
     }
     match Projector::new(json, registry, resolver) {
         Ok(p) => match echo {
@@ -225,7 +233,7 @@ fn render_echo(
             Echo::Pipes(sel) => p.pipes(sel).render(),
             Echo::Resources => p.resources().render(),
             Echo::Index => p.index().render(),
-            Echo::Change(_) => unreachable!("handled above"),
+            Echo::Change(_) | Echo::Intent(_) => unreachable!("handled above"),
         },
         Err(e) => format!("(projection unavailable: {e})"),
     }
@@ -744,6 +752,33 @@ pub fn set_instrument_input(
             }
         };
         Ok(Applied::clean(Echo::Change(change)))
+    })
+}
+
+/// Apply one **intent word** from the curated vocabulary — *warmer*, *looser*, *sadder* — as a
+/// batch of value edits.
+///
+/// The word's row names operator types and inputs, never addresses, so it broadcasts to every node
+/// of the row's type exposing the row's input; `target` narrows through the projection's own
+/// selection grammar, and `section` picks a reading when a word has more than one. A wired input is
+/// followed rather than severed — the seed of the interface input pipe feeding it moves instead,
+/// sized against that pipe's own declared range — and targets arriving at the same pipe are one
+/// edit. A move with nothing to move is a **skip**, not a failure. see rules: agent-mcp
+pub fn set_instrument_inputs_by_intent(
+    source: &str,
+    word: &str,
+    section: Option<Section>,
+    target: &[String],
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+) -> Result<EditResult, EditError> {
+    edit_existing(source, registry, resolver, |doc| {
+        let mut report = intent::apply(doc, registry, word, section, target)?;
+        let notes = std::mem::take(&mut report.notes);
+        Ok(Applied {
+            echo: Echo::Intent(report),
+            notes,
+        })
     })
 }
 

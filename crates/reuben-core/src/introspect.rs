@@ -94,7 +94,7 @@ fn port_kind(ty: &PortType) -> &'static str {
 
 /// Widen an `f32` to `f64` without exposing binary-fraction noise: round-trip through the `f32`'s
 /// own shortest decimal so `0.2_f32` serializes as `0.2`, not `0.20000000298…` (the naive `as f64`).
-fn widen(v: f32) -> f64 {
+pub(crate) fn widen(v: f32) -> f64 {
     v.to_string().parse().unwrap_or(v as f64)
 }
 

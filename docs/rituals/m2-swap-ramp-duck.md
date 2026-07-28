@@ -69,7 +69,7 @@ channel on loopback TCP `127.0.0.1:9124`.
      | nc 127.0.0.1 9124
    ```
 
-   (Prepare `chord-player-edited.json` first: copy `chord-player.json` and nudge, e.g., a filter
+   (Prepare `chord-player-edited.json` first: copy `chord-player.json` and change, e.g., a filter
    cutoff or delay time — anything that does **not** change a node's address, type, `config`
    constants, or resolved resources, per the survivor key.)
 

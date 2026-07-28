@@ -8,7 +8,7 @@ available, as do the document verbs; the engine tools (`send_live_controls`, `ge
 `swap_instrument`, `get_current_instrument`, `get_engine_diagnostics`) reach the user-owned engine and
 fail fast when it is absent ([mcp-stdio-sidecar](mcp-stdio-sidecar.md),
 [user-owned-engine](user-owned-engine.md)). The roster's third kind is the document vocabulary —
-nineteen engine-free mutators ([document-verbs](document-verbs.md)) — and no arm takes or returns
+twenty engine-free mutators ([document-verbs](document-verbs.md)) — and no arm takes or returns
 instrument JSON: a document is named by an opaque `source` and read back as a projection. Names
 follow the `verb_instrument_object` convention.
 

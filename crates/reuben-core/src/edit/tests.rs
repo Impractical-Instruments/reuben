@@ -572,3 +572,528 @@ fn resource_add_then_remove() {
     remove_instrument_resource(SRC, "kick", &registry, &resolver).expect("remove res");
     assert!(readback(&resolver)["resources"].get("kick").is_none());
 }
+
+// --- the intent verb -----------------------------------------------------------------------------
+
+/// A document with everything the intent verb has to navigate: two nodes of one type (broadcast),
+/// two more sharing one interface input pipe (the dedupe), an input fed by a real modulation source
+/// (the skip), an input with nothing written on it at all (the descriptor default), and an enum
+/// port (the `set`).
+fn seed_for_intent() -> String {
+    json!({
+        "format_version": 3,
+        "instrument": "intent-test",
+        "nodes": [
+            { "type": "oscillator", "address": "/osc", "inputs": { "freq": 220.0 } },
+            { "type": "filter", "address": "/filter",
+              "inputs": { "audio": { "from": "/osc" }, "cutoff": { "from": "/cutoff" } } },
+            { "type": "filter", "address": "/mod_filter",
+              "inputs": { "audio": { "from": "/osc" }, "cutoff": { "from": "/env.cv" } } },
+            { "type": "envelope", "address": "/env" },
+            { "type": "snap", "address": "/snap" },
+            { "type": "clock", "address": "/clock",
+              "inputs": { "tempo": { "from": "/tempo" }, "division": 4.0 } },
+            { "type": "clock", "address": "/pad_clock",
+              "inputs": { "tempo": { "from": "/tempo" }, "division": 1.0 } },
+            { "type": "mul_f32_signal", "address": "/amp",
+              "inputs": { "a": { "from": "/filter" }, "b": 0.5 } }
+        ],
+        "interface": {
+            "inputs": {
+                "cutoff": { "type": "f32_buffer", "min": 200.0, "max": 4000.0,
+                            "curve": "lin", "default": 1000.0 },
+                "tempo": { "type": "f32", "min": 60.0, "max": 180.0, "default": 130.0, "unit": "BPM" }
+            },
+            "outputs": { "main": { "from": "/amp" } }
+        }
+    })
+    .to_string()
+}
+
+fn by_intent(
+    resolver: &MemoryResolver,
+    word: &str,
+    section: Option<Section>,
+    target: &[&str],
+) -> EditResult {
+    let target: Vec<String> = target.iter().map(|t| t.to_string()).collect();
+    set_instrument_inputs_by_intent(SRC, word, section, &target, &Registry::builtin(), resolver)
+        .expect("a word in the table is not a refusal")
+}
+
+/// The whole lever in one call: a wired input moves the *pipe's* seed against the *pipe's* declared
+/// range, an unmatched move is a skip rather than a failure, and a real modulation source is named
+/// rather than clobbered.
+#[test]
+fn an_intent_word_follows_the_wire_and_skips_what_it_cannot_move() {
+    let resolver = resolver_with(&seed_for_intent());
+    let result = by_intent(&resolver, "warmer", None, &[]);
+
+    assert!(result.written, "{:?}", result.report);
+    let after = readback(&resolver);
+    // `slightly` on a linear pipe is 10% of the range a human declared: 1000 - 0.10*3800.
+    assert_eq!(
+        after["interface"]["inputs"]["cutoff"]["default"],
+        json!(620.0)
+    );
+    // The wire itself is untouched — the knob turned, the cable stayed plugged in.
+    assert_eq!(
+        after["nodes"][1]["inputs"]["cutoff"],
+        json!({ "from": "/cutoff" })
+    );
+    assert!(
+        result.zoom.contains("/cutoff.in 1000 → 620"),
+        "the echo is the change: {}",
+        result.zoom
+    );
+    // Fed by an envelope, so there is no scalar to move.
+    assert!(
+        result
+            .zoom
+            .contains("/mod_filter.cutoff` is wired from `/env.cv`"),
+        "{}",
+        result.zoom
+    );
+    // And the two moves this document has no seat for.
+    for missing in ["skipped saturator.warmth", "skipped reverb.damp"] {
+        assert!(result.zoom.contains(missing), "{}", result.zoom);
+    }
+    assert!(result
+        .zoom
+        .starts_with("warmer (timbral): 1 applied, 3 skipped"));
+}
+
+/// Two consumers of one pipe are one edit, reported once — the compounding a naive broadcast would
+/// do is exactly what makes a batch untrustworthy.
+#[test]
+fn targets_resolving_to_the_same_pipe_dedupe() {
+    let resolver = resolver_with(&seed_for_intent());
+    let result = by_intent(&resolver, "faster", None, &[]);
+
+    // Linear 60..180, default step: 130 + 0.25*120.
+    assert_eq!(
+        readback(&resolver)["interface"]["inputs"]["tempo"]["default"],
+        json!(160.0)
+    );
+    assert!(
+        result
+            .zoom
+            .starts_with("faster (rhythmic): 1 applied, 0 skipped"),
+        "{}",
+        result.zoom
+    );
+}
+
+/// A count moves by one, whichever way, and every matching node moves.
+#[test]
+fn an_integer_port_moves_one_count_per_node() {
+    let resolver = resolver_with(&seed_for_intent());
+    let result = by_intent(&resolver, "busier", None, &[]);
+
+    let after = readback(&resolver);
+    assert_eq!(after["nodes"][5]["inputs"]["division"], json!(5.0));
+    assert_eq!(after["nodes"][6]["inputs"]["division"], json!(2.0));
+    assert!(
+        result.zoom.contains("/clock.division 4 → 5"),
+        "{}",
+        result.zoom
+    );
+    assert!(
+        result.zoom.contains("skipped euclid.pulses"),
+        "{}",
+        result.zoom
+    );
+}
+
+/// An input the document never wrote still has a value: the operator's own declared default. And an
+/// exponential port moves by a ratio, so its range never enters the arithmetic.
+#[test]
+fn an_unwritten_input_moves_from_its_descriptor_default() {
+    let resolver = resolver_with(&seed_for_intent());
+    let result = by_intent(&resolver, "softer", None, &[]);
+
+    // `envelope.attack` is exponential, default 0.01, default step ×1.5.
+    assert_eq!(
+        readback(&resolver)["nodes"][3]["inputs"]["attack"],
+        json!(0.015)
+    );
+    assert!(
+        result.zoom.contains("/env.attack 0.01 → 0.015"),
+        "{}",
+        result.zoom
+    );
+}
+
+/// A third of the table assigns rather than shoves, and an enum is assigned by symbol.
+#[test]
+fn a_set_move_assigns_an_enum_symbol() {
+    let resolver = resolver_with(&seed_for_intent());
+    let result = by_intent(&resolver, "more consonant", None, &[]);
+
+    assert_eq!(
+        readback(&resolver)["nodes"][4]["inputs"]["target"],
+        json!("Chord")
+    );
+    assert!(
+        result
+            .zoom
+            .contains("/snap.target Scale → Chord [snap to chord tones]"),
+        "the curated hedge arrives after the act: {}",
+        result.zoom
+    );
+}
+
+/// `target` is the projection's selection grammar, and a term that named nothing is reported rather
+/// than silently dropped.
+#[test]
+fn target_narrows_and_reports_what_it_did_not_match() {
+    let resolver = resolver_with(&seed_for_intent());
+    let result = by_intent(&resolver, "warmer", None, &["/mod_filter", "/nope"]);
+
+    // `/filter` was outside the target, so its pipe is untouched.
+    assert_eq!(
+        readback(&resolver)["interface"]["inputs"]["cutoff"]["default"],
+        json!(1000.0)
+    );
+    assert!(result.zoom.contains("unmatched: /nope"), "{}", result.zoom);
+}
+
+/// The one overloaded word: the most likely reading is applied, and the report names the reading it
+/// passed over — the table's own preamble, mechanized.
+#[test]
+fn an_overloaded_word_takes_a_reading_and_names_the_other() {
+    let resolver = resolver_with(&seed_for_intent());
+    let timbral = by_intent(&resolver, "darker", None, &[]);
+    assert!(
+        timbral.zoom.starts_with("darker (timbral)"),
+        "{}",
+        timbral.zoom
+    );
+    assert!(
+        timbral
+            .zoom
+            .contains("also a tonal word — pass section \"tonal\""),
+        "{}",
+        timbral.zoom
+    );
+
+    let tonal = by_intent(&resolver, "darker", Some(Section::Tonal), &[]);
+    assert!(tonal.zoom.starts_with("darker (tonal)"), "{}", tonal.zoom);
+    assert!(
+        !tonal.zoom.contains("also a"),
+        "nothing was passed over: {}",
+        tonal.zoom
+    );
+}
+
+/// A word the table does not carry is a precondition failure, not a batch of zero edits: there is
+/// nothing to report, and a `written: true` for it would be a lie.
+#[test]
+fn a_word_outside_the_table_is_a_precondition_error() {
+    let resolver = resolver_with(&seed_for_intent());
+    let err =
+        set_instrument_inputs_by_intent(SRC, "shinier", None, &[], &Registry::builtin(), &resolver)
+            .expect_err("not a word in the table");
+    assert!(err.to_string().contains("shinier"), "{err}");
+}
+
+/// A pipe-fed graph shaped by its interface block: one instrument, one wired consumer per pipe, so
+/// each test declares exactly the pipe contract it is about.
+fn seed_piped(pipes: serde_json::Value, nodes: serde_json::Value) -> String {
+    json!({
+        "format_version": 3,
+        "instrument": "piped",
+        "nodes": nodes,
+        "interface": { "inputs": pipes, "outputs": { "main": { "from": "/amp" } } }
+    })
+    .to_string()
+}
+
+/// A pipe that declares no range has no range: the loader fills the gap with the type-wide ±1e6
+/// sentinel, and a quarter of *that* is half a million written into the document. The contract falls
+/// back to the port the pipe feeds, which is the only side that knows the musical span.
+#[test]
+fn a_pipe_with_no_declared_range_is_sized_by_the_port_it_feeds() {
+    let resolver = resolver_with(&seed_piped(
+        json!({ "wet": { "type": "f32", "default": 0.3 } }),
+        json!([
+            { "type": "oscillator", "address": "/osc" },
+            { "type": "reverb", "address": "/rv",
+              "inputs": { "audio": { "from": "/osc" }, "mix": { "from": "/wet" } } },
+            { "type": "mul_f32_signal", "address": "/amp",
+              "inputs": { "a": { "from": "/rv" }, "b": 0.5 } }
+        ]),
+    ));
+    let result = by_intent(&resolver, "wetter", None, &[]);
+
+    // `reverb.mix` is 0..1 linear, so the default step is a quarter of one — not of two million.
+    assert_eq!(
+        readback(&resolver)["interface"]["inputs"]["wet"]["default"],
+        json!(0.55)
+    );
+    assert!(
+        result.zoom.contains("/wet.in 0.3 → 0.55"),
+        "{}",
+        result.zoom
+    );
+}
+
+/// A non-finite bound must never reach the arithmetic. JSON cannot spell an infinity, so serde
+/// writes one as `null` — the seed would be *erased* while the report claimed the move landed, and
+/// a null seed is legal so nothing downstream would catch it.
+#[test]
+fn a_non_finite_range_is_skipped_rather_than_written() {
+    let resolver = resolver_with(&seed_piped(
+        // `1e40` is finite as an `f64` and infinite as the `f32` the pipe contract is built in.
+        json!({ "cut": { "type": "f32", "min": 20.0, "max": 1e40, "curve": "lin",
+                         "default": 1000.0 } }),
+        json!([
+            { "type": "oscillator", "address": "/osc" },
+            { "type": "filter", "address": "/f",
+              "inputs": { "audio": { "from": "/osc" }, "cutoff": { "from": "/cut" } } },
+            { "type": "mul_f32_signal", "address": "/amp",
+              "inputs": { "a": { "from": "/f" }, "b": 0.5 } }
+        ]),
+    ));
+    let result = by_intent(&resolver, "brighter", None, &[]);
+
+    let seed = &readback(&resolver)["interface"]["inputs"]["cut"]["default"];
+    assert_eq!(seed, &json!(1000.0), "the seed survives: {seed}");
+    assert!(
+        result.zoom.contains("not a finite value"),
+        "the skip says why: {}",
+        result.zoom
+    );
+    assert!(result.zoom.starts_with("brighter (timbral): 0 applied"));
+}
+
+/// A move that lands where it started is not a move. The report is the only account of the edit
+/// there is, so "applied" over a byte-identical document is the one thing it cannot say.
+#[test]
+fn a_move_that_clamps_to_where_it_started_is_a_skip() {
+    let resolver = resolver_with(
+        &json!({
+            "format_version": 3,
+            "instrument": "at-the-edge",
+            "nodes": [
+                { "type": "oscillator", "address": "/osc" },
+                { "type": "filter", "address": "/f",
+                  "inputs": { "audio": { "from": "/osc" }, "cutoff": 20000.0 } },
+                { "type": "reverb", "address": "/rv",
+                  "inputs": { "audio": { "from": "/f" }, "mix": 1.0, "damp": 0.0 } },
+                { "type": "mul_f32_signal", "address": "/amp",
+                  "inputs": { "a": { "from": "/rv" }, "b": 0.5 } }
+            ],
+            "interface": { "outputs": { "main": { "from": "/amp" } } }
+        })
+        .to_string(),
+    );
+    let result = by_intent(&resolver, "airier", None, &[]);
+
+    assert!(
+        result
+            .zoom
+            .starts_with("airier (timbral): 0 applied, 3 skipped"),
+        "{}",
+        result.zoom
+    );
+    assert!(result.zoom.contains("is already 1"), "{}", result.zoom);
+    let after = readback(&resolver);
+    assert_eq!(after["nodes"][2]["inputs"]["mix"], json!(1.0));
+    assert_eq!(after["nodes"][2]["inputs"]["damp"], json!(0.0));
+    assert_eq!(after["nodes"][1]["inputs"]["cutoff"], json!(20000.0));
+}
+
+/// Omitting `curve` is not an assertion of linearity — the loader's default is, and taking it would
+/// put a fraction-of-range step on a port whose response is a ratio.
+#[test]
+fn a_pipe_with_no_declared_curve_inherits_the_ports_response() {
+    let resolver = resolver_with(&seed_piped(
+        json!({ "glide": { "type": "f32", "min": 0.0, "max": 0.5, "default": 0.06 } }),
+        json!([
+            { "type": "oscillator", "address": "/osc" },
+            { "type": "m2s", "address": "/m", "inputs": { "time": { "from": "/glide" } } },
+            { "type": "mul_f32_signal", "address": "/amp",
+              "inputs": { "a": { "from": "/osc" }, "b": 0.5 } }
+        ]),
+    ));
+    let result = by_intent(&resolver, "looser", None, &[]);
+
+    // `m2s.time` is exponential: ×1.5, not a quarter of the pipe's own 0..0.5 span (which would be
+    // 0.185 — a 185 ms glide where the port's own geometry says 90.
+    assert_eq!(
+        readback(&resolver)["interface"]["inputs"]["glide"]["default"],
+        json!(0.09)
+    );
+    assert!(
+        result.zoom.contains("/glide.in 0.06 → 0.09"),
+        "{}",
+        result.zoom
+    );
+}
+
+/// A channel-bound pipe still moves — its seed is what a nested or unfed instrument plays — but the
+/// caller never named it, the wire led here, so the note says when the move is inaudible.
+#[test]
+fn moving_a_channel_bound_pipe_is_noted() {
+    let resolver = resolver_with(&seed_piped(
+        json!({ "cut": { "type": "f32_buffer", "channel": 0, "min": 200.0, "max": 4000.0,
+                         "curve": "lin", "default": 1000.0 } }),
+        json!([
+            { "type": "oscillator", "address": "/osc" },
+            { "type": "filter", "address": "/f",
+              "inputs": { "audio": { "from": "/osc" }, "cutoff": { "from": "/cut" } } },
+            { "type": "mul_f32_signal", "address": "/amp",
+              "inputs": { "a": { "from": "/f" }, "b": 0.5 } }
+        ]),
+    ));
+    let result = by_intent(&resolver, "warmer", None, &[]);
+
+    assert!(
+        result.zoom.contains("/cut.in 1000 → 620"),
+        "{}",
+        result.zoom
+    );
+    assert!(
+        result.notes.iter().any(|n| n.contains("input channel 0")),
+        "the caveat rides the edit: {:?}",
+        result.notes
+    );
+}
+
+/// `target` takes the addresses the report hands back. The wire-followed address is a pipe's, so
+/// narrowing by the address just echoed has to reach the same slot — one address space or none.
+#[test]
+fn target_accepts_the_pipe_address_the_report_echoes() {
+    let seed = seed_piped(
+        json!({ "cut": { "type": "f32", "min": 200.0, "max": 4000.0, "curve": "lin",
+                         "default": 1000.0 } }),
+        json!([
+            { "type": "oscillator", "address": "/osc" },
+            { "type": "filter", "address": "/f",
+              "inputs": { "audio": { "from": "/osc" }, "cutoff": { "from": "/cut" } } },
+            { "type": "mul_f32_signal", "address": "/amp",
+              "inputs": { "a": { "from": "/f" }, "b": 0.5 } }
+        ]),
+    );
+    let resolver = resolver_with(&seed);
+    let broadcast = by_intent(&resolver, "warmer", None, &[]);
+    assert!(broadcast.zoom.contains("/cut.in"), "{}", broadcast.zoom);
+
+    // The same word again, narrowed by the address that echo just named.
+    let resolver = resolver_with(&seed);
+    let narrowed = by_intent(&resolver, "warmer", None, &["/cut"]);
+    assert_eq!(
+        readback(&resolver)["interface"]["inputs"]["cut"]["default"],
+        json!(620.0)
+    );
+    assert!(
+        !narrowed.zoom.contains("unmatched"),
+        "the echoed address matched: {}",
+        narrowed.zoom
+    );
+}
+
+/// The dedupe is on a slot that was *written*. A slot a first move could not move is still a slot a
+/// second move can — the two arrive with different contracts, because they are fed by different
+/// ports — so blocking it on the first attempt loses the second entirely.
+#[test]
+fn a_slot_a_move_could_not_write_stays_open_to_the_next_move() {
+    let resolver = resolver_with(&seed_piped(
+        json!({ "p": { "type": "f32", "default": 20000.0 } }),
+        json!([
+            { "type": "oscillator", "address": "/osc" },
+            { "type": "filter", "address": "/f",
+              "inputs": { "audio": { "from": "/osc" }, "cutoff": { "from": "/p" },
+                          "resonance": { "from": "/p" } } },
+            { "type": "mul_f32_signal", "address": "/amp",
+              "inputs": { "a": { "from": "/f" }, "b": 0.5 } }
+        ]),
+    ));
+    // `harsher` is saturator.drive up; filter.cutoff up; filter.resonance up. Against `cutoff`'s
+    // 20..20000 the seed is already at the ceiling — a skip; against `resonance`'s 0..1 it is not.
+    let result = by_intent(&resolver, "harsher", None, &[]);
+
+    assert!(
+        result.zoom.contains("/p.in 20000 → 1"),
+        "the second move still reached the slot: {}",
+        result.zoom
+    );
+    assert!(
+        result
+            .zoom
+            .starts_with("harsher (timbral): 1 applied, 2 skipped"),
+        "{}",
+        result.zoom
+    );
+}
+
+/// A `set` names a specific thing — a minor 3rd, a rotation of 0 — so a range that will not hold it
+/// has no smaller version of it to offer. Clamping would land a *different* interval and the row's
+/// own description would then label it: `s2 → 5` reported as "a minor 3rd" while being a 4th.
+#[test]
+fn a_set_the_range_cannot_hold_is_a_skip_not_a_clamp() {
+    let resolver = resolver_with(&seed_piped(
+        json!({ "iv": { "type": "i32", "min": 5.0, "max": 9.0, "default": 7.0 } }),
+        json!([
+            { "type": "oscillator", "address": "/osc" },
+            { "type": "harmony", "address": "/h", "inputs": { "s2": { "from": "/iv" } } },
+            { "type": "mul_f32_signal", "address": "/amp",
+              "inputs": { "a": { "from": "/osc" }, "b": 0.5 } }
+        ]),
+    ));
+    // `sadder` sets s2 to a minor 3rd, s5 to a minor 6th, s6 to a minor 7th. Only s2 is pinned
+    // behind a range that excludes the interval it names.
+    let result = by_intent(&resolver, "sadder", None, &[]);
+
+    let after = readback(&resolver);
+    assert_eq!(
+        after["interface"]["inputs"]["iv"]["default"],
+        json!(7.0),
+        "an unreachable interval leaves the value alone"
+    );
+    assert!(
+        result.zoom.contains("cannot be set to 3"),
+        "the skip names the value it could not reach: {}",
+        result.zoom
+    );
+    // The siblings it *can* reach still land — a batch is not all-or-nothing.
+    assert_eq!(after["nodes"][1]["inputs"]["s5"], json!(8.0));
+    assert_eq!(after["nodes"][1]["inputs"]["s6"], json!(10.0));
+    assert!(result
+        .zoom
+        .starts_with("sadder (tonal): 2 applied, 1 skipped"));
+}
+
+/// One slot reached through three consumers is one problem. The successful path already collapses
+/// those three to one applied line; three copies of one skip read as three distinct failures.
+#[test]
+fn skips_that_name_the_same_slot_and_reason_collapse() {
+    let resolver = resolver_with(&seed_piped(
+        json!({ "tempo": { "type": "f32", "min": 60.0, "max": 180.0, "curve": "lin",
+                           "default": 180.0 } }),
+        json!([
+            { "type": "oscillator", "address": "/osc" },
+            { "type": "clock", "address": "/c1", "inputs": { "tempo": { "from": "/tempo" } } },
+            { "type": "clock", "address": "/c2", "inputs": { "tempo": { "from": "/tempo" } } },
+            { "type": "clock", "address": "/c3", "inputs": { "tempo": { "from": "/tempo" } } },
+            { "type": "mul_f32_signal", "address": "/amp",
+              "inputs": { "a": { "from": "/osc" }, "b": 0.5 } }
+        ]),
+    ));
+    let result = by_intent(&resolver, "faster", None, &[]);
+
+    assert!(
+        result
+            .zoom
+            .starts_with("faster (rhythmic): 0 applied, 1 skipped"),
+        "{}",
+        result.zoom
+    );
+    assert_eq!(
+        result.zoom.matches("/tempo.in` is already 180").count(),
+        1,
+        "{}",
+        result.zoom
+    );
+}
