@@ -262,6 +262,36 @@ class CommentRefGuardCss(unittest.TestCase):
         # reading is the chosen one — a colour restated in a comment is restatement anyway.
         self.assertEqual(len(self.problems("/* was #333 before */")), 1)
 
+    def test_the_colour_collision_is_named_in_the_message(self):
+        # Strictness with no explanation is what teaches people to route around a guard. Neither the
+        # docstring nor the rules doc is the surface an author hits — the error string is.
+        problems = self.problems("/* was #333 before */")
+        self.assertIn("hex COLOUR", problems[0])
+
+    def test_a_commented_out_declaration_gets_the_hint(self):
+        # The most ordinary comment a stylesheet carries, landing on the grey ramp.
+        problems = self.problems("/* background: #444; */")
+        self.assertEqual(len(problems), 1)
+        self.assertIn("hex COLOUR", problems[0])
+
+    def test_a_cross_repo_citation_gets_no_colour_hint(self):
+        # The `<repo>#<nnn>` spelling cannot be a colour, so the hint would be noise.
+        problems = self.problems("/* reuben-web#333 moved this */")
+        self.assertEqual(len(problems), 1)
+        self.assertNotIn("hex COLOUR", problems[0])
+
+    def test_a_citation_too_short_to_be_a_colour_gets_no_hint(self):
+        # CSS has no two-digit hex colour, so this one is unambiguous and needs no caveat.
+        problems = self.problems("/* the banner (#90) */")
+        self.assertEqual(len(problems), 1)
+        self.assertNotIn("hex COLOUR", problems[0])
+
+    def test_no_other_lane_gets_the_colour_hint(self):
+        # One branch, on the lane: a JS comment has no colour to be mistaken for.
+        problems = check_rules_refs.comment_ref_problems("a.mjs", "// see #333\n", "curly")
+        self.assertEqual(len(problems), 1)
+        self.assertNotIn("hex COLOUR", problems[0])
+
     def test_a_rules_pointer_is_clean(self):
         self.assertEqual(self.problems("/* see rules: code-as-grounding */"), [])
 
@@ -432,6 +462,46 @@ class ParityGuard(unittest.TestCase):
         self.assertEqual(self.problems("#[test]\nfn t() { assert_eq!(a.len(), b.len()); }"), [])
 
 
+class LaneKeyAndSuffixClass(unittest.TestCase):
+    """Check 7: reach is default-on, so every lane key in the tree is classified — readable,
+    deliberately out of reach, or not a prose surface — and one in no bucket is reported.
+
+    This is the check that makes default-on true of the CODE rather than only of the docstring.
+    """
+
+    def test_a_dotenv_is_keyed_by_format_not_by_environment(self):
+        # `.env.production` has suffix `.production`, which names an environment and matches no row.
+        self.assertEqual(check_rules_refs.lane_key(".env.production"), ".env")
+        self.assertEqual(check_rules_refs.lane_key(".env"), ".env")
+        self.assertEqual(check_rules_refs.lane_key("a.css"), ".css")
+
+    def test_an_extensionless_file_has_no_lane_key(self):
+        # LICENSE, a githook: nothing to classify, and outside the guard as it has always been.
+        self.assertEqual(check_rules_refs.lane_key("LICENSE"), "")
+
+    def test_a_readable_lane_is_clean(self):
+        self.assertEqual(check_rules_refs.suffix_class_problems({".rs": "a.rs"}), [])
+
+    def test_an_out_of_reach_lane_is_clean(self):
+        self.assertEqual(check_rules_refs.suffix_class_problems({".md": "a.md"}), [])
+
+    def test_a_non_source_lane_is_clean(self):
+        self.assertEqual(check_rules_refs.suffix_class_problems({".png": "a.png"}), [])
+
+    def test_an_unclassified_lane_is_reported(self):
+        problems = check_rules_refs.suffix_class_problems({".scss": "web/a.scss"})
+        self.assertEqual(len(problems), 1)
+        self.assertIn("unclassified lane `.scss`", problems[0])
+        self.assertTrue(problems[0].startswith("web/a.scss:1:"))
+
+    def test_every_out_of_reach_entry_carries_a_reason(self):
+        # The entry IS the reason — an exclusion with no argument is the silence this check exists
+        # to stop, so an empty or token one must not be able to sit in the table unnoticed.
+        for ext, reason in check_rules_refs.OUT_OF_REACH_EXTS.items():
+            with self.subTest(ext=ext):
+                self.assertGreaterEqual(len(reason.split()), 10)
+
+
 class WholeTree(unittest.TestCase):
     def run_main(self, files: dict[str, str]) -> int:
         with tempfile.TemporaryDirectory() as tmp:
@@ -491,6 +561,32 @@ class WholeTree(unittest.TestCase):
         self.assertEqual(self.run_main({"web/src/a.css": "/* see rules: no-such-topic */\n"}), 1)
         self.assertEqual(
             self.run_main({"web/src/a.css": "/* see rules: code-as-grounding */\n"}), 0)
+
+    def test_an_unclassified_lane_reds_the_tree(self):
+        # The mechanism, end to end: a lane the guard has never met is a sentence, not a shrug.
+        self.assertEqual(self.run_main({"web/a.scss": ".x { color: red; }\n"}), 1)
+
+    def test_a_dotenv_is_read_as_a_hash_lane(self):
+        # Found by check 7 rather than by anyone noticing, and carrying a real citation when it was.
+        self.assertEqual(self.run_main({"web/.env.production": "# baked in by #107\n"}), 1)
+
+    def test_html_is_classified_out_rather_than_missing(self):
+        # The honest state: three comment regimes in one file, so it is not readable with a single
+        # opener and its comments are UNPOLICED — which is not the same sentence as exempt. The
+        # citation below is deliberately NOT flagged, and this test is where that gap is written down.
+        self.assertEqual(self.run_main({"web/index.html": "<!-- the shell (#107) -->\n"}), 0)
+
+    def test_a_directory_named_engine_is_not_the_submodule(self):
+        # The skip is about BEING the submodule, which only the root position says. As a bare
+        # component it also swallowed `crates/reuben-api/src/engine/`, first-party modules that
+        # went unread under this repo's own CI.
+        self.assertEqual(
+            self.run_main({"crates/reuben-api/src/engine/mod.rs": "//! see rules: nope\n"}), 1)
+
+    def test_the_submodule_at_the_root_is_still_skipped(self):
+        # The converse: a run from the consuming repo's root must not read the submodule's tree.
+        self.assertEqual(
+            self.run_main({"engine/crates/reuben-core/src/lib.rs": "//! see rules: nope\n"}), 0)
 
     def test_a_nested_checkout_is_not_repo_content(self):
         # An agent worktree is a full second copy of the tree, and a stale one by design. Every
