@@ -492,8 +492,11 @@ jobs:
   # post-merge side-effects (deploy/persist), not merge gates.
   ci-passed:
     # This `name` is the exact string the `dev` ruleset requires as a status check (GitHub matches
-    # required checks by a job's `name`, not its id) — keep it equal to `ci-passed` so the ruleset,
-    # this workflow and CONTRIBUTING refer to the check by one name.
+    # required checks by a job's `name`, not its id) — rename it and the ruleset goes on expecting a
+    # check that never reports, wedging every PR exactly as a Skipped filtered job would (see the
+    # comment at the top of this file). So a rename is never one edit: move the ruleset with it, and
+    # grep for `ci-passed` first — the literal string is spelled out in prose both here and under
+    # `docs/rules/`, and none of those copies are guarded.
     name: ci-passed
     runs-on: ubuntu-latest
     needs:
