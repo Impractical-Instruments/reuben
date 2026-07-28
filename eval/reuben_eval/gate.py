@@ -115,9 +115,13 @@ def _reference_rewrite_lines(report: dict[str, Any], baseline: dict[str, Any]) -
     """Say so when the two sides do not share a reference revision.
 
     A reference solution is the ideal call sequence, so rewriting one moves every metric at once —
-    which reads exactly like a surface regression and is the opposite of one. The comparison is
-    normally silent: `eval-gate.sh` measures both sides with the PR's own harness, so the revisions
-    match and the only place the step is visible is the trend, which carries the number too.
+    which reads exactly like a surface regression and is the opposite of one.
+
+    **This cannot fire in CI, by construction.** `eval-gate.sh` never swaps `eval/`, so both sides of
+    a PR comparison are always measured by the PR's own harness and always carry the same revision.
+    It fires on exactly one path: a manual `--compare` against a report saved before a rewrite. The
+    trend is where the step actually lands, and `history_records` carries the revision there so the
+    dashboard names the commit — that is the half a human reads.
     """
     current = report.get("references", {}).get("revision")
     before = baseline.get("references", {}).get("revision")

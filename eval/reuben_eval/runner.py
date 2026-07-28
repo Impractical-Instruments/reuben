@@ -122,12 +122,15 @@ class Session:
                 result = self.sidecar.read_resource(uri)
             self.trace.record("resource", name, arguments, result)
             return result
+        # The roster gets first claim on every name, so nothing below can shadow a real verb — and
+        # the ledger needs the same answer, because a refused call is bound by no schema and has to
+        # be priced by argument shape rather than by name.
+        on_roster = name in self.sidecar.tools
         # Charged before dispatch, so a document emitted at a tool that refuses it is priced rather
         # than refunded by the error — the reach costs what taking it would have cost.
-        self.workspace.payloads.charge(name, arguments)
+        self.workspace.payloads.charge(name, arguments, on_roster=on_roster)
         surface = "mcp"
-        if name in self.sidecar.tools:
-            # The roster gets first claim on every name, so nothing below can shadow a real verb.
+        if on_roster:
             answer = self.sidecar.call_tool(name, arguments)
             result = answer.rendered()
             # Metric (b). Read off the structured report, never the prose: "invalid: 1 error(s)" is

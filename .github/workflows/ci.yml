@@ -104,6 +104,11 @@ jobs:
               - 'docs/agents/**'
               - 'eval/**'
               - '.github/scripts/eval-gate.sh'
+              # The dashboard consumes `reference_revision`, which this gate produces. The two halves
+              # of that annotation must move together or the trend gains a step no reader can
+              # interpret, so the dashboard's own suite runs on this gate's path set.
+              - '.github/scripts/bench-dashboard.py'
+              - '.github/scripts/test_bench_dashboard.py'
             rules:
               - 'docs/rules/**'
               # The supersession gate reads the ADRs: an ADR overturning a rule must mark it in the
@@ -369,6 +374,12 @@ jobs:
       # differential test lives in the dev extra and skips here, by design.
       - name: Harness unit tests
         run: cd eval && python3 -m unittest discover -s tests -v
+
+      # The consuming half. `reference_revision` only means anything if the dashboard reads it
+      # correctly, and its one job is to tell a re-baseline apart from a regression — a wrong call
+      # there tells the reader to discount a real one.
+      - name: Dashboard eval-trend tests
+        run: cd .github/scripts && python3 -m unittest test_bench_dashboard -v
 
       - name: Compare agent-surface cost vs baseline
         run: ./.github/scripts/eval-gate.sh "${{ steps.base.outputs.sha }}"

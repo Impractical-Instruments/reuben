@@ -124,8 +124,14 @@ def _changed_addresses(expected: dict[str, Any], produced: dict[str, Any]) -> li
     """
     changes: list[str] = []
     for key in sorted(set(expected) | set(produced)):
-        if key != "nodes" and expected.get(key) != produced.get(key):
-            changes.append(key if key in produced else f"{key} (dropped)")
+        if key == "nodes" or expected.get(key) == produced.get(key):
+            continue
+        if key not in produced:
+            changes.append(f"{key} (dropped)")
+        elif key not in expected:
+            changes.append(f"{key} (added)")
+        else:
+            changes.append(key)
 
     before, after = _nodes(expected), _nodes(produced)
     for node_address in sorted(set(before) | set(after)):

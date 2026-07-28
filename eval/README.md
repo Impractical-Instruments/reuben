@@ -109,10 +109,17 @@ new arrangement is therefore strictly better than "leave the tools on and watch"
 separates what a model *wants* from what the surface happens to offer it.
 
 The classification is shape-matched rather than a list of two names, since the whole point is to
-catch the reach *after* `read_file` is gone and whatever a model's priors call the same move
-(`readFile`, `fs_write`, `open_file`) arrives instead. It is consulted only once the real roster has
-failed to claim the name, so it can never shadow a verb. A check that cannot be made to fail is not a
-check, so `tests/test_tasks.py` drives a run that emits `read_file` and asserts the mode is reported.
+catch the reach *after* `read_file` is gone and whatever a model's priors call the same move arrives
+instead. It matches a **filesystem noun anywhere** (`readFile`, `move_file`, `directory_tree`,
+`write_document`) **or the whole name** against known host tools (`Read`, `Write`, `Edit`, `bash`,
+`str_replace_editor`) — a union, not an intersection. An AND of action-and-noun would be *stricter*
+than the two literal names it replaced: `Read` and `Write` are bare verbs with no noun to pair with,
+and `bash` has neither half, so a model falling back to one would be reported as having stopped
+wanting the old path when it had not. Being generous is safe because the matcher is only ever
+consulted on a name the roster already refused — it cannot shadow a verb, and a test walks the live
+roster to prove none of them trips it. A check that cannot be made to fail is not a check, so
+`tests/test_tasks.py` also drives a run that emits `read_file` after an otherwise-perfect edit and
+asserts the run fails with the mode named.
 
 Two things are deliberately outside this:
 
@@ -123,10 +130,22 @@ Two things are deliberately outside this:
   structural rather than conventional: nothing in the model-facing roster can read or write a file,
   and there is no host dispatch left for one to route to.
 
-Metric (c) reads differently as a result. With no document-carrying argument left on the roster, a
-run that stays inside the surface prices at **zero** — which is now the only shape a passing gate-tier
-run has. The ledger still names `write_file`, because a model can *invent* the call: characters
-emitted at a tool that refuses them are priced, not refunded by the error.
+Metric (c) is priced by the same logic, in two halves. A **roster** call is bound by a schema, so
+what carries a document can be named in advance — and that table is now empty, because no arm takes
+one by value any more. An **invented** call is bound by nothing, so it is priced by argument *shape*:
+`content`, `text`, `document`, `file_text`, `body` and friends are charged at whatever tool name they
+arrive on. Charging only `write_file(content=…)` would have let `writeFile(content=…)` and
+`write_file(text=…)` emit a whole document for free, and a false zero is the one direction this
+metric must never be fooled in now that it is a floor and a tripwire rather than a spread of values.
+
+A verb argument is not a document even when it is structured: `add_instrument_node(inputs=…)` and
+`send_live_controls(messages=…)` cost nothing. (c) prices **freehand JSON** — the document the model
+had to compose and hold — not communication, and a node's inputs map is the thing the verbs exist to
+make cheap. The name-keyed roster half is what keeps argument shape from ever catching one.
+
+The practical consequence: a passing gate-tier run prices at **zero**, and a non-zero number means a
+document was emitted somewhere. That is a strong signal, not a proof — a model could still hang bytes
+on an argument name nobody anticipated. It is a tripwire, wired to the shapes that actually occur.
 
 ## The tokenizer is pinned, and that is the point
 

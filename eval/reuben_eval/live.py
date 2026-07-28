@@ -178,7 +178,12 @@ def run_once(task: task_module.Task, rung: Rung, base_url: str) -> dict[str, Any
             record = outcome.as_dict()
             if capped:
                 record["passed"] = False
-                record["failure"] = f"hit the {ROUND_CAP}-round cap without finishing"
+                # The cap never overwrites a failure `judge` already named. A capped run that also
+                # reached for a file is counted as a reach, so prose saying it merely ran out of
+                # rounds would contradict the number beside it.
+                record["failure"] = (
+                    record["failure"] or f"hit the {ROUND_CAP}-round cap without finishing"
+                )
             record["capped"] = capped
             record["sampling"] = sampling
             record["trace"] = outcome.trace

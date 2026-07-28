@@ -21,11 +21,10 @@ import tempfile
 import unittest
 
 from reuben_eval import tasks
-from reuben_eval.mcp import SidecarError, sidecar_binary
+from reuben_eval.mcp import Sidecar, SidecarError, sidecar_binary
 from reuben_eval.runner import Session, run_reference
 from reuben_eval.workspace import (
     FILE_ACCESS,
-    FILE_TOOLS,
     HOST_TOOLS,
     PayloadLedger,
     file_access_failure,
@@ -39,6 +38,24 @@ def sidecar_available() -> bool:
         return True
     except SidecarError:
         return False
+
+
+def _replay(task, extra_calls=()):
+    """Replay a reference (plus any extra calls) and hand back the outcome and the document.
+
+    `run_reference` deliberately reports only the numbers; a test that has to inspect what was
+    actually written needs the workspace alive at scoring time, which is what this holds open.
+    """
+    with tempfile.TemporaryDirectory(prefix=f"reuben-eval-{task.key}-") as root:
+        with Session(task, pathlib.Path(root) / "workspace") as session:
+            for step in task.reference:
+                if step.surface == "resource":
+                    session.read_resource(str(step.arguments["uri"]))
+                else:
+                    session.call(step.name, dict(step.arguments))
+            for name, arguments in extra_calls:
+                session.call(name, dict(arguments))
+            return session.judge(), session.workspace.read_document(task.document)
 
 
 class TestReferenceSolutions(unittest.TestCase):
@@ -89,18 +106,18 @@ class TestReferenceSolutions(unittest.TestCase):
         self.assertEqual(outcome.payload_characters, 0)
         self.assertEqual(len(tasks.BY_KEY["tweak"].reference), 1)
 
+    @unittest.skipUnless(sidecar_available(), "reuben-mcp not built")
     def test_the_from_scratch_reference_builds_the_document_it_declares(self) -> None:
-        """The verb sequence and `_from_scratch_document` must not drift apart."""
-        document = tasks._from_scratch_document()
-        added = [
-            step.arguments
-            for step in tasks.BY_KEY["from_scratch"].reference
-            if step.name == "add_instrument_node"
-        ]
-        self.assertEqual(
-            [(a["address"], a["type"], a["inputs"]) for a in added],
-            [(n["address"], n["type"], n["inputs"]) for n in document["nodes"]],
-        )
+        """The verb sequence and `_from_scratch_document` must not drift apart.
+
+        Asserted on the *produced* document rather than on the steps, because a step-by-step
+        comparison only ever checks the parts it thinks to walk: add a `doc` to the target and a
+        nodes-and-pipes comparison stays green while the document silently loses it. This is the
+        claim the docstring makes — the rewrite changed the procedure and not the artifact — so it
+        is the claim that has to be tested.
+        """
+        _, produced = _replay(tasks.BY_KEY["from_scratch"])
+        self.assertEqual(produced, tasks._from_scratch_document())
 
 
 class TestFromScratchAssertion(unittest.TestCase):
@@ -257,22 +274,64 @@ class TestPayloadLedger(unittest.TestCase):
         # An echo is a model writing a document it has already emitted once — the re-emit this
         # metric exists to kill. Both writes are charged: the second is not free for being a repeat.
         ledger = PayloadLedger()
-        ledger.charge("write_file", {"path": "a.json", "content": tasks.VOICE})
-        ledger.charge("write_file", {"path": "a.json", "content": tasks.VOICE})
+        for _ in range(2):
+            ledger.charge("write_file", {"path": "a.json", "content": tasks.VOICE},
+                          on_roster=False)
         self.assertGreater(ledger.characters, len(tasks.VOICE))
         self.assertEqual(set(ledger.per_tool), {"write_file"})
+
+    def test_a_document_is_charged_whatever_the_invented_call_is_called(self) -> None:
+        """The name is as free as the encoding, so pricing one spelling prices nothing.
+
+        A refused call is bound by no schema: `writeFile`, `Write`, `write_document` and
+        `str_replace_editor` all emit the same document, and charging only `write_file(content=…)`
+        would let every other spelling through at zero. A false zero is the one direction this
+        metric must never be fooled in, now that it is a floor and a tripwire.
+        """
+        for tool, argument in (
+            ("write_file", "content"),
+            ("writeFile", "content"),
+            ("Write", "content"),
+            ("write_file", "text"),
+            ("write_document", "document"),
+            ("str_replace_editor", "file_text"),
+            ("save_file", "body"),
+        ):
+            with self.subTest(tool=tool, argument=argument):
+                ledger = PayloadLedger()
+                ledger.charge(tool, {"path": "a.json", argument: tasks.VOICE}, on_roster=False)
+                self.assertEqual(ledger.characters, len(tasks.VOICE))
 
     def test_intent_sized_arguments_cost_nothing(self) -> None:
         """A word, a node address and a float are what this map wants the model emitting."""
         ledger = PayloadLedger()
-        ledger.charge("validate_instrument", {"source": "instrument.json"})
+        ledger.charge("validate_instrument", {"source": "instrument.json"}, on_roster=True)
         ledger.charge(
-            "send_live_controls", {"messages": [{"address": "/filt/cutoff", "args": [800.0]}]}
+            "send_live_controls",
+            {"messages": [{"address": "/filt/cutoff", "args": [800.0]}]},
+            on_roster=True,
         )
-        ledger.charge("new_instrument", {"source": "instrument.json", "name": "tone"})
+        ledger.charge("new_instrument", {"source": "instrument.json", "name": "tone"},
+                      on_roster=True)
         ledger.charge("set_instrument_input", {"source": "instrument.json",
-                                               "address": "/filter", "port": "cutoff",
-                                               "value": 800.0})
+                                               "address": "/filter", "input": "cutoff",
+                                               "value": 800.0}, on_roster=True)
+        self.assertEqual(ledger.characters, 0)
+
+    def test_a_verb_argument_is_not_a_document(self) -> None:
+        """A node's inputs map is structured, and still free. The metric prices freehand JSON.
+
+        `add_instrument_node(inputs=…)` is small, schema-named, and is the thing the verbs exist to
+        make cheap — charging it would price the cure as the disease. The roster half of the ledger
+        is name-keyed precisely so a verb argument can never be caught by argument shape.
+        """
+        ledger = PayloadLedger()
+        ledger.charge(
+            "add_instrument_node",
+            {"source": "instrument.json", "address": "/filter", "type": "filter",
+             "inputs": {"audio": {"from": "/osc"}, "cutoff": 1200.0}},
+            on_roster=True,
+        )
         self.assertEqual(ledger.characters, 0)
 
     def test_encoding_does_not_change_the_price(self) -> None:
@@ -283,9 +342,9 @@ class TestPayloadLedger(unittest.TestCase):
         """
         compact = json.dumps(tasks.VOICE_DOCUMENT, separators=(",", ":"))
         as_string = PayloadLedger()
-        as_string.charge("write_file", {"content": compact})
+        as_string.charge("write_file", {"content": compact}, on_roster=False)
         as_object = PayloadLedger()
-        as_object.charge("write_file", {"content": tasks.VOICE_DOCUMENT})
+        as_object.charge("write_file", {"content": tasks.VOICE_DOCUMENT}, on_roster=False)
         self.assertEqual(as_string.characters, as_object.characters)
 
 
@@ -341,17 +400,23 @@ class TestTaskRoster(unittest.TestCase):
             {"from_scratch", "tweak", "intent_word", "intent_fan_out", "repair"},
         )
 
-    def test_every_task_has_a_reference_solution_that_writes_the_document(self) -> None:
-        """A reference must produce the answer document — through a verb, or by emitting it."""
+    @unittest.skipUnless(sidecar_available(), "reuben-mcp not built")
+    def test_every_reference_solution_actually_writes_the_document(self) -> None:
+        """A reference must leave the document changed, not merely mention it.
+
+        Asserted on the result rather than on the call list. Matching step arguments for the answer
+        document's name cannot tell a write from a read — `validate_instrument` and
+        `describe_instrument` both name their `source` — so such a check stays green on a reference
+        whose only mutating verb has been deleted. Running it is the only way to know.
+        """
         for task in tasks.TASKS:
             with self.subTest(task=task.key):
-                writes = [
-                    step
-                    for step in task.reference
-                    if step.arguments.get("source") == task.document
-                    or step.arguments.get("path") == task.document
-                ]
-                self.assertTrue(writes, "a reference solution must produce the answer document")
+                _, produced = _replay(task)
+                seed = task.seed.get(task.document)
+                if seed is not None:
+                    self.assertNotEqual(
+                        produced, json.loads(seed), "the reference left the document untouched"
+                    )
 
 
 class TestFileAccessIsANamedFailure(unittest.TestCase):
@@ -365,9 +430,22 @@ class TestFileAccessIsANamedFailure(unittest.TestCase):
     it. A check that cannot be made to fail is not a check, so these fire it.
     """
 
-    def test_the_model_facing_roster_has_no_file_tool(self) -> None:
-        offered = {tool["function"]["name"] for tool in HOST_TOOLS}
-        self.assertEqual(offered & set(FILE_TOOLS), set())
+    # Tools a real host actually offers, not names built backwards from the matcher. Claude Code's
+    # own roster, Anthropic's text-editor tool, the canonical MCP filesystem server, and the shells a
+    # model falls back to when none of those are there. Every one of these is a path by which a model
+    # that lost `write_file` can still emit a whole document.
+    REAL_HOST_TOOLS = (
+        "Read", "Write", "Edit", "Glob", "Bash", "bash", "sh",
+        "str_replace_editor", "text_editor", "str_replace_based_edit_tool",
+        "read_file", "write_file", "readFile", "writeFile", "read_text_file",
+        "move_file", "search_files", "get_file_info", "directory_tree", "list_directory",
+        "create_directory", "write_document", "save_document", "view", "cat", "run_command",
+    )
+
+    def test_the_model_facing_roster_offers_nothing_that_trips_it(self) -> None:
+        for tool in HOST_TOOLS:
+            with self.subTest(tool=tool["function"]["name"]):
+                self.assertFalse(looks_like_file_access(tool["function"]["name"]))
 
     def test_read_guide_never_trips_it(self) -> None:
         """Grounding prose is meant for the model's context; this decision does not touch it."""
@@ -375,24 +453,41 @@ class TestFileAccessIsANamedFailure(unittest.TestCase):
         self.assertFalse(looks_like_file_access("read_guide"))
         self.assertIsNone(file_access_failure([]))
 
-    def test_the_retired_names_are_classified(self) -> None:
-        for name in FILE_TOOLS:
-            with self.subTest(tool=name):
-                self.assertTrue(looks_like_file_access(name))
-                message = file_access_failure([name])
-                self.assertIn(FILE_ACCESS, message)
-                self.assertIn("read or write a file", message)
-                self.assertIn(name, message)
+    def test_every_real_host_file_tool_is_classified(self) -> None:
+        """The names that matter are the ones a model reaches for, not the two reuben retired.
 
-    def test_the_shape_survives_the_names_going_away(self) -> None:
-        """What a model emits once `read_file` is gone is whatever its priors call the same move."""
-        for name in ("readFile", "fs_write", "open_file", "list_files", "save-file", "edit_path"):
+        An AND of action-word and filesystem-noun is a *stricter* gate than the two literal names it
+        replaced: `Read`, `Write` and `Edit` are bare verbs with no noun, and `bash` has neither
+        half. Missing those lets a model fall back to the retired path and still be reported as
+        having stopped wanting it — the exact false green the removal was supposed to rule out.
+        """
+        for name in self.REAL_HOST_TOOLS:
             with self.subTest(tool=name):
                 self.assertTrue(looks_like_file_access(name))
+
+    def test_the_message_names_what_was_reached_for(self) -> None:
+        message = file_access_failure(["Write", "read_file"])
+        self.assertIn(FILE_ACCESS, message)
+        self.assertIn("read or write a file", message)
+        self.assertIn("Write", message)
+        self.assertIn("read_file", message)
 
     def test_it_does_not_catch_a_document_verb(self) -> None:
         """A near-miss on a real verb is a malformed call, not a reach for the filesystem."""
-        for name in ("describe_instrument", "set_instrument_input", "new_instrument", "swap"):
+        for name in ("describe_instrument", "set_instrument_input", "new_instrument",
+                     "add_instrument_node", "wire_instrument_input", "send_live_controls",
+                     "swap_instrument", "validate_instrument", "describe_operators"):
+            with self.subTest(tool=name):
+                self.assertFalse(looks_like_file_access(name))
+
+    @unittest.skipUnless(sidecar_available(), "reuben-mcp not built")
+    def test_no_name_on_the_live_roster_trips_it(self) -> None:
+        """The static sample above is a sample; this is the whole roster, whatever it grows to."""
+        with tempfile.TemporaryDirectory(prefix="reuben-roster-") as root:
+            with Sidecar(pathlib.Path(root)) as sidecar:
+                names = sorted(sidecar.tools)
+        self.assertGreater(len(names), 20, "the roster did not load")
+        for name in names:
             with self.subTest(tool=name):
                 self.assertFalse(looks_like_file_access(name))
 
@@ -403,17 +498,17 @@ class TestFileAccessIsANamedFailure(unittest.TestCase):
                 self.assertIsNone(file_access_failure(reached), file_access_failure(reached))
 
     @unittest.skipUnless(sidecar_available(), "reuben-mcp not built")
-    def test_a_run_that_emits_read_file_fails_with_the_named_mode(self) -> None:
-        """The check driven end to end, through the same path a live model's call takes."""
-        task = tasks.BY_KEY["tweak"]
-        with tempfile.TemporaryDirectory(prefix="reuben-eval-reach-") as root:
-            with Session(task, pathlib.Path(root) / "workspace") as session:
-                for step in task.reference:
-                    session.call(step.name, dict(step.arguments))
-                session.call("read_file", {"path": tasks.DOCUMENT})
-                outcome = session.judge()
-        # The document is correct — only the reach failed the run, which is the point.
-        self.assertFalse(outcome.passed)
+    def test_a_reach_after_a_correct_edit_still_fails_the_run(self) -> None:
+        """Driven end to end, through the same path a live model's call takes.
+
+        The `tweak` is correct and the document validates — only the reach failed the run. That is
+        the point: the harness scores what the model wanted, not just what it left behind.
+        """
+        outcome, produced = _replay(
+            tasks.BY_KEY["tweak"], [("read_file", {"path": tasks.DOCUMENT})]
+        )
+        tasks._assert_tweak(produced)  # the document is right
+        self.assertFalse(outcome.passed)  # the run is not
         self.assertEqual(outcome.failure_mode, FILE_ACCESS)
         self.assertIn("read_file", outcome.failure)
 

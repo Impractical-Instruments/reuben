@@ -412,13 +412,25 @@ def eval_rewrite_note(order):
     Every series steps at once on such a commit, and the step is the harness asking for a different
     ideal call sequence — not the surface getting dearer or cheaper. Without this the reader has only
     the shape to go on, and the shape of a rewrite and the shape of a regression are the same.
+
+    A record with no revision at all says *nothing* and is skipped rather than treated as a value.
+    `eval-history.jsonl` accumulates across trend branches, so a branch cut before the field existed
+    appends a gap in the middle of the series; comparing across it would announce a second rewrite
+    that never happened — which is the exact misreading this note exists to prevent. The one place a
+    missing revision is informative is the field's *first* appearance after commits that predate it:
+    those ran an older harness, so that commit is the rewrite.
     """
-    steps = [
-        entry["sha"]
-        for previous, entry in zip(order, order[1:])
-        if entry.get("reference_revision") != previous.get("reference_revision")
-        and entry.get("reference_revision") is not None
-    ]
+    steps, last = [], None
+    for index, entry in enumerate(order):
+        revision = entry.get("reference_revision")
+        if revision is None:
+            continue
+        if last is None:
+            if index > 0:
+                steps.append(entry["sha"])
+        elif revision != last:
+            steps.append(entry["sha"])
+        last = revision
     if not steps:
         return []
     return [
