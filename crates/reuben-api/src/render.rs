@@ -25,6 +25,10 @@ use crate::resources::{OwnedAdapter, Resources};
 
 /// The single-writer graph owner, off-thread by `&mut self`.
 pub use reuben_core::coordinator::Coordinator;
+/// A built-but-not-installed swap: what `Coordinator::prepare_document` returns, so a host whose
+/// render buffers are a fixed size reads the built Engine's geometry and either commits it or drops
+/// it. Re-exported because a host that holds one between the two calls has to name its type.
+pub use reuben_core::coordinator::PreparedSwap;
 /// The render side of a fresh pair — the initial Engine plus the mailbox a swap installs through.
 /// [`RenderSlot::new`] takes it; nothing else does.
 pub use reuben_core::coordinator::RenderSide;

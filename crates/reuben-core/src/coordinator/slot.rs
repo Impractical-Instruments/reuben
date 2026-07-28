@@ -177,6 +177,15 @@ impl RenderSlot {
     ///
     /// `input` is the interleaved logical input master, one input frame per output
     /// frame, or empty for the no-input path — identical to [`Engine::fill_duplex`].
+    ///
+    /// **Both buffers are sized against [`channels`](Self::channels) /
+    /// [`input_channels`](Self::input_channels) as read *before* the call.** An install landing
+    /// mid-block can move either, and a buffer's interleave stride cannot: on that one block the
+    /// remainder past the install point is filled with silence (the master is at zero there
+    /// regardless), the fade-up resumes on the next callback, and both accessors report the new
+    /// geometry the moment this call returns. A host that re-reads them per block sees one silent
+    /// tail; a host that cannot resize should decline such a swap before it is posted — see
+    /// `Coordinator::prepare_document`.
     pub fn fill_duplex(&mut self, input: &[f32], out: &mut [f32]) {
         // Re-post a stranded retiree if the one-in-flight invariant was ever (impossibly) violated.
         // A no-op on every real callback; here so the render thread never has to drop the box.
@@ -204,6 +213,10 @@ impl RenderSlot {
     /// The ramp path: render the buffer in phase-bounded segments (one Engine per segment), applying
     /// the raised-cosine gain per frame, installing at the zero crossing. Split because the install
     /// (Engine swap) must land at the exact frame the master is silent, which may fall mid-buffer.
+    ///
+    /// `ch`/`in_ch` below are the geometry `out` and `input` were sized against, read before the
+    /// install. The Engine installed mid-buffer need not share it, so they are re-read against the
+    /// live Engine at the install point rather than carried across it.
     fn fill_ramping(&mut self, input: &[f32], out: &mut [f32]) {
         let ch = self.engine.channels();
         let in_ch = self.engine.input_channels();
@@ -232,6 +245,22 @@ impl RenderSlot {
                     if self.ramp.pos == edge {
                         self.install_at_zero();
                         self.ramp.phase = Phase::Up;
+                        // The Engine that just went live need not share the geometry this buffer
+                        // was sized against: a swap can widen or narrow the logical master, or
+                        // bind input channels the caller is not supplying. Interleave stride is a
+                        // property of the buffer, so the remainder of THIS block cannot be
+                        // rendered through the new Engine at any stride the caller could read —
+                        // silence it and leave the up edge owed to the next callback, which the
+                        // caller sizes from `channels()` / `input_channels()`. Deferring rather
+                        // than advancing `pos` keeps the fade-up its full ~10ms. RT-safe: two
+                        // field loads and a compare per install (never per frame), plus a bounded
+                        // write loop over a buffer the caller already owns.
+                        if self.engine.channels() != ch
+                            || (!input.is_empty() && self.engine.input_channels() != in_ch)
+                        {
+                            silence_from(out, ch, f);
+                            return;
+                        }
                     }
                 }
                 Phase::Up => {
@@ -323,6 +352,15 @@ fn render_segment(
         let end = ((f + seg) * in_ch).min(input.len());
         let start = (f * in_ch).min(end);
         engine.fill_duplex(&input[start..end], out_sub);
+    }
+}
+
+/// Zero `out` from frame `f` on (interleaved at `ch`), including any tail the caller's buffer
+/// carries beyond a whole frame. RT-safe: a bounded write loop over the caller's buffer.
+#[inline]
+fn silence_from(out: &mut [f32], ch: usize, f: usize) {
+    for s in &mut out[f * ch..] {
+        *s = 0.0;
     }
 }
 

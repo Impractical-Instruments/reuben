@@ -3,7 +3,10 @@
 //! It owns the [`Registry`] handle, the resolver, the installed-Plan [`Manifest`], the canonical
 //! [`NormalizedDoc`], and the Coordinator-side mailbox endpoint. [`Coordinator::swap_document`]
 //! validates and builds a whole new Engine off-thread, diffs the migration table, fills the install
-//! mailbox with an [`InstallBundle`], and returns a [`SwapReport`]. [`Coordinator::reclaim`] drops
+//! mailbox with an [`InstallBundle`], and returns a [`SwapReport`]; the same swap splits at the
+//! build for a caller that must inspect what was built before carrying it
+//! ([`Coordinator::prepare_document`] → [`PreparedSwap`] → [`Coordinator::commit_swap`]).
+//! [`Coordinator::reclaim`] drops
 //! the retired bundle off-thread. "Off-thread" is a property of the *caller* — this module is a
 //! plain OS-free function with no clock, threads, or I/O — and single-writer discipline is enforced
 //! by `&mut self`.
@@ -32,6 +35,79 @@ pub struct InstallBundle {
     /// The `(old index, new index)` survivor pairs to transplant into `engine` from the retiring
     /// Engine before it goes live.
     pub migration: MigrationTable,
+}
+
+/// A validated, fully built swap that has **not** been handed to the render side: everything
+/// [`Coordinator::swap_document`] does *except* filling the install mailbox, stopped one step short
+/// so a caller can read what was built and refuse it.
+///
+/// The case this exists for is a door whose render buffers are a fixed size. Its geometry check can
+/// only run against the built Engine, and a single-call swap returns with that Engine already in
+/// the mailbox — the door is handed a fait accompli it cannot carry, and its only remaining move is
+/// to make its render path total and report the engine unplayable. Reading
+/// [`channels`](Self::channels) / [`input_channels`](Self::input_channels) here happens before
+/// anything crosses the RT boundary.
+///
+/// [`Coordinator::commit_swap`] posts a prepared swap; **dropping it declines it**, an ordinary
+/// off-thread free like every other Coordinator-side drop. Nothing was published, so there is
+/// nothing to reclaim and the install slot never closed.
+///
+/// It deliberately carries no [`MigrationTable`]: that table pairs Plan indices against the Engine
+/// this swap will displace, which is known at commit and not before. see rules: execution-runtime
+///
+/// **RT-safety requirement (drop off-thread), same as the [`InstallBundle`] it becomes.** Dropping
+/// one frees a whole Engine — a heap free the audio thread may never do. Nothing in this API can
+/// carry it there ([`Coordinator::commit_swap`] takes `&mut Coordinator`, which the render side
+/// does not have), so this is a property of the type rather than a hazard on any path here; it is
+/// stated because `PreparedSwap` is `Send` and a host is free to move one between its own threads.
+pub struct PreparedSwap {
+    /// The document that becomes canonical on commit.
+    doc: NormalizedDoc,
+    /// The built Engine's survivor identities, diffed against the installed manifest at commit.
+    manifest: Manifest,
+    /// The freshly built Engine — the same vessel the mailbox would carry.
+    engine: Engine,
+    /// The load's non-fatal resource problems, promoted into the commit report's warnings.
+    warnings: Vec<LoadWarning>,
+    /// Computed at prepare so the caller can read it before deciding; the commit report carries
+    /// this same string.
+    content_hash: String,
+}
+
+impl PreparedSwap {
+    /// The built Engine's logical output channel count ([`Engine::channels`]) — the geometry a door
+    /// with fixed-size render buffers weighs before committing.
+    pub fn channels(&self) -> usize {
+        self.engine.channels()
+    }
+
+    /// The built Engine's logical input channel count ([`Engine::input_channels`]) — the dual, for
+    /// a door that must also supply the input master.
+    pub fn input_channels(&self) -> usize {
+        self.engine.input_channels()
+    }
+
+    /// The core block size the built Engine renders in.
+    pub fn block_size(&self) -> usize {
+        self.engine.block_size()
+    }
+
+    /// The sample rate the built Engine's Plan was instantiated for.
+    pub fn sample_rate(&self) -> f32 {
+        self.engine.sample_rate()
+    }
+
+    /// The content hash the installed document advances to if this swap commits — the same token
+    /// the commit report carries, readable before the decision.
+    pub fn content_hash(&self) -> &str {
+        &self.content_hash
+    }
+
+    /// The load's non-fatal resource problems. Advisory (they never make a swap unbuildable), but a
+    /// door that surfaces them may want to weigh them in its decision, not only report them after.
+    pub fn warnings(&self) -> &[LoadWarning] {
+        &self.warnings
+    }
 }
 
 /// The render side's half of a fresh Coordinator: the **initial** Engine (installed directly into
@@ -132,7 +208,13 @@ impl Coordinator {
     }
 
     /// Validate + build a whole new Engine off-thread, precompute the migration table, fill the
-    /// install mailbox, and return a real [`SwapReport`].
+    /// install mailbox, and return a real [`SwapReport`]: the whole swap in one call, for a caller
+    /// that will carry whatever builds.
+    ///
+    /// A caller that might *not* — a door whose render buffers are a fixed size — takes the two
+    /// halves instead: [`prepare_document`](Self::prepare_document) builds and stops, and
+    /// [`commit_swap`](Self::commit_swap) posts what it built. This form is exactly those two,
+    /// back to back.
     ///
     /// `source` is the document JSON (by-path resolution is a shell concern — the resolver seam —
     /// kept out of this OS-free core). A load/instantiate error installs nothing. On success the
@@ -148,30 +230,120 @@ impl Coordinator {
     /// Coordinator at all). Do not re-add the parameter: it would be a second implementation of
     /// one decision, reachable only from its own test.
     pub fn swap_document(&mut self, source: &str) -> SwapReport {
+        // Reclaim BEFORE the build, not only inside the commit. `commit_swap` reclaims too, but by
+        // the time it runs the freshly built Engine is already alive — so reclaiming only there
+        // would raise this call's peak to live + retiree + new, where it has always been live +
+        // new. That extra Engine is a real cost to a wasm door under a memory cap. Doing it here
+        // keeps the one-call form byte-for-byte the swap it was; the second call is then a
+        // no-op load on an empty slot.
+        self.mailbox.try_reclaim();
+        match self.prepare_document(source) {
+            Ok(prepared) => self.commit_swap(prepared),
+            Err(rejected) => rejected,
+        }
+    }
+
+    /// Validate + build a whole new Engine off-thread and **stop there**: the first half of
+    /// [`swap_document`](Self::swap_document), returning a [`PreparedSwap`] the caller inspects and
+    /// then either commits ([`commit_swap`](Self::commit_swap)) or drops. Nothing crosses the RT
+    /// boundary, the install slot does not close, and the installed document does not move — so a
+    /// door that cannot carry what was built is never handed it.
+    ///
+    /// `&self`, not `&mut self`: preparing changes nothing here. Single-writer discipline still
+    /// binds where it matters — only the commit mutates.
+    ///
+    /// `Err` is the same rejection report the single-call form returns for a document that will not
+    /// load or will not plan: `ok: false`, the diagnostics, and the hash of what keeps playing.
+    // `result_large_err`: the lint's remedy buys nothing here, because it measures the wrong
+    // variant. Sizes as built: `SwapReport` 160 B, `PreparedSwap` 888 B, and the `Result` 888 B —
+    // the `Ok` variant sets it, so boxing the `Err` leaves the returned Result at 888 B exactly.
+    // What boxing would add is an allocation and a deref on every rejection, which is the ordinary
+    // outcome of an agent's first draft, for a report the caller already handles by value
+    // everywhere else (`swap_document` returns this same type unboxed).
+    #[allow(clippy::result_large_err)]
+    pub fn prepare_document(&self, source: &str) -> Result<PreparedSwap, SwapReport> {
+        // Parse + normalize (the loader is the single validation authority).
+        let doc = match NormalizedDoc::from_json(source, &self.registry, Some(&*self.resolver)) {
+            Ok(d) => d,
+            Err(e) => return Err(self.reject(vec![Diag::from_load(&e)])),
+        };
+
+        // Build the whole new Engine + its manifest off-thread.
+        let (engine, manifest, warnings) =
+            match build_engine(&doc, &self.registry, &*self.resolver, self.config) {
+                Ok(built) => built,
+                Err(FromDocumentError::Load(e)) => {
+                    return Err(self.reject(vec![Diag::from_load(&e)]))
+                }
+                Err(FromDocumentError::Plan(e)) => {
+                    return Err(self.reject(vec![Diag {
+                        node: None,
+                        port: None,
+                        message: format!("instantiate plan: {e:?}"),
+                    }]))
+                }
+            };
+
+        let content_hash = content_hash(&doc);
+        Ok(PreparedSwap {
+            doc,
+            manifest,
+            engine,
+            warnings,
+            content_hash,
+        })
+    }
+
+    /// Commit a [`PreparedSwap`]: diff it against what is *actually* installed, fill the install
+    /// mailbox, advance the canonical document + manifest, and return the real [`SwapReport`] — the
+    /// second half of [`swap_document`](Self::swap_document).
+    ///
+    /// Refused, with nothing installed, in two cases: while a previous swap is still in flight
+    /// (exactly as the single-call form is), and when `prepared` was built against a different
+    /// [`AudioConfig`] than this Coordinator runs. The prepared swap is consumed either way, so a
+    /// caller for whom the build was expensive calls [`try_reclaim`](Self::try_reclaim) first —
+    /// that is what opens the slot, and with it open the in-flight refusal is unreachable.
+    ///
+    /// Committing a swap prepared by a *different* Coordinator at the *same* config is sound and
+    /// deliberately allowed: the Engine is self-consistent by then, and the migration table is
+    /// diffed here against whatever this Coordinator has installed.
+    pub fn commit_swap(&mut self, prepared: PreparedSwap) -> SwapReport {
+        // A PreparedSwap is an Engine already instantiated against ONE AudioConfig, and the config
+        // is not recoverable from the document — so committing one into a Coordinator that runs a
+        // different rate or block size installs a Plan rendering at the wrong speed (pitch and
+        // tempo), under a declick ramp the slot sized for a rate the Engine does not run at. The
+        // single-call form could not express that, because it always built with `self.config`; the
+        // split can, so the split has to refuse it. Checked before anything is reclaimed or
+        // installed: a refusal must leave the mailbox exactly as it found it.
+        if prepared.sample_rate() != self.config.sample_rate
+            || prepared.block_size() != self.config.block_size
+        {
+            return self.reject(vec![Diag {
+                node: None,
+                port: None,
+                message: format!(
+                    "prepared against {} Hz / {}-frame blocks, but this Coordinator runs \
+                     {} Hz / {}-frame blocks — prepare and commit through Coordinators that \
+                     share an audio configuration",
+                    prepared.sample_rate(),
+                    prepared.block_size(),
+                    self.config.sample_rate,
+                    self.config.block_size,
+                ),
+            }]);
+        }
+
         // Opportunistically clear a previous swap whose retiree has come home, so a caller that
         // drove the render side between swaps can install the next one without a separate reclaim.
         self.mailbox.try_reclaim();
 
-        // Parse + normalize (the loader is the single validation authority).
-        let new_doc = match NormalizedDoc::from_json(source, &self.registry, Some(&*self.resolver))
-        {
-            Ok(d) => d,
-            Err(e) => return self.reject(vec![Diag::from_load(&e)]),
-        };
-
-        // Build the whole new Engine + its manifest off-thread.
-        let (engine, new_manifest, warnings) =
-            match build_engine(&new_doc, &self.registry, &*self.resolver, self.config) {
-                Ok(built) => built,
-                Err(FromDocumentError::Load(e)) => return self.reject(vec![Diag::from_load(&e)]),
-                Err(FromDocumentError::Plan(e)) => {
-                    return self.reject(vec![Diag {
-                        node: None,
-                        port: None,
-                        message: format!("instantiate plan: {e:?}"),
-                    }])
-                }
-            };
+        let PreparedSwap {
+            doc,
+            manifest,
+            engine,
+            warnings,
+            content_hash,
+        } = prepared;
 
         // The new engine's logical geometry, captured before it is boxed into the mailbox — the
         // native shell reads it back (via the installed-geometry accessors) to rebuild the device
@@ -179,8 +351,10 @@ impl Coordinator {
         let new_channels = engine.channels();
         let new_input_channels = engine.input_channels();
 
-        // Precompute the migration table + diff (the edit always wins).
-        let (migration, diff) = self.manifest.diff(&new_manifest);
+        // Precompute the migration table + diff (the edit always wins). This is the commit's work,
+        // not the build's: the table pairs Plan indices against the Engine this swap displaces, so
+        // a prepared swap held across another install still transplants against what it retires.
+        let (migration, diff) = self.manifest.diff(&manifest);
 
         // Fill the install mailbox. One swap in flight: if the render side has not yet drained
         // the previous swap, the retiree is not home, `install` is refused, and nothing changes —
@@ -199,9 +373,8 @@ impl Coordinator {
         // Committed (last-write-wins): the canonical document + manifest are now the new ones. The
         // render side is eventually-consistent — it applies the transplant at its next callback
         // top — but the Coordinator is the authority for "what is installed" from here on.
-        let content_hash = content_hash(&new_doc);
-        self.doc = new_doc;
-        self.manifest = new_manifest;
+        self.doc = doc;
+        self.manifest = manifest;
         self.installed_channels = new_channels;
         self.installed_input_channels = new_input_channels;
 
@@ -295,6 +468,12 @@ mod tests {
                 engine: side.engine,
                 mailbox: side.mailbox,
             }
+        }
+
+        /// Whether anything is waiting in the install slot — the render side's own view of
+        /// "have I been handed a new Engine yet", which a declined swap must never move.
+        fn has_install(&self) -> bool {
+            self.mailbox.has_install()
         }
 
         /// The callback-top install step, synchronous test form.
@@ -694,6 +873,305 @@ mod tests {
             1,
             "a rejected swap does not advance the installed geometry"
         );
+    }
+
+    // ---- Build-then-decide: prepare, inspect, commit or decline ----
+
+    /// [`envelope_doc`]'s rig widened to four logical master channels (the interface taps channel
+    /// 3 as well as channel 0). A door with fixed-size render buffers is exactly the caller that
+    /// has to see this width *before* the render side is handed the Engine carrying it.
+    const WIDE_ENVELOPE: &str = r#"{ "format_version": 3, "instrument": "eg",
+        "interface": { "outputs": {
+            "front": { "from": "/out.audio", "channel": 0 },
+            "rear":  { "from": "/out.audio", "channel": 3 } } },
+        "nodes": [
+          { "type": "envelope", "address": "/env",
+             "inputs": { "gate": 1.0, "attack": 0.5, "decay": 0.01,
+                         "sustain": 0.8, "release": 0.5 } },
+          { "type": "output", "address": "/out",
+             "inputs": { "audio": { "from": "/env.cv" } } } ] }"#;
+
+    #[test]
+    fn a_door_reads_the_built_geometry_and_declines_before_anything_crosses() {
+        // The property the split exists for: a door with fixed-size render buffers must be able to
+        // refuse an Engine it cannot carry, and refusing must leave the render side untouched.
+        // `swap_document` cannot offer that — by the time it returns, the mailbox is already full.
+        let (mut coord, side, _w) = Coordinator::install_initial(
+            &envelope_doc("/env"),
+            Registry::builtin(),
+            Box::new(MemoryResolver::new()),
+            cfg(),
+        )
+        .expect("initial install");
+        let rig = RenderRig::new(side);
+        let installed = coord.installed_hash();
+
+        // Build it, then look at what was built — this is the moment that did not exist before.
+        let prepared = coord.prepare_document(WIDE_ENVELOPE).expect("it builds");
+        assert_eq!(
+            prepared.channels(),
+            4,
+            "the door reads the built Engine's logical width"
+        );
+        assert_eq!(prepared.input_channels(), 0);
+        assert!(
+            !rig.has_install(),
+            "preparing a swap hands the render side nothing"
+        );
+
+        // The door declines: dropping the prepared swap is the whole gesture, and it is an
+        // ordinary off-thread free.
+        drop(prepared);
+        assert!(
+            !rig.has_install(),
+            "a declined swap never reaches the render side"
+        );
+        assert!(
+            coord.try_reclaim().is_none(),
+            "nothing was published, so there is no retiree to reclaim"
+        );
+        assert_eq!(
+            coord.installed_hash(),
+            installed,
+            "a declined swap does not advance the installed document"
+        );
+        assert_eq!(coord.installed_channels(), 2, "nor the installed geometry");
+
+        // And the slot is still free: the door can install something it *can* carry.
+        let narrow = coord.swap_document(&envelope_doc("/eg"));
+        assert!(
+            narrow.report.ok,
+            "declining did not wedge the swap slot: {:?}",
+            narrow.report
+        );
+        assert!(rig.has_install(), "the accepted swap did cross");
+    }
+
+    #[test]
+    fn a_committed_swap_installs_exactly_what_it_advertised() {
+        // The other half: what `prepare_document` reported is what `commit_swap` installs, and the
+        // report it returns is the same shape `swap_document` returns.
+        let (mut coord, side, _w) = Coordinator::install_initial(
+            &envelope_doc("/env"),
+            Registry::builtin(),
+            Box::new(MemoryResolver::new()),
+            cfg(),
+        )
+        .expect("initial install");
+        let rig = RenderRig::new(side);
+
+        let prepared = coord.prepare_document(WIDE_ENVELOPE).expect("it builds");
+        let advertised_hash = prepared.content_hash().to_string();
+        let advertised_channels = prepared.channels();
+
+        let report = coord.commit_swap(prepared);
+        assert!(report.report.ok, "commit installs: {:?}", report.report);
+        assert_eq!(
+            report.content_hash, advertised_hash,
+            "the committed report names the document prepare advertised"
+        );
+        assert_eq!(coord.installed_hash(), advertised_hash);
+        assert_eq!(coord.installed_channels(), advertised_channels);
+        assert!(rig.has_install(), "the committed swap crossed");
+    }
+
+    #[test]
+    fn a_prepared_swap_diffs_against_what_is_installed_when_it_commits() {
+        // A prepared swap carries no migration table: the table pairs Plan indices against the
+        // Engine it will displace, which is only known at commit. Prepare against `/env`, install
+        // a *rename* underneath it, then commit — the diff must describe the rename it actually
+        // displaces (only `/out` survives), not the `/env` document it was prepared against (where
+        // both nodes would have survived).
+        let (mut coord, side, _w) = Coordinator::install_initial(
+            &envelope_doc("/env"),
+            Registry::builtin(),
+            Box::new(MemoryResolver::new()),
+            cfg(),
+        )
+        .expect("initial install");
+        let mut rig = RenderRig::new(side);
+
+        let prepared = coord
+            .prepare_document(&envelope_doc("/env"))
+            .expect("builds");
+
+        // Something else installs first, and the render side drains it so the slot re-opens.
+        let renamed = coord.swap_document(&envelope_doc("/eg"));
+        assert!(renamed.report.ok, "{:?}", renamed.report);
+        rig.poll_install();
+        coord.try_reclaim();
+
+        let report = coord.commit_swap(prepared);
+        assert!(report.report.ok, "commit installs: {:?}", report.report);
+        let diff = report
+            .diff
+            .as_ref()
+            .expect("a committed swap carries a diff");
+        assert_eq!(
+            diff.survived, 1,
+            "only /out survives what this swap actually displaces"
+        );
+        assert_eq!(diff.added, vec!["/env".to_string()]);
+        assert_eq!(diff.removed, vec!["/eg".to_string()]);
+    }
+
+    #[test]
+    fn a_swap_prepared_against_a_different_audio_config_is_refused() {
+        // The one thing the split can express that the single call could not get wrong: a
+        // `PreparedSwap` is an Engine already instantiated against ONE AudioConfig, and
+        // `swap_document` always built with its own. The door this exists for already runs two
+        // Coordinators (a discovery context beside the live one), so "prepare there, commit here"
+        // is the first thing a caller tries — and committing it would install a Plan rendering at
+        // the wrong rate (pitch and tempo) under a declick ramp sized for a rate the Engine does
+        // not run at. It must be refused, with nothing installed and nothing crossed.
+        let (discovery, _side, _w) = Coordinator::install_initial(
+            &envelope_doc("/env"),
+            Registry::builtin(),
+            Box::new(MemoryResolver::new()),
+            AudioConfig::new(48_000.0, 64),
+        )
+        .expect("initial install");
+        let (mut live, live_side, _w) = Coordinator::install_initial(
+            &envelope_doc("/env"),
+            Registry::builtin(),
+            Box::new(MemoryResolver::new()),
+            AudioConfig::new(96_000.0, 128),
+        )
+        .expect("initial install");
+        let rig = RenderRig::new(live_side);
+        let installed = live.installed_hash();
+
+        let prepared = discovery
+            .prepare_document(&envelope_doc("/eg"))
+            .expect("it builds on the discovery context");
+        assert_eq!(prepared.sample_rate(), 48_000.0, "built at the other rate");
+        assert_eq!(prepared.block_size(), 64, "and the other block size");
+
+        let refused = live.commit_swap(prepared);
+        assert!(!refused.report.ok, "a foreign audio config is refused");
+        assert!(
+            refused
+                .report
+                .errors
+                .iter()
+                .any(|d| d.message.contains("48000") && d.message.contains("96000")),
+            "the diagnostic names both configs: {:?}",
+            refused.report.errors
+        );
+        assert!(refused.diff.is_none(), "a refused swap installs nothing");
+        assert_eq!(
+            refused.content_hash, installed,
+            "the report names what keeps playing"
+        );
+        assert!(!rig.has_install(), "nothing crossed the RT boundary");
+        assert_eq!(live.installed_hash(), installed);
+
+        // The refusal did not consume the live Coordinator's install slot either: a well-formed
+        // swap still goes in right after.
+        let ok = live.swap_document(&envelope_doc("/eg"));
+        assert!(
+            ok.report.ok,
+            "the refusal left the slot open: {:?}",
+            ok.report
+        );
+    }
+
+    #[test]
+    fn a_prepared_swap_commits_across_coordinators_that_share_a_config() {
+        // The converse, so the guard above is a config check and not an accidental
+        // same-Coordinator check: at a shared config the Engine is self-consistent and the
+        // migration table is diffed against whatever the *committing* Coordinator has installed.
+        let (discovery, _side, _w) = Coordinator::install_initial(
+            &envelope_doc("/env"),
+            Registry::builtin(),
+            Box::new(MemoryResolver::new()),
+            cfg(),
+        )
+        .expect("initial install");
+        let (mut live, live_side, _w) = Coordinator::install_initial(
+            &envelope_doc("/env"),
+            Registry::builtin(),
+            Box::new(MemoryResolver::new()),
+            cfg(),
+        )
+        .expect("initial install");
+        let rig = RenderRig::new(live_side);
+
+        let prepared = discovery
+            .prepare_document(&envelope_doc("/eg"))
+            .expect("it builds");
+        let report = live.commit_swap(prepared);
+        assert!(
+            report.report.ok,
+            "shared config commits: {:?}",
+            report.report
+        );
+        assert_eq!(
+            report.diff.as_ref().unwrap().survived,
+            1,
+            "diffed against the committing Coordinator's installed document"
+        );
+        assert!(rig.has_install(), "it crossed");
+    }
+
+    #[test]
+    fn the_one_call_swap_reclaims_before_it_builds() {
+        // `swap_document` is prepare + commit, and `commit_swap` reclaims — but reclaiming ONLY
+        // there would hold the retiree alive across the build, raising this call's peak from
+        // live + new to live + retiree + new. A whole extra Engine is a real cost to a door under
+        // a memory cap. The observable proxy: with a retiree waiting, the reclaim has already
+        // happened by the time the document is parsed, so a swap whose document is REJECTED — one
+        // that never reaches `commit_swap` at all — still comes back with the slot cleared.
+        let (mut coord, side, _w) = Coordinator::install_initial(
+            &envelope_doc("/env"),
+            Registry::builtin(),
+            Box::new(MemoryResolver::new()),
+            cfg(),
+        )
+        .expect("initial install");
+        let mut rig = RenderRig::new(side);
+
+        let first = coord.swap_document(&envelope_doc("/env"));
+        assert!(first.report.ok);
+        rig.poll_install(); // the render side drains and posts the retiree home
+
+        // A document that never builds: it returns before `commit_swap` is ever reached.
+        let rejected = coord.swap_document("{ not json");
+        assert!(!rejected.report.ok, "the document is rejected");
+        assert!(
+            coord.try_reclaim().is_none(),
+            "the rejected swap had already reclaimed the retiree — the reclaim runs before the \
+             build, not after it"
+        );
+    }
+
+    #[test]
+    fn prepare_rejects_a_bad_document_and_names_what_keeps_playing() {
+        // A document that will not load never becomes a `PreparedSwap`: the error side is the same
+        // rejection report `swap_document` returns, and nothing moves.
+        let (coord, side, _w) = Coordinator::install_initial(
+            &envelope_doc("/env"),
+            Registry::builtin(),
+            Box::new(MemoryResolver::new()),
+            cfg(),
+        )
+        .expect("initial install");
+        let rig = RenderRig::new(side);
+        let installed = coord.installed_hash();
+
+        let rejected = coord
+            .prepare_document("{ not json")
+            .err()
+            .expect("a bad document does not prepare");
+        assert!(!rejected.report.ok);
+        assert!(!rejected.report.errors.is_empty(), "it says why");
+        assert!(rejected.diff.is_none(), "a rejected swap installs nothing");
+        assert_eq!(
+            rejected.content_hash, installed,
+            "the report names what keeps playing"
+        );
+        assert!(!rig.has_install(), "nothing crossed");
+        assert_eq!(coord.installed_hash(), installed);
     }
 
     #[test]
