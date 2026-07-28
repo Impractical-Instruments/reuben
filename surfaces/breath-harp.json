@@ -1,0 +1,10 @@
+{
+  "surface_version": 1,
+  "instrument": "breath-harp",
+  "cols": 3,
+  "controls": [
+    { "bind": "pitch", "label": "Pitch", "widget": "radial" },
+    { "bind": "brightness", "label": "Brightness", "widget": "radial" },
+    { "bind": "damping", "label": "Damping", "widget": "radial" }
+  ]
+}
