@@ -110,10 +110,57 @@ Seven checks:
      whole time. See `lane_key`, which exists for exactly this and is now one rule rather than a
      special case per file.
 
-     `.html` — OUT of reach, and visibly so rather than by omission. Three comment regimes live in
-     one file: `<!-- -->`, `/* */` inside `<style>`, and `//` plus `/* */` inside `<script>`. That is
-     not one opener, so it is not readable yet, and until it is, its comments are UNPOLICED — which
-     is a different sentence from exempt, and the one OUT_OF_REACH_EXTS makes the guard say out loud.
+     `.html` — in reach, and the first lane here whose comment syntax changes BY REGION inside one
+     file: `<!-- … -->` in the markup, `/* … */` inside `<style>`, `//` and `/* … */` inside
+     `<script>`. The opener table did NOT grow a notion of nesting. The lane is a REGION FINDER
+     instead (`html_comments`): it reads the `<!-- … -->` form itself, and hands each raw-text
+     element to the lane that already reads that language — `<style>` to css, `<script>` to curly.
+     Everything a comment means inside those regions is then decided by a scanner that is already
+     tested, including CSS's colour collision, which travels with the REGION rather than with the
+     file: a bare `#nnn` inside `<style>` gets COLOUR_HINT and the same token in an HTML comment does
+     not. What is genuinely new is only where a region starts and stops, which is the only part that
+     can be wrong, so that is the part written down below.
+
+     WHERE A REGION STOPS is decided string-aware, which is a deliberate departure from the HTML
+     tokenizer. The spec ends a raw-text element at the first `</script`, full stop — which is why a
+     page has to spell it `<\\/script>` inside a JS string. `raw_text_end` instead skips a close tag
+     that sits inside a STRING or a BLOCK comment of the region's own language. What licenses that
+     is the narrowness: a close tag in either of those can only occur in a page a browser already
+     reads as broken, so the two readings differ on nothing that works — and of the two ways to be
+     wrong on a broken page, ending the region EARLY is the worse one, because the tail of the
+     script then gets read as markup, where a `//` comment is invisible and a stray `-->` closes a
+     comment that never opened. Early-ending is also why the close TAG NAME has to end
+     (`</scriptfoo>` closes nothing, per HTML5) and why the open tag is matched quote-aware: a `>`
+     inside an attribute value is not the end of the tag, and taking it for one leaves a dangling
+     quote that opens a string, eats the close tag, and swallows the rest of the file.
+
+     A `//` LINE comment is NOT tracked, which is the same argument reaching the opposite answer and
+     is the one place this lane sides with the tokenizer. `doIt(); // go</script>` is not a broken
+     page but an ordinary one — the tag ends the comment and the element together, exactly as
+     written — so hiding a close tag behind `//` would lose the region on markup that WORKS, and
+     lose it in the swallowing direction. The rule the three cases share: depart from the tokenizer
+     only where the tokenizer's answer implies a page nobody can render anyway.
+
+     ONE DIVERGENCE RISK TO HAND ON, because the same regions are wanted by a second tool. The lint
+     story for inline `<script>` is unbuilt here (the ESLint plugin that extracted those blocks does
+     not work under the pinned major), and every HTML-aware ESLint processor follows the TOKENIZER —
+     it truncates at the first `</script`, which is precisely the reading rejected above. So if a
+     processor lands, the two tools will disagree about where a script region ends on exactly the
+     inputs that are already broken, and nothing would notice: one would lint half a file while the
+     other read all of it. Whoever builds it should either adopt the boundary written down here or
+     record that it is taking the tokenizer's. The shared thing is this decision, not the code —
+     that side needs source text plus an offset map, in another language, in another repo.
+
+     WHAT THE REGION FINDER DOES NOT DO, since it is a scanner and not a parser. It does not know
+     element nesting or `@type`, so a `<script type="text/x-template">` holding markup is read as JS
+     rather than as markup. It does not know JS regex literals, so a `/` opening one is not a string
+     and a `</script` inside one would end the region. An open tag whose quote never closes falls
+     back to ending at the first `>`, which is a guess, though the browser has none better. What it
+     DOES track, each because the alternative is a wrong answer rather than a missing one: a
+     `<script>` or `<style>` written inside an HTML comment opens no region; `<textarea>` and
+     `<title>` hold ESCAPABLE raw text, so a `<!--` in one is page content and is skipped rather than
+     reported. None of the unhandled shapes exists in either tree, and each is a written gap rather
+     than a silent one, which is the same standard check 7 holds a lane to.
 
      A note on scope, since a lane table invites the question: `.go`, `.c`, `.java` and friends sit
      in CODE_EXTS and are read as JS is. Neither repo contains one. If a Javadoc'd Java file ever
@@ -151,7 +198,9 @@ Seven checks:
      so the guard's answer to a lane it has never met is a sentence rather than a shrug. The cost is
      that a genuinely new file type reds until somebody classifies it: a one-line edit, and the whole
      point. Run against these two trees it immediately named two lanes nobody had noticed — `.env`,
-     which turned out to be readable and carrying a citation, and `.html`, which is not readable yet.
+     which turned out to be readable and carrying a citation, and `.html`, which was classified out
+     until it earned the region finder it now has. Both ended up READ, which is the argument: the
+     bucket a lane lands in first is a statement about the guard, and it is meant to be revisited.
 
      BOTH exclusion buckets carry reasons, and for the same reason: if only one demanded a sentence,
      the other would be the cheap door out of a check-7 red, and the allow-list would be back wearing
@@ -185,8 +234,8 @@ from pathlib import Path, PurePath
 # The opener table, NOT a permission list: first-party source is in reach by default and a suffix
 # earns its row here so the guard knows how to READ it. See the module docstring's checks 4 and 7.
 CODE_EXTS = {".rs", ".py", ".mjs", ".js", ".ts", ".jsx", ".tsx", ".go", ".c", ".h",
-             ".cpp", ".hpp", ".java", ".rb", ".sh", ".toml", ".yml", ".yaml", ".css", ".env",
-             ".gitignore", ".gitattributes", ".gitmodules", ".ignore", "#!"}
+             ".cpp", ".hpp", ".java", ".rb", ".sh", ".toml", ".yml", ".yaml", ".css", ".html",
+             ".env", ".gitignore", ".gitattributes", ".gitmodules", ".ignore", "#!"}
 
 # The other two buckets check 7 sorts a lane key into. Under default-on it is the EXCLUSIONS that
 # have to be enumerated, so these two are the ones that grow, and a key in none of the three is
@@ -202,9 +251,6 @@ OUT_OF_REACH_EXTS = {
     ".md": "provenance's one sanctioned home is a Markdown file — a rationale's `Distilled from:` / "
            "`Decided in:` line, and the live ADRs — so scanning it would red on the very text the "
            "rule points at",
-    ".html": "three comment regimes in one file (`<!-- -->`, `/* */` inside `<style>`, `//` and "
-             "`/* */` inside `<script>`), so it is not readable with a single opener; making it "
-             "readable is its own change, and until then its comments are unpoliced — not exempt",
 }
 # Not a prose surface at all. Three reasons cover every entry, so they are named once and shared:
 # writing sixteen bespoke paragraphs about image formats would be the ritual, not the argument.
@@ -311,11 +357,13 @@ HASH_EXTS = {".py", ".sh", ".rb", ".toml", ".yml", ".yaml", ".env", ".gitignore"
 # reported by check 7 under its own name rather than read with an opener nobody checked — `#` opens
 # a comment in a shell script and is a private field in a JS one.
 HASH_INTERPRETERS = {"sh", "bash", "zsh", "dash", "ksh", "ash", "python", "python3", "ruby", "perl"}
-# The four lanes, by suffix. `rust` and `curly` share the `//` opener and differ on what a comment
-# may also be; `css` shares `curly`'s block form and differs on whether `//` opens anything at all:
-# see the module docstring's check 4.
+# The five lanes, by suffix. `rust` and `curly` share the `//` opener and differ on what a comment
+# may also be; `css` shares `curly`'s block form and differs on whether `//` opens anything at all;
+# `html` is not a comment grammar at all but a region finder over the other two: see the module
+# docstring's check 4.
 RUST_EXTS = {".rs"}
 CSS_EXTS = {".css"}
+HTML_EXTS = {".html"}
 # What delimits a string, per lane. Not one set: in Rust a lone `'` is a LIFETIME (`&'a str`), and
 # treating it as an open string swallows the rest of the line — which is why Rust tracks `"` only.
 # Everywhere else the apostrophe really is a delimiter, and in the JS family so is the backtick;
@@ -330,6 +378,32 @@ CSS_QUOTES = "\"'"
 # CSS says no — there `//` is the authority slashes of a `url(…)`, and reading it as an opener turns
 # the rest of the URL into prose.
 BLOCK_LANES = {"curly": (CURLY_QUOTES, True), "css": (CSS_QUOTES, False)}
+# The `.html` lane, which is one fact about the format and nothing else. A `<script>` or `<style>`
+# element holds RAW TEXT: the markup grammar stops at the open tag and resumes after the close tag,
+# and what lies between belongs to another language whole. So the lane hands each region to the lane
+# that already reads that language, and reads only the markup's own `<!-- … -->` form itself.
+#
+# The open tag is matched QUOTE-AWARE — `"…"` and `'…'` may hold the `>` that would otherwise end it
+# — because getting that wrong does not cost a few characters, it costs the file: the stray quote
+# opens a string in the delegated scanner, the string eats the close tag, and every comment below,
+# markup ones included, goes unread. The bare `[^>]*>` fallback is second in the alternation and
+# only reachable when a quote never closes, which is a file no browser agrees about either. The
+# alternatives are disjoint on their first character, so the group cannot backtrack pathologically.
+HTML_REGION_LANES = {"script": "curly", "style": "css"}
+# The other half of the raw-text family, which has no lane because it is not source: `<textarea>` and
+# `<title>` hold ESCAPABLE raw text, so a `<!--` inside one is page content a user reads literally,
+# not a comment. They are skipped whole rather than scanned — the alternative is reporting a
+# citation against text that is rendered on the page, which is the reverse of what this check is for.
+# `HTML_REGION_LANES.get` returning None is what tells the walk which of the two it is holding.
+HTML_TEXT_ELEMENTS = {"textarea", "title"}
+HTML_REGION_RE = re.compile(
+    rf"""<({'|'.join(sorted(HTML_REGION_LANES.keys() | HTML_TEXT_ELEMENTS))})\b"""
+    r"""(?:(?:[^>"']|"[^"]*"|'[^']*')*>|[^>]*>)""", re.IGNORECASE)
+HTML_COMMENT_OPEN, HTML_COMMENT_CLOSE = "<!--", "-->"
+# What may follow a close tag's name. HTML5 ends a raw-text element only when the next character is
+# whitespace, `/` or `>`, so `</scriptfoo>` closes nothing — and a bare prefix match there would end
+# the region EARLY, which is the one failure mode this lane's whole argument is against.
+HTML_TAG_END = " \t\n\r\f/>"
 # Where a `#` may open a comment, and where a quote may open a string, in the `#` lanes. YAML's rule
 # is that `#` comments only at line start or after whitespace — a bare URL's fragment is data, not
 # prose — and shell agrees (a `#` mid-word is literal). TOML and Python are laxer, so this is a
@@ -442,6 +516,8 @@ def lane_of(suffix: str) -> str:
         return "rust"
     if suffix in CSS_EXTS:
         return "css"
+    if suffix in HTML_EXTS:
+        return "html"
     return "hash" if suffix in HASH_EXTS else "curly"
 
 
@@ -542,19 +618,135 @@ def curly_comments(text: str, quotes: str = CURLY_QUOTES,
     return out
 
 
-def fold_curly_comments(text: str, quotes: str = CURLY_QUOTES,
-                        line_comments: bool = True) -> tuple[str, list[int]]:
-    """`fold_comments` for the block-comment lanes, over `curly_comments` so a `/* … */` is prose too.
+def raw_text_end(text: str, start: int, closer: str, lane: str | None) -> int:
+    """Where a raw-text element's content ends: the offset of its first REAL close tag.
+
+    Real means two things. The tag name has to actually end — HTML5 admits only whitespace, `/` or
+    `>` after it, so `</scriptfoo>` closes nothing, and a bare prefix match there would end the
+    region early. And, where the region has a `lane`, the tag has to sit outside that language's own
+    STRINGS and BLOCK comments.
+
+    That second half is a deliberate departure from the HTML tokenizer, which ends a raw-text
+    element at the first `</script` and nothing else — which is exactly why a page has to spell the
+    tag `<\\/script>` inside a JS string. It is a narrow departure, and the boundary is the whole
+    argument: a close tag inside a string or a `/* … */` can only occur in a page a browser ALREADY
+    reads as broken, so the two readings differ on nothing that works, and of the two ways to be
+    wrong on a broken page, ending the region EARLY is the worse one — the tail of the script gets
+    read as markup, where a `//` comment is invisible and a stray `-->` closes a comment that never
+    opened.
+
+    A `//` LINE comment is deliberately NOT tracked, and that is the same argument reaching the
+    opposite answer. `doIt(); // go</script>` is not a broken page, it is an ordinary one: the tag
+    ends the comment and the element together, exactly as the author meant. Hiding a close tag
+    behind `//` would therefore lose the region on markup that WORKS — every inline script whose
+    last line carries a trailing comment — and it would lose it in the swallowing direction, taking
+    the whole rest of the file into the script with it. A regex literal is not tracked either — see
+    the module docstring.
+
+    `lane` is None for the ESCAPABLE raw-text elements, whose content is text rather than source:
+    nothing in a `<title>` opens a string or a comment, so nothing there may hide a close tag.
+    """
+    quotes = BLOCK_LANES[lane][0] if lane else ""
+    i, n = start, len(text)
+    in_str, in_block = "", False
+    while i < n:
+        c = text[i]
+        if in_block:
+            if text.startswith("*/", i):
+                in_block, i = False, i + 1
+        elif in_str:
+            if c == "\\":
+                i += 1
+            elif c == in_str or (c == "\n" and in_str != "`"):
+                in_str = ""
+        elif c in quotes:
+            in_str = c
+        elif lane and text.startswith("/*", i):
+            in_block, i = True, i + 1
+        elif c == "<" and text[i:i + len(closer)].lower() == closer:
+            after = text[i + len(closer):i + len(closer) + 1]
+            if not after or after in HTML_TAG_END:      # `</scriptfoo>` is not a close tag
+                return i
+        i += 1
+    return n
+
+
+def markup_comments(text: str, lo: int, hi: int) -> list[tuple[int, str, str]]:
+    """The `<!-- … -->` comments in one stretch of markup, one entry per line.
+
+    Per line for the same reason `curly_comments` is: a piece is what a reported line number is
+    computed from, so a citation on the third line of a comment has to arrive as its own piece.
+    An unterminated `<!--` runs to the end of the stretch, matching how an unclosed `/*` is read.
+    """
+    out: list[tuple[int, str, str]] = []
+    i = lo
+    while (open_at := text.find(HTML_COMMENT_OPEN, i, hi)) >= 0:
+        body = open_at + len(HTML_COMMENT_OPEN)
+        close_at = text.find(HTML_COMMENT_CLOSE, body, hi)
+        stop = hi if close_at < 0 else close_at
+        while body < stop:
+            nl = text.find("\n", body, stop)
+            eol = stop if nl < 0 else nl
+            out.append((body, text[body:eol], "html"))
+            body = eol + 1
+        i = stop + len(HTML_COMMENT_CLOSE)
+    return out
+
+
+def html_comments(text: str) -> list[tuple[int, str, str]]:
+    """Every comment in an HTML file as `(offset of the prose, prose, the lane that read it)`.
+
+    The region finder the `.html` lane is: markup outside a raw-text element goes to
+    `markup_comments`, and a `<script>` / `<style>` body goes to the scanner that already reads that
+    language, offset back into the whole file so a report still names a real line.
+
+    The lane travels with each piece because it decides more than the opener does. CSS's hex-colour
+    collision is a real ambiguity inside `<style>` and is not one in an HTML comment, so the hint
+    has to follow the region rather than the file's suffix.
+
+    Pieces come out in ASCENDING offset order, which is not incidental: `fold_pieces` decides what
+    joins to what by comparing each piece's line to the one before it, so checks 2, 5 and 6 read a
+    shuffled file as a pile of one-line comments.
+    """
+    out: list[tuple[int, str, str]] = []
+    i = mark = 0
+    n = len(text)
+    while i < n:
+        if text.startswith(HTML_COMMENT_OPEN, i):
+            close_at = text.find(HTML_COMMENT_CLOSE, i + len(HTML_COMMENT_OPEN))
+            i = n if close_at < 0 else close_at + len(HTML_COMMENT_CLOSE)
+            continue                   # a `<script>` written inside a comment opens no region
+        tag = HTML_REGION_RE.match(text, i) if text[i] == "<" else None
+        if tag is None:
+            i += 1
+            continue
+        kind = tag.group(1).lower()
+        lane = HTML_REGION_LANES.get(kind)          # None for `<textarea>` / `<title>`: skipped
+        body = tag.end()
+        end = raw_text_end(text, body, f"</{kind}", lane)
+        out.extend(markup_comments(text, mark, tag.start()))
+        if lane is not None:
+            quotes, line_comments = BLOCK_LANES[lane]
+            out.extend((body + off, piece, lane)
+                       for off, piece in curly_comments(text[body:end], quotes, line_comments))
+        close_tag_end = text.find(">", end)
+        i = mark = n if close_tag_end < 0 else close_tag_end + 1
+    out.extend(markup_comments(text, mark, n))
+    return out
+
+
+def fold_pieces(text: str, pieces: list[tuple[int, str]]) -> tuple[str, list[int]]:
+    """`fold_comments` for a lane scanned whole-file rather than line-by-line.
 
     Same folding rule as the line-by-line version — consecutive lines are one comment and join with
-    a space, a gap starts a new one — but the pieces come from the whole-file scan, so a pointer
+    a space, a gap starts a new one — but the pieces come from a whole-file scan, so a pointer
     wrapped inside a block comment is read whole instead of not at all.
     """
     line_starts = [0] + [i + 1 for i, c in enumerate(text) if c == "\n"]
     out: list[str] = []
     idx: list[int] = []
     prev_line = None
-    for off, piece in curly_comments(text, quotes, line_comments):
+    for off, piece in pieces:
         line = bisect.bisect_right(line_starts, off)
         stripped = piece.lstrip()
         lead = len(piece) - len(stripped)
@@ -569,6 +761,12 @@ def fold_curly_comments(text: str, quotes: str = CURLY_QUOTES,
             idx.append(start + k)
         prev_line = line
     return "".join(out), idx
+
+
+def fold_curly_comments(text: str, quotes: str = CURLY_QUOTES,
+                        line_comments: bool = True) -> tuple[str, list[int]]:
+    """`fold_pieces` over the block-comment scan, so a `/* … */` is prose too."""
+    return fold_pieces(text, curly_comments(text, quotes, line_comments))
 
 
 def fold_comments(text: str, opener: str = "//", quotes: str | None = None) -> tuple[str, list[int]]:
@@ -656,6 +854,9 @@ def comment_ref_problems(rel: str, text: str, lane: str = "rust") -> list[str]:
     Reads comment prose only, so an issue number inside a string literal (a test fixture, a URL)
     is not a violation — the target is prose that retells history, not data. `lane` selects the
     grammar and, with it, what is out of reach; the module docstring's check 4 argues each.
+
+    Each piece carries the lane that READ it, which is the file's lane everywhere except `.html` —
+    there one file holds three regions and a `<style>` comment is CSS however the file is named.
     """
     line_starts = [0] + [i + 1 for i, c in enumerate(text) if c == "\n"]
 
@@ -666,9 +867,11 @@ def comment_ref_problems(rel: str, text: str, lane: str = "rust") -> list[str]:
             lo, hi = (mid, hi) if line_starts[mid] <= off else (lo, mid - 1)
         return lo + 1
 
-    pieces: list[tuple[int, str]] = []
-    if lane in BLOCK_LANES:
-        pieces = curly_comments(text, *BLOCK_LANES[lane])
+    pieces: list[tuple[int, str, str]] = []
+    if lane == "html":
+        pieces = html_comments(text)
+    elif lane in BLOCK_LANES:
+        pieces = [(off, body, lane) for off, body in curly_comments(text, *BLOCK_LANES[lane])]
     else:
         opener = "#" if lane == "hash" else "//"
         quotes = HASH_QUOTES if lane == "hash" else RUST_QUOTES
@@ -681,16 +884,16 @@ def comment_ref_problems(rel: str, text: str, lane: str = "rust") -> list[str]:
                 # concerned — its own hash IS the opener — so the body starts one character too
                 # late and the citation arrives as a bare number. Re-attaching costs Rust nothing:
                 # neither pattern can match into a `//`.
-                pieces.append((pos + found[0], opener + found[1]))
+                pieces.append((pos + found[0], opener + found[1], lane))
             pos += len(raw)
 
     problems = []
-    for off, body in pieces:
+    for off, body, read_as in pieces:
         i = line_at(off)
         for ref in ISSUE_RE.findall(body):
             problems.append(f"{rel}:{i}: issue citation `{ref}` in a comment — provenance belongs "
                             f"in a rationale file, not in code; point at a topic instead"
-                            + (COLOUR_HINT if lane == "css" and SHORT_HEX_RE.match(ref) else ""))
+                            + (COLOUR_HINT if read_as == "css" and SHORT_HEX_RE.match(ref) else ""))
         for ref in RULE_ANCHOR_RE.findall(body):
             problems.append(f"{rel}:{i}: rule-level pointer `{ref}` in a comment — point at the "
                             f"topic instead (`see rules: <topic>`)")
@@ -700,7 +903,9 @@ def comment_ref_problems(rel: str, text: str, lane: str = "rust") -> list[str]:
 def folded_with_lines(text: str, lane: str = "rust"):
     """`(folded prose, line_at)` — the comment-folded view plus a resolver from a folded offset
     back to the 1-based source line, so a problem names the line a reader has to go edit."""
-    if lane in BLOCK_LANES:
+    if lane == "html":
+        folded, idx = fold_pieces(text, [(off, body) for off, body, _ in html_comments(text)])
+    elif lane in BLOCK_LANES:
         folded, idx = fold_curly_comments(text, *BLOCK_LANES[lane])
     else:
         opener = "#" if lane == "hash" else "//"
