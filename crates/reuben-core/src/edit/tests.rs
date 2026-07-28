@@ -43,6 +43,23 @@ fn seed_with_pipe() -> String {
     .to_string()
 }
 
+/// [`seed`] with the one operator carrying a plan-time `Constant` — the only shape
+/// `set_instrument_constant` can be exercised on against a document that still validates.
+fn seed_with_voicer() -> String {
+    json!({
+        "format_version": 3,
+        "instrument": "test",
+        "nodes": [
+            { "type": "voicer", "address": "/voices" },
+            { "type": "mul_f32_signal", "address": "/amp", "inputs": { "a": { "from": "/voices" }, "b": 0.5 } }
+        ],
+        "interface": {
+            "outputs": { "main": { "from": "/amp" } }
+        }
+    })
+    .to_string()
+}
+
 fn resolver_with(json: &str) -> MemoryResolver {
     let mut r = MemoryResolver::new();
     r.insert_text(SRC, json);
@@ -71,10 +88,9 @@ fn set_input_writes_a_valid_edit_and_returns_a_new_hash() {
     let after = readback(&resolver);
     assert_ne!(before, after);
     assert_eq!(after["nodes"][0]["inputs"]["freq"], json!(440.0));
-    // The echo is the touched node's zoom.
     assert!(
         result.zoom.contains("/osc"),
-        "zoom echoes the node: {}",
+        "the echo names what was edited: {}",
         result.zoom
     );
 }
@@ -103,6 +119,193 @@ fn a_missing_target_node_is_a_precondition_error_not_a_report() {
     let err = set_instrument_input(SRC, "/ghost", "freq", json!(1.0), &registry, &resolver)
         .expect_err("no such node");
     assert!(matches!(err, EditError::Target(_)), "got {err:?}");
+}
+
+// --- one address space: a pipe is a node ---------------------------------------------------------
+
+/// An `interface.inputs` entry **is a node** — it mints `/<name>` and behaves like a source — so its
+/// seed is set through the same verb and the same address space as any other node input.
+#[test]
+fn set_input_seeds_a_pipe_through_the_address_it_mints() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_with_pipe());
+
+    let result = set_instrument_input(SRC, "/cutoff", "in", json!(880.0), &registry, &resolver)
+        .expect("seed");
+
+    assert!(result.report.ok, "{:?}", result.report);
+    assert!(result.written);
+    assert_eq!(
+        readback(&resolver)["interface"]["inputs"]["cutoff"]["default"],
+        json!(880.0),
+        "the seed lands on the pipe's `default`, its disk spelling"
+    );
+}
+
+/// A pipe is a single-port pass-through, so any port but `in` is a precondition error that names
+/// the one port there is rather than writing somewhere the caller did not mean.
+#[test]
+fn a_pipe_takes_only_its_one_input() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_with_pipe());
+
+    let err = set_instrument_input(
+        SRC,
+        "/cutoff",
+        "default",
+        json!(880.0),
+        &registry,
+        &resolver,
+    )
+    .expect_err("a pipe has no `default` port");
+    assert!(err.to_string().contains('`'), "{err}");
+    assert!(
+        err.to_string().contains("`in`"),
+        "the error names the port to use: {err}"
+    );
+}
+
+/// The address space is one; the operations over it are not. Every verb that addresses an input
+/// **resolves** a pipe address — none of them may report it absent, which is the whole premise of
+/// the shared namespace — and a verb whose operation is meaningless on a boundary input refuses in
+/// terms of what the address *is*.
+#[test]
+fn every_input_verb_resolves_a_pipe_address_and_refuses_in_its_terms() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_with_pipe());
+
+    set_instrument_input(SRC, "/cutoff", "in", json!(880.0), &registry, &resolver)
+        .expect("setting a value is meaningful on a boundary input");
+
+    let refusals = [
+        (
+            "wire",
+            wire_instrument_input(SRC, "/cutoff", "in", "/osc", &registry, &resolver).unwrap_err(),
+            "boundary",
+        ),
+        (
+            "unwire",
+            unwire_instrument_input(SRC, "/cutoff", "in", &registry, &resolver).unwrap_err(),
+            "no wire to clear",
+        ),
+        (
+            "set_constant",
+            set_instrument_constant(SRC, "/cutoff", "voices", json!(4), &registry, &resolver)
+                .unwrap_err(),
+            "`config`",
+        ),
+    ];
+    for (verb, err, why) in refusals {
+        let message = err.to_string();
+        assert!(matches!(err, EditError::Target(_)), "{verb}: {err:?}");
+        assert!(
+            !message.contains("no node at address") && !message.contains("no node or interface"),
+            "{verb} must not report a real address as absent: {message}"
+        );
+        assert!(
+            message.contains("`cutoff`") && message.contains("interface input pipe"),
+            "{verb} names what the address is: {message}"
+        );
+        assert!(
+            message.contains(why),
+            "{verb} says why its operation is meaningless here: {message}"
+        );
+    }
+
+    // Wiring a consumer *from* the pipe is ordinary and untouched — it is being wired *into* that
+    // a boundary input refuses.
+    wire_instrument_input(SRC, "/amp", "b", "/cutoff", &registry, &resolver)
+        .expect("a pipe is a source like any other");
+
+    // And a genuinely absent address still reads as absent, so the two failures stay tellable apart.
+    let absent = wire_instrument_input(SRC, "/ghost", "in", "/osc", &registry, &resolver)
+        .expect_err("no such address");
+    assert!(absent.to_string().contains("/ghost"), "{absent}");
+}
+
+/// The node verbs share the namespace too: a pipe address is declared rather than added, so they
+/// name the interface half of the vocabulary instead of denying the address exists.
+#[test]
+fn the_node_verbs_send_a_pipe_address_to_the_interface_verbs() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_with_pipe());
+
+    let err = remove_instrument_node(SRC, "/cutoff", &registry, &resolver).expect_err("not a node");
+    let message = err.to_string();
+    assert!(
+        !message.contains("no node at address"),
+        "the address is real: {message}"
+    );
+    assert!(
+        message.contains("remove_instrument_interface_input"),
+        "the refusal names the verb that does reach it: {message}"
+    );
+}
+
+// --- the wire is not severed by a value edit ------------------------------------------------------
+
+/// Setting a literal on an input that currently holds a wire is **refused**, not silently applied:
+/// in the shipped library a vocabulary-target input fed from an interface pipe is the common case,
+/// and a destroyed wire is not recoverable from the result. The error names the way through.
+#[test]
+fn set_input_refuses_to_sever_a_wire() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_with_pipe());
+    let before = readback(&resolver);
+
+    let err = set_instrument_input(SRC, "/osc", "freq", json!(440.0), &registry, &resolver)
+        .expect_err("`/osc.freq` is wired from `/cutoff`");
+
+    assert!(matches!(err, EditError::Target(_)), "got {err:?}");
+    let message = err.to_string();
+    assert!(
+        message.contains("/cutoff"),
+        "the refusal names the wire it would have severed: {message}"
+    );
+    assert!(
+        message.contains("unwire_instrument_input"),
+        "the refusal names the verb that severs on purpose: {message}"
+    );
+    assert_eq!(
+        before,
+        readback(&resolver),
+        "the wired input is not clobbered"
+    );
+}
+
+// --- the value verbs echo the change --------------------------------------------------------------
+
+/// A value edit's echo is `from → to`, not the state it landed in: a zoom shows `freq=440` and
+/// structurally cannot show what it was, because the prior document is gone.
+#[test]
+fn the_value_verbs_echo_the_change_not_the_state() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed());
+
+    let input = set_instrument_input(SRC, "/osc", "freq", json!(440.0), &registry, &resolver)
+        .expect("set input");
+    assert_eq!(input.zoom, "/osc.freq 220 → 440");
+
+    let voicer = resolver_with(&seed_with_voicer());
+    let constant = set_instrument_constant(SRC, "/voices", "voices", json!(4), &registry, &voicer)
+        .expect("set constant");
+    assert!(constant.report.ok && constant.written, "{constant:?}");
+    assert_eq!(
+        constant.zoom, "/voices.voices (unset) → 4",
+        "a slot that held nothing says so rather than inventing a prior value"
+    );
+
+    let pipe_resolver = resolver_with(&seed_with_pipe());
+    let seeded = set_instrument_input(
+        SRC,
+        "/cutoff",
+        "in",
+        json!(880.0),
+        &registry,
+        &pipe_resolver,
+    )
+    .expect("seed the pipe");
+    assert_eq!(seeded.zoom, "/cutoff.in 440 → 880");
 }
 
 // --- cascade -------------------------------------------------------------------------------------
@@ -339,7 +542,6 @@ fn interface_input_add_and_meta_round_trip() {
         SRC,
         "cutoff",
         None,
-        None,
         Some(50.0),
         None,
         None,
@@ -349,9 +551,13 @@ fn interface_input_add_and_meta_round_trip() {
     )
     .expect("set meta");
     assert!(meta.written);
+    let after = readback(&resolver);
+    assert_eq!(after["interface"]["inputs"]["cutoff"]["min"], json!(50.0));
+    // The meta verb is the quantity contract and nothing else: the seed is untouched, because it
+    // is the value verb's to write.
     assert_eq!(
-        readback(&resolver)["interface"]["inputs"]["cutoff"]["min"],
-        json!(50.0)
+        after["interface"]["inputs"]["cutoff"]["default"],
+        json!(1000.0)
     );
 }
 

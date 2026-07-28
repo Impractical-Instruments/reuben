@@ -121,6 +121,80 @@ fn advertises_the_window_prose() {
     }
 }
 
+/// A node input and an interface pipe's seed are one concept, so exactly one verb writes it. The
+/// meta verb is the pipe's *quantity* contract and nothing else; the value verb owns the seed and
+/// says how a pipe is addressed. Asserted on the wire because that is where a model reads it, and
+/// because no completeness guard can catch a concept expressed twice.
+#[test]
+fn the_value_verb_owns_the_seed_and_the_meta_verb_is_the_quantity_contract() {
+    let out = drive(&[TOOLS_LIST]);
+    let response = response_with_id(&out, 2);
+    let tools = response["result"]["tools"]
+        .as_array()
+        .unwrap_or_else(|| panic!("tools/list result missing a tools array:\n{response}"));
+    let tool = |name: &str| {
+        tools
+            .iter()
+            .find(|t| t["name"] == serde_json::json!(name))
+            .unwrap_or_else(|| panic!("tools/list missing `{name}`"))
+    };
+
+    let meta = tool("set_instrument_interface_input_meta");
+    let properties = meta["inputSchema"]["properties"]
+        .as_object()
+        .unwrap_or_else(|| panic!("no input properties on the meta verb: {meta}"));
+    assert!(
+        !properties.contains_key("default"),
+        "the meta verb is the quantity contract (channel/min/max/curve/unit) — the seed is \
+         set_instrument_input's: {meta}"
+    );
+    for field in ["channel", "min", "max", "curve", "unit"] {
+        assert!(
+            properties.contains_key(field),
+            "the meta verb still carries `{field}`: {meta}"
+        );
+    }
+    assert!(
+        !meta["description"]
+            .as_str()
+            .expect("a described verb")
+            .contains("default"),
+        "the meta verb's sentence no longer advertises a seed it cannot write: {meta}"
+    );
+
+    let value = tool("set_instrument_input")["description"]
+        .as_str()
+        .expect("a described verb");
+    assert!(
+        value.contains("pipe"),
+        "the value verb says it also sets a pipe's value: {value}"
+    );
+
+    // One word for one slot, across every verb that writes it. A model that learns `value` here
+    // and tries it next door must be right — and if it is ever wrong again, wrong loudly.
+    let add = tool("add_instrument_interface_input");
+    let add_properties = add["inputSchema"]["properties"]
+        .as_object()
+        .expect("input properties");
+    assert!(
+        add_properties.contains_key("value") && !add_properties.contains_key("default"),
+        "the pipe's seed is spelled `value` wherever it is written: {add}"
+    );
+
+    // Closed, on the wire: an argument the window does not declare is refused, not dropped.
+    for name in [
+        "set_instrument_input",
+        "set_instrument_interface_input_meta",
+        "add_instrument_interface_input",
+    ] {
+        assert_eq!(
+            tool(name)["inputSchema"]["additionalProperties"],
+            serde_json::json!(false),
+            "`{name}` must advertise a closed argument surface"
+        );
+    }
+}
+
 /// The banned markup, as (label, detector). Hand-rolled rather than a regex dependency: the three
 /// shapes are each a single scan.
 type Detector = (&'static str, fn(&str) -> bool);

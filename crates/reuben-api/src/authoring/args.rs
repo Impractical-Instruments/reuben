@@ -7,7 +7,10 @@
 //!
 //! Each mutating verb carries an optional `expect` content-hash write guard. It is an ordinary
 //! field of a type the window owns, applied once in [`verbs`](super::verbs) rather than
-//! re-implemented per door. see rules: agent-mcp
+//! re-implemented per door.
+//!
+//! Every struct here is `deny_unknown_fields`, which schemars carries onto the wire as
+//! `additionalProperties: false`. see rules: agent-mcp
 
 use std::collections::BTreeMap;
 
@@ -15,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 /// Arguments for `describe_operators`: an optional `name` filter plus the `compact` mode switch.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct DescribeOperators {
     /// Restrict to one operator type; omit to list every registered operator.
     #[serde(default)]
@@ -63,6 +67,7 @@ impl InstrumentView {
 /// Arguments for `describe_instrument`: a `source`, a view, and the projection's one selection
 /// grammar.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct DescribeInstrument {
     /// The instrument document (a path for this door).
     pub source: String,
@@ -81,6 +86,7 @@ pub struct DescribeInstrument {
 
 /// Arguments for `describe_boundary`: the document whose nesting face to read.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct DescribeBoundary {
     /// The instrument document (a path for this door).
     pub source: String,
@@ -92,6 +98,7 @@ pub struct DescribeBoundary {
 // that had to hold one. `source` is opaque and door-resolved (a path natively), exactly as it is on
 // every document verb. see rules: agent-mcp
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ValidateInstrument {
     /// The instrument document (a path for this door). Nested references resolve sibling-first
     /// from its directory, then the library root.
@@ -102,6 +109,7 @@ pub struct ValidateInstrument {
 
 /// Arguments for `new_instrument`: where to create the document, and its name.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct NewInstrument {
     /// Where to create the document (a path for this door). Refuses to overwrite an existing one.
     pub source: String,
@@ -111,6 +119,7 @@ pub struct NewInstrument {
 
 /// Arguments for `set_instrument_name`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SetInstrumentName {
     /// The document to edit.
     pub source: String,
@@ -123,6 +132,7 @@ pub struct SetInstrumentName {
 
 /// Arguments for `set_instrument_description`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SetInstrumentDescription {
     /// The document to edit.
     pub source: String,
@@ -136,6 +146,7 @@ pub struct SetInstrumentDescription {
 /// Arguments for `add_instrument_node` — the one-shot, zoom-mirroring add: the node lands fully
 /// formed.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AddInstrumentNode {
     /// The document to edit.
     pub source: String,
@@ -168,6 +179,7 @@ pub struct AddInstrumentNode {
 
 /// Arguments for `remove_instrument_node` — cascades: unwires every consumer, reports what it broke.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RemoveInstrumentNode {
     /// The document to edit.
     pub source: String,
@@ -179,6 +191,7 @@ pub struct RemoveInstrumentNode {
 
 /// Arguments for `rename_instrument_node` — rewires every consumer to the new address.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RenameInstrumentNode {
     /// The document to edit.
     pub source: String,
@@ -192,6 +205,7 @@ pub struct RenameInstrumentNode {
 
 /// Arguments for `set_instrument_node_description`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SetInstrumentNodeDescription {
     /// The document to edit.
     pub source: String,
@@ -204,8 +218,10 @@ pub struct SetInstrumentNodeDescription {
     pub expect: Option<String>,
 }
 
-/// Arguments for `set_instrument_input`: set a node input to a **literal** value.
+/// Arguments for `set_instrument_input`: set a node input, or an interface input pipe's seed, to a
+/// **literal** value.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SetInstrumentInput {
     /// The document to edit.
     pub source: String,
@@ -221,6 +237,7 @@ pub struct SetInstrumentInput {
 
 /// Arguments for `wire_instrument_input`: wire a node input from a source port.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct WireInstrumentInput {
     /// The document to edit.
     pub source: String,
@@ -236,6 +253,7 @@ pub struct WireInstrumentInput {
 
 /// Arguments for `unwire_instrument_input`: revert a node input to its descriptor default.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct UnwireInstrumentInput {
     /// The document to edit.
     pub source: String,
@@ -249,6 +267,7 @@ pub struct UnwireInstrumentInput {
 
 /// Arguments for `set_instrument_constant`: set an instantiate-time constant on a node.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SetInstrumentConstant {
     /// The document to edit.
     pub source: String,
@@ -264,6 +283,7 @@ pub struct SetInstrumentConstant {
 
 /// Arguments for `add_instrument_interface_input`: add a boundary input pipe.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AddInstrumentInterfaceInput {
     /// The document to edit.
     pub source: String,
@@ -276,9 +296,10 @@ pub struct AddInstrumentInterfaceInput {
     /// Optional logical input channel (signal pipes only).
     #[serde(default)]
     pub channel: Option<usize>,
-    /// Optional unwired/seed value: a number, or an enum symbol string.
+    /// The pipe's value when nothing feeds it: a number, or an enum symbol string. Omit for a bare
+    /// signal pipe, which renders silence unfed. Later changed with `set_instrument_input`.
     #[serde(default)]
-    pub default: Option<serde_json::Value>,
+    pub value: Option<serde_json::Value>,
     /// Optional engine-enforced range floor.
     #[serde(default)]
     pub min: Option<f64>,
@@ -297,6 +318,7 @@ pub struct AddInstrumentInterfaceInput {
 
 /// Arguments for `add_instrument_interface_output`: add a master-tap output pipe.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AddInstrumentInterfaceOutput {
     /// The document to edit.
     pub source: String,
@@ -322,6 +344,7 @@ pub struct AddInstrumentInterfaceOutput {
 
 /// Arguments for `remove_instrument_interface_input` / `remove_instrument_interface_output`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RemoveInstrumentInterfacePipe {
     /// The document to edit.
     pub source: String,
@@ -331,9 +354,11 @@ pub struct RemoveInstrumentInterfacePipe {
     pub expect: Option<String>,
 }
 
-/// Arguments for `set_instrument_interface_input_meta`: update an input pipe's metadata (each
-/// provided field is written; omitted fields are unchanged).
+/// Arguments for `set_instrument_interface_input_meta`: update an input pipe's quantity contract
+/// (each provided field is written; omitted fields are unchanged). The pipe's value is
+/// `set_instrument_input`'s, addressed `/name` with input `in`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SetInstrumentInterfaceInputMeta {
     /// The document to edit.
     pub source: String,
@@ -341,8 +366,6 @@ pub struct SetInstrumentInterfaceInputMeta {
     pub name: String,
     #[serde(default)]
     pub channel: Option<usize>,
-    #[serde(default)]
-    pub default: Option<serde_json::Value>,
     #[serde(default)]
     pub min: Option<f64>,
     #[serde(default)]
@@ -358,6 +381,7 @@ pub struct SetInstrumentInterfaceInputMeta {
 
 /// Arguments for `set_instrument_interface_output_meta`: update an output pipe's metadata.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SetInstrumentInterfaceOutputMeta {
     /// The document to edit.
     pub source: String,
@@ -377,6 +401,7 @@ pub struct SetInstrumentInterfaceOutputMeta {
 
 /// Arguments for `add_instrument_resource`: add an id→source entry to the resources table.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AddInstrumentResource {
     /// The document to edit.
     pub source: String,
@@ -390,6 +415,7 @@ pub struct AddInstrumentResource {
 
 /// Arguments for `remove_instrument_resource`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RemoveInstrumentResource {
     /// The document to edit.
     pub source: String,
@@ -397,4 +423,62 @@ pub struct RemoveInstrumentResource {
     pub id: String,
     #[serde(default)]
     pub expect: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// An argument this verb does not declare is an error, not a dropped key. Serde's default is to
+    /// drop, which would answer a caller written against a slot that has moved with a clean
+    /// `written: true` for an edit that did not happen. see rules: agent-mcp
+    #[test]
+    fn a_key_the_verb_does_not_declare_is_refused() {
+        // The exact regression: `default` moved off the meta verb onto the value verb, and every
+        // caller written against the old surface still sends it.
+        let stale = json!({ "source": "i.json", "name": "cutoff", "default": 123.0, "unit": "Hz" });
+        let err = serde_json::from_value::<SetInstrumentInterfaceInputMeta>(stale)
+            .expect_err("the meta verb no longer writes a value");
+        assert!(
+            err.to_string().contains("default"),
+            "the refusal names the key it will not take: {err}"
+        );
+
+        // And the other half: a word learned on one verb, tried on the verb next door.
+        let guessed = json!({ "source": "i.json", "name": "cutoff", "type": "f32",
+                              "default": 880.0 });
+        assert!(
+            serde_json::from_value::<AddInstrumentInterfaceInput>(guessed).is_err(),
+            "this verb spells the pipe's seed `value` like every other value-writing verb"
+        );
+        let spelled = json!({ "source": "i.json", "name": "cutoff", "type": "f32",
+                              "value": 880.0 });
+        let args: AddInstrumentInterfaceInput =
+            serde_json::from_value(spelled).expect("the declared spelling parses");
+        assert_eq!(args.value, Some(json!(880.0)));
+    }
+
+    /// The closure is not confined to the verb that lost a parameter: every argument surface the
+    /// window declares is closed, so the next one to move a slot cannot fail silently either.
+    #[test]
+    fn every_authoring_argument_surface_is_closed() {
+        // One representative per shape — a read, a create, a point-edit, a removal.
+        assert!(serde_json::from_value::<DescribeInstrument>(
+            json!({ "source": "i.json", "compact": true })
+        )
+        .is_err());
+        assert!(serde_json::from_value::<NewInstrument>(
+            json!({ "source": "i.json", "instrument": "x" })
+        )
+        .is_err());
+        assert!(serde_json::from_value::<SetInstrumentInput>(
+            json!({ "source": "i.json", "address": "/osc", "input": "freq", "to": 440.0 })
+        )
+        .is_err());
+        assert!(serde_json::from_value::<RemoveInstrumentResource>(
+            json!({ "source": "i.json", "id": "kick", "cascade": true })
+        )
+        .is_err());
+    }
 }

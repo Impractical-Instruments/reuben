@@ -61,21 +61,26 @@ pub const SET_INSTRUMENT_NODE_DESCRIPTION: &str =
     "Set (or, omitting `description`, clear) a node's note.";
 
 pub const SET_INSTRUMENT_INPUT: &str =
-    "Set a node input to a literal value: a number, or an enum symbol string. The one-value \
-     point-edit — no re-emitting the whole document. Use wire_instrument_input to connect a port.";
+    "Set an input to a literal value: a number, or an enum symbol string. The one-value \
+     point-edit — no re-emitting the whole document. An interface input pipe is a node too: \
+     address it `/name`, input `in`. Echoes from -> to. Refuses an input that is already wired: \
+     unwire_instrument_input first, or wire_instrument_input to re-point it.";
 
 pub const WIRE_INSTRUMENT_INPUT: &str =
-    "Wire a node input from a source port: `from` is `/node.port`, or `/node` for a sole-output source.";
+    "Wire a node input from a source port: `from` is `/node.port`, or `/node` for a sole-output \
+     source. This document's own interface input pipes are fed from outside it, so they cannot be \
+     wired — you wire *from* one.";
 
 pub const UNWIRE_INSTRUMENT_INPUT: &str =
     "Clear a node input, reverting it to the operator's descriptor default.";
 
 pub const SET_INSTRUMENT_CONSTANT: &str =
-    "Set an instantiate-time constant on a node (a plan-time `config` value like a Voicer's `voices`).";
+    "Set an instantiate-time constant on a node (a plan-time `config` value like a Voicer's \
+     `voices`). Echoes the change (from -> to), not the node.";
 
 pub const ADD_INSTRUMENT_INTERFACE_INPUT: &str =
     "Add a boundary input pipe: a declared-type input that mints an address `/name` internal \
-     nodes consume from, with optional channel, default, min/max, curve (lin/exp), and unit.";
+     nodes consume from, with optional channel, value, min/max, curve (lin/exp), and unit.";
 
 pub const ADD_INSTRUMENT_INTERFACE_OUTPUT: &str =
     "Add a master-tap output pipe fed from an internal port (`from` = `/node.port` or `/node`), \
@@ -86,8 +91,9 @@ pub const REMOVE_INSTRUMENT_INTERFACE_INPUT: &str = "Remove a boundary input pip
 pub const REMOVE_INSTRUMENT_INTERFACE_OUTPUT: &str = "Remove a master-tap output pipe by name.";
 
 pub const SET_INSTRUMENT_INTERFACE_INPUT_META: &str =
-    "Update an input pipe's metadata (channel, default, min/max, curve lin/exp, unit); each \
-     provided field is written, omitted fields are unchanged.";
+    "Update an input pipe's quantity contract (channel, min/max, curve lin/exp, unit); each \
+     provided field is written, omitted fields are unchanged. Not its value: that is \
+     set_instrument_input on `/name`, input `in`.";
 
 pub const SET_INSTRUMENT_INTERFACE_OUTPUT_META: &str =
     "Update an output pipe's metadata (channel, min/max, unit); each provided field is \

@@ -298,12 +298,18 @@ target-pointing form (no entry points inward anymore):
   **integer control** ([composition-operators](../rules/composition-operators.md)): a count
   like euclid's `steps`/`pulses`/`rotation`, whole-numbered `default`/`min`/`max` (no `curve`), that
   wires straight into a consumer's integer (`i32`) port — or widens losslessly into an `f32` one —
-  and quantizes live input. A numeric pipe owns
-  engine-enforced `default`/`min`/`max`/`curve` plus a display `unit` — the pipe's whole
-  *quantity* contract; presentation (`label`/`widget`) lives in a surface doc, not on the pipe. A
+  and quantizes live input. A numeric pipe owns an engine-enforced `default` — its **value**, the
+  one the entry seeds and the one a verb changes later — inside an engine-enforced
+  `min`/`max`/`curve` plus a display `unit`, the *quantity* contract around it; presentation
+  (`label`/`widget`) lives in a surface doc, not on the pipe. A
   defaulted pipe unfed materializes its default —
   a knob at rest, message-drivable at **`/<name>/in`** over OSC; an unfed *bare* signal pipe
-  renders silence (and warns at top level, where nothing can ever feed it).
+  renders silence (and warns at top level, where nothing can ever feed it). Because the pipe
+  **is** a node, that value is set like any node input — `set_instrument_input` on `/<name>`,
+  input `in`; its meta verb writes the contract around the value and never the value. What a
+  boundary input cannot be is **wired**: what feeds it is outside this document, so the wiring
+  verbs address it and refuse, saying so. Wiring *from* `/<name>` is ordinary — that is what
+  internal consumers do.
 - An **output pipe is fed from an internal port**: `"main_l": { "from": "/pan.left" }`.
   Signal output pipes drive the logical master channels.
 - A **signal** pipe may carry an optional logical **`channel: <int>`** binding — **honored
