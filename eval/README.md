@@ -108,18 +108,24 @@ Read and Write that reuben cannot take away, so the old path stays walkable outs
 new arrangement is therefore strictly better than "leave the tools on and watch", because it
 separates what a model *wants* from what the surface happens to offer it.
 
-The classification is shape-matched rather than a list of two names, since the whole point is to
-catch the reach *after* `read_file` is gone and whatever a model's priors call the same move arrives
-instead. It matches a **filesystem noun anywhere** (`readFile`, `move_file`, `directory_tree`,
-`write_document`) **or the whole name** against known host tools (`Read`, `Write`, `Edit`, `bash`,
-`str_replace_editor`) — a union, not an intersection. An AND of action-and-noun would be *stricter*
-than the two literal names it replaced: `Read` and `Write` are bare verbs with no noun to pair with,
-and `bash` has neither half, so a model falling back to one would be reported as having stopped
-wanting the old path when it had not. Being generous is safe because the matcher is only ever
-consulted on a name the roster already refused — it cannot shadow a verb, and a test walks the live
-roster to prove none of them trips it. A check that cannot be made to fail is not a check, so
-`tests/test_tasks.py` also drives a run that emits `read_file` after an otherwise-perfect edit and
-asserts the run fails with the mode named.
+The classification matches a name rather than enumerating two, since the whole point is to catch the
+reach *after* `read_file` is gone and whatever a model's priors call the same move arrives instead.
+It is a **union** of four cheap rules: a filesystem noun in any word (`readFile`, `move_file`,
+`directory_tree`), a shell or editing word in any word (`execute_command`, `run_terminal_cmd`,
+`apply_patch`), a whole-name match for the bare verbs (`Read`, `Write`, `Edit`, `cat`), and a
+fragment match for the editor family whose spelling keeps moving (`str_replace_based_edit_tool`).
+
+Every one of those rules exists because a narrower one missed something real. An AND of
+action-and-noun would be *stricter* than the two literal names it replaced — `Read` and `Write` are
+bare verbs with no noun. A whole-name shell set catches the category words and misses every product:
+`execute_command` (Cline), `run_shell_command` (Gemini CLI), `run_terminal_cmd` (Cursor),
+`execute_bash` (OpenHands), `local_shell` (OpenAI) are what agents actually ship. A miss there is a
+model falling back to the old path and being reported as having stopped wanting it.
+
+Being generous is safe because the matcher is only ever consulted on a name the roster already
+refused — it cannot shadow a verb, and a test walks the live roster to prove none of them trips it. A
+check that cannot be made to fail is not a check, so `tests/test_tasks.py` also drives a run that
+emits `read_file` after an otherwise-perfect edit and asserts the run fails with the mode named.
 
 Two things are deliberately outside this:
 
@@ -130,22 +136,27 @@ Two things are deliberately outside this:
   structural rather than conventional: nothing in the model-facing roster can read or write a file,
   and there is no host dispatch left for one to route to.
 
-Metric (c) is priced by the same logic, in two halves. A **roster** call is bound by a schema, so
-what carries a document can be named in advance — and that table is now empty, because no arm takes
-one by value any more. An **invented** call is bound by nothing, so it is priced by argument *shape*:
-`content`, `text`, `document`, `file_text`, `body` and friends are charged at whatever tool name they
-arrive on. Charging only `write_file(content=…)` would have let `writeFile(content=…)` and
-`write_file(text=…)` emit a whole document for free, and a false zero is the one direction this
-metric must never be fooled in now that it is a floor and a tripwire rather than a spread of values.
+Metric (c) is priced in two halves, on the same principle. A **roster** call is charged **by name**:
+it is bound by a schema, so what carries a document is a fact known in advance — and that table is
+now empty, because no arm takes one by value any more. An **invented** call is charged **by value**:
+read the argument, never its label. It qualifies if its serialisation runs past ~200 characters,
+which is where an argument stops being communication whatever it is called, or if it parses as JSON
+carrying an instrument's keys, which catches a near-empty document that slips under the size floor.
+
+Reading the value rather than the name is what makes this hold. Any list of argument names is one
+agent product behind the next one shipped: `patch` is OpenAI Codex's `apply_patch`, `file_text` is
+Anthropic's text editor, and a model inventing a call is bound by neither. `Write(content=…)`,
+`write_file(text=…)` and `apply_patch(patch=…)` are one emission in three spellings, and are priced
+identically. A false zero is the one direction this metric must never be fooled in now that it is a
+floor and a tripwire rather than a spread of values.
 
 A verb argument is not a document even when it is structured: `add_instrument_node(inputs=…)` and
 `send_live_controls(messages=…)` cost nothing. (c) prices **freehand JSON** — the document the model
 had to compose and hold — not communication, and a node's inputs map is the thing the verbs exist to
-make cheap. The name-keyed roster half is what keeps argument shape from ever catching one.
+make cheap. The name-keyed roster half is what structurally keeps the value rule from reaching one.
 
 The practical consequence: a passing gate-tier run prices at **zero**, and a non-zero number means a
-document was emitted somewhere. That is a strong signal, not a proof — a model could still hang bytes
-on an argument name nobody anticipated. It is a tripwire, wired to the shapes that actually occur.
+document was emitted somewhere — at whatever call, under whatever argument name.
 
 ## The tokenizer is pinned, and that is the point
 

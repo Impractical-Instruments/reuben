@@ -30,8 +30,13 @@ A *verb argument* is not one of those, even when it is structured: `add_instrume
 and `send_live_controls(messages=…)` cost nothing. The metric prices **freehand JSON** — the document
 the model had to compose and hold — not communication. A node's inputs map is small, named by a
 schema, and is the thing the verbs exist to make cheap; charging it would price the cure as the
-disease. What counts is a whole document arriving in an argument, at a roster arm that takes one by
-value (there are none left) or at a call the model invented.
+disease.
+
+Which is why the two halves are priced differently. A roster call is charged **by name**, because a
+schema says in advance what carries a document, and that is what keeps a verb's own arguments free.
+A refused call is charged **by value** — read the argument, not its label. Nothing else survives
+contact: `apply_patch(patch=…)`, `write_file(text=…)` and `Write(content=…)` are one emission wearing
+three spellings, and any list of argument names is one agent product behind the next one shipped.
 """
 
 from __future__ import annotations
@@ -48,15 +53,15 @@ from typing import Any
 # here — that is what keeps metric (c) from silently reading zero through it.
 DOCUMENT_ARGUMENTS: dict[str, tuple[str, ...]] = {}
 
-# Argument names that carry a document when the call itself is invented. A refused call is bound by
-# no schema, so the *name* it hangs the bytes on is as free as the encoding — pricing only
-# `write_file(content=…)` would let `writeFile(content=…)` and `write_file(text=…)` emit a whole
-# document for free, and a false zero is the one direction this metric must never be fooled in. All
-# of the argument is charged, not just the part routed to the answer document: a stray scratch write
-# makes the surface look MORE expensive, never less, so it cannot flatter a prototype's claim.
-DOCUMENT_SHAPED_ARGUMENTS = frozenset(
-    {"content", "contents", "text", "document", "file_text", "body", "new_str", "new_string", "data"}
-)
+# The size at which an argument stops being communication and becomes a payload. Every argument the
+# roster's own verbs take is far below it — an address, a port name, a float, a source path, a node's
+# inputs map — and every instrument document is far above. All of the argument is charged, not just
+# the part routed to the answer document: a stray scratch write makes the surface look MORE
+# expensive, never less, so the error cannot flatter a prototype's claim.
+DOCUMENT_CHARACTER_FLOOR = 200
+
+# The keys that identify an instrument document too small to trip the floor.
+_DOCUMENT_KEYS = frozenset({"nodes", "format_version", "instrument", "interface"})
 
 # The report's name for this outcome, kept out of the prose so a reader and a grep agree on it.
 FILE_ACCESS = "file-access"
@@ -71,15 +76,28 @@ _FILE_NOUNS = frozenset(
     {"file", "files", "filesystem", "path", "paths", "dir", "dirs", "directory", "directories",
      "fs", "disk", "folder", "document", "documents"}
 )
-# Whole-name matches, for the tools whose names carry neither half — a bare verb (`Read`), a shell
-# (`bash`), or a proper noun (`str_replace_editor`). Compared against the name flattened of
-# separators too, so `strReplaceEditor` lands with `str_replace_editor`. Deliberately excludes
-# ambiguous bare verbs like `create` and `run`, which a model is as likely to aim at a document verb
-# as at a file.
+# Whole-name matches, for the file tools whose names carry no noun — a bare verb (`Read`, `Write`,
+# `Edit`). Compared against the name flattened of separators, so `strReplaceEditor` lands with
+# `str_replace_editor`. Deliberately excludes ambiguous bare verbs like `create` and `run`, which a
+# model is as likely to aim at a document verb as at a file.
 _HOST_FILE_TOOLS = frozenset(
-    {"read", "write", "edit", "view", "cat", "open", "save", "append", "ls", "glob",
-     "bash", "sh", "shell", "exec", "execute", "runcommand", "terminal"}
+    {"read", "write", "edit", "view", "cat", "open", "save", "append", "ls", "glob"}
 )
+
+# A shell is a file tool wearing a different hat — `cat instrument.json` reads the document as surely
+# as `read_file` does. Matched per WORD rather than whole-name, because the category words are not
+# what agent products actually ship: `execute_command` (Cline), `run_shell_command` (Gemini CLI),
+# `run_terminal_cmd` (Cursor), `execute_bash` (OpenHands), `local_shell` (OpenAI) all carry a shell
+# token inside a longer name. A whole-name set catches the categories and misses every real one —
+# structurally the same defect as missing `Read` and `Write`.
+_SHELL_WORDS = frozenset(
+    {"bash", "sh", "zsh", "shell", "exec", "execute", "cmd", "command", "terminal", "subprocess",
+     "interpreter", "python"}
+)
+
+# Editing a document's text is reaching for its bytes, whether or not the name says "file":
+# `apply_patch` is OpenAI Codex's editor and mentions neither. Matched per word, like the shells.
+_EDIT_WORDS = frozenset({"patch", "diff", "rewrite", "overwrite", "replace"})
 
 # Fragments that name a file editor whatever it is wrapped in — `str_replace_editor`,
 # `str_replace_based_edit_tool`, `text_editor`. A whole-name set cannot keep up with those; the
@@ -103,7 +121,7 @@ def looks_like_file_access(name: str) -> bool:
     flat = re.sub(r"[^a-z0-9]+", "", name.lower())
     if flat in _HOST_FILE_TOOLS or any(marker in flat for marker in _FILE_MARKERS):
         return True
-    return bool(_words(name) & _FILE_NOUNS)
+    return bool(_words(name) & (_FILE_NOUNS | _SHELL_WORDS | _EDIT_WORDS))
 
 
 def file_access_failure(reached: list[str]) -> str | None:
@@ -152,6 +170,30 @@ HOST_TOOLS: list[dict[str, Any]] = [
 ]
 
 
+def _is_document_payload(value: Any) -> bool:
+    """Is this argument value an emitted document, judged on the value alone?
+
+    Two ways to qualify, and neither looks at what the argument is called. Size is the blunt one and
+    does most of the work: past `DOCUMENT_CHARACTER_FLOOR` an argument has stopped being
+    communication whatever it is, and charging it errs in the safe direction. The document keys catch
+    the rest — a near-empty instrument is only a few dozen characters and would slip under the floor.
+    """
+    if isinstance(value, str):
+        if len(value) > DOCUMENT_CHARACTER_FLOOR:
+            return True
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, ValueError):
+            return False
+    elif isinstance(value, (dict, list)):
+        if len(json.dumps(value, separators=(",", ":"))) > DOCUMENT_CHARACTER_FLOOR:
+            return True
+        parsed = value
+    else:  # a number, a bool, None — never a document
+        return False
+    return isinstance(parsed, dict) and bool(_DOCUMENT_KEYS & set(parsed))
+
+
 class WorkspaceError(RuntimeError):
     """A workspace path that escaped the root."""
 
@@ -167,14 +209,21 @@ class PayloadLedger:
         """Price one call. A roster tool is charged by name; a refused one, by argument shape.
 
         The split is the whole point. A roster call is bound by a schema, so what carries a document
-        is a fact the harness can name in advance. A refused call is bound by nothing, so neither the
-        tool name nor the argument name can be assumed — only the shape can.
+        is a fact the harness can name in advance — and the name is what keeps a verb's own
+        structured arguments free. A refused call is bound by nothing, so neither the tool name nor
+        the argument name can be assumed: `apply_patch(patch=…)`, `write_file(text=…)` and
+        `Write(content=…)` are the same emission wearing three spellings, and any list of names is
+        one agent product behind. Only the value itself is a fact, so the value is what is read.
         """
-        fields = DOCUMENT_ARGUMENTS.get(tool, ()) if on_roster else DOCUMENT_SHAPED_ARGUMENTS
-        for name in fields:
-            value = arguments.get(name)
-            if value is None:
-                continue
+        if on_roster:
+            emissions = [
+                value
+                for name in DOCUMENT_ARGUMENTS.get(tool, ())
+                if (value := arguments.get(name)) is not None
+            ]
+        else:
+            emissions = [value for value in arguments.values() if _is_document_payload(value)]
+        for value in emissions:
             # A document may arrive as a JSON string or as a parsed object. Both are the same
             # emission; normalise so neither is cheaper by accident of encoding.
             text = value if isinstance(value, str) else json.dumps(value, separators=(",", ":"))

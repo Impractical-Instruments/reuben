@@ -280,13 +280,13 @@ class TestPayloadLedger(unittest.TestCase):
         self.assertGreater(ledger.characters, len(tasks.VOICE))
         self.assertEqual(set(ledger.per_tool), {"write_file"})
 
-    def test_a_document_is_charged_whatever_the_invented_call_is_called(self) -> None:
-        """The name is as free as the encoding, so pricing one spelling prices nothing.
+    def test_a_document_is_charged_whatever_the_invented_call_calls_it(self) -> None:
+        """The argument name is as free as the encoding, so a list of names prices nothing.
 
-        A refused call is bound by no schema: `writeFile`, `Write`, `write_document` and
-        `str_replace_editor` all emit the same document, and charging only `write_file(content=…)`
-        would let every other spelling through at zero. A false zero is the one direction this
-        metric must never be fooled in, now that it is a floor and a tripwire.
+        These are not hypothetical spellings: `patch` is OpenAI Codex's `apply_patch`, `file_text`
+        is Anthropic's text editor. Any enumeration is one agent product behind the next one
+        shipped, so the value is read instead of its label. A false zero is the one direction this
+        metric must never be fooled in, now that it is a floor and a tripwire rather than a spread.
         """
         for tool, argument in (
             ("write_file", "content"),
@@ -296,11 +296,33 @@ class TestPayloadLedger(unittest.TestCase):
             ("write_document", "document"),
             ("str_replace_editor", "file_text"),
             ("save_file", "body"),
+            ("apply_patch", "patch"),
+            ("edit_file", "diff"),
+            ("create_file", "code"),
+            ("upload", "payload"),
+            ("submit", "instrument"),
+            ("post", "json"),
         ):
             with self.subTest(tool=tool, argument=argument):
                 ledger = PayloadLedger()
                 ledger.charge(tool, {"path": "a.json", argument: tasks.VOICE}, on_roster=False)
                 self.assertEqual(ledger.characters, len(tasks.VOICE))
+
+    def test_a_small_document_is_charged_even_under_the_size_floor(self) -> None:
+        """Size does most of the work; the document keys catch what slips under it."""
+        seed = json.dumps({"format_version": 3, "instrument": "tone", "nodes": []})
+        self.assertLess(len(seed), 200)
+        ledger = PayloadLedger()
+        ledger.charge("apply_patch", {"patch": seed}, on_roster=False)
+        self.assertEqual(ledger.characters, len(seed))
+
+    def test_a_refused_call_that_emits_nothing_costs_nothing(self) -> None:
+        """A shell reach is still a reach, but no document crossed — classification, not payload."""
+        ledger = PayloadLedger()
+        ledger.charge("bash", {"command": "cat instrument.json"}, on_roster=False)
+        ledger.charge("read_file", {"path": "instrument.json"}, on_roster=False)
+        ledger.charge("Read", {"file_path": "instrument.json", "limit": 200}, on_roster=False)
+        self.assertEqual(ledger.characters, 0)
 
     def test_intent_sized_arguments_cost_nothing(self) -> None:
         """A word, a node address and a float are what this map wants the model emitting."""
@@ -435,11 +457,19 @@ class TestFileAccessIsANamedFailure(unittest.TestCase):
     # model falls back to when none of those are there. Every one of these is a path by which a model
     # that lost `write_file` can still emit a whole document.
     REAL_HOST_TOOLS = (
-        "Read", "Write", "Edit", "Glob", "Bash", "bash", "sh",
+        # Claude Code, and Anthropic's text editor across its spellings.
+        "Read", "Write", "Edit", "Glob", "Bash", "BashTool",
         "str_replace_editor", "text_editor", "str_replace_based_edit_tool",
-        "read_file", "write_file", "readFile", "writeFile", "read_text_file",
-        "move_file", "search_files", "get_file_info", "directory_tree", "list_directory",
-        "create_directory", "write_document", "save_document", "view", "cat", "run_command",
+        # The canonical MCP filesystem server.
+        "read_file", "write_file", "read_text_file", "move_file", "search_files",
+        "get_file_info", "directory_tree", "list_directory", "create_directory",
+        # The shell each major agent harness actually ships — the category words (`bash`, `shell`)
+        # are not what any of them is called.
+        "execute_command", "run_shell_command", "run_terminal_cmd", "execute_bash", "local_shell",
+        "shell_exec", "container_exec", "run_command", "subprocess", "zsh", "sh",
+        "code_interpreter", "python",
+        # Assorted spellings a model reaches for unprompted.
+        "readFile", "writeFile", "apply_patch", "write_document", "save_document", "view", "cat",
     )
 
     def test_the_model_facing_roster_offers_nothing_that_trips_it(self) -> None:
