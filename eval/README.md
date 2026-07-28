@@ -134,7 +134,7 @@ python3 eval/tools/gen_unicode_classes.py    # then refresh pins.json, and say s
 ```
 reuben_eval/mcp.py         MCP stdio client + the token ledger
 reuben_eval/workspace.py   host file tools + the document-payload ledger (metric c)
-reuben_eval/tasks.py       the four tasks, reference solutions, structural assertions
+reuben_eval/tasks.py       the five tasks, reference solutions, structural assertions
 reuben_eval/runner.py      one task run, scored
 reuben_eval/gate.py        deterministic tier + the CI gate
 reuben_eval/live.py        live tier + the pinned rungs
