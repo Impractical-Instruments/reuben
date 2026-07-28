@@ -229,8 +229,8 @@ impl<'a> SlotWalk<'a> {
     /// Check one value slot and everything reachable below it. `seen` carries the `$defs` names
     /// already entered along this path, so a self-referential definition terminates.
     ///
-    /// Path notation: `a.b` a property, `[]`/`[i]` an array item, `.*` a map value, `~>Name` a
-    /// `$defs` hop.
+    /// Path notation: `a.b` a property, `[]`/`[i]` an array item, `.*` a map value,
+    /// `|anyOf[i]` a union branch, `~>Name` a `$defs` hop (`~>#` the self-recursive root).
     fn slot(&mut self, node: &'a serde_json::Value, path: &str, seen: &[&'a str]) {
         self.visited += 1;
         let map = match node {
@@ -278,14 +278,19 @@ impl<'a> SlotWalk<'a> {
         if let Some(values) = map.get("additionalProperties") {
             self.slot(values, &format!("{path}.*"), seen);
         }
-        match map.get("items") {
-            Some(serde_json::Value::Array(tuple)) => {
-                for (i, child) in tuple.iter().enumerate() {
-                    self.slot(child, &format!("{path}[{i}]"), seen);
+        // Both array spellings. schemars writes a tuple as `prefixItems`, so reading only `items`
+        // walks past every tuple slot there is; the draft-07 `items`-as-array form is read too
+        // rather than handed to the not-a-schema arm, which would report it as a defect it is not.
+        for keyword in ["items", "prefixItems"] {
+            match map.get(keyword) {
+                Some(serde_json::Value::Array(tuple)) => {
+                    for (i, child) in tuple.iter().enumerate() {
+                        self.slot(child, &format!("{path}[{i}]"), seen);
+                    }
                 }
+                Some(single) => self.slot(single, &format!("{path}[]"), seen),
+                None => {}
             }
-            Some(single) => self.slot(single, &format!("{path}[]"), seen),
-            None => {}
         }
         // A union is only as constrained as its loosest branch.
         for keyword in ["anyOf", "oneOf", "allOf"] {
@@ -297,13 +302,21 @@ impl<'a> SlotWalk<'a> {
         }
     }
 
-    /// Resolve a `#/$defs/<name>` pointer against this tool's own root and keep walking. Skipping
-    /// the hop would let a typeless leaf hide one indirection down and the whole guard pass.
+    /// Resolve a pointer against this tool's own root and keep walking. Skipping the hop would let
+    /// a typeless leaf hide one indirection down and the whole guard pass.
+    ///
+    /// Two spellings resolve: `#/$defs/<name>`, and the bare `#` schemars writes for a
+    /// self-recursive root type. Anything else is reported rather than followed — a pointer this
+    /// walker cannot resolve is a slot it cannot vouch for.
     fn follow(&mut self, reference: &'a str, path: &str, seen: &[&'a str]) {
-        let Some((name, target)) = reference
-            .strip_prefix("#/$defs/")
-            .and_then(|name| Some((name, self.root.get("$defs")?.get(name)?)))
-        else {
+        let resolved = if reference == "#" {
+            Some(("#", self.root))
+        } else {
+            reference
+                .strip_prefix("#/$defs/")
+                .and_then(|name| Some((name, self.root.get("$defs")?.get(name)?)))
+        };
+        let Some((name, target)) = resolved else {
             self.report(
                 path,
                 &format!("references `{reference}`, which its own schema does not define"),
@@ -320,6 +333,15 @@ impl<'a> SlotWalk<'a> {
     }
 }
 
+/// The offender paths a walk collected, in walk order — the path is the message's second
+/// backtick-delimited run.
+fn offender_paths(walk: &SlotWalk<'_>) -> Vec<String> {
+    walk.offenders
+        .iter()
+        .filter_map(|o| o.split('`').nth(3).map(str::to_string))
+        .collect()
+}
+
 #[test]
 fn every_advertised_property_constrains_its_value() {
     // A property typed `serde_json::Value` renders as a schema with no keywords at all. A client
@@ -328,10 +350,11 @@ fn every_advertised_property_constrains_its_value() {
     // every hand-built request in the test suite stays green. So this reads the schemas as a client
     // does. see rules: agent-mcp
 
-    // Teeth first: the walker on a planted schema that hides one bare property behind a `$defs`
-    // hop, one `items: true`, and one `additionalProperties: true`. Three offenders and no more
-    // also pins `additionalProperties: false` — the closed argument surface, on most of the roster
-    // — as a pass, so the guard cannot be red everywhere for the wrong reason.
+    // Teeth first: one planted schema carrying a typeless leaf behind every descent the walker
+    // claims to make, so no arm of it can be deleted with the suite still green. Finding these and
+    // nothing else also pins the passing cases — a constrained property, a tuple slot that does
+    // carry a type, and `additionalProperties: false`, which is how most of the roster spells its
+    // closed argument surface and would otherwise make the guard red everywhere.
     let planted = serde_json::json!({
         "type": "object",
         "additionalProperties": false,
@@ -345,23 +368,51 @@ fn every_advertised_property_constrains_its_value() {
         "properties": {
             "typed": { "type": "string" },
             "hop": { "$ref": "#/$defs/Hop" },
+            "dangling": { "$ref": "#/$defs/Nope" },
             "list": { "type": "array", "items": true },
-            "map": { "type": "object", "additionalProperties": true }
+            "legacy": { "type": "array", "items": [{ "type": "string" }, {}] },
+            "pair": { "type": "array", "prefixItems": [{ "type": "string" }, {}] },
+            "malformed": { "type": "array", "items": 7 },
+            "map": { "type": "object", "additionalProperties": true },
+            "union": { "anyOf": [{ "type": "string" }, {}] }
         }
     });
     let mut teeth = SlotWalk::new("planted", &planted);
     teeth.slot(&planted, "", &[]);
-    let found: Vec<&str> = teeth
-        .offenders
-        .iter()
-        .filter_map(|o| o.split('`').nth(3))
-        .collect();
     assert_eq!(
-        found,
-        ["hop~>Hop.bare", "list[]", "map.*"],
-        "the walker must find a typeless leaf through a `$defs` hop, an item schema and a map \
-         value schema, and nothing else:\n{}",
+        offender_paths(&teeth),
+        [
+            "dangling",
+            "hop~>Hop.bare",
+            "legacy[1]",
+            "list[]",
+            "malformed[]",
+            "map.*",
+            "pair[1]",
+            "union|anyOf[1]"
+        ],
+        "the walker must reach a typeless value through a `$defs` hop, both array spellings, a \
+         tuple slot, a map value and a union branch, refuse a pointer it cannot resolve and a \
+         non-schema, and report nothing else:\n{}",
         teeth.offenders.join("\n")
+    );
+
+    // schemars spells a self-recursive root as a bare `#`, which resolves and must neither be
+    // reported as dangling nor walked forever.
+    let recursive = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "child": { "$ref": "#" },
+            "leaf": { "description": "a leaf below the recursion" }
+        }
+    });
+    let mut root_ref = SlotWalk::new("planted", &recursive);
+    root_ref.slot(&recursive, "", &[]);
+    assert_eq!(
+        offender_paths(&root_ref),
+        ["child~>#.leaf", "leaf"],
+        "a self-recursive root resolves, terminates, and still reports what is under it:\n{}",
+        root_ref.offenders.join("\n")
     );
 
     let out = drive(&[TOOLS_LIST]);
@@ -369,6 +420,12 @@ fn every_advertised_property_constrains_its_value() {
     let tools = response["result"]["tools"]
         .as_array()
         .unwrap_or_else(|| panic!("tools/list result missing a tools array:\n{response}"));
+    let schema_of = |name: &str| {
+        &tools
+            .iter()
+            .find(|t| t["name"] == serde_json::json!(name))
+            .unwrap_or_else(|| panic!("tools/list missing `{name}`"))["inputSchema"]
+    };
 
     let mut offenders = Vec::new();
     let mut visited = 0;
@@ -381,7 +438,7 @@ fn every_advertised_property_constrains_its_value() {
         visited += walk.visited;
     }
 
-    // A roster whose schemas moved under another key would otherwise walk nothing and pass.
+    // A `tools` array that came back empty walks nothing and passes every assertion below it.
     assert!(
         visited > 100,
         "expected the whole advertised argument surface, walked {visited} value slots"
@@ -390,6 +447,64 @@ fn every_advertised_property_constrains_its_value() {
         offenders.is_empty(),
         "every advertised property must constrain its value:\n{}",
         offenders.join("\n")
+    );
+
+    // Having a constraint is not the same as having the right one: narrowing a literal slot to
+    // `string` satisfies every assertion above while restoring the exact defect this guard exists
+    // to catch. So each slot's advertised forms are pinned to the forms the verb behind it accepts.
+    //
+    // Parity: the accepted forms are hand-written coercion matches in a crate this test may not
+    // name, so neither list can be generated from the other and they are held in step here.
+    let literal = serde_json::json!(["number", "string"]);
+    let nullable_literal = serde_json::json!(["number", "string", "null"]);
+    let wire_ref = "/properties/inputs/additionalProperties/anyOf/1";
+    let pinned = [
+        ("set_instrument_input", "/properties/value/type", &literal),
+        (
+            "set_instrument_constant",
+            "/properties/value/type",
+            &literal,
+        ),
+        (
+            "add_instrument_interface_input",
+            "/properties/value/type",
+            &nullable_literal,
+        ),
+        (
+            "add_instrument_node",
+            "/properties/config/additionalProperties/type",
+            &literal,
+        ),
+        (
+            "add_instrument_node",
+            "/properties/inputs/additionalProperties/anyOf/0/type",
+            &literal,
+        ),
+        (
+            "send_live_controls",
+            "/$defs/ControlSendMessage/properties/args/items/type",
+            &literal,
+        ),
+    ];
+    for (tool, pointer, expected) in pinned {
+        assert_eq!(
+            schema_of(tool).pointer(pointer),
+            Some(expected),
+            "`{tool}` advertises the forms the verb accepts at `{pointer}`: {}",
+            schema_of(tool)
+        );
+    }
+    // The one-shot add is the only path that also takes a wire-ref, and it is advertised only there.
+    let inputs = schema_of("add_instrument_node");
+    assert_eq!(
+        inputs.pointer(&format!("{wire_ref}/properties/from/type")),
+        Some(&serde_json::json!("string")),
+        "the one-shot add advertises the wire-ref form it accepts: {inputs}"
+    );
+    assert_eq!(
+        inputs.pointer(&format!("{wire_ref}/required")),
+        Some(&serde_json::json!(["from"])),
+        "the advertised wire-ref names the key that makes it one: {inputs}"
     );
 }
 
