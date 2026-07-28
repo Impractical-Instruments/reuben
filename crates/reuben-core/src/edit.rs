@@ -11,6 +11,15 @@
 //! so they cascade: they auto-unwire every consumer and report exactly what they broke in
 //! [`EditResult::notes`]; [`rename_instrument_node`] rewrites those refs instead of dropping them.
 //!
+//! **Nothing mechanical proves this vocabulary carves the format at its joints.** There is no
+//! completeness guard on the write side at all, and the read side's
+//! [`FIELD_COVERAGE`](crate::projection::FIELD_COVERAGE) — which does prove every leaf field is
+//! reachable — could not have caught the failure that matters most here either: it disposes of one
+//! field at a time and never asks whether two of them are one concept. A concept split across two
+//! verbs is green under any such table, which is exactly how a node input literal and an interface
+//! pipe's seed came to be written by two different verbs. The witness is a reader, or the consumer
+//! that had to guess which verb it wanted.
+//!
 //! see rules: agent-mcp
 
 use std::collections::BTreeMap;

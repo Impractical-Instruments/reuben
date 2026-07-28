@@ -1413,7 +1413,16 @@ fn render_boundary(b: &PatchBoundary) -> String {
 ///
 /// The guard proves every field is *dispositioned*; that the code actually emits what a row claims
 /// is the golden-projection test's job (`tests/projection_golden.rs`).
-
+///
+/// **What it cannot prove, permanently:** that two rows are not one concept. Each row is a field
+/// paired with a surface, decided one field at a time; nothing here asks whether two fields — or,
+/// on the write side, two verbs — are the same idea wearing two names. A concept split in half is
+/// therefore fully dispositioned and fully green, and that is how a node input literal and an
+/// interface pipe's `default` came to be written by two different verbs. The write side once had a
+/// mirror of this table and lost it (a hand-maintained completeness test of the window's own
+/// surface, against a surface that gets none); the limit named here was the one defect it would
+/// not have caught anyway. Only a reader comparing rows catches it — the guard cannot, and adding
+/// rows will never make it able to.
 pub const FIELD_COVERAGE: &[(&str, &str)] = &[
     // --- the document itself: the header, which every view carries ---
     ("format_version", "doc-header"),
