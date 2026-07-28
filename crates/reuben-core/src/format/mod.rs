@@ -506,9 +506,13 @@ pub enum LoadError {
     DuplicateAddress(String),
     /// A wire-ref or output references a node that doesn't exist.
     UnknownNode(String),
-    /// A node has no port with that name (in the required direction).
+    /// A node has no **output** with that name, or an `interface` entry's declared target names no
+    /// port on the node it points at. An input a node's own `inputs` block names is
+    /// [`UnknownInput`](Self::UnknownInput), whatever form the value took.
     UnknownPort { node: String, port: String },
-    /// A node has no input (port, settable param, or enum) with that name.
+    /// A node has no input (port, settable param, or enum) with that name. Reserved for a name that
+    /// resolves to nothing: a value the port cannot read is
+    /// [`BadInputLiteral`](Self::BadInputLiteral) or [`BadInputValue`](Self::BadInputValue).
     UnknownInput { node: String, input: String },
     /// An `inputs` or `config` entry sets a value of the right **form** that names nothing — a
     /// symbol or an index that is no variant of that enum (never snaps to default).
@@ -1374,20 +1378,12 @@ impl InstrumentDoc {
             graph.nodes[key].sample_id = n.sample.clone();
             graph.nodes[key].voice_id = n.voice.clone();
 
-            // `config`: every name must be a declared Constant; apply it at its slot.
+            // `config`: every name must be a declared Constant, and every value must be one the
+            // constant can read — `set_constant` coerces silently, so an unvalidated value would
+            // leave the document saying one thing and the plan built on another.
             for (name, value) in &n.config {
-                if !descriptor.is_constant(name) {
-                    return Err(LoadError::UnknownConfig {
-                        node: n.address.clone(),
-                        name: name.clone(),
-                    });
-                }
-                match value {
-                    ConfigValue::Number(v) => graph.set_constant(key, name, &Arg::F32(*v as f32)),
-                    ConfigValue::Symbol(s) => {
-                        graph.set_constant(key, name, &Arg::Str(s.as_str().into()))
-                    }
-                }
+                let arg = config_literal(&descriptor, name, value, &n.address)?;
+                graph.set_constant(key, name, &arg);
             }
 
             // `inputs`: a Constant here is an error; literals apply now, wire-refs in pass 2.
@@ -2073,12 +2069,55 @@ impl BoundaryFace {
     }
 }
 
+/// What form of literal `port` takes, phrased to complete "…, but it takes {}". Asked through
+/// [`Port::coerce`] — the conversion the literal is about to go through — rather than by restating
+/// which port types accept one; the restatement is what drifted the last time a number type landed.
+/// `nothing` is the surface's answer for a port that takes no literal at all, which is where the
+/// two surfaces differ: an input can be wired instead, a `config` constant cannot.
+///
+/// Never names the port's declared range. An out-of-range number is clamped, not refused, so a
+/// range quoted inside a form error would advertise a constraint the loader does not enforce.
+fn expected_literal(port: &Port, nothing: &str) -> String {
+    if let Some(e) = port.enum_meta() {
+        let variants: Vec<String> = e.variants.iter().map(|v| format!("{v:?}")).collect();
+        return format!("one of the symbols {}", variants.join(", "));
+    }
+    if port.coerce(&Arg::F32(0.0)).is_some() {
+        return "a number".to_string();
+    }
+    nothing.to_string()
+}
+
+/// How a numeric literal reads back to the author, completing "… is set to {}".
+fn got_number(v: f64) -> String {
+    format!("the number {v}")
+}
+
+/// How a symbol literal reads back to the author. A symbol that parses as a number gets the
+/// near-miss named: quoting a number is the commonest way to reach a form error, and saying so
+/// collapses the repair to one edit instead of a hunt for a port that was never missing.
+fn got_symbol(s: &str) -> String {
+    if s.trim().parse::<f64>().is_ok() {
+        format!("the symbol {s:?} (a number in quotes)")
+    } else {
+        format!("the symbol {s:?}")
+    }
+}
+
+/// The author-facing answer for an input port that takes no literal — it has a wire to offer
+/// instead, which is the whole repair.
+const NO_INPUT_LITERAL: &str = "no literal value — wire a source into it";
+
 /// Validate one literal `inputs` value against the port named `port_name` on `desc` and produce
 /// the [`Arg`] to set — `None` for a wire-ref (pass 2's job). The one statement of the literal
 /// rules for both surfaces that accept literals — a document node's input in pass 1, and a
-/// subpatch boundary input checked against the **inner** port its face names:
-/// a number needs a materialized `Float` or an enum, a symbol needs an enum, and the symbol must
-/// name a variant (an unknown symbol is an error, never a silent default).
+/// subpatch boundary input checked against the **inner** port its face names.
+///
+/// The **name** question is asked once and asked first, so every failure after it is about the
+/// value: a port that exists is never reported as missing. A number needs a port some literal
+/// number can set, a symbol needs an enum, and either way the value must name something the port
+/// admits (it never snaps to a default).
+///
 /// `err_node`/`err_input` label errors in the author's terms — for a boundary literal, the
 /// subpatch address and external name, never the prefixed internal.
 fn literal_arg(
@@ -2088,6 +2127,26 @@ fn literal_arg(
     err_node: &str,
     err_input: &str,
 ) -> Result<Option<Arg>, LoadError> {
+    if matches!(value, InputValue::Wire { .. }) {
+        return Ok(None);
+    }
+    let Some(port) = desc.inputs.iter().find(|p| p.name == port_name) else {
+        return Err(LoadError::UnknownInput {
+            node: err_node.to_string(),
+            input: err_input.to_string(),
+        });
+    };
+    let bad_value = |value: String| LoadError::BadInputValue {
+        node: err_node.to_string(),
+        input: err_input.to_string(),
+        value,
+    };
+    let wrong_form = |got: String| LoadError::BadInputLiteral {
+        node: err_node.to_string(),
+        input: err_input.to_string(),
+        expected: expected_literal(port, NO_INPUT_LITERAL),
+        got,
+    };
     match value {
         InputValue::Wire { .. } => Ok(None),
         InputValue::Number(v) => {
@@ -2097,29 +2156,80 @@ fn literal_arg(
             // (`materialized_input` + `enum_input`) missed integer ports entirely: the first
             // reads the `F32Meta` slot, and an `i32` port's meta is not there.
             if !desc.accepts_number_literal(port_name) {
-                return Err(LoadError::UnknownInput {
-                    node: err_node.to_string(),
-                    input: err_input.to_string(),
-                });
+                return Err(wrong_form(got_number(*v)));
             }
-            Ok(Some(Arg::F32(*v as f32)))
+            let arg = Arg::F32(*v as f32);
+            // That predicate probes with a canonical value: it answers "is this input settable by
+            // a number", not "is this number good". An enum index is the one kind where the two
+            // answers differ — out of range it resolves to nothing, and forwarding it would store
+            // the default while the document said otherwise.
+            if let Some((_, e)) = desc.enum_input(port_name) {
+                if e.resolve_arg(&arg).is_none() {
+                    return Err(bad_value(v.to_string()));
+                }
+            }
+            Ok(Some(arg))
         }
         InputValue::Symbol(s) => {
             let Some((_, e)) = desc.enum_input(port_name) else {
-                return Err(LoadError::UnknownInput {
-                    node: err_node.to_string(),
-                    input: err_input.to_string(),
-                });
+                return Err(wrong_form(got_symbol(s)));
             };
             if e.resolve(s).is_none() {
-                return Err(LoadError::BadInputValue {
-                    node: err_node.to_string(),
-                    input: err_input.to_string(),
-                    value: s.clone(),
-                });
+                return Err(bad_value(s.clone()));
             }
             Ok(Some(Arg::Str(s.as_str().into())))
         }
+    }
+}
+
+/// [`literal_arg`]'s constant-side sibling: validate one `config` value against the declared
+/// [`Constant`](Descriptor::constants) named `name` and produce the [`Arg`] to set. Callers resolve
+/// the name first ([`LoadError::UnknownConfig`]), so every failure here is about the value.
+///
+/// `config` admits no wire-refs, so it has no deferred form and no second pass —
+/// [`Graph::set_constant`] simply returns when the value does not coerce, which left a document
+/// that named a real constant with an unusable value loading clean and running on the default.
+fn config_literal(
+    desc: &Descriptor,
+    name: &str,
+    value: &ConfigValue,
+    node: &str,
+) -> Result<Arg, LoadError> {
+    let Some(port) = desc.constant(name) else {
+        return Err(LoadError::UnknownConfig {
+            node: node.to_string(),
+            name: name.to_string(),
+        });
+    };
+    let bad_value = |value: String| LoadError::BadInputValue {
+        node: node.to_string(),
+        input: name.to_string(),
+        value,
+    };
+    let wrong_form = |got: String| LoadError::BadInputLiteral {
+        node: node.to_string(),
+        input: name.to_string(),
+        expected: expected_literal(port, "no literal value"),
+        got,
+    };
+    match value {
+        ConfigValue::Number(v) => {
+            let arg = Arg::F32(*v as f32);
+            match port.enum_meta() {
+                Some(e) if e.resolve_arg(&arg).is_none() => Err(bad_value(v.to_string())),
+                Some(_) => Ok(arg),
+                // Probed canonically, like `accepts_number_literal`: the question is whether a
+                // number can set this constant at all, not whether *this* number is in range —
+                // an out-of-range one clamps, as it does on an input.
+                None if port.coerce(&Arg::F32(0.0)).is_some() => Ok(arg),
+                None => Err(wrong_form(got_number(*v))),
+            }
+        }
+        ConfigValue::Symbol(s) => match port.enum_meta() {
+            Some(e) if e.resolve(s).is_none() => Err(bad_value(s.clone())),
+            Some(_) => Ok(Arg::Str(s.as_str().into())),
+            None => Err(wrong_form(got_symbol(s))),
+        },
     }
 }
 
@@ -2140,9 +2250,9 @@ fn resolve_input(
         Some(face) => match face.input(name) {
             Some(fp) => Ok(Some((fp.node, fp.port, fp.ty.clone()))),
             None if face.dark_inputs.contains(name) => Ok(None),
-            None => Err(LoadError::UnknownPort {
+            None => Err(LoadError::UnknownInput {
                 node: addr.to_string(),
-                port: name.to_string(),
+                input: name.to_string(),
             }),
         },
         None => {
@@ -2703,13 +2813,16 @@ fn pick_output(
     }
 }
 
+/// The index of the input port named `name`. An absent name is [`LoadError::UnknownInput`] — the
+/// same variant a *literal* on an absent name raises, so one mistake reads as one instruction
+/// however the author wrote the value.
 fn in_port(desc: &Descriptor, node: &str, name: &str) -> Result<usize, LoadError> {
     desc.inputs
         .iter()
         .position(|p| p.name == name)
-        .ok_or_else(|| LoadError::UnknownPort {
+        .ok_or_else(|| LoadError::UnknownInput {
             node: node.to_string(),
-            port: name.to_string(),
+            input: name.to_string(),
         })
 }
 
@@ -2910,6 +3023,42 @@ mod tests {
             load(json, &reg()),
             Err(LoadError::BadInputValue { .. })
         ));
+    }
+
+    /// An enum index outside the variant list names nothing. It used to load clean and leave the
+    /// port on its default — the document said `Bp` and the graph played `Lp` — because the
+    /// settability probe uses a canonical index while the author's own index went unchecked.
+    /// The clamping rule numeric ports live by does not reach here: an index is a name, not a
+    /// quantity, so there is no nearest variant to clamp to.
+    #[test]
+    fn an_out_of_range_enum_index_is_a_bad_value_not_a_silent_default() {
+        let json = r#"{"instrument":"t","nodes":[
+            {"type":"filter","address":"/f","inputs":{"mode":-3}}]}"#;
+        let err = load_err(json, "an out-of-range enum index must not load");
+        assert!(
+            matches!(&err, LoadError::BadInputValue { node, input, .. }
+                if node == "/f" && input == "mode"),
+            "{err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            "node \"/f\" input \"mode\": invalid value \"-3\""
+        );
+    }
+
+    /// A `config` constant had no form check at all: the name was validated, then `set_constant`
+    /// coerced and returned in silence when the value did not fit, so the document declared one
+    /// pool size and the plan built another. `config` takes no wire-refs, so this is the whole
+    /// literal contract for the constant surface.
+    #[test]
+    fn a_config_symbol_on_a_numeric_constant_is_a_form_error() {
+        let json = r#"{"instrument":"t","nodes":[
+            {"type":"voicer","address":"/v","config":{"voices":"eight"}}]}"#;
+        let err = load_err(json, "a symbol on a numeric constant must not load");
+        assert_eq!(
+            err.to_string(),
+            "node \"/v\" input \"voices\" is set to the symbol \"eight\", but it takes a number"
+        );
     }
 
     #[test]
@@ -3128,22 +3277,51 @@ mod tests {
         assert!(load(i32_src, &reg()).is_ok());
     }
 
-    /// The widened gate must not start admitting literals on ports that genuinely take none: a
-    /// bare audio buffer has no scalar to set, and an unknown name is still unknown.
+    /// The widened gate must not start admitting literals on a port that genuinely takes none — a
+    /// bare audio buffer has no scalar to set — but the refusal is about the **value**: `/o` has an
+    /// `audio` input, and telling the author it does not sends them to `describe_operators`, which
+    /// answers with the port and costs a repair round. The message names the form and the fix.
     #[test]
-    fn a_literal_on_a_portless_or_bare_buffer_input_is_still_unknown() {
+    fn a_literal_on_a_bare_buffer_input_is_a_form_error_naming_the_wire_it_wants() {
         let bare_buffer = r#"{"instrument":"t","nodes":[
             {"type":"output","address":"/o","inputs":{"audio":1.0}}]}"#;
-        assert!(matches!(
-            load(bare_buffer, &reg()),
-            Err(LoadError::UnknownInput { .. })
-        ));
+        let err = load_err(bare_buffer, "a literal on a bare buffer must not load");
+        assert!(
+            matches!(&err, LoadError::BadInputLiteral { node, input, .. }
+                if node == "/o" && input == "audio"),
+            "{err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            "node \"/o\" input \"audio\" is set to the number 1, \
+             but it takes no literal value — wire a source into it"
+        );
+    }
+
+    /// A name no port owns is the one thing `UnknownInput` now claims — and the whole of it.
+    #[test]
+    fn a_literal_on_a_name_no_port_owns_is_unknown_input() {
         let nonesuch = r#"{"instrument":"t","nodes":[
             {"type":"add_i32_value","address":"/k","inputs":{"nope":1}}]}"#;
         assert!(matches!(
             load(nonesuch, &reg()),
             Err(LoadError::UnknownInput { .. })
         ));
+    }
+
+    /// The near-miss the form error exists to collapse: a client that sends numbers as strings
+    /// used to get "no input `resonance`" on a filter that plainly has one, and every symptom read
+    /// as a wrong port name. The message now names the quoting, so the repair is one edit.
+    #[test]
+    fn a_quoted_number_on_a_numeric_port_names_the_quoting() {
+        let json = r#"{"instrument":"t","nodes":[
+            {"type":"filter","address":"/hp","inputs":{"resonance":"0.08"}}]}"#;
+        let err = load_err(json, "a quoted number must not load");
+        assert_eq!(
+            err.to_string(),
+            "node \"/hp\" input \"resonance\" is set to the symbol \"0.08\" \
+             (a number in quotes), but it takes a number"
+        );
     }
 
     #[test]
@@ -3971,17 +4149,18 @@ mod tests {
 
     #[test]
     fn unknown_boundary_port_errors_in_boundary_terms() {
-        // A wire into a face input the interface doesn't expose: UnknownPort naming the subpatch
+        // A wire into a face input the interface doesn't expose: UnknownInput naming the subpatch
         // address and the external name — never the prefixed internals (P5 hardens this further).
+        // The same variant a literal on that name raises: the author made one mistake.
         let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
             {"type":"oscillator","address":"/osc"},
             {"type":"subpatch","address":"/sub","patch":"v",
              "inputs":{"nope":{"from":"/osc.audio"}}}]}"#;
         assert!(matches!(
             load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE)),
-            Err(LoadError::UnknownPort { node, port }) if node == "/sub" && port == "nope"
+            Err(LoadError::UnknownInput { node, input }) if node == "/sub" && input == "nope"
         ));
-        // A literal onto a missing boundary input follows pass 1's rule: UnknownInput.
+        // A literal onto the same missing boundary input answers identically.
         let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
             {"type":"subpatch","address":"/sub","patch":"v","inputs":{"nope":1.0}}]}"#;
         assert!(matches!(
