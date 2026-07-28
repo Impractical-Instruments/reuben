@@ -101,42 +101,47 @@ pub enum MapCurve {
     Exponential,
 }
 
-/// Declare the name→type table [`enum_meta_by_type`] dispatches on and the
-/// [`PIPEABLE_ENUM_TYPES`] roster that names it, from one list — a test that has to enumerate the
-/// pipeable enums reads the roster instead of restating the arms, so the two cannot drift.
-macro_rules! pipeable_enums {
-    ($($name:literal => $ty:ty),+ $(,)?) => {
-        /// Every vocab **enum** type an `interface.inputs` entry may declare, in declaration
-        /// order. The roster half of the [`enum_meta_by_type`] table.
-        pub const PIPEABLE_ENUM_TYPES: &[&str] = &[$($name),+];
+/// One row of [`PIPEABLE_ENUMS`]: the type name a document may declare, and the derive-generated
+/// constructor for its [`EnumMeta`](crate::descriptor::EnumMeta) at a given port.
+type PipeableEnum = (
+    &'static str,
+    fn(&'static str) -> crate::descriptor::EnumMeta,
+);
 
-        /// Resolve a vocab **enum** type by its `Arg`-variant name (`"FilterMode"`, `"SnapDir"`, …)
-        /// to its [`EnumMeta`](crate::descriptor::EnumMeta) for port `port_name` — the central
-        /// name→type table the **interface pipe** loader uses when an `interface.inputs` entry
-        /// declares an enum type (`"type": "FilterMode"`). Operators never come through here (their
-        /// contracts name the Rust type directly); only the document-declared pipe does, so this is
-        /// the one place a *string* names a vocab enum. `None` for an unknown name — the loader
-        /// turns that into a pointed load error. Adding a vocab enum that should be pipeable = one
-        /// entry in the [`pipeable_enums!`] list.
-        pub fn enum_meta_by_type(
-            type_name: &str,
-            port_name: &'static str,
-        ) -> Option<crate::descriptor::EnumMeta> {
-            Some(match type_name {
-                $($name => <$ty>::enum_meta(port_name),)+
-                _ => return None,
-            })
-        }
-    };
+/// Every vocab **enum** type an `interface.inputs` entry may declare, paired with its
+/// [`EnumMeta`](crate::descriptor::EnumMeta) constructor — the central name→type table the
+/// **interface pipe** loader uses when an entry declares an enum type (`"type": "FilterMode"`).
+/// Operators never come through here (their contracts name the Rust type directly); only the
+/// document-declared pipe does, so this is the one place a *string* names a vocab enum.
+///
+/// A table rather than a `match` so the roster and the dispatch are one declaration: a test that
+/// has to enumerate the pipeable enums reads [`PIPEABLE_ENUM_TYPES`] instead of restating the
+/// arms, and the two cannot drift. Adding a pipeable vocab enum = one row here.
+const PIPEABLE_ENUMS: &[PipeableEnum] = &[
+    ("GateMode", GateMode::enum_meta),
+    ("FilterMode", FilterMode::enum_meta),
+    ("Waveform", Waveform::enum_meta),
+    ("GrainWindow", GrainWindow::enum_meta),
+    ("M2sMode", M2sMode::enum_meta),
+    ("MapCurve", MapCurve::enum_meta),
+    ("SnapDir", SnapDir::enum_meta),
+    ("SnapTarget", SnapTarget::enum_meta),
+];
+
+/// The declarable vocab-enum type names, in table order — the roster half of [`PIPEABLE_ENUMS`].
+pub(crate) fn pipeable_enum_types() -> impl Iterator<Item = &'static str> {
+    PIPEABLE_ENUMS.iter().map(|(name, _)| *name)
 }
 
-pipeable_enums! {
-    "GateMode" => GateMode,
-    "FilterMode" => FilterMode,
-    "Waveform" => Waveform,
-    "GrainWindow" => GrainWindow,
-    "M2sMode" => M2sMode,
-    "MapCurve" => MapCurve,
-    "SnapDir" => SnapDir,
-    "SnapTarget" => SnapTarget,
+/// Resolve a vocab **enum** type by its `Arg`-variant name (`"FilterMode"`, `"SnapDir"`, …) to its
+/// [`EnumMeta`](crate::descriptor::EnumMeta) for port `port_name`. `None` for an unknown name — the
+/// loader turns that into a pointed load error.
+pub fn enum_meta_by_type(
+    type_name: &str,
+    port_name: &'static str,
+) -> Option<crate::descriptor::EnumMeta> {
+    PIPEABLE_ENUMS
+        .iter()
+        .find(|(name, _)| *name == type_name)
+        .map(|(_, meta)| meta(port_name))
 }

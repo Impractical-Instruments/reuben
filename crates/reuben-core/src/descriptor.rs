@@ -340,6 +340,23 @@ impl Port {
         self.meta.is_some()
     }
 
+    /// Whether a **numeric literal** can set this port — the load-time gate on `{ "cutoff": 3000 }`
+    /// and on a `config` count.
+    ///
+    /// Asked through [`coerce`](Self::coerce), the function that would actually convert the
+    /// literal, rather than by restating which port types accept one. The restatement is what
+    /// broke: the gate used to read the [`F32Meta`] struct field, so every `i32` port — whose meta
+    /// lives *inside* [`PortType::I32`] — was invisible and a literal on one was refused as an
+    /// unknown input. Deriving the predicate from the conversion keeps the two from drifting again
+    /// the next time a number type lands.
+    ///
+    /// Probed with a canonical in-range value rather than the author's, because this answers *"is
+    /// this port settable by a number"*, not *"is this particular number good"*. The caller asks
+    /// the second question by coercing the author's own value.
+    pub fn accepts_number_literal(&self) -> bool {
+        self.coerce(&crate::message::Arg::F32(0.0)).is_some()
+    }
+
     /// Coerce an author literal [`Arg`](crate::message::Arg) to this port's normalized latch value
     /// — the single type-aware seam every authoring path funnels through. A scalar
     /// [`F32`](PortType::F32) control clamps to its [`F32Meta`] range; a vocab **enum** resolves a
@@ -463,25 +480,12 @@ impl Descriptor {
             .and_then(|(i, p)| p.meta.as_ref().map(|m| (i, m)))
     }
 
-    /// Whether a **numeric literal** in a document's `inputs` block can set the input named
-    /// `name` — the load-time gate on `{ "cutoff": 3000 }`.
-    ///
-    /// Asked through [`Port::coerce`], the function that would actually convert the literal,
-    /// rather than by restating which port types accept one. The restatement is what broke: the
-    /// gate used to read [`materialized_input`](Self::materialized_input), which answers out of
-    /// the [`F32Meta`] struct field, so every `i32` port — whose meta lives *inside*
-    /// [`PortType::I32`] — was invisible and a literal on one was refused as an unknown input.
-    /// Deriving the predicate from the conversion keeps the two from drifting again
-    /// the next time a number type lands.
-    ///
-    /// Probed with a canonical in-range value rather than the author's, because this answers
-    /// *"is this input settable by a number"*, not *"is this particular number good"*. An
-    /// out-of-range literal keeps its existing treatment downstream — clamped for a number,
-    /// dropped for an enum index — instead of being relabelled an unknown input.
+    /// [`Port::accepts_number_literal`] for the input named `name` — the by-name form for callers
+    /// holding a descriptor rather than a port. `false` for a name this operator has no input for.
     pub fn accepts_number_literal(&self, name: &str) -> bool {
         self.inputs
             .iter()
-            .any(|p| p.name == name && p.coerce(&crate::message::Arg::F32(0.0)).is_some())
+            .any(|p| p.name == name && p.accepts_number_literal())
     }
 
     /// Every input carrying an [`F32Meta`] — each scalar [`F32`](PortType::F32) control and each

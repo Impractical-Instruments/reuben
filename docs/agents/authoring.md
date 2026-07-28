@@ -550,9 +550,9 @@ Every node has an OSC **address**, derived from graph structure by default. A Me
 node by address prefix and an **input port by name** — always addressed explicitly as
 `/<node>/<input>` (routing is by port name; there is no whole-node sugar). An `F32` control
 input takes a scalar (`/filt/cutoff 1500`). An enum input takes a **symbol** — its variant name
-(`/filt/mode "Hp"`; the JSON literal `"mode": "Hp"` is the same form) — with a bare in-range
-integer index accepted as a fallback; an unknown symbol or out-of-range index is an **error**,
-never a silent snap to the default. A `Note` input takes its args (`/voicer/notes [69.0, 1.0]`).
+(`/filt/mode "Hp"`; the JSON literal `"mode": "Hp"` is the same form) — with an in-range integer
+index accepted as a fallback, quoted (`"1"`) or bare (`1`); an unknown symbol or out-of-range
+index is an **error**, never a silent snap to the default. A `Note` input takes its args (`/voicer/notes [69.0, 1.0]`).
 Full wildcard dispatch (`/drums/*/decay`) is designed but not built — today a Message targets at
 most one node ([signal-time-dsp](../rules/signal-time-dsp.md)).
 

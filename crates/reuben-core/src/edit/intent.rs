@@ -546,7 +546,8 @@ fn resolve(
         }
         Slot::Pipe { name } => {
             let pipe = input_pipe(doc, &name);
-            let (descriptor, _) = pipe_descriptor(&name, pipe).map_err(|e| e.to_string())?;
+            let minted = pipe_descriptor(&name, pipe).map_err(|e| e.to_string())?;
+            let descriptor = minted.descriptor;
             let declared = descriptor
                 .inputs
                 .into_iter()

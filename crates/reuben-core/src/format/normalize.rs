@@ -523,7 +523,9 @@ fn migrate_input_entry(
     referrer: Option<&str>,
 ) -> Result<Option<InputPipeDoc>, LoadError> {
     let (addr, port) = parse_wire(target);
-    // v1 rule: an input ref names its port explicitly — no sole-input sugar.
+    // v1 rule: an input ref names its port explicitly — no sole-input sugar. The ref carries no
+    // port segment at all here, so there is no input name to report as unknown; `UnknownPort`
+    // naming the whole ref is the v1-migration spelling for a malformed target.
     let port_name = port.ok_or_else(|| LoadError::UnknownPort {
         node: addr.to_string(),
         port: target.to_string(),
@@ -586,9 +588,9 @@ fn migrate_input_entry(
             .inputs
             .iter()
             .position(|p| p.name == port_name)
-            .ok_or_else(|| LoadError::UnknownPort {
+            .ok_or_else(|| LoadError::UnknownInput {
                 node: addr.to_string(),
-                port: port_name.to_string(),
+                input: port_name.to_string(),
             })?;
         // The v1 override law still holds for v1 documents: an override must
         // stay a truthful subset of what the target port enforced (fatal in v1, stays fatal).
@@ -703,7 +705,8 @@ fn pipe_from_port(port: &Port) -> Option<InputPipeDoc> {
 /// and copy the named boundary pipe's declaration. Any availability failure — no resolver on
 /// this path, a missing id/source, unreadable text — falls back to a plain `"f32"` pipe so the
 /// document loads and references degrade dark at build; a child that *parses* but
-/// declares no such pipe stays the fatal `UnknownPort` v1 raised.
+/// declares no such pipe stays fatal, as `UnknownInput` — the same variant the v2 path gives a
+/// boundary input name that resolves to nothing.
 #[allow(clippy::too_many_arguments)]
 fn child_input_pipe(
     doc: &InstrumentDoc,
@@ -744,9 +747,9 @@ fn child_input_pipe(
         .and_then(|i| i.inputs.get(port_name))
         .and_then(|e| e.pipe())
         .cloned()
-        .ok_or_else(|| LoadError::UnknownPort {
+        .ok_or_else(|| LoadError::UnknownInput {
             node: addr.to_string(),
-            port: port_name.to_string(),
+            input: port_name.to_string(),
         })?;
     Ok(InputPipeDoc {
         // The child's own channel binding is child-local (inert when nested);
