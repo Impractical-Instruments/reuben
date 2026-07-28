@@ -63,10 +63,8 @@ pub const SET_INSTRUMENT_NODE_DESCRIPTION: &str =
 pub const SET_INSTRUMENT_INPUT: &str =
     "Set an input to a literal value: a number, or an enum symbol string. The one-value \
      point-edit — no re-emitting the whole document. An interface input pipe is a node too: \
-     address it as the `/name` it mints, input `in`, to set its value. Echoes the change \
-     (from -> to), not the node. Refuses an input that is currently wired — unwire it first \
-     with unwire_instrument_input if you mean to break the connection. Use \
-     wire_instrument_input to connect a port.";
+     address it as the `/name` it mints, input `in`. Echoes from -> to. Refuses an input that \
+     is already wired: unwire_instrument_input first, or wire_instrument_input to re-point it.";
 
 pub const WIRE_INSTRUMENT_INPUT: &str =
     "Wire a node input from a source port: `from` is `/node.port`, or `/node` for a sole-output source.";
@@ -92,8 +90,8 @@ pub const REMOVE_INSTRUMENT_INTERFACE_OUTPUT: &str = "Remove a master-tap output
 
 pub const SET_INSTRUMENT_INTERFACE_INPUT_META: &str =
     "Update an input pipe's quantity contract (channel, min/max, curve lin/exp, unit); each \
-     provided field is written, omitted fields are unchanged. The pipe's value is not here — \
-     set it with set_instrument_input, addressing the pipe as `/name` with input `in`.";
+     provided field is written, omitted fields are unchanged. Not its value: that is \
+     set_instrument_input on `/name`, input `in`.";
 
 pub const SET_INSTRUMENT_INTERFACE_OUTPUT_META: &str =
     "Update an output pipe's metadata (channel, min/max, unit); each provided field is \

@@ -59,9 +59,8 @@ pub struct EditResult {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
     /// The rendered echo of what the verb did — the node zoom of an added node, the pipe view of a
-    /// changed pipe, the index after a removal, or, for a value edit, the one line naming the
-    /// address, the input, and the value before and after. Your read of the result, in the same
-    /// compact grammar you read the rest of the document through.
+    /// changed pipe, the index after a removal, or a value edit's from -> to line. The agent's read
+    /// of the result, in the same compact grammar it reads the rest of the document through.
     pub zoom: String,
 }
 
