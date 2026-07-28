@@ -25,11 +25,12 @@ one crate; the rest of the workspace stays std-only. The edit contract is a clos
 **document vocabulary** and the read side is a set of partial **structural projections**, so no
 reuben-owned bytes ride the agent's context — though not yet on every lane: the web door defers the
 whole document vocabulary and still takes documents by value, so its verbs there are designed, not
-built. Setting a value reaches one namespace rather than one per kind of slot — an interface input
-pipe's value is written by the verb that writes any node input, though the wiring verbs do not yet
-reach a pipe — and what a verb echoes back is decided by whether it wrote anything the caller did
-not name. Every argument surface is closed, so a key the window does not know is a refusal rather
-than a silent drop.
+built. Inputs live in **one address space** rather than one per kind of slot — an interface input
+pipe is the node it mints, reached by every verb that addresses an input — while the *operations*
+over that space are not uniform, so a verb that cannot act on an address refuses by naming what the
+address is rather than denying it exists. What a verb echoes back is decided by whether it wrote
+anything the caller did not name, and every argument surface is closed, so a key the window does not
+know is a refusal rather than a silent drop.
 
 The load-bearing invariant under all of this is **one source, many doors**, and the source is the
 `reuben-api` **window**. It declares the argument and result types every door serializes, the one
@@ -132,7 +133,7 @@ authoring guide, the intent vocabulary, the library index), and code, skills, an
 [why](rationale/agent-mcp/closed-argument-surface.md)
 
 <a id="value-verbs-one-address-space"></a>
-### Setting a value reaches a node input and an interface pipe's value through one address space — the pipe is addressed as the node it mints, port `in` — and refuses a wired input rather than severing it; the wiring verbs stay node-only.
+### Every input is addressable through one address space — an interface pipe is the node it mints, port `in` — and a verb whose operation is meaningless on an address refuses by naming what that address is: a boundary input cannot be wired because it is fed from outside the graph, and a wired input is never silently severed.
 
 [why](rationale/agent-mcp/value-verbs-one-address-space.md)
 

@@ -62,13 +62,14 @@ pub const SET_INSTRUMENT_NODE_DESCRIPTION: &str =
 
 pub const SET_INSTRUMENT_INPUT: &str =
     "Set an input to a literal value: a number, or an enum symbol string. The one-value \
-     point-edit — no re-emitting the whole document. This verb also sets an interface input \
-     pipe's value: address the pipe `/name`, input `in` (only here — the wiring verbs address \
-     nodes). Echoes from -> to. Refuses an input that is already wired: \
+     point-edit — no re-emitting the whole document. An interface input pipe is a node too: \
+     address it `/name`, input `in`. Echoes from -> to. Refuses an input that is already wired: \
      unwire_instrument_input first, or wire_instrument_input to re-point it.";
 
 pub const WIRE_INSTRUMENT_INPUT: &str =
-    "Wire a node input from a source port: `from` is `/node.port`, or `/node` for a sole-output source.";
+    "Wire a node input from a source port: `from` is `/node.port`, or `/node` for a sole-output \
+     source. This document's own interface input pipes are fed from outside it, so they cannot be \
+     wired — you wire *from* one.";
 
 pub const UNWIRE_INSTRUMENT_INPUT: &str =
     "Clear a node input, reverting it to the operator's descriptor default.";

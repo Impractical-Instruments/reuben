@@ -23,8 +23,9 @@ the only pre-image an agent gets.
 it is easy to overclaim. The echo restores a *previous value* — set it back and the document is
 where it was. It does not restore *absence*: `(unset) → 880` records truthfully that the slot held
 nothing, and putting nothing back is a different move that the value verb cannot make. For a node
-input the wiring verb's clear makes it anyway; for an interface pipe's value nothing does today
-(see [value-verbs-one-address-space](value-verbs-one-address-space.md)). The echo's job is to carry
+input the wiring verb's clear makes it anyway; for an interface pipe's value nothing does, by
+decision rather than by omission (see
+[value-verbs-one-address-space](value-verbs-one-address-space.md)). The echo's job is to carry
 the fact; whether a verb exists to act on it is a separate question, and one this rule must not be
 read as answering.
 

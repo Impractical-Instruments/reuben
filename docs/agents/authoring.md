@@ -306,8 +306,10 @@ target-pointing form (no entry points inward anymore):
   a knob at rest, message-drivable at **`/<name>/in`** over OSC; an unfed *bare* signal pipe
   renders silence (and warns at top level, where nothing can ever feed it). Because the pipe
   **is** a node, that value is set like any node input — `set_instrument_input` on `/<name>`,
-  input `in`. Its meta verb writes the contract around the value and never the value; the wiring
-  verbs do not reach a pipe address at all.
+  input `in`; its meta verb writes the contract around the value and never the value. What a
+  boundary input cannot be is **wired**: what feeds it is outside this document, so the wiring
+  verbs address it and refuse, saying so. Wiring *from* `/<name>` is ordinary — that is what
+  internal consumers do.
 - An **output pipe is fed from an internal port**: `"main_l": { "from": "/pan.left" }`.
   Signal output pipes drive the logical master channels.
 - A **signal** pipe may carry an optional logical **`channel: <int>`** binding — **honored

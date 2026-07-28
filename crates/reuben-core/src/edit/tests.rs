@@ -165,38 +165,81 @@ fn a_pipe_takes_only_its_one_input() {
     );
 }
 
-/// How far the shared address space reaches, pinned so that widening it is a deliberate edit and
-/// not a drift: **setting a value** reaches a pipe, **wiring** does not. The advertised sentence
-/// scopes its claim to this verb for exactly this reason.
+/// The address space is one; the operations over it are not. Every verb that addresses an input
+/// **resolves** a pipe address — none of them may report it absent, which is the whole premise of
+/// the shared namespace — and a verb whose operation is meaningless on a boundary input refuses in
+/// terms of what the address *is*.
 #[test]
-fn only_the_value_verb_reaches_a_pipe_address() {
+fn every_input_verb_resolves_a_pipe_address_and_refuses_in_its_terms() {
     let registry = Registry::builtin();
     let resolver = resolver_with(&seed_with_pipe());
 
     set_instrument_input(SRC, "/cutoff", "in", json!(880.0), &registry, &resolver)
-        .expect("setting a value reaches the pipe");
+        .expect("setting a value is meaningful on a boundary input");
 
-    for (verb, err) in [
-        (
-            "unwire",
-            unwire_instrument_input(SRC, "/cutoff", "in", &registry, &resolver).unwrap_err(),
-        ),
+    let refusals = [
         (
             "wire",
             wire_instrument_input(SRC, "/cutoff", "in", "/osc", &registry, &resolver).unwrap_err(),
+            "boundary",
         ),
-    ] {
+        (
+            "unwire",
+            unwire_instrument_input(SRC, "/cutoff", "in", &registry, &resolver).unwrap_err(),
+            "no wire to clear",
+        ),
+        (
+            "set_constant",
+            set_instrument_constant(SRC, "/cutoff", "voices", json!(4), &registry, &resolver)
+                .unwrap_err(),
+            "`config`",
+        ),
+    ];
+    for (verb, err, why) in refusals {
+        let message = err.to_string();
+        assert!(matches!(err, EditError::Target(_)), "{verb}: {err:?}");
         assert!(
-            matches!(err, EditError::Target(_)),
-            "{verb} addresses nodes only, and says so: {err:?}"
+            !message.contains("no node at address") && !message.contains("no node or interface"),
+            "{verb} must not report a real address as absent: {message}"
+        );
+        assert!(
+            message.contains("`cutoff`") && message.contains("interface input pipe"),
+            "{verb} names what the address is: {message}"
+        );
+        assert!(
+            message.contains(why),
+            "{verb} says why its operation is meaningless here: {message}"
         );
     }
 
-    // The constant verb addresses a node and names a plan-time slot on it; a pipe has no `config`
-    // block for it to reach, so its absence from the shared space is the type, not an omission.
-    let err = set_instrument_constant(SRC, "/cutoff", "voices", json!(4), &registry, &resolver)
-        .expect_err("a pipe carries no constants");
-    assert!(matches!(err, EditError::Target(_)), "got {err:?}");
+    // Wiring a consumer *from* the pipe is ordinary and untouched — it is being wired *into* that
+    // a boundary input refuses.
+    wire_instrument_input(SRC, "/amp", "b", "/cutoff", &registry, &resolver)
+        .expect("a pipe is a source like any other");
+
+    // And a genuinely absent address still reads as absent, so the two failures stay tellable apart.
+    let absent = wire_instrument_input(SRC, "/ghost", "in", "/osc", &registry, &resolver)
+        .expect_err("no such address");
+    assert!(absent.to_string().contains("/ghost"), "{absent}");
+}
+
+/// The node verbs share the namespace too: a pipe address is declared rather than added, so they
+/// name the interface half of the vocabulary instead of denying the address exists.
+#[test]
+fn the_node_verbs_send_a_pipe_address_to_the_interface_verbs() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_with_pipe());
+
+    let err = remove_instrument_node(SRC, "/cutoff", &registry, &resolver).expect_err("not a node");
+    let message = err.to_string();
+    assert!(
+        !message.contains("no node at address"),
+        "the address is real: {message}"
+    );
+    assert!(
+        message.contains("remove_instrument_interface_input"),
+        "the refusal names the verb that does reach it: {message}"
+    );
 }
 
 // --- the wire is not severed by a value edit ------------------------------------------------------

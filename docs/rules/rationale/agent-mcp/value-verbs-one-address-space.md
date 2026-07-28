@@ -1,4 +1,4 @@
-# Why: Setting a value reaches a node input and an interface pipe's value through one address space — the pipe is addressed as the node it mints, port `in` — and refuses a wired input rather than severing it; the wiring verbs stay node-only.
+# Why: Every input is addressable through one address space — an interface pipe is the node it mints, port `in` — and a verb whose operation is meaningless on an address refuses by naming what that address is: a boundary input cannot be wired because it is fed from outside the graph, and a wired input is never silently severed.
 
 [Rule](../../agent-mcp.md#value-verbs-one-address-space)
 
@@ -19,25 +19,38 @@ migration across ~20 fixtures for a cosmetic win is not worth it, and the preced
 The pipe's meta verb keeps what its name always claimed and nothing more: the *quantity* contract —
 channel binding, range, curve, unit — around a value it does not own.
 
-**How far the shared address space actually reaches, and why the rule says so.** Setting a value
-reaches a pipe; **wiring does not**. Whether a pipe should be wire-addressable is a live design
-question with consequences this rule does not get to decide — a pipe's `in` is fed by whatever is
-outside the boundary, so a wire into it means something different from a wire into a node input.
-Until that is settled the wiring verbs address nodes only, and the rule names the limit rather than
-implying a symmetry the code does not have. An address space that only some verbs honour is a worse
-grounding surface than two honest ones, because a model cannot tell which verbs are in the club — so
-the advertised sentence scopes the claim to the verb that honours it, and does not describe a
-namespace.
+**The address space is one; the operations over it are not.** From a consumer's side every input is
+the same thing — it can be set to a value, and all but this document's own boundary inputs can be
+wired — so every verb that addresses an input resolves every input address. What differs is whether
+a given operation *means* anything there, and the rule is that a verb which cannot act says so **in
+terms of what the address is**.
 
-**Two known asymmetries, recorded rather than left as folklore:**
+The alternative, which shipped first and was wrong, is reporting `no node at address /cutoff`. That
+sentence is false: `/cutoff` is a first-class address in the flat namespace, which is the whole
+premise of sharing one. A model told an address does not exist looks for a typo, invents a node, or
+gives up; a model told *this is the instrument's boundary input `cutoff`, here is what reaches it*
+makes the next call correctly. An address space only some verbs resolve is worse than two honest
+ones, because nothing tells the model which verbs are in the club — and the fix for that is to make
+every verb resolve it, not to advertise a caveat.
 
-- A node input can be returned to *unset* (the wiring verb's clear does exactly that). **A pipe's
-  value cannot**: nothing reaches a pipe address to clear it, and the meta verb no longer writes
-  that slot. So seeding a pipe that had no value is a one-way edit today. That is a consequence of
-  the deferred question above, not an independent choice, and it is the one place where this rule's
-  own "cheap to undo" argument does not hold.
-- The refusal below is what keeps that from being worse: a value edit that cannot be undone must at
-  least never destroy something the caller did not name.
+**Why a boundary input cannot be wired** is a property of the document, not of how it is being used.
+This document's `interface.inputs` pipes are its **boundary**: what feeds them is outside the graph
+— a live `send`, a channel binding, or the host's wire onto this face when the document is nested.
+A wire from inside would stop them being a boundary. That is a local fact, true whether the document
+is played at top level or nested, so the refusal needs no notion of context. It also does not reach
+*other* instruments' inputs: a nested child's interface names appear as ordinary ports on the
+`subpatch` node's own address, a synthesized boundary face, and wiring those is plain node
+addressing that has always worked. Wiring *from* a pipe is likewise ordinary and untouched — it is a
+source like any other.
+
+**One asymmetry, recorded rather than left as folklore.** A node input can be returned to *unset*
+(the wiring verb's clear does exactly that). **A pipe's value cannot**: no verb clears one, and the
+meta verb no longer writes that slot. Adding a clear through the value verb was rejected on the same
+grounds this whole ticket rests on — it would be a second verb-path for what the wiring verb already
+does to a node input, which is the defect class being corrected, not a fix. So seeding a pipe that
+had no value is a one-way edit, and it is the one place this rule's own "cheap to undo" argument does
+not hold. The refusal below is what keeps that from being worse: an edit that cannot be undone must
+at least never destroy something the caller did not name.
 
 **Refusing a wired input, rather than severing it with a note.** The severance is the destructive
 half of a verb whose purpose is not destruction, and in the shipped library it is the common case

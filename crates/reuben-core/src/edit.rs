@@ -377,16 +377,41 @@ fn cascade_unwire(doc: &mut InstrumentDoc, address: &str) -> Vec<String> {
     notes
 }
 
-/// Find a node index by address, or the precondition error naming it absent.
-fn node_index(doc: &InstrumentDoc, address: &str) -> Result<usize, EditError> {
-    doc.nodes
-        .iter()
-        .position(|n| n.address == address)
-        .ok_or_else(|| EditError::Target(format!("no node at address `{address}`")))
+/// Resolve an address to a document node, refusing an interface input pipe **in terms of what it
+/// is**. `cannot` completes the sentence — why this verb's operation is meaningless on a boundary
+/// input, and what reaches it instead.
+///
+/// A pipe address is not absent, so it must never be reported as absent; that is the whole point of
+/// the shared namespace. see rules: agent-mcp
+fn node_index_for(
+    doc: &InstrumentDoc,
+    address: &str,
+    cannot: impl FnOnce(&str) -> String,
+) -> Result<usize, EditError> {
+    match address_target(doc, address)? {
+        AddressTarget::Node(idx) => Ok(idx),
+        AddressTarget::Pipe(name) => Err(EditError::Target(format!(
+            "`{address}` is this document's own interface input pipe `{name}` — its boundary, fed \
+             from outside the graph. {}",
+            cannot(&name)
+        ))),
+    }
 }
 
-/// What an address in the flat node namespace resolves to for a value edit.
-enum ValueTarget {
+/// Find a node index by address, for the verbs that act on a node as a whole. A pipe is declared
+/// rather than added, so the way through is the interface half of the vocabulary.
+fn node_index(doc: &InstrumentDoc, address: &str) -> Result<usize, EditError> {
+    node_index_for(doc, address, |name| {
+        format!(
+            "It is declared in `interface.inputs`, not added as a node, so the interface verbs are \
+             what reach it: `remove_instrument_interface_input` to drop it (cascading over the \
+             address it mints), or `set_instrument_interface_input_meta` with the name `{name}`."
+        )
+    })
+}
+
+/// What an address in the flat namespace resolves to.
+enum AddressTarget {
     /// A document node, by index.
     Node(usize),
     /// An interface input pipe, by entry name — the node its `/<name>` mints.
@@ -396,9 +421,9 @@ enum ValueTarget {
 /// Resolve an address the way the loader's namespace does: the document's own nodes, then the
 /// addresses the interface's input pipes mint. Nodes first only because the loader rejects a
 /// collision between the two outright, so at most one can answer.
-fn value_target(doc: &InstrumentDoc, address: &str) -> Result<ValueTarget, EditError> {
+fn address_target(doc: &InstrumentDoc, address: &str) -> Result<AddressTarget, EditError> {
     if let Some(idx) = doc.nodes.iter().position(|n| n.address == address) {
-        return Ok(ValueTarget::Node(idx));
+        return Ok(AddressTarget::Node(idx));
     }
     let name = address.strip_prefix('/').filter(|n| {
         doc.interface
@@ -406,19 +431,19 @@ fn value_target(doc: &InstrumentDoc, address: &str) -> Result<ValueTarget, EditE
             .is_some_and(|i| matches!(i.inputs.get(*n), Some(InterfaceEntry::Pipe(_))))
     });
     match name {
-        Some(n) => Ok(ValueTarget::Pipe(n.to_string())),
+        Some(n) => Ok(AddressTarget::Pipe(n.to_string())),
         None => Err(EditError::Target(format!(
             "no node or interface input pipe at address `{address}`"
         ))),
     }
 }
 
-/// The input pipe [`value_target`] just resolved. Separate from the resolution because the lookup
+/// The input pipe [`address_target`] just resolved. Separate from the resolution because the lookup
 /// borrows the document immutably and the write needs it mutably.
 fn input_pipe_mut<'a>(doc: &'a mut InstrumentDoc, name: &str) -> &'a mut InputPipeDoc {
     match doc.interface.as_mut().and_then(|i| i.inputs.get_mut(name)) {
         Some(InterfaceEntry::Pipe(pipe)) => pipe,
-        _ => unreachable!("`value_target` resolved this name to an input pipe"),
+        _ => unreachable!("`address_target` resolved this name to an input pipe"),
     }
 }
 
@@ -674,8 +699,8 @@ pub fn set_instrument_input(
 ) -> Result<EditResult, EditError> {
     edit_existing(source, registry, resolver, |doc| {
         let v = literal_input(value)?;
-        let change = match value_target(doc, address)? {
-            ValueTarget::Node(idx) => {
+        let change = match address_target(doc, address)? {
+            AddressTarget::Node(idx) => {
                 let node = &mut doc.nodes[idx];
                 if let Some(InputValue::Wire { from }) = node.inputs.get(input) {
                     return Err(EditError::Target(format!(
@@ -694,7 +719,7 @@ pub fn set_instrument_input(
                     to,
                 }
             }
-            ValueTarget::Pipe(name) => {
+            AddressTarget::Pipe(name) => {
                 if input != PIPE_INPUT_PORT {
                     return Err(EditError::Target(format!(
                         "`{address}` is an interface input pipe: a pass-through whose only input \
@@ -723,6 +748,10 @@ pub fn set_instrument_input(
 }
 
 /// Wire a node input from a source port (`/node.port`, or `/node` sole-output sugar).
+///
+/// This document's own interface input pipes are addressable here and **refuse**: a boundary input
+/// is fed from outside the graph, so a wire from inside it would stop it being a boundary. Wiring
+/// *from* one is ordinary and unaffected. see rules: agent-mcp
 pub fn wire_instrument_input(
     source: &str,
     address: &str,
@@ -732,7 +761,14 @@ pub fn wire_instrument_input(
     resolver: &dyn ResourceResolver,
 ) -> Result<EditResult, EditError> {
     edit_existing(source, registry, resolver, |doc| {
-        let idx = node_index(doc, address)?;
+        let idx = node_index_for(doc, address, |name| {
+            format!(
+                "A live send, a channel binding, or the host's wire onto this face when the \
+                 document is nested is what feeds it, so a wire from inside would stop it being a \
+                 boundary. Wire a consumer *from* `/{name}` instead (pass it as `from`), or set \
+                 its value with `set_instrument_input`."
+            )
+        })?;
         doc.nodes[idx].inputs.insert(
             input.to_string(),
             InputValue::Wire {
@@ -745,6 +781,9 @@ pub fn wire_instrument_input(
 
 /// Unwire a node input, reverting it to the operator's descriptor default. A no-op input (nothing
 /// set) is reported, not an error.
+///
+/// This document's own interface input pipes are addressable here and **refuse**: nothing inside
+/// the graph feeds a boundary input, so there is no wire on one to clear. see rules: agent-mcp
 pub fn unwire_instrument_input(
     source: &str,
     address: &str,
@@ -753,7 +792,12 @@ pub fn unwire_instrument_input(
     resolver: &dyn ResourceResolver,
 ) -> Result<EditResult, EditError> {
     edit_existing(source, registry, resolver, |doc| {
-        let idx = node_index(doc, address)?;
+        let idx = node_index_for(doc, address, |_| {
+            "Nothing inside the graph feeds it, so it carries no wire to clear. Its value is \
+             `set_instrument_input`'s, and dropping the pipe altogether is \
+             `remove_instrument_interface_input`'s."
+                .to_string()
+        })?;
         let notes = if doc.nodes[idx].inputs.remove(input).is_some() {
             Vec::new()
         } else {
@@ -771,6 +815,10 @@ pub fn unwire_instrument_input(
 // --- config verb ---------------------------------------------------------------------------------
 
 /// Set an instantiate-time constant on a node (e.g. a Voicer's `voices`).
+///
+/// This document's own interface input pipes are addressable here and **refuse**: a pipe is a
+/// loader-built pass-through with no `config` block, so it has no plan-time constant to set.
+/// see rules: agent-mcp
 pub fn set_instrument_constant(
     source: &str,
     address: &str,
@@ -780,7 +828,14 @@ pub fn set_instrument_constant(
     resolver: &dyn ResourceResolver,
 ) -> Result<EditResult, EditError> {
     edit_existing(source, registry, resolver, |doc| {
-        let idx = node_index(doc, address)?;
+        let idx = node_index_for(doc, address, |pipe| {
+            format!(
+                "It is a loader-built pass-through with no `config` block, so it has no plan-time \
+                 constant to set. Its quantity contract is \
+                 `set_instrument_interface_input_meta` with the name `{pipe}`, and its value is \
+                 `set_instrument_input`'s."
+            )
+        })?;
         let v = config_value(value)?;
         let node = &mut doc.nodes[idx];
         let from = node.config.get(name).map(config_scalar);
