@@ -9,6 +9,9 @@ regression that over- or under-reports is caught, not just pass/fail.
 exercised through a tree, since which paths check 3 reaches is the part that can regress.
 """
 from __future__ import annotations
+import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -475,9 +478,44 @@ class LaneKeyAndSuffixClass(unittest.TestCase):
         self.assertEqual(check_rules_refs.lane_key(".env"), ".env")
         self.assertEqual(check_rules_refs.lane_key("a.css"), ".css")
 
-    def test_an_extensionless_file_has_no_lane_key(self):
-        # LICENSE, a githook: nothing to classify, and outside the guard as it has always been.
+    def test_a_dot_prefixed_name_is_the_format(self):
+        # The dotenv argument, stated once rather than once per file: these carry no suffix at all,
+        # and `#` has opened a comment in every one of them the whole time.
+        for name in (".gitignore", ".gitattributes", ".gitmodules", ".ignore"):
+            with self.subTest(name=name):
+                self.assertEqual(check_rules_refs.lane_key(name), name)
+                self.assertIn(name, check_rules_refs.CODE_EXTS)
+
+    def test_a_shebang_is_a_lane_declaration(self):
+        # An extensionless executable declares its format on line one, and `#!/bin/sh` is as good a
+        # declaration as a suffix.
+        self.assertEqual(check_rules_refs.lane_key("pre-commit", "#!/bin/sh"), "#!")
+        self.assertEqual(check_rules_refs.lane_key("gate", "#!/usr/bin/env bash"), "#!")
+        self.assertEqual(check_rules_refs.lane_key("gen", "#!/usr/bin/env python3"), "#!")
+
+    def test_an_unknown_interpreter_is_reported_rather_than_guessed(self):
+        # `#` opens a comment in a shell script and declares a private field in a JS one. An
+        # interpreter nobody has checked keys as ITSELF and lands in this check, rather than being
+        # read with an opener chosen on a hunch.
+        key = check_rules_refs.lane_key("tool", "#!/usr/bin/env node")
+        self.assertEqual(key, "#!node")
+        self.assertEqual(len(check_rules_refs.suffix_class_problems({key: "tool"})), 1)
+
+    def test_a_file_declaring_no_format_anywhere_is_still_classified(self):
+        # LICENSE, NOTICE. The key is "", which is a key like any other and carries its own reason,
+        # rather than dropping out of the census — which is how four `.gitignore`s stayed invisible
+        # while this check reported every lane accounted for.
         self.assertEqual(check_rules_refs.lane_key("LICENSE"), "")
+        self.assertEqual(check_rules_refs.lane_key("LICENSE", "GNU AFFERO GENERAL PUBLIC LICENSE"), "")
+        self.assertEqual(check_rules_refs.suffix_class_problems({"": "LICENSE"}), [])
+
+    def test_the_lane_key_is_casefolded(self):
+        # Latent in both trees, and the advice it produced was nonsense: an unclassified `.JPG` was
+        # told to earn itself a comment-opener row.
+        self.assertEqual(check_rules_refs.lane_key("UPPER.CSS"), ".css")
+        self.assertEqual(check_rules_refs.lane_key("file.RS"), ".rs")
+        self.assertEqual(check_rules_refs.lane_key("README.MD"), ".md")
+        self.assertEqual(check_rules_refs.lane_key("photo.JPG"), ".jpg")
 
     def test_a_readable_lane_is_clean(self):
         self.assertEqual(check_rules_refs.suffix_class_problems({".rs": "a.rs"}), [])
@@ -494,12 +532,14 @@ class LaneKeyAndSuffixClass(unittest.TestCase):
         self.assertIn("unclassified lane `.scss`", problems[0])
         self.assertTrue(problems[0].startswith("web/a.scss:1:"))
 
-    def test_every_out_of_reach_entry_carries_a_reason(self):
-        # The entry IS the reason — an exclusion with no argument is the silence this check exists
-        # to stop, so an empty or token one must not be able to sit in the table unnoticed.
-        for ext, reason in check_rules_refs.OUT_OF_REACH_EXTS.items():
-            with self.subTest(ext=ext):
-                self.assertGreaterEqual(len(reason.split()), 10)
+    def test_both_exclusion_buckets_carry_reasons(self):
+        # The entry IS the reason, in BOTH buckets. If only one demanded a sentence, the other would
+        # be the cheap door out of a red here, and the silent allow-list would be back under a third
+        # name. Shared reasons are fine — the argument is per KIND — but a bare token is not.
+        for bucket in (check_rules_refs.OUT_OF_REACH_EXTS, check_rules_refs.NOT_SOURCE_EXTS):
+            for ext, reason in bucket.items():
+                with self.subTest(ext=ext):
+                    self.assertGreaterEqual(len(reason.split()), 10)
 
 
 class WholeTree(unittest.TestCase):
@@ -588,6 +628,27 @@ class WholeTree(unittest.TestCase):
         self.assertEqual(
             self.run_main({"engine/crates/reuben-core/src/lib.rs": "//! see rules: nope\n"}), 0)
 
+    def test_a_gitignore_citing_an_issue_is_flagged(self):
+        # The blind spot check 7 could not see, because it had no key for these to be unclassified
+        # UNDER: four of these were carrying citations across the two repos.
+        self.assertEqual(self.run_main({".gitignore": "# generated by #107\nnode_modules/\n"}), 1)
+
+    def test_a_githook_citing_an_issue_is_flagged(self):
+        # No suffix and no dot — the format is on line one.
+        self.assertEqual(
+            self.run_main({"scripts/hooks/pre-commit": "#!/bin/sh\n# run from here since #107\n"}), 1)
+
+    def test_a_file_declaring_no_format_is_neither_scanned_nor_reported(self):
+        # LICENSE states no comment syntax, so it has no comments for the ban to reach — and that
+        # is a written classification now, not an omission.
+        self.assertEqual(self.run_main({"LICENSE": "GNU AFFERO GENERAL PUBLIC LICENSE\n#107\n"}), 0)
+
+    def test_a_skill_exempt_from_the_adr_rule_is_still_classified(self):
+        # SKILL_ALLOWLIST exempts a skill from the ADR-token rule and from nothing else. A `.scss`
+        # under one is still an unclassified lane, so classification runs before that filter.
+        self.assertEqual(
+            self.run_main({".claude/skills/absorb-adrs/theme.scss": ".x { color: red; }\n"}), 1)
+
     def test_a_nested_checkout_is_not_repo_content(self):
         # An agent worktree is a full second copy of the tree, and a stale one by design. Every
         # finding in it names a path that reads as real and is about to be discarded.
@@ -604,6 +665,54 @@ class WholeTree(unittest.TestCase):
         # The pair is anchored at the root: `worktrees` is not a reserved name further down, and a
         # source dir that happens to carry it stays in reach.
         self.assertEqual(self.run_main({"crates/worktrees/src/lib.rs": "//! see rules: nope\n"}), 1)
+
+
+class RepoContentNotFilesystem(unittest.TestCase):
+    """What the guard walks is the repository, not the disk under it.
+
+    `rglob` made the guard un-runnable locally the moment anybody ran the tests: a Playwright run
+    leaves `test-results/**/video.webm`, and check 7 would report an unclassified `.webm` and advise
+    giving a video file a comment opener. CI never saw it, because a clean checkout has no junk.
+    """
+
+    def build_repo(self, files: dict[str, str]) -> Path:
+        tmp = tempfile.mkdtemp()
+        root = Path(tmp)
+        self.addCleanup(shutil.rmtree, tmp, True)
+        build(root, files)
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+        subprocess.run(["git", "init", "-q", str(root)], check=True, env=env)
+        subprocess.run(["git", "-C", str(root), "add", "-A"], check=True, env=env)
+        return root
+
+    def test_an_ignored_artifact_is_not_repo_content(self):
+        root = self.build_repo({".gitignore": "test-results/\n",
+                                "test-results/run/video.webm": "not really a video\n"})
+        self.assertEqual(check_rules_refs.main(str(root)), 0)
+
+    def test_the_same_artifact_unignored_is_repo_content(self):
+        # The converse, so the skip is provably git's opinion and not a hardcoded directory name:
+        # nothing about `test-results` is special, only about it being disclaimed.
+        root = self.build_repo({".gitignore": "nothing/\n",
+                                "test-results/run/video.webm": "not really a video\n"})
+        problems = check_rules_refs.main(str(root))
+        self.assertEqual(problems, 1)
+
+    def test_an_untracked_but_unignored_file_is_still_scanned(self):
+        # `--others --exclude-standard`, not `--cached`: a file just written and not yet added is
+        # repo content, and a pre-commit run has to see it.
+        root = self.build_repo({".gitignore": "junk/\n"})
+        (root / "src").mkdir(parents=True, exist_ok=True)
+        (root / "src" / "new.rs").write_text("// fixed in #107\n", encoding="utf-8")
+        self.assertEqual(check_rules_refs.main(str(root)), 1)
+
+    def test_a_tree_that_is_not_a_repo_falls_back_to_the_filesystem(self):
+        # The fixture trees every other test in this file uses are exactly that case.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            build(root, {"src/lib.rs": "// fixed in #107\n"})
+            self.assertIsNone(check_rules_refs.repo_files(root))
+            self.assertEqual(check_rules_refs.main(str(root)), 1)
 
 
 if __name__ == "__main__":

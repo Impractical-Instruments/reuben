@@ -38,7 +38,7 @@
 
 # Python bytecode, wherever it lands. Unanchored on purpose: the rules-doc scripts live in
 # /scripts, but the skills ship their own Python too (absorb-adrs, control-surface), and running
-# any of their test suites drops a __pycache__ next to the source. A /scripts-only rule let two
-# .pyc blobs into #555.
+# any of their test suites drops a __pycache__ next to the source — which a /scripts-only rule
+# does not catch.
 __pycache__/
 *.py[cod]
