@@ -104,9 +104,9 @@ Two swap rules of thumb ([execution-runtime](../rules/execution-runtime.md)):
 - **A swap ducks the output for ~20ms.** The engine ramps the master to silence, installs
   the new Plan at zero, and ramps back up — a brief duck, never a click. Don't chase it as a
   dropout. A node at the same address with the same operator type keeps its live state across
-  the swap; only the changed nodes rebuild cold. (The **web** lane's swap is ruder by design —
-  every node rebuilds cold, `survived: 0` — because its single-threaded worklet can't run the
-  off-thread mailbox install.)
+  the swap; only the changed nodes rebuild cold. (The **web** lane works the same way: it builds
+  each new Engine off the render thread and installs it through the mailbox, so a survivor keeps
+  its state there too. It used to rebuild every node cold, `survived: 0`; that is no longer true.)
 - **A note-off racing a swap can hang a note — re-send the off.** Pending messages are
   dropped at install, so an off landing in that window (≤ one block plus the down-ramp) is
   lost and a surviving voice's gate stays high. Recoverable in-band: re-send the off (or

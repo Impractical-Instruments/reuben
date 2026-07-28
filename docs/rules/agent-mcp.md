@@ -23,9 +23,9 @@ forwarding the engine tools to a long-lived, **user-owned** `reuben play`, so th
 conversation death and the shim never spawns or kills the engine. rmcp and tokio are fenced in that
 one crate; the rest of the workspace stays std-only. The edit contract is a closed, path-addressed
 **document vocabulary** and the read side is a set of partial **structural projections**, so no
-reuben-owned bytes ride the agent's context — though not yet on every lane: the web door defers the
-whole document vocabulary and still takes documents by value, so its verbs there are designed, not
-built. Inputs live in **one address space** rather than one per kind of slot — an interface input
+reuben-owned bytes ride the agent's context — on every lane now, the web door included: it serves the
+whole document vocabulary source-addressed, naming documents into a store the host owns rather than
+carrying them. Inputs live in **one address space** rather than one per kind of slot — an interface input
 pipe is the node it mints, reached by every verb that addresses an input — while the *operations*
 over that space are not uniform, so a verb that cannot act on an address refuses by naming what the
 address is rather than denying it exists. What a verb echoes back is decided by whether it wrote
@@ -118,7 +118,7 @@ authoring guide, the intent vocabulary, the library index), and code, skills, an
 [why](rationale/agent-mcp/structure-channel-envelope.md)
 
 <a id="optimistic-concurrency-guard"></a>
-### The optimistic-concurrency expect guard is the window's, applied inside the Coordinator lock so the compare and the swap are one critical section — every door with a Coordinator behind it shares that one implementation, and only a lane with no Coordinator writes its own.
+### The optimistic-concurrency expect guard is the window's, applied inside the Coordinator lock so the compare and the swap are one critical section — every door that can ask a Coordinator what it has installed shares that one implementation, and only a lane that cannot reach an installed hash writes its own.
 
 [why](rationale/agent-mcp/optimistic-concurrency-guard.md)
 
