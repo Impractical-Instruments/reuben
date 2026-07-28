@@ -14,6 +14,7 @@ pub struct ControlSendMessage {
     pub address: String,
     /// The arguments — numbers or strings.
     #[serde(default)]
+    #[schemars(with = "Vec<crate::schema::Literal>")]
     pub args: Vec<serde_json::Value>,
 }
 
