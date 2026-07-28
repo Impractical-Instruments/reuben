@@ -76,12 +76,13 @@ _FILE_NOUNS = frozenset(
     {"file", "files", "filesystem", "path", "paths", "dir", "dirs", "directory", "directories",
      "fs", "disk", "folder", "document", "documents"}
 )
-# Whole-name matches, for the file tools whose names carry no noun — a bare verb (`Read`, `Write`,
-# `Edit`). Compared against the name flattened of separators, so `strReplaceEditor` lands with
-# `str_replace_editor`. Deliberately excludes ambiguous bare verbs like `create` and `run`, which a
-# model is as likely to aim at a document verb as at a file.
+# Whole-name matches, for the tools whose names carry no noun — a bare verb (`Read`, `Write`,
+# `Edit`) or a shell spelled exactly (`run_command`). Compared against the name flattened of
+# separators, so `strReplaceEditor` lands with `str_replace_editor` and `run_command` lands without
+# `send_command` coming with it. Deliberately excludes ambiguous bare verbs like `create` and `run`,
+# which a model is as likely to aim at a document verb as at a file.
 _HOST_FILE_TOOLS = frozenset(
-    {"read", "write", "edit", "view", "cat", "open", "save", "append", "ls", "glob"}
+    {"read", "write", "edit", "view", "cat", "open", "save", "append", "ls", "glob", "runcommand"}
 )
 
 # A shell is a file tool wearing a different hat — `cat instrument.json` reads the document as surely
@@ -90,14 +91,28 @@ _HOST_FILE_TOOLS = frozenset(
 # `run_terminal_cmd` (Cursor), `execute_bash` (OpenHands), `local_shell` (OpenAI) all carry a shell
 # token inside a longer name. A whole-name set catches the categories and misses every real one —
 # structurally the same defect as missing `Read` and `Write`.
+#
+# Bare `command` is deliberately absent: it is redundant (every product above lands on `execute`,
+# `shell`, `terminal`, `cmd` or `bash`) and it collides with `send_live_controls`' likeliest mangles,
+# `send_command` and `run_control_command`.
 _SHELL_WORDS = frozenset(
-    {"bash", "sh", "zsh", "shell", "exec", "execute", "cmd", "command", "terminal", "subprocess",
+    {"bash", "sh", "zsh", "shell", "exec", "execute", "cmd", "terminal", "subprocess",
      "interpreter", "python"}
 )
 
 # Editing a document's text is reaching for its bytes, whether or not the name says "file":
 # `apply_patch` is OpenAI Codex's editor and mentions neither. Matched per word, like the shells.
 _EDIT_WORDS = frozenset({"patch", "diff", "rewrite", "overwrite", "replace"})
+
+# reuben's own naming convention, and the one word that tells a hallucinated document verb apart from
+# a host tool. Every verb on the roster is `verb_instrument_object`; no file tool anywhere carries it.
+# Without this guard the shell and edit words turn reuben's own vocabulary against it: `patch` is a
+# live argument name on `add_instrument_node`, the authoring skill is called *patcher*, and
+# `replace_instrument_node` is a natural sibling of the shipped `rename_instrument_node`. Each is a
+# malformed call at a document verb, and counting it as a reach corrupts the one number this tier
+# exists to produce. The live-roster test cannot catch that — it fires only if reuben *ships* such a
+# verb, never if a model hallucinates one, which is exactly the live-tier case.
+_OWN_VOCABULARY = "instrument"
 
 # Fragments that name a file editor whatever it is wrapped in — `str_replace_editor`,
 # `str_replace_based_edit_tool`, `text_editor`. A whole-name set cannot keep up with those; the
@@ -121,13 +136,21 @@ def looks_like_file_access(name: str) -> bool:
     flat = re.sub(r"[^a-z0-9]+", "", name.lower())
     if flat in _HOST_FILE_TOOLS or any(marker in flat for marker in _FILE_MARKERS):
         return True
-    return bool(_words(name) & (_FILE_NOUNS | _SHELL_WORDS | _EDIT_WORDS))
+    words = _words(name)
+    # A filesystem noun still counts inside reuben's own vocabulary — `write_instrument_file` names
+    # a file whatever else it says. The verb words do not: there, `instrument` is the tell.
+    vocabulary = _FILE_NOUNS if _OWN_VOCABULARY in words else _FILE_NOUNS | _SHELL_WORDS | _EDIT_WORDS
+    return bool(words & vocabulary)
 
 
 def file_access_failure(reached: list[str]) -> str | None:
-    """The named failure: an agent tried to read or write a file. `None` when none did.
+    """The named failure: an agent reached outside the roster for the document. `None` if none did.
 
     It is the *attempt* that fails a run, not a completed operation — nothing here can complete one.
+    The message says so: it names the call the model reached for and stops there. Asserting a
+    filesystem operation would over-claim, because a shell or an interpreter is classified on the
+    same evidence and no read or write was ever observed.
+
     Removing the tools from reuben's roster does not remove them from the world, so this stays a live
     detector of whether a model still wants the old path once the surface stops offering it.
     """
@@ -135,8 +158,9 @@ def file_access_failure(reached: list[str]) -> str | None:
         return None
     names = ", ".join(f"`{name}`" for name in sorted(set(reached)))
     return (
-        f"{FILE_ACCESS}: an agent tried to read or write a file ({names}) — a document is read with "
-        "`describe_instrument` and written with the document verbs; its bytes never reach the agent"
+        f"{FILE_ACCESS}: an agent reached outside the roster for the document ({names}) — it is read "
+        "with `describe_instrument` and written with the document verbs; its bytes never reach the "
+        "agent"
     )
 
 

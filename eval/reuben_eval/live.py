@@ -275,9 +275,10 @@ def render(report: dict[str, Any]) -> str:
     reaches = sum(r.get("file_access_reaches", 0) for r in report["tasks"].values())
     if reaches:
         lines.append(
-            f"> ⚠️ `file-access`: {reaches} run(s) tried to read or write a file. The roster does not "
-            "offer one — a document is read with `describe_instrument` and written with the document "
-            "verbs — so this is the model still preferring the retired path, not a missing tool."
+            f"> ⚠️ `{FILE_ACCESS}`: {reaches} run(s) reached outside the roster for the document — a "
+            "file tool, a shell or an interpreter. It is read with `describe_instrument` and written "
+            "with the document verbs, so this is the model still preferring the retired path rather "
+            "than a missing tool. The trace names the call each run reached for."
         )
         lines.append("")
     if rung["band"] == WEAKEST_RUNG and all(r["pass_rate"] == 0 for r in report["tasks"].values()):

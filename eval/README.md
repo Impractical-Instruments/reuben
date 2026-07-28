@@ -96,9 +96,11 @@ than fixing it.
 That observation has been deliberately traded for a **stronger one**. The roster reads a document
 (`describe_instrument`) and writes one (the document verbs) without the model ever seeing its bytes,
 so a conforming client has no reason to touch instrument JSON at all. The tools come off, and on both
-tiers **`file-access` — an agent tried to read or write a file — becomes a named failure mode**: the
-run fails and the report says so on its own line, classified apart from a malformed call so it is
-legible at a glance rather than looking like a typo.
+tiers **`file-access` — an agent reached outside the roster for the document — becomes a named
+failure mode**: the run fails and the report says so on its own line, classified apart from a
+malformed call so it is legible at a glance rather than looking like a typo. The message names the
+call reached for and stops there; asserting a read or a write would over-claim, since a shell and an
+interpreter are classified on the same evidence and neither operation is ever observed.
 
 What that detects is the **reach**, not a completed operation — nothing in the harness can complete
 one any more. That distinction is what keeps the check live rather than trivially green forever.
@@ -155,8 +157,11 @@ A verb argument is not a document even when it is structured: `add_instrument_no
 had to compose and hold — not communication, and a node's inputs map is the thing the verbs exist to
 make cheap. The name-keyed roster half is what structurally keeps the value rule from reaching one.
 
-The practical consequence: a passing gate-tier run prices at **zero**, and a non-zero number means a
-document was emitted somewhere — at whatever call, under whatever argument name.
+The practical consequence: a passing gate-tier run prices at **zero**, and a non-zero number means
+bytes were emitted somewhere — usually a document, sometimes long prose at an invented call. The
+200-character floor is a size heuristic, so it cannot tell the two apart, and it is not trying to:
+the error runs only toward *more* expensive, which is the direction a cost metric may never be fooled
+in. It is a tripwire, not a proof.
 
 ## The tokenizer is pinned, and that is the point
 

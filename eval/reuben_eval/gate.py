@@ -144,8 +144,8 @@ def render(report: dict[str, Any], baseline: dict[str, Any] | None) -> tuple[str
     failed = False
 
     unpassed = [key for key, result in report["tasks"].items() if not result["passed"]]
-    # Split out ahead of the rest: a reference that reached for a file failed a rule, not the engine,
-    # and folding the two together sends the reader looking for a break that is not there.
+    # Split out ahead of the rest: a reference that reached outside the roster failed a rule, not the
+    # engine, and folding the two together sends the reader looking for a break that is not there.
     reaches = [
         key for key in unpassed if report["tasks"][key].get("failure_mode") == FILE_ACCESS
     ]
@@ -153,7 +153,7 @@ def render(report: dict[str, Any], baseline: dict[str, Any] | None) -> tuple[str
     if reaches:
         failed = True
         lines.append(
-            f"❌ `{FILE_ACCESS}` — a reference solution tried to read or write a file: "
+            f"❌ `{FILE_ACCESS}` — a reference solution reached outside the roster: "
             + ", ".join(f"`{key}`" for key in reaches)
         )
         for key in reaches:
@@ -215,7 +215,7 @@ def render(report: dict[str, Any], baseline: dict[str, Any] | None) -> tuple[str
     lines.append("")
     if failed:
         verdict = (
-            f"a reference solution reached for a file (`{FILE_ACCESS}`)"
+            f"a reference solution reached outside the roster (`{FILE_ACCESS}`)"
             if reaches and not broken
             else "a reference solution no longer passes — the surface is broken, not merely bigger"
         )

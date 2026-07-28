@@ -442,7 +442,7 @@ class TestTaskRoster(unittest.TestCase):
 
 
 class TestFileAccessIsANamedFailure(unittest.TestCase):
-    """`file-access`: an agent tried to read or write a file.
+    """`file-access`: an agent reached outside the roster for the document.
 
     A conforming client has no reason to touch instrument JSON — the projection is the read, the
     document verbs are the write — so the harness does not merely omit file tools, it fails the
@@ -450,6 +450,10 @@ class TestFileAccessIsANamedFailure(unittest.TestCase):
     live signal after the tools are gone: reuben cannot take `Read`/`Write` away from a real host, so
     what this measures is whether a model still wants the old path when the surface stops offering
     it. A check that cannot be made to fail is not a check, so these fire it.
+
+    The count is the number this whole tier exists to produce, which makes it corruptible from both
+    sides: too narrow and a real reach reads as a model that stopped wanting the old path, too wide
+    and a fumbled document verb is counted as one. Both directions are held below.
     """
 
     # Tools a real host actually offers, not names built backwards from the matcher. Claude Code's
@@ -495,12 +499,18 @@ class TestFileAccessIsANamedFailure(unittest.TestCase):
             with self.subTest(tool=name):
                 self.assertTrue(looks_like_file_access(name))
 
-    def test_the_message_names_what_was_reached_for(self) -> None:
-        message = file_access_failure(["Write", "read_file"])
+    def test_the_message_names_the_reach_without_asserting_an_operation(self) -> None:
+        """`bash` is classified on the same evidence as `Write`, and neither read nor wrote.
+
+        The mode is `file-access`, but the prose may only report what was observed: a call outside
+        the roster. Claiming a filesystem operation would over-claim on a shell or an interpreter.
+        """
+        message = file_access_failure(["Write", "bash"])
         self.assertIn(FILE_ACCESS, message)
-        self.assertIn("read or write a file", message)
+        self.assertIn("reached outside the roster", message)
+        self.assertNotIn("read or write a file", message)
         self.assertIn("Write", message)
-        self.assertIn("read_file", message)
+        self.assertIn("bash", message)
 
     def test_it_does_not_catch_a_document_verb(self) -> None:
         """A near-miss on a real verb is a malformed call, not a reach for the filesystem."""
@@ -509,6 +519,29 @@ class TestFileAccessIsANamedFailure(unittest.TestCase):
                      "swap_instrument", "validate_instrument", "describe_operators"):
             with self.subTest(tool=name):
                 self.assertFalse(looks_like_file_access(name))
+
+    def test_it_does_not_catch_a_verb_reuben_could_plausibly_have_shipped(self) -> None:
+        """The matcher must not turn reuben's own naming convention against it.
+
+        `patch` is a live argument name on `add_instrument_node` and the authoring skill is called
+        *patcher*; `replace_instrument_node` is a natural sibling of the shipped
+        `rename_instrument_node`; `send_command` is a natural mangle of `send_live_controls`. Each
+        is a malformed call **at a document verb**, and counting one as a reach corrupts the single
+        number this tier exists to produce. The live-roster test cannot catch this — it fires only
+        if reuben *ships* such a verb, never if a model hallucinates one, which is the live case.
+        """
+        for name in ("add_instrument_patch", "set_instrument_patch", "remove_instrument_patch",
+                     "replace_instrument_node", "replace_instrument_input", "patch_instrument",
+                     "rewrite_instrument", "overwrite_instrument", "diff_instrument",
+                     "send_command", "send_osc_command", "run_control_command"):
+            with self.subTest(tool=name):
+                self.assertFalse(looks_like_file_access(name))
+
+    def test_a_filesystem_noun_still_counts_inside_reuben_vocabulary(self) -> None:
+        """The `instrument` guard exempts the verb words, not the nouns — a file is still a file."""
+        for name in ("write_instrument_file", "read_instrument_path", "instrument_directory"):
+            with self.subTest(tool=name):
+                self.assertTrue(looks_like_file_access(name))
 
     @unittest.skipUnless(sidecar_available(), "reuben-mcp not built")
     def test_no_name_on_the_live_roster_trips_it(self) -> None:

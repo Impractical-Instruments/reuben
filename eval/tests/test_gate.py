@@ -61,14 +61,14 @@ class TestVisibilityNotVerdict(unittest.TestCase):
         self.assertTrue(failed)
         self.assertNotIn(gate.FILE_ACCESS, summary)
 
-    def test_a_reach_for_a_file_gets_its_own_line(self) -> None:
+    def test_a_reach_outside_the_roster_gets_its_own_line(self) -> None:
         """Reported apart from an engine break: it is a rule the reference broke, not the loader."""
         result = _result(passed=False, total=5000, fixed=4767, tools=8, schema_bytes=8000,
-                         failure="file-access: an agent tried to read or write a file (`read_file`)")
+                         failure="file-access: an agent reached outside the roster (`read_file`)")
         result["failure_mode"] = gate.FILE_ACCESS
         summary, failed = gate.render(_report(result), None)
         self.assertTrue(failed)
-        self.assertIn("tried to read or write a file", summary)
+        self.assertIn("reached outside the roster", summary)
         self.assertNotIn("no longer passes", summary)
 
     def test_classify_never_returns_a_blocking_tier(self) -> None:
