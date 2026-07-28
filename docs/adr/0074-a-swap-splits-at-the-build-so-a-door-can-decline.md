@@ -1,4 +1,4 @@
-# ADR-0068 — a Swap splits at the build, so a door can decline what it cannot carry
+# ADR-0074 — a Swap splits at the build, so a door can decline what it cannot carry
 
 ## Context
 

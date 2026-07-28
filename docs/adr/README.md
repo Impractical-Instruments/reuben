@@ -14,6 +14,12 @@ Once a decision has solidified, its durable form is a **rule** (+ rationale) und
 A human runs `absorb-adrs` on a cadence — it is not automatic. Superseded and dead-end ADRs
 are culled in the same pass; only the reasoning that still applies survives, in the rationale.
 
+**Numbers are never reused.** Because the fold deletes files, the highest number *in this directory*
+is not the highest number ever issued — a new ADR takes the next number after the highest in
+`git log --all --diff-filter=A --name-only --format="" -- 'docs/adr/*.md'`, not after the highest
+still on disk. A reused number collides with the `Distilled from:` lines the absorbed ADR left
+behind, which are the only surviving pointers to it and cannot be disambiguated after the fact.
+
 ## Overturning a live rule
 
 Because the fold is periodic and the ADR is immediate, an ADR can leave a rule stating the old now
