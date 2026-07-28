@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="340" viewBox="0 0 880 340" role="img" aria-label="Agent surface — document chars">
+<rect width="880" height="340" rx="6" fill="#fcfcfb"/>
+<text x="64" y="24" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="14" font-weight="600" fill="#0b0b0b">Agent surface — document chars</text>
+<text x="64" y="41" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#52514e">reference-solution floor per task, per main commit, 2026-07-28 to 2026-07-28</text>
+<line x1="64" y1="306.0" x2="730" y2="306.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56" y="309.5" text-anchor="end" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">0</text>
+<line x1="64" y1="256.0" x2="730" y2="256.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56" y="259.5" text-anchor="end" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">0.2</text>
+<line x1="64" y1="206.0" x2="730" y2="206.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56" y="209.5" text-anchor="end" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">0.4</text>
+<line x1="64" y1="156.0" x2="730" y2="156.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56" y="159.5" text-anchor="end" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">0.6</text>
+<line x1="64" y1="106.0" x2="730" y2="106.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56" y="109.5" text-anchor="end" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">0.8</text>
+<line x1="64" y1="56.0" x2="730" y2="56.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56" y="59.5" text-anchor="end" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">1</text>
+<text x="56" y="46" text-anchor="end" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" fill="#898781">chars</text>
+<line x1="64" y1="306" x2="730" y2="306" stroke="#c3c2b7" stroke-width="1"/>
+<text x="64.0" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-28</text>
+<circle cx="64.0" cy="306.0" r="2.5" fill="#2a78d6"/>
+<circle cx="64.0" cy="306.0" r="6" fill="#fcfcfb"/>
+<circle cx="64.0" cy="306.0" r="4" fill="#2a78d6"/>
+<circle cx="64.0" cy="306.0" r="2.5" fill="#1baf7a"/>
+<circle cx="64.0" cy="306.0" r="6" fill="#fcfcfb"/>
+<circle cx="64.0" cy="306.0" r="4" fill="#1baf7a"/>
+<circle cx="64.0" cy="306.0" r="2.5" fill="#eda100"/>
+<circle cx="64.0" cy="306.0" r="6" fill="#fcfcfb"/>
+<circle cx="64.0" cy="306.0" r="4" fill="#eda100"/>
+<circle cx="64.0" cy="306.0" r="2.5" fill="#008300"/>
+<circle cx="64.0" cy="306.0" r="6" fill="#fcfcfb"/>
+<circle cx="64.0" cy="306.0" r="4" fill="#008300"/>
+<circle cx="64.0" cy="306.0" r="2.5" fill="#4a3aa7"/>
+<circle cx="64.0" cy="306.0" r="6" fill="#fcfcfb"/>
+<circle cx="64.0" cy="306.0" r="4" fill="#4a3aa7"/>
+<line x1="70.0" y1="306.0" x2="74.0" y2="198.0" stroke="#c3c2b7" stroke-width="1"/>
+<circle cx="79.0" cy="194.5" r="3.5" fill="#2a78d6"/>
+<text x="87.0" y="198.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#0b0b0b">from_scratch</text>
+<text x="87.0" y="210.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#52514e">0</text>
+<line x1="70.0" y1="306.0" x2="74.0" y2="226.0" stroke="#c3c2b7" stroke-width="1"/>
+<circle cx="79.0" cy="222.5" r="3.5" fill="#1baf7a"/>
+<text x="87.0" y="226.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#0b0b0b">intent_fan_out</text>
+<text x="87.0" y="238.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#52514e">0</text>
+<line x1="70.0" y1="306.0" x2="74.0" y2="254.0" stroke="#c3c2b7" stroke-width="1"/>
+<circle cx="79.0" cy="250.5" r="3.5" fill="#eda100"/>
+<text x="87.0" y="254.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#0b0b0b">intent_word</text>
+<text x="87.0" y="266.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#52514e">0</text>
+<line x1="70.0" y1="306.0" x2="74.0" y2="282.0" stroke="#c3c2b7" stroke-width="1"/>
+<circle cx="79.0" cy="278.5" r="3.5" fill="#008300"/>
+<text x="87.0" y="282.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#0b0b0b">repair</text>
+<text x="87.0" y="294.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#52514e">0</text>
+<circle cx="79.0" cy="306.5" r="3.5" fill="#4a3aa7"/>
+<text x="87.0" y="310.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#0b0b0b">tweak</text>
+<text x="87.0" y="322.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#52514e">0</text>
+</svg>
