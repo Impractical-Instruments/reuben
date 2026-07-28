@@ -30,18 +30,28 @@ undo two decisions that are load-bearing:
 So the two sets — advertised and accepted — are maintained as a pair rather than derived from one
 another, and the advertised set is deliberately *narrower* in one place: the wire-ref object is
 absent from the literal slots, because those verbs reject it. Advertising a form the verb refuses
-would invite the call.
+would invite the call. A pair maintained by hand is a pair that can drift, so the exact advertised
+forms are pinned on the wire; a guard that only asks whether a slot has *some* constraint is
+satisfied by narrowing a literal to a string, which is this defect again with the build green.
+
+The schemas are **inlined** rather than emitted as definitions to reference. Three things fall out
+of that and none of them would from a derived untagged enum: an optional slot folds its null into
+the same `type` list instead of growing a union, so it stays one keyword a client reads directly;
+there is no `$ref` for a client to resolve before it knows what to coerce to; and the sidecar's
+output-schema conformance walker, which refuses to guess which branch of a multi-branch union a
+payload took, is never handed one.
 
 The guard reads the wire, not the declarations, for the reason the
 [prose guard](../code-as-grounding/wire-descriptions-are-model-facing.md) does: a check on the arg
 structs would catch `serde_json::Value` specifically and miss every other way a slot renders
-typeless. Two details decide whether it is worth having at all. It must **resolve `$defs`** — the
-batch verb's control arguments sit one `$ref` hop down, and a walker that stops at the reference
-reports three offenders instead of six and goes green the day the top-level slots are fixed, with the
-real one still broken. And it must **not be able to walk nothing**: a planted schema proves it still
-finds a typeless leaf through a hop, an item schema and a map value schema, and a floor on the number
-of slots visited catches a rename that would otherwise empty the walk into a vacuous pass. A guard
-that cannot fail is worse than none, because it is believed.
+typeless. Two details decide whether it is worth having at all. It must **follow every descent a
+schema can make** — the batch verb's control arguments sit one `$ref` hop down, so a walker that
+stops at the reference reports five offenders instead of six and goes green the day the top-level
+slots are fixed with the real one still broken; the same holds for a map's value schema, a union
+branch, and the `prefixItems` a tuple is spelled with. And it must **not be able to walk nothing**: a
+planted schema carries a typeless leaf behind each of those descents, so no arm can be deleted with
+the suite still green, and a floor on the number of slots visited refuses a roster that came back
+empty. A guard that cannot fail is worse than none, because it is believed.
 
 Guarded by: crates/reuben-mcp/tests/stdio_tools_list.rs::every_advertised_property_constrains_its_value
 
