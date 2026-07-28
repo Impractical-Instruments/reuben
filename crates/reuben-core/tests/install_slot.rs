@@ -244,11 +244,15 @@ fn an_install_that_changes_the_master_width_does_not_render_a_malformed_quantum(
         "the swapped-in rig taps channel 3, so master width derives to 4"
     );
 
-    // One frame past the install point: the down edge fills exactly `edge` frames, then the install
-    // lands and a single frame of the up edge remains — a remainder whose old-width sample count
-    // (2) is not a whole number of new-width frames (4).
+    // SPAN, and why it is not `edge + 1`: the curve pins `curve[edge] == 0.0`, so frame `edge` —
+    // the install frame — reads silent whatever was rendered into it. A buffer ending there cannot
+    // tell a silenced remainder from a malformed one. The remainder must be several frames long to
+    // discriminate, and an ODD frame count keeps the old-width sample count (2 per frame) off a
+    // whole number of new-width frames (4 per frame), which is what trips Engine's multiple-of-
+    // channels assert in a debug build. The buffer is pre-filled with a nonzero sentinel so an
+    // *unwritten* remainder reads as loudly as a mis-rendered one.
     let edge = slot.ramp_edge_frames();
-    let span = edge + 1;
+    let span = edge + 17;
     let mut buf = vec![0.123f32; span * ch];
     slot.fill(&mut buf);
 
@@ -301,8 +305,14 @@ fn an_install_that_changes_the_input_width_does_not_smear_the_callers_input() {
         "the output width is unchanged — only the input stride moves"
     );
 
+    // SPAN, and why it must clear a whole core block: the output width is unchanged here, so a
+    // mis-strided input is not visible in the same frame it is staged — the Engine stages input one
+    // core block ahead of the block that consumes it. A remainder shorter than `block_size` renders
+    // the fresh Engine's first (input-less) block and reads silent either way, which cannot
+    // discriminate. Past that boundary the smeared stride reaches the output and the remainder is
+    // audibly not silent unless the install actually stopped rendering into this buffer.
     let edge = slot.ramp_edge_frames();
-    let span = edge + 1;
+    let span = edge + slot.block_size() + 17;
     let mut out = vec![0.456f32; span * ch];
     let input: Vec<f32> = (0..span * in_ch)
         .map(|i| ((i % 89) as f32 / 89.0) - 0.5)
