@@ -24,8 +24,9 @@ one had to either write a private path around the Coordinator, or accept the fai
 **A Swap splits at the build.** `Coordinator::prepare_document` does everything `swap_document`
 does except fill the mailbox, and returns a `PreparedSwap` — a built Engine the caller can measure
 (`channels`, `input_channels`, `block_size`, `sample_rate`, `content_hash`, `warnings`).
-`Coordinator::commit_swap` posts it. `swap_document` is exactly those two back to back, unchanged
-for every caller that already had one.
+`Coordinator::commit_swap` posts it. `swap_document` is those two back to back behind its own
+reclaim, unchanged for every caller that already had one — see the reclaim-order note below for
+what that last part costs to keep true.
 
 **Declining is dropping.** A `PreparedSwap` the caller does not commit is freed where every other
 Coordinator-side drop happens — off the audio thread. Nothing was published, so the install slot
