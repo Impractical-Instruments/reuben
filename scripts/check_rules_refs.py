@@ -94,10 +94,21 @@ Seven checks:
      standing: in the CSS lane the message carries COLOUR_HINT, naming the collision and the way out.
      Neither this docstring nor the rules doc is a surface anybody reads at the moment they are stuck.
 
-     `.env` — readable, and found by check 7 rather than by anybody noticing. A dotenv file names the
-     ENVIRONMENT after the last dot, so `.env.production` has suffix `.production`, which describes
-     no format and matched no row; `#` had opened a comment in it the whole time. It is keyed by
-     `lane_key` rather than by suffix, and it is the reason that function exists.
+     The hint is not selective and should not be read as if it were. SHORT_HEX_RE admits any three-
+     or four-digit run, and these repos' issue numbers live squarely inside that range, so in
+     practice EVERY citation the CSS lane reports carries the caveat — a real citation gets a
+     paragraph about colours it does not need. That is the trade taken deliberately: the alternative
+     is a hint that fires only on shapes a heuristic guessed were colours, which is the same guess
+     the strictness exists to refuse, one level up. The message is worded conditionally ("if that is
+     a hex colour") because it genuinely cannot tell, not as hedging.
+
+     The DOT-PREFIXED lanes — `.env`, `.gitignore`, `.gitattributes`, `.gitmodules`, `.ignore` — and
+     an extensionless script's SHEBANG are all in reach, all `#`. Each was invisible for the same
+     reason: the guard read a suffix, and these files put the format somewhere else. `.env.production`
+     has suffix `.production`, which describes nothing; `.gitignore` has no suffix at all; a githook
+     has neither, and says `#!/bin/sh` on line one. `#` had opened a comment in every one of them the
+     whole time. See `lane_key`, which exists for exactly this and is now one rule rather than a
+     special case per file.
 
      `.html` — OUT of reach, and visibly so rather than by omission. Three comment regimes live in
      one file: `<!-- -->`, `/* */` inside `<style>`, and `//` plus `/* */` inside `<script>`. That is
@@ -142,28 +153,51 @@ Seven checks:
      point. Run against these two trees it immediately named two lanes nobody had noticed — `.env`,
      which turned out to be readable and carrying a citation, and `.html`, which is not readable yet.
 
-     It reads a lane KEY, not a suffix (`lane_key`). An extensionless file — LICENSE, a githook — has
-     no key, and is left exactly where it has always been: outside this check and outside the guard.
+     BOTH exclusion buckets carry reasons, and for the same reason: if only one demanded a sentence,
+     the other would be the cheap door out of a check-7 red, and the allow-list would be back wearing
+     a third set of words. NOT_SOURCE_EXTS shares three reasons across its entries rather than
+     inventing sixteen — the argument is per KIND (no comment syntax, binary asset, generated
+     output), and writing it out once per image format would be the ritual, not the argument.
+
+     It reads a lane KEY, not a suffix (`lane_key`), because a file declares its format in more than
+     one place and reading only the suffix is how this check came to assert something untrue. A
+     dot-prefixed name IS the format; an extensionless executable declares it on line one. Four
+     `.gitignore`s and a githook were carrying citations in this exact ban's blind spot, in both
+     repos, while check 7 reported every lane classified — it had no key for them to be unclassified
+     UNDER. A file that declares no format anywhere keys as "" and is classified like anything else,
+     with its reason written down, rather than dropping out of the census.
+
+     WHAT IT WALKS is the repository, not the filesystem: `repo_files` asks git for tracked plus
+     untracked-not-ignored, and only falls back to `rglob` outside a working tree. `rglob` made the
+     guard un-runnable locally the moment anybody ran the tests — a Playwright run leaves
+     `test-results/**/video.webm`, and check 7 would report an unclassified `.webm` and advise giving
+     a video file a comment opener. CI never saw it, because a clean checkout has no junk in it,
+     which is the shape of bug that survives longest.
 
 Exit non-zero on any violation. Stdlib only. Wired into CI in both repos.
 
 Usage: python3 scripts/check_rules_refs.py [root=.]
 """
 from __future__ import annotations
-import bisect, re, sys
+import bisect, re, subprocess, sys
 from pathlib import Path, PurePath
 
 # The opener table, NOT a permission list: first-party source is in reach by default and a suffix
 # earns its row here so the guard knows how to READ it. See the module docstring's checks 4 and 7.
 CODE_EXTS = {".rs", ".py", ".mjs", ".js", ".ts", ".jsx", ".tsx", ".go", ".c", ".h",
-             ".cpp", ".hpp", ".java", ".rb", ".sh", ".toml", ".yml", ".yaml", ".css", ".env"}
+             ".cpp", ".hpp", ".java", ".rb", ".sh", ".toml", ".yml", ".yaml", ".css", ".env",
+             ".gitignore", ".gitattributes", ".gitmodules", ".ignore", "#!"}
 
-# The other two buckets check 7 sorts a suffix into. Under default-on it is the EXCLUSIONS that have
-# to be enumerated, so these two sets are the ones that grow, and a suffix in none of the three is
+# The other two buckets check 7 sorts a lane key into. Under default-on it is the EXCLUSIONS that
+# have to be enumerated, so these two are the ones that grow, and a key in none of the three is
 # reported rather than skipped.
 #
-# Deliberately out of reach: first-party source the guard does not read, each with the reason it
-# does not. Absence of a reason is the thing check 7 exists to prevent, so the reason IS the entry.
+# BOTH carry reasons, and they carry them for the same reason. An exclusion is a decision, and a
+# decision with no argument is the silence this check exists to abolish — so if only one bucket
+# demanded a sentence, the other would be the cheap door an author takes to make a check-7 red go
+# away, and the allow-list would be back wearing a third set of words. The reason IS the entry.
+#
+# Deliberately out of reach: first-party source the guard does not read, and why not.
 OUT_OF_REACH_EXTS = {
     ".md": "provenance's one sanctioned home is a Markdown file — a rationale's `Distilled from:` / "
            "`Decided in:` line, and the live ADRs — so scanning it would red on the very text the "
@@ -172,11 +206,27 @@ OUT_OF_REACH_EXTS = {
              "`/* */` inside `<script>`), so it is not readable with a single opener; making it "
              "readable is its own change, and until then its comments are unpoliced — not exempt",
 }
-# Not a prose surface at all: data, fixtures, binaries, build output, lockfiles. Nothing here is
-# hand-written source, so nothing here can carry a comment retelling history. JSON is on this list
-# for the strongest possible reason: the format has no comment syntax to police.
-NOT_SOURCE_EXTS = {".json", ".lock", ".txt", ".tiktoken", ".tosc", ".wav", ".woff2", ".png", ".jpg",
-                   ".jpeg", ".gif", ".ico", ".webp", ".wasm", ".pyc", ".map"}
+# Not a prose surface at all. Three reasons cover every entry, so they are named once and shared:
+# writing sixteen bespoke paragraphs about image formats would be the ritual, not the argument.
+NO_COMMENT_SYNTAX = ("the format has no comment syntax at all, so there is no comment here for the "
+                     "ban to reach — every byte of it is content")
+BINARY_ASSET = ("a binary asset: bytes rather than text, and nothing anybody writes prose into or "
+                "reads prose out of")
+GENERATED_OUTPUT = ("generated by the tool that owns it and edited by regenerating, never by hand, "
+                    "so a comment in it does not survive to be read")
+# A file whose name declares no format and whose first line declares no interpreter. It states no
+# comment syntax, so it has no comments — the ban has nothing to reach. LICENSE and NOTICE are the
+# whole population in these two trees, and both are verbatim third-party text besides.
+NO_LANE_KEY = ("the name declares no format and the first line declares no interpreter, so the file "
+               "states no comment syntax and therefore has no comments to police")
+NOT_SOURCE_EXTS = {
+    "": NO_LANE_KEY,
+    ".json": NO_COMMENT_SYNTAX, ".txt": NO_COMMENT_SYNTAX, ".tiktoken": NO_COMMENT_SYNTAX,
+    ".lock": GENERATED_OUTPUT, ".map": GENERATED_OUTPUT,
+    ".tosc": BINARY_ASSET, ".wav": BINARY_ASSET, ".woff2": BINARY_ASSET, ".png": BINARY_ASSET,
+    ".jpg": BINARY_ASSET, ".jpeg": BINARY_ASSET, ".gif": BINARY_ASSET, ".ico": BINARY_ASSET,
+    ".webp": BINARY_ASSET, ".wasm": BINARY_ASSET, ".pyc": BINARY_ASSET,
+}
 SKIP_DIRS = {".git", "target", "node_modules", "dist", "build"}
 # Two skips that are only ever a skip AT THE ROOT, matched as a root-anchored tuple rather than as
 # a bare directory name anywhere in the path.
@@ -255,7 +305,12 @@ MIN_PARITY_REASON_WORDS = 5
 # Which token opens a comment, by extension. Keyed off the suffix rather than sniffed generically:
 # `#` opens a comment in the shell/Python half and is an attribute (`#[…]`) or a raw-string delimiter
 # (`r#"…"#`) in Rust, and guessing wrong turns code into prose.
-HASH_EXTS = {".py", ".sh", ".rb", ".toml", ".yml", ".yaml", ".env"}
+HASH_EXTS = {".py", ".sh", ".rb", ".toml", ".yml", ".yaml", ".env", ".gitignore", ".gitattributes",
+             ".gitmodules", ".ignore", "#!"}
+# Which interpreters make a shebang a `#` lane. Not a guess: an interpreter absent from this set is
+# reported by check 7 under its own name rather than read with an opener nobody checked — `#` opens
+# a comment in a shell script and is a private field in a JS one.
+HASH_INTERPRETERS = {"sh", "bash", "zsh", "dash", "ksh", "ash", "python", "python3", "ruby", "perl"}
 # The four lanes, by suffix. `rust` and `curly` share the `//` opener and differ on what a comment
 # may also be; `css` shares `curly`'s block form and differs on whether `//` opens anything at all:
 # see the module docstring's check 4.
@@ -289,16 +344,73 @@ HASH_QUOTE_BEFORE = " \t[{(,:=-"
 CONT_MARKER_RE = re.compile(r"^(///|//!|//|#|\*|--)[ \t]?")
 
 
-def lane_key(name: str) -> str:
+def lane_key(name: str, first_line: str = "") -> str:
     """The token a file's lane is decided by. Its suffix, except where the suffix is not the format.
 
-    A dotenv file names the ENVIRONMENT after the last dot, not the format: `.env.production` has
-    suffix `.production`, which describes nothing and matches nothing, so the file went unread while
-    `#` had opened a comment in it all along. The format is `.env`, and that is what it is keyed by.
+    Three shapes, one argument: a file declares its format somewhere, and the suffix is only the
+    most common place. Where the guard read the suffix and nothing else, it saw nothing at all.
+
+    A DOT-PREFIXED name IS the format, and anything after a second dot is a qualifier: `.env` and
+    `.env.production` are both dotenv (the suffix `.production` names an environment and describes
+    no syntax), and `.gitignore` has no suffix whatsoever. Keying the leading segment covers both —
+    it is one rule where `.env` alone used to be a special case.
+
+    An EXTENSIONLESS EXECUTABLE declares its format on line one. `#!/bin/sh` is as good a lane
+    declaration as `.sh`, so a shebang naming an interpreter whose comments open with `#` keys as
+    that lane. An interpreter NOT on that list keys as ITSELF and check 7 reports it, because `#`
+    does not open a comment in every language a shebang can name and guessing is what the opener
+    table exists to prevent.
+
+    Everything else keys as its lowercased suffix, or as "" — which is a key like any other, and
+    carries its reason in NOT_SOURCE_EXTS rather than dropping out of the census.
     """
-    if name == ".env" or name.startswith(".env."):
-        return ".env"
-    return PurePath(name).suffix
+    name = name.lower()
+    if name.startswith("."):
+        return "." + name[1:].split(".")[0]
+    suffix = PurePath(name).suffix
+    if suffix:
+        return suffix
+    if first_line.startswith("#!"):
+        tokens = first_line[2:].split()
+        interp = PurePath(tokens[0]).name if tokens else ""
+        if interp == "env" and len(tokens) > 1:          # `#!/usr/bin/env bash`
+            interp = PurePath(tokens[1]).name
+        return "#!" if interp in HASH_INTERPRETERS else (f"#!{interp}" if interp else "")
+    return ""
+
+
+def first_line(path: Path) -> str:
+    """The file's first line, for a shebang. A bounded read: a name that declares no format is no
+    reason to slurp a font."""
+    try:
+        with path.open("rb") as fh:
+            return fh.readline(256).decode("utf-8", "replace").strip()
+    except OSError:
+        return ""
+
+
+def repo_files(root: Path) -> list[Path] | None:
+    """Repo content as git defines it, or None if `root` is not inside a working tree.
+
+    The guard's subject is the repository, and `rglob` walks the FILESYSTEM — which is a different
+    set the moment anybody runs the tests. A Playwright run leaves `test-results/**/video.webm`
+    lying around, and check 7 would dutifully report an unclassified `.webm` and advise giving a
+    video file a comment opener. CI never saw it (a clean checkout has no junk) so the guard would
+    have been green in the one place it runs and unusable in the place it is read.
+
+    `--cached --others --exclude-standard` is tracked PLUS untracked-but-not-ignored: a file staged
+    or merely written is repo content and gets scanned, while everything `.gitignore` disclaims is
+    not. Fixing this by naming `test-results` in SKIP_DIRS would be whack-a-mole against a category
+    whose next member is not yet named.
+    """
+    try:
+        out = subprocess.run(["git", "-C", str(root), "ls-files", "--cached", "--others",
+                              "--exclude-standard", "-z"], capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    return [root / rel for rel in out.stdout.decode("utf-8", "replace").split("\0") if rel]
 
 
 def suffix_class_problems(seen: dict[str, str]) -> list[str]:
@@ -690,22 +802,24 @@ def main(root_arg: str = ".") -> int:
         return bool(SLUG_RE.match(slug)) and topic_path(cross, slug).exists()
 
     seen: dict[str, str] = {}                  # lane key -> first path carrying it, for check 7
-    for path in root.rglob("*"):
+    listing = repo_files(root)
+    for path in (listing if listing is not None else root.rglob("*")):
         if not path.is_file():
             continue
         parts = path.relative_to(root).parts
-        if set(parts) & SKIP_DIRS or set(parts) & SKILL_ALLOWLIST:
+        if set(parts) & SKIP_DIRS:
             continue
         if any(parts[:len(pre)] == pre for pre in SKIP_PREFIXES):
             continue
         rel = path.relative_to(root).as_posix()
-        # Classify BEFORE the readability gate, which is the whole point: a suffix the guard cannot
-        # read still has to be accounted for. An extensionless file (LICENSE, a githook) has no lane
-        # key to classify and is left where it has always been.
-        key = lane_key(path.name)
-        if key:
-            seen.setdefault(key, rel)
-        if key not in CODE_EXTS:
+        # Classify BEFORE the readability gate — a lane the guard cannot read still has to be
+        # accounted for — and before SKILL_ALLOWLIST, which exempts a skill from the ADR-token rule
+        # and from nothing else. A `.scss` under an exempt skill is still an unclassified lane.
+        # The shebang peek costs one short read, and only for a file whose NAME said nothing; the
+        # alternative is slurping every font and wasm blob to look at a line they do not have.
+        key = lane_key(path.name) or lane_key(path.name, first_line(path))
+        seen.setdefault(key, rel)
+        if set(parts) & SKILL_ALLOWLIST or key not in CODE_EXTS:
             continue
         try:
             text = path.read_text(encoding="utf-8", errors="ignore")
