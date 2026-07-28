@@ -2122,17 +2122,19 @@ impl BoundaryFace {
 /// drifted the last time a number type landed. `nothing` is the surface's answer for a port that
 /// takes no literal at all, which is where the two surfaces differ: an input can be wired instead,
 /// a `config` constant cannot.
-/// see rules: authoring-library
 fn expected_literal(port: &Port, nothing: &str) -> String {
     if let Some(e) = port.enum_meta() {
         let variants: Vec<String> = e.variants.iter().map(|v| format!("{v:?}")).collect();
         // The one range worth naming. A numeric port's range is *clamped*, so quoting it would
         // advertise a constraint the loader does not enforce; an enum's index range is enforced —
         // outside it the number names nothing — and it is the second literal form this port takes.
+        // `#[derive(ArgValue)]` cannot mint a variantless enum, so the subtraction is safe —
+        // saturating rather than asserting because a panic here would replace a load error an
+        // author can act on with one they cannot.
         return format!(
             "one of the symbols {} (or an index 0..={})",
             variants.join(", "),
-            e.variants.len() - 1
+            e.variants.len().saturating_sub(1)
         );
     }
     if port.accepts_number_literal() {
@@ -2215,7 +2217,8 @@ fn literal_arg(
 ///
 /// That last part is load-bearing, not tidiness. [`Graph::set_value`] drops a value it cannot
 /// coerce without a word, so validating one spelling and forwarding another is silent data loss —
-/// which is exactly what a numeric-string enum symbol did. `"1"` passes [`EnumMeta::resolve`] (a
+/// which is exactly what a numeric-string enum symbol did. `"1"` passes
+/// [`EnumMeta::resolve`](crate::descriptor::EnumMeta::resolve) (a
 /// bare integer is an in-range index there) and then fails the derive's symbol-only `Arg::Str`
 /// coercion, so the document said `Hp` and the graph played the default. Returning the coerced
 /// value closes that gap by construction rather than by a matching pair of checks.
@@ -2572,35 +2575,36 @@ fn check_logical_channel(name: &str, ch: usize) -> Result<(), LoadError> {
 
 /// The pipe type words [`pipe_descriptor`] answers to directly, in the order its error message
 /// offers them. Everything else it accepts is a vocab enum name
-/// ([`PIPEABLE_ENUM_TYPES`](crate::vocab::PIPEABLE_ENUM_TYPES)), so these two rosters together are
+/// ([`pipeable_enum_types`](crate::vocab::pipeable_enum_types)), so these two rosters together are
 /// the whole declarable set.
 pub(crate) const PIPE_BASE_TYPES: &[&str] =
     &["f32_buffer", "f32", "i32", "note", "harmony", "pitch"];
 
-/// Synthesize an input pipe's per-entry [`Descriptor`] from its declaration: one
-/// `in` port the boundary feeds and one `out` port consumers wire from, both of the **declared**
-/// `Arg` type — the existing pass-2 wire check then enforces that type against every consumer,
-/// no new checker. A numeric pipe's declared `default`/`min`/`max`/`curve` become the port's own
-/// engine-enforced [`F32Meta`] (an unwired signal pipe materializes `default`; a **bare** signal
-/// pipe materializes silence). Validation is local and pointed: unknown type, numeric metadata
-/// on a message pipe, an incoherent range, or a `channel` on anything but a signal pipe
-/// (hardware channels carry signals).
-/// What one `interface.inputs` entry mints: the synthesized [`Descriptor`], the [`PortKind`] the
-/// pipe operator runs as, and — for an enum pipe — the declared default already **resolved through
-/// the port**.
+/// What one `interface.inputs` entry mints — [`pipe_descriptor`]'s whole result.
 ///
-/// The resolved default rides along rather than being re-derived at the application site, because
-/// re-deriving is how a validated value and a stored value come apart: `pipe_descriptor` accepts a
-/// bare integer string as an index, and re-spelling that as `Arg::Str` downstream fails the
-/// symbol-only coercion and stores nothing at all.
+/// The resolved `enum_default` rides along rather than being re-derived at the application site,
+/// because re-deriving is how a validated value and a stored value come apart: `pipe_descriptor`
+/// accepts a bare integer string as an index, and re-spelling that as `Arg::Str` downstream fails
+/// the symbol-only coercion and stores nothing at all.
 pub(crate) struct MintedPipe {
+    /// The synthesized per-entry descriptor: one `in` port and one `out` port.
     pub descriptor: Descriptor,
+    /// The kind the pipe operator runs as, which decides whether it may bind a hardware channel.
     pub kind: PortKind,
     /// The enum pipe's declared default as its latch [`Arg`]; `None` for a numeric pipe (whose
     /// default lives in the port's own meta) and for an enum pipe that declares none.
     pub enum_default: Option<Arg>,
 }
 
+/// Synthesize an input pipe's per-entry [`Descriptor`] from its declaration: one
+/// `in` port the boundary feeds and one `out` port consumers wire from, both of the **declared**
+/// `Arg` type — the existing pass-2 wire check then enforces that type against every consumer,
+/// no new checker. A numeric pipe's declared `default`/`min`/`max`/`curve` become the port's own
+/// engine-enforced [`F32Meta`] (an unwired signal pipe materializes `default`; a **bare** signal
+/// pipe materializes silence); an enum pipe's default is resolved here and handed back in
+/// [`MintedPipe::enum_default`]. Validation is local and pointed: unknown type, numeric metadata
+/// on a message pipe, an incoherent range, a default the declared type cannot read, or a `channel`
+/// on anything but a signal pipe (hardware channels carry signals).
 pub(crate) fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<MintedPipe, LoadError> {
     let err = |reason: String| LoadError::InterfacePipe {
         name: name.to_string(),
@@ -5810,6 +5814,18 @@ mod tests {
                         {"type":"voicer","address":"/v","config":{"voices":"eight"}}]}"#,
                     "node \"/v\" config constant \"voices\" is set to the symbol \"eight\", \
                      but it takes a number",
+                ),
+                // A mistyped pipe type gets the whole declarable set, not a category and an
+                // example. Pinned in full because the roster is the useful part: a regression to
+                // "or a shared vocab enum name (e.g. …)" still contains "unknown pipe type" and
+                // would otherwise pass.
+                (
+                    r#"{"format_version":2,"instrument":"t",
+                        "interface":{"inputs":{"p":{"type":"FilterMod"}}},"nodes":[]}"#,
+                    "interface pipe \"p\": unknown pipe type \"FilterMod\" — one of \
+                     \"f32_buffer\", \"f32\", \"i32\", \"note\", \"harmony\", \"pitch\", \
+                     \"GateMode\", \"FilterMode\", \"Waveform\", \"GrainWindow\", \"M2sMode\", \
+                     \"MapCurve\", \"SnapDir\", \"SnapTarget\"",
                 ),
             ];
             for (json, expected) in cases {

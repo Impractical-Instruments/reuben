@@ -114,8 +114,8 @@ type PipeableEnum = (
 /// Operators never come through here (their contracts name the Rust type directly); only the
 /// document-declared pipe does, so this is the one place a *string* names a vocab enum.
 ///
-/// A table rather than a `match` so the roster and the dispatch are one declaration: a test that
-/// has to enumerate the pipeable enums reads [`PIPEABLE_ENUM_TYPES`] instead of restating the
+/// A table rather than a `match` so the roster and the dispatch are one declaration: anything that
+/// has to enumerate the pipeable enums reads [`pipeable_enum_types`] instead of restating the
 /// arms, and the two cannot drift. Adding a pipeable vocab enum = one row here.
 const PIPEABLE_ENUMS: &[PipeableEnum] = &[
     ("GateMode", GateMode::enum_meta),

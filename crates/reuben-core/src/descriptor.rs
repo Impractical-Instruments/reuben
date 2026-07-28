@@ -350,9 +350,12 @@ impl Port {
     /// unknown input. Deriving the predicate from the conversion keeps the two from drifting again
     /// the next time a number type lands.
     ///
-    /// Probed with a canonical in-range value rather than the author's, because this answers *"is
-    /// this port settable by a number"*, not *"is this particular number good"*. The caller asks
-    /// the second question by coercing the author's own value.
+    /// Probed with `0.0` rather than the author's value, because this answers *"is this port
+    /// settable by a number"*, not *"is this particular number good"*. `0.0` is not in every
+    /// port's declared range (`filter.cutoff` starts at 20) and does not need to be: a numeric
+    /// port *clamps* rather than refusing, and every enum has an index 0 — so the probe turns on
+    /// the port's kind, which is the question, and never on its bounds. The caller asks the second
+    /// question by coercing the author's own value.
     pub fn accepts_number_literal(&self) -> bool {
         self.coerce(&crate::message::Arg::F32(0.0)).is_some()
     }
@@ -480,21 +483,12 @@ impl Descriptor {
             .and_then(|(i, p)| p.meta.as_ref().map(|m| (i, m)))
     }
 
-    /// [`Port::accepts_number_literal`] for the input named `name` — the by-name form for callers
-    /// holding a descriptor rather than a port. `false` for a name this operator has no input for.
-    pub fn accepts_number_literal(&self, name: &str) -> bool {
-        self.inputs
-            .iter()
-            .any(|p| p.name == name && p.accepts_number_literal())
-    }
-
     /// Every input carrying an [`F32Meta`] — each scalar [`F32`](PortType::F32) control and each
     /// signal port with a scalar default — paired with that meta.
     ///
     /// **Not** the set an author may write a numeric literal on, despite the name: it answers out
     /// of the `F32Meta` slot alone, so it omits every [`I32`](PortType::I32) control.
-    /// Use [`accepts_number_literal`](Self::accepts_number_literal) for that question. Currently
-    /// callerless.
+    /// Use [`Port::accepts_number_literal`] for that question. Currently callerless.
     pub fn settable_inputs(&self) -> impl Iterator<Item = (&'static str, &F32Meta)> {
         self.inputs
             .iter()
