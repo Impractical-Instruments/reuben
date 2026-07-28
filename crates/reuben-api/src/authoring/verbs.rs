@@ -389,7 +389,7 @@ pub fn add_instrument_interface_input(
             &args.name,
             &args.type_name,
             args.channel,
-            args.default.clone(),
+            args.value.clone(),
             args.min,
             args.max,
             args.curve.as_deref(),

@@ -165,6 +165,40 @@ fn a_pipe_takes_only_its_one_input() {
     );
 }
 
+/// How far the shared address space reaches, pinned so that widening it is a deliberate edit and
+/// not a drift: **setting a value** reaches a pipe, **wiring** does not. The advertised sentence
+/// scopes its claim to this verb for exactly this reason.
+#[test]
+fn only_the_value_verb_reaches_a_pipe_address() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_with_pipe());
+
+    set_instrument_input(SRC, "/cutoff", "in", json!(880.0), &registry, &resolver)
+        .expect("setting a value reaches the pipe");
+
+    for (verb, err) in [
+        (
+            "unwire",
+            unwire_instrument_input(SRC, "/cutoff", "in", &registry, &resolver).unwrap_err(),
+        ),
+        (
+            "wire",
+            wire_instrument_input(SRC, "/cutoff", "in", "/osc", &registry, &resolver).unwrap_err(),
+        ),
+    ] {
+        assert!(
+            matches!(err, EditError::Target(_)),
+            "{verb} addresses nodes only, and says so: {err:?}"
+        );
+    }
+
+    // The constant verb addresses a node and names a plan-time slot on it; a pipe has no `config`
+    // block for it to reach, so its absence from the shared space is the type, not an omission.
+    let err = set_instrument_constant(SRC, "/cutoff", "voices", json!(4), &registry, &resolver)
+        .expect_err("a pipe carries no constants");
+    assert!(matches!(err, EditError::Target(_)), "got {err:?}");
+}
+
 // --- the wire is not severed by a value edit ------------------------------------------------------
 
 /// Setting a literal on an input that currently holds a wire is **refused**, not silently applied:

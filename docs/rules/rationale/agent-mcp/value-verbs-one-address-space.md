@@ -1,4 +1,4 @@
-# Why: The value verbs write node inputs and interface-pipe seeds through one address space — a pipe is addressed as the node it mints, port `in` — and refuse a wired input rather than severing it.
+# Why: Setting a value reaches a node input and an interface pipe's value through one address space — the pipe is addressed as the node it mints, port `in` — and refuses a wired input rather than severing it; the wiring verbs stay node-only.
 
 [Rule](../../agent-mcp.md#value-verbs-one-address-space)
 
@@ -18,6 +18,26 @@ migration across ~20 fixtures for a cosmetic win is not worth it, and the preced
 
 The pipe's meta verb keeps what its name always claimed and nothing more: the *quantity* contract —
 channel binding, range, curve, unit — around a value it does not own.
+
+**How far the shared address space actually reaches, and why the rule says so.** Setting a value
+reaches a pipe; **wiring does not**. Whether a pipe should be wire-addressable is a live design
+question with consequences this rule does not get to decide — a pipe's `in` is fed by whatever is
+outside the boundary, so a wire into it means something different from a wire into a node input.
+Until that is settled the wiring verbs address nodes only, and the rule names the limit rather than
+implying a symmetry the code does not have. An address space that only some verbs honour is a worse
+grounding surface than two honest ones, because a model cannot tell which verbs are in the club — so
+the advertised sentence scopes the claim to the verb that honours it, and does not describe a
+namespace.
+
+**Two known asymmetries, recorded rather than left as folklore:**
+
+- A node input can be returned to *unset* (the wiring verb's clear does exactly that). **A pipe's
+  value cannot**: nothing reaches a pipe address to clear it, and the meta verb no longer writes
+  that slot. So seeding a pipe that had no value is a one-way edit today. That is a consequence of
+  the deferred question above, not an independent choice, and it is the one place where this rule's
+  own "cheap to undo" argument does not hold.
+- The refusal below is what keeps that from being worse: a value edit that cannot be undone must at
+  least never destroy something the caller did not name.
 
 **Refusing a wired input, rather than severing it with a note.** The severance is the destructive
 half of a verb whose purpose is not destruction, and in the shipped library it is the common case

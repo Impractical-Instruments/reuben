@@ -62,9 +62,10 @@ pub const SET_INSTRUMENT_NODE_DESCRIPTION: &str =
 
 pub const SET_INSTRUMENT_INPUT: &str =
     "Set an input to a literal value: a number, or an enum symbol string. The one-value \
-     point-edit — no re-emitting the whole document. An interface input pipe is a node too: \
-     address it as the `/name` it mints, input `in`. Echoes from -> to. Refuses an input that \
-     is already wired: unwire_instrument_input first, or wire_instrument_input to re-point it.";
+     point-edit — no re-emitting the whole document. This verb also sets an interface input \
+     pipe's value: address the pipe `/name`, input `in` (only here — the wiring verbs address \
+     nodes). Echoes from -> to. Refuses an input that is already wired: \
+     unwire_instrument_input first, or wire_instrument_input to re-point it.";
 
 pub const WIRE_INSTRUMENT_INPUT: &str =
     "Wire a node input from a source port: `from` is `/node.port`, or `/node` for a sole-output source.";
@@ -78,7 +79,7 @@ pub const SET_INSTRUMENT_CONSTANT: &str =
 
 pub const ADD_INSTRUMENT_INTERFACE_INPUT: &str =
     "Add a boundary input pipe: a declared-type input that mints an address `/name` internal \
-     nodes consume from, with optional channel, default, min/max, curve (lin/exp), and unit.";
+     nodes consume from, with optional channel, value, min/max, curve (lin/exp), and unit.";
 
 pub const ADD_INSTRUMENT_INTERFACE_OUTPUT: &str =
     "Add a master-tap output pipe fed from an internal port (`from` = `/node.port` or `/node`), \

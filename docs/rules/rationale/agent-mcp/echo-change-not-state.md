@@ -16,8 +16,17 @@ rather than a matter of taste:
   projection structurally cannot supply it: the prior document is gone by the time one could be cut.
 
 So the value verbs echo `address`, `input`, `from` and `to`. It is both smaller than a zoom and
-strictly more informative, and that matters more than usual while undo is unbuilt — a from→to line
-is the only pre-image an agent gets, and it is enough to put a value back.
+strictly more informative, and that matters more than usual while undo is unbuilt: a from→to line is
+the only pre-image an agent gets.
+
+**It is a pre-image, not a guarantee of reversibility**, and the difference is worth stating because
+it is easy to overclaim. The echo restores a *previous value* — set it back and the document is
+where it was. It does not restore *absence*: `(unset) → 880` records truthfully that the slot held
+nothing, and putting nothing back is a different move that the value verb cannot make. For a node
+input the wiring verb's clear makes it anyway; for an interface pipe's value nothing does today
+(see [value-verbs-one-address-space](value-verbs-one-address-space.md)). The echo's job is to carry
+the fact; whether a verb exists to act on it is a separate question, and one this rule must not be
+read as answering.
 
 The rule is stated as a test on the *verb*, not as a list of verbs, because the list is what drifts:
 the next verb added answers "did I write anything the caller did not name?" and its echo follows.

@@ -167,8 +167,32 @@ fn the_value_verb_owns_the_seed_and_the_meta_verb_is_the_quantity_contract() {
         .expect("a described verb");
     assert!(
         value.contains("pipe"),
-        "the value verb says a pipe is addressed like any other node: {value}"
+        "the value verb says it also sets a pipe's value: {value}"
     );
+
+    // One word for one slot, across every verb that writes it. A model that learns `value` here
+    // and tries it next door must be right — and if it is ever wrong again, wrong loudly.
+    let add = tool("add_instrument_interface_input");
+    let add_properties = add["inputSchema"]["properties"]
+        .as_object()
+        .expect("input properties");
+    assert!(
+        add_properties.contains_key("value") && !add_properties.contains_key("default"),
+        "the pipe's seed is spelled `value` wherever it is written: {add}"
+    );
+
+    // Closed, on the wire: an argument the window does not declare is refused, not dropped.
+    for name in [
+        "set_instrument_input",
+        "set_instrument_interface_input_meta",
+        "add_instrument_interface_input",
+    ] {
+        assert_eq!(
+            tool(name)["inputSchema"]["additionalProperties"],
+            serde_json::json!(false),
+            "`{name}` must advertise a closed argument surface"
+        );
+    }
 }
 
 /// The banned markup, as (label, detector). Hand-rolled rather than a regex dependency: the three

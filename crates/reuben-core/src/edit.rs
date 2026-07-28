@@ -799,13 +799,16 @@ pub fn set_instrument_constant(
 
 /// Add an interface **input** pipe: a declared-type boundary input that mints an address internal
 /// nodes consume from, with optional channel binding and numeric metadata.
+///
+/// `value` is the pipe's seed — `default` on disk, and the same slot
+/// [`set_instrument_input`] writes later through the address this entry mints.
 #[allow(clippy::too_many_arguments)]
 pub fn add_instrument_interface_input(
     source: &str,
     name: &str,
     ty: &str,
     channel: Option<usize>,
-    default: Option<Value>,
+    value: Option<Value>,
     min: Option<f64>,
     max: Option<f64>,
     curve_token: Option<&str>,
@@ -813,7 +816,7 @@ pub fn add_instrument_interface_input(
     registry: &Registry,
     resolver: &dyn ResourceResolver,
 ) -> Result<EditResult, EditError> {
-    let default = default.map(pipe_default).transpose()?;
+    let default = value.map(pipe_default).transpose()?;
     let curve = curve_token.map(curve).transpose()?;
     edit_existing(source, registry, resolver, |doc| {
         let iface = interface_mut(doc);
