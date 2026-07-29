@@ -1391,10 +1391,14 @@ mod tests {
         // disk at request time, so nothing about them is compile-coupled to anything: the authoring
         // guide alone names 13 roster verbs. Driving the scan off RESOURCES rather than a list of
         // paths is what makes a resource added later scanned by default instead of by remembering.
+        // `default_path`, not `resolve_path()`: the checked-in guides are the subject, so a host's
+        // `REUBEN_*` override would point this at the wrong file — and reading one here would put a
+        // second reader on vars `every_resource_env_field_drives_its_resolve_path` sets and clears
+        // process-wide, which is the race that test's comment says it is safe from.
         for entry in RESOURCES {
-            let path = entry.resolve_path();
-            let text = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("read the {} at {}: {e}", entry.noun, path.display()));
+            let path = entry.default_path;
+            let text = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("read the {} at {path}: {e}", entry.noun));
             assert_eq!(
                 reuben_api::tools::unserved_verbs(&text),
                 Vec::<&str>::new(),

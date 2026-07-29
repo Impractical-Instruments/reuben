@@ -51,7 +51,7 @@ const HEADER: &str = "\
 
 One signature line per instrument in the available-set: name — role line
 (the document's `doc` first sentence), (interface input pipes) → output pipes. Trusted for
-selection only — wiring facts come from `describe_patch` or the document itself. Generated:
+selection only — wiring facts come from `describe_instrument` or the document itself. Generated:
 regenerate with `cargo run -p reuben-native --example gen_library_index`; never hand-edit
 (the `library_index_is_in_sync` test compares this file against a fresh generation).
 ";

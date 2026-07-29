@@ -193,10 +193,13 @@ const VERB_PREFIXES: &[&str] = &[
 ];
 
 /// Names that read as a tool and are not one, so prose may name them with no contract behind them.
-/// `describe_boundary` is a window verb answering a door that reads a document structurally rather
-/// than a tool a model calls (see the module header); `describe_patch` is the core introspection
-/// behind it. Neither is a name a model can send.
-const UNADVERTISED_VERBS: &[&str] = &["describe_boundary", "describe_patch"];
+/// `describe_boundary` is the window verb answering a door that reads a document structurally
+/// rather than a tool a model calls — see the module header.
+///
+/// Kept as short as it can be. Prose that names something a model cannot call is usually a defect
+/// the scan has just found, not an exception it needs: an entry here silences the one check that
+/// would have caught it.
+const UNADVERTISED_VERBS: &[&str] = &["describe_boundary"];
 
 /// The verb names in `text` that no contract serves — empty for prose that only sends a model
 /// somewhere it can actually go.

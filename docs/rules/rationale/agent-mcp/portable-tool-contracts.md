@@ -73,11 +73,14 @@ roster: seven of the twelve are carried by a single contract, so a derived list 
 recognising the token at the very moment the contract carrying it went away, and pass the check
 whose whole job is to fail there.
 
-One model-facing surface is left uncovered and known: a field's description, which schemars lifts
-from a doc comment. Four of them cross-reference a sibling verb today, and each of those verbs is
-held by one of the surfaces above, so nothing dangles — but that is a property of the current text
-rather than something enforced, and a field doc naming a verb no other surface mentions would go
-unscanned.
+Two model-facing surfaces are left uncovered and known. A field's description, which schemars lifts
+from a doc comment, and the refusals `reuben-core` returns — one of which tells a model a wire-ref
+belongs on `wire_instrument_input` rather than `set_instrument_input`. The core case is the harder
+one and cannot be fixed the way the rest were: `reuben-core` may not name the window, so that
+sentence can take neither the symbol nor the scan, and it is a door's own prose reaching the model
+through a crate the roster is invisible from. Every verb both surfaces name is carried by a covered
+surface today, so nothing dangles — but that is a property of the current text rather than
+something enforced.
 
 Distilled from: ADR-0044, ADR-0048, ADR-0052, ADR-0054, ADR-0068, ADR-0071 · symbols decided in
 issue #700 — settled directly, no ADR.
