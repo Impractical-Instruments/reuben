@@ -12,6 +12,8 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
+use reuben_api::tools::names;
+
 /// Drive the shim through initialize → initialized → a single `tools/call` and return the raw
 /// stdout. Requests are buffered into the child's stdin, which is then closed; on EOF the shim
 /// shuts down, flushing every response first. A watchdog thread bounds the read so
@@ -98,7 +100,7 @@ fn describe_operators_unknown_name_is_iserror() {
     // An unknown operator name is a can't-do-the-job error — the tool cannot
     // describe an operator that does not exist.
     let result = call_tool(
-        "describe_operators",
+        names::DESCRIBE_OPERATORS,
         serde_json::json!({ "name": "definitely_not_an_operator" }),
     );
     assert!(
@@ -111,7 +113,7 @@ fn describe_operators_unknown_name_is_iserror() {
 fn describe_operators_no_filter_lists_all() {
     // No filter mirrors `introspect::describe(None)` — every registered operator,
     // structured under `{ operators: [...] }`. The count must match the live registry.
-    let result = call_tool("describe_operators", serde_json::json!({}));
+    let result = call_tool(names::DESCRIBE_OPERATORS, serde_json::json!({}));
     assert!(
         !is_error(&result),
         "listing all operators is not an error: {result}"
@@ -138,7 +140,10 @@ fn describe_operators_no_filter_lists_all() {
 fn describe_operators_compact_returns_signatures() {
     // `compact:true` switches the verb to its signature-line projection: one line per registered
     // operator, with the full port objects absent (their token weight is the point).
-    let result = call_tool("describe_operators", serde_json::json!({ "compact": true }));
+    let result = call_tool(
+        names::DESCRIBE_OPERATORS,
+        serde_json::json!({ "compact": true }),
+    );
     assert!(
         !is_error(&result),
         "compact listing is not an error: {result}"
@@ -200,7 +205,7 @@ fn validate_broken_doc_is_ok_false_not_iserror() {
     // validates to `ok:false` with a node-named Diag — an ordinary result, NOT isError.
     let path = seeded("validate_broken", typo_document());
     let result = call_tool(
-        "validate_instrument",
+        names::VALIDATE_INSTRUMENT,
         serde_json::json!({ "source": path.to_string_lossy() }),
     );
     assert!(
@@ -226,7 +231,7 @@ fn describe_instrument_projects_an_unloadable_document_but_has_no_boundary_for_i
     // it, but the boundary view cannot be cut from a document that will not load.
     let path = seeded("describe_unloadable", typo_document());
     let source = serde_json::json!({ "source": path.to_string_lossy() });
-    let result = call_tool("describe_instrument", source.clone());
+    let result = call_tool(names::DESCRIBE_INSTRUMENT, source.clone());
     assert!(
         !is_error(&result),
         "an unloadable document still has structure to read: {result}"
@@ -243,7 +248,7 @@ fn describe_instrument_projects_an_unloadable_document_but_has_no_boundary_for_i
     // none. That case stays isError, pointing at the authority and at the view that does answer.
     let mut boundary = source;
     boundary["view"] = serde_json::json!("boundary");
-    let result = call_tool("describe_instrument", boundary);
+    let result = call_tool(names::DESCRIBE_INSTRUMENT, boundary);
     assert!(
         is_error(&result),
         "an unloadable document has no boundary to describe: {result}"
@@ -252,7 +257,7 @@ fn describe_instrument_projects_an_unloadable_document_but_has_no_boundary_for_i
         .as_str()
         .unwrap_or_else(|| panic!("isError result must carry guidance text: {result}"));
     assert!(
-        text.contains("validate_instrument"),
+        text.contains(names::VALIDATE_INSTRUMENT),
         "the guidance must point at the validation authority: {text}"
     );
 }
@@ -266,7 +271,7 @@ fn an_incoherent_selection_is_refused_rather_than_silently_narrowed() {
     let source = path.to_string_lossy().to_string();
 
     let both = call_tool(
-        "describe_instrument",
+        names::DESCRIBE_INSTRUMENT,
         serde_json::json!({
             "source": source, "view": "nodes", "select": ["/osc"], "type": "oscillator"
         }),
@@ -279,7 +284,7 @@ fn an_incoherent_selection_is_refused_rather_than_silently_narrowed() {
     // Same rule one branch further in: `boundary` builds no selection at all, so terms it cannot
     // honour must be refused there too rather than quietly ignored.
     let boundary = call_tool(
-        "describe_instrument",
+        names::DESCRIBE_INSTRUMENT,
         serde_json::json!({ "source": source, "view": "boundary", "select": ["/osc"] }),
     );
     assert!(
@@ -293,7 +298,7 @@ fn a_missing_source_is_iserror_and_there_is_no_inline_document_arm() {
     // An unreadable `source` is the only can't-do-the-job shape left, and `document` is not a
     // field — passing one is a schema violation, not a second way in. Neither may quietly succeed.
     let missing = call_tool(
-        "validate_instrument",
+        names::VALIDATE_INSTRUMENT,
         serde_json::json!({ "source": "definitely/not/here.json" }),
     );
     assert!(
@@ -302,7 +307,7 @@ fn a_missing_source_is_iserror_and_there_is_no_inline_document_arm() {
     );
 
     let inline = call_tool(
-        "validate_instrument",
+        names::VALIDATE_INSTRUMENT,
         serde_json::json!({ "document": typo_document() }),
     );
     assert!(

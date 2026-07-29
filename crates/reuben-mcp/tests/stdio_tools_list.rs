@@ -15,6 +15,8 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
+use reuben_api::tools::names;
+
 /// Drive the shim through initialize → initialized → `extra` requests over stdio and return the
 /// raw stdout. Requests are buffered into the child's stdin, which is then closed; on EOF the shim
 /// shuts down, flushing every response first, so reading stdout to EOF collects all
@@ -140,7 +142,7 @@ fn the_value_verb_owns_the_seed_and_the_meta_verb_is_the_quantity_contract() {
             .unwrap_or_else(|| panic!("tools/list missing `{name}`"))
     };
 
-    let meta = tool("set_instrument_interface_input_meta");
+    let meta = tool(names::SET_INSTRUMENT_INTERFACE_INPUT_META);
     let properties = meta["inputSchema"]["properties"]
         .as_object()
         .unwrap_or_else(|| panic!("no input properties on the meta verb: {meta}"));
@@ -163,7 +165,7 @@ fn the_value_verb_owns_the_seed_and_the_meta_verb_is_the_quantity_contract() {
         "the meta verb's sentence no longer advertises a seed it cannot write: {meta}"
     );
 
-    let value = tool("set_instrument_input")["description"]
+    let value = tool(names::SET_INSTRUMENT_INPUT)["description"]
         .as_str()
         .expect("a described verb");
     assert!(
@@ -173,7 +175,7 @@ fn the_value_verb_owns_the_seed_and_the_meta_verb_is_the_quantity_contract() {
 
     // One word for one slot, across every verb that writes it. A model that learns `value` here
     // and tries it next door must be right — and if it is ever wrong again, wrong loudly.
-    let add = tool("add_instrument_interface_input");
+    let add = tool(names::ADD_INSTRUMENT_INTERFACE_INPUT);
     let add_properties = add["inputSchema"]["properties"]
         .as_object()
         .expect("input properties");
@@ -184,9 +186,9 @@ fn the_value_verb_owns_the_seed_and_the_meta_verb_is_the_quantity_contract() {
 
     // Closed, on the wire: an argument the window does not declare is refused, not dropped.
     for name in [
-        "set_instrument_input",
-        "set_instrument_interface_input_meta",
-        "add_instrument_interface_input",
+        names::SET_INSTRUMENT_INPUT,
+        names::SET_INSTRUMENT_INTERFACE_INPUT_META,
+        names::ADD_INSTRUMENT_INTERFACE_INPUT,
     ] {
         assert_eq!(
             tool(name)["inputSchema"]["additionalProperties"],
@@ -459,29 +461,33 @@ fn every_advertised_property_constrains_its_value() {
     let nullable_literal = serde_json::json!(["number", "string", "null"]);
     let wire_ref = "/properties/inputs/additionalProperties/anyOf/1";
     let pinned = [
-        ("set_instrument_input", "/properties/value/type", &literal),
         (
-            "set_instrument_constant",
+            names::SET_INSTRUMENT_INPUT,
             "/properties/value/type",
             &literal,
         ),
         (
-            "add_instrument_interface_input",
+            names::SET_INSTRUMENT_CONSTANT,
+            "/properties/value/type",
+            &literal,
+        ),
+        (
+            names::ADD_INSTRUMENT_INTERFACE_INPUT,
             "/properties/value/type",
             &nullable_literal,
         ),
         (
-            "add_instrument_node",
+            names::ADD_INSTRUMENT_NODE,
             "/properties/config/additionalProperties/type",
             &literal,
         ),
         (
-            "add_instrument_node",
+            names::ADD_INSTRUMENT_NODE,
             "/properties/inputs/additionalProperties/anyOf/0/type",
             &literal,
         ),
         (
-            "send_live_controls",
+            names::SEND_LIVE_CONTROLS,
             "/$defs/ControlSendMessage/properties/args/items/type",
             &literal,
         ),
@@ -495,7 +501,7 @@ fn every_advertised_property_constrains_its_value() {
         );
     }
     // The one-shot add is the only path that also takes a wire-ref, and it is advertised only there.
-    let inputs = schema_of("add_instrument_node");
+    let inputs = schema_of(names::ADD_INSTRUMENT_NODE);
     assert_eq!(
         inputs.pointer(&format!("{wire_ref}/properties/from/type")),
         Some(&serde_json::json!("string")),

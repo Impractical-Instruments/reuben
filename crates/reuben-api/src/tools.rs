@@ -6,6 +6,12 @@
 //! door. Output schemas derive from the window's own result types; a door still owns its transport
 //! and how it carries the sentence.
 //!
+//! The same entry also exposes the verb as a **symbol** in [`mod@names`], which is how a door
+//! names a contract it cannot reach by type: the document verbs are already compile-coupled
+//! through the argument type each one takes, but a read or engine arm projected as a JSON literal
+//! is coupled to nothing, and a contract removed here would reach that door as dead plumbing
+//! behind a name it no longer advertises.
+//!
 //! Not every window verb is a roster entry: `describe_boundary` answers a door that reads a
 //! document structurally rather than a tool a model calls, so it has no advertised sentence to own.
 //!
@@ -50,158 +56,111 @@ pub struct Contract {
     pub description: &'static str,
 }
 
-/// The contract roster, in canonical wire order: the pure contracts first, then the
-/// engine contracts, then the document vocabulary. This is the authority every door derives its
-/// advertised name-set and count from; the order here is the order on the wire.
+/// Declare the roster once. Each entry is one contract, in four parts: the **symbol** a door names
+/// it by, the exact spelling that symbol carries onto the wire, the channel kind, and the sentence
+/// it is advertised by.
 ///
-/// Every name follows the `verb_instrument_object` convention, and no contract carries an
-/// instrument document by value: a document is named by an opaque `source` the door's resolver
-/// interprets, and read back as a projection — see rules: agent-mcp.
-pub const CONTRACTS: &[Contract] = &[
-    Contract {
-        name: "describe_operators",
-        kind: ContractKind::Pure,
-        description: authoring_prose::DESCRIBE_OPERATORS,
-    },
-    Contract {
-        name: "describe_instrument",
-        kind: ContractKind::Pure,
-        description: authoring_prose::DESCRIBE_INSTRUMENT,
-    },
-    Contract {
-        name: "validate_instrument",
-        kind: ContractKind::Pure,
-        description: authoring_prose::VALIDATE_INSTRUMENT,
-    },
-    Contract {
-        name: "send_live_controls",
-        kind: ContractKind::Engine,
-        description: engine_prose::SEND_LIVE_CONTROLS,
-    },
-    Contract {
-        name: "get_engine_status",
-        kind: ContractKind::Engine,
-        description: engine_prose::GET_ENGINE_STATUS,
-    },
-    Contract {
-        name: "swap_instrument",
-        kind: ContractKind::Engine,
-        description: engine_prose::SWAP_INSTRUMENT,
-    },
-    Contract {
-        name: "get_current_instrument",
-        kind: ContractKind::Engine,
-        description: engine_prose::GET_CURRENT_INSTRUMENT,
-    },
-    Contract {
-        name: "get_engine_diagnostics",
-        kind: ContractKind::Engine,
-        description: engine_prose::GET_ENGINE_DIAGNOSTICS,
-    },
+/// The one invocation below expands to both [`CONTRACTS`] and [`names`], so the roster and the
+/// symbol set cannot drift: a contract deleted from the table takes its symbol with it, and every
+/// door that still names it stops compiling rather than quietly dropping it from what it
+/// advertises. A second, hand-kept list of names beside the roster would be exactly the drift the
+/// symbols exist to end.
+macro_rules! roster {
+    ($($symbol:ident = $wire:literal, $kind:ident, $description:expr;)*) => {
+        /// One `&'static str` per [`CONTRACTS`](crate::tools::CONTRACTS) entry, in roster order:
+        /// the symbol a door names a contract by where it would otherwise write a string literal.
+        ///
+        /// A door writes `names::SWAP_INSTRUMENT` in the projection or the dispatch arm that
+        /// spells `"swap_instrument"` today, and a contract removed upstream is `E0425: cannot
+        /// find value` at that site — the compile error the roster owes its consumers, in place of
+        /// dead plumbing behind a name nobody advertises any more.
+        ///
+        /// Pairs with `names()`: this module names one contract, that function hands back the
+        /// ordered set.
+        pub mod names {
+            $(pub const $symbol: &str = $wire;)*
+        }
+
+        /// The contract roster, in canonical wire order: the pure contracts first, then the
+        /// engine contracts, then the document vocabulary. This is the authority every door
+        /// derives its advertised name-set and count from; the order here is the order on the
+        /// wire.
+        ///
+        /// Every name follows the `verb_instrument_object` convention, and no contract carries an
+        /// instrument document by value: a document is named by an opaque `source` the door's
+        /// resolver interprets, and read back as a projection — see rules: agent-mcp.
+        pub const CONTRACTS: &[Contract] = &[$(
+            Contract {
+                name: names::$symbol,
+                kind: ContractKind::$kind,
+                description: $description,
+            },
+        )*];
+
+        /// Each entry's symbol as written, beside the spelling it carries — the only thing that
+        /// can see both halves, since a symbol is not a value the roster can read back.
+        #[cfg(test)]
+        const SYMBOLS_AND_SPELLINGS: &[(&str, &str)] =
+            &[$((stringify!($symbol), names::$symbol),)*];
+    };
+}
+
+roster! {
+    DESCRIBE_OPERATORS = "describe_operators", Pure, authoring_prose::DESCRIBE_OPERATORS;
+    DESCRIBE_INSTRUMENT = "describe_instrument", Pure, authoring_prose::DESCRIBE_INSTRUMENT;
+    VALIDATE_INSTRUMENT = "validate_instrument", Pure, authoring_prose::VALIDATE_INSTRUMENT;
+
+    SEND_LIVE_CONTROLS = "send_live_controls", Engine, engine_prose::SEND_LIVE_CONTROLS;
+    GET_ENGINE_STATUS = "get_engine_status", Engine, engine_prose::GET_ENGINE_STATUS;
+    SWAP_INSTRUMENT = "swap_instrument", Engine, engine_prose::SWAP_INSTRUMENT;
+    GET_CURRENT_INSTRUMENT = "get_current_instrument", Engine, engine_prose::GET_CURRENT_INSTRUMENT;
+    GET_ENGINE_DIAGNOSTICS = "get_engine_diagnostics", Engine, engine_prose::GET_ENGINE_DIAGNOSTICS;
+
     // The document-manipulation vocabulary: the closed set of engine-free mutators an agent
     // authors a document through, grouped document · nodes · inputs · config · interface ·
     // resources.
-    Contract {
-        name: "new_instrument",
-        kind: ContractKind::Document,
-        description: authoring_prose::NEW_INSTRUMENT,
-    },
-    Contract {
-        name: "set_instrument_name",
-        kind: ContractKind::Document,
-        description: authoring_prose::SET_INSTRUMENT_NAME,
-    },
-    Contract {
-        name: "set_instrument_description",
-        kind: ContractKind::Document,
-        description: authoring_prose::SET_INSTRUMENT_DESCRIPTION,
-    },
-    Contract {
-        name: "add_instrument_node",
-        kind: ContractKind::Document,
-        description: authoring_prose::ADD_INSTRUMENT_NODE,
-    },
-    Contract {
-        name: "remove_instrument_node",
-        kind: ContractKind::Document,
-        description: authoring_prose::REMOVE_INSTRUMENT_NODE,
-    },
-    Contract {
-        name: "rename_instrument_node",
-        kind: ContractKind::Document,
-        description: authoring_prose::RENAME_INSTRUMENT_NODE,
-    },
-    Contract {
-        name: "set_instrument_node_description",
-        kind: ContractKind::Document,
-        description: authoring_prose::SET_INSTRUMENT_NODE_DESCRIPTION,
-    },
-    Contract {
-        name: "set_instrument_input",
-        kind: ContractKind::Document,
-        description: authoring_prose::SET_INSTRUMENT_INPUT,
-    },
-    Contract {
-        name: "set_instrument_inputs_by_intent",
-        kind: ContractKind::Document,
-        description: authoring_prose::SET_INSTRUMENT_INPUTS_BY_INTENT,
-    },
-    Contract {
-        name: "wire_instrument_input",
-        kind: ContractKind::Document,
-        description: authoring_prose::WIRE_INSTRUMENT_INPUT,
-    },
-    Contract {
-        name: "unwire_instrument_input",
-        kind: ContractKind::Document,
-        description: authoring_prose::UNWIRE_INSTRUMENT_INPUT,
-    },
-    Contract {
-        name: "set_instrument_constant",
-        kind: ContractKind::Document,
-        description: authoring_prose::SET_INSTRUMENT_CONSTANT,
-    },
-    Contract {
-        name: "add_instrument_interface_input",
-        kind: ContractKind::Document,
-        description: authoring_prose::ADD_INSTRUMENT_INTERFACE_INPUT,
-    },
-    Contract {
-        name: "add_instrument_interface_output",
-        kind: ContractKind::Document,
-        description: authoring_prose::ADD_INSTRUMENT_INTERFACE_OUTPUT,
-    },
-    Contract {
-        name: "remove_instrument_interface_input",
-        kind: ContractKind::Document,
-        description: authoring_prose::REMOVE_INSTRUMENT_INTERFACE_INPUT,
-    },
-    Contract {
-        name: "remove_instrument_interface_output",
-        kind: ContractKind::Document,
-        description: authoring_prose::REMOVE_INSTRUMENT_INTERFACE_OUTPUT,
-    },
-    Contract {
-        name: "set_instrument_interface_input_meta",
-        kind: ContractKind::Document,
-        description: authoring_prose::SET_INSTRUMENT_INTERFACE_INPUT_META,
-    },
-    Contract {
-        name: "set_instrument_interface_output_meta",
-        kind: ContractKind::Document,
-        description: authoring_prose::SET_INSTRUMENT_INTERFACE_OUTPUT_META,
-    },
-    Contract {
-        name: "add_instrument_resource",
-        kind: ContractKind::Document,
-        description: authoring_prose::ADD_INSTRUMENT_RESOURCE,
-    },
-    Contract {
-        name: "remove_instrument_resource",
-        kind: ContractKind::Document,
-        description: authoring_prose::REMOVE_INSTRUMENT_RESOURCE,
-    },
-];
+    NEW_INSTRUMENT = "new_instrument", Document, authoring_prose::NEW_INSTRUMENT;
+    SET_INSTRUMENT_NAME = "set_instrument_name", Document, authoring_prose::SET_INSTRUMENT_NAME;
+    SET_INSTRUMENT_DESCRIPTION = "set_instrument_description", Document,
+        authoring_prose::SET_INSTRUMENT_DESCRIPTION;
+
+    ADD_INSTRUMENT_NODE = "add_instrument_node", Document, authoring_prose::ADD_INSTRUMENT_NODE;
+    REMOVE_INSTRUMENT_NODE = "remove_instrument_node", Document,
+        authoring_prose::REMOVE_INSTRUMENT_NODE;
+    RENAME_INSTRUMENT_NODE = "rename_instrument_node", Document,
+        authoring_prose::RENAME_INSTRUMENT_NODE;
+    SET_INSTRUMENT_NODE_DESCRIPTION = "set_instrument_node_description", Document,
+        authoring_prose::SET_INSTRUMENT_NODE_DESCRIPTION;
+
+    SET_INSTRUMENT_INPUT = "set_instrument_input", Document, authoring_prose::SET_INSTRUMENT_INPUT;
+    SET_INSTRUMENT_INPUTS_BY_INTENT = "set_instrument_inputs_by_intent", Document,
+        authoring_prose::SET_INSTRUMENT_INPUTS_BY_INTENT;
+    WIRE_INSTRUMENT_INPUT = "wire_instrument_input", Document,
+        authoring_prose::WIRE_INSTRUMENT_INPUT;
+    UNWIRE_INSTRUMENT_INPUT = "unwire_instrument_input", Document,
+        authoring_prose::UNWIRE_INSTRUMENT_INPUT;
+
+    SET_INSTRUMENT_CONSTANT = "set_instrument_constant", Document,
+        authoring_prose::SET_INSTRUMENT_CONSTANT;
+
+    ADD_INSTRUMENT_INTERFACE_INPUT = "add_instrument_interface_input", Document,
+        authoring_prose::ADD_INSTRUMENT_INTERFACE_INPUT;
+    ADD_INSTRUMENT_INTERFACE_OUTPUT = "add_instrument_interface_output", Document,
+        authoring_prose::ADD_INSTRUMENT_INTERFACE_OUTPUT;
+    REMOVE_INSTRUMENT_INTERFACE_INPUT = "remove_instrument_interface_input", Document,
+        authoring_prose::REMOVE_INSTRUMENT_INTERFACE_INPUT;
+    REMOVE_INSTRUMENT_INTERFACE_OUTPUT = "remove_instrument_interface_output", Document,
+        authoring_prose::REMOVE_INSTRUMENT_INTERFACE_OUTPUT;
+    SET_INSTRUMENT_INTERFACE_INPUT_META = "set_instrument_interface_input_meta", Document,
+        authoring_prose::SET_INSTRUMENT_INTERFACE_INPUT_META;
+    SET_INSTRUMENT_INTERFACE_OUTPUT_META = "set_instrument_interface_output_meta", Document,
+        authoring_prose::SET_INSTRUMENT_INTERFACE_OUTPUT_META;
+
+    ADD_INSTRUMENT_RESOURCE = "add_instrument_resource", Document,
+        authoring_prose::ADD_INSTRUMENT_RESOURCE;
+    REMOVE_INSTRUMENT_RESOURCE = "remove_instrument_resource", Document,
+        authoring_prose::REMOVE_INSTRUMENT_RESOURCE;
+}
 
 /// The roster's contract names, in [`CONTRACTS`] order — the ordered name-set a door advertises.
 /// A door builds its wire surface from this rather than a hand-typed list.
@@ -212,4 +171,23 @@ pub const CONTRACTS: &[Contract] = &[
 /// it against. A door that cannot make the same refusal owes itself the equivalent check.
 pub fn names() -> Vec<&'static str> {
     CONTRACTS.iter().map(|c| c.name).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Parity: `macro_rules!` cannot change the case of an identifier, so a roster entry writes its
+    /// symbol and its wire spelling as two tokens rather than deriving one from the other; nothing
+    /// but this holds the pair to the convention a door reads a symbol by.
+    #[test]
+    fn a_symbol_is_the_upper_case_of_the_name_it_carries() {
+        for (symbol, spelling) in SYMBOLS_AND_SPELLINGS {
+            assert_eq!(
+                *symbol,
+                spelling.to_ascii_uppercase(),
+                "the roster entry for `{spelling}` names a symbol that does not spell it"
+            );
+        }
+    }
 }

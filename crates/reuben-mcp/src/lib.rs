@@ -16,6 +16,14 @@
 //! [`stamp_window_prose`] writes the window's sentence onto the built router instead — the same
 //! prose the CLI and the browser read, rather than a copy per door.
 //!
+//! The `name` argument is literal-only for the same reason, and there is no equivalent escape: a
+//! route's name is what the router is keyed by, so it must be spelled before the router exists.
+//! That one literal per tool is the whole of what this door still spells by hand, and
+//! [`stamp_window_prose`]'s two assertions are what hold it to the roster — at construction, in
+//! both directions. Everywhere the door names a contract as a *value* rather than as a route key
+//! it writes [`reuben_api::tools::names`] instead, so a contract the window drops is a compile
+//! error here and not a name that quietly stops meaning anything.
+//!
 //! The one thing left that is genuinely this door's is the socket: `reuben-mcp` reaches a
 //! *separate process*, so it supplies a loopback TCP transport where an in-process host supplies
 //! none at all.
@@ -840,6 +848,7 @@ mod tests {
         ControlArg, ControlMessage, DiagnosticsReport, DiffSummary, Request, Response, SwapReport,
         DEFAULT_STRUCTURE_ADDR,
     };
+    use reuben_api::tools::names;
     use std::io;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -1090,7 +1099,7 @@ mod tests {
         const OPEN_BY_DESIGN: &[(&str, &str)] = &[
             // The instrument document rides as raw JSON on purpose — the engine is the single
             // validation authority, so the tool surface deliberately does not describe its shape.
-            ("get_current_instrument", ".document"),
+            (names::GET_CURRENT_INSTRUMENT, ".document"),
         ];
         // Arrays as well as objects: an array landing here means its node declared no `items`, so
         // every element and everything beneath it would go unchecked. `SwapReport`'s `errors` and
@@ -1226,7 +1235,7 @@ mod tests {
         // `skip_serializing_if` make them structurally different objects, and `engine_status` is
         // checked both ways because `guidance` is its skip_serializing_if field.
         assert_payload_conforms(
-            "swap_instrument",
+            names::SWAP_INSTRUMENT,
             "clean install",
             &engine::SwapResult::installed(SwapReport {
                 report: Report {
@@ -1244,7 +1253,7 @@ mod tests {
             }),
         );
         assert_payload_conforms(
-            "swap_instrument",
+            names::SWAP_INSTRUMENT,
             "validation failure",
             &engine::SwapResult::installed(SwapReport {
                 report: Report {
@@ -1261,7 +1270,7 @@ mod tests {
             }),
         );
         assert_payload_conforms(
-            "swap_instrument",
+            names::SWAP_INSTRUMENT,
             "expect-guard miss",
             &engine::SwapResult::conflict(Conflict {
                 expected: "0badc0de".to_string(),
@@ -1269,7 +1278,7 @@ mod tests {
             }),
         );
         assert_payload_conforms(
-            "get_current_instrument",
+            names::GET_CURRENT_INSTRUMENT,
             "installed document",
             &engine::CurrentInstrument {
                 source: Some("voices/t.json".to_string()),
@@ -1278,12 +1287,12 @@ mod tests {
             },
         );
         assert_payload_conforms(
-            "get_engine_diagnostics",
+            names::GET_ENGINE_DIAGNOSTICS,
             "counters",
             &DiagnosticsReport::default(),
         );
         assert_payload_conforms(
-            "send_live_controls",
+            names::SEND_LIVE_CONTROLS,
             "queued",
             &engine::SendOutput { sent: 2 },
         );
@@ -1292,7 +1301,7 @@ mod tests {
             ("reachable", None),
         ] {
             assert_payload_conforms(
-                "get_engine_status",
+                names::GET_ENGINE_STATUS,
                 case,
                 &engine::EngineStatus {
                     reachable: guidance.is_none(),
@@ -1520,7 +1529,7 @@ mod tests {
             .tool_router
             .list_all()
             .into_iter()
-            .find(|t| t.name == "send_live_controls")
+            .find(|t| t.name == names::SEND_LIVE_CONTROLS)
             .expect("send is registered");
         let schema = serde_json::to_value(&send.input_schema).expect("input schema to value");
         assert_eq!(
@@ -1788,7 +1797,7 @@ mod tests {
         let tools = server.tool_router.list_all();
         let send = tools
             .iter()
-            .find(|t| t.name == "send_live_controls")
+            .find(|t| t.name == names::SEND_LIVE_CONTROLS)
             .expect("send is registered");
         let schema = serde_json::to_value(&send.input_schema).expect("input schema to value");
         let messages = &schema["properties"]["messages"];

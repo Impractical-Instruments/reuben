@@ -27,4 +27,28 @@ executes cannot name different things. A per-door duplicate of the *roster* was 
 it came up — a second name-list free to drift silently is precisely the divergence this rule exists
 to prevent.
 
-Distilled from: ADR-0044, ADR-0048, ADR-0052, ADR-0054, ADR-0068, ADR-0071
+Deriving *from* the roster is only half of it: a door also has to **name** an entry, and a name
+written as a bare string literal compiles against nothing, so a contract removed upstream reaches
+that door as dead plumbing behind a verb it no longer advertises. The document verbs never had this
+problem — a door names `reuben_api::authoring::<ArgsType>` per verb, so deleting the verb deletes
+the type and the door stops compiling. The read and engine arms had no equivalent, because a
+projection assembled as a JSON literal has no type to lose. So the roster emits its names as
+symbols: one `tools::names::*` const per entry, from the same table that builds `CONTRACTS`, and a
+door writes the symbol where it would write the literal. The signal a deleted contract owes its
+consumers is then the same one a deleted argument type gives — a compile error at the site that
+names it.
+
+Emitting both from one table is the point, not the convenience. A hand-kept list of names beside
+the roster would be the [parity marker](../code-as-grounding/parity-test-is-a-defect-marker.md)
+this repo cashes rather than renews — a second name-list free to drift, which is the very thing the
+paragraph above rejects. What the macro cannot derive is the *case*: `macro_rules!` cannot
+lower-case an identifier, so the symbol and the spelling are two tokens of one entry, held to the
+convention by the one test in `tools.rs` that can see both halves.
+
+A door that cannot take the symbol keeps the literal and says why. rmcp's `#[tool(name = …)]` is
+one: the attribute parses a string literal and a route key must exist before the router does. That
+door already refuses to construct on a roster mismatch, in both directions, which is the stronger
+guarantee the symbols only approximate.
+
+Distilled from: ADR-0044, ADR-0048, ADR-0052, ADR-0054, ADR-0068, ADR-0071 · symbols decided in
+issue #700 — settled directly, no ADR.
