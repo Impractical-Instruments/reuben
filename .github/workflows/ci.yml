@@ -264,8 +264,15 @@ jobs:
         with:
           fetch-depth: 0 # need the baseline commit (PR base / previous push) in history
 
-      # Cache the valgrind .deb so the slow apt-get update + download are skipped
-      # on a hit, mirroring the iai-callgrind-runner cache below.
+      # Unconditional, including on a cache hit: valgrind Depends on libc6-dbg, which the cache
+      # below deliberately does not hold (it must match the runner image's libc6 exactly), so apt
+      # fetches it from the network at install time. Against a stale index that fetch names a glibc
+      # point release that has already left the pool, and 404s.
+      - name: Refresh apt index
+        run: sudo apt-get update
+
+      # Cache the valgrind .deb so the download is skipped on a hit, mirroring the
+      # iai-callgrind-runner cache below.
       - name: Cache valgrind .deb
         id: vg-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -276,7 +283,6 @@ jobs:
       - name: Download valgrind .deb (cache miss)
         if: steps.vg-cache.outputs.cache-hit != 'true'
         run: |
-          sudo apt-get update
           mkdir -p ~/valgrind-debs
           cd ~/valgrind-debs && apt-get download valgrind
       - name: Install valgrind (callgrind backend for iai-callgrind)
