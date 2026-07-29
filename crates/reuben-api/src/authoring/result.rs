@@ -86,6 +86,7 @@ pub struct PortInfo {
     /// Unwired default: a number for a scalar/integer control, the variant symbol for an enum.
     /// Omitted for a port with no settable default (audio buffers, `Note`/`Harmony`, outputs).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<crate::schema::Literal>")]
     pub default: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min: Option<f64>,

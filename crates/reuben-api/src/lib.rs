@@ -32,6 +32,9 @@ pub mod authoring;
 pub mod engine;
 
 #[cfg(feature = "authoring")]
+pub mod schema;
+
+#[cfg(feature = "authoring")]
 pub mod tools;
 
 #[cfg(feature = "fs-resolver")]

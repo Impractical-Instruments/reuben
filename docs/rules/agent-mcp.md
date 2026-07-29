@@ -132,6 +132,11 @@ authoring guide, the intent vocabulary, the library index), and code, skills, an
 
 [why](rationale/agent-mcp/closed-argument-surface.md)
 
+<a id="typed-argument-surface"></a>
+### Every argument slot a verb advertises declares the value forms it accepts — the other half of the closed surface, which governs only the keys — because a client that coerces a call against the advertised schema has nothing to coerce an undeclared slot to, and sends a number as a string.
+
+[why](rationale/agent-mcp/typed-argument-surface.md)
+
 <a id="value-verbs-one-address-space"></a>
 ### Every input is addressable through one address space — an interface pipe is the node it mints, port `in` — and a verb whose operation is meaningless on an address refuses by naming what that address is: a boundary input cannot be wired because it is fed from outside the graph, and a wired input is never silently severed.
 

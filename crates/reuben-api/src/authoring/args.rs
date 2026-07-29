@@ -157,9 +157,11 @@ pub struct AddInstrumentNode {
     pub type_name: String,
     /// Inputs by name: a literal (number or enum symbol) or a wire-ref `{"from": "/node.port"}`.
     #[serde(default)]
+    #[schemars(with = "BTreeMap<String, crate::schema::NodeInput>")]
     pub inputs: BTreeMap<String, serde_json::Value>,
     /// Instantiate-time constants by name (plan-time `config`, never wired).
     #[serde(default)]
+    #[schemars(with = "BTreeMap<String, crate::schema::Literal>")]
     pub config: BTreeMap<String, serde_json::Value>,
     /// Optional node description.
     #[serde(default)]
@@ -230,6 +232,7 @@ pub struct SetInstrumentInput {
     /// The input name.
     pub input: String,
     /// The literal value: a number, or an enum symbol string. (Wiring is `wire_instrument_input`.)
+    #[schemars(with = "crate::schema::Literal")]
     pub value: serde_json::Value,
     #[serde(default)]
     pub expect: Option<String>,
@@ -298,6 +301,7 @@ pub struct SetInstrumentConstant {
     /// The constant name.
     pub name: String,
     /// The constant value: a number, or a symbol string.
+    #[schemars(with = "crate::schema::Literal")]
     pub value: serde_json::Value,
     #[serde(default)]
     pub expect: Option<String>,
@@ -321,6 +325,7 @@ pub struct AddInstrumentInterfaceInput {
     /// The pipe's value when nothing feeds it: a number, or an enum symbol string. Omit for a bare
     /// signal pipe, which renders silence unfed. Later changed with `set_instrument_input`.
     #[serde(default)]
+    #[schemars(with = "Option<crate::schema::Literal>")]
     pub value: Option<serde_json::Value>,
     /// Optional engine-enforced range floor.
     #[serde(default)]
