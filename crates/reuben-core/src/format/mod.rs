@@ -491,6 +491,33 @@ pub struct PortRef {
     pub channel: Option<usize>,
 }
 
+/// Which block an offending value was written in — the only thing that differs between a runtime
+/// input and a plan-time [`Constant`](Descriptor::constants) when the *value* is what went wrong.
+///
+/// A discriminator rather than a second pair of [`LoadError`] variants: the mistake is the same
+/// mistake and the repair is the same repair (rewrite the value), so it earns the same variant —
+/// the rule this loader already follows when a name that resolves to nothing answers
+/// [`UnknownInput`](LoadError::UnknownInput) whatever form the value took. Splitting would double
+/// the arms every exhaustive consumer carries to say one noun.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueSurface {
+    /// A node's `inputs` entry.
+    Input,
+    /// A node's `config` entry.
+    Constant,
+}
+
+impl ValueSurface {
+    /// The noun an author knows this surface by — matching `UnknownConfig`'s "config constant",
+    /// so one document's two error messages name one thing one way.
+    fn noun(self) -> &'static str {
+        match self {
+            ValueSurface::Input => "input",
+            ValueSurface::Constant => "config constant",
+        }
+    }
+}
+
 /// Why loading an instrument document failed. Messages are written for an author
 /// (human or agent) to act on.
 #[derive(Debug)]
@@ -506,16 +533,39 @@ pub enum LoadError {
     DuplicateAddress(String),
     /// A wire-ref or output references a node that doesn't exist.
     UnknownNode(String),
-    /// A node has no port with that name (in the required direction).
+    /// A reference names no **output** on the node it points at — a wire-ref's source, a master
+    /// tap, or the sole-output sugar landing on a face with none. Also the v1-migration spelling
+    /// for an interface target carrying no port segment at all, where there is no input name to
+    /// report. Every *input* name that resolves to nothing is
+    /// [`UnknownInput`](Self::UnknownInput), on every path and whatever form the value took.
     UnknownPort { node: String, port: String },
-    /// A node has no input (port, settable param, or enum) with that name.
+    /// A node has no input (port, settable param, or enum) with that name. Reserved for a name that
+    /// resolves to nothing: a value the port cannot read is
+    /// [`BadInputLiteral`](Self::BadInputLiteral) or [`BadInputValue`](Self::BadInputValue).
     UnknownInput { node: String, input: String },
-    /// An `inputs` entry sets a value the descriptor can't read as that input — an `Enum` symbol on
-    /// a non-enum input, or a symbol/index that names no variant (never snaps to default).
+    /// An `inputs` or `config` entry sets a value of the right **form** that names nothing — a
+    /// symbol or an index that is no variant of that enum (never snaps to default).
     BadInputValue {
+        surface: ValueSurface,
         node: String,
-        input: String,
-        value: String,
+        name: String,
+        /// What the port takes, phrased to complete "…, but it takes {expected}".
+        expected: String,
+        /// What the author wrote, phrased to complete "… is set to {got}".
+        got: String,
+    },
+    /// An `inputs` or `config` entry sets a literal whose **form** the port cannot take: a symbol
+    /// on a port that takes a number, a literal of any form on a port that takes none. The port
+    /// exists and the name is right — only the value's shape is wrong, which is the opposite
+    /// instruction from [`UnknownInput`](Self::UnknownInput).
+    BadInputLiteral {
+        surface: ValueSurface,
+        node: String,
+        name: String,
+        /// What the port takes, phrased to complete "…, but it takes {expected}".
+        expected: String,
+        /// What the author wrote, phrased to complete "… is set to {got}".
+        got: String,
     },
     /// A `config` name is not a declared [`Constant`](Descriptor::constants).
     UnknownConfig { node: String, name: String },
@@ -580,9 +630,26 @@ impl fmt::Display for LoadError {
             LoadError::UnknownInput { node, input } => {
                 write!(f, "node {node:?} has no input {input:?}")
             }
-            LoadError::BadInputValue { node, input, value } => {
-                write!(f, "node {node:?} input {input:?}: invalid value {value:?}")
+            // One sentence for both: they differ in *why* the value failed, which is what the
+            // variant carries, not in what the author has to be told.
+            LoadError::BadInputValue {
+                surface,
+                node,
+                name,
+                expected,
+                got,
             }
+            | LoadError::BadInputLiteral {
+                surface,
+                node,
+                name,
+                expected,
+                got,
+            } => write!(
+                f,
+                "node {node:?} {} {name:?} is set to {got}, but it takes {expected}",
+                surface.noun()
+            ),
             LoadError::UnknownConfig { node, name } => {
                 write!(f, "node {node:?} has no config constant {name:?}")
             }
@@ -1268,7 +1335,11 @@ impl InstrumentDoc {
                              `NormalizedDoc::from_json`"
                         .to_string(),
                 })?;
-                let (descriptor, kind) = pipe_descriptor(name, pipe)?;
+                let MintedPipe {
+                    descriptor,
+                    kind,
+                    enum_default,
+                } = pipe_descriptor(name, pipe)?;
                 let bare_signal = kind == PortKind::Signal && descriptor.inputs[0].meta.is_none();
                 let address = format!("/{name}");
                 if !addresses.insert(address.clone()) {
@@ -1276,11 +1347,12 @@ impl InstrumentDoc {
                 }
                 let key = graph.add_boxed(&address, Box::new(Pipe::new(kind)), descriptor.clone());
                 // An enum pipe's declared default seeds the pipe's latch as a value-override;
-                // numeric pipes carry theirs inside the port's own meta.
-                if descriptor.inputs[0].enum_meta().is_some() {
-                    if let Some(PipeDefault::Symbol(s)) = &pipe.default {
-                        graph.set_value(key, PIPE_INPUT_PORT, &Arg::Str(s.as_str().into()));
-                    }
+                // numeric pipes carry theirs inside the port's own meta. Seeded with what
+                // `pipe_descriptor` resolved, not with the symbol as written: `set_value` drops a
+                // spelling it cannot coerce in silence, and a numeric-string default ("1") is
+                // exactly such a spelling — validated as an index, then unreadable as a symbol.
+                if let Some(arg) = &enum_default {
+                    graph.set_value(key, PIPE_INPUT_PORT, arg);
                 }
                 by_addr.insert(address, (key, descriptor));
                 interface.inputs.insert(name.clone(), (key, 0));
@@ -1353,20 +1425,12 @@ impl InstrumentDoc {
             graph.nodes[key].sample_id = n.sample.clone();
             graph.nodes[key].voice_id = n.voice.clone();
 
-            // `config`: every name must be a declared Constant; apply it at its slot.
+            // `config`: every name must be a declared Constant, and every value must be one the
+            // constant can read — `set_constant` coerces silently, so an unvalidated value would
+            // leave the document saying one thing and the plan built on another.
             for (name, value) in &n.config {
-                if !descriptor.is_constant(name) {
-                    return Err(LoadError::UnknownConfig {
-                        node: n.address.clone(),
-                        name: name.clone(),
-                    });
-                }
-                match value {
-                    ConfigValue::Number(v) => graph.set_constant(key, name, &Arg::F32(*v as f32)),
-                    ConfigValue::Symbol(s) => {
-                        graph.set_constant(key, name, &Arg::Str(s.as_str().into()))
-                    }
-                }
+                let arg = config_literal(&descriptor, name, value, &n.address)?;
+                graph.set_constant(key, name, &arg);
             }
 
             // `inputs`: a Constant here is an error; literals apply now, wire-refs in pass 2.
@@ -2052,12 +2116,72 @@ impl BoundaryFace {
     }
 }
 
+/// What form of literal `port` takes, phrased to complete "…, but it takes {}". Asked through
+/// [`Port::accepts_number_literal`] and [`Port::enum_meta`] — the conversions the literal is about
+/// to go through — rather than by restating which port types accept one; the restatement is what
+/// drifted the last time a number type landed. `nothing` is the surface's answer for a port that
+/// takes no literal at all, which is where the two surfaces differ: an input can be wired instead,
+/// a `config` constant cannot.
+fn expected_literal(port: &Port, nothing: &str) -> String {
+    if let Some(e) = port.enum_meta() {
+        let variants: Vec<String> = e.variants.iter().map(|v| format!("{v:?}")).collect();
+        // The one range worth naming. A numeric port's range is *clamped*, so quoting it would
+        // advertise a constraint the loader does not enforce; an enum's index range is enforced —
+        // outside it the number names nothing — and it is the second literal form this port takes.
+        // `#[derive(ArgValue)]` cannot mint a variantless enum, so the subtraction is safe —
+        // saturating rather than asserting because a panic here would replace a load error an
+        // author can act on with one they cannot.
+        return format!(
+            "one of the symbols {} (or an index 0..={})",
+            variants.join(", "),
+            e.variants.len().saturating_sub(1)
+        );
+    }
+    if port.accepts_number_literal() {
+        return "a number".to_string();
+    }
+    nothing.to_string()
+}
+
+/// How a numeric literal reads back to the author, completing "… is set to {}".
+fn got_number(v: f64) -> String {
+    format!("the number {v}")
+}
+
+/// How a symbol literal reads back to the author.
+fn got_symbol(s: &str) -> String {
+    format!("the symbol {s:?}")
+}
+
+/// [`got_symbol`] with the near-miss named. On a port that takes no symbol at all, a symbol that
+/// parses as a number is almost always a client that stringified it, and saying so collapses the
+/// repair to one edit instead of a hunt for a port that was never missing.
+///
+/// Only for that case. Where the port *does* take symbols — an enum — quoting a number is a legal
+/// spelling of its index, so pointing at the quotes would send the author to fix the one thing
+/// that is not wrong.
+fn got_quoted_symbol(s: &str) -> String {
+    if s.trim().parse::<f64>().is_ok() {
+        format!("the symbol {s:?} (a number in quotes)")
+    } else {
+        got_symbol(s)
+    }
+}
+
+/// The author-facing answer for an input port that takes no literal — it has a wire to offer
+/// instead, which is the whole repair.
+const NO_INPUT_LITERAL: &str = "no literal value — wire a source into it";
+
 /// Validate one literal `inputs` value against the port named `port_name` on `desc` and produce
 /// the [`Arg`] to set — `None` for a wire-ref (pass 2's job). The one statement of the literal
 /// rules for both surfaces that accept literals — a document node's input in pass 1, and a
-/// subpatch boundary input checked against the **inner** port its face names:
-/// a number needs a materialized `Float` or an enum, a symbol needs an enum, and the symbol must
-/// name a variant (an unknown symbol is an error, never a silent default).
+/// subpatch boundary input checked against the **inner** port its face names.
+///
+/// The **name** question is asked once and asked first, so every failure after it is about the
+/// value: a port that exists is never reported as missing. A number needs a port some literal
+/// number can set, a symbol needs an enum, and either way the value must name something the port
+/// admits (it never snaps to a default).
+///
 /// `err_node`/`err_input` label errors in the author's terms — for a boundary literal, the
 /// subpatch address and external name, never the prefixed internal.
 fn literal_arg(
@@ -2067,39 +2191,119 @@ fn literal_arg(
     err_node: &str,
     err_input: &str,
 ) -> Result<Option<Arg>, LoadError> {
+    if matches!(value, InputValue::Wire { .. }) {
+        return Ok(None);
+    }
+    let Some(port) = desc.inputs.iter().find(|p| p.name == port_name) else {
+        return Err(LoadError::UnknownInput {
+            node: err_node.to_string(),
+            input: err_input.to_string(),
+        });
+    };
+    coerce_literal(
+        port,
+        value,
+        ValueSurface::Input,
+        err_node,
+        err_input,
+        NO_INPUT_LITERAL,
+    )
+    .map(Some)
+}
+
+/// The literal rule itself, over one [`Port`] — shared by every surface an author writes a value
+/// on. Returns the [`Arg`] to store, which is always [`Port::coerce`]'s own output: **what
+/// validated is what is handed on**.
+///
+/// That last part is load-bearing, not tidiness. [`Graph::set_value`] drops a value it cannot
+/// coerce without a word, so validating one spelling and forwarding another is silent data loss —
+/// which is exactly what a numeric-string enum symbol did. `"1"` passes
+/// [`EnumMeta::resolve`](crate::descriptor::EnumMeta::resolve) (a
+/// bare integer is an in-range index there) and then fails the derive's symbol-only `Arg::Str`
+/// coercion, so the document said `Hp` and the graph played the default. Returning the coerced
+/// value closes that gap by construction rather than by a matching pair of checks.
+///
+/// The **form** question is asked with a canonical value ([`Port::accepts_number_literal`]) and the
+/// **value** question with the author's own, because they are different questions: an out-of-range
+/// number on a numeric port clamps, while an out-of-range enum index names nothing.
+fn coerce_literal(
+    port: &Port,
+    value: &InputValue,
+    surface: ValueSurface,
+    node: &str,
+    name: &str,
+    nothing: &str,
+) -> Result<Arg, LoadError> {
+    let wrong_form = |got: String| LoadError::BadInputLiteral {
+        surface,
+        node: node.to_string(),
+        name: name.to_string(),
+        expected: expected_literal(port, nothing),
+        got,
+    };
+    let bad_value = |got: String| LoadError::BadInputValue {
+        surface,
+        node: node.to_string(),
+        name: name.to_string(),
+        expected: expected_literal(port, nothing),
+        got,
+    };
     match value {
-        InputValue::Wire { .. } => Ok(None),
+        // A wire-ref is pass 2's, and the surfaces that have no wires never construct one.
+        InputValue::Wire { from } => Err(wrong_form(format!("a wire from {from:?}"))),
         InputValue::Number(v) => {
-            // One predicate for all three settable kinds — a materialized `f32` control, an
-            // `i32` control, an enum by index — because it is derived from `Port::coerce`, the
-            // conversion this literal is about to go through. Two hand-kept checks here
-            // (`materialized_input` + `enum_input`) missed integer ports entirely: the first
-            // reads the `F32Meta` slot, and an `i32` port's meta is not there.
-            if !desc.accepts_number_literal(port_name) {
-                return Err(LoadError::UnknownInput {
-                    node: err_node.to_string(),
-                    input: err_input.to_string(),
-                });
+            if !port.accepts_number_literal() {
+                return Err(wrong_form(got_number(*v)));
             }
-            Ok(Some(Arg::F32(*v as f32)))
+            port.coerce(&Arg::F32(*v as f32))
+                .ok_or_else(|| bad_value(got_number(*v)))
         }
         InputValue::Symbol(s) => {
-            let Some((_, e)) = desc.enum_input(port_name) else {
-                return Err(LoadError::UnknownInput {
-                    node: err_node.to_string(),
-                    input: err_input.to_string(),
-                });
+            let Some(e) = port.enum_meta() else {
+                return Err(wrong_form(got_quoted_symbol(s)));
             };
-            if e.resolve(s).is_none() {
-                return Err(LoadError::BadInputValue {
-                    node: err_node.to_string(),
-                    input: err_input.to_string(),
-                    value: s.clone(),
-                });
-            }
-            Ok(Some(Arg::Str(s.as_str().into())))
+            // Through the index, because that is the spelling `coerce` reads in both forms —
+            // a symbol resolved here and then re-spelled as `Arg::Str` would not survive it.
+            e.resolve(s)
+                .and_then(|i| port.coerce(&Arg::I32(i as i32)))
+                .ok_or_else(|| bad_value(got_symbol(s)))
         }
     }
+}
+
+/// [`literal_arg`]'s constant-side sibling: validate one `config` value against the declared
+/// [`Constant`](Descriptor::constants) named `name` and produce the [`Arg`] to set. Callers resolve
+/// the name first ([`LoadError::UnknownConfig`]), so every failure here is about the value.
+///
+/// `config` admits no wire-refs, so it has no deferred form and no second pass —
+/// [`Graph::set_constant`] simply returns when the value does not coerce, which left a document
+/// that named a real constant with an unusable value loading clean and running on the default.
+fn config_literal(
+    desc: &Descriptor,
+    name: &str,
+    value: &ConfigValue,
+    node: &str,
+) -> Result<Arg, LoadError> {
+    let Some(port) = desc.constant(name) else {
+        return Err(LoadError::UnknownConfig {
+            node: node.to_string(),
+            name: name.to_string(),
+        });
+    };
+    // `config`'s two value forms are `inputs`' two literal forms, so they go through the one rule
+    // rather than a parallel copy of it that could answer differently.
+    let literal = match value {
+        ConfigValue::Number(v) => InputValue::Number(*v),
+        ConfigValue::Symbol(s) => InputValue::Symbol(s.clone()),
+    };
+    coerce_literal(
+        port,
+        &literal,
+        ValueSurface::Constant,
+        node,
+        name,
+        "no literal value",
+    )
 }
 
 /// Resolve a wire/tap/interface endpoint's **input** side to the inner `(node, port, type)`:
@@ -2119,9 +2323,9 @@ fn resolve_input(
         Some(face) => match face.input(name) {
             Some(fp) => Ok(Some((fp.node, fp.port, fp.ty.clone()))),
             None if face.dark_inputs.contains(name) => Ok(None),
-            None => Err(LoadError::UnknownPort {
+            None => Err(LoadError::UnknownInput {
                 node: addr.to_string(),
-                port: name.to_string(),
+                input: name.to_string(),
             }),
         },
         None => {
@@ -2369,18 +2573,39 @@ fn check_logical_channel(name: &str, ch: usize) -> Result<(), LoadError> {
     Ok(())
 }
 
+/// The pipe type words [`pipe_descriptor`] answers to directly, in the order its error message
+/// offers them. Everything else it accepts is a vocab enum name
+/// ([`pipeable_enum_types`](crate::vocab::pipeable_enum_types)), so these two rosters together are
+/// the whole declarable set.
+pub(crate) const PIPE_BASE_TYPES: &[&str] =
+    &["f32_buffer", "f32", "i32", "note", "harmony", "pitch"];
+
+/// What one `interface.inputs` entry mints — [`pipe_descriptor`]'s whole result.
+///
+/// The resolved `enum_default` rides along rather than being re-derived at the application site,
+/// because re-deriving is how a validated value and a stored value come apart: `pipe_descriptor`
+/// accepts a bare integer string as an index, and re-spelling that as `Arg::Str` downstream fails
+/// the symbol-only coercion and stores nothing at all.
+pub(crate) struct MintedPipe {
+    /// The synthesized per-entry descriptor: one `in` port and one `out` port.
+    pub descriptor: Descriptor,
+    /// The kind the pipe operator runs as, which decides whether it may bind a hardware channel.
+    pub kind: PortKind,
+    /// The enum pipe's declared default as its latch [`Arg`]; `None` for a numeric pipe (whose
+    /// default lives in the port's own meta) and for an enum pipe that declares none.
+    pub enum_default: Option<Arg>,
+}
+
 /// Synthesize an input pipe's per-entry [`Descriptor`] from its declaration: one
 /// `in` port the boundary feeds and one `out` port consumers wire from, both of the **declared**
 /// `Arg` type — the existing pass-2 wire check then enforces that type against every consumer,
 /// no new checker. A numeric pipe's declared `default`/`min`/`max`/`curve` become the port's own
 /// engine-enforced [`F32Meta`] (an unwired signal pipe materializes `default`; a **bare** signal
-/// pipe materializes silence). Validation is local and pointed: unknown type, numeric metadata
-/// on a message pipe, an incoherent range, or a `channel` on anything but a signal pipe
-/// (hardware channels carry signals).
-pub(crate) fn pipe_descriptor(
-    name: &str,
-    pipe: &InputPipeDoc,
-) -> Result<(Descriptor, PortKind), LoadError> {
+/// pipe materializes silence); an enum pipe's default is resolved here and handed back in
+/// [`MintedPipe::enum_default`]. Validation is local and pointed: unknown type, numeric metadata
+/// on a message pipe, an incoherent range, a default the declared type cannot read, or a `channel`
+/// on anything but a signal pipe (hardware channels carry signals).
+pub(crate) fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<MintedPipe, LoadError> {
     let err = |reason: String| LoadError::InterfacePipe {
         name: name.to_string(),
         reason,
@@ -2493,6 +2718,9 @@ pub(crate) fn pipe_descriptor(
         Ok(())
     };
 
+    // Set by the enum arm to the default it resolved, so the value that passed validation is the
+    // one the caller seeds the latch with.
+    let mut enum_default = None;
     let (input, output, kind) = match pipe.ty.as_str() {
         "f32_buffer" => {
             let declared = pipe.default.is_some()
@@ -2560,28 +2788,44 @@ pub(crate) fn pipe_descriptor(
                 crate::vocab::enum_meta_by_type(other, PIPE_INPUT_PORT),
                 crate::vocab::enum_meta_by_type(other, "out"),
             ) else {
-                return Err(err(format!(
-                    "unknown pipe type {other:?} — one of \"f32_buffer\", \"f32\", \"i32\", \
-                     \"note\", \"harmony\", \"pitch\", or a shared vocab enum name (e.g. \"FilterMode\")"
-                )));
+                // The whole declarable set, read from the two rosters rather than described — an
+                // author who mistyped a type name wants the list, not a category and an example.
+                let known = PIPE_BASE_TYPES
+                    .iter()
+                    .copied()
+                    .chain(crate::vocab::pipeable_enum_types())
+                    .map(|t| format!("{t:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(err(format!("unknown pipe type {other:?} — one of {known}")));
             };
             if pipe.min.is_some() || pipe.max.is_some() || pipe.curve.is_some() {
                 return Err(err(format!(
                     "`min`/`max`/`curve` apply to numeric pipes only, not {other:?}"
                 )));
             }
+            let port = Port::enumerated(im);
             match &pipe.default {
-                Some(PipeDefault::Symbol(s)) if im.resolve(s).is_none() => {
-                    return Err(err(format!("default {s:?} names no {other} variant")));
+                Some(PipeDefault::Symbol(s)) => {
+                    // Resolved through the port, and kept — the same rule `coerce_literal` follows
+                    // on the other two surfaces: what validates is what gets stored.
+                    let Some(arg) = port
+                        .enum_meta()
+                        .and_then(|e| e.resolve(s))
+                        .and_then(|i| port.coerce(&Arg::I32(i as i32)))
+                    else {
+                        return Err(err(format!("default {s:?} names no {other} variant")));
+                    };
+                    enum_default = Some(arg);
                 }
                 Some(PipeDefault::Number(_)) => {
                     return Err(err(
                         "an enum pipe's default is its variant symbol, not a number".to_string(),
                     ));
                 }
-                _ => {}
+                None => {}
             }
-            (Port::enumerated(im), Port::enumerated(om), PortKind::Value)
+            (port, Port::enumerated(om), PortKind::Value)
         }
     };
     if pipe.channel.is_some() && kind != PortKind::Signal {
@@ -2591,8 +2835,8 @@ pub(crate) fn pipe_descriptor(
             pipe.ty
         )));
     }
-    Ok((
-        Descriptor {
+    Ok(MintedPipe {
+        descriptor: Descriptor {
             type_name: "pipe",
             inputs: vec![input],
             outputs: vec![output],
@@ -2600,7 +2844,8 @@ pub(crate) fn pipe_descriptor(
             resources: Vec::new(),
         },
         kind,
-    ))
+        enum_default,
+    })
 }
 
 /// Whether two ports carry the same **`Arg` type** for wiring (the equal-types arm of the
@@ -2670,13 +2915,16 @@ fn pick_output(
     }
 }
 
+/// The index of the input port named `name`. An absent name is [`LoadError::UnknownInput`] — the
+/// same variant a *literal* on an absent name raises, so one mistake reads as one instruction
+/// however the author wrote the value.
 fn in_port(desc: &Descriptor, node: &str, name: &str) -> Result<usize, LoadError> {
     desc.inputs
         .iter()
         .position(|p| p.name == name)
-        .ok_or_else(|| LoadError::UnknownPort {
+        .ok_or_else(|| LoadError::UnknownInput {
             node: node.to_string(),
-            port: name.to_string(),
+            input: name.to_string(),
         })
 }
 
@@ -2877,6 +3125,39 @@ mod tests {
             load(json, &reg()),
             Err(LoadError::BadInputValue { .. })
         ));
+    }
+
+    /// An enum index outside the variant list names nothing. It used to load clean and leave the
+    /// port on its default — the document said `Bp` and the graph played `Lp` — because the
+    /// settability probe uses a canonical index while the author's own index went unchecked.
+    /// The clamping rule numeric ports live by does not reach here: an index is a name, not a
+    /// quantity, so there is no nearest variant to clamp to.
+    #[test]
+    fn an_out_of_range_enum_index_is_a_bad_value_not_a_silent_default() {
+        let json = r#"{"instrument":"t","nodes":[
+            {"type":"filter","address":"/f","inputs":{"mode":-3}}]}"#;
+        let err = load_err(json, "an out-of-range enum index must not load");
+        assert!(
+            matches!(&err, LoadError::BadInputValue { node, name, .. }
+                if node == "/f" && name == "mode"),
+            "{err:?}"
+        );
+    }
+
+    /// A `config` constant had no form check at all: the name was validated, then `set_constant`
+    /// coerced and returned in silence when the value did not fit, so the document declared one
+    /// pool size and the plan built another. `config` takes no wire-refs, so this is the whole
+    /// literal contract for the constant surface.
+    #[test]
+    fn a_config_symbol_on_a_numeric_constant_is_a_form_error() {
+        let json = r#"{"instrument":"t","nodes":[
+            {"type":"voicer","address":"/v","config":{"voices":"eight"}}]}"#;
+        let err = load_err(json, "a symbol on a numeric constant must not load");
+        assert!(
+            matches!(&err, LoadError::BadInputLiteral { surface, node, name, .. }
+                if *surface == ValueSurface::Constant && node == "/v" && name == "voices"),
+            "{err:?}"
+        );
     }
 
     #[test]
@@ -3095,22 +3376,46 @@ mod tests {
         assert!(load(i32_src, &reg()).is_ok());
     }
 
-    /// The widened gate must not start admitting literals on ports that genuinely take none: a
-    /// bare audio buffer has no scalar to set, and an unknown name is still unknown.
+    /// The widened gate must not start admitting literals on a port that genuinely takes none — a
+    /// bare audio buffer has no scalar to set — but the refusal is about the **value**: `/o` has an
+    /// `audio` input, and telling the author it does not sends them to `describe_operators`, which
+    /// answers with the port and costs a repair round. The message names the form and the fix.
     #[test]
-    fn a_literal_on_a_portless_or_bare_buffer_input_is_still_unknown() {
+    fn a_literal_on_a_bare_buffer_input_is_a_form_error_naming_the_wire_it_wants() {
         let bare_buffer = r#"{"instrument":"t","nodes":[
             {"type":"output","address":"/o","inputs":{"audio":1.0}}]}"#;
-        assert!(matches!(
-            load(bare_buffer, &reg()),
-            Err(LoadError::UnknownInput { .. })
-        ));
+        let err = load_err(bare_buffer, "a literal on a bare buffer must not load");
+        assert!(
+            matches!(&err, LoadError::BadInputLiteral { node, name, .. }
+                if node == "/o" && name == "audio"),
+            "{err:?}"
+        );
+    }
+
+    /// A name no port owns is the one thing `UnknownInput` now claims — and the whole of it.
+    #[test]
+    fn a_literal_on_a_name_no_port_owns_is_unknown_input() {
         let nonesuch = r#"{"instrument":"t","nodes":[
             {"type":"add_i32_value","address":"/k","inputs":{"nope":1}}]}"#;
         assert!(matches!(
             load(nonesuch, &reg()),
             Err(LoadError::UnknownInput { .. })
         ));
+    }
+
+    /// The near-miss the form error exists to collapse: a client that sends numbers as strings
+    /// used to get "no input `resonance`" on a filter that plainly has one, and every symptom read
+    /// as a wrong port name. The message now names the quoting, so the repair is one edit.
+    #[test]
+    fn a_quoted_number_on_a_numeric_port_names_the_quoting() {
+        let json = r#"{"instrument":"t","nodes":[
+            {"type":"filter","address":"/hp","inputs":{"resonance":"0.08"}}]}"#;
+        let err = load_err(json, "a quoted number must not load");
+        assert_eq!(
+            err.to_string(),
+            "node \"/hp\" input \"resonance\" is set to the symbol \"0.08\" \
+             (a number in quotes), but it takes a number"
+        );
     }
 
     #[test]
@@ -3465,14 +3770,16 @@ mod tests {
         assert!(matches!(load(json, &reg()), Err(LoadError::UnknownNode(_))));
     }
 
+    /// `/osc` has no input named `gate` — a direction-correct but absent port. A v1 entry's
+    /// target names an *input*, so the miss is `UnknownInput`, the same variant the v2 path gives
+    /// the same mistake: one document format should not change what the error is called.
     #[test]
-    fn interface_unknown_port_errors() {
-        // `/osc` has no input named `gate` — a direction-correct but absent port.
+    fn interface_unknown_input_errors() {
         let json = r#"{"instrument":"t","interface":{"inputs":{"gate":"/osc.gate"}},
             "nodes":[{"type":"oscillator","address":"/osc"}]}"#;
         assert!(matches!(
             load(json, &reg()),
-            Err(LoadError::UnknownPort { .. })
+            Err(LoadError::UnknownInput { node, input }) if node == "/osc" && input == "gate"
         ));
     }
 
@@ -3938,17 +4245,18 @@ mod tests {
 
     #[test]
     fn unknown_boundary_port_errors_in_boundary_terms() {
-        // A wire into a face input the interface doesn't expose: UnknownPort naming the subpatch
+        // A wire into a face input the interface doesn't expose: UnknownInput naming the subpatch
         // address and the external name — never the prefixed internals (P5 hardens this further).
+        // The same variant a literal on that name raises: the author made one mistake.
         let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
             {"type":"oscillator","address":"/osc"},
             {"type":"subpatch","address":"/sub","patch":"v",
              "inputs":{"nope":{"from":"/osc.audio"}}}]}"#;
         assert!(matches!(
             load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE)),
-            Err(LoadError::UnknownPort { node, port }) if node == "/sub" && port == "nope"
+            Err(LoadError::UnknownInput { node, input }) if node == "/sub" && input == "nope"
         ));
-        // A literal onto a missing boundary input follows pass 1's rule: UnknownInput.
+        // A literal onto the same missing boundary input answers identically.
         let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
             {"type":"subpatch","address":"/sub","patch":"v","inputs":{"nope":1.0}}]}"#;
         assert!(matches!(
@@ -4149,8 +4457,8 @@ mod tests {
             {"type":"subpatch","address":"/sub","patch":"v","inputs":{"mode":"Nope"}}]}"#;
         assert!(matches!(
             load_instrument(bad, &reg(), &PatchResolver(FILTER_CHILD)),
-            Err(LoadError::BadInputValue { node, input, .. })
-                if node == "/sub" && input == "mode"
+            Err(LoadError::BadInputValue { node, name, .. })
+                if node == "/sub" && name == "mode"
         ));
     }
 
@@ -4780,5 +5088,750 @@ mod tests {
             Some(ConfigValue::Number(_))
         ));
         assert!(!v.inputs.contains_key("voices"));
+    }
+
+    /// The literal-form golden table: for every kind of port a literal can land on, and every kind
+    /// of literal the format admits, the exact `LoadError` an author is owed — across all three
+    /// surfaces where an author writes a value against a port: a node's `inputs`, a node's
+    /// `config`, and an `interface.inputs` entry's `default`.
+    ///
+    /// An author reads the error *variant* as an instruction about what to do next — "the name is
+    /// wrong" sends them to `describe_operators`, "the value is wrong" sends them to the value — so
+    /// the variant is part of the contract and gets the same enumeration the port contract does.
+    /// Two censuses keep the table honest: every registered input and constant must classify into a
+    /// row, and every declarable pipe type must reach one, so a new operator or a new port kind
+    /// fails here rather than quietly acquiring whatever behaviour falls out.
+    ///
+    /// Acceptance is never `load(..).is_ok()`. A literal the loader validates and then drops also
+    /// loads clean — that silent default is the whole family of bugs this table exists to catch —
+    /// so an accepted cell must move the built graph **off** what the same document without that
+    /// literal produces.
+    mod literal_form {
+        use super::*;
+
+        /// The row key — the kinds of port a literal can land on, one per way [`Port::coerce`]
+        /// answers. Classified from a `&Port` **exhaustively over [`PortType`]**, so a new port
+        /// type does not compile until someone decides what a literal on it owes an author.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        enum LiteralPort {
+            /// A materialized scalar control (`add_f32_value.a`).
+            F32Control,
+            /// A bounded integer control (`euclid.steps`).
+            I32Control,
+            /// A signal port that also carries a scalar default (`oscillator.freq`).
+            SignalControl,
+            /// A signal port with no scalar to set (`output.audio`).
+            BareSignal,
+            /// A vocab enum (`filter.mode`).
+            Enum,
+            /// A struct vocab port — `Note`, `Harmony`, `Pitch`.
+            StructVocab,
+            /// The type-agnostic pass-through (`osc_out.in`).
+            PassThrough,
+        }
+
+        /// Classify one port into its row, or name the kind that has none. The `Err` arms are the
+        /// port shapes nothing in the registry or the pipe vocabulary presents today: there is no
+        /// witness to exercise, so rather than folding them into a catch-all that would invent an
+        /// answer, they fail the censuses loudly the day one appears.
+        fn classify(p: &Port) -> Result<LiteralPort, &'static str> {
+            Ok(match (&p.ty, p.meta.is_some()) {
+                (PortType::F32, true) => LiteralPort::F32Control,
+                (PortType::F32Buffer, true) => LiteralPort::SignalControl,
+                (PortType::F32Buffer, false) => LiteralPort::BareSignal,
+                (PortType::I32 { meta: Some(_) }, _) => LiteralPort::I32Control,
+                (
+                    PortType::Vocab {
+                        enum_meta: Some(_), ..
+                    },
+                    _,
+                ) => LiteralPort::Enum,
+                (
+                    PortType::Vocab {
+                        enum_meta: None, ..
+                    },
+                    _,
+                ) => LiteralPort::StructVocab,
+                (PortType::Arg, _) => LiteralPort::PassThrough,
+                (PortType::F32, false) => return Err("an F32 port carrying no F32Meta"),
+                (PortType::I32 { meta: None }, _) => return Err("an I32 port carrying no I32Meta"),
+                (PortType::Str, _) => return Err("a Str port"),
+            })
+        }
+
+        /// What an author is owed for one (port kind, literal) pair.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        enum Owed {
+            /// The literal is applied — and the built graph moves off its default.
+            Accepted,
+            /// The value's form is wrong for this port: it names a real port, badly.
+            WrongForm,
+            /// The form is right and the value names nothing in the port's closed set.
+            BadValue,
+            /// `literal_arg` handed the value to pass 2, which owns the reference and fails on the
+            /// **source** — never on the destination port's form.
+            Deferred,
+            /// The pipe-default surface refuses it. `pipe_descriptor` validates a declared
+            /// `default` itself and answers with its own boundary-named variant, so the table
+            /// records that rather than pretending all three surfaces share one error type.
+            PipeRefused,
+        }
+
+        /// The one place this table names a [`LoadError`] variant: a rename is a single edit here,
+        /// and a variant no cell owes is reported as a violation rather than passing as "some
+        /// error", which is how a form mismatch got away with answering `UnknownInput`.
+        fn outcome(e: &LoadError) -> Result<Owed, String> {
+            Ok(match e {
+                LoadError::BadInputLiteral { .. } => Owed::WrongForm,
+                LoadError::BadInputValue { .. } => Owed::BadValue,
+                LoadError::UnknownNode(_) => Owed::Deferred,
+                LoadError::InterfacePipe { .. } => Owed::PipeRefused,
+                other => return Err(format!("no cell owes {other:?} — {other}")),
+            })
+        }
+
+        /// One port kind's row: a registry witness for the document surface, the
+        /// `interface.inputs` declarations minting the same kind for the boundary surface, and the
+        /// outcome owed for each literal the format admits.
+        struct Row {
+            kind: LiteralPort,
+            /// `(operator type, input port)` — a registered input of this kind.
+            witness: (&'static str, &'static str),
+            /// Pipe declarations minting this kind. Empty when the kind has no pipe form.
+            pipes: &'static [&'static str],
+            /// The literals an author may write, as JSON, and what each owes. Shared by the
+            /// document and boundary surfaces — the same rule serves both, which is the point.
+            literals: &'static [(&'static str, Owed)],
+            /// The `default` an `interface.inputs` entry may declare — a third place a literal
+            /// meets a port, with its own validator and its own error. Empty when the kind has no
+            /// pipe form.
+            defaults: &'static [(&'static str, Owed)],
+        }
+
+        /// The four literal forms every numeric-ish port answers the same way: a number it can
+        /// mean, a number past any range it could mean (clamped, never refused), and two symbols.
+        const NUMERIC_LITERALS: &[(&str, Owed)] = &[
+            ("2", Owed::Accepted),
+            ("1000000000", Owed::Accepted),
+            ("\"Hp\"", Owed::WrongForm),
+            ("\"nonesuch\"", Owed::WrongForm),
+            ("{\"from\":\"/nonesuch.out\"}", Owed::Deferred),
+        ];
+
+        /// A port that takes no literal at all refuses every form, and says so the same way.
+        const NO_LITERALS: &[(&str, Owed)] = &[
+            ("1", Owed::WrongForm),
+            ("1000000000", Owed::WrongForm),
+            ("\"Hp\"", Owed::WrongForm),
+            ("\"nonesuch\"", Owed::WrongForm),
+            ("{\"from\":\"/nonesuch.out\"}", Owed::Deferred),
+        ];
+
+        const TABLE: &[Row] = &[
+            Row {
+                kind: LiteralPort::F32Control,
+                witness: ("add_f32_value", "a"),
+                pipes: &[r#"{"type":"f32","min":-10,"max":10,"default":0}"#],
+                literals: NUMERIC_LITERALS,
+                defaults: &[
+                    ("2.5", Owed::Accepted),
+                    ("\"Hp\"", Owed::PipeRefused),
+                    ("\"2.5\"", Owed::PipeRefused),
+                ],
+            },
+            Row {
+                kind: LiteralPort::I32Control,
+                witness: ("euclid", "steps"),
+                pipes: &[r#"{"type":"i32","min":1,"max":16,"default":4}"#],
+                literals: NUMERIC_LITERALS,
+                defaults: &[
+                    ("7", Owed::Accepted),
+                    ("7.5", Owed::PipeRefused),
+                    ("\"Hp\"", Owed::PipeRefused),
+                ],
+            },
+            Row {
+                kind: LiteralPort::SignalControl,
+                witness: ("oscillator", "freq"),
+                pipes: &[r#"{"type":"f32_buffer","min":20,"max":20000,"default":440}"#],
+                literals: NUMERIC_LITERALS,
+                defaults: &[("330", Owed::Accepted), ("\"Hp\"", Owed::PipeRefused)],
+            },
+            Row {
+                kind: LiteralPort::BareSignal,
+                witness: ("output", "audio"),
+                pipes: &[r#"{"type":"f32_buffer"}"#],
+                literals: NO_LITERALS,
+                // A `default` is what *makes* an f32_buffer pipe metered, so the bare form has no
+                // default axis of its own — declaring one moves it to the SignalControl row.
+                defaults: &[],
+            },
+            Row {
+                kind: LiteralPort::Enum,
+                // `filter.mode` is a `FilterMode` — variants Lp / Hp / Bp, default Lp.
+                witness: ("filter", "mode"),
+                pipes: &[r#"{"type":"FilterMode"}"#],
+                literals: &[
+                    ("1", Owed::Accepted),
+                    ("-3", Owed::BadValue),
+                    ("\"Hp\"", Owed::Accepted),
+                    // The index spelled as a symbol. A client that stringifies numbers writes
+                    // this, and it is the one form that passed validation and then vanished:
+                    // `EnumMeta::resolve` reads it as an index, the derive's `Arg::Str` coercion
+                    // does not, and the override was dropped in between.
+                    ("\"1\"", Owed::Accepted),
+                    ("\"3\"", Owed::BadValue),
+                    ("\"nonesuch\"", Owed::BadValue),
+                    ("{\"from\":\"/nonesuch.out\"}", Owed::Deferred),
+                ],
+                defaults: &[
+                    ("\"Hp\"", Owed::Accepted),
+                    ("\"1\"", Owed::Accepted),
+                    ("\"3\"", Owed::PipeRefused),
+                    ("\"nonesuch\"", Owed::PipeRefused),
+                    ("1", Owed::PipeRefused),
+                ],
+            },
+            Row {
+                kind: LiteralPort::StructVocab,
+                witness: ("voicer", "notes"),
+                pipes: &[
+                    r#"{"type":"note"}"#,
+                    r#"{"type":"harmony"}"#,
+                    r#"{"type":"pitch"}"#,
+                ],
+                literals: NO_LITERALS,
+                defaults: &[("1", Owed::PipeRefused), ("\"Hp\"", Owed::PipeRefused)],
+            },
+            Row {
+                kind: LiteralPort::PassThrough,
+                witness: ("osc_out", "in"),
+                // `arg` is not a declarable pipe type — the boundary axis cannot present this kind.
+                pipes: &[],
+                literals: NO_LITERALS,
+                defaults: &[],
+            },
+        ];
+
+        /// The `config` surface's table. `config` admits no wire-refs, so it has no deferred form,
+        /// and its witnesses are declared **constants**.
+        struct ConstRow {
+            kind: LiteralPort,
+            witness: (&'static str, &'static str),
+            literals: &'static [(&'static str, Owed)],
+        }
+
+        const CONSTANTS: &[ConstRow] = &[ConstRow {
+            // The voicer's pool size: an `I32Meta`-bounded 1..=32.
+            kind: LiteralPort::I32Control,
+            witness: ("voicer", "voices"),
+            literals: &[
+                ("3", Owed::Accepted),
+                ("100", Owed::Accepted),
+                ("\"eight\"", Owed::WrongForm),
+                ("\"3\"", Owed::WrongForm),
+            ],
+        }];
+
+        /// A resolver handing back one generated child document — the fixed-`&'static str`
+        /// `PatchResolver` cannot carry a per-case child.
+        struct Child(String);
+        impl ResourceResolver for Child {
+            fn resolve(&self, s: &str) -> Result<SampleBuffer, crate::resources::ResolveError> {
+                Err(crate::resources::ResolveError::NotFound(s.to_string()))
+            }
+            fn resolve_text(&self, _: &str) -> Result<String, crate::resources::ResolveError> {
+                Ok(self.0.clone())
+            }
+        }
+
+        /// Load a one-node document with `literal` written on `op`'s `port` input — or, for
+        /// `literal: None`, the same document with nothing written on it at all (the baseline an
+        /// accepted literal has to move off).
+        fn doc_case(op: &str, port: &str, literal: Option<&str>) -> Result<Graph, LoadError> {
+            let inputs =
+                literal.map_or(String::new(), |l| format!(r#","inputs":{{"{port}":{l}}}"#));
+            let json = format!(
+                r#"{{"instrument":"t","nodes":[
+                    {{"type":"{op}","address":"/n"{inputs}}}]}}"#
+            );
+            load(&json, &reg())
+        }
+
+        /// Load a parent whose `/sub` subpatch is a child exposing one boundary input `p`
+        /// declared as `decl`, with `literal` written on it (`None` = the baseline).
+        fn boundary_case(decl: &str, literal: Option<&str>) -> Result<Graph, LoadError> {
+            let child = format!(
+                r#"{{"format_version":2,"instrument":"kid",
+                    "interface":{{"inputs":{{"p":{decl}}}}},"nodes":[]}}"#
+            );
+            let inputs = literal.map_or(String::new(), |l| format!(r#","inputs":{{"p":{l}}}"#));
+            let parent = format!(
+                r#"{{"instrument":"p","resources":{{"v":"v.json"}},"nodes":[
+                    {{"type":"subpatch","address":"/sub","patch":"v"{inputs}}}]}}"#
+            );
+            load_instrument(&parent, &reg(), &Child(child)).map(|l| l.graph)
+        }
+
+        /// Load a document declaring one input pipe of type `ty`, with `default` declared on it
+        /// (`None` = the baseline).
+        fn default_case(ty: &str, default: Option<&str>) -> Result<Graph, LoadError> {
+            let d = default.map_or(String::new(), |v| format!(r#","default":{v}"#));
+            let json = format!(
+                r#"{{"format_version":2,"instrument":"t",
+                    "interface":{{"inputs":{{"p":{{"type":{ty:?}{d}}}}}}},"nodes":[]}}"#
+            );
+            load(&json, &reg())
+        }
+
+        /// What one node records about its port defaults: the stored value-overrides, and the
+        /// numeric default each port itself declares.
+        type Recorded = (Vec<(usize, Arg)>, Vec<Option<f64>>);
+
+        /// What a built graph records about one node's port defaults: the overrides it stores, and
+        /// the numeric default the port itself declares. An accepted literal has to change one of
+        /// them — which of the two depends on the surface (a pipe's numeric default lives in the
+        /// port's meta, an enum's in an override), and this table has no business caring which.
+        fn recorded(g: &Graph, addr: &str) -> Option<Recorded> {
+            let key = g.find(addr)?;
+            let n = &g.nodes[key];
+            Some((
+                n.value_overrides.clone(),
+                n.descriptor
+                    .inputs
+                    .iter()
+                    .map(|p| p.number_default())
+                    .collect(),
+            ))
+        }
+
+        /// Assert one cell against its baseline — the same document with that value left out.
+        ///
+        /// `load(..).is_ok()` is not the acceptance test: a literal the loader validates and then
+        /// silently drops also loads clean, which is the whole family of defects this table exists
+        /// to catch. So an accepted value must leave the built graph **different from** the
+        /// baseline. That formulation is why a declared pipe default cannot make these cells
+        /// vacuous: the default is in the baseline too.
+        ///
+        /// `label` is the `(node, name)` the error must speak in; on the boundary surface that is
+        /// the subpatch address and the external pipe name, never the prefixed internals.
+        fn check_cell(
+            result: Result<Graph, LoadError>,
+            owed: Owed,
+            baseline: &Result<Graph, LoadError>,
+            addr: &str,
+            label: (Option<&str>, Option<&str>),
+        ) -> Result<(), String> {
+            match result {
+                Ok(g) => {
+                    if owed != Owed::Accepted {
+                        return Err(format!("owed {owed:?}, loaded clean"));
+                    }
+                    let Ok(base) = baseline else {
+                        return Err("the baseline document does not even load".to_string());
+                    };
+                    let got = recorded(&g, addr).ok_or_else(|| format!("no node at {addr}"))?;
+                    let was = recorded(base, addr).ok_or_else(|| format!("no node at {addr}"))?;
+                    if got == was {
+                        return Err(format!(
+                            "loaded clean but left {addr} identical to the same document \
+                             without the value — it was validated and then dropped, and the \
+                             port kept its default ({was:?})"
+                        ));
+                    }
+                }
+                Err(e) => {
+                    let got = outcome(&e)?;
+                    if got != owed {
+                        return Err(format!("owed {owed:?}, got {got:?} — {e}"));
+                    }
+                    if matches!(owed, Owed::WrongForm | Owed::BadValue | Owed::PipeRefused) {
+                        let d = crate::contract::Diag::from_load(&e);
+                        if (d.node.as_deref(), d.port.as_deref()) != label {
+                            return Err(format!(
+                                "localized to {:?}/{:?}, owed {label:?} — {e}",
+                                d.node, d.port
+                            ));
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        /// Report every violating cell at once. The table is a specification, and a specification
+        /// that stops at its first violation is a poor report of what is actually wrong.
+        fn report(failures: Vec<String>) {
+            assert!(
+                failures.is_empty(),
+                "{} cell(s) violate the literal-form table:\n  {}",
+                failures.len(),
+                failures.join("\n  ")
+            );
+        }
+
+        /// The `type` word a row's pipe declaration names.
+        fn pipe_ty(decl: &str) -> String {
+            serde_json::from_str::<InputPipeDoc>(decl)
+                .expect("a table pipe declaration parses")
+                .ty
+        }
+
+        #[test]
+        fn the_document_surface_matches_the_table() {
+            let mut failures = Vec::new();
+            for row in TABLE {
+                let (op, port) = row.witness;
+                let baseline = doc_case(op, port, None);
+                for (literal, owed) in row.literals {
+                    if let Err(why) = check_cell(
+                        doc_case(op, port, Some(literal)),
+                        *owed,
+                        &baseline,
+                        "/n",
+                        (Some("/n"), Some(port)),
+                    ) {
+                        failures.push(format!(
+                            "{op}.{port} ({:?}) set to {literal}: {why}",
+                            row.kind
+                        ));
+                    }
+                }
+            }
+            report(failures);
+        }
+
+        #[test]
+        fn the_subpatch_boundary_matches_the_table() {
+            let mut failures = Vec::new();
+            for row in TABLE {
+                for decl in row.pipes {
+                    let baseline = boundary_case(decl, None);
+                    for (literal, owed) in row.literals {
+                        if let Err(why) = check_cell(
+                            boundary_case(decl, Some(literal)),
+                            *owed,
+                            &baseline,
+                            "/sub/p",
+                            (Some("/sub"), Some("p")),
+                        ) {
+                            failures.push(format!(
+                                "boundary pipe {decl} ({:?}) set to {literal}: {why}",
+                                row.kind
+                            ));
+                        }
+                    }
+                }
+            }
+            report(failures);
+        }
+
+        /// The third surface: an `interface.inputs` entry's own declared `default`. It is
+        /// validated by `pipe_descriptor` rather than `literal_arg`, so it is the one place a
+        /// literal meets a port through different code — and it carried its own copy of the
+        /// validated-then-dropped defect.
+        #[test]
+        fn the_pipe_default_surface_matches_the_table() {
+            let mut failures = Vec::new();
+            for row in TABLE {
+                let Some(decl) = row.pipes.first() else {
+                    continue;
+                };
+                let ty = pipe_ty(decl);
+                let baseline = default_case(&ty, None);
+                for (literal, owed) in row.defaults {
+                    // An `InterfacePipe` error is named by the boundary **entry**, which is not a
+                    // node — so it localizes to a port with no node, and asserting that is how the
+                    // "errors speak in boundary terms" rule is held on this surface too.
+                    if let Err(why) = check_cell(
+                        default_case(&ty, Some(literal)),
+                        *owed,
+                        &baseline,
+                        "/p",
+                        (None, Some("p")),
+                    ) {
+                        failures.push(format!(
+                            "pipe {ty:?} ({:?}) default {literal}: {why}",
+                            row.kind
+                        ));
+                    }
+                }
+            }
+            report(failures);
+        }
+
+        #[test]
+        fn the_config_surface_matches_the_constants_table() {
+            let mut failures = Vec::new();
+            for row in CONSTANTS {
+                let (op, name) = row.witness;
+                let bare =
+                    format!(r#"{{"instrument":"t","nodes":[{{"type":"{op}","address":"/n"}}]}}"#);
+                let baseline = load(&bare, &reg()).map(|g| {
+                    g.nodes[g.find("/n").expect("the node")]
+                        .constant_overrides
+                        .clone()
+                });
+                for (literal, owed) in row.literals {
+                    let json = format!(
+                        r#"{{"instrument":"t","nodes":[
+                            {{"type":"{op}","address":"/n","config":{{"{name}":{literal}}}}}]}}"#
+                    );
+                    let why = match load(&json, &reg()) {
+                        Ok(_) if *owed != Owed::Accepted => {
+                            Err(format!("owed {owed:?}, loaded clean"))
+                        }
+                        Ok(g) => {
+                            let key = g.find("/n").expect("the node");
+                            let was = baseline.as_ref().expect("the baseline loads");
+                            if &g.nodes[key].constant_overrides == was {
+                                Err("loaded clean but recorded no new constant override — \
+                                     the value was dropped and the constant kept its default"
+                                    .to_string())
+                            } else {
+                                Ok(())
+                            }
+                        }
+                        Err(e) => match outcome(&e) {
+                            Ok(got) if got == *owed => {
+                                let d = crate::contract::Diag::from_load(&e);
+                                if (d.node.as_deref(), d.port.as_deref())
+                                    == (Some("/n"), Some(name))
+                                {
+                                    Ok(())
+                                } else {
+                                    Err(format!("localized to {:?}/{:?} — {e}", d.node, d.port))
+                                }
+                            }
+                            Ok(got) => Err(format!("owed {owed:?}, got {got:?} — {e}")),
+                            Err(why) => Err(why),
+                        },
+                    };
+                    if let Err(why) = why {
+                        failures.push(format!(
+                            "config {op}.{name} ({:?}) set to {literal}: {why}",
+                            row.kind
+                        ));
+                    }
+                }
+            }
+            report(failures);
+        }
+
+        /// Every input and constant the registry presents classifies into a row. A new operator, or
+        /// an existing one growing a port of a kind nobody has decided the literal rules for, fails
+        /// here naming the operator, the port, and the kind.
+        #[test]
+        fn every_registry_port_reaches_a_row() {
+            let registry = reg();
+            let mut seen = 0usize;
+            for entry in registry.entries() {
+                let d = &entry.descriptor;
+                for (surface, ports, kinds) in [
+                    (
+                        "input",
+                        &d.inputs,
+                        TABLE.iter().map(|r| r.kind).collect::<Vec<_>>(),
+                    ),
+                    (
+                        "constant",
+                        &d.constants,
+                        CONSTANTS.iter().map(|r| r.kind).collect::<Vec<_>>(),
+                    ),
+                ] {
+                    for p in ports {
+                        seen += 1;
+                        let kind = classify(p).unwrap_or_else(|what| {
+                            panic!(
+                                "{} {surface} {:?} is {what} — the literal-form table has no row \
+                                 deciding what a literal on it owes an author",
+                                d.type_name, p.name
+                            )
+                        });
+                        // The input half of this is currently a tautology — `classify`'s `Ok`
+                        // arms and the `TABLE` rows are the same seven kinds. It is kept for the
+                        // constant half, where the covered set is genuinely narrower, and for the
+                        // day a kind is classified but deliberately left without a row.
+                        assert!(
+                            kinds.contains(&kind),
+                            "{} {surface} {:?} is a {kind:?}, which no {surface} row covers",
+                            d.type_name,
+                            p.name
+                        );
+                    }
+                }
+            }
+            // `inventory` submissions can be dead-stripped, and a table that swept nothing would
+            // pass every assertion above (the `builtin_is_nonempty` canary exists for the same
+            // reason). The built-in set is in the low hundreds of ports.
+            assert!(seen > 100, "the census swept only {seen} ports");
+        }
+
+        /// Every pipe type an `interface.inputs` entry may declare mints a port kind some row
+        /// covers *on the boundary axis*. A registry sweep cannot see this surface: a pipe port is
+        /// synthesized from a document word, not taken from an operator contract.
+        #[test]
+        fn every_declarable_pipe_type_reaches_a_boundary_row() {
+            // Each row's declarations really mint that row's kind — otherwise a boundary cell
+            // would be exercising a different port than the row it is filed under claims.
+            let minted = |decl: &str| {
+                let doc: InputPipeDoc =
+                    serde_json::from_str(decl).expect("a table pipe declaration parses");
+                let m = pipe_descriptor("p", &doc).expect("a declarable pipe type");
+                classify(&m.descriptor.inputs[0])
+            };
+            for row in TABLE {
+                for decl in row.pipes {
+                    assert_eq!(
+                        minted(decl),
+                        Ok(row.kind),
+                        "{decl} is filed under the wrong row"
+                    );
+                }
+            }
+
+            // Every word a document may declare mints a kind some row exercises on the boundary.
+            // The enum roster is read from `vocab`, not restated, so a newly pipeable enum arrives
+            // here on its own.
+            for word in PIPE_BASE_TYPES
+                .iter()
+                .copied()
+                .chain(crate::vocab::pipeable_enum_types())
+            {
+                let kind = minted(&format!(r#"{{"type":{word:?}}}"#)).unwrap_or_else(|what| {
+                    panic!("pipe type {word:?} mints {what}, which no row covers")
+                });
+                assert!(
+                    TABLE.iter().any(|r| r.kind == kind && !r.pipes.is_empty()),
+                    "pipe type {word:?} mints a {kind:?} that no row exercises on the boundary"
+                );
+            }
+            // `f32_buffer` is the one word minting two kinds — bare (no scalar to set) or
+            // scalar-defaulted (a number sets it) — and the bare word alone only ever reaches the
+            // first, so the metered form needs a row of its own.
+            for kind in [LiteralPort::BareSignal, LiteralPort::SignalControl] {
+                assert!(
+                    TABLE.iter().any(|r| r.kind == kind
+                        && r.pipes.iter().any(|d| d.contains("f32_buffer"))),
+                    "the {kind:?} form of an f32_buffer pipe has no boundary row"
+                );
+            }
+        }
+
+        /// A name no port owns answers `UnknownInput` whatever form the value took — number,
+        /// symbol, or wire-ref. The same mistake reads as the same instruction, so an author is
+        /// never told to go looking at the value when the name is what is wrong.
+        #[test]
+        fn an_unknown_name_is_unknown_input_in_every_form() {
+            let mut failures = Vec::new();
+            let owed = |what: &str, addr: &str, err: LoadError| -> Option<String> {
+                match &err {
+                    LoadError::UnknownInput { node, input } if node == addr && input == "nope" => {
+                        None
+                    }
+                    other => Some(format!("{what}: {other:?}")),
+                }
+            };
+            for literal in ["1", r#""Hp""#, r#"{"from":"/src.out"}"#] {
+                let json = format!(
+                    r#"{{"instrument":"t","nodes":[
+                        {{"type":"add_f32_value","address":"/src"}},
+                        {{"type":"filter","address":"/n","inputs":{{"nope":{literal}}}}}]}}"#
+                );
+                let err = load_err(&json, "an absent input name must not load");
+                failures.extend(owed(&format!("document, {literal}"), "/n", err));
+
+                // The boundary says it the same way, in boundary terms.
+                let child = r#"{"format_version":2,"instrument":"kid",
+                    "interface":{"inputs":{"p":{"type":"f32"}}},"nodes":[]}"#;
+                let parent = format!(
+                    r#"{{"instrument":"p","resources":{{"v":"v.json"}},"nodes":[
+                        {{"type":"add_f32_value","address":"/src"}},
+                        {{"type":"subpatch","address":"/sub","patch":"v",
+                          "inputs":{{"nope":{literal}}}}}]}}"#
+                );
+                let Err(err) = load_instrument(&parent, &reg(), &Child(child.to_string())) else {
+                    panic!("{literal}: an absent boundary input name must not load");
+                };
+                failures.extend(owed(&format!("boundary, {literal}"), "/sub", err));
+            }
+            // And so does the v1 migration path, which reaches the same question through
+            // `migrate_input_entry` rather than through pass 2 — one input name, one answer,
+            // whichever format version the document is written in.
+            let v1 = r#"{"instrument":"t","interface":{"inputs":{"x":"/n.nope"}},
+                "nodes":[{"type":"filter","address":"/n"}]}"#;
+            let err = load_err(v1, "a v1 entry naming an absent input must not load");
+            failures.extend(owed("v1 interface entry", "/n", err));
+            report(failures);
+        }
+
+        /// The sentences themselves, one per distinct thing the loader can say. The table asserts
+        /// which *variant* an author gets; these assert what they actually read, which is the part
+        /// this whole change exists to improve.
+        #[test]
+        fn the_messages_read_as_instructions() {
+            let cases: &[(&str, &str)] = &[
+                // A quoted number on a numeric port — the near-miss that motivated all of this.
+                (
+                    r#"{"instrument":"t","nodes":[
+                        {"type":"filter","address":"/hp","inputs":{"resonance":"0.08"}}]}"#,
+                    "node \"/hp\" input \"resonance\" is set to the symbol \"0.08\" \
+                     (a number in quotes), but it takes a number",
+                ),
+                // A literal on a port that takes none: the repair is a wire, so say so.
+                (
+                    r#"{"instrument":"t","nodes":[
+                        {"type":"output","address":"/o","inputs":{"audio":1.0}}]}"#,
+                    "node \"/o\" input \"audio\" is set to the number 1, but it takes no \
+                     literal value — wire a source into it",
+                ),
+                // An enum names its variants — and its index range, which unlike a numeric
+                // port's range is enforced rather than clamped.
+                (
+                    r#"{"instrument":"t","nodes":[
+                        {"type":"filter","address":"/f","inputs":{"mode":"nonesuch"}}]}"#,
+                    "node \"/f\" input \"mode\" is set to the symbol \"nonesuch\", but it takes \
+                     one of the symbols \"Lp\", \"Hp\", \"Bp\" (or an index 0..=2)",
+                ),
+                // An out-of-range index spelled as a symbol gets **no** "a number in quotes"
+                // hint: on an enum the quoting is a legal spelling, so the quotes are the one
+                // thing here that is not wrong.
+                (
+                    r#"{"instrument":"t","nodes":[
+                        {"type":"filter","address":"/f","inputs":{"mode":"3"}}]}"#,
+                    "node \"/f\" input \"mode\" is set to the symbol \"3\", but it takes \
+                     one of the symbols \"Lp\", \"Hp\", \"Bp\" (or an index 0..=2)",
+                ),
+                (
+                    r#"{"instrument":"t","nodes":[
+                        {"type":"filter","address":"/f","inputs":{"mode":-3}}]}"#,
+                    "node \"/f\" input \"mode\" is set to the number -3, but it takes \
+                     one of the symbols \"Lp\", \"Hp\", \"Bp\" (or an index 0..=2)",
+                ),
+                // A `config` value calls its port what `UnknownConfig` calls it.
+                (
+                    r#"{"instrument":"t","nodes":[
+                        {"type":"voicer","address":"/v","config":{"voices":"eight"}}]}"#,
+                    "node \"/v\" config constant \"voices\" is set to the symbol \"eight\", \
+                     but it takes a number",
+                ),
+                // A mistyped pipe type gets the whole declarable set, not a category and an
+                // example. Pinned in full because the roster is the useful part: a regression to
+                // "or a shared vocab enum name (e.g. …)" still contains "unknown pipe type" and
+                // would otherwise pass.
+                (
+                    r#"{"format_version":2,"instrument":"t",
+                        "interface":{"inputs":{"p":{"type":"FilterMod"}}},"nodes":[]}"#,
+                    "interface pipe \"p\": unknown pipe type \"FilterMod\" — one of \
+                     \"f32_buffer\", \"f32\", \"i32\", \"note\", \"harmony\", \"pitch\", \
+                     \"GateMode\", \"FilterMode\", \"Waveform\", \"GrainWindow\", \"M2sMode\", \
+                     \"MapCurve\", \"SnapDir\", \"SnapTarget\"",
+                ),
+            ];
+            for (json, expected) in cases {
+                let err = load_err(json, "the case must not load");
+                assert_eq!(&err.to_string(), expected);
+            }
+        }
     }
 }

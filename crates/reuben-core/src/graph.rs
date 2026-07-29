@@ -147,9 +147,11 @@ impl Graph {
     }
 
     /// Override a plan-time **`Constant`** by name, coercing the raw author literal to the
-    /// constant's stored [`Arg`] (an `i32` count clamps to its range). No-op if `name` is not a
-    /// constant or `raw` does not resolve. Upserts the `(slot, Arg)` override the patch's `config`
-    /// block sets and `from_graph` saves back.
+    /// constant's stored [`Arg`] (an `i32` count clamps to its range). Upserts the `(slot, Arg)`
+    /// override the patch's `config` block sets and `from_graph` saves back.
+    ///
+    /// **Silent no-op** if `name` is not a constant or `raw` does not resolve — see
+    /// [`set_value`](Self::set_value) for what that obliges a caller to do.
     pub fn set_constant(&mut self, node: NodeKey, name: &str, raw: &Arg) {
         let n = &mut self.nodes[node];
         let Some((slot, arg)) = n.descriptor.coerce_constant(name, raw) else {
@@ -163,9 +165,13 @@ impl Graph {
 
     /// Override a settable input's unwired default by name, coercing the raw author
     /// literal to the input's latch [`Arg`]: an `F32` control clamps to its range, an enum resolves a
-    /// symbol / index / concrete variant. No-op if `name` is not a settable input or `raw` does not
-    /// resolve (the loader validates names + values up front). Upserts the `(port, Arg)` override
-    /// consumed by [`Plan::instantiate`](crate::plan::Plan::instantiate).
+    /// symbol / index / concrete variant. Upserts the `(port, Arg)` override consumed by
+    /// [`Plan::instantiate`](crate::plan::Plan::instantiate).
+    ///
+    /// **Silent no-op** if `name` is not a settable input or `raw` does not resolve. That silence
+    /// is why a caller must hand over the value its own validation produced, not the one the author
+    /// wrote: validating one form and passing another leaves the document saying one thing and the
+    /// graph playing another, with nothing raised anywhere.
     pub fn set_value(&mut self, node: NodeKey, name: &str, raw: &Arg) {
         let n = &mut self.nodes[node];
         let Some((port, arg)) = n.descriptor.coerce_input(name, raw) else {

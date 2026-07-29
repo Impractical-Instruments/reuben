@@ -281,11 +281,26 @@ Each entry in a node's **`inputs`** map is one of:
 `format::load` resolves types via a `Registry`, applies literals/config, resolves wire-refs to
 edges (checking `Arg` types), and returns a `Graph`. Loading is an authoring step — portable core,
 never the audio thread. Every node needs a registered `type` and a unique `address` — a
-duplicate is the fatal `DuplicateAddress`. An out-of-range numeric literal — an input default
-or a `config` constant — is **clamped** into the port's declared range, never a load error.
-Other errors are specific: `UnknownInput`, `BadInputValue`, `TypeMismatch`,
-`ConstantInInputs` (a `Constant` placed in `inputs`), `UnknownConfig`, `AmbiguousWire`. See
-`instruments/*.json` for worked examples.
+duplicate is the fatal `DuplicateAddress`. An out-of-range numeric literal on a **numeric** port —
+an `f32`/`i32` input default or a `config` constant — is **clamped** into the port's declared
+range, never a load error. The carve-out is an **enum**, where a number is a variant *index*, not
+a quantity: an index outside the variant list names nothing, so it is a `BadInputValue` rather
+than a clamp to the nearest variant.
+
+Other errors are specific, and each says what to do next:
+
+- `UnknownInput` — no input of that name, whatever form the value took. Go look up the port.
+- `BadInputLiteral` — the name is right and the value's **form** is wrong: a symbol on a port
+  that takes a number (quoting a number is the usual way here), or any literal on a port that
+  takes none (wire a source into it instead). Change the value, not the name. `config` values
+  are checked the same way — `{"voices": "eight"}` is a form error, not a silent fallback to
+  the constant's default.
+- `BadInputValue` — the form is right and the value names nothing: an unknown enum symbol, or an
+  out-of-range enum index.
+- `TypeMismatch`, `ConstantInInputs` (a `Constant` placed in `inputs`), `UnknownConfig`,
+  `AmbiguousWire`.
+
+See `instruments/*.json` for worked examples.
 
 ### The `interface` block: named pipes at the boundary ([composition-operators](../rules/composition-operators.md)) <!-- lanes: skills,mcp,web -->
 
@@ -535,9 +550,9 @@ Every node has an OSC **address**, derived from graph structure by default. A Me
 node by address prefix and an **input port by name** — always addressed explicitly as
 `/<node>/<input>` (routing is by port name; there is no whole-node sugar). An `F32` control
 input takes a scalar (`/filt/cutoff 1500`). An enum input takes a **symbol** — its variant name
-(`/filt/mode "Hp"`; the JSON literal `"mode": "Hp"` is the same form) — with a bare in-range
-integer index accepted as a fallback; an unknown symbol or out-of-range index is an **error**,
-never a silent snap to the default. A `Note` input takes its args (`/voicer/notes [69.0, 1.0]`).
+(`/filt/mode "Hp"`; the JSON literal `"mode": "Hp"` is the same form) — with an in-range integer
+index accepted as a fallback, quoted (`"1"`) or bare (`1`); an unknown symbol or out-of-range
+index is an **error**, never a silent snap to the default. A `Note` input takes its args (`/voicer/notes [69.0, 1.0]`).
 Full wildcard dispatch (`/drums/*/decay`) is designed but not built — today a Message targets at
 most one node ([signal-time-dsp](../rules/signal-time-dsp.md)).
 
