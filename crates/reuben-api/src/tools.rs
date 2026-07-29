@@ -192,10 +192,11 @@ const VERB_PREFIXES: &[&str] = &[
     "wire_",
 ];
 
-/// Window verbs that read as a tool name but are deliberately not roster entries, so prose may
-/// name one without a contract behind it. `describe_boundary` answers a door reading a document
-/// structurally rather than a tool a model calls — see the module header.
-const UNADVERTISED_VERBS: &[&str] = &["describe_boundary"];
+/// Names that read as a tool and are not one, so prose may name them with no contract behind them.
+/// `describe_boundary` is a window verb answering a door that reads a document structurally rather
+/// than a tool a model calls (see the module header); `describe_patch` is the core introspection
+/// behind it. Neither is a name a model can send.
+const UNADVERTISED_VERBS: &[&str] = &["describe_boundary", "describe_patch"];
 
 /// The verb names in `text` that no contract serves — empty for prose that only sends a model
 /// somewhere it can actually go.
@@ -209,6 +210,11 @@ const UNADVERTISED_VERBS: &[&str] = &["describe_boundary"];
 /// A token is *verb-shaped* if it opens with one of the `verb_` forms a roster name is built from.
 /// Anything else in the prose is invisible here, which is the intended blind spot: this answers
 /// "does this sentence send a model to a verb nobody serves", not "is every word in it a name".
+///
+/// The shape is broader than the roster, so a name of the door's own that happens to wear it — an
+/// operator type like `add_f`, a host verb this window never hears of — comes back as unserved. A
+/// door with such names filters them out of the returned list; only the two that belong to the
+/// window itself are excluded here.
 pub fn unserved_verbs(text: &str) -> Vec<&str> {
     text.split(|c: char| !(c.is_ascii_lowercase() || c == '_'))
         .filter(|token| {

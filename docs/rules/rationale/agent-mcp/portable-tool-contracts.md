@@ -60,12 +60,24 @@ seed a document — and prose held in a `const &str` cannot interpolate that ver
 reads inside a string, so a verb retired *completely*, contract and route together, leaves every
 door compiling and every other test green while live prose goes on sending a model somewhere
 nobody answers. That is the same defect the symbols exist to prevent, one layer down from where a
-name can be a value at all. So prose is held to the roster by a scan instead of a type: every
-verb-shaped token in a sentence the roster carries, and in the gist the sidecar hands a model on
-connect, must be a verb some contract still serves. The `verb_` openings the scan recognises are
-deliberately *not* derived from the roster — seven of the twelve are carried by a single contract,
-so a derived list would stop recognising the token at the very moment the contract carrying it went
-away, and pass the check whose whole job is to fail there.
+name can be a value at all.
+
+So prose is held to the roster by a scan instead of a type, and the scan is one function every door
+shares rather than a tokenizer per crate. What it covers is every prose surface a model actually
+reads: the sentences the roster carries, the gist the sidecar hands a model on connect, and the
+guides it serves as resources — the last being the surface that most needs it, since a guide is
+read from disk at request time and so is compile-coupled to nothing at all. The scan runs off the
+resource table rather than a list of paths, so a resource added later is covered by default instead
+of by remembering. The `verb_` openings it recognises are deliberately *not* derived from the
+roster: seven of the twelve are carried by a single contract, so a derived list would stop
+recognising the token at the very moment the contract carrying it went away, and pass the check
+whose whole job is to fail there.
+
+One model-facing surface is left uncovered and known: a field's description, which schemars lifts
+from a doc comment. Four of them cross-reference a sibling verb today, and each of those verbs is
+held by one of the surfaces above, so nothing dangles — but that is a property of the current text
+rather than something enforced, and a field doc naming a verb no other surface mentions would go
+unscanned.
 
 Distilled from: ADR-0044, ADR-0048, ADR-0052, ADR-0054, ADR-0068, ADR-0071 · symbols decided in
 issue #700 — settled directly, no ADR.

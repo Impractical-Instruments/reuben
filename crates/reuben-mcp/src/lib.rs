@@ -1386,6 +1386,31 @@ mod tests {
     }
 
     #[test]
+    fn every_served_resource_sends_a_model_only_to_verbs_the_roster_serves() {
+        // The guides are the largest model-facing prose in the repo and the door reads them from
+        // disk at request time, so nothing about them is compile-coupled to anything: the authoring
+        // guide alone names 13 roster verbs. Driving the scan off RESOURCES rather than a list of
+        // paths is what makes a resource added later scanned by default instead of by remembering.
+        for entry in RESOURCES {
+            let path = entry.resolve_path();
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read the {} at {}: {e}", entry.noun, path.display()));
+            assert_eq!(
+                reuben_api::tools::unserved_verbs(&text),
+                Vec::<&str>::new(),
+                "{} sends a model to a verb no contract serves",
+                entry.uri
+            );
+            assert_eq!(
+                reuben_api::tools::unserved_verbs(entry.description),
+                Vec::<&str>::new(),
+                "{}'s advertised description sends a model to a verb no contract serves",
+                entry.uri
+            );
+        }
+    }
+
+    #[test]
     fn the_instructions_send_a_model_only_to_verbs_the_roster_serves() {
         // The gist names six verbs and is handed to every model that connects, so it is prose with
         // the same failure mode as an advertised sentence — and `stamp_window_prose`'s refusal
