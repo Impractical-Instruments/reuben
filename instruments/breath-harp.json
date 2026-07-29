@@ -1,23 +1,33 @@
 {
   "format_version": 3,
   "instrument": "breath-harp",
-  "doc": "Breath-excited four-string harp: blow into the microphone and the filtered breath noise excites four modal-resonator strings tuned in fifths and octaves off one fundamental, which ring out through a saturator, an echo and a self-keyed compressor. The mic is only an exciter — the resonators are pure wet, so no breath ever reaches the output, just the strings it set moving; `/pluck` also fires their internal mallets for a hands-free strum. The `pitch`, `brightness` and `damping` pipes are signed offsets that ride on top of each string's own value, so one control moves all four strings at once and the spread between them survives; each rests at 0, the instrument's voiced sound. Reach for it when you want a physical, blown-into instrument rather than a keyed synth.",
+  "doc": "Breath-excited four-string harp: blow into the microphone and the filtered breath noise excites four modal-resonator strings tuned in fifths and octaves off one fundamental, which ring out through a saturator, an echo and a self-keyed compressor. The mic is only an exciter — the resonators are pure wet, so no breath ever reaches the output, just the strings it set moving; `/pluck` also fires their internal mallets for a hands-free strum. `pitch` is the fundamental itself in Hz, the one seat that retunes all four strings — the other three are ratios of it — and `breath` is how hard the mic drives them, so a quiet room and a loud one both reach the strings. `brightness` and `damping` are signed offsets riding on each string's own value, so one control moves all four at once and the spread between them survives; each rests at 0, the instrument's voiced sound. Reach for it when you want a physical, blown-into instrument rather than a keyed synth.",
   "interface": {
     "inputs": {
+      "breath": {
+        "type": "f32",
+        "default": 6.0,
+        "min": 0.0,
+        "max": 24.0,
+        "unit": "x"
+      },
       "brightness": {
         "type": "f32",
+        "default": 0.0,
         "min": -0.5,
         "max": 0.38,
         "curve": "lin"
       },
       "damping": {
         "type": "f32",
+        "default": 0.0,
         "min": -0.8,
         "max": 0.12,
         "curve": "lin"
       },
       "level": {
         "type": "f32",
+        "default": 0.0,
         "min": -24.0,
         "max": 24.0,
         "curve": "lin",
@@ -29,13 +39,15 @@
       },
       "pitch": {
         "type": "f32",
-        "min": -70.0,
-        "max": 550.0,
-        "curve": "lin",
+        "default": 110.0,
+        "min": 40.0,
+        "max": 660.0,
+        "curve": "exp",
         "unit": "Hz"
       },
       "pluck": {
         "type": "f32",
+        "default": 0.0,
         "min": 0.0,
         "max": 1.0,
         "curve": "lin"
@@ -64,22 +76,13 @@
     {
       "type": "mul_f32_signal",
       "address": "/exciter",
-      "doc": "Breath drive: how hard the filtered mic noise excites the strings (`b`, an OSC-settable gain).",
+      "doc": "Breath drive: how hard the filtered mic noise excites the strings. Fed from the `breath` pipe, so a quiet mic and a loud one both reach the strings.",
       "inputs": {
         "a": {
           "from": "/hp.audio"
         },
-        "b": 6.0
-      }
-    },
-    {
-      "type": "add_f32_value",
-      "address": "/fund",
-      "doc": "The harp's fundamental in Hz — one seat that retunes all four strings; the others are ratios of it.",
-      "inputs": {
-        "a": 110.0,
         "b": {
-          "from": "/pitch"
+          "from": "/breath"
         }
       }
     },
@@ -89,7 +92,7 @@
       "doc": "String 2 tuning: a fifth above the fundamental.",
       "inputs": {
         "a": {
-          "from": "/fund"
+          "from": "/pitch"
         },
         "b": 1.5
       }
@@ -100,7 +103,7 @@
       "doc": "String 3 tuning: an octave above the fundamental.",
       "inputs": {
         "a": {
-          "from": "/fund"
+          "from": "/pitch"
         },
         "b": 2.0
       }
@@ -111,7 +114,7 @@
       "doc": "String 4 tuning: an octave and a fifth above the fundamental.",
       "inputs": {
         "a": {
-          "from": "/fund"
+          "from": "/pitch"
         },
         "b": 3.0
       }
@@ -128,7 +131,7 @@
           "from": "/d1"
         },
         "freq": {
-          "from": "/fund"
+          "from": "/pitch"
         },
         "gate": {
           "from": "/pluck"
