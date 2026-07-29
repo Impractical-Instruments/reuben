@@ -47,12 +47,15 @@ the consts named in the case of the wire, and a roster of lower-case consts read
 variables at every door that imports it. The casing is worth the second token; a test holds the
 pair to the convention.
 
-Where a name still has to be a literal, the literal stays and says why. rmcp's `#[tool(name = …)]`
-is one — the attribute parses a string literal, so no const can reach it — and the sentences in
-`authoring::prose` are another, since a `const &str` cannot interpolate the symbol for a sibling
-verb it names. Neither is left bare: the MCP door refuses to construct unless the router and the
-roster are the same name-set, in both directions, which is a stronger guarantee than the symbols
-give and the reason that door needs no symbol in its route keys at all.
+Where a name still has to be a literal, the literal stays, says why, and is covered by something
+else. rmcp's `#[tool(name = …)]` is one: the attribute parses a string literal, so no const can
+reach it — and that door refuses to construct unless the router and the roster are the same
+name-set, in both directions, which is a stronger guarantee than a symbol in a route key would
+give. The sentences in `authoring::prose` are the other: a sentence routinely tells a model to
+reach for a sibling verb, and a `const &str` cannot interpolate that verb's symbol, because
+`concat!` takes literals only. Their cover is a test rather than a type — every verb-shaped token
+in a roster sentence must be a roster name — because the failure it prevents is the same one: a
+dropped contract leaving live prose pointing a model at a verb no door serves.
 
 Distilled from: ADR-0044, ADR-0048, ADR-0052, ADR-0054, ADR-0068, ADR-0071 · symbols decided in
 issue #700 — settled directly, no ADR.

@@ -187,4 +187,54 @@ mod tests {
             );
         }
     }
+
+    /// The verb-shaped prefixes a roster name can start with — the `verb_` half of the
+    /// `verb_instrument_object` convention, plus the three verbs that name something other than an
+    /// instrument. Widening the roster past these widens this list with it.
+    const VERB_PREFIXES: &[&str] = &[
+        "add_",
+        "describe_",
+        "get_",
+        "new_",
+        "remove_",
+        "rename_",
+        "send_",
+        "set_",
+        "swap_",
+        "unwire_",
+        "validate_",
+        "wire_",
+    ];
+
+    /// Every `[a-z_]` run in `text` that reads as a verb name: it opens with a verb prefix and
+    /// carries something after it.
+    fn verb_shaped_tokens(text: &str) -> Vec<&str> {
+        text.split(|c: char| !(c.is_ascii_lowercase() || c == '_'))
+            .filter(|token| {
+                VERB_PREFIXES.iter().any(|prefix| {
+                    token
+                        .strip_prefix(prefix)
+                        .is_some_and(|rest| !rest.is_empty())
+                })
+            })
+            .collect()
+    }
+
+    /// A sentence advertised to a model routinely tells it to reach for a *sibling* verb, and a
+    /// `const &str` cannot interpolate the symbol for one — `concat!` takes literals only. So the
+    /// sentences name their siblings in prose, and dropping a contract would leave them pointing at
+    /// a verb no door serves, which is the failure the symbols exist to prevent everywhere the
+    /// spelling can be a value.
+    #[test]
+    fn a_sentence_names_only_verbs_the_roster_still_serves() {
+        for contract in CONTRACTS {
+            for token in verb_shaped_tokens(contract.description) {
+                assert!(
+                    CONTRACTS.iter().any(|c| c.name == token),
+                    "`{}`'s sentence sends a model to `{token}`, which is not on the roster",
+                    contract.name
+                );
+            }
+        }
+    }
 }
