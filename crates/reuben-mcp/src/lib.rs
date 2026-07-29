@@ -1386,6 +1386,20 @@ mod tests {
     }
 
     #[test]
+    fn the_instructions_send_a_model_only_to_verbs_the_roster_serves() {
+        // The gist names six verbs and is handed to every model that connects, so it is prose with
+        // the same failure mode as an advertised sentence — and `stamp_window_prose`'s refusal
+        // cannot see it, because that compares route keys and never reads inside a string. A verb
+        // fully retired upstream (contract and route together) leaves the rest of this door
+        // compiling and every other test green while the gist still tells a model to call it.
+        assert_eq!(
+            reuben_api::tools::unserved_verbs(INSTRUCTIONS),
+            Vec::<&str>::new(),
+            "the server instructions send a model to a verb no contract serves"
+        );
+    }
+
+    #[test]
     fn resource_table_is_self_consistent() {
         // The "new resource = one row" guard: a copy-pasted row that forgot to update its URI, env
         // override, or default path would silently alias another resource's.

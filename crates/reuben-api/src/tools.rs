@@ -168,6 +168,62 @@ pub fn names() -> Vec<&'static str> {
     CONTRACTS.iter().map(|c| c.name).collect()
 }
 
+/// The `verb_` openings a roster name is built from — the first half of the
+/// `verb_instrument_object` convention, widened by the verbs that name something other than an
+/// instrument. What makes a token in prose *read* as a tool a model can call.
+///
+/// Parity: this cannot be derived from [`CONTRACTS`], and deriving it would be worse than useless.
+/// Seven of these twelve are carried by exactly one contract, so a derived list would lose the
+/// opening at the moment that contract left the roster — un-shaping the very token left dangling in
+/// a sibling's sentence, and passing the check whose whole job is to fail there. The list has to
+/// outlive the entry to catch its removal.
+const VERB_PREFIXES: &[&str] = &[
+    "add_",
+    "describe_",
+    "get_",
+    "new_",
+    "remove_",
+    "rename_",
+    "send_",
+    "set_",
+    "swap_",
+    "unwire_",
+    "validate_",
+    "wire_",
+];
+
+/// Window verbs that read as a tool name but are deliberately not roster entries, so prose may
+/// name one without a contract behind it. `describe_boundary` answers a door reading a document
+/// structurally rather than a tool a model calls — see the module header.
+const UNADVERTISED_VERBS: &[&str] = &["describe_boundary"];
+
+/// The verb names in `text` that no contract serves — empty for prose that only sends a model
+/// somewhere it can actually go.
+///
+/// Model-facing prose names sibling verbs constantly ("unwire it first", "call `new_instrument`"),
+/// and prose held in a `const &str` cannot interpolate a symbol for one, because `concat!` takes
+/// literals only. So a door that writes such a sentence holds it to the roster with this instead:
+/// the coupling is a test rather than a type, but it fails on the same event — a contract leaving
+/// the roster while live prose goes on pointing a model at it.
+///
+/// A token is *verb-shaped* if it opens with one of the `verb_` forms a roster name is built from.
+/// Anything else in the prose is invisible here, which is the intended blind spot: this answers
+/// "does this sentence send a model to a verb nobody serves", not "is every word in it a name".
+pub fn unserved_verbs(text: &str) -> Vec<&str> {
+    text.split(|c: char| !(c.is_ascii_lowercase() || c == '_'))
+        .filter(|token| {
+            VERB_PREFIXES.iter().any(|prefix| {
+                token
+                    .strip_prefix(prefix)
+                    .is_some_and(|rest| !rest.is_empty())
+            })
+        })
+        .filter(|token| {
+            !CONTRACTS.iter().any(|c| c.name == *token) && !UNADVERTISED_VERBS.contains(token)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,53 +244,35 @@ mod tests {
         }
     }
 
-    /// The verb-shaped prefixes a roster name can start with — the `verb_` half of the
-    /// `verb_instrument_object` convention, plus the three verbs that name something other than an
-    /// instrument. Widening the roster past these widens this list with it.
-    const VERB_PREFIXES: &[&str] = &[
-        "add_",
-        "describe_",
-        "get_",
-        "new_",
-        "remove_",
-        "rename_",
-        "send_",
-        "set_",
-        "swap_",
-        "unwire_",
-        "validate_",
-        "wire_",
-    ];
-
-    /// Every `[a-z_]` run in `text` that reads as a verb name: it opens with a verb prefix and
-    /// carries something after it.
-    fn verb_shaped_tokens(text: &str) -> Vec<&str> {
-        text.split(|c: char| !(c.is_ascii_lowercase() || c == '_'))
-            .filter(|token| {
-                VERB_PREFIXES.iter().any(|prefix| {
-                    token
-                        .strip_prefix(prefix)
-                        .is_some_and(|rest| !rest.is_empty())
-                })
-            })
-            .collect()
-    }
-
-    /// A sentence advertised to a model routinely tells it to reach for a *sibling* verb, and a
-    /// `const &str` cannot interpolate the symbol for one — `concat!` takes literals only. So the
-    /// sentences name their siblings in prose, and dropping a contract would leave them pointing at
-    /// a verb no door serves, which is the failure the symbols exist to prevent everywhere the
-    /// spelling can be a value.
+    /// The sentences are the roster's own prose, so they are the first thing held to it.
     #[test]
     fn a_sentence_names_only_verbs_the_roster_still_serves() {
         for contract in CONTRACTS {
-            for token in verb_shaped_tokens(contract.description) {
-                assert!(
-                    CONTRACTS.iter().any(|c| c.name == token),
-                    "`{}`'s sentence sends a model to `{token}`, which is not on the roster",
-                    contract.name
-                );
-            }
+            assert_eq!(
+                unserved_verbs(contract.description),
+                Vec::<&str>::new(),
+                "`{}`'s sentence sends a model to a verb no contract serves; if the name is not a \
+                 tool a model can call, it belongs in UNADVERTISED_VERBS",
+                contract.name
+            );
+        }
+    }
+
+    /// [`unserved_verbs`] can only see a token whose opening it recognises, so a roster name built
+    /// from an opening [`VERB_PREFIXES`] does not carry would be invisible to it — and so would
+    /// every dangling reference to that name. Adding such a verb has to fail *here*, when the list
+    /// can still be widened, rather than silently narrowing the check for good.
+    #[test]
+    fn every_roster_name_is_shaped_like_a_verb_the_scan_can_see() {
+        for contract in CONTRACTS {
+            assert!(
+                VERB_PREFIXES
+                    .iter()
+                    .any(|prefix| contract.name.starts_with(prefix)),
+                "`{}` opens with a verb form VERB_PREFIXES does not list, so prose naming it \
+                 would go unscanned",
+                contract.name
+            );
         }
     }
 }

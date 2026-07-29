@@ -51,11 +51,21 @@ Where a name still has to be a literal, the literal stays, says why, and is cove
 else. rmcp's `#[tool(name = …)]` is one: the attribute parses a string literal, so no const can
 reach it — and that door refuses to construct unless the router and the roster are the same
 name-set, in both directions, which is a stronger guarantee than a symbol in a route key would
-give. The sentences in `authoring::prose` are the other: a sentence routinely tells a model to
-reach for a sibling verb, and a `const &str` cannot interpolate that verb's symbol, because
-`concat!` takes literals only. Their cover is a test rather than a type — every verb-shaped token
-in a roster sentence must be a roster name — because the failure it prevents is the same one: a
-dropped contract leaving live prose pointing a model at a verb no door serves.
+give.
+
+**Model-facing prose is the other, and it is the case a route-key check cannot reach.** A sentence
+routinely tells a model to reach for a sibling verb — unwire it first, call `new_instrument` to
+seed a document — and prose held in a `const &str` cannot interpolate that verb's symbol, because
+`concat!` takes literals only. Nor does the door's refusal help: it compares route keys and never
+reads inside a string, so a verb retired *completely*, contract and route together, leaves every
+door compiling and every other test green while live prose goes on sending a model somewhere
+nobody answers. That is the same defect the symbols exist to prevent, one layer down from where a
+name can be a value at all. So prose is held to the roster by a scan instead of a type: every
+verb-shaped token in a sentence the roster carries, and in the gist the sidecar hands a model on
+connect, must be a verb some contract still serves. The `verb_` openings the scan recognises are
+deliberately *not* derived from the roster — seven of the twelve are carried by a single contract,
+so a derived list would stop recognising the token at the very moment the contract carrying it went
+away, and pass the check whose whole job is to fail there.
 
 Distilled from: ADR-0044, ADR-0048, ADR-0052, ADR-0054, ADR-0068, ADR-0071 · symbols decided in
 issue #700 — settled directly, no ADR.
