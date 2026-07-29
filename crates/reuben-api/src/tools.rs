@@ -58,13 +58,8 @@ pub struct Contract {
 
 /// Declare the roster once. Each entry is one contract, in four parts: the **symbol** a door names
 /// it by, the exact spelling that symbol carries onto the wire, the channel kind, and the sentence
-/// it is advertised by.
-///
-/// The one invocation below expands to both [`CONTRACTS`] and [`names`], so the roster and the
-/// symbol set cannot drift: a contract deleted from the table takes its symbol with it, and every
-/// door that still names it stops compiling rather than quietly dropping it from what it
-/// advertises. A second, hand-kept list of names beside the roster would be exactly the drift the
-/// symbols exist to end.
+/// it is advertised by. The one invocation below expands to all of [`CONTRACTS`], [`mod@names`]
+/// and the test table that checks the two halves of an entry against each other.
 macro_rules! roster {
     ($($symbol:ident = $wire:literal, $kind:ident, $description:expr;)*) => {
         /// One `&'static str` per [`CONTRACTS`](crate::tools::CONTRACTS) entry, in roster order:
@@ -97,8 +92,8 @@ macro_rules! roster {
             },
         )*];
 
-        /// Each entry's symbol as written, beside the spelling it carries — the only thing that
-        /// can see both halves, since a symbol is not a value the roster can read back.
+        /// Each entry's symbol, as text, beside the spelling it carries. The roster itself keeps
+        /// only the spelling, so this is the one place both halves of an entry are values.
         #[cfg(test)]
         const SYMBOLS_AND_SPELLINGS: &[(&str, &str)] =
             &[$((stringify!($symbol), names::$symbol),)*];
@@ -177,9 +172,11 @@ pub fn names() -> Vec<&'static str> {
 mod tests {
     use super::*;
 
-    /// Parity: `macro_rules!` cannot change the case of an identifier, so a roster entry writes its
-    /// symbol and its wire spelling as two tokens rather than deriving one from the other; nothing
-    /// but this holds the pair to the convention a door reads a symbol by.
+    /// Parity: one token per entry is buildable — `stringify!` derives the spelling from the
+    /// symbol — but only by naming the consts in the case of the wire, and a roster of
+    /// `non_upper_case_globals` reads as a set of variables at every door that imports it. The
+    /// second token buys the casing back, and this holds the pair to the convention a door reads a
+    /// symbol by.
     #[test]
     fn a_symbol_is_the_upper_case_of_the_name_it_carries() {
         for (symbol, spelling) in SYMBOLS_AND_SPELLINGS {

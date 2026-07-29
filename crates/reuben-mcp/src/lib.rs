@@ -16,13 +16,19 @@
 //! [`stamp_window_prose`] writes the window's sentence onto the built router instead — the same
 //! prose the CLI and the browser read, rather than a copy per door.
 //!
-//! The `name` argument is literal-only for the same reason, and there is no equivalent escape: a
-//! route's name is what the router is keyed by, so it must be spelled before the router exists.
-//! That one literal per tool is the whole of what this door still spells by hand, and
-//! [`stamp_window_prose`]'s two assertions are what hold it to the roster — at construction, in
-//! both directions. Everywhere the door names a contract as a *value* rather than as a route key
-//! it writes [`reuben_api::tools::names`] instead, so a contract the window drops is a compile
-//! error here and not a name that quietly stops meaning anything.
+//! The `name` argument is literal-only for the same reason, so the roster spelling is written out
+//! once per tool here — redundantly, since rmcp defaults a route's name to the method's own ident
+//! and every method is already named for its verb, but written anyway so the wire name is read off
+//! the attribute rather than inferred from a default. Nothing about that literal is coupled to the
+//! roster, and [`stamp_window_prose`]'s two assertions are what stand in for the coupling: at
+//! construction, in both directions, refusing to start rather than serve a surface that is not the
+//! roster.
+//!
+//! Everywhere the door names a contract as a *value* rather than as a route key it writes
+//! [`reuben_api::tools::names`] instead, so the window dropping that contract is a compile error
+//! here. Today that is all test code, because the route key is the only place non-test source
+//! names a verb at all — the door reaches every one of them through a window function, and that
+//! call is already coupled to the window by its own argument type.
 //!
 //! The one thing left that is genuinely this door's is the socket: `reuben-mcp` reaches a
 //! *separate process*, so it supplies a loopback TCP transport where an in-process host supplies

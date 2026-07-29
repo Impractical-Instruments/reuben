@@ -41,14 +41,18 @@ names it.
 Emitting both from one table is the point, not the convenience. A hand-kept list of names beside
 the roster would be the [parity marker](../code-as-grounding/parity-test-is-a-defect-marker.md)
 this repo cashes rather than renews — a second name-list free to drift, which is the very thing the
-paragraph above rejects. What the macro cannot derive is the *case*: `macro_rules!` cannot
-lower-case an identifier, so the symbol and the spelling are two tokens of one entry, held to the
-convention by the one test in `tools.rs` that can see both halves.
+paragraph above rejects. The entry still spells its symbol and its wire name as two tokens, and
+that is a choice rather than a limit: `stringify!` would derive one from the other, but only with
+the consts named in the case of the wire, and a roster of lower-case consts reads as a set of
+variables at every door that imports it. The casing is worth the second token; a test holds the
+pair to the convention.
 
-A door that cannot take the symbol keeps the literal and says why. rmcp's `#[tool(name = …)]` is
-one: the attribute parses a string literal and a route key must exist before the router does. That
-door already refuses to construct on a roster mismatch, in both directions, which is the stronger
-guarantee the symbols only approximate.
+Where a name still has to be a literal, the literal stays and says why. rmcp's `#[tool(name = …)]`
+is one — the attribute parses a string literal, so no const can reach it — and the sentences in
+`authoring::prose` are another, since a `const &str` cannot interpolate the symbol for a sibling
+verb it names. Neither is left bare: the MCP door refuses to construct unless the router and the
+roster are the same name-set, in both directions, which is a stronger guarantee than the symbols
+give and the reason that door needs no symbol in its route keys at all.
 
 Distilled from: ADR-0044, ADR-0048, ADR-0052, ADR-0054, ADR-0068, ADR-0071 · symbols decided in
 issue #700 — settled directly, no ADR.
