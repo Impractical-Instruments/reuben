@@ -1,0 +1,382 @@
+{
+  "format_version": 3,
+  "instrument": "breath-harp",
+  "doc": "Breath-excited four-string harp: blow into the microphone and the filtered breath noise excites four modal-resonator strings tuned in fifths and octaves off one fundamental, which ring out through a saturator, an echo and a self-keyed compressor. The mic is only an exciter — the resonators are pure wet, so no breath ever reaches the output, just the strings it set moving; `/pluck` also fires their internal mallets for a hands-free strum. `pitch` is the fundamental itself in Hz, the one seat that retunes all four strings — the other three are ratios of it — and `breath` is how hard the mic drives them, so a quiet room and a loud one both reach the strings. `brightness` and `damping` are signed offsets riding on each string's own value, so one control moves all four at once and the spread between them survives; each rests at 0, the instrument's voiced sound. Reach for it when you want a physical, blown-into instrument rather than a keyed synth.",
+  "interface": {
+    "inputs": {
+      "breath": {
+        "type": "f32",
+        "default": 6.0,
+        "min": 0.0,
+        "max": 24.0,
+        "unit": "x"
+      },
+      "brightness": {
+        "type": "f32",
+        "default": 0.0,
+        "min": -0.5,
+        "max": 0.38,
+        "curve": "lin"
+      },
+      "damping": {
+        "type": "f32",
+        "default": 0.0,
+        "min": -0.8,
+        "max": 0.12,
+        "curve": "lin"
+      },
+      "level": {
+        "type": "f32",
+        "default": 0.0,
+        "min": -24.0,
+        "max": 24.0,
+        "curve": "lin",
+        "unit": "dB"
+      },
+      "mic": {
+        "type": "f32_buffer",
+        "channel": 0
+      },
+      "pitch": {
+        "type": "f32",
+        "default": 110.0,
+        "min": 40.0,
+        "max": 660.0,
+        "curve": "exp",
+        "unit": "Hz"
+      },
+      "pluck": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0,
+        "curve": "lin"
+      }
+    },
+    "outputs": {
+      "out": {
+        "from": "/comp.audio"
+      }
+    }
+  },
+  "nodes": [
+    {
+      "type": "filter",
+      "address": "/hp",
+      "doc": "Breath highpass: strips rumble and plosive thud so only the hiss excites the strings.",
+      "inputs": {
+        "audio": {
+          "from": "/mic"
+        },
+        "cutoff": 300.0,
+        "mode": "Hp",
+        "resonance": 0.05
+      }
+    },
+    {
+      "type": "mul_f32_signal",
+      "address": "/exciter",
+      "doc": "Breath drive: how hard the filtered mic noise excites the strings. Fed from the `breath` pipe, so a quiet mic and a loud one both reach the strings.",
+      "inputs": {
+        "a": {
+          "from": "/hp.audio"
+        },
+        "b": {
+          "from": "/breath"
+        }
+      }
+    },
+    {
+      "type": "mul_f32_value",
+      "address": "/f2",
+      "doc": "String 2 tuning: a fifth above the fundamental.",
+      "inputs": {
+        "a": {
+          "from": "/pitch"
+        },
+        "b": 1.5
+      }
+    },
+    {
+      "type": "mul_f32_value",
+      "address": "/f3",
+      "doc": "String 3 tuning: an octave above the fundamental.",
+      "inputs": {
+        "a": {
+          "from": "/pitch"
+        },
+        "b": 2.0
+      }
+    },
+    {
+      "type": "mul_f32_value",
+      "address": "/f4",
+      "doc": "String 4 tuning: an octave and a fifth above the fundamental.",
+      "inputs": {
+        "a": {
+          "from": "/pitch"
+        },
+        "b": 3.0
+      }
+    },
+    {
+      "type": "resonator",
+      "address": "/s1",
+      "doc": "String 1 — the fundamental. Pure-wet modal bank, so the breath never comes out the other end; only the string it set ringing.",
+      "inputs": {
+        "brightness": {
+          "from": "/b1"
+        },
+        "damping": {
+          "from": "/d1"
+        },
+        "freq": {
+          "from": "/pitch"
+        },
+        "gate": {
+          "from": "/pluck"
+        },
+        "in": {
+          "from": "/exciter"
+        },
+        "position": 0.28,
+        "structure": 0.08
+      }
+    },
+    {
+      "type": "resonator",
+      "address": "/s2",
+      "doc": "String 2 — the fifth. Slightly darker and shorter-ringing than string 1, as a shorter string is.",
+      "inputs": {
+        "brightness": {
+          "from": "/b2"
+        },
+        "damping": {
+          "from": "/d2"
+        },
+        "freq": {
+          "from": "/f2"
+        },
+        "gate": {
+          "from": "/pluck"
+        },
+        "in": {
+          "from": "/exciter"
+        },
+        "position": 0.32,
+        "structure": 0.08
+      }
+    },
+    {
+      "type": "resonator",
+      "address": "/s3",
+      "doc": "String 3 — the octave.",
+      "inputs": {
+        "brightness": {
+          "from": "/b3"
+        },
+        "damping": {
+          "from": "/d3"
+        },
+        "freq": {
+          "from": "/f3"
+        },
+        "gate": {
+          "from": "/pluck"
+        },
+        "in": {
+          "from": "/exciter"
+        },
+        "position": 0.36,
+        "structure": 0.08
+      }
+    },
+    {
+      "type": "resonator",
+      "address": "/s4",
+      "doc": "String 4 — the octave-and-a-fifth, the shortest and quickest to die away.",
+      "inputs": {
+        "brightness": {
+          "from": "/b4"
+        },
+        "damping": {
+          "from": "/d4"
+        },
+        "freq": {
+          "from": "/f4"
+        },
+        "gate": {
+          "from": "/pluck"
+        },
+        "in": {
+          "from": "/exciter"
+        },
+        "position": 0.4,
+        "structure": 0.08
+      }
+    },
+    {
+      "type": "add_f32_signal",
+      "address": "/sum_a",
+      "inputs": {
+        "a": {
+          "from": "/s1"
+        },
+        "b": {
+          "from": "/s2"
+        }
+      }
+    },
+    {
+      "type": "add_f32_signal",
+      "address": "/sum_b",
+      "inputs": {
+        "a": {
+          "from": "/s3"
+        },
+        "b": {
+          "from": "/s4"
+        }
+      }
+    },
+    {
+      "type": "add_f32_signal",
+      "address": "/strings",
+      "doc": "The four strings summed — the instrument proper, before the tail.",
+      "inputs": {
+        "a": {
+          "from": "/sum_a"
+        },
+        "b": {
+          "from": "/sum_b"
+        }
+      }
+    },
+    {
+      "type": "saturator",
+      "address": "/body",
+      "doc": "Soundboard: a touch of saturation to glue the four strings into one body.",
+      "inputs": {
+        "audio": {
+          "from": "/strings"
+        },
+        "drive": 1.6,
+        "level": 0.9,
+        "warmth": 0.45
+      }
+    },
+    {
+      "type": "delay",
+      "address": "/echo",
+      "doc": "Echo: repeats that let one breath keep answering itself.",
+      "inputs": {
+        "audio": {
+          "from": "/body"
+        },
+        "feedback": 0.38,
+        "mix": 0.32,
+        "time": 0.34
+      }
+    },
+    {
+      "type": "compressor",
+      "address": "/comp",
+      "doc": "Output compressor, self-keyed: evens out the difference between a hard puff and a soft one so quiet breath still speaks.",
+      "inputs": {
+        "attack": 8.0,
+        "audio": {
+          "from": "/echo"
+        },
+        "key_hp": 120.0,
+        "makeup": {
+          "from": "/level"
+        },
+        "ratio": 3.5,
+        "release": 220.0,
+        "threshold": -20.0
+      }
+    },
+    {
+      "type": "add_f32_value",
+      "address": "/b1",
+      "doc": "String 1's brightness: its own base plus the shared brightness control, so one knob moves all four strings and keeps the spread between them.",
+      "inputs": {
+        "a": 0.62,
+        "b": {
+          "from": "/brightness"
+        }
+      }
+    },
+    {
+      "type": "add_f32_value",
+      "address": "/b2",
+      "inputs": {
+        "a": 0.58,
+        "b": {
+          "from": "/brightness"
+        }
+      }
+    },
+    {
+      "type": "add_f32_value",
+      "address": "/b3",
+      "inputs": {
+        "a": 0.55,
+        "b": {
+          "from": "/brightness"
+        }
+      }
+    },
+    {
+      "type": "add_f32_value",
+      "address": "/b4",
+      "inputs": {
+        "a": 0.5,
+        "b": {
+          "from": "/brightness"
+        }
+      }
+    },
+    {
+      "type": "add_f32_value",
+      "address": "/d1",
+      "doc": "String 1's ring time: its own base plus the shared damping control.",
+      "inputs": {
+        "a": 0.88,
+        "b": {
+          "from": "/damping"
+        }
+      }
+    },
+    {
+      "type": "add_f32_value",
+      "address": "/d2",
+      "inputs": {
+        "a": 0.86,
+        "b": {
+          "from": "/damping"
+        }
+      }
+    },
+    {
+      "type": "add_f32_value",
+      "address": "/d3",
+      "inputs": {
+        "a": 0.84,
+        "b": {
+          "from": "/damping"
+        }
+      }
+    },
+    {
+      "type": "add_f32_value",
+      "address": "/d4",
+      "inputs": {
+        "a": 0.8,
+        "b": {
+          "from": "/damping"
+        }
+      }
+    }
+  ]
+}
