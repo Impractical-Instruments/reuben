@@ -120,7 +120,7 @@ not by hope:
 - **subpatch** — a node referencing a nested instrument, inlined and dissolved into the parent graph at build. · [composition-operators](composition-operators.md)
 - **surface doc** — the presentation-only document that binds an instrument's interface input-pipe names to widgets, decoupled from the instrument itself. · [authoring-library](authoring-library.md)
 - **survivor** — an operator that persists across a Swap (matched on address + type + instantiate-time fingerprint) and keeps its state via box transplant. · [execution-runtime](execution-runtime.md)
-- **Swap** — the single off-thread transition that installs a new Plan/Engine at a block boundary, migrating survivor state and reclaiming the old vessel. · [execution-runtime](execution-runtime.md)
+- **Swap** — the off-thread transition that installs a new Plan/Engine at a block boundary, migrating survivor state and reclaiming the old vessel; the whole-Engine unit until ADR-0076 lands the sub-Plan one. · [execution-runtime](execution-runtime.md)
 - **Tonal context** — the latched key/scale/chord/tuning value, owned by a context Operator, that followers resolve pitch against. · [signal-time-dsp](signal-time-dsp.md)
 - **toolchain pin** — the exact-version `rust-toolchain.toml` that local dev and CI share so their fmt/clippy verdicts are identical, kept in lockstep with the workspace MSRV. · [web-product-process](web-product-process.md)
 - **Toy** — a launch beginner instrument assembled from existing operators plus a generated surface, one per distinct player gesture. · [authoring-library](authoring-library.md)
@@ -128,7 +128,7 @@ not by hope:
 - **Value** — a latched, held, single-valued port form (`f32`/`enum`/`harmony`/`i32`), read as a constant within a `process` call via zero-order-hold. · [composition-operators](composition-operators.md)
 - **Voice** — one instance of a voice instrument the Voicer runs; what sounds a note, distinct from the note Message itself. · [composition-operators](composition-operators.md)
 - **Voice instrument** — an ordinary instrument whose interface makes it hostable by a Voicer; a role read off the interface, never a separate kind. · [composition-operators](composition-operators.md)
-- **Voicer** — the sole runtime host: it builds N standalone voice patches and renders only the active ones per block. · [composition-operators](composition-operators.md)
+- **Voicer** — a runtime host (the first, and until ADR-0075 lands the only one): it builds N standalone voice patches and renders only the active ones per block. · [composition-operators](composition-operators.md)
 - **Window** — the `reuben-api` crate: the one thing between the engine and every consumer, declaring the types a door serializes, the roster and its advertised sentences, and both ends of the structure channel. · [agent-mcp](agent-mcp.md)
 
 ## Avoid these synonyms

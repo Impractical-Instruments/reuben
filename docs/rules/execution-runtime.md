@@ -25,7 +25,11 @@ including the very first build, is a **Swap**: off the audio thread a single-wri
 instantiates a new Plan (topo sort, allocate the delta), the whole **Engine** vessel
 crosses the RT boundary through a pair of single-slot atomic mailboxes, surviving operators keep
 their state by pointer-transplant, and the retired Engine is reclaimed off-thread. Because the swap
-is audibly abrupt, install is wrapped in a fixed ~20 ms master-gain duck. Nothing but the Coordinator
+is audibly abrupt, install is wrapped in a fixed ~20 ms master-gain duck. *(Superseded by ADR-0076,
+pending absorption: one hosted sub-Plan may be installed into a playing Engine without rebuilding the
+vessel, and that path carries no ramp because it produces no discontinuity — a parked slot changes
+nothing sounding, and a live slot adopts at the host's next boundary. The whole-Engine unit and its
+ramp stay correct for everything above a host.)* Nothing but the Coordinator
 writes structure, and nothing crosses the RT boundary except by lock-free message passing — a shape
 Rust's `Send`/`Sync` enforces — which is also the seam where the removable native I/O layer detaches
 from the portable core and its **embed surface**, the `Engine` bridge. *(A host shell reaches that
@@ -153,6 +157,8 @@ Superseded by: ADR-0067 (pending absorption)
 
 [why](rationale/execution-runtime/engine-swap-unit.md)
 
+Superseded by: ADR-0076 (pending absorption)
+
 <a id="survivor-migration"></a>
 ### Operator state survives a Swap by pointer-transplanting boxes matched on fully-qualified address, operator type, and instantiate-time fingerprint.
 
@@ -173,7 +179,7 @@ Superseded by: ADR-0067 (pending absorption)
 - **Block** — the fixed-size processing quantum; each block computes message- and signal-domain data in one dependency-ordered pass.
 - **Plan** — the runtime artifact: the immutable, already-allocated, topologically ordered schedule that Render executes per block.
 - **Instantiate** — the off-thread construction of a Plan (topo sort, allocate the delta); the first half of every Swap, where all allocation lives.
-- **Swap** — the single off-thread transition that installs a new Plan/Engine at a block boundary, migrating survivor state and reclaiming the old vessel.
+- **Swap** — the off-thread transition that installs a new Plan/Engine at a block boundary, migrating survivor state and reclaiming the old vessel; the whole-Engine unit until ADR-0076 lands the sub-Plan one.
 - **Render** — the hard-realtime, allocation-free per-block execution of the current Plan on the audio thread.
 - **Coordinator** — the single non-RT writer of graph structure; owns the canonical graph and instrument library and performs every Swap.
 - **Engine** — the portable bridge in reuben-core (`queue_osc` → `fill` → `drain_outbound`) a host shell drives, and the whole vessel (Plan + Renderer + scratch) that a Swap crosses.

@@ -44,7 +44,9 @@ build-time count) is referenced by a `subpatch` node and **inlined**: at build i
 the parent's flat schedule under an address prefix, boundary wires rewire to the inner targets, and
 the node dissolves — zero runtime cost, per-reuse identity and state for free. Runtime-varying
 cardinality is **hosted**: the **Voicer** builds N standalone voice patches and renders the active
-ones per block, the sole runtime host. Either way a graph's edge is crossed by **interface pipes** —
+ones per block, the sole runtime host. *(Superseded by ADR-0075, pending absorption: the split is on
+whether the live set is decided at build, not on cardinality, so a fixed set with a runtime-varying
+live subset hosts too and the Voicer is one host rather than the host.)* Either way a graph's edge is crossed by **interface pipes** —
 the single boundary mechanism at every level: an input pipe mints an address internal nodes wire
 from, an output pipe is fed from an internal port, each pipe declares its own `Arg` type, and
 N-channel hardware I/O is N mono pipes bound to logical channels that a separate device profile — not
@@ -117,6 +119,8 @@ the patch — maps onto the rig.
 
 [why](rationale/composition-operators/nesting-inline-or-host.md)
 
+Superseded by: ADR-0075 (pending absorption)
+
 <a id="interface-pipes"></a>
 ### A graph's boundary is named interface pipes — an input pipe mints an address internal nodes wire from and an output pipe is fed from an internal port, each pipe declares its own `Arg` type, and N-channel I/O is N mono pipes bound to logical channels that a device profile, not the patch, maps to hardware.
 
@@ -167,5 +171,5 @@ the patch — maps onto the rig.
 - **subpatch** — a node referencing a nested instrument, inlined and dissolved into the parent graph at build.
 - **logical channel** — the device-independent channel index a signal pipe binds; a device profile, not the patch, maps it to hardware.
 - **Voice** — one instance of a voice instrument the Voicer runs; what sounds a note, distinct from the note Message itself.
-- **Voicer** — the sole runtime host: it builds N standalone voice patches and renders only the active ones per block.
+- **Voicer** — a runtime host (the first, and until ADR-0075 lands the only one): it builds N standalone voice patches and renders only the active ones per block.
 - **Voice instrument** — an ordinary instrument whose interface makes it hostable by a Voicer; a role read off the interface, never a separate kind.
