@@ -178,9 +178,10 @@ fn boundary_of(
     core_introspect::describe_patch(json, registry, resolver).map_err(|message| {
         Refusal::new(format!(
             "{message}\n\nThe document could not be loaded, so there is no boundary to \
-             describe. Run `validate_instrument` for the full report of errors and \
+             describe. Run `{validate}` for the full report of errors and \
              warnings, or read `view: \"index\"` — the structural views project even when \
-             the document does not load."
+             the document does not load.",
+            validate = crate::tools::names::VALIDATE_INSTRUMENT
         ))
     })
 }
@@ -925,7 +926,9 @@ mod tests {
         )
         .expect_err("nothing to describe");
         assert!(
-            refusal.message.contains("validate_instrument"),
+            refusal
+                .message
+                .contains(crate::tools::names::VALIDATE_INSTRUMENT),
             "the refusal says what to reach for instead: {refusal}"
         );
     }

@@ -16,6 +16,20 @@
 //! [`stamp_window_prose`] writes the window's sentence onto the built router instead — the same
 //! prose the CLI and the browser read, rather than a copy per door.
 //!
+//! The `name` argument is literal-only for the same reason, so the roster spelling is written out
+//! once per tool here — redundantly, since rmcp defaults a route's name to the method's own ident
+//! and every method is already named for its verb, but written anyway so the wire name is read off
+//! the attribute rather than inferred from a default. Nothing about that literal is coupled to the
+//! roster, and [`stamp_window_prose`]'s two assertions are what stand in for the coupling: at
+//! construction, in both directions, refusing to start rather than serve a surface that is not the
+//! roster.
+//!
+//! Everywhere the door names a contract as a *value* rather than as a route key it writes
+//! [`reuben_api::tools::names`] instead, so the window dropping that contract is a compile error
+//! here. Today that is all test code, because the route key is the only place non-test source
+//! names a verb at all: the door reaches every one of them by calling the window function that
+//! serves it, and a function is not a string.
+//!
 //! The one thing left that is genuinely this door's is the socket: `reuben-mcp` reaches a
 //! *separate process*, so it supplies a loopback TCP transport where an in-process host supplies
 //! none at all.
@@ -840,6 +854,7 @@ mod tests {
         ControlArg, ControlMessage, DiagnosticsReport, DiffSummary, Request, Response, SwapReport,
         DEFAULT_STRUCTURE_ADDR,
     };
+    use reuben_api::tools::names;
     use std::io;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -1090,7 +1105,7 @@ mod tests {
         const OPEN_BY_DESIGN: &[(&str, &str)] = &[
             // The instrument document rides as raw JSON on purpose — the engine is the single
             // validation authority, so the tool surface deliberately does not describe its shape.
-            ("get_current_instrument", ".document"),
+            (names::GET_CURRENT_INSTRUMENT, ".document"),
         ];
         // Arrays as well as objects: an array landing here means its node declared no `items`, so
         // every element and everything beneath it would go unchecked. `SwapReport`'s `errors` and
@@ -1226,7 +1241,7 @@ mod tests {
         // `skip_serializing_if` make them structurally different objects, and `engine_status` is
         // checked both ways because `guidance` is its skip_serializing_if field.
         assert_payload_conforms(
-            "swap_instrument",
+            names::SWAP_INSTRUMENT,
             "clean install",
             &engine::SwapResult::installed(SwapReport {
                 report: Report {
@@ -1244,7 +1259,7 @@ mod tests {
             }),
         );
         assert_payload_conforms(
-            "swap_instrument",
+            names::SWAP_INSTRUMENT,
             "validation failure",
             &engine::SwapResult::installed(SwapReport {
                 report: Report {
@@ -1261,7 +1276,7 @@ mod tests {
             }),
         );
         assert_payload_conforms(
-            "swap_instrument",
+            names::SWAP_INSTRUMENT,
             "expect-guard miss",
             &engine::SwapResult::conflict(Conflict {
                 expected: "0badc0de".to_string(),
@@ -1269,7 +1284,7 @@ mod tests {
             }),
         );
         assert_payload_conforms(
-            "get_current_instrument",
+            names::GET_CURRENT_INSTRUMENT,
             "installed document",
             &engine::CurrentInstrument {
                 source: Some("voices/t.json".to_string()),
@@ -1278,12 +1293,12 @@ mod tests {
             },
         );
         assert_payload_conforms(
-            "get_engine_diagnostics",
+            names::GET_ENGINE_DIAGNOSTICS,
             "counters",
             &DiagnosticsReport::default(),
         );
         assert_payload_conforms(
-            "send_live_controls",
+            names::SEND_LIVE_CONTROLS,
             "queued",
             &engine::SendOutput { sent: 2 },
         );
@@ -1292,7 +1307,7 @@ mod tests {
             ("reachable", None),
         ] {
             assert_payload_conforms(
-                "get_engine_status",
+                names::GET_ENGINE_STATUS,
                 case,
                 &engine::EngineStatus {
                     reachable: guidance.is_none(),
@@ -1368,6 +1383,49 @@ mod tests {
                 entry.uri
             );
         }
+    }
+
+    #[test]
+    fn every_served_resource_sends_a_model_only_to_verbs_the_roster_serves() {
+        // The guides are the largest model-facing prose in the repo and the door reads them from
+        // disk at request time, so nothing about them is compile-coupled to anything: the authoring
+        // guide alone names 13 roster verbs. Driving the scan off RESOURCES rather than a list of
+        // paths is what makes a resource added later scanned by default instead of by remembering.
+        // `default_path`, not `resolve_path()`: the checked-in guides are the subject, so a host's
+        // `REUBEN_*` override would point this at the wrong file — and reading one here would put a
+        // second reader on vars `every_resource_env_field_drives_its_resolve_path` sets and clears
+        // process-wide, which is the race that test's comment says it is safe from.
+        for entry in RESOURCES {
+            let path = entry.default_path;
+            let text = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("read the {} at {path}: {e}", entry.noun));
+            assert_eq!(
+                reuben_api::tools::unserved_verbs(&text),
+                Vec::<&str>::new(),
+                "{} sends a model to a verb no contract serves",
+                entry.uri
+            );
+            assert_eq!(
+                reuben_api::tools::unserved_verbs(entry.description),
+                Vec::<&str>::new(),
+                "{}'s advertised description sends a model to a verb no contract serves",
+                entry.uri
+            );
+        }
+    }
+
+    #[test]
+    fn the_instructions_send_a_model_only_to_verbs_the_roster_serves() {
+        // The gist names six verbs and is handed to every model that connects, so it is prose with
+        // the same failure mode as an advertised sentence — and `stamp_window_prose`'s refusal
+        // cannot see it, because that compares route keys and never reads inside a string. A verb
+        // fully retired upstream (contract and route together) leaves the rest of this door
+        // compiling and every other test green while the gist still tells a model to call it.
+        assert_eq!(
+            reuben_api::tools::unserved_verbs(INSTRUCTIONS),
+            Vec::<&str>::new(),
+            "the server instructions send a model to a verb no contract serves"
+        );
     }
 
     #[test]
@@ -1520,7 +1578,7 @@ mod tests {
             .tool_router
             .list_all()
             .into_iter()
-            .find(|t| t.name == "send_live_controls")
+            .find(|t| t.name == names::SEND_LIVE_CONTROLS)
             .expect("send is registered");
         let schema = serde_json::to_value(&send.input_schema).expect("input schema to value");
         assert_eq!(
@@ -1788,7 +1846,7 @@ mod tests {
         let tools = server.tool_router.list_all();
         let send = tools
             .iter()
-            .find(|t| t.name == "send_live_controls")
+            .find(|t| t.name == names::SEND_LIVE_CONTROLS)
             .expect("send is registered");
         let schema = serde_json::to_value(&send.input_schema).expect("input schema to value");
         let messages = &schema["properties"]["messages"];
