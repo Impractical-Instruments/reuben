@@ -834,9 +834,16 @@ fn dissolve_interface_pipes(graph: &mut Graph) -> Vec<DissolvedPipe> {
         let feeder = wires.feeder(key);
         // Removing this pipe re-opens exactly one question, and only for the nodes wired *into*
         // it: their single consumer stops being this pipe's input port and becomes whatever this
-        // pipe fed, which is the port kind the Value→Event rule above reads. Everything else the
-        // cursor has already passed is settled, so rewinding to the earliest such pipe reproduces
-        // "first dissolvable in key order" exactly, without rescanning for it.
+        // pipe fed, which is the port kind the Value→Event rule above reads. Rewinding the cursor
+        // to the earliest such pipe therefore reproduces "first dissolvable in key order"
+        // exactly, without rescanning the graph for it.
+        //
+        // Today's pipe types cannot actually reach that: a pipe's `in` is never `Arg`, so a Value
+        // pipe feeding an Event pipe input is rejected as a wire before dissolution runs, and a
+        // pipe carries at most one inbound wire so no feeder ever *loses* a consumer here. This
+        // stays because it is one `min` over a one-element list and it is what makes the cursor
+        // equivalent to the scan it replaces rather than equivalent-given-today's-pipe-types — a
+        // new pipe type would otherwise change dissolution silently.
         let rewind = wires
             .feeders(key)
             .filter_map(|src| pipe_at.get(src).copied())
@@ -963,8 +970,8 @@ impl Wires {
             .map(|&i| (self.edges[i].src, self.edges[i].src_port))
     }
 
-    /// The distinct-per-edge live sources feeding `key`. Callers want the *nodes*, not the ports:
-    /// these are the only ones whose own dissolvability `key`'s removal can change.
+    /// The source node of every live wire into `key`, one per wire. Callers want the *nodes*, not
+    /// the ports: these are the only ones whose own dissolvability `key`'s removal can change.
     fn feeders(&self, key: NodeKey) -> impl Iterator<Item = NodeKey> + '_ {
         self.in_e[key]
             .iter()
@@ -1162,6 +1169,115 @@ fn topo_order(graph: &Graph, adj: &Adjacency) -> Result<Vec<NodeKey>, PlanError>
         return Err(PlanError::Cycle);
     }
     Ok(order)
+}
+
+#[cfg(test)]
+mod dissolve_chains {
+    use super::{AudioConfig, Plan};
+    use crate::registry::Registry;
+    use crate::resources::{ResolveError, ResourceResolver, SampleBuffer};
+
+    /// A gain cell behind an `in` boundary.
+    const INNER: &str = r#"{"format_version":2,"instrument":"inner",
+        "interface":{"inputs":{"in":{"type":"f32_buffer"}},
+                     "outputs":{"out":{"from":"/g.out"}}},
+        "nodes":[{"type":"mul_f32_signal","address":"/g",
+                  "inputs":{"a":{"from":"/in"},"b":0.5}}]}"#;
+
+    /// `inner` re-exported through a second boundary — so a top-level wire reaches the gain
+    /// through *two* pipes, one per nesting level.
+    const OUTER: &str = r#"{"format_version":2,"instrument":"outer",
+        "resources":{"inner":"inner.json"},
+        "interface":{"inputs":{"in":{"type":"f32_buffer"}},
+                     "outputs":{"out":{"from":"/s.out"}}},
+        "nodes":[{"type":"subpatch","address":"/s","patch":"inner",
+                  "inputs":{"in":{"from":"/in"}}}]}"#;
+
+    const TOP: &str = r#"{"format_version":2,"instrument":"top",
+        "resources":{"outer":"outer.json"},
+        "interface":{"outputs":{"out":{"from":"/out.audio"}}},
+        "nodes":[{"type":"oscillator","address":"/o"},
+                 {"type":"subpatch","address":"/w","patch":"outer",
+                  "inputs":{"in":{"from":"/o"}}},
+                 {"type":"output","address":"/out","inputs":{"audio":{"from":"/w.out"}}}]}"#;
+
+    struct Nested;
+    impl ResourceResolver for Nested {
+        fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+            Err(ResolveError::NotFound(source.to_string()))
+        }
+        fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
+            match source {
+                "inner.json" => Ok(INNER.to_string()),
+                "outer.json" => Ok(OUTER.to_string()),
+                _ => Err(ResolveError::NotFound(source.to_string())),
+            }
+        }
+    }
+
+    /// Two nested boundaries put two pipes in a row between the oscillator and the gain. Both
+    /// collapse, and the alias of the *outer* one — whose consumer was the inner pipe, itself
+    /// since dissolved — has to follow through to the gain rather than dangle at a node that is
+    /// no longer in the schedule.
+    ///
+    /// The follow-through is bookkeeping kept on the side of the fixpoint rather than re-derived
+    /// from it, so it is worth pinning behaviorally: an alias that stops following its hops still
+    /// names a plausible node index and goes on routing messages, to the wrong port.
+    #[test]
+    fn a_chain_of_two_pipes_collapses_and_both_aliases_land_on_the_gain() {
+        let loaded = crate::load_instrument(TOP, &Registry::builtin(), &Nested).expect("loads");
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+        let plan =
+            Plan::instantiate(loaded.graph, AudioConfig::new(48_000.0, 64)).expect("instantiates");
+
+        let gain = plan
+            .nodes
+            .iter()
+            .position(|n| n.address == "/w/s/g")
+            .expect("the inner gain survives the splice");
+        let a = plan.nodes[gain]
+            .descriptor
+            .inputs
+            .iter()
+            .position(|p| p.name == "a")
+            .expect("`a` input");
+
+        // No pipe is left in the schedule: both levels' boundaries dissolved.
+        assert!(
+            !plan.nodes.iter().any(|n| n.descriptor.type_name == "pipe"),
+            "a pipe stayed in the schedule: {:?}",
+            plan.nodes
+                .iter()
+                .filter(|n| n.descriptor.type_name == "pipe")
+                .map(|n| &n.address)
+                .collect::<Vec<_>>()
+        );
+
+        // Both minted addresses stay addressable, and both name the gain's `a` port.
+        let mut addrs: Vec<&str> = plan
+            .input_aliases
+            .iter()
+            .map(|al| {
+                assert_eq!((al.node, al.dst_port), (gain, a), "{} dangles", al.address);
+                al.address.as_str()
+            })
+            .collect();
+        addrs.sort_unstable();
+        assert_eq!(addrs, ["/w/in", "/w/s/in"]);
+
+        // The oscillator's buffer reaches the gain zero-copy — the collapse rewired the feeder
+        // wire through, rather than leaving the gain on a materialized scratch.
+        let osc = plan
+            .nodes
+            .iter()
+            .position(|n| n.address == "/o")
+            .expect("/o node");
+        assert_eq!(
+            plan.nodes[gain].inputs[a].as_deref(),
+            Some(&plan.nodes[osc].outputs[0][..]),
+            "the gain does not share the oscillator's buffer"
+        );
+    }
 }
 
 #[cfg(test)]
