@@ -6,9 +6,11 @@
 # on the baseline commit still works (we never swap the benches). Deterministic instruction
 # counts mean no wall-clock flake on the shared runner.
 #
-# TWO LAYERS, each gated independently so one can't mask the other:
+# THREE LAYERS, each gated independently so one can't mask the other:
 #   - macro_iai: end-to-end `render_block` per instrument.
 #   - micro_iai: per-operator `process` (needs the `bench` feature's crate-private bridge).
+#   - construct_iai: parse + build + instantiate, swept across node counts. The other two gate
+#     cost paid per block; this one gates cost paid once per Swap on the caller's thread.
 # Each layer runs its own baseline/compare cycle. If a layer's harness postdates the baseline
 # (e.g. the PR that introduces micro_iai — the baseline `src/` has no `bench_support`), that
 # layer's baseline build fails and it is skipped with a note, while the other still gates.
@@ -53,6 +55,12 @@
 #                  itself via --callgrind-limits; the authoritative verdict).
 #   WARN:          3%..10% — surfaced in the job summary + as a GH annotation, non-blocking.
 #
+# PLUS one gate the baseline comparison structurally cannot make — see `scaling_gate` at the
+# bottom: a build whose cost per node grows with node count reads as a perfectly ordinary number
+# at any single size, and a PR that makes it worse moves every construct case by the same few
+# percent. Only the ratio BETWEEN two sizes tells linear from superlinear, so the construct layer
+# is additionally gated on its own absolute growth factor, with no reference to the baseline.
+#
 # Arg 1: baseline commit SHA (empty => no comparison, just run once).
 set -uo pipefail
 
@@ -61,7 +69,7 @@ PKG="reuben-core"
 # Both iai layers. macro_iai needs no features; micro_iai needs `bench` for the
 # crate-private `Io` bridge. The feature only compiles `bench_support` (dead code for macro_iai),
 # so it leaves macro Ir byte-stable — safe to pass on both runs.
-BENCHES=("macro_iai" "micro_iai")
+BENCHES=("macro_iai" "micro_iai" "construct_iai")
 FEATURES="bench"
 # reuben-core's full source closure — every crate whose `src/` feeds the core build (see header).
 # These move to the baseline ref together so the snapshot is self-consistent; reuben-core/src alone
@@ -86,6 +94,13 @@ BUILD_CONFIG=".cargo/config.toml"
 SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 FAIL_PCT=10
 WARN_PCT=3
+# Construct-layer growth factor: the Ir ratio between consecutive benched node counts, which
+# double. A build that is linear in node count lands at 2.0; the superlinear build this gate was
+# written against landed at 2.9–3.3. The gap between 2.0 and the limit is room for the *fixed*
+# per-build cost (registry construction, document parse) that makes the small end of a sweep
+# cheaper than proportional — not room for a per-node scan, which blows straight past it.
+FAIL_GROWTH=2.4
+WARN_GROWTH=2.2
 
 # Persisted trend (layer 1). The gate only ever compares HEAD to its parent and then
 # discards the numbers (they survive only in this job's step summary). We additionally harvest
@@ -132,6 +147,14 @@ declare -a SUM_ROWS=()
 # A case header ends in `("<workload>")`; the workload id is the clean case name (e.g. add_f32_signal
 # vs add_f32_value). Summary-section headers end in `:` and are ignored, so each case records once.
 #
+# A layer whose bench args are NOT string literals renders `<bench id>:<setup>(<args>)` with nothing
+# quoted, and the workload rule above skips it silently — which is how the construct layer's first
+# run harvested nothing at all while every other part of the gate reported green. The second header
+# rule takes the **bench id** for those. The two rules are kept separate rather than unified so the
+# macro/micro layers keep keying their history on the workload exactly as before: those case names
+# are matched against the baseline and against the `bench-history` series, and re-keying them to
+# their bench ids would orphan every point already recorded.
+#
 # The compare run is captured with CARGO_TERM_COLOR=always (the job log is colored for humans), so the
 # captured text carries ANSI SGR escapes — `\e[0m` trails the case header (breaking the `("...")$`
 # anchor) and `\e[1m` sits between `Instructions:` and the digits (breaking the count pattern). Both
@@ -144,6 +167,7 @@ harvest_history() {
     function emit(ir){ printf "{\"sha\":\"%s\",\"commit_sha\":\"%s\",\"date\":\"%s\",\"run_id\":\"%s\",\"layer\":\"%s\",\"case\":\"%s\",\"ir\":%s}\n", sha, full, date, run, layer, cur, ir }
     { gsub(/[[:cntrl:]]\[[0-9;]*m/, "") }
     /\("[^"]+"\)[[:space:]]*$/ { h=$0; sub(/.*\("/,"",h); sub(/"\)[[:space:]]*$/,"",h); cur=h; have=0; next }
+    /::[^[:space:]]*[[:space:]][^[:space:]]+:[^[:space:]]*\([^"]*\)[[:space:]]*$/ { h=$0; sub(/.*[[:space:]]/,"",h); sub(/:.*/,"",h); cur=h; have=0; next }
     (cur!="" && !have && /Instructions:[[:space:]]*[0-9]+\|/) { v=$0; sub(/.*Instructions:[[:space:]]*/,"",v); sub(/\|.*/,"",v); emit(v); have=1; next }
     (cur!="" && !have && /Performance has regressed: Instructions \([0-9]+ -> [0-9]+\)/) { v=$0; sub(/.*-> /,"",v); sub(/\).*/,"",v); emit(v); have=1; next }
   ' "$log" >>"$RECORD" || true
@@ -316,6 +340,59 @@ gate_one() {
 
 for b in "${BENCHES[@]}"; do gate_one "$b"; done
 
+# Growth-factor gate for the construct layer — the check the baseline comparison structurally
+# cannot make (see header). Reads the absolute Ir the compare run already harvested into $RECORD,
+# pairs each benched case with the one at twice its node count, and fails when doubling the
+# document costs more than FAIL_GROWTH times the instructions. No baseline is involved:
+# superlinearity is a property of THIS commit, so a PR that merely inherits it is as red as the
+# one that introduced it — which is the point, since a gate that only ever compares to yesterday
+# will happily hold a quadratic build steady forever.
+scaling_gate() {
+  local rows
+  rows="$(awk '
+    { gsub(/[[:cntrl:]]\[[0-9;]*m/, "") }
+    /"layer":"construct"/ {
+      c=$0; sub(/.*"case":"/,"",c); sub(/".*/,"",c)
+      v=$0; sub(/.*"ir":/,"",v); sub(/[^0-9].*/,"",v)
+      if (c !~ /^[a-z]+_n[0-9]+$/ || v == "") next
+      shape=c; sub(/_n[0-9]+$/,"",shape)
+      n=c; sub(/^[a-z]+_n/,"",n)
+      ir[shape,n+0]=v+0
+    }
+    # The benched sizes double, so a pair is (n, 2n) — found by lookup, which leaves no sort
+    # order to get wrong and silently skips a size whose partner was not harvested.
+    END { for (k in ir) { split(k, p, SUBSEP); n = p[2]+0
+            if ((p[1], n*2) in ir && ir[p[1],n] > 0)
+              printf "%s %d %.3f\n", p[1], n, ir[p[1],n*2]/ir[p[1],n] } }
+  ' "$RECORD" | LC_ALL=C sort)"
+
+  both ""
+  both "## Construct scaling — Ir growth per node-count doubling (linear ⇒ 2.00, limit ${FAIL_GROWTH})"
+  both ""
+  both "| Shape | Nodes | Growth | Status |"
+  both "|---|---:|---:|:---:|"
+  if [ -z "$rows" ]; then
+    both "| _(no construct Ir pairs harvested — layer skipped, or case ids unpaired)_ |  |  |  |"
+    both ""
+    printf '::warning title=Scaling gate inert::no construct-layer Ir pairs harvested — the growth factor was not checked this run\n'
+    return 0
+  fi
+  local shape n r status icon
+  while read -r shape n r; do
+    status=$(awk -v r="$r" -v f="$FAIL_GROWTH" -v w="$WARN_GROWTH" 'BEGIN{
+      if (r+0 >= f) print "FAIL"; else if (r+0 >= w) print "WARN"; else print "ok"}')
+    case "$status" in
+      FAIL) icon="❌"; overall_fail=1
+            printf '::error title=Superlinear construct::%s %s -> %s nodes costs %sx the instructions (linear is 2.0, limit %s)\n' "$shape" "$n" "$((n * 2))" "$r" "$FAIL_GROWTH" ;;
+      WARN) icon="⚠️"
+            printf '::warning title=Construct scaling creep::%s %s -> %s nodes costs %sx the instructions (linear is 2.0)\n' "$shape" "$n" "$((n * 2))" "$r" ;;
+      *)    icon="✅" ;;
+    esac
+    both "| ${shape} | ${n} → $((n * 2)) | ${r} | ${icon} |"
+  done <<<"$rows"
+  both ""
+}
+
 # Consolidated low-detail summary: just Ir Δ% per case across both layers, in one place. The runner's
 # full per-case detail (cache hits, cycles) stays in the job log for the PR-vs-baseline compare; this
 # is the at-a-glance "did anything move, and by how much" table. `both` so it lands in the streaming
@@ -332,6 +409,8 @@ else
 fi
 both ""
 
+scaling_gate
+
 # A baseline bench that COMPILED but failed at runtime (vs. a harness that merely postdates the
 # baseline API) is fatal — the gate could not certify "no regression," and silently passing it is the
 # masking bug we are closing.
@@ -341,7 +420,7 @@ if [ "$hard_broken" -ne 0 ]; then
 fi
 
 if [ "$overall_fail" -ne 0 ]; then
-  both "**Result: ❌ regression over ${FAIL_PCT}%.**"
+  both "**Result: ❌ regression over ${FAIL_PCT}%, or construct scaling over ${FAIL_GROWTH}x per doubling.**"
   exit 1
 fi
 if [ "$skipped" -ne 0 ]; then

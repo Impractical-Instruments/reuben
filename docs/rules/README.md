@@ -99,7 +99,7 @@ not by hope:
 - **NormalizedDoc** — the type minted once at the parse gate that every build and load path accepts, proving a document is current-shaped and migrated exactly once. · [authoring-library](authoring-library.md)
 - **Operator** — the smallest node: a unit of DSP behavior, authored as one single-voice, single-channel block-at-a-time stream that the engine schedules. · [composition-operators](composition-operators.md)
 - **Output filter** — the host-owned persona: what the person is shown (sound-not-machine subject, hidden diagnostics, register), maximal on web and absent at skills/MCP. · [agent-mcp](agent-mcp.md)
-- **perf gate** — the CI iai-callgrind instruction-count check over the render hot path, measured base-ref-relative so toolchain drift cancels. · [web-product-process](web-product-process.md)
+- **perf gate** — the CI iai-callgrind instruction-count check over the render hot path, measured base-ref-relative so toolchain drift cancels. ADR-0077 adds a construct layer and, on it, a growth-factor check that reads no baseline. · [web-product-process](web-product-process.md)
 - **Pitch** — a symbolic scale degree or an absolute 12-TET coordinate, carried as one enum case; the resolved Hz is the result, not the Pitch. · [signal-time-dsp](signal-time-dsp.md)
 - **Plan** — the runtime artifact: the immutable, already-allocated, topologically ordered schedule that Render executes per block. · [execution-runtime](execution-runtime.md)
 - **product repo** — the separate private AGPL repo holding the browser shell, player app, share-link codec, and chat-authoring agent, which pins this repo as a submodule. · [web-product-process](web-product-process.md)

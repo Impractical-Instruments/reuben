@@ -461,6 +461,10 @@ def main():
     pts = {k: p for k, p in ((k, real_points(s)) for k, s in series.items()) if p}
     macro = sorted(c for l, c in pts if l == "macro")
     micro = sorted(c for l, c in pts if l == "micro")
+    # Construct cases are `<shape>_n<nodes>`; sorted by node count within a shape so the table
+    # reads as a sweep, which is the only way its numbers mean anything (see the section below).
+    construct = sorted((c for l, c in pts if l == "construct"),
+                       key=lambda c: (c.rsplit("_n", 1)[0], int(c.rsplit("_n", 1)[1])))
     last = order[-1]
     first_day, last_day = order[0]["date"][:10], last["date"][:10]
     n_points = sum(len(s) for s in series.values())
@@ -522,6 +526,16 @@ def main():
     ):
         charts_written.append("overhead")
 
+    if construct and write_chart(
+        outdir, "construct", order,
+        [(c, pts[("construct", c)]) for c in construct],
+        "Graph construction cost",
+        "parse + build + instantiate of a synthetic document - callgrind instructions (Ir) at "
+        + f"three node counts per shape, per {label} commit",
+        1e6, "Ir (M)",
+    ):
+        charts_written.append("construct")
+
     heavy = sorted(sorted(micro, key=lambda c: pts[("micro", c)][-1][1], reverse=True)[:6])
     if write_chart(
         outdir, "micro-heavy", order,
@@ -573,6 +587,34 @@ def main():
         ]
     else:
         lines.append("_No overhead data recorded yet._")
+    lines += ["", "## Graph construction (construct)", ""]
+    if construct:
+        if "construct" in charts_written:
+            lines += [picture("construct", "Line chart of graph construction instruction counts "
+                                           + f"at three node counts per shape across {label} "
+                                           + "commits"), ""]
+        lines += [
+            "Cost paid **once per Swap**, on the caller's thread — which in the browser is the "
+            + "main thread, so this is tab-freeze time rather than background time. Read the "
+            + "growth table, not the levels: each shape is benched at node counts that double, "
+            + "so a build linear in node count holds at 2.00x while a per-node scan pushes it "
+            + "toward 4.00x. The perf gate fails the run above 2.40x, independently of any "
+            + "baseline.",
+            "",
+        ]
+        lines += table([(c, "construct", c) for c in construct])
+        latest = {c: pts[("construct", c)][-1][1] for c in construct}
+        pairs = []
+        for c in construct:
+            shape, n = c.rsplit("_n", 1)
+            twice = f"{shape}_n{int(n) * 2}"
+            if twice in latest and latest[c]:
+                pairs.append((shape, int(n), latest[twice] / latest[c]))
+        if pairs:
+            lines += ["", "| Shape | Nodes | Latest growth |", "|---|---:|---:|"]
+            lines += [f"| {s} | {n:,} → {n * 2:,} | {g:.2f}x |" for s, n, g in pairs]
+    else:
+        lines.append("_No construct data recorded yet._")
     lines += ["", "## Heaviest operators (micro)", ""]
     if micro:
         if "micro-heavy" in charts_written:
@@ -587,6 +629,7 @@ def main():
         ]
         micro_by_cost = sorted(micro, key=lambda c: -pts[("micro", c)][-1][1])
         lines += table([(f"macro/{c}", "macro", c) for c in macro]
+                       + [(f"construct/{c}", "construct", c) for c in construct]
                        + [(c, "micro", c) for c in micro_by_cost])
         lines += ["", "</details>"]
     else:
@@ -606,6 +649,10 @@ def main():
         + "overhead above. Cheap (value-rate) cases are therefore dominated by that overhead: a "
         + "uniform absolute shift across all of them is an engine-overhead change, not operator "
         + "regressions.",
+        "- Construct cases are the one place an absolute level is the *less* interesting number: "
+        + "a change that moves all three sizes of a shape by the same factor is a constant-factor "
+        + "change, while one that moves only the largest is a scaling change, and only the second "
+        + "kind gets worse as songs get bigger.",
         "- A series that starts mid-chart is an operator that landed after recording began; its "
         + "*vs first* compares against its own first real measurement (registration stubs "
         + f"< {STUB_FLOOR} Ir are dropped).",

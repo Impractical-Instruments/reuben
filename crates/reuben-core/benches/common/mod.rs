@@ -7,7 +7,14 @@
 //!
 //! Each bench binary compiles this module independently and uses only a subset of
 //! it, so `dead_code` is expected.
+//!
+//! [`construct`] is the other workload: the load + instantiate pair that runs *before* any of
+//! this, sized by node count rather than fixed, because what it measures is scaling.
+//!
+//! see rules: web-product-process
 #![allow(dead_code)]
+
+pub mod construct;
 
 use reuben_core::resources::{ResolveError, ResourceResolver, SampleBuffer};
 use reuben_core::vocab::pitch::{Note, Pitch};

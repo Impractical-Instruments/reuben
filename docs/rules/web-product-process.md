@@ -37,8 +37,9 @@ data-chunk length before any sample-bearing share bundle can carry a stranger's 
 The dev process that governs the repo is deliberately small and self-verifying, and the rules below
 state it: one pinned toolchain so a local verdict equals CI's, shared hooks as a convenience ahead
 of the authoritative CI gate, `dev` as the integration branch that fast-forwards onto `main` to
-ship, an instruction-count perf gate over the render hot path, and versioned release archives for a
-headless CLI whose primary product is the crate.
+ship, an instruction-count perf gate over the render hot path (which ADR-0077 widens to cover graph
+construction, and to gate how that cost scales rather than only what it is), and versioned release
+archives for a headless CLI whose primary product is the crate.
 
 ## Rules
 
@@ -112,6 +113,8 @@ Superseded by: ADR-0067 (pending absorption)
 <a id="perf-benchmark-gate"></a>
 ### The render hot path is guarded by an instruction-count perf gate that diffs HEAD against its base ref and fails a PR on a >10% regression, with wall-clock benchmarking left to local runs.
 
+Superseded by: ADR-0077 (pending absorption)
+
 [why](rationale/web-product-process/perf-benchmark-gate.md)
 
 <a id="micro-bench-drives-the-real-path"></a>
@@ -127,4 +130,4 @@ Superseded by: ADR-0067 (pending absorption)
 - **share link** — an origin-independent encoded bundle that boots an instrument in the browser; a product-repo feature whose residue here is the sample-bytes trust obligation.
 - **promotion** — the fast-forward-only advance of `dev` onto `main` that ships production.
 - **toolchain pin** — the exact-version `rust-toolchain.toml` that local dev and CI share so their fmt/clippy verdicts are identical, kept in lockstep with the workspace MSRV.
-- **perf gate** — the CI iai-callgrind instruction-count check over the render hot path, measured base-ref-relative so toolchain drift cancels.
+- **perf gate** — the CI iai-callgrind instruction-count check over the render hot path, measured base-ref-relative so toolchain drift cancels. ADR-0077 adds a construct layer and, on it, a growth-factor check that reads no baseline.
