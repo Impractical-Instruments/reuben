@@ -105,23 +105,23 @@ fn seed_latch(p: &Port, port: usize, value_overrides: &[(usize, Arg)]) -> Arg {
 /// A node in execution order, with its arena buffer wiring resolved.
 pub struct PlanNode {
     pub address: String,
-    /// The operator instance (single-element `Vec`; the per-Lane fan-out is gone).
+    /// The operator instance.
     /// `pub(crate)`: the survivor transplant ([`Plan::transplant_survivors`]) is the only writer
-    /// that moves these boxes, and it lives on `Plan` — no caller reaches in to swap them.
-    pub(crate) ops: Vec<Box<dyn Operator>>,
+    /// that moves this box, and it lives on `Plan` — no caller reaches in to swap it.
+    pub(crate) op: Box<dyn Operator>,
     /// A handle to the operator type's descriptor, moved over from the graph node — see
     /// [`Entry::descriptor`](crate::registry::Entry::descriptor). Instantiate copies nothing, so
     /// whatever sharing the graph had the Plan keeps; nothing on the render path mutates a
     /// descriptor, and reads go through the handle untouched.
     pub descriptor: Arc<Descriptor>,
-    /// For each input port (full input-port order): the source's arena buffer index (a one-element
-    /// `Vec`), or `None`. `Some` for **every** [`Buffer`](PortType::F32Buffer) input — wired to a
+    /// For each input port (full input-port order): the source's arena buffer index, or `None`.
+    /// `Some` for **every** [`Buffer`](PortType::F32Buffer) input — wired to a
     /// Buffer source (zero-copy share) or **materialized** (a dedicated scratch buffer, see
     /// `materialize`) when fed by a scalar source *or unwired* (an unwired bare buffer fills with
     /// silence from its zero-seeded latch). That totality is the **buffer-presence invariant**:
     /// `process` always sees a dense length-n buffer on a Signal input, so a typed
     /// Signal read indexes directly. Held / Stream inputs carry no buffer (`None`).
-    pub inputs: Vec<Option<Vec<usize>>>,
+    pub inputs: Vec<Option<usize>>,
     /// Per input port (full input-port order): its [`PortKind`], precomputed at Instantiate so the
     /// hot message-routing path reads the bucket directly instead of re-deriving it from the port
     /// descriptor (`port_kind` does a `Vocab` name comparison that the audio thread
@@ -152,11 +152,11 @@ pub struct PlanNode {
     /// (`false` ⇒ held unchanged this block).
     pub varying: Vec<bool>,
     /// For each **signal (Buffer) output** port — in signal-output ordinal order — its arena
-    /// buffer index (a one-element `Vec`). [`crate::operator::Io::write`] on a Signal handle indexes
+    /// buffer index. [`crate::operator::Io::write`] on a Signal handle indexes
     /// this by the all-outputs port index the contract macro emits, which equals the signal ordinal
     /// **only when signal outputs precede message outputs in the declaration** (the invariant every
     /// operator holds; e.g. `envelope` declares `cv` before `active`).
-    pub outputs: Vec<Vec<usize>>,
+    pub outputs: Vec<usize>,
     /// Message-edge routing: indexed by **all-outputs port index**
     /// (the index an `Out` handle carries into [`crate::operator::Io::write`]; `emit.port` is that index). A signal output
     /// has an empty slot; a message output carries the `(dst node, dst input port)` pairs its
@@ -272,7 +272,7 @@ pub struct Plan {
     pub config: AudioConfig,
     /// Nodes in topological execution order. `pub(crate)`: the survivor migration seam
     /// ([`Plan::transplant_survivors`]) is the one interface that mutates node state across a Swap;
-    /// no caller indexes `.nodes[..].ops` directly.
+    /// no caller indexes `.nodes[..].op` directly.
     pub(crate) nodes: Vec<PlanNode>,
     /// Total number of edge buffers in the arena.
     pub num_buffers: usize,
@@ -387,24 +387,21 @@ impl Plan {
 
         // 1. Assign every (node, Buffer output port) a unique arena buffer index. A message output
         // (Note / Harmony / scalar control out) carries no Signal data — events arrive via routing
-        // — so it gets an empty buffer list (its emptiness is the marker that an edge into
-        // it must materialize rather than share). The inner `Vec` is a single buffer per signal port
-        // (the per-Lane dimension is gone — polyphony is hosted inside the Voicer).
+        // — so it gets `None` (its absence is the marker that an edge into it must materialize
+        // rather than share).
         let mut next_buffer = 0usize;
-        let mut out_buffers: SecondaryMap<NodeKey, Vec<Vec<usize>>> = SecondaryMap::new();
+        let mut out_buffers: SecondaryMap<NodeKey, Vec<Option<usize>>> = SecondaryMap::new();
         for (key, node) in &graph.nodes {
             let ports = node
                 .descriptor
                 .outputs
                 .iter()
                 .map(|p| {
-                    if p.ty.is_buffer() {
+                    p.ty.is_buffer().then(|| {
                         let i = next_buffer;
                         next_buffer += 1;
-                        vec![i]
-                    } else {
-                        Vec::new()
-                    }
+                        i
+                    })
                 })
                 .collect();
             out_buffers.insert(key, ports);
@@ -415,7 +412,7 @@ impl Plan {
             .iter()
             .map(|(k, p, channel)| OutputTap {
                 channel: *channel,
-                buffers: out_buffers[*k][*p].clone(),
+                buffers: out_buffers[*k][*p].into_iter().collect(),
             })
             .collect();
 
@@ -445,9 +442,9 @@ impl Plan {
                 .collect();
 
             // Input buffer wiring: a Buffer input wired to a Buffer source shares its
-            // arena buffers (zero-copy); a Buffer input wired to a scalar source materializes a
+            // arena buffer (zero-copy); a Buffer input wired to a scalar source materializes a
             // scratch buffer (the one implicit ZOH bridge); Held / Stream inputs carry no buffer.
-            let mut inputs: Vec<Option<Vec<usize>>> = Vec::with_capacity(n_inputs);
+            let mut inputs: Vec<Option<usize>> = Vec::with_capacity(n_inputs);
             let mut materialize: Vec<(usize, usize)> = Vec::new();
             let varying: Vec<bool> = vec![true; n_inputs];
             // Classify every input port once: the routing kind feeds both the buffer
@@ -467,31 +464,26 @@ impl Plan {
                 }
                 let wired = adj
                     .feeder(*key, port)
-                    .map(|(src, src_port)| out_buffers[src][src_port].clone());
+                    .and_then(|(src, src_port)| out_buffers[src][src_port]);
                 match wired {
-                    // Wired to a Buffer (audio) source: share its buffers zero-copy.
-                    Some(bufs) if !bufs.is_empty() => inputs.push(Some(bufs)),
+                    // Wired to a Buffer (audio) source: share its buffer zero-copy.
+                    Some(buf) => inputs.push(Some(buf)),
                     // Wired to a scalar (message) source, or unwired: materialize a scratch the
                     // engine fills ZOH from the latch + routed scalar messages.
-                    _ => {
+                    None => {
                         let buf = next_buffer;
                         next_buffer += 1;
                         materialize.push((port, buf));
                         scratch_buffers.push(buf);
-                        inputs.push(Some(vec![buf]));
+                        inputs.push(Some(buf));
                     }
                 }
             }
 
             // Signal (Buffer) outputs, in signal-output ordinal order — the index a Signal write
-            // handle (`io.write` on an `Out<SignalF32>`) uses.
-            let outputs: Vec<Vec<usize>> = descriptor
-                .outputs
-                .iter()
-                .enumerate()
-                .filter(|(_, p)| p.ty.is_buffer())
-                .map(|(port, _)| out_buffers[*key][port].clone())
-                .collect();
+            // handle (`io.write` on an `Out<SignalF32>`) uses. Compacting the assignment above
+            // (declaration order, `None` at every message output) *is* that ordinal order.
+            let outputs: Vec<usize> = out_buffers[*key].iter().flatten().copied().collect();
 
             // Message-edge targets, indexed by **all-outputs port index** — the index an `Out`
             // handle carries into [`crate::operator::Io::write`] (the contract macro numbers outputs
@@ -520,13 +512,12 @@ impl Plan {
             // path.
             let mut op = node.op;
             op.on_instantiate(&config)?;
-            let ops = vec![op];
 
             let materialize_clean = vec![false; materialize.len()];
             let materialize_device_fed = vec![false; materialize.len()];
             nodes.push(PlanNode {
                 address: node.address,
-                ops,
+                op,
                 descriptor: node.descriptor,
                 inputs,
                 input_kinds,
@@ -610,7 +601,7 @@ impl Plan {
                 let node = index_of[key];
                 let is_signal = nodes[node].descriptor.outputs[port].ty.is_buffer();
                 let (kind, signal_buf, captured_slot) = if is_signal {
-                    (PortKind::Signal, Some(out_buffers[key][port][0]), None)
+                    (PortKind::Signal, out_buffers[key][port], None)
                 } else {
                     let slot = captured_len;
                     captured_len += 1;
@@ -687,7 +678,7 @@ impl Plan {
     /// one-way `coordinator → plan/engine` layering); [`crate::engine::Engine`] forwards straight to
     /// here.
     ///
-    /// **RT-safe:** a bounded loop of [`std::mem::swap`] over `Vec<Box<dyn Operator>>` — pointer
+    /// **RT-safe:** a bounded loop of [`std::mem::swap`] over `Box<dyn Operator>` — pointer
     /// swaps only, no allocation, no drop, no lock. Runs at the render-callback top.
     pub(crate) fn transplant_survivors(&mut self, from: &mut Plan, pairs: &[(usize, usize)]) {
         for &(old_index, new_index) in pairs {
@@ -695,15 +686,10 @@ impl Plan {
                 old_index < from.nodes.len() && new_index < self.nodes.len(),
                 "migration table index out of range — mispaired table/engine"
             );
-            std::mem::swap(
-                &mut from.nodes[old_index].ops,
-                &mut self.nodes[new_index].ops,
-            );
+            std::mem::swap(&mut from.nodes[old_index].op, &mut self.nodes[new_index].op);
             // Re-assert on-change held outputs so a consumer isn't stranded on the post-transplant
-            // reset default (see rules: execution-runtime). RT-safe: bounded loop, no allocation.
-            for op in &mut self.nodes[new_index].ops {
-                op.on_transplant();
-            }
+            // reset default (see rules: execution-runtime). RT-safe: no allocation.
+            self.nodes[new_index].op.on_transplant();
         }
     }
 }
@@ -1285,8 +1271,8 @@ mod dissolve_chains {
             .position(|n| n.address == "/o")
             .expect("/o node");
         assert_eq!(
-            plan.nodes[gain].inputs[a].as_deref(),
-            Some(&plan.nodes[osc].outputs[0][..]),
+            plan.nodes[gain].inputs[a],
+            Some(plan.nodes[osc].outputs[0]),
             "the gain does not share the oscillator's buffer"
         );
     }
@@ -1771,8 +1757,8 @@ mod transplant_tests {
         let mut fresh = one_node_plan();
         let mut retiring = one_node_plan();
 
-        let survivor = box_addr(&*retiring.nodes[0].ops[0]);
-        let cold = box_addr(&*fresh.nodes[0].ops[0]);
+        let survivor = box_addr(&*retiring.nodes[0].op);
+        let cold = box_addr(&*fresh.nodes[0].op);
         assert_ne!(
             survivor, cold,
             "the two plans must own distinct boxes to start"
@@ -1781,12 +1767,12 @@ mod transplant_tests {
         fresh.transplant_survivors(&mut retiring, &[(0, 0)]);
 
         assert_eq!(
-            box_addr(&*fresh.nodes[0].ops[0]),
+            box_addr(&*fresh.nodes[0].op),
             survivor,
             "the survivor's live box crosses into the fresh Plan"
         );
         assert_eq!(
-            box_addr(&*retiring.nodes[0].ops[0]),
+            box_addr(&*retiring.nodes[0].op),
             cold,
             "the displaced cold box lands in `from`, to free off-thread with the retiree"
         );
@@ -1797,9 +1783,9 @@ mod transplant_tests {
     fn empty_table_transplants_nothing() {
         let mut fresh = one_node_plan();
         let mut retiring = one_node_plan();
-        let before = box_addr(&*fresh.nodes[0].ops[0]);
+        let before = box_addr(&*fresh.nodes[0].op);
         fresh.transplant_survivors(&mut retiring, &[]);
-        assert_eq!(box_addr(&*fresh.nodes[0].ops[0]), before);
+        assert_eq!(box_addr(&*fresh.nodes[0].op), before);
     }
 
     /// A mispaired, out-of-bounds table trips the bounds guard in debug builds — the one thing the

@@ -86,7 +86,7 @@ impl RenderScratch {
         let max_out_bufs = plan
             .nodes
             .iter()
-            .map(|n| n.outputs.iter().map(|p| p.len()).sum::<usize>())
+            .map(|n| n.outputs.len())
             .max()
             .unwrap_or(0);
         Self {
@@ -774,10 +774,8 @@ fn process_node(
     // Swap this node's signal-output buffers out of the arena into `out_scratch` (disjoint from
     // inputs — no self-loops; cycles error), in signal-output port order.
     out_scratch.clear();
-    for port in &node.outputs {
-        for &bi in port {
-            out_scratch.push(std::mem::take(&mut arena[bi]));
-        }
+    for &bi in &node.outputs {
+        out_scratch.push(std::mem::take(&mut arena[bi]));
     }
     let n_inputs = node.descriptor.inputs.len();
 
@@ -823,7 +821,7 @@ fn process_node(
         let inputs = node
             .inputs
             .iter()
-            .map(|src| src.as_ref().map(|bufs| &arena[bufs[0]][seg_start..seg_end]));
+            .map(|src| src.map(|bi| &arena[bi][seg_start..seg_end]));
 
         // Output slices for this segment, in signal-output port order.
         let outputs = out_scratch
@@ -836,16 +834,12 @@ fn process_node(
             .with_streams(&stream_refs)
             .with_varying(&node.varying)
             .with_emit(&mut *emit_scratch, seg_start);
-        node.ops[0].process(&mut io);
+        node.op.process(&mut io);
     }
 
-    // Return the signal-output buffers to the arena, same flat order they were taken.
-    let mut k = 0;
-    for port in &node.outputs {
-        for &bi in port {
-            arena[bi] = std::mem::take(&mut out_scratch[k]);
-            k += 1;
-        }
+    // Return the signal-output buffers to the arena, same order they were taken.
+    for (k, &bi) in node.outputs.iter().enumerate() {
+        arena[bi] = std::mem::take(&mut out_scratch[k]);
     }
 }
 
