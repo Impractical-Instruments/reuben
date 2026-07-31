@@ -30,10 +30,17 @@ use crate::signal::{AudioSample, BlockMut};
 
 /// Decides the order in which nodes are processed for a block.
 ///
-/// The plan is already topologically ordered, so a valid execution is simply
-/// `0..nodes.len()`. A future parallel executor returns the same set grouped into
-/// concurrently-runnable clusters. The order is written into a caller-owned buffer
-/// (reused across blocks) so producing it allocates nothing in steady state.
+/// The plan is already topologically ordered, so a valid execution is simply `0..nodes.len()`. A
+/// future parallel executor returns the same set grouped into concurrently-runnable clusters. The
+/// order is written into a caller-owned buffer (reused across blocks) so producing it allocates
+/// nothing in steady state.
+///
+/// **An implementation must keep each node at its planned index.** Instantiate's arena liveness
+/// pass hands one edge buffer to several producers, dated by *that* linearization — so two
+/// independent branches can share a slot, and running one where the other was planned makes them
+/// overwrite each other. Grouping consecutive indices into concurrent clusters is not the same
+/// freedom as reordering them, and a genuinely order-free executor needs the liveness question
+/// re-asked, not just this trait re-implemented.
 pub trait Executor {
     fn order(&self, plan: &Plan, out: &mut Vec<usize>);
 }

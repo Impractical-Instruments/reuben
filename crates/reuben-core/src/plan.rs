@@ -402,17 +402,18 @@ impl Plan {
             index_of.insert(*key, i);
         }
 
-        // 1. Arena liveness. A Buffer output port needs a slot only while something still has to
-        // read it — not for the life of the plan — so record when each one dies: the execution
-        // index of its last consumer, or the producer's own index when nothing reads it. Bucketed
-        // by that index, so the assignment walk below returns freed slots in the same single pass.
+        // 1. Arena liveness — see rules: execution-runtime. A Buffer output port needs a slot only
+        // while something still has to read it, so record when each one dies: the execution index
+        // of its last consumer, or the producer's own index when nothing reads it. Bucketed by that
+        // index, so the assignment walk below returns freed slots in the same single pass.
         //
         // Two kinds of buffer never appear here, and so never expire. A **master tap** and a
         // Signal **interface output** are read after the whole schedule has run (`render_plan`'s
-        // tap sum; a host reading a voice's `audio`), so their slots stay live to the end of the
-        // block. A **materialize scratch** is assigned in the node loop and never enters this
-        // table: it holds a ZOH value across the block boundary and is excluded from the
-        // per-block clear, so recycling one would hand an input's held value to another input.
+        // tap sum; a host reading a voice's `audio`) — a new post-schedule reader must be added
+        // here, or it silently reads whatever later node inherited the slot. A **materialize
+        // scratch** is assigned in the node loop and never enters this table: it holds a ZOH value
+        // across the block boundary and is excluded from the per-block clear, so recycling one
+        // would hand an input's held value to another input.
         let pinned: HashSet<(NodeKey, usize)> = graph
             .outputs
             .iter()
@@ -1388,7 +1389,10 @@ mod port_kind_tests {
 /// Wire-form oracle + per-wire checker fixtures — see rules: composition-operators. These
 /// fixtures wire **synthetic single-port operators** (one declared form each) so a plan's buffer
 /// count isolates the wire under test:
-/// [`signal_buffer_count`] == declared-Signal ports + materialized Value→Signal edges.
+/// [`signal_buffer_count`] == *simultaneously live* declared-Signal ports + materialized
+/// Value→Signal edges. Every fixture here is a source and a sink, so at most one signal edge is
+/// ever live and the two readings coincide — but on a real graph they do not, and a count read off
+/// this oracle is a statement about arena residency, not about how many signal ports exist.
 ///
 /// A unit module rather than `tests/wire_forms.rs` because the fixtures reach into
 /// [`Plan::nodes`] (`pub(crate)`) — they are unit checks of `instantiate`'s wiring, not black-box
@@ -1472,8 +1476,10 @@ mod wire_forms {
         plan.nodes[node].input_kinds[port]
     }
 
-    /// Buffer cost of a plan: declared-Signal ports + materialized Value→Signal edges. With
-    /// single-port synthetic operators this isolates the wire under test.
+    /// Buffer cost of a plan: the arena slots it holds — *simultaneously live* declared-Signal
+    /// ports plus materialized Value→Signal edges, since Instantiate recycles a slot once its last
+    /// consumer has run. With single-port synthetic operators nothing is ever recycled, so this
+    /// isolates the wire under test.
     fn signal_buffer_count(plan: &Plan) -> usize {
         plan.num_buffers
     }

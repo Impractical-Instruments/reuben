@@ -185,8 +185,12 @@ pub struct Voicer {
     /// Per-voice "got an event this block" flag (parallel to `pool.voices`), so a voice toggled
     /// on→off within one block still renders its blip even though it ends idle. Cleared per block.
     touched: Vec<bool>,
-    /// Arena buffer index of each voice plan's `audio` interface output, resolved
-    /// once (all voice plans are identical copies). `None` ⇒ no such output; fall back to `master[0]`.
+    /// Arena buffer index of each voice plan's `audio` interface output, resolved once from voice
+    /// 0 and then used to index *every* voice's arena. That is only sound because the voices are
+    /// built from one patch and Instantiate is a pure function of the graph, so each independently
+    /// built plan lands its boundary output on the same slot — asserted at `on_instantiate`, since
+    /// a mismatch would read another voice's audio silently rather than fail.
+    /// `None` ⇒ no such output; fall back to `master[0]`.
     audio_buf: Option<usize>,
     /// [`Plan::captured`](crate::plan::Plan::captured) slot of each voice plan's `active` interface
     /// output. `None` ⇒ the patch declares no `active`; liveness then falls back to gate (`on`), and
@@ -273,6 +277,17 @@ impl Operator for Voicer {
         // All voice plans are copies of one patch — resolve the output boundary indices once.
         self.audio_buf = slots[0].plan.interface_signal_buf("audio");
         self.active_cap = slots[0].plan.interface_value_slot("active");
+        // Voice 0's indices are used against every voice's arena and `captured`, so the plans have
+        // to agree. They are built independently (a `Graph` is not `Clone`), and the arena slot is
+        // now the output of a liveness pass rather than a port ordinal — a quieter function of the
+        // same input. Loud in dev, because a drifted index is not a crash but the wrong voice.
+        debug_assert!(
+            slots
+                .iter()
+                .all(|s| s.plan.interface_signal_buf("audio") == self.audio_buf
+                    && s.plan.interface_value_slot("active") == self.active_cap),
+            "voice plans disagree on their boundary slots — one patch must instantiate identically"
+        );
         self.pool = VoicePool::new(slots.len());
         self.slots = slots;
         Ok(())
