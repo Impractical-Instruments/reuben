@@ -896,6 +896,22 @@ impl Loaded {
             warnings: self.warnings.clone(),
         }
     }
+
+    /// Did every reference beneath this build resolve? A [`LoadWarning::ResolveFailed`] anywhere
+    /// under it means some reference was answered *unavailable* — a fact about the world at that
+    /// instant rather than about the document — so the build describes a moment, not the child,
+    /// and the rest of the load must not reuse it. Availability is the one input to a build that
+    /// a resolver can change underfoot; everything else follows from the document.
+    fn availability_held(&self) -> bool {
+        fn unavailable(w: &LoadWarning) -> bool {
+            match w {
+                LoadWarning::ResolveFailed { .. } => true,
+                LoadWarning::Nested { warning, .. } => unavailable(warning),
+                _ => false,
+            }
+        }
+        !self.warnings.iter().any(unavailable)
+    }
 }
 
 /// Shared state threaded through the recursive nested-load passes (`voice`/`patch`),
@@ -928,9 +944,13 @@ struct LoadCtx {
     /// Deliberately in-memory and per-load: the key is the canonical id `docs` already uses, so
     /// there is no serialized form, no engine-build-id in a key, and no freshness question.
     ///
-    /// Successes only, and inserted only *after* the build returns — which is what keeps the
-    /// cycle guard intact. A source that (transitively) re-enters itself is caught during that
-    /// first build, so no cyclic child is ever cached to be served past the guard later.
+    /// Holds only builds that were **complete**: inserted after the build returns, and only if
+    /// every reference under it resolved ([`Loaded::availability_held`]). Both halves are what
+    /// keep the cycle guard intact. Inserting after the build means a source that re-enters
+    /// itself is caught while building rather than cached first; refusing a build that degraded
+    /// on availability means a child that lost a reference *this instant* is re-attempted per
+    /// site, so it cannot be frozen in its dark form and later answer past the guard — which is
+    /// how a cyclic library would otherwise dissolve into a silent instrument.
     built: BTreeMap<String, Loaded>,
 }
 
@@ -1287,6 +1307,12 @@ fn load_child_guarded(
 /// The first reference pays one copy it would not otherwise need. That is deliberate: sparing it
 /// would mean knowing the reuse count before the first build, and the copy is a small fraction of
 /// the build it replaces.
+///
+/// A build that degraded on **availability** is not cached ([`Loaded::availability_held`]), so each
+/// site re-attempts it exactly as it did before this cache existed. That is what keeps the cycle
+/// guard honest: a child whose own reference was momentarily unresolvable would otherwise be
+/// cached in its dark form and later answer *past* the guard, turning a cyclic library into a
+/// silent instrument instead of a named error.
 fn load_child_cached(
     doc: &NormalizedDoc,
     source: &str,
@@ -1296,6 +1322,9 @@ fn load_child_cached(
 ) -> Result<Loaded, LoadError> {
     if !ctx.built.contains_key(source) {
         let loaded = load_child_guarded(doc, source, registry, resolver, ctx)?;
+        if !loaded.availability_held() {
+            return Ok(loaded);
+        }
         ctx.built.insert(source.to_string(), loaded);
     }
     Ok(ctx.built[source].copy())
@@ -1553,44 +1582,55 @@ impl InstrumentDoc {
             // Canonical id keys the fetch/parse dedup and the cycle guard: two
             // ids spelling one source (`a.json` vs `./a.json`) share one parse and one identity.
             let canon = resolver.canonical(source, referrer);
-            if !patch_docs.contains_key(&canon) {
-                // A child this load already parsed (a v1 re-export entry migrated through it,
-                // or another document referenced it) comes from the load-wide cache; parse
-                // failures stay per-document so each keeps its own warning.
-                let child_doc = if let Some(cached) = ctx.docs.get(&canon) {
-                    Some(cached.clone())
-                } else {
-                    match resolver.resolve_text(&canon) {
-                        Ok(text) => {
-                            let parsed = NormalizedDoc::parse_with(
-                                &text,
-                                registry,
-                                Some(resolver),
-                                ctx,
-                                Some(&canon),
-                            )?;
-                            ctx.docs.insert(canon.clone(), parsed.clone());
-                            Some(parsed)
-                        }
-                        Err(e) => {
-                            let failed = LoadWarning::ResolveFailed {
-                                slot: "patch",
-                                id: id.clone(),
-                                source: canon.clone(),
-                                reason: e.to_string(),
-                            };
-                            warnings.push(failed.nested_in(&n.address));
-                            None
-                        }
+            // A source this load already built is served from the cache without consulting the
+            // resolver at all — the same short-circuit the voice pass takes, so both reference
+            // paths agree on what a second reference costs and neither can degrade a source the
+            // other already built. Taken here, after `lookup_source`, so a node naming an id this
+            // document's `resources` table lacks still gets its own `MissingResource`.
+            let already_built = ctx.built.get(&canon).map(Loaded::copy);
+            let loaded = match already_built {
+                Some(loaded) => loaded,
+                None => {
+                    if !patch_docs.contains_key(&canon) {
+                        // A child this load already parsed (a v1 re-export entry migrated through it,
+                        // or another document referenced it) comes from the load-wide cache; parse
+                        // failures stay per-document so each keeps its own warning.
+                        let child_doc = if let Some(cached) = ctx.docs.get(&canon) {
+                            Some(cached.clone())
+                        } else {
+                            match resolver.resolve_text(&canon) {
+                                Ok(text) => {
+                                    let parsed = NormalizedDoc::parse_with(
+                                        &text,
+                                        registry,
+                                        Some(resolver),
+                                        ctx,
+                                        Some(&canon),
+                                    )?;
+                                    ctx.docs.insert(canon.clone(), parsed.clone());
+                                    Some(parsed)
+                                }
+                                Err(e) => {
+                                    let failed = LoadWarning::ResolveFailed {
+                                        slot: "patch",
+                                        id: id.clone(),
+                                        source: canon.clone(),
+                                        reason: e.to_string(),
+                                    };
+                                    warnings.push(failed.nested_in(&n.address));
+                                    None
+                                }
+                            }
+                        };
+                        patch_docs.insert(canon.clone(), child_doc);
                     }
-                };
-                patch_docs.insert(canon.clone(), child_doc);
-            }
-            let Some(child_doc) = &patch_docs[&canon] else {
-                dark.insert(n.address.clone());
-                continue;
+                    let Some(child_doc) = &patch_docs[&canon] else {
+                        dark.insert(n.address.clone());
+                        continue;
+                    };
+                    load_child_cached(child_doc, &canon, registry, resolver, ctx)?
+                }
             };
-            let loaded = load_child_cached(child_doc, &canon, registry, resolver, ctx)?;
             warnings.extend(loaded.warnings.into_iter().map(|w| w.nested_in(&n.address)));
             // A subpatch-inlined child's channel bindings are discarded at splice — inert
             //, exactly as under a Voicer, and warned symmetrically: the same
@@ -5118,6 +5158,55 @@ mod tests {
             resolve_instrument("a.json", &reg(), &TwoDocs),
             Err(LoadError::CyclicResource { source }) if source == "a.json"
         ));
+    }
+
+    #[test]
+    fn a_cycle_is_fatal_even_when_a_reference_was_momentarily_unavailable() {
+        // A -> B -> A, where B's build happens to run while A is briefly unresolvable. B degrades
+        // dark and, if that degraded build were cached, A's later reference to B would be answered
+        // from the cache without ever pushing B onto the guard stack — and the cycle would go
+        // unseen, dissolving a cyclic library into a silent instrument instead of naming it. So a
+        // build that lost a reference to availability is not cached: darkness is a fact about the
+        // world at one instant, not about the document.
+        use std::cell::Cell;
+        struct FlakyOnce {
+            withheld: Cell<bool>,
+        }
+        impl ResourceResolver for FlakyOnce {
+            fn resolve(&self, s: &str) -> Result<SampleBuffer, crate::resources::ResolveError> {
+                Err(crate::resources::ResolveError::NotFound(s.to_string()))
+            }
+            fn resolve_text(&self, source: &str) -> Result<String, crate::resources::ResolveError> {
+                match source {
+                    // The first read of "a.json" fails; every later one succeeds.
+                    "a.json" if !self.withheld.get() => {
+                        self.withheld.set(true);
+                        Err(crate::resources::ResolveError::NotFound(source.to_string()))
+                    }
+                    "a.json" => Ok(r#"{"instrument":"a","resources":{"b":"b.json"},"nodes":[
+                        {"type":"subpatch","address":"/sub","patch":"b"}]}"#
+                        .to_string()),
+                    _ => Ok(r#"{"instrument":"b","resources":{"a":"a.json"},"nodes":[
+                        {"type":"subpatch","address":"/sub","patch":"a"}]}"#
+                        .to_string()),
+                }
+            }
+        }
+        // `/first` builds b (whose reference to a is withheld this once); `/second` then builds a,
+        // which references b — the moment the cycle becomes visible.
+        let json = r#"{"instrument":"p","resources":{"b":"b.json","a":"a.json"},"nodes":[
+            {"type":"subpatch","address":"/first","patch":"b"},
+            {"type":"subpatch","address":"/second","patch":"a"}]}"#;
+        let resolver = FlakyOnce {
+            withheld: Cell::new(false),
+        };
+        assert!(
+            matches!(
+                load_instrument(json, &reg(), &resolver),
+                Err(LoadError::CyclicResource { .. })
+            ),
+            "a cycle must stay fatal however the availability fell out"
+        );
     }
 
     #[test]

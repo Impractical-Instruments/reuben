@@ -25,11 +25,31 @@ ahead of time, and it would mean serializing live operator state and pointer-lin
 
 ## Decision
 
-**A child source is built once per load, and every further reference is a fresh-state copy of that
-build.** The cache lives in `LoadCtx` beside the parse and decode caches it completes, keyed by the
-same canonical id, and is populated only *after* a build returns — which is what keeps the cycle
-guard intact, since a source that re-enters itself is caught during that first build and so is never
-cached to be served past the guard later.
+**A child source that builds completely is built once per load, and every further reference is a
+fresh-state copy of that build.** The cache lives in `LoadCtx` beside the parse and decode caches it
+completes, keyed by the same canonical id.
+
+Two conditions on what may enter it, and both exist to keep the **cycle guard** honest. The first is
+obvious: a build is cached only after it returns, so a source that re-enters itself is caught while
+building rather than cached first. The second is not, and was found by adversarial review after the
+first version of this change shipped it wrong. A build that degraded on **availability** — some
+reference beneath it answered *unavailable* — is not cached at all; each site re-attempts it exactly
+as it did before the cache existed.
+
+The reason is that availability is the one input to a build that a resolver can change underfoot,
+and a build that lost a reference describes *a moment*, not the child. Cache it and the moment
+becomes the answer for the rest of the load. Concretely, with `A → B → A` and a resolver that
+withholds `A` on its first read (a file appearing mid-`git checkout` under `FsResolver`): `B` builds
+with its `A` edge dark, gets cached, and when `A` is later built its reference to `B` is answered
+from the cache — so `B` is never pushed onto the guard stack, and a cyclic library dissolves into a
+silent instrument instead of a named `CyclicResource`. Refusing to cache a degraded build restores
+the pre-cache behaviour exactly, and is the same policy the sample and document caches already
+apply for the same reason.
+
+**Both reference paths take the same short-circuit.** A source already in the cache is served
+without consulting the resolver, whether the reference is a `subpatch` node or a voice copy. The
+first version short-circuited only the voice path, which left a source first built for a voice pool
+being re-read and re-parsed by a later `subpatch` reference purely to discard the result.
 
 The copy is `Graph::spawn_copy`: same nodes, wires, taps, boundary and author overrides, with every
 operator box taken through **`Operator::spawn`** and every stored `NodeKey` remapped through the
@@ -67,10 +87,24 @@ same measurement gives ~28% (×1.39), because what is saved is proportional to t
 no longer rebuilt. The voice pass is not on the bench at all and is the larger win in absolute terms
 — one build and one source read for a pool of thirty-two, against thirty-two of each.
 
-The first reference to a source pays one copy it would not otherwise need, and the template stays
-resident for the rest of the load. Both are deliberate: sparing the copy would mean knowing the
-reuse count before the first build, and the resident template is one child's worth of graph against
-the reuses it replaces.
+**A document with no repeated child is ~9% slower to load, and neither bench shape can see it.**
+The first reference to a source pays one copy it would not otherwise need, so N references cost
+about `1 + 0.09N` builds against the old `N` — break-even sits just above one reference. Measured
+wall-clock, cache off → on: a single reference to a 64-node child 109 → 119 µs (+9%), 64 sites over
+64 distinct children 1137 → 1250 µs (+10%), 32 sites over 32 distinct 24-node children 1419 → 1510
+µs (+6%), against 64 sites over *one* child 1397 → 1006 µs (−28%). Peak RSS over a load of 300
+distinct children rises ~12%, the resident templates.
+
+This is not visible to the gate. `nest_doc` sweeps N sites over one `CELL_SOURCE` — the best case —
+and `wide`/`deep` do not nest at all, so "the flat shapes are unchanged" is evidence about
+non-nested documents and says nothing about a nested all-distinct one. It is recorded here rather
+than benched because the trade is deliberate and one-directional: the documents that load slowly
+enough to matter are the repetitive ones, and 9% of a small load is microseconds while the reuse
+case is where the seconds are.
+
+The alternative — deferring the cache until a source is referenced twice — was considered and
+rejected. It makes a single reference free but costs a second build at two references, which is
+worse than either arrangement for the shape immediately either side of break-even.
 
 This lands against today's dissolve-only `subpatch`, while [ADR-0076](0076-a-swap-may-install-one-hosted-sub-plan.md)
 has a Swap installing a hosted sub-`Plan`. The copy is at the `Graph` level, below where that split

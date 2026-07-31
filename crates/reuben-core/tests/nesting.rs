@@ -560,3 +560,72 @@ fn a_reused_section_keeps_the_voices_its_voicer_hosts() {
         "the second reuse of a voicer-hosting section rendered silence: its pool was dropped"
     );
 }
+
+#[test]
+fn a_source_one_reference_already_built_is_not_read_again_for_another() {
+    // `/c` is a section hosting a two-voice pool of `voice.json`; `/v` then names that same
+    // document directly as a subpatch. By the time `/v` is reached the source has been built and
+    // cached, so the read, the parse and the build are all already paid — asking the resolver again
+    // only to discard the answer is work this change exists to remove, and it is also the one way
+    // two references to one source could still disagree about whether it exists.
+    const VOICE: &str = r#"{
+        "format_version": 2,
+        "instrument": "voice",
+        "interface": {
+            "inputs": {
+                "freq": { "type": "f32", "default": 440.0, "min": 20.0, "max": 20000.0 },
+                "gate": { "type": "f32", "default": 0.0, "min": 0.0, "max": 1.0 }
+            },
+            "outputs": { "audio": { "from": "/p.out" } }
+        },
+        "nodes": [ { "type": "probe_704", "address": "/p" } ]
+    }"#;
+    const SECTION: &str = r#"{
+        "format_version": 2,
+        "instrument": "section",
+        "resources": { "v": "voice.json" },
+        "interface": { "outputs": { "audio": { "from": "/voicer.audio" } } },
+        "nodes": [
+            { "type": "voicer", "address": "/voicer", "voice": "v", "config": { "voices": 2 } }
+        ]
+    }"#;
+    const SONG: &str = r#"{
+        "format_version": 2,
+        "instrument": "song",
+        "resources": { "s": "section.json", "v": "voice.json" },
+        "nodes": [
+            { "type": "subpatch", "address": "/c", "patch": "s" },
+            { "type": "subpatch", "address": "/v", "patch": "v" }
+        ]
+    }"#;
+
+    struct Counting(AtomicUsize);
+    impl ResourceResolver for Counting {
+        fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+            Err(ResolveError::NotFound(source.to_string()))
+        }
+        fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            match source {
+                "section.json" => Ok(SECTION.to_string()),
+                "voice.json" => Ok(VOICE.to_string()),
+                other => Err(ResolveError::NotFound(other.to_string())),
+            }
+        }
+    }
+
+    let _serialized = PROBE_LOCK.lock().expect("probe lock");
+    let resolver = Counting(AtomicUsize::new(0));
+    let loaded = load_instrument(SONG, &probe_registry(), &resolver).expect("load");
+    assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+    assert!(
+        loaded.graph.find("/v/p").is_some(),
+        "the direct reuse spliced"
+    );
+
+    assert_eq!(
+        resolver.0.load(Ordering::Relaxed),
+        2,
+        "one read per distinct source: section.json and voice.json"
+    );
+}
