@@ -897,15 +897,19 @@ impl Loaded {
         }
     }
 
-    /// Did every reference beneath this build resolve? A [`LoadWarning::ResolveFailed`] anywhere
-    /// under it means some reference was answered *unavailable* — a fact about the world at that
-    /// instant rather than about the document — so the build describes a moment, not the child,
-    /// and the rest of the load must not reuse it. Availability is the one input to a build that
-    /// a resolver can change underfoot; everything else follows from the document.
+    /// Did every **instrument-kind** reference beneath this build resolve? A `patch`/`voice`
+    /// reference answered *unavailable* leaves a build that describes an instant rather than the
+    /// child, and — because those are exactly the references the cycle guard walks — freezing one
+    /// in that form would let it answer past the guard. So such a build is not reusable.
+    ///
+    /// A failed **`sample`** does not count. A sample is not a graph: it cannot re-enter this load,
+    /// so it cannot hide a cycle, and its warning is cloned to every site either way. Refusing the
+    /// cache for it would cost every reuse of a library child whose sample the user has not
+    /// installed — a common case — and buy nothing.
     fn availability_held(&self) -> bool {
         fn unavailable(w: &LoadWarning) -> bool {
             match w {
-                LoadWarning::ResolveFailed { .. } => true,
+                LoadWarning::ResolveFailed { slot, .. } => *slot != "sample",
                 LoadWarning::Nested { warning, .. } => unavailable(warning),
                 _ => false,
             }
@@ -945,12 +949,20 @@ struct LoadCtx {
     /// there is no serialized form, no engine-build-id in a key, and no freshness question.
     ///
     /// Holds only builds that were **complete**: inserted after the build returns, and only if
-    /// every reference under it resolved ([`Loaded::availability_held`]). Both halves are what
-    /// keep the cycle guard intact. Inserting after the build means a source that re-enters
-    /// itself is caught while building rather than cached first; refusing a build that degraded
-    /// on availability means a child that lost a reference *this instant* is re-attempted per
-    /// site, so it cannot be frozen in its dark form and later answer past the guard — which is
-    /// how a cyclic library would otherwise dissolve into a silent instrument.
+    /// every instrument-kind reference under it resolved ([`Loaded::availability_held`]). Both
+    /// halves protect the cycle guard. Inserting after the build means a source that re-enters
+    /// itself is caught while building rather than cached first; refusing a build that lost a
+    /// `patch`/`voice` reference *this instant* means it is re-attempted per site rather than
+    /// frozen in its dark form to answer past the guard later — which is how a cyclic library
+    /// would otherwise dissolve into a silent instrument.
+    ///
+    /// **What this assumes.** Like `docs`, that one canonical id names one document for the
+    /// duration of a load. A resolver that returns different *content* for a source it already
+    /// served makes the earlier build stale, and no guard here notices — but that is `docs`'
+    /// standing assumption too, so a `subpatch` chain behaved this way before any of this
+    /// existed. What changed is that it now holds on every path rather than on all but the voice
+    /// one, which used to re-read by omission. Availability is singled out above precisely
+    /// because it was the one thing *both* paths re-evaluated per site.
     built: BTreeMap<String, Loaded>,
 }
 
@@ -1256,16 +1268,24 @@ fn try_resolve_instrument(
     ctx: &mut LoadCtx,
 ) -> Result<Result<Loaded, LoadWarning>, LoadError> {
     // A source this load already built is served from the cache without touching the resolver:
-    // no re-read, no re-parse, no rebuild. Availability needs no second opinion — a source that
-    // built once was available, and re-asking a resolver mid-load could only introduce a way for
-    // one document's voices to disagree with each other.
+    // no re-read, no re-parse, no rebuild.
     if let Some(built) = ctx.built.get(source) {
         return Ok(Ok(built.copy()));
+    }
+    // Then the parse cache — consulted *and filled* here, not only on the `subpatch` path. That
+    // asymmetry was this path's alone: it parsed without recording, so `docs`' own "read and
+    // parsed once per load" was true of one caller and not the other, and a source first reached
+    // through a voice pool was read again by the next reference to it.
+    if let Some(doc) = ctx.docs.get(source).cloned() {
+        return Ok(Ok(load_child_cached(
+            &doc, source, registry, resolver, ctx,
+        )?));
     }
     match resolver.resolve_text(source) {
         Ok(text) => {
             let doc =
                 NormalizedDoc::parse_with(&text, registry, Some(resolver), ctx, Some(source))?;
+            ctx.docs.insert(source.to_string(), doc.clone());
             Ok(Ok(load_child_cached(
                 &doc, source, registry, resolver, ctx,
             )?))

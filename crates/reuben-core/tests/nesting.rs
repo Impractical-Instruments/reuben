@@ -629,3 +629,52 @@ fn a_source_one_reference_already_built_is_not_read_again_for_another() {
         "one read per distinct source: section.json and voice.json"
     );
 }
+
+#[test]
+fn a_child_whose_sample_is_missing_is_still_built_once() {
+    // A build that lost a `patch`/`voice` reference is not cached, because those are the
+    // references the cycle guard walks. A missing **sample** is a different thing: it is not a
+    // graph, cannot re-enter the load, and cannot hide a cycle — and a library child whose sample
+    // the user has not installed is ordinary, not exotic. So it still caches, and each site still
+    // gets its own copy of the warning.
+    const CHILD: &str = r#"{
+        "format_version": 2,
+        "instrument": "child",
+        "resources": { "kick": "kick.wav" },
+        "interface": { "outputs": { "out": { "from": "/p.out" } } },
+        "nodes": [
+            { "type": "probe_704", "address": "/p" },
+            { "type": "sample", "address": "/s", "sample": "kick" }
+        ]
+    }"#;
+    const PARENT: &str = r#"{
+        "format_version": 2,
+        "instrument": "parent",
+        "resources": { "c": "child.json" },
+        "nodes": [
+            { "type": "subpatch", "address": "/a", "patch": "c" },
+            { "type": "subpatch", "address": "/b", "patch": "c" },
+            { "type": "subpatch", "address": "/c", "patch": "c" }
+        ]
+    }"#;
+
+    let _serialized = PROBE_LOCK.lock().expect("probe lock");
+    let before = PROBE_BUILDS.load(Ordering::Relaxed);
+    let loaded = load_instrument(PARENT, &probe_registry(), &Fixed(CHILD)).expect("non-fatal");
+
+    assert_eq!(
+        PROBE_BUILDS.load(Ordering::Relaxed) - before,
+        1,
+        "a dead sample must not cost the child its cache"
+    );
+    let sites = loaded
+        .warnings
+        .iter()
+        .filter(|w| matches!(w, reuben_core::LoadWarning::Nested { .. }))
+        .count();
+    assert_eq!(
+        sites, 3,
+        "each site keeps its own warning: {:?}",
+        loaded.warnings
+    );
+}

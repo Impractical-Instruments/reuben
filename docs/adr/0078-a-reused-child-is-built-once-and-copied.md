@@ -36,15 +36,40 @@ first version of this change shipped it wrong. A build that degraded on **availa
 reference beneath it answered *unavailable* — is not cached at all; each site re-attempts it exactly
 as it did before the cache existed.
 
-The reason is that availability is the one input to a build that a resolver can change underfoot,
-and a build that lost a reference describes *a moment*, not the child. Cache it and the moment
-becomes the answer for the rest of the load. Concretely, with `A → B → A` and a resolver that
-withholds `A` on its first read (a file appearing mid-`git checkout` under `FsResolver`): `B` builds
-with its `A` edge dark, gets cached, and when `A` is later built its reference to `B` is answered
-from the cache — so `B` is never pushed onto the guard stack, and a cyclic library dissolves into a
-silent instrument instead of a named `CyclicResource`. Refusing to cache a degraded build restores
-the pre-cache behaviour exactly, and is the same policy the sample and document caches already
-apply for the same reason.
+The reason is that a build which lost a reference describes *a moment*, not the child. Cache it and
+the moment becomes the answer for the rest of the load. Concretely, with `A → B → A` and a resolver
+that withholds `A` on its first read (a file appearing mid-`git checkout` under `FsResolver`): `B`
+builds with its `A` edge dark, gets cached, and when `A` is later built its reference to `B` is
+answered from the cache — so `B` is never pushed onto the guard stack, and a cyclic library
+dissolves into a silent instrument instead of a named `CyclicResource`. Refusing to cache such a
+build restores the pre-cache behaviour exactly, and is the same policy the sample and document
+caches already apply.
+
+Only **instrument-kind** references count. A failed `sample` does not bar the cache: a sample is
+not a graph, so it cannot re-enter the load and cannot hide a cycle, and its warning reaches every
+site either way. Counting it would cost the cache on every reuse of a library child whose sample
+the user has not installed — an ordinary case — and buy nothing.
+
+### What this does not fix, stated plainly
+
+Availability is not the only input a resolver can change underfoot. **Content** is too, and no
+guard here notices: a resolver that serves different bytes for a source it already served leaves the
+earlier build stale, and the same `A → B → A` shape then masks the same cycle. That is worth being
+exact about, because a first draft of this ADR claimed otherwise.
+
+It is not, however, new. `docs` has always assumed one canonical id names one document for a load,
+so a `subpatch → subpatch` chain has behaved this way since long before any of this — verified by
+running the content-mutating repro against the unmodified loader, which also returns a silent
+instrument. What the built cache changes is that the assumption now holds on *every* path. The
+voice path used to re-read by omission — it parsed without recording into `docs` — and so happened
+to catch one shape the subpatch path already missed. That omission is closed here rather than
+preserved: a source is read and parsed once per load however it is referenced, which is what `docs`
+always claimed and only one caller delivered.
+
+One visible consequence, under such a resolver only: two sites in one document naming one id can
+now disagree, where a site that failed to read a source keeps its `ResolveFailed` while a sibling
+splices the build a *different* reference obtained. Each site still reports what happened to it,
+which is the per-site rule holding rather than bending.
 
 **Both reference paths take the same short-circuit.** A source already in the cache is served
 without consulting the resolver, whether the reference is a `subpatch` node or a voice copy. The
@@ -85,7 +110,9 @@ is the controlled before/after the shape was added to produce. That figure is a 
 bench's child, which is a single gain node behind two pipes: re-run with a sixteen-node child the
 same measurement gives ~28% (×1.39), because what is saved is proportional to the size of the thing
 no longer rebuilt. The voice pass is not on the bench at all and is the larger win in absolute terms
-— one build and one source read for a pool of thirty-two, against thirty-two of each.
+— one build and one source read for a pool of thirty-two, against thirty-two of each, provided the
+voice document's own `patch`/`voice` references resolve. If one does not, that pool is back to
+thirty-two builds by the rule above; a missing *sample* costs it nothing.
 
 **A document with no repeated child is ~9% slower to load, and neither bench shape can see it.**
 The first reference to a source pays one copy it would not otherwise need, so N references cost
