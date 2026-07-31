@@ -1341,8 +1341,9 @@ impl InstrumentDoc {
                     kind,
                     enum_default,
                 } = pipe_descriptor(name, pipe)?;
-                // One handle per minted pipe: the graph node and the wire-resolution table below
-                // both hold this descriptor, and a pipe's ports are as immutable as an operator's.
+                // A pipe's ports are as immutable as an operator's, so its holders share one
+                // handle. Per *pipe*, though — the ports come from this entry's own declaration,
+                // so unlike an operator type there is nothing registry-wide to share.
                 let descriptor = Arc::new(descriptor);
                 let bare_signal = kind == PortKind::Signal && descriptor.inputs[0].meta.is_none();
                 let address = format!("/{name}");

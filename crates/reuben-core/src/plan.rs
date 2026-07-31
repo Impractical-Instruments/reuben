@@ -109,9 +109,10 @@ pub struct PlanNode {
     /// `pub(crate)`: the survivor transplant ([`Plan::transplant_survivors`]) is the only writer
     /// that moves these boxes, and it lives on `Plan` — no caller reaches in to swap them.
     pub(crate) ops: Vec<Box<dyn Operator>>,
-    /// A handle to the operator type's descriptor, carried over from the graph node — see
-    /// [`Entry::descriptor`](crate::registry::Entry::descriptor). Nothing on the render path
-    /// mutates a descriptor, so N nodes of one type read one shared copy.
+    /// A handle to the operator type's descriptor, moved over from the graph node — see
+    /// [`Entry::descriptor`](crate::registry::Entry::descriptor). Instantiate copies nothing, so
+    /// whatever sharing the graph had the Plan keeps; nothing on the render path mutates a
+    /// descriptor, and reads go through the handle untouched.
     pub descriptor: Arc<Descriptor>,
     /// For each input port (full input-port order): the source's arena buffer index (a one-element
     /// `Vec`), or `None`. `Some` for **every** [`Buffer`](PortType::F32Buffer) input — wired to a
@@ -1509,7 +1510,9 @@ mod descriptor_sharing_tests {
 
     /// The same, through the loader — the path every real graph takes. A document naming one type
     /// N times leaves N nodes pointing at the registry's one descriptor, so the port lists do not
-    /// scale with node count (nor with a voice pool, whose copies each load through here).
+    /// scale with node count. A voice pool loads each copy through here against the same registry,
+    /// so its operator nodes share too — its interface pipes do not, each minting its own ports
+    /// from its own declaration.
     #[test]
     fn a_document_naming_one_type_three_times_shares_one_descriptor() {
         let registry = Registry::builtin();

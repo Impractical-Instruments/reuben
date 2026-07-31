@@ -50,8 +50,8 @@ pub struct Entry {
     pub make: fn() -> Box<dyn Operator>,
     /// The type's self-description, behind a shared handle. Every field of a [`Descriptor`] is a
     /// function of the operator **type**, not the instance, and nothing mutates one after
-    /// registration — so this allocation is the only copy, and each node built from this entry
-    /// clones the handle rather than the port lists.
+    /// registration — so each node built from this entry clones the handle rather than the port
+    /// lists, and one registry costs one descriptor per registered type however many nodes name it.
     pub descriptor: Arc<Descriptor>,
 }
 
