@@ -105,7 +105,6 @@ fn seed_latch(p: &Port, port: usize, value_overrides: &[(usize, Arg)]) -> Arg {
 /// A node in execution order, with its arena buffer wiring resolved.
 pub struct PlanNode {
     pub address: String,
-    /// The operator instance.
     /// `pub(crate)`: the survivor transplant ([`Plan::transplant_survivors`]) is the only writer
     /// that moves this box, and it lives on `Plan` — no caller reaches in to swap it.
     pub(crate) op: Box<dyn Operator>,
@@ -115,12 +114,12 @@ pub struct PlanNode {
     /// descriptor, and reads go through the handle untouched.
     pub descriptor: Arc<Descriptor>,
     /// For each input port (full input-port order): the source's arena buffer index, or `None`.
-    /// `Some` for **every** [`Buffer`](PortType::F32Buffer) input — wired to a
-    /// Buffer source (zero-copy share) or **materialized** (a dedicated scratch buffer, see
-    /// `materialize`) when fed by a scalar source *or unwired* (an unwired bare buffer fills with
-    /// silence from its zero-seeded latch). That totality is the **buffer-presence invariant**:
-    /// `process` always sees a dense length-n buffer on a Signal input, so a typed
-    /// Signal read indexes directly. Held / Stream inputs carry no buffer (`None`).
+    /// `Some` for **every** [`Buffer`](PortType::F32Buffer) input — wired to a Buffer source
+    /// (zero-copy share) or **materialized** (a dedicated scratch buffer, see `materialize`) when
+    /// fed by a scalar source *or unwired* (an unwired bare buffer fills with silence from its
+    /// zero-seeded latch). That totality is the **buffer-presence invariant**: `process` always
+    /// sees a dense length-n buffer on a Signal input, so a typed Signal read indexes directly.
+    /// Held / Stream inputs carry no buffer (`None`).
     pub inputs: Vec<Option<usize>>,
     /// Per input port (full input-port order): its [`PortKind`], precomputed at Instantiate so the
     /// hot message-routing path reads the bucket directly instead of re-deriving it from the port
@@ -152,9 +151,9 @@ pub struct PlanNode {
     /// (`false` ⇒ held unchanged this block).
     pub varying: Vec<bool>,
     /// For each **signal (Buffer) output** port — in signal-output ordinal order — its arena
-    /// buffer index. [`crate::operator::Io::write`] on a Signal handle indexes
-    /// this by the all-outputs port index the contract macro emits, which equals the signal ordinal
-    /// **only when signal outputs precede message outputs in the declaration** (the invariant every
+    /// buffer index. [`crate::operator::Io::write`] on a Signal handle indexes this by the
+    /// all-outputs port index the contract macro emits, which equals the signal ordinal **only
+    /// when signal outputs precede message outputs in the declaration** (the invariant every
     /// operator holds; e.g. `envelope` declares `cv` before `active`).
     pub outputs: Vec<usize>,
     /// Message-edge routing: indexed by **all-outputs port index**
@@ -258,13 +257,14 @@ pub struct InputTap {
     pub mat_index: usize,
 }
 
-/// One master tap: a tapped port's arena buffers, summed into the master output.
+/// One master tap: a tapped port's arena buffer, summed into the master output.
 pub struct OutputTap {
     /// Logical master channel this tap feeds, or `None` to broadcast to every
     /// channel (the historical mono fan).
     pub channel: Option<usize>,
-    /// Arena buffer indices of the tapped port; all summed.
-    pub buffers: Vec<usize>,
+    /// Arena buffer index of the tapped port, or `None` when the tapped port is a message
+    /// output — it carries no Signal data, so the tap contributes nothing to the master.
+    pub buffer: Option<usize>,
 }
 
 /// The immutable execution image.
@@ -412,7 +412,7 @@ impl Plan {
             .iter()
             .map(|(k, p, channel)| OutputTap {
                 channel: *channel,
-                buffers: out_buffers[*k][*p].into_iter().collect(),
+                buffer: out_buffers[*k][*p],
             })
             .collect();
 

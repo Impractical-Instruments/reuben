@@ -384,8 +384,8 @@ pub fn render_plan<E: Executor>(
         }
     }
 
-    // Sum master taps into the per-channel master: every buffer of every tapped
-    // port, in fixed order, so output stays deterministic. A broadcast tap
+    // Sum master taps into the per-channel master: every tapped port's buffer,
+    // in fixed order, so output stays deterministic. A broadcast tap
     // (`channel: None`) adds to every channel — the historical mono fan, so channel 0 of a
     // fully-broadcast instrument is bit-identical to the pre-stereo single buffer. A
     // channel-pinned tap adds to that one channel only.
@@ -393,22 +393,19 @@ pub fn render_plan<E: Executor>(
         chan.iter_mut().for_each(|s| *s = 0.0);
     }
     for tap in &plan.output_taps {
+        let Some(buf) = tap.buffer else { continue };
         match tap.channel {
             None => {
-                for &buf in &tap.buffers {
-                    for chan in master.iter_mut() {
-                        for (o, s) in chan.iter_mut().zip(arena[buf].iter()) {
-                            *o += *s;
-                        }
+                for chan in master.iter_mut() {
+                    for (o, s) in chan.iter_mut().zip(arena[buf].iter()) {
+                        *o += *s;
                     }
                 }
             }
             Some(c) => {
                 if let Some(chan) = master.get_mut(c) {
-                    for &buf in &tap.buffers {
-                        for (o, s) in chan.iter_mut().zip(arena[buf].iter()) {
-                            *o += *s;
-                        }
+                    for (o, s) in chan.iter_mut().zip(arena[buf].iter()) {
+                        *o += *s;
                     }
                 }
             }
