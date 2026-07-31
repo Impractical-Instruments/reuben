@@ -1299,7 +1299,8 @@ impl InstrumentDoc {
         // address -> (key, descriptor) for resolving wire-refs and outputs. Document nodes only:
         // spliced subpatch internals are deliberately not wireable — the boundary face is the
         // contract (the namespace scopes OSC reachability, not wiring).
-        let mut by_addr: BTreeMap<String, (crate::graph::NodeKey, Descriptor)> = BTreeMap::new();
+        let mut by_addr: BTreeMap<String, (crate::graph::NodeKey, Arc<Descriptor>)> =
+            BTreeMap::new();
         // Every claimed address — document nodes *and* spliced subpatch internals — so the
         // duplicate check also catches post-prefix collisions (fatal).
         let mut addresses: BTreeSet<String> = BTreeSet::new();
@@ -1340,12 +1341,16 @@ impl InstrumentDoc {
                     kind,
                     enum_default,
                 } = pipe_descriptor(name, pipe)?;
+                // One handle per minted pipe: the graph node and the wire-resolution table below
+                // both hold this descriptor, and a pipe's ports are as immutable as an operator's.
+                let descriptor = Arc::new(descriptor);
                 let bare_signal = kind == PortKind::Signal && descriptor.inputs[0].meta.is_none();
                 let address = format!("/{name}");
                 if !addresses.insert(address.clone()) {
                     return Err(LoadError::DuplicateAddress(address));
                 }
-                let key = graph.add_boxed(&address, Box::new(Pipe::new(kind)), descriptor.clone());
+                let key =
+                    graph.add_boxed(&address, Box::new(Pipe::new(kind)), Arc::clone(&descriptor));
                 // An enum pipe's declared default seeds the pipe's latch as a value-override;
                 // numeric pipes carry theirs inside the port's own meta. Seeded with what
                 // `pipe_descriptor` resolved, not with the symbol as written: `set_value` drops a
@@ -2041,12 +2046,12 @@ fn pipe_type_name(ty: &PortType) -> Option<String> {
 }
 
 fn lookup<'a>(
-    by_addr: &'a BTreeMap<String, (crate::graph::NodeKey, Descriptor)>,
+    by_addr: &'a BTreeMap<String, (crate::graph::NodeKey, Arc<Descriptor>)>,
     node: &str,
 ) -> Result<(crate::graph::NodeKey, &'a Descriptor), LoadError> {
     by_addr
         .get(node)
-        .map(|(k, d)| (*k, d))
+        .map(|(k, d)| (*k, &**d))
         .ok_or_else(|| LoadError::UnknownNode(node.to_string()))
 }
 
@@ -2315,7 +2320,7 @@ fn config_literal(
 /// this load) — the caller drops the reference; an unknown name stays fatal.
 fn resolve_input(
     faces: &BTreeMap<String, BoundaryFace>,
-    by_addr: &BTreeMap<String, (crate::graph::NodeKey, Descriptor)>,
+    by_addr: &BTreeMap<String, (crate::graph::NodeKey, Arc<Descriptor>)>,
     addr: &str,
     name: &str,
 ) -> Result<Option<(crate::graph::NodeKey, usize, PortType)>, LoadError> {
@@ -2343,7 +2348,7 @@ fn resolve_input(
 /// port (see [`resolve_input`]).
 fn resolve_output(
     faces: &BTreeMap<String, BoundaryFace>,
-    by_addr: &BTreeMap<String, (crate::graph::NodeKey, Descriptor)>,
+    by_addr: &BTreeMap<String, (crate::graph::NodeKey, Arc<Descriptor>)>,
     addr: &str,
     reference: &str,
     port: Option<&str>,

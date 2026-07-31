@@ -14,6 +14,8 @@
 //!
 //! see rules: execution-runtime
 
+use std::sync::Arc;
+
 use slotmap::SecondaryMap;
 
 use crate::config::AudioConfig;
@@ -107,7 +109,10 @@ pub struct PlanNode {
     /// `pub(crate)`: the survivor transplant ([`Plan::transplant_survivors`]) is the only writer
     /// that moves these boxes, and it lives on `Plan` — no caller reaches in to swap them.
     pub(crate) ops: Vec<Box<dyn Operator>>,
-    pub descriptor: Descriptor,
+    /// A handle to the operator type's descriptor, carried over from the graph node — see
+    /// [`Entry::descriptor`](crate::registry::Entry::descriptor). Nothing on the render path
+    /// mutates a descriptor, so N nodes of one type read one shared copy.
+    pub descriptor: Arc<Descriptor>,
     /// For each input port (full input-port order): the source's arena buffer index (a one-element
     /// `Vec`), or `None`. `Some` for **every** [`Buffer`](PortType::F32Buffer) input — wired to a
     /// Buffer source (zero-copy share) or **materialized** (a dedicated scratch buffer, see
@@ -976,6 +981,8 @@ mod port_kind_tests {
 /// integration tests, so they live where they can see the crate internals they assert on.
 #[cfg(test)]
 mod wire_forms {
+    use std::sync::Arc;
+
     use super::{port_kind, Plan, PlanError, PortKind};
     use crate::config::AudioConfig;
     use crate::descriptor::{Descriptor, Port, PortType};
@@ -1060,8 +1067,16 @@ mod wire_forms {
     /// Wire one source-output form to one sink-input form through the real planner.
     fn wire(src: Port, dst: Port) -> Result<Plan, PlanError> {
         let mut g = Graph::new();
-        let s = g.add_boxed("/src", Box::new(Probe), desc("src", vec![], vec![src]));
-        let d = g.add_boxed("/dst", Box::new(Probe), desc("dst", vec![dst], vec![]));
+        let s = g.add_boxed(
+            "/src",
+            Box::new(Probe),
+            Arc::new(desc("src", vec![], vec![src])),
+        );
+        let d = g.add_boxed(
+            "/dst",
+            Box::new(Probe),
+            Arc::new(desc("dst", vec![dst], vec![])),
+        );
         g.connect(s, 0, d, 0);
         Plan::instantiate(g, AudioConfig::new(48_000.0, 128))
     }
@@ -1101,12 +1116,12 @@ mod wire_forms {
         let a = g.add_boxed(
             "/a",
             Box::new(Probe),
-            desc("a", vec![value("i")], vec![value("o")]),
+            Arc::new(desc("a", vec![value("i")], vec![value("o")])),
         );
         let b = g.add_boxed(
             "/b",
             Box::new(Probe),
-            desc("b", vec![value("i")], vec![value("o")]),
+            Arc::new(desc("b", vec![value("i")], vec![value("o")])),
         );
         g.connect(a, 0, b, 0);
         g.connect(b, 0, a, 0);
@@ -1352,6 +1367,8 @@ mod wire_forms {
 /// state) moves, and that a mispaired-out-of-bounds table trips the debug guard.
 #[cfg(test)]
 mod transplant_tests {
+    use std::sync::Arc;
+
     use super::Plan;
     use crate::config::AudioConfig;
     use crate::descriptor::Descriptor;
@@ -1384,7 +1401,11 @@ mod transplant_tests {
     /// A one-node plan whose single node's operator box is the transplant subject.
     fn one_node_plan() -> Plan {
         let mut g = Graph::new();
-        g.add_boxed("/n", Box::new(Probe { _state: 0 }), Probe::descriptor());
+        g.add_boxed(
+            "/n",
+            Box::new(Probe { _state: 0 }),
+            Arc::new(Probe::descriptor()),
+        );
         Plan::instantiate(g, AudioConfig::new(48_000.0, 128)).expect("one-node plan instantiates")
     }
 
@@ -1444,5 +1465,70 @@ mod transplant_tests {
         let mut fresh = one_node_plan();
         let mut retiring = one_node_plan();
         fresh.transplant_survivors(&mut retiring, &[(0, 5)]);
+    }
+}
+
+/// Unit tests for the descriptor **handle**: every field of a `Descriptor` is a function of the
+/// operator type, not the instance, so a node holds a shared handle and a graph of N nodes over K
+/// operator types stores K descriptors, not N.
+#[cfg(test)]
+mod descriptor_sharing_tests {
+    use std::sync::Arc;
+
+    use super::Plan;
+    use crate::config::AudioConfig;
+    use crate::graph::Graph;
+    use crate::registry::Registry;
+
+    /// Instantiate does not copy: the plan node's descriptor is the *same allocation* the registry
+    /// handed the graph, so nodes of one type share one copy of its port lists all the way through.
+    #[test]
+    fn nodes_of_one_type_share_the_registry_descriptor_through_instantiate() {
+        let registry = Registry::builtin();
+        let entry = registry.get("oscillator").expect("builtin oscillator");
+        let mut graph = Graph::new();
+        for i in 0..3 {
+            graph.add_boxed(
+                &format!("/osc{i}"),
+                (entry.make)(),
+                Arc::clone(&entry.descriptor),
+            );
+        }
+
+        let plan = Plan::instantiate(graph, AudioConfig::new(48_000.0, 128))
+            .expect("three unwired oscillators instantiate");
+
+        assert_eq!(plan.nodes.len(), 3);
+        for node in &plan.nodes {
+            assert!(
+                Arc::ptr_eq(&node.descriptor, &entry.descriptor),
+                "each plan node holds the registry's descriptor, not a copy of it"
+            );
+        }
+    }
+
+    /// The same, through the loader — the path every real graph takes. A document naming one type
+    /// N times leaves N nodes pointing at the registry's one descriptor, so the port lists do not
+    /// scale with node count (nor with a voice pool, whose copies each load through here).
+    #[test]
+    fn a_document_naming_one_type_three_times_shares_one_descriptor() {
+        let registry = Registry::builtin();
+        let json = r#"{"instrument":"t","nodes":[
+            {"type":"oscillator","address":"/a"},
+            {"type":"oscillator","address":"/b"},
+            {"type":"oscillator","address":"/c"}]}"#;
+        let graph = crate::format::load(json, &registry).expect("three oscillators load");
+
+        let registered = &registry
+            .get("oscillator")
+            .expect("builtin oscillator")
+            .descriptor;
+        for address in ["/a", "/b", "/c"] {
+            let key = graph.find(address).expect("node built");
+            assert!(
+                Arc::ptr_eq(&graph.nodes[key].descriptor, registered),
+                "{address} holds the registry's descriptor, not a copy of it"
+            );
+        }
     }
 }

@@ -53,7 +53,7 @@ const ADDR: &str = "op";
 pub struct OpDriver {
     plan: Plan,
     renderer: Renderer,
-    descriptor: Descriptor,
+    descriptor: Arc<Descriptor>,
     sample_rate: f32,
     /// Time-varying audio-in buffers: `(input port, scratch arena buffer, samples)`. Written into
     /// the arena each block (the slot is materialize scratch, so the per-block clear skips it).
@@ -73,15 +73,18 @@ impl OpDriver {
     /// instantiated through the real [`Plan`] path, so it sees exactly the per-node seeding the
     /// engine builds.
     pub fn for_type<T: Operator + 'static>(op: T, sample_rate: f32) -> Self {
-        let descriptor = T::descriptor();
-        Self::from_boxed(Box::new(op), descriptor, sample_rate)
+        Self::from_boxed(Box::new(op), Arc::new(T::descriptor()), sample_rate)
     }
 
     /// Build a driver from an already-boxed operator + its descriptor — the registry-driven path
     /// (`Registry::get(kind)`), and the target of [`spawn`](OpDriver::spawn).
-    pub fn from_boxed(op: Box<dyn Operator>, descriptor: Descriptor, sample_rate: f32) -> Self {
+    pub fn from_boxed(
+        op: Box<dyn Operator>,
+        descriptor: Arc<Descriptor>,
+        sample_rate: f32,
+    ) -> Self {
         let mut graph = Graph::new();
-        graph.add_boxed(ADDR, op, descriptor.clone());
+        graph.add_boxed(ADDR, op, Arc::clone(&descriptor));
         let config = AudioConfig::new(sample_rate, BLOCK_SIZE);
         let plan = Plan::instantiate(graph, config).expect("single-node graph always instantiates");
         let renderer = Renderer::new(&plan);
@@ -239,7 +242,7 @@ impl OpDriver {
     /// op's spawn clones them) while resetting playback state. Configure it independently.
     pub fn spawn(&self) -> OpDriver {
         let op = self.plan.nodes[0].ops[0].spawn();
-        let mut d = OpDriver::from_boxed(op, self.descriptor.clone(), self.sample_rate);
+        let mut d = OpDriver::from_boxed(op, Arc::clone(&self.descriptor), self.sample_rate);
         d._store = self._store.clone();
         d
     }
@@ -440,7 +443,7 @@ mod tests {
             (0..n).map(|i| ((i * 7) % 31) as f32 / 31.0 - 0.5).collect();
         let mut d = OpDriver::from_boxed(
             Box::new(Pipe::new(PortKind::Signal)),
-            Pipe::descriptor(),
+            Arc::new(Pipe::descriptor()),
             48_000.0,
         );
         d.drive(0, &samples);
