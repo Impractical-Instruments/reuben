@@ -347,7 +347,10 @@ impl Plan {
         // concept, not a mandatory rendered node) before ordering what actually executes.
         check_wire_forms(&graph)?;
         let dissolved = dissolve_interface_pipes(&mut graph);
-        let order = topo_order(&graph)?;
+        // Index the (now final) wire list once; every per-node wire question below asks it
+        // instead of rescanning the flat list.
+        let adj = Adjacency::build(&graph);
+        let order = topo_order(&graph, &adj)?;
 
         // Logical master width is derived from the instrument, not the device:
         // the highest referenced channel index + 1, floored to stereo so a mono patch still
@@ -456,11 +459,9 @@ impl Plan {
                     inputs.push(None);
                     continue;
                 }
-                let wired = graph
-                    .connections
-                    .iter()
-                    .find(|c| c.dst == *key && c.dst_port == port)
-                    .map(|c| out_buffers[c.src][c.src_port].clone());
+                let wired = adj
+                    .feeder(*key, port)
+                    .map(|(src, src_port)| out_buffers[src][src_port].clone());
                 match wired {
                     // Wired to a Buffer (audio) source: share its buffers zero-copy.
                     Some(bufs) if !bufs.is_empty() => inputs.push(Some(bufs)),
@@ -501,11 +502,8 @@ impl Plan {
                     if p.ty.is_buffer() {
                         return Vec::new();
                     }
-                    graph
-                        .connections
-                        .iter()
-                        .filter(|c| c.src == *key && c.src_port == port)
-                        .map(|c| (index_of[c.dst], c.dst_port))
+                    adj.consumers(*key, port)
+                        .map(|(dst, dst_port)| (index_of[dst], dst_port))
                         .collect()
                 })
                 .collect();
@@ -723,41 +721,86 @@ impl Plan {
 /// there). Chains (a pipe feeding a pipe, e.g. through a spliced nest) collapse to fixpoint;
 /// an alias whose consumer dissolves is re-pointed to that pipe's own consumer.
 fn dissolve_interface_pipes(graph: &mut Graph) -> Vec<DissolvedPipe> {
+    // The candidates, in graph key order — the order the fixpoint settles them in, and so the
+    // order of the aliases it returns. Collected once: dissolution only ever removes pipes, never
+    // mints one. A patch with no boundary at all (nothing nested, nothing declared) leaves here
+    // before paying for any of the bookkeeping below.
+    let pipes: Vec<NodeKey> = graph
+        .nodes
+        .iter()
+        .filter(|(_, n)| n.descriptor.type_name == "pipe")
+        .map(|(k, _)| k)
+        .collect();
+    if pipes.is_empty() {
+        return Vec::new();
+    }
+    let mut pipe_at: SecondaryMap<NodeKey, usize> = SecondaryMap::new();
+    for (i, &k) in pipes.iter().enumerate() {
+        pipe_at.insert(k, i);
+    }
     let mut dissolved: Vec<DissolvedPipe> = Vec::new();
+    // Aliases recorded so far, grouped by the consumer they currently point at, so the chain
+    // re-point below moves only the aliases that actually follow this hop. Scanning every alias
+    // recorded so far at every dissolve is quadratic in the pipe count, and a spliced document's
+    // pipe count is its subpatch count times their boundary width — the number that grows.
+    let mut aliases_of: SecondaryMap<NodeKey, Vec<usize>> = SecondaryMap::new();
+    // The two "kept as a rendered node" reasons that are fixed for the whole fixpoint: nothing
+    // dissolution does adds a channel binding or a tap, and a pipe carrying either never
+    // dissolves, so both sets are read out of the graph once instead of re-derived per candidate.
+    let mut bound: SecondaryMap<NodeKey, ()> = SecondaryMap::new();
+    for name in graph.interface.input_channels.keys() {
+        if let Some(&(k, _)) = graph.interface.inputs.get(name) {
+            bound.insert(k, ());
+        }
+    }
+    let mut tapped: SecondaryMap<NodeKey, ()> = SecondaryMap::new();
+    for &(k, _, _) in &graph.outputs {
+        tapped.insert(k, ());
+    }
+    for &(k, _) in graph.interface.outputs.values() {
+        tapped.insert(k, ());
+    }
+    let mut wires = Wires::take(graph);
+    // Cursor into `pipes`. Everything before it has been examined and found undissolvable, and
+    // nothing dissolution does can change that — *except* for the pipes feeding what it
+    // dissolves, which the rewind at the bottom of the loop brings back into view. Re-deriving
+    // "the first dissolvable pipe" by scanning from the top instead costs the whole graph per
+    // pipe, which is a flattened song's dominant cost. see rules: execution-runtime
+    let mut pos = 0usize;
     loop {
         // One dissolve per scan, to fixpoint: rewiring can make another pipe dissolvable
         // (chains), and mutating while iterating the slotmap is not on.
         let mut found: Option<(NodeKey, NodeKey, usize)> = None;
-        for (key, node) in &graph.nodes {
-            // Loader-built pipes only: a document cannot name `"type": "pipe"` on a node.
-            if node.descriptor.type_name != "pipe" {
+        while pos < pipes.len() {
+            let key = pipes[pos];
+            // Already dissolved: its key no longer names a node.
+            let Some(node) = graph.nodes.get(key) else {
+                pos += 1;
                 continue;
-            }
+            };
             // A channel-bound pipe stays a rendered node: the input master
             // writes the caller's logical channel into the pipe's materialized scratch each
             // block, so the buffer — and the interface entry that finds it — must survive.
             // Hosted/nested bindings are cleared/discarded before instantiate, so their pipes
             // still dissolve.
-            if graph.interface.input_channels.keys().any(|n| {
-                graph
-                    .interface
-                    .inputs
-                    .get(n)
-                    .is_some_and(|(k, _)| *k == key)
-            }) {
+            if bound.contains_key(key) {
+                pos += 1;
                 continue;
             }
             // Exactly one wire consumer — its input port absorbs the pipe's role wholesale.
-            let mut consumers = graph.connections.iter().filter(|c| c.src == key);
-            let Some(c0) = consumers.next() else { continue };
+            let mut consumers = wires.consumers(key);
+            let Some(c0) = consumers.next() else {
+                pos += 1;
+                continue;
+            };
             if consumers.next().is_some() {
+                pos += 1;
                 continue;
             }
             // The pipe's `out` must not be read by name elsewhere: a master tap or an
             // `interface` output on it needs the rendered buffer/port to exist.
-            if graph.outputs.iter().any(|(k, _, _)| *k == key)
-                || graph.interface.outputs.values().any(|(k, _)| *k == key)
-            {
+            if tapped.contains_key(key) {
+                pos += 1;
                 continue;
             }
             // A Value pipe into an Event/`Arg` pass-through input: the pipe's frame-0 seed
@@ -765,12 +808,14 @@ fn dissolve_interface_pipes(graph: &mut Graph) -> Vec<DissolvedPipe> {
             let kind = port_kind(&node.descriptor.inputs[0]);
             let dst_kind = port_kind(&graph.nodes[c0.dst].descriptor.inputs[c0.dst_port]);
             if kind == PortKind::Value && dst_kind == PortKind::Event {
+                pos += 1;
                 continue;
             }
             found = Some((key, c0.dst, c0.dst_port));
             break;
         }
         let Some((key, dst, dst_port)) = found else {
+            wires.finish(graph);
             return dissolved;
         };
 
@@ -786,14 +831,26 @@ fn dissolve_interface_pipes(graph: &mut Graph) -> Vec<DissolvedPipe> {
         // Legality is transitive — the pipe's `in`/`out` share one declared type, so every
         // rewired pair is a combination `check_wire_forms` already admitted (the one crossing it
         // would not, Value-source→Arg-input, is excluded by the Event-consumer guard above).
-        let feeder = graph
-            .connections
-            .iter()
-            .find(|c| c.dst == key)
-            .map(|c| (c.src, c.src_port));
-        graph.connections.retain(|c| c.src != key && c.dst != key);
+        let feeder = wires.feeder(key);
+        // Removing this pipe re-opens exactly one question, and only for the nodes wired *into*
+        // it: their single consumer stops being this pipe's input port and becomes whatever this
+        // pipe fed, which is the port kind the Value→Event rule above reads. Rewinding the cursor
+        // to the earliest such pipe therefore reproduces "first dissolvable in key order"
+        // exactly, without rescanning the graph for it.
+        //
+        // Today's pipe types cannot actually reach that: a pipe's `in` is never `Arg`, so a Value
+        // pipe feeding an Event pipe input is rejected as a wire before dissolution runs, and a
+        // pipe carries at most one inbound wire so no feeder ever *loses* a consumer here. This
+        // stays because it is one `min` over a one-element list and it is what makes the cursor
+        // equivalent to the scan it replaces rather than equivalent-given-today's-pipe-types — a
+        // new pipe type would otherwise change dissolution silently.
+        let rewind = wires
+            .feeders(key)
+            .filter_map(|src| pipe_at.get(src).copied())
+            .min();
+        wires.detach(key);
         if let Some((src, src_port)) = feeder {
-            graph.connections.push(Connection {
+            wires.connect(Connection {
                 src,
                 src_port,
                 dst,
@@ -824,12 +881,12 @@ fn dissolve_interface_pipes(graph: &mut Graph) -> Vec<DissolvedPipe> {
         // A chained alias (this pipe was another dissolved pipe's consumer) follows through to
         // this pipe's own consumer. (Its normalization keeps the outermost pipe's port — for
         // in-range values, the only case authored chains produce, the hops agree.)
-        for d in dissolved.iter_mut() {
-            if d.consumer == key {
-                d.consumer = dst;
-                d.consumer_port = dst_port;
-            }
+        let mut moved = aliases_of.remove(key).unwrap_or_default();
+        for &i in &moved {
+            dissolved[i].consumer = dst;
+            dissolved[i].consumer_port = dst_port;
         }
+        moved.push(dissolved.len());
         dissolved.push(DissolvedPipe {
             address,
             port: pipe_port,
@@ -837,6 +894,127 @@ fn dissolve_interface_pipes(graph: &mut Graph) -> Vec<DissolvedPipe> {
             consumer: dst,
             consumer_port: dst_port,
         });
+        // The moved aliases and this pipe's own now all name `dst`, so a later dissolve of `dst`
+        // finds them together under one key.
+        aliases_of
+            .entry(dst)
+            .expect("no node is inserted during dissolution, so no key is a newer version")
+            .or_default()
+            .append(&mut moved);
+        if let Some(j) = rewind {
+            pos = pos.min(j);
+        }
+    }
+}
+
+/// A Graph's wire list while [`dissolve_interface_pipes`] rewrites it: the edges, an index from
+/// each endpoint into them, and a tombstone per edge.
+///
+/// Dissolving one pipe asks the wire list three questions — who consumes this node, what feeds it,
+/// and drop everything touching it — and the flat [`Graph::connections`] answers each only by
+/// being read end to end. That is the whole list per pipe, and a spliced document has a pipe per
+/// nested boundary port, so the cost of flattening a song grows with the square of its size.
+///
+/// Removal marks rather than compacts, and the surviving edges are written back in their original
+/// order with the rewired ones appended in the order they were made — byte for byte what
+/// repeated `retain` + `push` produced. That matters beyond tidiness: the node loop resolves a
+/// multiply-fed input by taking the *first* wire it finds, so the order of this list is part of
+/// what Instantiate means.
+struct Wires {
+    edges: Vec<Connection>,
+    /// Parallel to `edges`: `true` once the edge has been spliced out.
+    dead: Vec<bool>,
+    /// Per source node, indices into `edges`. May name dead edges; readers skip them.
+    ///
+    /// Keyed for every node the graph held at [`take`](Self::take) and never added to, so the
+    /// reading methods index it directly: a `SecondaryMap` is unaffected by removals from the
+    /// primary `SlotMap`, and dissolution only ever removes. The insert paths still go through
+    /// `get_mut` because an *edge* may name an endpoint the graph does not hold, which is a
+    /// different question from whether the key is live.
+    out_e: SecondaryMap<NodeKey, Vec<usize>>,
+    /// Per destination node, indices into `edges`. See [`out_e`](Self::out_e).
+    in_e: SecondaryMap<NodeKey, Vec<usize>>,
+}
+
+impl Wires {
+    fn take(graph: &mut Graph) -> Self {
+        let edges = std::mem::take(&mut graph.connections);
+        let mut out_e: SecondaryMap<NodeKey, Vec<usize>> =
+            graph.nodes.keys().map(|k| (k, Vec::new())).collect();
+        let mut in_e: SecondaryMap<NodeKey, Vec<usize>> =
+            graph.nodes.keys().map(|k| (k, Vec::new())).collect();
+        for (i, c) in edges.iter().enumerate() {
+            if let Some(e) = out_e.get_mut(c.src) {
+                e.push(i);
+            }
+            if let Some(e) = in_e.get_mut(c.dst) {
+                e.push(i);
+            }
+        }
+        let dead = vec![false; edges.len()];
+        Self {
+            edges,
+            dead,
+            out_e,
+            in_e,
+        }
+    }
+
+    /// The live wires leaving `key`, in wire-list order.
+    fn consumers(&self, key: NodeKey) -> impl Iterator<Item = &Connection> + '_ {
+        self.out_e[key]
+            .iter()
+            .filter(|&&i| !self.dead[i])
+            .map(|&i| &self.edges[i])
+    }
+
+    /// The first live wire into `key`, as `(src, src_port)`.
+    fn feeder(&self, key: NodeKey) -> Option<(NodeKey, usize)> {
+        self.in_e[key]
+            .iter()
+            .find(|&&i| !self.dead[i])
+            .map(|&i| (self.edges[i].src, self.edges[i].src_port))
+    }
+
+    /// The source node of every live wire into `key`, one per wire. Callers want the *nodes*, not
+    /// the ports: these are the only ones whose own dissolvability `key`'s removal can change.
+    fn feeders(&self, key: NodeKey) -> impl Iterator<Item = NodeKey> + '_ {
+        self.in_e[key]
+            .iter()
+            .filter(|&&i| !self.dead[i])
+            .map(|&i| self.edges[i].src)
+    }
+
+    /// Drop every wire touching `key` — what `retain(|c| c.src != key && c.dst != key)` did.
+    fn detach(&mut self, key: NodeKey) {
+        for &i in self.out_e[key].iter().chain(self.in_e[key].iter()) {
+            self.dead[i] = true;
+        }
+    }
+
+    /// Append a rewired edge.
+    fn connect(&mut self, c: Connection) {
+        let i = self.edges.len();
+        if let Some(e) = self.out_e.get_mut(c.src) {
+            e.push(i);
+        }
+        if let Some(e) = self.in_e.get_mut(c.dst) {
+            e.push(i);
+        }
+        self.edges.push(c);
+        self.dead.push(false);
+    }
+
+    /// Compact the survivors back onto the graph.
+    fn finish(self, graph: &mut Graph) {
+        let dead = self.dead;
+        graph.connections = self
+            .edges
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| !dead[*i])
+            .map(|(_, c)| c)
+            .collect();
     }
 }
 
@@ -911,8 +1089,67 @@ fn check_wire_forms(graph: &Graph) -> Result<(), PlanError> {
     Ok(())
 }
 
+/// A Graph's wires indexed by endpoint, built once per Instantiate.
+///
+/// [`Graph::connections`] is a flat unordered list, but every reader of it wants *one node's*
+/// edges: the scheduler wants a settled node's successors, the node loop wants the wire feeding a
+/// given input port and the wires leaving a given output port. Answering each of those by scanning
+/// the whole list is a linear scan per node, so the build as a whole grows with the square of the
+/// patch — which is invisible on a hand-authored instrument and a frozen main thread on a
+/// generated one. see rules: execution-runtime
+///
+/// Each per-node list preserves `connections` order, so a reader that takes the *first* match
+/// still takes the same wire it did when it scanned the flat list — Instantiate stays
+/// deterministic, and the whole change is confined to how the wire is found.
+struct Adjacency {
+    /// Per source node, its outgoing wires as `(src_port, dst, dst_port)`.
+    out_edges: SecondaryMap<NodeKey, Vec<(usize, NodeKey, usize)>>,
+    /// Per destination node, its incoming wires as `(dst_port, src, src_port)`.
+    in_edges: SecondaryMap<NodeKey, Vec<(usize, NodeKey, usize)>>,
+}
+
+impl Adjacency {
+    fn build(graph: &Graph) -> Self {
+        let mut out_edges: SecondaryMap<NodeKey, Vec<(usize, NodeKey, usize)>> =
+            graph.nodes.keys().map(|k| (k, Vec::new())).collect();
+        let mut in_edges: SecondaryMap<NodeKey, Vec<(usize, NodeKey, usize)>> =
+            graph.nodes.keys().map(|k| (k, Vec::new())).collect();
+        for c in &graph.connections {
+            // A wire naming a node the graph no longer holds is dropped rather than indexed:
+            // `SecondaryMap` indexing would panic, and the callers this replaces simply never
+            // matched such a wire.
+            if let Some(e) = out_edges.get_mut(c.src) {
+                e.push((c.src_port, c.dst, c.dst_port));
+            }
+            if let Some(e) = in_edges.get_mut(c.dst) {
+                e.push((c.dst_port, c.src, c.src_port));
+            }
+        }
+        Self {
+            out_edges,
+            in_edges,
+        }
+    }
+
+    /// The wire feeding `(node, port)` — the first, when an input is fed more than once.
+    fn feeder(&self, node: NodeKey, port: usize) -> Option<(NodeKey, usize)> {
+        self.in_edges[node]
+            .iter()
+            .find(|(dst_port, _, _)| *dst_port == port)
+            .map(|(_, src, src_port)| (*src, *src_port))
+    }
+
+    /// Every wire leaving `(node, port)`, in `connections` order.
+    fn consumers(&self, node: NodeKey, port: usize) -> impl Iterator<Item = (NodeKey, usize)> + '_ {
+        self.out_edges[node]
+            .iter()
+            .filter(move |(src_port, _, _)| *src_port == port)
+            .map(|(_, dst, dst_port)| (*dst, *dst_port))
+    }
+}
+
 /// Kahn topological sort; deterministic given graph key order. Errors on cycle.
-fn topo_order(graph: &Graph) -> Result<Vec<NodeKey>, PlanError> {
+fn topo_order(graph: &Graph, adj: &Adjacency) -> Result<Vec<NodeKey>, PlanError> {
     let mut indegree: SecondaryMap<NodeKey, usize> =
         graph.nodes.keys().map(|k| (k, 0usize)).collect();
     for c in &graph.connections {
@@ -925,11 +1162,11 @@ fn topo_order(graph: &Graph) -> Result<Vec<NodeKey>, PlanError> {
 
     while let Some(k) = queue.pop() {
         order.push(k);
-        for c in graph.connections.iter().filter(|c| c.src == k) {
-            let d = &mut indegree[c.dst];
+        for (_, dst, _) in &adj.out_edges[k] {
+            let d = &mut indegree[*dst];
             *d -= 1;
             if *d == 0 {
-                queue.push(c.dst);
+                queue.push(*dst);
             }
         }
     }
@@ -938,6 +1175,115 @@ fn topo_order(graph: &Graph) -> Result<Vec<NodeKey>, PlanError> {
         return Err(PlanError::Cycle);
     }
     Ok(order)
+}
+
+#[cfg(test)]
+mod dissolve_chains {
+    use super::{AudioConfig, Plan};
+    use crate::registry::Registry;
+    use crate::resources::{ResolveError, ResourceResolver, SampleBuffer};
+
+    /// A gain cell behind an `in` boundary.
+    const INNER: &str = r#"{"format_version":2,"instrument":"inner",
+        "interface":{"inputs":{"in":{"type":"f32_buffer"}},
+                     "outputs":{"out":{"from":"/g.out"}}},
+        "nodes":[{"type":"mul_f32_signal","address":"/g",
+                  "inputs":{"a":{"from":"/in"},"b":0.5}}]}"#;
+
+    /// `inner` re-exported through a second boundary — so a top-level wire reaches the gain
+    /// through *two* pipes, one per nesting level.
+    const OUTER: &str = r#"{"format_version":2,"instrument":"outer",
+        "resources":{"inner":"inner.json"},
+        "interface":{"inputs":{"in":{"type":"f32_buffer"}},
+                     "outputs":{"out":{"from":"/s.out"}}},
+        "nodes":[{"type":"subpatch","address":"/s","patch":"inner",
+                  "inputs":{"in":{"from":"/in"}}}]}"#;
+
+    const TOP: &str = r#"{"format_version":2,"instrument":"top",
+        "resources":{"outer":"outer.json"},
+        "interface":{"outputs":{"out":{"from":"/out.audio"}}},
+        "nodes":[{"type":"oscillator","address":"/o"},
+                 {"type":"subpatch","address":"/w","patch":"outer",
+                  "inputs":{"in":{"from":"/o"}}},
+                 {"type":"output","address":"/out","inputs":{"audio":{"from":"/w.out"}}}]}"#;
+
+    struct Nested;
+    impl ResourceResolver for Nested {
+        fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+            Err(ResolveError::NotFound(source.to_string()))
+        }
+        fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
+            match source {
+                "inner.json" => Ok(INNER.to_string()),
+                "outer.json" => Ok(OUTER.to_string()),
+                _ => Err(ResolveError::NotFound(source.to_string())),
+            }
+        }
+    }
+
+    /// Two nested boundaries put two pipes in a row between the oscillator and the gain. Both
+    /// collapse, and the alias of the *outer* one — whose consumer was the inner pipe, itself
+    /// since dissolved — has to follow through to the gain rather than dangle at a node that is
+    /// no longer in the schedule.
+    ///
+    /// The follow-through is bookkeeping kept on the side of the fixpoint rather than re-derived
+    /// from it, so it is worth pinning behaviorally: an alias that stops following its hops still
+    /// names a plausible node index and goes on routing messages, to the wrong port.
+    #[test]
+    fn a_chain_of_two_pipes_collapses_and_both_aliases_land_on_the_gain() {
+        let loaded = crate::load_instrument(TOP, &Registry::builtin(), &Nested).expect("loads");
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+        let plan =
+            Plan::instantiate(loaded.graph, AudioConfig::new(48_000.0, 64)).expect("instantiates");
+
+        let gain = plan
+            .nodes
+            .iter()
+            .position(|n| n.address == "/w/s/g")
+            .expect("the inner gain survives the splice");
+        let a = plan.nodes[gain]
+            .descriptor
+            .inputs
+            .iter()
+            .position(|p| p.name == "a")
+            .expect("`a` input");
+
+        // No pipe is left in the schedule: both levels' boundaries dissolved.
+        assert!(
+            !plan.nodes.iter().any(|n| n.descriptor.type_name == "pipe"),
+            "a pipe stayed in the schedule: {:?}",
+            plan.nodes
+                .iter()
+                .filter(|n| n.descriptor.type_name == "pipe")
+                .map(|n| &n.address)
+                .collect::<Vec<_>>()
+        );
+
+        // Both minted addresses stay addressable, and both name the gain's `a` port.
+        let mut addrs: Vec<&str> = plan
+            .input_aliases
+            .iter()
+            .map(|al| {
+                assert_eq!((al.node, al.dst_port), (gain, a), "{} dangles", al.address);
+                al.address.as_str()
+            })
+            .collect();
+        addrs.sort_unstable();
+        assert_eq!(addrs, ["/w/in", "/w/s/in"]);
+
+        // The oscillator's buffer reaches the gain zero-copy — the collapse rewired the feeder
+        // wire through, rather than leaving the gain on a materialized scratch.
+        let osc = plan
+            .nodes
+            .iter()
+            .position(|n| n.address == "/o")
+            .expect("/o node");
+        assert_eq!(
+            plan.nodes[gain].inputs[a].as_deref(),
+            Some(&plan.nodes[osc].outputs[0][..]),
+            "the gain does not share the oscillator's buffer"
+        );
+    }
 }
 
 #[cfg(test)]

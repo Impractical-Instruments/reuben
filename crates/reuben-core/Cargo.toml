@@ -53,9 +53,20 @@ harness = false
 name = "macro_iai"
 harness = false
 
+# Construct (parse + build + instantiate) benches. Same two layers as the macro set, but swept
+# across node counts: what they measure is how build cost scales, not its absolute value.
+[[bench]]
+name = "construct_criterion"
+harness = false
+
+[[bench]]
+name = "construct_iai"
+harness = false
+
 # Per-operator micro benches. `required-features = ["bench"]` ⇒ cargo SKIPS these (no error)
-# unless the bridge feature is on, so a bare `cargo bench` runs only the macro layer while the full
-# run (`cargo reuben-core-bench`) covers both. Same two layers as the macro set.
+# unless the bridge feature is on, so a bare `cargo bench` runs the macro and construct layers but
+# not this one; the full run (`cargo reuben-core-bench`) covers all three. Same two layers as the
+# macro set.
 [[bench]]
 name = "micro_criterion"
 harness = false
