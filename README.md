@@ -2,7 +2,7 @@
 
 Deterministic CI performance trend: callgrind **instruction counts (Ir)** for rendering **1 s of audio** (375 × 128-frame blocks @ 48 kHz), recorded on every direct push to `dev`. Instruction counts don't jitter — every visible move is a real code change (or a toolchain bump).
 
-**107 commits** · 2026-07-12 → 2026-07-30 · 7815 data points · last: `3a6623e` (2026-07-30T14:32:54-04:00)
+**108 commits** · 2026-07-12 → 2026-07-30 · 7909 data points · last: `a5e8b67` (2026-07-30T20:36:44-04:00)
 
 *Companion trend: the **main** series lives on the [`bench-history`](https://github.com/Impractical-Instruments/reuben/tree/bench-history) branch.*
 
@@ -32,6 +32,36 @@ Deterministic CI performance trend: callgrind **instruction counts (Ir)** for re
 
 `overhead` is a bench-only no-op operator behind a typical port shape, so its entire cost is the engine's per-node stepping overhead (edge clear, routing, materialize, `Io` build — see `bench_support.rs`). The `proxy (abs_f32_value)` line is the cheapest value-rate case — ~99% the same overhead — covering history from before the dedicated case landed; its level differs (a smaller port surface), so the two are separate lines, never stitched. Latest: **564k Ir** ≈ **1,504 instructions per node per block**. This overhead is a constant offset on every micro case and scales with node count in an instrument.
 
+## Graph construction (construct)
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="charts/construct-dark.svg">
+  <img alt="Line chart of graph construction instruction counts at three node counts per shape across dev commits" src="charts/construct-light.svg">
+</picture>
+
+Cost paid **once per Swap**, on the caller's thread — which in the browser is the main thread, so this is tab-freeze time rather than background time. Read the growth table, not the levels: each shape is benched at node counts that double, so a build linear in node count holds at 2.00x while a per-node scan pushes it toward 4.00x. The perf gate fails the run above 2.40x, independently of any baseline.
+
+| Case | Latest Ir | vs prev | vs first | since |
+|---|---:|---:|---:|---|
+| `deep_n2048` | 65.9M | — | ±0.0% | 2026-07-30 |
+| `deep_n4096` | 132.8M | — | ±0.0% | 2026-07-30 |
+| `deep_n8192` | 276.0M | — | ±0.0% | 2026-07-30 |
+| `nest_n2048` | 56.4M | — | ±0.0% | 2026-07-30 |
+| `nest_n4096` | 114.9M | — | ±0.0% | 2026-07-30 |
+| `nest_n8192` | 230.3M | — | ±0.0% | 2026-07-30 |
+| `wide_n2048` | 55.0M | — | ±0.0% | 2026-07-30 |
+| `wide_n4096` | 116.2M | — | ±0.0% | 2026-07-30 |
+| `wide_n8192` | 234.3M | — | ±0.0% | 2026-07-30 |
+
+| Shape | Nodes | Latest growth |
+|---|---:|---:|
+| deep | 2,048 → 4,096 | 2.01x |
+| deep | 4,096 → 8,192 | 2.08x |
+| nest | 2,048 → 4,096 | 2.04x |
+| nest | 4,096 → 8,192 | 2.00x |
+| wide | 2,048 → 4,096 | 2.11x |
+| wide | 4,096 → 8,192 | 2.02x |
+
 ## Heaviest operators (micro)
 
 <picture>
@@ -50,14 +80,23 @@ Deterministic CI performance trend: callgrind **instruction counts (Ir)** for re
 | `macro/echo` | 37.6M | ±0.0% | **-13.0%** | 2026-07-12 |
 | `macro/reverb` | 44.9M | ±0.0% | **-11.1%** | 2026-07-12 |
 | `macro/sampler-arp` | 15.8M | ±0.0% | -0.3% | 2026-07-12 |
+| `construct/deep_n2048` | 65.9M | — | ±0.0% | 2026-07-30 |
+| `construct/deep_n4096` | 132.8M | — | ±0.0% | 2026-07-30 |
+| `construct/deep_n8192` | 276.0M | — | ±0.0% | 2026-07-30 |
+| `construct/nest_n2048` | 56.4M | — | ±0.0% | 2026-07-30 |
+| `construct/nest_n4096` | 114.9M | — | ±0.0% | 2026-07-30 |
+| `construct/nest_n8192` | 230.3M | — | ±0.0% | 2026-07-30 |
+| `construct/wide_n2048` | 55.0M | — | ±0.0% | 2026-07-30 |
+| `construct/wide_n4096` | 116.2M | — | ±0.0% | 2026-07-30 |
+| `construct/wide_n8192` | 234.3M | — | ±0.0% | 2026-07-30 |
 | `granulator` | 27.6M | ±0.0% | +0.5% | 2026-07-12 |
 | `resonator` | 18.4M | ±0.0% | -0.5% | 2026-07-12 |
 | `reverb` | 11.0M | ±0.0% | -0.1% | 2026-07-12 |
 | `compressor` | 9.67M | ±0.0% | -0.2% | 2026-07-20 |
 | `saturator` | 8.65M | ±0.0% | -0.1% | 2026-07-12 |
 | `pan` | 6.08M | ±0.0% | -0.1% | 2026-07-12 |
-| `sequencer` | 5.17M | ±0.0% | **+5.7%** | 2026-07-12 |
-| `euclid` | 4.36M | ±0.0% | **+6.0%** | 2026-07-12 |
+| `sequencer` | 5.17M | +0.1% | **+5.8%** | 2026-07-12 |
+| `euclid` | 4.35M | -0.1% | **+5.8%** | 2026-07-12 |
 | `sample` | 3.86M | ±0.0% | -0.3% | 2026-07-12 |
 | `delay` | 3.71M | ±0.0% | -0.2% | 2026-07-12 |
 | `lfo` | 3.06M | ±0.0% | ±0.0% | 2026-07-12 |
@@ -77,7 +116,7 @@ Deterministic CI performance trend: callgrind **instruction counts (Ir)** for re
 | `round_f32_signal` | 785k | ±0.0% | ±0.0% | 2026-07-22 |
 | `differentiate_f32_signal` | 783k | ±0.0% | -0.6% | 2026-07-12 |
 | `harmony` | 775k | ±0.0% | **-4.8%** | 2026-07-12 |
-| `div_f32_signal` | 753k | ±0.0% | **-53.1%** | 2026-07-12 |
+| `div_f32_signal` | 754k | ±0.0% | **-53.1%** | 2026-07-12 |
 | `add_f32_signal` | 744k | ±0.0% | **-47.4%** | 2026-07-12 |
 | `max_f32_signal` | 744k | ±0.0% | **-47.4%** | 2026-07-12 |
 | `min_f32_signal` | 744k | ±0.0% | **-47.4%** | 2026-07-12 |
@@ -100,13 +139,13 @@ Deterministic CI performance trend: callgrind **instruction counts (Ir)** for re
 | `modulo_f32_value` | 556k | ±0.0% | +1.0% | 2026-07-12 |
 | `power_f32_value` | 552k | ±0.0% | +1.0% | 2026-07-12 |
 | `modulo_i32_value` | 543k | ±0.0% | +1.3% | 2026-07-21 |
-| `div_f32_value` | 542k | ±0.0% | +1.0% | 2026-07-12 |
+| `div_f32_value` | 542k | ±0.0% | +0.9% | 2026-07-12 |
 | `add_f32_value` | 542k | ±0.0% | +1.0% | 2026-07-12 |
 | `max_f32_value` | 542k | ±0.0% | +1.0% | 2026-07-12 |
 | `min_f32_value` | 542k | ±0.0% | +1.0% | 2026-07-12 |
 | `mul_f32_value` | 542k | ±0.0% | +1.0% | 2026-07-12 |
 | `sub_f32_value` | 542k | ±0.0% | +1.0% | 2026-07-12 |
-| `div_i32_value` | 541k | ±0.0% | +1.3% | 2026-07-21 |
+| `div_i32_value` | 540k | ±0.0% | +1.3% | 2026-07-21 |
 | `sub_i32_value` | 540k | ±0.0% | +1.3% | 2026-07-21 |
 | `add_i32_value` | 540k | ±0.0% | +1.3% | 2026-07-21 |
 | `mul_i32_value` | 539k | ±0.0% | +1.3% | 2026-07-21 |
@@ -128,7 +167,7 @@ Deterministic CI performance trend: callgrind **instruction counts (Ir)** for re
 | `abs_i32_value` | 518k | ±0.0% | +1.2% | 2026-07-21 |
 | `transpose` | 506k | ±0.0% | -0.3% | 2026-07-12 |
 | `chord` | 486k | ±0.0% | -2.2% | 2026-07-12 |
-| `osc_out` | 447k | ±0.0% | -0.3% | 2026-07-12 |
+| `osc_out` | 447k | ±0.0% | -0.4% | 2026-07-12 |
 | `subpatch` | 414k | ±0.0% | -0.7% | 2026-07-12 |
 
 </details>
@@ -182,6 +221,7 @@ The deterministic tier of the eval harness: each task's **reference solution** (
 
 - **Bold** deltas exceed the perf gate's 3% warn line.
 - Micro cases measure `step_node` — operator DSP **plus** the constant per-node engine overhead above. Cheap (value-rate) cases are therefore dominated by that overhead: a uniform absolute shift across all of them is an engine-overhead change, not operator regressions.
+- Construct cases are the one place an absolute level is the *less* interesting number: a change that moves all three sizes of a shape by the same factor is a constant-factor change, while one that moves only the largest is a scaling change, and only the second kind gets worse as songs get bigger.
 - A series that starts mid-chart is an operator that landed after recording began; its *vs first* compares against its own first real measurement (registration stubs < 1000 Ir are dropped).
 - Gaps are honest: a commit whose bench harness didn't compile against its baseline records nothing.
 - Ir is not wall-clock. Counts shift when the pinned toolchain or target baseline changes (e.g. the x86-64-v3 bump on 2026-06-29) — those steps are real cost changes on the same workload, but not source-code regressions/wins.
