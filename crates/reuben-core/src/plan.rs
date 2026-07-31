@@ -107,8 +107,7 @@ fn seed_latch(p: &Port, port: usize, value_overrides: &[(usize, Arg)]) -> Arg {
 pub struct PlanNode {
     /// This node's OSC address, moved over from the graph node — see
     /// [`Node::address`](crate::graph::Node::address). Instantiate copies nothing, so whatever
-    /// sharing the loader's intern table gave the graph the Plan keeps: the N sub-plans a Voicer
-    /// renders one patch through hold one copy of each address between them.
+    /// sharing the graph had the Plan keeps.
     pub address: Arc<str>,
     /// `pub(crate)`: the survivor transplant ([`Plan::transplant_survivors`]) is the only writer
     /// that moves this box, and it lives on `Plan` — no caller reaches in to swap it.

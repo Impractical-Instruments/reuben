@@ -25,9 +25,9 @@ pub struct Node {
     /// OSC address of this node (its public name; message routing prefix), behind a shared
     /// handle. The loader hands every node an address from one intern table per load, so the N
     /// independent Graphs the voice pass builds from a single patch — and the Plans they
-    /// instantiate into — hold one copy of `/osc`, not N. Immutable once built: a rename edits the
-    /// document and reloads, and the splice prefix mints a fresh handle rather than growing this
-    /// one.
+    /// instantiate into — hold one copy of `/osc`, not N. Never edited in place: the one writer
+    /// after build (the subpatch splice, which prefixes the address with the reusing node's)
+    /// replaces the whole handle with its own mint.
     pub address: Arc<str>,
     pub op: Box<dyn Operator>,
     /// This node's operator type's self-description, behind a shared handle — see
