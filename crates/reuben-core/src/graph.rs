@@ -22,8 +22,16 @@ new_key_type! {
 
 /// One operator instance in the Graph.
 pub struct Node {
-    /// OSC address of this node (its public name; message routing prefix).
-    pub address: String,
+    /// OSC address of this node (its public name; message routing prefix), behind a shared
+    /// handle — so [`spawn_copy`](Graph::spawn_copy) reproduces it with a refcount bump instead
+    /// of a `String` per node per copy. An N-voice pool is N copies of one build, and it (with
+    /// the Plans they instantiate into, which move the handle) holds one `/osc` rather than N.
+    /// The loader additionally mints from one intern table per load, which extends the same
+    /// sharing across the graphs it *builds* rather than copies.
+    ///
+    /// Never edited in place: the one writer after build (the subpatch splice, which prefixes the
+    /// address with the reusing node's) replaces the whole handle with its own mint.
+    pub address: Arc<str>,
     pub op: Box<dyn Operator>,
     /// This node's operator type's self-description, behind a shared handle — see
     /// [`Entry::descriptor`](crate::registry::Entry::descriptor). A node the loader built from a
@@ -135,14 +143,18 @@ impl Graph {
     /// loader, which builds operators from a [`crate::registry`] and hands over a clone of that
     /// entry's handle — so every node of one type points at the registry's single copy. Inputs and
     /// constants default from the descriptor; only author overrides are stored on the node.
+    ///
+    /// `address` takes an already-shared handle as readily as a `&str`: the loader hands over a
+    /// clone from its per-load intern table (see [`Node::address`]), a caller building a graph by
+    /// hand hands over a literal and mints one.
     pub fn add_boxed(
         &mut self,
-        address: &str,
+        address: impl Into<Arc<str>>,
         op: Box<dyn Operator>,
         descriptor: Arc<Descriptor>,
     ) -> NodeKey {
         self.nodes.insert(Node {
-            address: address.to_string(),
+            address: address.into(),
             op,
             descriptor,
             value_overrides: Vec::new(),
@@ -290,7 +302,7 @@ impl Graph {
     pub fn find(&self, address: &str) -> Option<NodeKey> {
         self.nodes
             .iter()
-            .find(|(_, n)| n.address == address)
+            .find(|(_, n)| &*n.address == address)
             .map(|(k, _)| k)
     }
 }
@@ -338,7 +350,7 @@ mod tests {
         spawns: &Arc<AtomicUsize>,
     ) -> NodeKey {
         g.nodes.insert(Node {
-            address: address.to_string(),
+            address: Arc::from(address),
             op: Box::new(Counted {
                 binding: Arc::new(1),
                 spawns: Arc::clone(spawns),
@@ -383,7 +395,7 @@ mod tests {
     /// describe the same patch under different keys compare equal, and one that remapped a key
     /// onto the wrong node does not.
     fn shape(g: &Graph) -> Vec<String> {
-        let addr = |k: NodeKey| g.nodes[k].address.as_str();
+        let addr = |k: NodeKey| &*g.nodes[k].address;
         let mut lines: Vec<String> = Vec::new();
         for c in &g.connections {
             lines.push(format!(
