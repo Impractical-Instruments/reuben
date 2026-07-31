@@ -12,7 +12,7 @@ mod normalize;
 
 pub use normalize::NormalizedDoc;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -908,6 +908,36 @@ struct LoadCtx {
     /// Successes only — a resolve/parse failure is re-surfaced per referencing site so each
     /// keeps its own warning (the `samples` policy).
     docs: BTreeMap<String, NormalizedDoc>,
+    /// The load-wide node-address intern table (see [`AddressTable`]).
+    addresses: AddressTable,
+}
+
+/// The node addresses minted during one load, deduped by value — the table and its own index in
+/// one (an `Arc<str>` hashes and borrows as its `str`).
+///
+/// The point is the voice pass: it builds one patch once per voice, so an 8-voice instrument used
+/// to mint eight `/osc` strings. Interned, the copies — and the [`Plan`](crate::plan::Plan)s they
+/// instantiate into, which move the handle rather than copy the bytes — hold one allocation per
+/// distinct address between them. Subpatch reuse shares nothing (a splice prefixes each internal
+/// address with the reusing node's, so no two reuses claim one string); it goes through the same
+/// table because the prefixed address of a *voice copy's* subpatch does.
+///
+/// Hashed, not ordered: the table is only ever looked up, never iterated, so no iteration order
+/// reaches the built Graph and the load stays deterministic — while a build stays linear in node
+/// count, which is what the construct gate watches.
+#[derive(Default)]
+struct AddressTable(HashSet<Arc<str>>);
+
+impl AddressTable {
+    /// A handle on `address`, minted the first time this load claims it and shared after.
+    fn intern(&mut self, address: &str) -> Arc<str> {
+        if let Some(shared) = self.0.get(address) {
+            return Arc::clone(shared);
+        }
+        let shared: Arc<str> = Arc::from(address);
+        self.0.insert(Arc::clone(&shared));
+        shared
+    }
 }
 
 /// Parse, build, and **resolve + bind decoded resources** — the full authoring
@@ -1302,8 +1332,9 @@ impl InstrumentDoc {
         let mut by_addr: BTreeMap<String, (crate::graph::NodeKey, Arc<Descriptor>)> =
             BTreeMap::new();
         // Every claimed address — document nodes *and* spliced subpatch internals — so the
-        // duplicate check also catches post-prefix collisions (fatal).
-        let mut addresses: BTreeSet<String> = BTreeSet::new();
+        // duplicate check also catches post-prefix collisions (fatal). Holds the interned handle
+        // the node itself gets, not a second copy of the same bytes.
+        let mut addresses: BTreeSet<Arc<str>> = BTreeSet::new();
         // Synthesized boundary face per subpatch address: the owned-string port set
         // pass 2 resolves boundary wires against.
         let mut faces: BTreeMap<String, BoundaryFace> = BTreeMap::new();
@@ -1346,12 +1377,15 @@ impl InstrumentDoc {
                 // so unlike an operator type there is nothing registry-wide to share.
                 let descriptor = Arc::new(descriptor);
                 let bare_signal = kind == PortKind::Signal && descriptor.inputs[0].meta.is_none();
-                let address = format!("/{name}");
-                if !addresses.insert(address.clone()) {
-                    return Err(LoadError::DuplicateAddress(address));
+                let address = ctx.addresses.intern(&format!("/{name}"));
+                if !addresses.insert(Arc::clone(&address)) {
+                    return Err(LoadError::DuplicateAddress(address.to_string()));
                 }
-                let key =
-                    graph.add_boxed(&address, Box::new(Pipe::new(kind)), Arc::clone(&descriptor));
+                let key = graph.add_boxed(
+                    Arc::clone(&address),
+                    Box::new(Pipe::new(kind)),
+                    Arc::clone(&descriptor),
+                );
                 // An enum pipe's declared default seeds the pipe's latch as a value-override;
                 // numeric pipes carry theirs inside the port's own meta. Seeded with what
                 // `pipe_descriptor` resolved, not with the symbol as written: `set_value` drops a
@@ -1360,7 +1394,7 @@ impl InstrumentDoc {
                 if let Some(arg) = &enum_default {
                     graph.set_value(key, PIPE_INPUT_PORT, arg);
                 }
-                by_addr.insert(address, (key, descriptor));
+                by_addr.insert(address.to_string(), (key, descriptor));
                 interface.inputs.insert(name.clone(), (key, 0));
                 if let Some(ch) = pipe.channel {
                     // A logical input channel binding — honored only when this
@@ -1392,7 +1426,8 @@ impl InstrumentDoc {
                     address: n.address.clone(),
                     type_name: n.type_name.clone(),
                 })?;
-            if !addresses.insert(n.address.clone()) {
+            let address = ctx.addresses.intern(&n.address);
+            if !addresses.insert(Arc::clone(&address)) {
                 return Err(LoadError::DuplicateAddress(n.address.clone()));
             }
             let descriptor = entry.descriptor.clone();
@@ -1425,7 +1460,7 @@ impl InstrumentDoc {
                 }
                 continue;
             }
-            let key = graph.add_boxed(&n.address, (entry.make)(), descriptor.clone());
+            let key = graph.add_boxed(address, (entry.make)(), descriptor.clone());
             // Retain the logical resource ids so `from_graph` round-trips the reference on save
             // (the resolved bytes/sub-graphs are bound out-of-band and do not survive the build).
             graph.nodes[key].sample_id = n.sample.clone();
@@ -1543,7 +1578,13 @@ impl InstrumentDoc {
                     LoadWarning::InertChannelBinding { name: pipe.clone() }.nested_in(&n.address),
                 );
             }
-            let face = splice_subpatch(&mut graph, loaded.graph, &n.address, &mut addresses)?;
+            let face = splice_subpatch(
+                &mut graph,
+                loaded.graph,
+                &n.address,
+                &mut addresses,
+                &mut ctx.addresses,
+            )?;
 
             // Boundary literals (`"wet": 0.3`): validated against the face and the
             // inner port the interface names, then applied as that inner node's value-override.
@@ -1829,7 +1870,7 @@ impl InstrumentDoc {
                     }
                     let src = &graph.nodes[src_key];
                     let from = if src.descriptor.outputs.len() == 1 {
-                        src.address.clone()
+                        src.address.to_string()
                     } else {
                         format!("{}.{}", src.address, src.descriptor.outputs[src_port].name)
                     };
@@ -1838,7 +1879,7 @@ impl InstrumentDoc {
 
                 NodeDoc {
                     type_name: d.type_name.to_string(),
-                    address: node.address.clone(),
+                    address: node.address.to_string(),
                     doc: None,
                     config,
                     inputs,
@@ -2403,16 +2444,17 @@ fn splice_subpatch(
     parent: &mut Graph,
     mut child: Graph,
     prefix: &str,
-    addresses: &mut BTreeSet<String>,
+    addresses: &mut BTreeSet<Arc<str>>,
+    table: &mut AddressTable,
 ) -> Result<BoundaryFace, LoadError> {
     let mut key_map: BTreeMap<crate::graph::NodeKey, crate::graph::NodeKey> = BTreeMap::new();
     // Deterministic splice order: SlotMap iteration is insertion order, which is doc order.
     let child_keys: Vec<crate::graph::NodeKey> = child.nodes.keys().collect();
     for ck in child_keys {
         let mut node = child.nodes.remove(ck).expect("child key just enumerated");
-        let address = format!("{prefix}{}", node.address);
-        if !addresses.insert(address.clone()) {
-            return Err(LoadError::DuplicateAddress(address));
+        let address = table.intern(&format!("{prefix}{}", node.address));
+        if !addresses.insert(Arc::clone(&address)) {
+            return Err(LoadError::DuplicateAddress(address.to_string()));
         }
         node.address = address;
         key_map.insert(ck, parent.nodes.insert(node));
@@ -5839,5 +5881,101 @@ mod tests {
                 assert_eq!(&err.to_string(), expected);
             }
         }
+    }
+}
+
+/// Address allocations across the copies of one patch — the voice pass builds a patch once per
+/// voice, so an 8-voice instrument built eight `/osc` strings. These pin the sharing that makes
+/// it one, from the built Graph through to the Plan the Voicer renders.
+#[cfg(test)]
+mod address_sharing {
+    use super::*;
+    use crate::plan::Plan;
+    use crate::AudioConfig;
+
+    /// A voice-shaped patch: a `freq` boundary pipe (dissolved at instantiate, so its minted
+    /// address is an [`InputAlias`](crate::plan::InputAlias) rather than a node) feeding an
+    /// oscillator into an output.
+    const VOICE: &str = r#"{"format_version":2,"instrument":"voice",
+        "interface":{"inputs":{"freq":{"type":"f32_buffer","default":440.0,"min":20.0,"max":20000.0}},
+                     "outputs":{"audio":{"from":"/out.audio"}}},
+        "nodes":[{"type":"oscillator","address":"/osc","inputs":{"freq":{"from":"/freq"}}},
+                 {"type":"output","address":"/out","inputs":{"audio":{"from":"/osc.audio"}}}]}"#;
+
+    /// Build the patch twice through one load — exactly what the voice-resource pass does per
+    /// voice copy (one `LoadCtx`, N independent Graphs).
+    fn two_copies() -> (Graph, Graph) {
+        let doc = NormalizedDoc::from_json(VOICE, &Registry::builtin(), None).expect("parse");
+        let reg = Registry::builtin();
+        let mut ctx = LoadCtx::default();
+        let a = doc
+            .build_nested(&reg, None, &mut ctx, None)
+            .expect("copy a");
+        let b = doc
+            .build_nested(&reg, None, &mut ctx, None)
+            .expect("copy b");
+        (a.graph, b.graph)
+    }
+
+    /// Each node's address paired with the allocation backing it, sorted so two independently
+    /// built copies compare positionally.
+    fn graph_addrs(g: &Graph) -> Vec<(String, *const u8)> {
+        let mut v: Vec<(String, *const u8)> = g
+            .nodes
+            .iter()
+            .map(|(_, n)| (n.address.to_string(), n.address.as_ptr()))
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn two_copies_of_one_patch_share_every_node_address_allocation() {
+        let (a, b) = two_copies();
+        assert!(
+            !graph_addrs(&a).is_empty(),
+            "the patch has nodes to compare"
+        );
+        assert_eq!(
+            graph_addrs(&a),
+            graph_addrs(&b),
+            "a second copy of the patch minted its own address strings"
+        );
+    }
+
+    #[test]
+    fn instantiate_carries_the_shared_allocation_into_the_plan() {
+        let (a, b) = two_copies();
+        let cfg = AudioConfig::new(48_000.0, 64);
+        let pa = Plan::instantiate(a, cfg).expect("copy a instantiates");
+        let pb = Plan::instantiate(b, cfg).expect("copy b instantiates");
+
+        let nodes = |p: &Plan| -> Vec<(String, *const u8)> {
+            p.nodes
+                .iter()
+                .map(|n| (n.address.to_string(), n.address.as_ptr()))
+                .collect()
+        };
+        assert_eq!(
+            nodes(&pa),
+            nodes(&pb),
+            "a voice sub-plan holds its own copy of every node address"
+        );
+
+        let aliases = |p: &Plan| -> Vec<(String, *const u8)> {
+            p.input_aliases
+                .iter()
+                .map(|al| (al.address.to_string(), al.address.as_ptr()))
+                .collect()
+        };
+        assert!(
+            !aliases(&pa).is_empty(),
+            "the `freq` pipe dissolves to an alias"
+        );
+        assert_eq!(
+            aliases(&pa),
+            aliases(&pb),
+            "a voice sub-plan holds its own copy of every dissolved pipe address"
+        );
     }
 }

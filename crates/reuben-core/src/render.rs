@@ -342,7 +342,7 @@ pub fn render_plan<E: Executor>(
             .outbound_taps
             .iter()
             .find(|t| t.node == i)
-            .map(|t| t.address.as_str())
+            .map(|t| &*t.address)
         {
             for e in emit_scratch.drain(..) {
                 outbound.push(Message::new(addr, e.arg, e.frame));
@@ -905,12 +905,12 @@ mod tests {
         let fx = plan
             .nodes
             .iter()
-            .position(|n| n.address == "/fx")
+            .position(|n| &*n.address == "/fx")
             .expect("/fx node");
         let deep = plan
             .nodes
             .iter()
-            .position(|n| n.address == "/fx/verb/delay")
+            .position(|n| &*n.address == "/fx/verb/delay")
             .expect("/fx/verb/delay node");
         assert!(
             fx < deep,
@@ -950,7 +950,7 @@ mod tests {
                 .filter(|(r, _)| {
                     !r.materialize_writes.is_empty() || !r.held.is_empty() || !r.events.is_empty()
                 })
-                .map(|(_, n)| n.address.as_str())
+                .map(|(_, n)| &*n.address)
                 .collect();
             assert_eq!(delivered, [want], "{addr}: the two paths disagree");
         }

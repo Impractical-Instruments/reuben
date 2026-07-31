@@ -22,8 +22,13 @@ new_key_type! {
 
 /// One operator instance in the Graph.
 pub struct Node {
-    /// OSC address of this node (its public name; message routing prefix).
-    pub address: String,
+    /// OSC address of this node (its public name; message routing prefix), behind a shared
+    /// handle. The loader hands every node an address from one intern table per load, so the N
+    /// independent Graphs the voice pass builds from a single patch — and the Plans they
+    /// instantiate into — hold one copy of `/osc`, not N. Immutable once built: a rename edits the
+    /// document and reloads, and the splice prefix mints a fresh handle rather than growing this
+    /// one.
+    pub address: Arc<str>,
     pub op: Box<dyn Operator>,
     /// This node's operator type's self-description, behind a shared handle — see
     /// [`Entry::descriptor`](crate::registry::Entry::descriptor). A node the loader built from a
@@ -135,14 +140,18 @@ impl Graph {
     /// loader, which builds operators from a [`crate::registry`] and hands over a clone of that
     /// entry's handle — so every node of one type points at the registry's single copy. Inputs and
     /// constants default from the descriptor; only author overrides are stored on the node.
+    ///
+    /// `address` takes an already-shared handle as readily as a `&str`: the loader hands over a
+    /// clone from its per-load intern table (see [`Node::address`]), a caller building a graph by
+    /// hand hands over a literal and mints one.
     pub fn add_boxed(
         &mut self,
-        address: &str,
+        address: impl Into<Arc<str>>,
         op: Box<dyn Operator>,
         descriptor: Arc<Descriptor>,
     ) -> NodeKey {
         self.nodes.insert(Node {
-            address: address.to_string(),
+            address: address.into(),
             op,
             descriptor,
             value_overrides: Vec::new(),
@@ -222,7 +231,7 @@ impl Graph {
     pub fn find(&self, address: &str) -> Option<NodeKey> {
         self.nodes
             .iter()
-            .find(|(_, n)| n.address == address)
+            .find(|(_, n)| &*n.address == address)
             .map(|(k, _)| k)
     }
 }

@@ -153,9 +153,9 @@ pub fn build_manifest(
         .nodes
         .iter()
         .map(|node| NodeIdentity {
-            address: node.address.clone(),
+            address: node.address.to_string(),
             type_name: node.descriptor.type_name.to_string(),
-            fingerprint: fingerprints.get(&node.address).copied(),
+            fingerprint: fingerprints.get(&*node.address).copied(),
         })
         .collect();
     Manifest { nodes }

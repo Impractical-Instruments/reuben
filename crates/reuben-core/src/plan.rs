@@ -105,7 +105,11 @@ fn seed_latch(p: &Port, port: usize, value_overrides: &[(usize, Arg)]) -> Arg {
 
 /// A node in execution order, with its arena buffer wiring resolved.
 pub struct PlanNode {
-    pub address: String,
+    /// This node's OSC address, moved over from the graph node — see
+    /// [`Node::address`](crate::graph::Node::address). Instantiate copies nothing, so whatever
+    /// sharing the loader's intern table gave the graph the Plan keeps: the N sub-plans a Voicer
+    /// renders one patch through hold one copy of each address between them.
+    pub address: Arc<str>,
     /// `pub(crate)`: the survivor transplant ([`Plan::transplant_survivors`]) is the only writer
     /// that moves this box, and it lives on `Plan` — no caller reaches in to swap it.
     pub(crate) op: Box<dyn Operator>,
@@ -184,8 +188,9 @@ pub struct PlanNode {
 pub struct OutboundTap {
     /// The sink node's index in execution order.
     pub node: usize,
-    /// The outbound OSC address — the node's address, stamped on every drained Message.
-    pub address: String,
+    /// The outbound OSC address — a handle on the sink node's own address (one sink = one
+    /// address), stamped on every drained Message.
+    pub address: Arc<str>,
 }
 
 /// One resolved `interface` **output**: a voice patch's named boundary output, so a
@@ -218,8 +223,9 @@ pub struct InterfaceOutput {
 /// `(node, dst_port)` with exactly the normalization the rendered pipe applied (the pipe port
 /// types/clamps first, then the consumer port — the same two hops the node made).
 pub(crate) struct InputAlias {
-    /// The dissolved pipe node's minted address (e.g. `/freq`).
-    pub address: String,
+    /// The dissolved pipe node's minted address (e.g. `/freq`) — the handle the dissolved node
+    /// held, so the copies of one patch share it as their surviving nodes' addresses do.
+    pub address: Arc<str>,
     /// The pipe's synthesized `in` port: types inbound OSC args ([`Plan::osc_in_message`]) and
     /// clamps/resolves Value messages, exactly as routing to the rendered pipe node did.
     pub port: Port,
@@ -233,7 +239,7 @@ pub(crate) struct InputAlias {
 
 /// A pipe collapsed by [`dissolve_interface_pipes`], keyed by its (pre-instantiate) consumer.
 struct DissolvedPipe {
-    address: String,
+    address: Arc<str>,
     port: Port,
     kind: PortKind,
     consumer: NodeKey,
@@ -1313,7 +1319,7 @@ mod dissolve_chains {
         let gain = plan
             .nodes
             .iter()
-            .position(|n| n.address == "/w/s/g")
+            .position(|n| &*n.address == "/w/s/g")
             .expect("the inner gain survives the splice");
         let a = plan.nodes[gain]
             .descriptor
@@ -1339,7 +1345,7 @@ mod dissolve_chains {
             .iter()
             .map(|al| {
                 assert_eq!((al.node, al.dst_port), (gain, a), "{} dangles", al.address);
-                al.address.as_str()
+                &*al.address
             })
             .collect();
         addrs.sort_unstable();
@@ -1350,7 +1356,7 @@ mod dissolve_chains {
         let osc = plan
             .nodes
             .iter()
-            .position(|n| n.address == "/o")
+            .position(|n| &*n.address == "/o")
             .expect("/o node");
         assert_eq!(
             plan.nodes[gain].inputs[a],
@@ -1517,7 +1523,11 @@ mod wire_forms {
     fn port_form_reads_a_declared_input_form() {
         let plan = wire(Port::f32_buffer("o"), Port::f32_buffer("i")).expect("instantiate");
         // The sink node (index varies with topo order); find it by address.
-        let dst = plan.nodes.iter().position(|n| n.address == "/dst").unwrap();
+        let dst = plan
+            .nodes
+            .iter()
+            .position(|n| &*n.address == "/dst")
+            .unwrap();
         assert_eq!(port_form(&plan, dst, 0), port_kind(&Port::f32_buffer("i")));
     }
 
@@ -1556,7 +1566,10 @@ mod wire_forms {
     // ------------------------------------------------------------------------------------------
 
     fn dst_idx(plan: &Plan) -> usize {
-        plan.nodes.iter().position(|n| n.address == "/dst").unwrap()
+        plan.nodes
+            .iter()
+            .position(|n| &*n.address == "/dst")
+            .unwrap()
     }
 
     /// A — Value→Signal is the one implicit coercion: the Value source materializes a (constant)
@@ -1909,7 +1922,7 @@ mod descriptor_sharing_tests {
         let mut graph = Graph::new();
         for i in 0..3 {
             graph.add_boxed(
-                &format!("/osc{i}"),
+                format!("/osc{i}"),
                 (entry.make)(),
                 Arc::clone(&entry.descriptor),
             );
@@ -2028,5 +2041,34 @@ mod arena_reuse {
                 "a {stages}-stage chain ping-pongs between two slots"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod outbound_addresses {
+    use super::{AudioConfig, Plan};
+    use crate::graph::Graph;
+    use crate::operators::{OscOut, Oscillator, Output};
+
+    /// A sink's outbound address *is* its node's address — one sink, one address — so the tap
+    /// points at the node's allocation instead of holding a second copy of the same bytes.
+    #[test]
+    fn an_outbound_tap_shares_its_node_address_allocation() {
+        let mut g = Graph::new();
+        let osc = g.add("/osc", Oscillator::new());
+        let out = g.add("/out", Output::new());
+        g.connect(osc, 0, out, 0);
+        g.tap_output(out, 0);
+        g.add("/fb", OscOut::new());
+
+        let plan = Plan::instantiate(g, AudioConfig::new(48_000.0, 64)).expect("instantiates");
+        assert_eq!(plan.outbound_taps.len(), 1, "one `osc_out` sink");
+        let tap = &plan.outbound_taps[0];
+        assert_eq!(&*tap.address, "/fb");
+        assert_eq!(
+            tap.address.as_ptr(),
+            plan.nodes[tap.node].address.as_ptr(),
+            "the tap copied its node's address instead of pointing at it"
+        );
     }
 }
