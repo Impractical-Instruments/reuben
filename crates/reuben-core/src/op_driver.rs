@@ -136,8 +136,6 @@ impl OpDriver {
         let port = port.index();
         let node = &mut self.plan.nodes[0];
         let bi = node.inputs[port]
-            .as_ref()
-            .and_then(|b| b.first().copied())
             .expect("drive() target must be a Buffer/Float input with a scratch buffer");
         // Take it out of the materialize loop; the slot stays scratch (skips the per-block clear),
         // so the buffer we write survives and `varying` stays as we set it.
@@ -158,7 +156,7 @@ impl OpDriver {
         let store = Arc::new(store);
         let mut refs = ResolvedRefs::new();
         refs.set(slot, id);
-        self.plan.nodes[0].ops[0].bind_resources(&store, &refs);
+        self.plan.nodes[0].op.bind_resources(&store, &refs);
         self._store = Some(store);
         self
     }
@@ -195,8 +193,8 @@ impl OpDriver {
 
             self.renderer.step_node(&mut self.plan, 0, frames, &msgs);
 
-            for (ord, bufs) in self.plan.nodes[0].outputs.iter().enumerate() {
-                let src = self.renderer.arena_buffer(bufs[0]);
+            for (ord, &bi) in self.plan.nodes[0].outputs.iter().enumerate() {
+                let src = self.renderer.arena_buffer(bi);
                 self.outputs[ord][start..start + frames].copy_from_slice(&src[..frames]);
             }
             for e in self.renderer.last_emits() {
@@ -234,14 +232,14 @@ impl OpDriver {
     /// re-assertion behavior (an on-change held publisher must re-emit its current value the next
     /// block, even with no input change).
     pub fn on_transplant(&mut self) -> &mut Self {
-        self.plan.nodes[0].ops[0].on_transplant();
+        self.plan.nodes[0].op.on_transplant();
         self
     }
 
     /// A driver over a fresh [`Operator::spawn`] of this one: carries resource bindings forward (the
     /// op's spawn clones them) while resetting playback state. Configure it independently.
     pub fn spawn(&self) -> OpDriver {
-        let op = self.plan.nodes[0].ops[0].spawn();
+        let op = self.plan.nodes[0].op.spawn();
         let mut d = OpDriver::from_boxed(op, Arc::clone(&self.descriptor), self.sample_rate);
         d._store = self._store.clone();
         d
