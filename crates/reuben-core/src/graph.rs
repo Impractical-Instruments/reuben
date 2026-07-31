@@ -26,9 +26,10 @@ pub struct Node {
     pub address: String,
     pub op: Box<dyn Operator>,
     /// This node's operator type's self-description, behind a shared handle — see
-    /// [`Entry::descriptor`](crate::registry::Entry::descriptor). A node the loader built points at
-    /// its registry entry's copy, so a document naming one type N times costs one descriptor rather
-    /// than N; a node added through [`Graph::add`] has no entry to share from and mints its own.
+    /// [`Entry::descriptor`](crate::registry::Entry::descriptor). A node the loader built from a
+    /// registered type points at that entry's copy, so a document naming one type N times costs one
+    /// descriptor rather than N; a loader-minted interface pipe (no entry exists — the name is
+    /// reserved) and a node added through [`Graph::add`] each mint their own.
     pub descriptor: Arc<Descriptor>,
     /// Author value-overrides for settable inputs, as `(input port, coerced `Arg`)` — the
     /// unwired-default a `/node/<input> v` literal sets, seeding the input's latch at Instantiate.
