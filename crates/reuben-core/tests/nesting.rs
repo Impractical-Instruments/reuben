@@ -7,10 +7,16 @@
 //! bit-identical comparison proves too: shared oscillator state would advance phase twice per
 //! block and diverge from the flattened twin immediately.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+
+use reuben_core::descriptor::Port;
+use reuben_core::message::Message;
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
 use reuben_core::resources::{ResolveError, ResourceResolver, SampleBuffer};
-use reuben_core::{load, load_instrument, AudioConfig, Graph, Registry};
+use reuben_core::vocab::pitch::{Note, Pitch};
+use reuben_core::{load, load_instrument, AudioConfig, Descriptor, Graph, Io, Operator, Registry};
 
 /// A single-oscillator sub-instrument exposing `freq` in / `audio` out.
 // A well-formed v1 child: its `audio` boundary output is also anonymously tapped (as every
@@ -327,4 +333,348 @@ fn mistyped_boundary_wire_fails_at_load_not_at_instantiate() {
     let msg = err.to_string();
     assert!(msg.contains("/sub.gain"), "boundary-named: {msg}");
     assert!(!msg.contains("/sub/amt"), "leaked internals: {msg}");
+}
+
+// ----------------------------------------------------------------------------------------------
+// Reuse: a child document referenced N times is **built once**, and the other N-1 references are
+// fresh-state copies of that one build. The observation seam is the registry's
+// constructor: `make` runs once per node the loader *builds*, while `Operator::spawn` supplies
+// every copy — so a counter on `make` separates the two without reaching inside the loader.
+// ----------------------------------------------------------------------------------------------
+
+/// Constructions of [`Probe`] via the registry. Process-wide, because a registry constructor is a
+/// bare `fn` pointer with nowhere to hang per-test state — so every test that reads it holds
+/// [`PROBE_LOCK`] for the duration, and the count is read as a delta either way.
+static PROBE_BUILDS: AtomicUsize = AtomicUsize::new(0);
+
+/// Serializes the tests that read [`PROBE_BUILDS`]; `cargo test` runs them on parallel threads.
+static PROBE_LOCK: Mutex<()> = Mutex::new(());
+
+/// A silent one-output operator that counts how many times the registry constructed it.
+struct Probe;
+
+impl Operator for Probe {
+    fn descriptor() -> Descriptor {
+        Descriptor {
+            type_name: "probe_704",
+            inputs: vec![],
+            outputs: vec![Port::f32_buffer("out")],
+            constants: vec![],
+            resources: vec![],
+        }
+    }
+    fn process(&mut self, _io: &mut Io) {}
+    fn spawn(&self) -> Box<dyn Operator> {
+        Box::new(Probe)
+    }
+}
+
+/// [`Registry::builtin`] plus [`Probe`].
+fn probe_registry() -> Registry {
+    let mut reg = Registry::builtin();
+    reg.register(
+        || {
+            PROBE_BUILDS.fetch_add(1, Ordering::Relaxed);
+            Box::new(Probe)
+        },
+        Probe::descriptor(),
+    );
+    reg
+}
+
+#[test]
+fn four_subpatch_reuses_build_the_child_once() {
+    const CHILD: &str = r#"{
+        "format_version": 2,
+        "instrument": "child",
+        "interface": { "outputs": { "out": { "from": "/p.out" } } },
+        "nodes": [ { "type": "probe_704", "address": "/p" } ]
+    }"#;
+    const PARENT: &str = r#"{
+        "format_version": 2,
+        "instrument": "parent",
+        "resources": { "c": "child.json" },
+        "nodes": [
+            { "type": "subpatch", "address": "/a", "patch": "c" },
+            { "type": "subpatch", "address": "/b", "patch": "c" },
+            { "type": "subpatch", "address": "/c", "patch": "c" },
+            { "type": "subpatch", "address": "/d", "patch": "c" }
+        ]
+    }"#;
+
+    let _serialized = PROBE_LOCK.lock().expect("probe lock");
+    let before = PROBE_BUILDS.load(Ordering::Relaxed);
+    let loaded = load_instrument(PARENT, &probe_registry(), &Fixed(CHILD)).expect("load");
+    assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+
+    // The four reuses really are present — otherwise "built once" is trivially true because the
+    // document degraded to nothing (the failure mode the construct bench also guards against).
+    for address in ["/a/p", "/b/p", "/c/p", "/d/p"] {
+        assert!(
+            loaded.graph.find(address).is_some(),
+            "{address} missing: the reuse dissolved instead of splicing"
+        );
+    }
+    assert_eq!(
+        PROBE_BUILDS.load(Ordering::Relaxed) - before,
+        1,
+        "four reuses of one child must build it once and copy it three times"
+    );
+}
+
+/// Counts `resolve_text` calls alongside [`Fixed`]'s single answer — the voice pass's per-copy
+/// re-read is visible here and nowhere else, since the parse cache alone never covered it.
+struct CountingFixed(&'static str, AtomicUsize);
+
+impl ResourceResolver for CountingFixed {
+    fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+        Err(ResolveError::NotFound(source.to_string()))
+    }
+    fn resolve_text(&self, _source: &str) -> Result<String, ResolveError> {
+        self.1.fetch_add(1, Ordering::Relaxed);
+        Ok(self.0.to_string())
+    }
+}
+
+#[test]
+fn a_thirty_two_voice_pool_builds_its_patch_once() {
+    // The voice pass is the other O(reuses) build: a Voicer hosts `voices` copies of one patch.
+    // Unlike the subpatch pass it never even shared a *parse*, so a 32-voice pool used to read,
+    // parse and build the same source 32 times.
+    const VOICE: &str = r#"{
+        "format_version": 2,
+        "instrument": "voice",
+        "interface": {
+            "inputs": {
+                "freq": { "type": "f32", "default": 440.0, "min": 20.0, "max": 20000.0 },
+                "gate": { "type": "f32", "default": 0.0, "min": 0.0, "max": 1.0 }
+            },
+            "outputs": { "audio": { "from": "/p.out" } }
+        },
+        "nodes": [ { "type": "probe_704", "address": "/p" } ]
+    }"#;
+    const HOST: &str = r#"{
+        "format_version": 2,
+        "instrument": "host",
+        "resources": { "v": "voice.json" },
+        "interface": { "outputs": { "out": { "from": "/out.audio" } } },
+        "nodes": [
+            { "type": "voicer", "address": "/voicer", "voice": "v", "config": { "voices": 32 } },
+            { "type": "output", "address": "/out",
+              "inputs": { "audio": { "from": "/voicer.audio" } } }
+        ]
+    }"#;
+
+    let _serialized = PROBE_LOCK.lock().expect("probe lock");
+    let resolver = CountingFixed(VOICE, AtomicUsize::new(0));
+    let before = PROBE_BUILDS.load(Ordering::Relaxed);
+    let loaded = load_instrument(HOST, &probe_registry(), &resolver).expect("load");
+    assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+
+    assert_eq!(
+        PROBE_BUILDS.load(Ordering::Relaxed) - before,
+        1,
+        "a 32-voice pool must build its patch once and copy it 31 times"
+    );
+    assert_eq!(
+        resolver.1.load(Ordering::Relaxed),
+        1,
+        "and read the source once"
+    );
+
+    // The pool really is 32 voices deep — a patch that failed to bind would also "build once".
+    let mut plan = Plan::instantiate(loaded.graph, AudioConfig::new(48_000.0, 64))
+        .expect("instantiate the pool");
+    let mut r = Renderer::new(&plan);
+    let mut buf = vec![0.0f32; 64];
+    r.render_block(&mut plan, &[], &mut buf);
+}
+
+/// Serves a named set of child documents, so a test can nest one inside another.
+struct Library(&'static [(&'static str, &'static str)]);
+
+impl ResourceResolver for Library {
+    fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+        Err(ResolveError::NotFound(source.to_string()))
+    }
+    fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
+        self.0
+            .iter()
+            .find(|(name, _)| *name == source)
+            .map(|(_, doc)| doc.to_string())
+            .ok_or_else(|| ResolveError::NotFound(source.to_string()))
+    }
+}
+
+/// The shipped voice patch, plus a section that hosts a pool of it behind an `audio` face.
+const POLY_LIBRARY: &[(&str, &str)] = &[
+    (
+        "voice.json",
+        include_str!("../../../instruments/voices/default-voice.json"),
+    ),
+    (
+        "section.json",
+        r#"{
+            "format_version": 2,
+            "instrument": "section",
+            "resources": { "v": "voice.json" },
+            "interface": { "outputs": { "audio": { "from": "/voicer.audio" } } },
+            "nodes": [
+                { "type": "voicer", "address": "/voicer", "voice": "v",
+                  "config": { "voices": 2 } }
+            ]
+        }"#,
+    ),
+];
+
+#[test]
+fn a_reused_section_keeps_the_voices_its_voicer_hosts() {
+    // A Voicer's bound voice graphs are state a copy cannot drop: they are the pool it renders.
+    // A section is exactly the shape a song repeats — so the *second* reuse, the one served as a
+    // copy rather than a build, is what gets played here. Silence would be the failure.
+    const SONG: &str = r#"{
+        "format_version": 2,
+        "instrument": "song",
+        "resources": { "s": "section.json" },
+        "interface": { "outputs": { "out": { "from": "/out.audio" } } },
+        "nodes": [
+            { "type": "subpatch", "address": "/a", "patch": "s" },
+            { "type": "subpatch", "address": "/b", "patch": "s" },
+            { "type": "output", "address": "/out",
+              "inputs": { "audio": { "from": "/b.audio" } } }
+        ]
+    }"#;
+
+    let loaded = load_instrument(SONG, &Registry::builtin(), &Library(POLY_LIBRARY)).expect("load");
+    assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+
+    let cfg = AudioConfig::new(48_000.0, 128);
+    let mut plan = Plan::instantiate(loaded.graph, cfg).expect("instantiate");
+    let mut r = Renderer::new(&plan);
+    let mut buf = vec![0.0f32; cfg.block_size];
+    let note = Message::new("/b/voicer/notes", Note::new(Pitch::Degree(0), 1.0), 0);
+    r.render_block(&mut plan, &[note], &mut buf);
+
+    assert!(
+        buf.iter().any(|s| *s != 0.0),
+        "the second reuse of a voicer-hosting section rendered silence: its pool was dropped"
+    );
+}
+
+#[test]
+fn a_source_one_reference_already_built_is_not_read_again_for_another() {
+    // `/c` is a section hosting a two-voice pool of `voice.json`; `/v` then names that same
+    // document directly as a subpatch. By the time `/v` is reached the source has been built and
+    // cached, so the read, the parse and the build are all already paid — asking the resolver again
+    // only to discard the answer is work this change exists to remove, and it is also the one way
+    // two references to one source could still disagree about whether it exists.
+    const VOICE: &str = r#"{
+        "format_version": 2,
+        "instrument": "voice",
+        "interface": {
+            "inputs": {
+                "freq": { "type": "f32", "default": 440.0, "min": 20.0, "max": 20000.0 },
+                "gate": { "type": "f32", "default": 0.0, "min": 0.0, "max": 1.0 }
+            },
+            "outputs": { "audio": { "from": "/p.out" } }
+        },
+        "nodes": [ { "type": "probe_704", "address": "/p" } ]
+    }"#;
+    const SECTION: &str = r#"{
+        "format_version": 2,
+        "instrument": "section",
+        "resources": { "v": "voice.json" },
+        "interface": { "outputs": { "audio": { "from": "/voicer.audio" } } },
+        "nodes": [
+            { "type": "voicer", "address": "/voicer", "voice": "v", "config": { "voices": 2 } }
+        ]
+    }"#;
+    const SONG: &str = r#"{
+        "format_version": 2,
+        "instrument": "song",
+        "resources": { "s": "section.json", "v": "voice.json" },
+        "nodes": [
+            { "type": "subpatch", "address": "/c", "patch": "s" },
+            { "type": "subpatch", "address": "/v", "patch": "v" }
+        ]
+    }"#;
+
+    struct Counting(AtomicUsize);
+    impl ResourceResolver for Counting {
+        fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+            Err(ResolveError::NotFound(source.to_string()))
+        }
+        fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            match source {
+                "section.json" => Ok(SECTION.to_string()),
+                "voice.json" => Ok(VOICE.to_string()),
+                other => Err(ResolveError::NotFound(other.to_string())),
+            }
+        }
+    }
+
+    let _serialized = PROBE_LOCK.lock().expect("probe lock");
+    let resolver = Counting(AtomicUsize::new(0));
+    let loaded = load_instrument(SONG, &probe_registry(), &resolver).expect("load");
+    assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+    assert!(
+        loaded.graph.find("/v/p").is_some(),
+        "the direct reuse spliced"
+    );
+
+    assert_eq!(
+        resolver.0.load(Ordering::Relaxed),
+        2,
+        "one read per distinct source: section.json and voice.json"
+    );
+}
+
+#[test]
+fn a_child_whose_sample_is_missing_is_still_built_once() {
+    // A build that lost a `patch`/`voice` reference is not cached, because those are the
+    // references the cycle guard walks. A missing **sample** is a different thing: it is not a
+    // graph, cannot re-enter the load, and cannot hide a cycle — and a library child whose sample
+    // the user has not installed is ordinary, not exotic. So it still caches, and each site still
+    // gets its own copy of the warning.
+    const CHILD: &str = r#"{
+        "format_version": 2,
+        "instrument": "child",
+        "resources": { "kick": "kick.wav" },
+        "interface": { "outputs": { "out": { "from": "/p.out" } } },
+        "nodes": [
+            { "type": "probe_704", "address": "/p" },
+            { "type": "sample", "address": "/s", "sample": "kick" }
+        ]
+    }"#;
+    const PARENT: &str = r#"{
+        "format_version": 2,
+        "instrument": "parent",
+        "resources": { "c": "child.json" },
+        "nodes": [
+            { "type": "subpatch", "address": "/a", "patch": "c" },
+            { "type": "subpatch", "address": "/b", "patch": "c" },
+            { "type": "subpatch", "address": "/c", "patch": "c" }
+        ]
+    }"#;
+
+    let _serialized = PROBE_LOCK.lock().expect("probe lock");
+    let before = PROBE_BUILDS.load(Ordering::Relaxed);
+    let loaded = load_instrument(PARENT, &probe_registry(), &Fixed(CHILD)).expect("non-fatal");
+
+    assert_eq!(
+        PROBE_BUILDS.load(Ordering::Relaxed) - before,
+        1,
+        "a dead sample must not cost the child its cache"
+    );
+    let sites = loaded
+        .warnings
+        .iter()
+        .filter(|w| matches!(w, reuben_core::LoadWarning::Nested { .. }))
+        .count();
+    assert_eq!(
+        sites, 3,
+        "each site keeps its own warning: {:?}",
+        loaded.warnings
+    );
 }

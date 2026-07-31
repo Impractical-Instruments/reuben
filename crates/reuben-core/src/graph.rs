@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use slotmap::{new_key_type, SlotMap};
+use slotmap::{new_key_type, SecondaryMap, SlotMap};
 
 use crate::descriptor::Descriptor;
 use crate::message::Arg;
@@ -23,11 +23,14 @@ new_key_type! {
 /// One operator instance in the Graph.
 pub struct Node {
     /// OSC address of this node (its public name; message routing prefix), behind a shared
-    /// handle. The loader hands every node an address from one intern table per load, so the N
-    /// independent Graphs the voice pass builds from a single patch — and the Plans they
-    /// instantiate into — hold one copy of `/osc`, not N. Never edited in place: the one writer
-    /// after build (the subpatch splice, which prefixes the address with the reusing node's)
-    /// replaces the whole handle with its own mint.
+    /// handle — so [`spawn_copy`](Graph::spawn_copy) reproduces it with a refcount bump instead
+    /// of a `String` per node per copy. An N-voice pool is N copies of one build, and it (with
+    /// the Plans they instantiate into, which move the handle) holds one `/osc` rather than N.
+    /// The loader additionally mints from one intern table per load, which extends the same
+    /// sharing across the graphs it *builds* rather than copies.
+    ///
+    /// Never edited in place: the one writer after build (the subpatch splice, which prefixes the
+    /// address with the reusing node's) replaces the whole handle with its own mint.
     pub address: Arc<str>,
     pub op: Box<dyn Operator>,
     /// This node's operator type's self-description, behind a shared handle — see
@@ -226,6 +229,74 @@ impl Graph {
         self.outputs.push((node, port.index(), Some(channel)));
     }
 
+    /// A **fresh-state structural copy** of this patch: the same nodes, wires, master taps,
+    /// `interface` boundary and author overrides, with every operator box taken through
+    /// [`Operator::spawn`] — so each copy starts at zero running state while shared resource
+    /// bindings (a decoded sample's `Arc`) ride along rather than being duplicated.
+    ///
+    /// This is what makes a *reused* child cheap: a document referenced by N `subpatch` nodes, or
+    /// a voice patch hosted N times, is built once and copied for the rest.
+    ///
+    /// Keys are the copy's own. A [`NodeKey`] taken from the original is not merely stale here, it
+    /// is *wrong-and-live*: SlotMap keys are per-map, so an original's key resolves against
+    /// whatever the copy happens to hold in that slot. Every stored key is therefore remapped
+    /// through the insertion rather than carried.
+    pub fn spawn_copy(&self) -> Graph {
+        let mut nodes = SlotMap::with_capacity_and_key(self.nodes.len());
+        let mut remap: SecondaryMap<NodeKey, NodeKey> =
+            SecondaryMap::with_capacity(self.nodes.len());
+        for (key, n) in &self.nodes {
+            let fresh = nodes.insert(Node {
+                address: n.address.clone(),
+                op: n.op.spawn(),
+                descriptor: Arc::clone(&n.descriptor),
+                value_overrides: n.value_overrides.clone(),
+                constant_overrides: n.constant_overrides.clone(),
+                sample_id: n.sample_id.clone(),
+                voice_id: n.voice_id.clone(),
+            });
+            remap.insert(key, fresh);
+        }
+        let at = |k: NodeKey| remap[k];
+        Graph {
+            nodes,
+            connections: self
+                .connections
+                .iter()
+                .map(|c| Connection {
+                    src: at(c.src),
+                    src_port: c.src_port,
+                    dst: at(c.dst),
+                    dst_port: c.dst_port,
+                })
+                .collect(),
+            outputs: self
+                .outputs
+                .iter()
+                .map(|(k, port, channel)| (at(*k), *port, *channel))
+                .collect(),
+            interface: Interface {
+                inputs: self
+                    .interface
+                    .inputs
+                    .iter()
+                    .map(|(name, (k, port))| (name.clone(), (at(*k), *port)))
+                    .collect(),
+                outputs: self
+                    .interface
+                    .outputs
+                    .iter()
+                    .map(|(name, (k, port))| (name.clone(), (at(*k), *port)))
+                    .collect(),
+                input_channels: self.interface.input_channels.clone(),
+                output_channels: self.interface.output_channels.clone(),
+                dark_inputs: self.interface.dark_inputs.clone(),
+                dark_outputs: self.interface.dark_outputs.clone(),
+            },
+            input_channels_width: self.input_channels_width,
+        }
+    }
+
     /// Find a node by its OSC address. Used by the loader to bind resources to the right
     /// node after the graph is built.
     pub fn find(&self, address: &str) -> Option<NodeKey> {
@@ -233,5 +304,178 @@ impl Graph {
             .iter()
             .find(|(_, n)| &*n.address == address)
             .map(|(k, _)| k)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::descriptor::{Descriptor, Port};
+    use crate::operator::{Io, Operator};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// An operator that counts its own `spawn` calls, so a test can tell a box that came through
+    /// [`Operator::spawn`] from one built any other way. It carries a `binding` across the call
+    /// the way a resource-holding operator must; that a copy also starts with *fresh* state is an
+    /// audible claim, proven at the render seam (`tests/nesting.rs`), not here.
+    struct Counted {
+        binding: Arc<u32>,
+        spawns: Arc<AtomicUsize>,
+    }
+
+    impl Operator for Counted {
+        fn descriptor() -> Descriptor {
+            Descriptor {
+                type_name: "counted",
+                inputs: vec![Port::f32_buffer("in")],
+                outputs: vec![Port::f32_buffer("out")],
+                constants: vec![],
+                resources: vec![],
+            }
+        }
+        fn process(&mut self, _io: &mut Io) {}
+        fn spawn(&self) -> Box<dyn Operator> {
+            self.spawns.fetch_add(1, Ordering::Relaxed);
+            Box::new(Counted {
+                binding: Arc::clone(&self.binding),
+                spawns: Arc::clone(&self.spawns),
+            })
+        }
+    }
+
+    fn node(
+        g: &mut Graph,
+        desc: &Arc<Descriptor>,
+        address: &str,
+        spawns: &Arc<AtomicUsize>,
+    ) -> NodeKey {
+        g.nodes.insert(Node {
+            address: Arc::from(address),
+            op: Box::new(Counted {
+                binding: Arc::new(1),
+                spawns: Arc::clone(spawns),
+            }),
+            descriptor: Arc::clone(desc),
+            value_overrides: vec![],
+            constant_overrides: vec![],
+            sample_id: None,
+            voice_id: None,
+        })
+    }
+
+    /// A two-node graph carrying one of everything [`Graph::spawn_copy`] has to reproduce.
+    fn template(spawns: &Arc<AtomicUsize>) -> Graph {
+        let mut g = Graph::new();
+        let desc = Arc::new(Counted::descriptor());
+        // Burn a slot before the real nodes: a removal bumps the slot's generation, so this
+        // graph's keys are ones a freshly filled SlotMap never hands out. Without it the original
+        // and its copy hand out *identical* keys, and a copy that carried its parent's keys
+        // verbatim would satisfy every assertion below while being wrong by construction.
+        let scratch = node(&mut g, &desc, "/scratch", spawns);
+        g.nodes.remove(scratch);
+        let a = node(&mut g, &desc, "/a", spawns);
+        let b = node(&mut g, &desc, "/b", spawns);
+        g.nodes[a].value_overrides.push((0, Arg::F32(0.25)));
+        g.nodes[a].constant_overrides.push((0, Arg::I32(4)));
+        g.nodes[a].sample_id = Some("kick".to_string());
+        g.nodes[b].voice_id = Some("tone".to_string());
+        g.connect(a, 0usize, b, 0usize);
+        g.tap_output_channel(b, 0usize, 1);
+        g.interface.inputs.insert("freq".to_string(), (a, 0));
+        g.interface.outputs.insert("audio".to_string(), (b, 0));
+        g.interface.input_channels.insert("freq".to_string(), 2);
+        g.interface.output_channels.insert("audio".to_string(), 1);
+        g.interface.dark_inputs.insert("gone".to_string());
+        g.interface.dark_outputs.insert("also-gone".to_string());
+        g.input_channels_width = 3;
+        g
+    }
+
+    /// Every key-bearing part of a graph, written out in **address** terms — so two graphs that
+    /// describe the same patch under different keys compare equal, and one that remapped a key
+    /// onto the wrong node does not.
+    fn shape(g: &Graph) -> Vec<String> {
+        let addr = |k: NodeKey| &*g.nodes[k].address;
+        let mut lines: Vec<String> = Vec::new();
+        for c in &g.connections {
+            lines.push(format!(
+                "wire {}:{} -> {}:{}",
+                addr(c.src),
+                c.src_port,
+                addr(c.dst),
+                c.dst_port
+            ));
+        }
+        for (k, port, channel) in &g.outputs {
+            lines.push(format!("tap {}:{port} -> {channel:?}", addr(*k)));
+        }
+        for (name, (k, port)) in &g.interface.inputs {
+            lines.push(format!("in {name} -> {}:{port}", addr(*k)));
+        }
+        for (name, (k, port)) in &g.interface.outputs {
+            lines.push(format!("out {name} <- {}:{port}", addr(*k)));
+        }
+        lines
+    }
+
+    #[test]
+    fn spawn_copy_reproduces_the_patch_under_its_own_keys() {
+        let spawns = Arc::new(AtomicUsize::new(0));
+        let original = template(&spawns);
+        let copy = original.spawn_copy();
+
+        assert_eq!(
+            shape(&copy),
+            shape(&original),
+            "same patch, in address terms"
+        );
+        assert_eq!(copy.input_channels_width, original.input_channels_width);
+        assert_eq!(
+            copy.interface.input_channels,
+            original.interface.input_channels
+        );
+        assert_eq!(
+            copy.interface.output_channels,
+            original.interface.output_channels
+        );
+        assert_eq!(copy.interface.dark_inputs, original.interface.dark_inputs);
+        assert_eq!(copy.interface.dark_outputs, original.interface.dark_outputs);
+
+        // The template burns a slot before `/a` (see there), so the original's `/a` key carries a
+        // bumped generation the copy's freshly filled map never issues. That is the one key
+        // provably remapped rather than coincidentally equal — and every structural claim above
+        // rides on the remap, since a key carried over verbatim resolves to nothing here.
+        assert_ne!(
+            copy.find("/a").expect("/a"),
+            original.find("/a").expect("/a"),
+            "a copy's keys are its own"
+        );
+
+        // Author overrides ride along — the copy has to render what the original would.
+        let a = copy.find("/a").expect("/a");
+        let b = copy.find("/b").expect("/b");
+        assert_eq!(copy.nodes[a].value_overrides, vec![(0, Arg::F32(0.25))]);
+        assert_eq!(copy.nodes[a].constant_overrides, vec![(0, Arg::I32(4))]);
+        assert_eq!(copy.nodes[a].sample_id.as_deref(), Some("kick"));
+        assert_eq!(copy.nodes[b].voice_id.as_deref(), Some("tone"));
+        assert!(Arc::ptr_eq(
+            &copy.nodes[a].descriptor,
+            &original.nodes[original.find("/a").unwrap()].descriptor
+        ));
+    }
+
+    #[test]
+    fn spawn_copy_takes_every_operator_box_through_spawn() {
+        // The whole state story rests on this: `spawn` is the one contract that resets running
+        // state while carrying a resource binding forward, so a copy that built its boxes any
+        // other way would either inherit the template's charge or drop its sample.
+        let spawns = Arc::new(AtomicUsize::new(0));
+        let original = template(&spawns);
+        let copy = original.spawn_copy();
+        assert_eq!(
+            spawns.load(Ordering::Relaxed),
+            copy.nodes.len(),
+            "one spawn per node, and no other route"
+        );
     }
 }
