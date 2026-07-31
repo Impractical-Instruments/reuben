@@ -7,6 +7,7 @@
 //! (the seam for the "agents author new Operators in Rust" goal).
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use crate::descriptor::Descriptor;
 use crate::operator::Operator;
@@ -47,7 +48,11 @@ pub(crate) use register_operator;
 pub struct Entry {
     /// Construct a fresh instance with default state.
     pub make: fn() -> Box<dyn Operator>,
-    pub descriptor: Descriptor,
+    /// The type's self-description, behind a shared handle. Every field of a [`Descriptor`] is a
+    /// function of the operator **type**, not the instance, and nothing mutates one after
+    /// registration — so each node built from this entry clones the handle rather than the port
+    /// lists, and one registry costs one descriptor per registered type however many nodes name it.
+    pub descriptor: Arc<Descriptor>,
 }
 
 /// A set of known operator types, keyed by [`Descriptor::type_name`].
@@ -97,8 +102,13 @@ impl Registry {
             "operator type name \"pipe\" is reserved: interface pipes are loader-built \
              and save identifies their nodes by this name"
         );
-        self.entries
-            .insert(descriptor.type_name, Entry { make, descriptor });
+        self.entries.insert(
+            descriptor.type_name,
+            Entry {
+                make,
+                descriptor: Arc::new(descriptor),
+            },
+        );
     }
 
     /// Look up a type by name.
@@ -243,11 +253,13 @@ mod tests {
         let osc = builtins.get("oscillator").expect("oscillator registered");
         // A distinguishable override descriptor under the same name: one extra input port
         // (cloned from the original, so the fixture doesn't care what oscillator's ports are).
-        let mut second = osc.descriptor.clone();
+        // Deref-then-clone: the entry hands out a shared handle, and this fixture needs a
+        // *divergent* descriptor, so it copies the pointee rather than the pointer.
+        let mut second = (*osc.descriptor).clone();
         second.inputs.push(second.inputs[0].clone());
 
         let mut r = Registry::new();
-        r.register(osc.make, osc.descriptor.clone());
+        r.register(osc.make, (*osc.descriptor).clone());
         r.register(osc.make, second.clone()); // must not panic, must replace
 
         let entry = r

@@ -7,6 +7,7 @@
 //! see rules: composition-operators
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use slotmap::{new_key_type, SlotMap};
 
@@ -24,7 +25,12 @@ pub struct Node {
     /// OSC address of this node (its public name; message routing prefix).
     pub address: String,
     pub op: Box<dyn Operator>,
-    pub descriptor: Descriptor,
+    /// This node's operator type's self-description, behind a shared handle — see
+    /// [`Entry::descriptor`](crate::registry::Entry::descriptor). A node the loader built from a
+    /// registered type points at that entry's copy, so a document naming one type N times costs one
+    /// descriptor rather than N; a loader-minted interface pipe (no entry exists — the name is
+    /// reserved) and a node added through [`Graph::add`] each mint their own.
+    pub descriptor: Arc<Descriptor>,
     /// Author value-overrides for settable inputs, as `(input port, coerced `Arg`)` — the
     /// unwired-default a `/node/<input> v` literal sets, seeding the input's latch at Instantiate.
     /// One generic channel: an `F32` control's clamped value and an enum's concrete variant share it,
@@ -122,18 +128,18 @@ impl Graph {
 
     /// Add an operator instance with default params. Returns its stable key.
     pub fn add<T: Operator + 'static>(&mut self, address: &str, op: T) -> NodeKey {
-        let descriptor = T::descriptor();
-        self.add_boxed(address, Box::new(op), descriptor)
+        self.add_boxed(address, Box::new(op), Arc::new(T::descriptor()))
     }
 
-    /// Add an already-boxed operator with its descriptor. Used by the instrument loader, which
-    /// builds operators from a [`crate::registry`]. Inputs and constants default from the descriptor;
-    /// only author overrides are stored on the node.
+    /// Add an already-boxed operator with a handle to its type's descriptor. Used by the instrument
+    /// loader, which builds operators from a [`crate::registry`] and hands over a clone of that
+    /// entry's handle — so every node of one type points at the registry's single copy. Inputs and
+    /// constants default from the descriptor; only author overrides are stored on the node.
     pub fn add_boxed(
         &mut self,
         address: &str,
         op: Box<dyn Operator>,
-        descriptor: Descriptor,
+        descriptor: Arc<Descriptor>,
     ) -> NodeKey {
         self.nodes.insert(Node {
             address: address.to_string(),
