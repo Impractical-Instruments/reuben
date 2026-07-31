@@ -14,6 +14,7 @@
 //!
 //! see rules: execution-runtime
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use slotmap::SecondaryMap;
@@ -156,6 +157,15 @@ pub struct PlanNode {
     /// when signal outputs precede message outputs in the declaration** (the invariant every
     /// operator holds; e.g. `envelope` declares `cv` before `active`).
     pub outputs: Vec<usize>,
+    /// The subset of `outputs`' arena slots that a **previous** producer in this block already
+    /// wrote — slots the liveness pass in [`Plan::instantiate`] recycled. Render's per-block edge
+    /// clear zeroes each slot once, before any node runs, which leaves the *first* producer of a
+    /// slot a fresh buffer but not the second; zeroing these again immediately before this node
+    /// runs restores the guarantee for every producer alike, so an operator that writes only part
+    /// of its output reads silence in the rest, never the previous edge's audio. Empty for a plan
+    /// whose buffers all live to the end (nothing to re-zero), and the total zeroing across a
+    /// block is one fill per signal output port either way.
+    pub recycled_outputs: Vec<usize>,
     /// Message-edge routing: indexed by **all-outputs port index**
     /// (the index an `Out` handle carries into [`crate::operator::Io::write`]; `emit.port` is that index). A signal output
     /// has an empty slot; a message output carries the `(dst node, dst input port)` pairs its
@@ -385,49 +395,69 @@ impl Plan {
             .max()
             .unwrap_or(0);
 
-        // 1. Assign every (node, Buffer output port) a unique arena buffer index. A message output
-        // (Note / Harmony / scalar control out) carries no Signal data — events arrive via routing
-        // — so it gets `None` (its absence is the marker that an edge into it must materialize
-        // rather than share).
-        let mut next_buffer = 0usize;
-        let mut out_buffers: SecondaryMap<NodeKey, Vec<Option<usize>>> = SecondaryMap::new();
-        for (key, node) in &graph.nodes {
-            let ports = node
-                .descriptor
-                .outputs
-                .iter()
-                .map(|p| {
-                    p.ty.is_buffer().then(|| {
-                        let i = next_buffer;
-                        next_buffer += 1;
-                        i
-                    })
-                })
-                .collect();
-            out_buffers.insert(key, ports);
-        }
-
-        let output_taps = graph
-            .outputs
-            .iter()
-            .map(|(k, p, channel)| OutputTap {
-                channel: *channel,
-                buffer: out_buffers[*k][*p],
-            })
-            .collect();
-
-        // Node index in execution order, for resolving Message-edge targets to Plan indices.
+        // Node index in execution order: resolves Message-edge targets to Plan indices, and
+        // dates each edge buffer's last reader for the liveness pass below.
         let mut index_of: SecondaryMap<NodeKey, usize> = SecondaryMap::new();
         for (i, key) in order.iter().enumerate() {
             index_of.insert(*key, i);
         }
+
+        // 1. Arena liveness. A Buffer output port needs a slot only while something still has to
+        // read it — not for the life of the plan — so record when each one dies: the execution
+        // index of its last consumer, or the producer's own index when nothing reads it. Bucketed
+        // by that index, so the assignment walk below returns freed slots in the same single pass.
+        //
+        // Two kinds of buffer never appear here, and so never expire. A **master tap** and a
+        // Signal **interface output** are read after the whole schedule has run (`render_plan`'s
+        // tap sum; a host reading a voice's `audio`), so their slots stay live to the end of the
+        // block. A **materialize scratch** is assigned in the node loop and never enters this
+        // table: it holds a ZOH value across the block boundary and is excluded from the
+        // per-block clear, so recycling one would hand an input's held value to another input.
+        let pinned: HashSet<(NodeKey, usize)> = graph
+            .outputs
+            .iter()
+            .map(|(k, p, _)| (*k, *p))
+            .chain(graph.interface.outputs.values().copied())
+            .collect();
+
+        // The buckets are one flat list threaded by an intrusive singly-linked list —
+        // `expire_at[i]` indexes the first port dying after node `i` and `expire_next` chains the
+        // rest. A `Vec` per node would read more directly and cost a heap allocation per node on
+        // the build path, which is the cost the construct gate exists to watch.
+        const END: usize = usize::MAX;
+        let mut expire: Vec<(NodeKey, usize)> = Vec::new();
+        let mut expire_next: Vec<usize> = Vec::new();
+        let mut expire_at: Vec<usize> = vec![END; order.len()];
+        for (i, key) in order.iter().enumerate() {
+            for (port, p) in graph.nodes[*key].descriptor.outputs.iter().enumerate() {
+                if !p.ty.is_buffer() || pinned.contains(&(*key, port)) {
+                    continue;
+                }
+                let last = adj
+                    .consumers(*key, port)
+                    .map(|(dst, _)| index_of[dst])
+                    .max()
+                    .unwrap_or(i);
+                expire_next.push(expire_at[last]);
+                expire_at[last] = expire.len();
+                expire.push((*key, port));
+            }
+        }
+
+        // Arena assignment state, threaded through the node loop: a high-water mark for when no
+        // live buffer can supply a slot, and the free list expiry returns slots to. `Vec`
+        // push/pop makes reuse LIFO and `expire` is filled in execution order, so which slot a
+        // port gets is a function of the graph alone — Instantiate stays deterministic.
+        let mut next_buffer = 0usize;
+        let mut free: Vec<usize> = Vec::new();
+        let mut out_buffers: SecondaryMap<NodeKey, Vec<Option<usize>>> = SecondaryMap::new();
 
         // 2. Build PlanNodes in execution order.
         let mut nodes = Vec::with_capacity(order.len());
         // Arena slots that are materialize scratch; Render skips them in its per-block
         // clear so held inputs persist. Collected as buffers are assigned below.
         let mut scratch_buffers: Vec<usize> = Vec::new();
-        for key in &order {
+        for (i, key) in order.iter().enumerate() {
             let descriptor = &graph.nodes[*key].descriptor;
             let overrides = &graph.nodes[*key].value_overrides;
             let n_inputs = descriptor.inputs.len();
@@ -480,10 +510,39 @@ impl Plan {
                 }
             }
 
+            // Assign this node's Buffer outputs their arena slots: one the free list is holding
+            // if there is one, a fresh one otherwise. A message output (Note / Harmony / scalar
+            // control out) carries no Signal data — events arrive via routing — so it gets `None`,
+            // and that absence is the marker that an edge *into* it must materialize rather than
+            // share.
+            //
+            // Nothing this node reads can be on the free list: a buffer it consumes expires no
+            // earlier than this index, and expiry is applied only after the node is built. That
+            // is what keeps `process_node`'s output swap (a `mem::take` out of the arena)
+            // disjoint from its inputs.
+            let mut recycled_outputs: Vec<usize> = Vec::new();
+            let assigned: Vec<Option<usize>> = descriptor
+                .outputs
+                .iter()
+                .map(|p| {
+                    p.ty.is_buffer().then(|| match free.pop() {
+                        Some(b) => {
+                            recycled_outputs.push(b);
+                            b
+                        }
+                        None => {
+                            let b = next_buffer;
+                            next_buffer += 1;
+                            b
+                        }
+                    })
+                })
+                .collect();
             // Signal (Buffer) outputs, in signal-output ordinal order — the index a Signal write
             // handle (`io.write` on an `Out<SignalF32>`) uses. Compacting the assignment above
             // (declaration order, `None` at every message output) *is* that ordinal order.
-            let outputs: Vec<usize> = out_buffers[*key].iter().flatten().copied().collect();
+            let outputs: Vec<usize> = assigned.iter().flatten().copied().collect();
+            out_buffers.insert(*key, assigned);
 
             // Message-edge targets, indexed by **all-outputs port index** — the index an `Out`
             // handle carries into [`crate::operator::Io::write`] (the contract macro numbers outputs
@@ -527,9 +586,31 @@ impl Plan {
                 latch,
                 varying,
                 outputs,
+                recycled_outputs,
                 out_targets,
             });
+
+            // Every buffer whose last reader was this node returns to the free list, for a
+            // producer that runs after it. Deferred to here — past this node's own assignment
+            // above — so a node can never be handed a slot it is itself still reading.
+            let mut e = expire_at[i];
+            while e != END {
+                let (k, port) = expire[e];
+                // Only Buffer output ports are bucketed, and those are exactly the ones the
+                // assignment above gave a slot.
+                free.push(out_buffers[k][port].expect("a bucketed port owns a slot"));
+                e = expire_next[e];
+            }
         }
+
+        let output_taps = graph
+            .outputs
+            .iter()
+            .map(|(k, p, channel)| OutputTap {
+                channel: *channel,
+                buffer: out_buffers[*k][*p],
+            })
+            .collect();
 
         let mut materialize_scratch_mask = vec![false; next_buffer];
         for b in scratch_buffers {
@@ -1863,6 +1944,82 @@ mod descriptor_sharing_tests {
             assert!(
                 Arc::ptr_eq(&graph.nodes[key].descriptor, registered),
                 "{address} holds the registry's descriptor, not a copy of it"
+            );
+        }
+    }
+}
+
+/// Arena reuse — a buffer's slot returns to a free list once its last consumer has run, so a
+/// plan's `num_buffers` tracks how many edges are *simultaneously* live rather than how many
+/// edges exist. Synthetic single-port operators again (as in [`wire_forms`]), so a count is a
+/// statement about the allocator and nothing else.
+#[cfg(test)]
+mod arena_reuse {
+    use std::sync::Arc;
+
+    use super::{AudioConfig, Descriptor, Graph, Plan, Port};
+    use crate::graph::NodeKey;
+    use crate::operator::{Io, Operator};
+
+    struct Probe;
+
+    impl Operator for Probe {
+        fn descriptor() -> Descriptor {
+            desc(vec![], vec![])
+        }
+        fn process(&mut self, _io: &mut Io) {}
+        fn spawn(&self) -> Box<dyn Operator> {
+            Box::new(Probe)
+        }
+    }
+
+    fn desc(inputs: Vec<Port>, outputs: Vec<Port>) -> Descriptor {
+        Descriptor {
+            type_name: "probe",
+            inputs,
+            outputs,
+            constants: vec![],
+            resources: vec![],
+        }
+    }
+
+    /// Add a node with `n_in` Signal inputs and `n_out` Signal outputs.
+    fn add(g: &mut Graph, address: &str, n_in: usize, n_out: usize) -> NodeKey {
+        const NAMES: [&str; 4] = ["a", "b", "c", "d"];
+        let inputs = NAMES[..n_in].iter().map(|n| Port::f32_buffer(n)).collect();
+        let outputs = NAMES[..n_out].iter().map(|n| Port::f32_buffer(n)).collect();
+        g.add_boxed(address, Box::new(Probe), Arc::new(desc(inputs, outputs)))
+    }
+
+    /// Arena cost of a source feeding `stages` single-in/single-out stages in series, the last of
+    /// them tapped to the master. Every port here is a declared Signal, so nothing materializes
+    /// and the count is the chain's edges and nothing else.
+    fn chain_buffers(stages: usize) -> usize {
+        let mut g = Graph::new();
+        let mut prev = add(&mut g, "/src", 0, 1);
+        for i in 0..stages {
+            let next = add(&mut g, &format!("/t{i}"), 1, 1);
+            g.connect(prev, 0, next, 0);
+            prev = next;
+        }
+        g.tap_output(prev, 0usize);
+        Plan::instantiate(g, AudioConfig::new(48_000.0, 128))
+            .expect("the fixture instantiates")
+            .num_buffers
+    }
+
+    /// A serial chain — the common instrument shape (osc → filter → shaper → amp) — holds two
+    /// edges live at a time whatever its length: the stage's input and the stage's output,
+    /// ping-ponging between the same two slots. The tapped last stage keeps the slot it lands on
+    /// (a tap is read after the schedule), which is one of the two, not a third. Two slots at
+    /// every depth is the whole point of the pass; one per stage was the cost.
+    #[test]
+    fn a_serial_chain_costs_the_same_two_buffers_at_every_depth() {
+        for stages in [2, 3, 8, 64] {
+            assert_eq!(
+                chain_buffers(stages),
+                2,
+                "a {stages}-stage chain ping-pongs between two slots"
             );
         }
     }

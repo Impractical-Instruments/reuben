@@ -768,6 +768,14 @@ fn process_node(
     bounds.sort_unstable();
     bounds.dedup();
 
+    // Re-zero the output slots an earlier producer in this block already wrote. The per-block
+    // edge clear ran before any node did, so it left the block's *first* producer of each
+    // recycled slot a fresh buffer and no one else; this restores that for the rest. Empty
+    // unless Instantiate's liveness pass recycled a slot into this node.
+    for &bi in &node.recycled_outputs {
+        arena[bi].fill(0.0);
+    }
+
     // Swap this node's signal-output buffers out of the arena into `out_scratch` (disjoint from
     // inputs — no self-loops; cycles error), in signal-output port order.
     out_scratch.clear();
