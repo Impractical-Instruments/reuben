@@ -142,6 +142,16 @@ def real_points(points_by_commit):
     return items
 
 
+def construct_size(case):
+    """`(shape, nodes)` for a `<shape>_n<nodes>` construct case id, or None if it isn't one.
+
+    Returns rather than raises so a case name this doesn't recognise is skipped instead of
+    aborting the whole render — see where it is called.
+    """
+    shape, sep, n = case.rpartition("_n")
+    return (shape, int(n)) if sep and shape and n.isdigit() else None
+
+
 def fmt_ir(v):
     if v >= 10_000_000:
         return f"{v / 1e6:,.1f}M"
@@ -463,8 +473,11 @@ def main():
     micro = sorted(c for l, c in pts if l == "micro")
     # Construct cases are `<shape>_n<nodes>`; sorted by node count within a shape so the table
     # reads as a sweep, which is the only way its numbers mean anything (see the section below).
-    construct = sorted((c for l, c in pts if l == "construct"),
-                       key=lambda c: (c.rsplit("_n", 1)[0], int(c.rsplit("_n", 1)[1])))
+    # A record that does not parse is dropped, never raised: this renders from an append-only
+    # history file, so one malformed case name would otherwise freeze the dashboard — macro, micro
+    # and eval with it — at its last good version for good, behind a caught exception in a job log.
+    construct = sorted((c for l, c in pts if l == "construct" and construct_size(c)),
+                       key=construct_size)
     last = order[-1]
     first_day, last_day = order[0]["date"][:10], last["date"][:10]
     n_points = sum(len(s) for s in series.values())
@@ -606,10 +619,10 @@ def main():
         latest = {c: pts[("construct", c)][-1][1] for c in construct}
         pairs = []
         for c in construct:
-            shape, n = c.rsplit("_n", 1)
-            twice = f"{shape}_n{int(n) * 2}"
+            shape, n = construct_size(c)
+            twice = f"{shape}_n{n * 2}"
             if twice in latest and latest[c]:
-                pairs.append((shape, int(n), latest[twice] / latest[c]))
+                pairs.append((shape, n, latest[twice] / latest[c]))
         if pairs:
             lines += ["", "| Shape | Nodes | Latest growth |", "|---|---:|---:|"]
             lines += [f"| {s} | {n:,} → {n * 2:,} | {g:.2f}x |" for s, n, g in pairs]

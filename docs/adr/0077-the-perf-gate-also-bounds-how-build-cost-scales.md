@@ -18,10 +18,16 @@ unbudgeted, and two consumers had made large graphs ordinary rather than hypothe
 of a song is instantiated and parked in the graph, and an agent writing an instrument has no
 human-scale limit on how many nodes it asks for.
 
-Measured in-engine at three node counts per shape, the build turned out to cost ~2.9–3.3× per
-doubling of the document, against 2.0× for a linear build — roughly n^1.6, corroborating a browser
-harness that had seen ~4 s at 8 000 nodes. Four separate per-node scans of the flat wire list were
-responsible, three in Instantiate and one in pipe dissolution.
+Measured in-engine at three node counts per shape, the build turned out to cost ~2.9–3.5× per
+doubling of the document, against 2.0× for a linear build — roughly n^1.6 to n^1.8, corroborating a
+browser harness that had seen ~4 s at 8 000 nodes. Four separate per-node scans of the flat wire list
+were responsible, three in Instantiate and one in pipe dissolution.
+
+The worst of the three shapes was the **nested** one, which is also the one that resembles a real
+song: repetition is what puts hundreds of interface pipes in front of the dissolver. A flat document
+is large but not shaped like anything anyone writes, so it under-reports the problem it is being
+used to find — which is the argument for benching more than one shape, not for picking the right
+one.
 
 Two things about that are worth more than the fix:
 
@@ -53,11 +59,22 @@ under which the property gets fixed rather than grandfathered.
 
 The band between 2.0 and 2.4 is room for the *fixed* per-build cost — registry construction, JSON
 parse — that makes the small end of a sweep cheaper than proportional. It is not room for a per-node
-scan, which lands near 3 and climbs.
+scan, which lands near 3 and climbs. The runner reads a little higher than a dev machine (2.005–2.112
+against 1.999–2.034 locally, on a different target-cpu), so the usable headroom is nearer 0.3 than
+0.4 — worth knowing before anyone tightens the limit toward 2.2.
+
+**The workload asserts its own shape.** A resource that fails to resolve is deliberately non-fatal
+in this engine, so a `nest` document whose child stopped resolving would still build, still scale
+linearly — a degenerate graph is linear — and still read as a large *improvement* against the
+baseline. Both gates would be green while the only case exercising pipe dissolution had silently
+stopped exercising it. The measured region therefore asserts zero load warnings and an exact node
+count, turning that into a hard failure. This is the same hazard `perf-gate.sh` already handles for
+`instruments/` by swapping fixtures with `src/`; `benches/` is deliberately never swapped, so the
+generator has to state it itself.
 
 ## Consequences
 
-The build is linear in node count and the shapes cost 4.0–5.4× fewer instructions at 8 192 nodes.
+The build is linear in node count and the shapes cost 3.9–6.5× fewer instructions at 8 192 nodes.
 That is a consequence of the measurement, not the point of it: the point is that the exponent is now
 a gated, recorded number, so the next scan to land is a red PR rather than a bug report from a
 frozen tab.

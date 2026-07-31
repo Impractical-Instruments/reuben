@@ -898,7 +898,7 @@ fn dissolve_interface_pipes(graph: &mut Graph) -> Vec<DissolvedPipe> {
         // finds them together under one key.
         aliases_of
             .entry(dst)
-            .expect("the consumer is a live node")
+            .expect("no node is inserted during dissolution, so no key is a newer version")
             .or_default()
             .append(&mut moved);
         if let Some(j) = rewind {
@@ -925,8 +925,14 @@ struct Wires {
     /// Parallel to `edges`: `true` once the edge has been spliced out.
     dead: Vec<bool>,
     /// Per source node, indices into `edges`. May name dead edges; readers skip them.
+    ///
+    /// Keyed for every node the graph held at [`take`](Self::take) and never added to, so the
+    /// reading methods index it directly: a `SecondaryMap` is unaffected by removals from the
+    /// primary `SlotMap`, and dissolution only ever removes. The insert paths still go through
+    /// `get_mut` because an *edge* may name an endpoint the graph does not hold, which is a
+    /// different question from whether the key is live.
     out_e: SecondaryMap<NodeKey, Vec<usize>>,
-    /// Per destination node, indices into `edges`. May name dead edges; readers skip them.
+    /// Per destination node, indices into `edges`. See [`out_e`](Self::out_e).
     in_e: SecondaryMap<NodeKey, Vec<usize>>,
 }
 

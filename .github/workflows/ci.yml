@@ -241,7 +241,7 @@ jobs:
         run: cargo test --workspace --features reuben-core/bench,reuben-core/schemars
 
   bench:
-    name: perf gate (macro + micro Ir)
+    name: perf gate (macro + micro + construct Ir)
     runs-on: ubuntu-latest
     needs: changes
     # Same draft-skip as `check`, then the path gate OR an unconditional run on every push to main/dev.

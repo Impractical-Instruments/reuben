@@ -31,19 +31,19 @@ use common::construct::{construct, deep_doc, nest_doc, wide_doc};
 use iai_callgrind::{library_benchmark, library_benchmark_group, main};
 use std::hint::black_box;
 
-/// Generate a wide document of `2 * leaves` nodes, outside the measured region.
-fn wide(leaves: usize) -> String {
-    wide_doc(leaves)
+/// Each setup returns the document *and* the graph size it is supposed to build, so the measured
+/// region can assert it got what the case name claims — see [`construct`] for why a workload that
+/// quietly builds something smaller passes both gates.
+fn wide(leaves: usize) -> (String, usize) {
+    (wide_doc(leaves), 2 * leaves)
 }
 
-/// Generate a deep document of `stages + 2` nodes, outside the measured region.
-fn deep(stages: usize) -> String {
-    deep_doc(stages)
+fn deep(stages: usize) -> (String, usize) {
+    (deep_doc(stages), stages + 2)
 }
 
-/// Generate a nested document of `4 * cells + 1` nodes, outside the measured region.
-fn nest(cells: usize) -> String {
-    nest_doc(cells)
+fn nest(cells: usize) -> (String, usize) {
+    (nest_doc(cells), 4 * cells + 1)
 }
 
 #[library_benchmark]
@@ -56,8 +56,8 @@ fn nest(cells: usize) -> String {
 #[bench::nest_n2048(args = (512,), setup = nest)]
 #[bench::nest_n4096(args = (1024,), setup = nest)]
 #[bench::nest_n8192(args = (2048,), setup = nest)]
-fn build(doc: String) -> usize {
-    black_box(construct(&doc))
+fn build((doc, nodes): (String, usize)) -> usize {
+    black_box(construct(&doc, nodes))
 }
 
 library_benchmark_group!(name = construct_group; benchmarks = build);

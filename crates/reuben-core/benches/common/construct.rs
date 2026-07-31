@@ -170,11 +170,32 @@ pub fn nest_doc(cells: usize) -> String {
 }
 
 /// The measured region: parse + build + instantiate, exactly the engine work
-/// `Coordinator::install_initial` does around its manifest bookkeeping. Returns the Plan's arena
-/// buffer count — a size-proportional witness of the built Plan, so the optimizer cannot elide
-/// the build.
-pub fn construct(json: &str) -> usize {
+/// `Coordinator::install_initial` does around its manifest bookkeeping. `expect_nodes` is the
+/// graph the caller's shape is supposed to have produced. Returns the Plan's arena buffer count —
+/// a size-proportional witness of the built Plan, for the caller to `black_box`.
+///
+/// Both assertions are load-bearing, because the *shape* of this workload is not something either
+/// gate can check. A resource that fails to resolve is deliberately non-fatal — a `patch` the
+/// resolver stops serving degrades to a warning and a graph with the nested nodes missing — so if
+/// [`Generated`] ever stopped matching, `nest` would quietly collapse from 1024 interface pipes to
+/// none. It would still build, still scale linearly (a degenerate graph is linear), and still read
+/// as a large *improvement* against the baseline: green on both gates, while the only case that
+/// exercises pipe dissolution had stopped exercising it. The same argument `perf-gate.sh` makes for
+/// swapping `instruments/` with `src/` — a workload that mis-loads into something cheap is worse
+/// than one that fails — applies here, and `benches/` is never swapped, so it is made explicit
+/// instead.
+pub fn construct(json: &str, expect_nodes: usize) -> usize {
     let loaded = load_instrument(json, &Registry::builtin(), &Generated).expect("doc loads");
+    assert!(
+        loaded.warnings.is_empty(),
+        "the workload degraded instead of loading: {:?}",
+        loaded.warnings
+    );
+    assert_eq!(
+        loaded.graph.nodes.len(),
+        expect_nodes,
+        "the workload built a different graph than its size says"
+    );
     let plan = Plan::instantiate(loaded.graph, AudioConfig::new(SAMPLE_RATE, BLOCK_SIZE))
         .expect("doc instantiates");
     plan.num_buffers

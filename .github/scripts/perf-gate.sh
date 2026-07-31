@@ -66,9 +66,9 @@ set -uo pipefail
 
 BASE_SHA="${1:-}"
 PKG="reuben-core"
-# Both iai layers. macro_iai needs no features; micro_iai needs `bench` for the
-# crate-private `Io` bridge. The feature only compiles `bench_support` (dead code for macro_iai),
-# so it leaves macro Ir byte-stable — safe to pass on both runs.
+# The iai layers. Only micro_iai needs a feature — `bench`, for the crate-private `Io` bridge. That
+# feature only compiles `bench_support` (dead code for the other two), so it leaves their Ir
+# byte-stable — safe to pass on every run.
 BENCHES=("macro_iai" "micro_iai" "construct_iai")
 FEATURES="bench"
 # reuben-core's full source closure — every crate whose `src/` feeds the core build (see header).
@@ -96,7 +96,7 @@ FAIL_PCT=10
 WARN_PCT=3
 # Construct-layer growth factor: the Ir ratio between consecutive benched node counts, which
 # double. A build that is linear in node count lands at 2.0; the superlinear build this gate was
-# written against landed at 2.9–3.3. The gap between 2.0 and the limit is room for the *fixed*
+# written against landed at 2.9–3.5. The gap between 2.0 and the limit is room for the *fixed*
 # per-build cost (registry construction, document parse) that makes the small end of a sweep
 # cheaper than proportional — not room for a per-node scan, which blows straight past it.
 FAIL_GROWTH=2.4
@@ -155,6 +155,12 @@ declare -a SUM_ROWS=()
 # are matched against the baseline and against the `bench-history` series, and re-keying them to
 # their bench ids would orphan every point already recorded.
 #
+# That rule strips the leading `a::b::c ` path to reach the id, anchored at the START of the line —
+# NOT back from the last space. iai renders the args with `TokenStream::to_string`, which puts a
+# space after each comma, so a bench taking two args renders `id:setup(1024, 2)` and a
+# strip-to-last-space yields the case name `2)`. That name is silently dropped by the scaling gate
+# and is exactly the malformed record the dashboard has to survive.
+#
 # The compare run is captured with CARGO_TERM_COLOR=always (the job log is colored for humans), so the
 # captured text carries ANSI SGR escapes — `\e[0m` trails the case header (breaking the `("...")$`
 # anchor) and `\e[1m` sits between `Instructions:` and the digits (breaking the count pattern). Both
@@ -167,13 +173,13 @@ harvest_history() {
     function emit(ir){ printf "{\"sha\":\"%s\",\"commit_sha\":\"%s\",\"date\":\"%s\",\"run_id\":\"%s\",\"layer\":\"%s\",\"case\":\"%s\",\"ir\":%s}\n", sha, full, date, run, layer, cur, ir }
     { gsub(/[[:cntrl:]]\[[0-9;]*m/, "") }
     /\("[^"]+"\)[[:space:]]*$/ { h=$0; sub(/.*\("/,"",h); sub(/"\)[[:space:]]*$/,"",h); cur=h; have=0; next }
-    /::[^[:space:]]*[[:space:]][^[:space:]]+:[^[:space:]]*\([^"]*\)[[:space:]]*$/ { h=$0; sub(/.*[[:space:]]/,"",h); sub(/:.*/,"",h); cur=h; have=0; next }
+    /::[^[:space:]]*[[:space:]][^[:space:]]+:[^[:space:]]*\([^"]*\)[[:space:]]*$/ { h=$0; sub(/^[^[:space:]]*[[:space:]]+/,"",h); sub(/:.*/,"",h); cur=h; have=0; next }
     (cur!="" && !have && /Instructions:[[:space:]]*[0-9]+\|/) { v=$0; sub(/.*Instructions:[[:space:]]*/,"",v); sub(/\|.*/,"",v); emit(v); have=1; next }
     (cur!="" && !have && /Performance has regressed: Instructions \([0-9]+ -> [0-9]+\)/) { v=$0; sub(/.*-> /,"",v); sub(/\).*/,"",v); emit(v); have=1; next }
   ' "$log" >>"$RECORD" || true
 }
 
-note "## Perf gate — instruction counts (macro \`render_block\` + per-operator \`process\`)"
+note "## Perf gate — instruction counts (macro \`render_block\`, per-operator \`process\`, graph construct)"
 note ""
 
 # No usable baseline (new branch's first push, or a null/unknown SHA): run each once so the
@@ -348,7 +354,12 @@ for b in "${BENCHES[@]}"; do gate_one "$b"; done
 # one that introduced it — which is the point, since a gate that only ever compares to yesterday
 # will happily hold a quadratic build steady forever.
 scaling_gate() {
-  local rows
+  local rows harvested
+  # How many construct records reached $RECORD at all. This separates "the layer never ran" (a
+  # skip — honest, and already reported as partial coverage) from "the layer ran and produced
+  # records that formed no pair" (a parse hole or a renamed case id — a gate checking nothing
+  # while reporting green, which is the masking bug this file exists to keep closed).
+  harvested="$(grep -c '"layer":"construct"' "$RECORD" 2>/dev/null || true)"
   rows="$(awk '
     { gsub(/[[:cntrl:]]\[[0-9;]*m/, "") }
     /"layer":"construct"/ {
@@ -372,9 +383,17 @@ scaling_gate() {
   both "| Shape | Nodes | Growth | Status |"
   both "|---|---:|---:|:---:|"
   if [ -z "$rows" ]; then
-    both "| _(no construct Ir pairs harvested — layer skipped, or case ids unpaired)_ |  |  |  |"
+    if [ "${harvested:-0}" -eq 0 ]; then
+      both "| _(the construct layer recorded nothing — skipped; growth not checked)_ |  |  |  |"
+      both ""
+      skipped=$((skipped + 1))
+      printf '::warning title=Scaling gate inert::the construct layer recorded no Ir — the growth factor was not checked this run\n'
+      return 0
+    fi
+    both "| _(${harvested} construct records, but no size pair among them)_ |  |  |  |"
     both ""
-    printf '::warning title=Scaling gate inert::no construct-layer Ir pairs harvested — the growth factor was not checked this run\n'
+    overall_fail=1
+    printf '::error title=Scaling gate checked nothing::%s construct Ir records harvested but no (n, 2n) pair formed — the case ids no longer pair, so the growth factor is unchecked\n' "$harvested"
     return 0
   fi
   local shape n r status icon

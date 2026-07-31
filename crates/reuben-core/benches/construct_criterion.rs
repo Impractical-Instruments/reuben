@@ -27,7 +27,7 @@ fn construct_bench(c: &mut Criterion) {
         let nodes = 2 * leaves;
         group.throughput(Throughput::Elements(nodes as u64));
         group.bench_with_input(BenchmarkId::new("wide", nodes), &json, |b, json| {
-            b.iter(|| black_box(construct(json)))
+            b.iter(|| black_box(construct(json, nodes)))
         });
     }
     for &stages in DEEP_STAGES {
@@ -35,7 +35,7 @@ fn construct_bench(c: &mut Criterion) {
         let nodes = stages + 2;
         group.throughput(Throughput::Elements(nodes as u64));
         group.bench_with_input(BenchmarkId::new("deep", nodes), &json, |b, json| {
-            b.iter(|| black_box(construct(json)))
+            b.iter(|| black_box(construct(json, nodes)))
         });
     }
     for &cells in NEST_CELLS {
@@ -43,7 +43,7 @@ fn construct_bench(c: &mut Criterion) {
         let nodes = 4 * cells + 1;
         group.throughput(Throughput::Elements(nodes as u64));
         group.bench_with_input(BenchmarkId::new("nest", nodes), &json, |b, json| {
-            b.iter(|| black_box(construct(json)))
+            b.iter(|| black_box(construct(json, nodes)))
         });
     }
     group.finish();
