@@ -421,7 +421,17 @@ impl Operator for Voicer {
     }
 
     fn spawn(&self) -> Box<dyn Operator> {
-        Box::new(Self::new())
+        // The bound voice graphs are this operator's resource binding, and [`Operator::spawn`]
+        // carries a binding forward: a copy that dropped them would host an empty pool and render
+        // silence. Each voice is copied in turn rather than shared, so a copy's pool starts as
+        // independent of its template's as the template's voices are of each other.
+        //
+        // After `on_instantiate` has taken the graphs there is nothing here to carry — by then the
+        // pool is live sub-plans, which no copy may share.
+        Box::new(Self {
+            graphs: self.graphs.iter().map(Graph::spawn_copy).collect(),
+            ..Self::new()
+        })
     }
 }
 

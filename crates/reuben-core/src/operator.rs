@@ -566,9 +566,15 @@ pub trait Operator: Send {
 
     /// Make a fresh-state copy of the same operator type. Params are applied by the engine
     /// separately, so this only needs to reset per-instance state (typically
-    /// `Box::new(Self::new())`). An operator that holds a resource binding (see
-    /// [`Operator::bind_resources`]) must carry it forward here while resetting playback state,
-    /// so every copy shares the decoded data.
+    /// `Box::new(Self::new())`). An operator that holds a **binding** must carry it forward here
+    /// while resetting playback state — a decoded sample (see [`Operator::bind_resources`]) so
+    /// every copy shares the data, and hosted voice graphs (see [`Operator::bind_voices`]) so
+    /// every copy still has a pool to render.
+    ///
+    /// This is what makes a reused child cheap: [`Graph::spawn_copy`](crate::Graph::spawn_copy)
+    /// takes every node's box through here, so the loader builds a repeated document once and
+    /// copies it — which means a `spawn` that drops a binding is not a missing optimization but a
+    /// silent musical defect in every copy after the first.
     fn spawn(&self) -> Box<dyn Operator>;
 
     /// Receive decoded resources after construction, before instantiate. The

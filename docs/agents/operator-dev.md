@@ -30,7 +30,7 @@ pub trait Operator: Send {
     /// Process exactly one (sub)block. Must not allocate.
     fn process(&mut self, io: &mut Io);
 
-    /// Fresh-state instance of the same type.
+    /// Fresh-state instance of the same type, carrying any binding forward.
     fn spawn(&self) -> Box<dyn Operator>;
 
     /// Receive decoded resources after construction. Default no-op;
@@ -74,9 +74,13 @@ and event outputs (append-only) need nothing.
   - **Internal wires are addressless** — routed by connection, not name. Exemplars:
     `sequencer.rs` / `snap.rs` for `Note` events; the Voicer and `snap.rs` read `Harmony`,
     `harmony.rs` emits it.
-- **`spawn()`** — usually `Box::new(Self::new())`. Resets per-Voice state only. A resource-bearing
-  operator carries its binding (the `Arc<ResourceStore>` + resolved handle) forward while resetting
-  playback state, so every Voice shares the decoded data — see `sample.rs`.
+- **`spawn()`** — usually `Box::new(Self::new())`. Resets per-Voice state only. Any operator holding
+  a **binding** carries it forward while resetting playback state: a resource-bearing one its
+  `Arc<ResourceStore>` + resolved handle, so every Voice shares the decoded data (`sample.rs`), and
+  the Voicer its `bind_voices` graphs, so every copy still has a pool to render (`voicer.rs`).
+  This is not only the Voice-copy path: the loader **builds a reused child document once and
+  copies it**, taking every node's box through `spawn`, so a `spawn` that drops a binding is a
+  silent musical defect in every reference after the first — not a missed optimization.
 - **`bind_resources(store, refs)`** — the two-phase-init hook for operators depending on
   **external decoded data**. The
   loader resolves+decodes the document's `resources` table into a shared `ResourceStore` and calls
@@ -217,9 +221,10 @@ Other notes:
 - **Polyphony** is not a per-operator concern: there is no Lane fan-out. The **Voicer** is
   a single-Voice operator that hosts N voice sub-patches — a voice is a standalone Instrument
   (instrument-resource, declared `resources: { voice }`) with an `interface { inputs, outputs }`
-  boundary (`freq`/`gate` in, `audio`/`active` out). The loader builds the patch `voices` times and
-  `bind_voices` them; the Voicer instantiates each into its own sub-`Plan` at `on_instantiate`, drives
-  per-voice `freq`/`gate`, and sums their audio. See `voicer.rs` and `instruments/voices/*.json`.
+  boundary (`freq`/`gate` in, `audio`/`active` out). The loader builds the patch **once** and copies
+  it to `voices` independent graphs, then `bind_voices` them; the Voicer instantiates each into its
+  own sub-`Plan` at `on_instantiate`, drives per-voice `freq`/`gate`, and sums their audio. See
+  `voicer.rs` and `instruments/voices/*.json`.
 
 ### Enum over the wire: symbol primary, index fallback
 
