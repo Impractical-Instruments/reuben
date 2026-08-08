@@ -18,8 +18,24 @@ Run from the feature branch so the diff is meaningful.
 
 ## Workflow
 
-1. **Find what changed.** `git diff --stat $(git merge-base HEAD main)..HEAD` and read the
-   substantive diffs. Identify shipped features: new operators
+1. **Find what changed.** Diff against the default branch, resolved — never hard-coded:
+
+   ```sh
+   git fetch -q origin &&
+   git remote set-head origin -a &&
+   base=$(git symbolic-ref --short refs/remotes/origin/HEAD) && echo "base: $base" &&
+   git diff --stat "$(git merge-base HEAD "$base")"..HEAD
+   ```
+
+   `set-head` first: a clone made before the default branch last changed still points
+   `origin/HEAD` at the old one and resolves it cleanly at exit 0, so re-deriving the pointer is
+   what makes the base trustworthy rather than merely resolved
+   ([`CONTRIBUTING.md`](../../../CONTRIBUTING.md#branching--release-flow)). `&&` throughout for
+   the same reason — an unresolved `base` would leave `git diff --stat ..HEAD`, which git reads
+   as `HEAD..HEAD`, prints nothing for, and exits 0 on. Never hard-code `main` here: it is the
+   release branch, so its merge-base is the last promotion, not where this branch diverged.
+
+   Read the substantive diffs. Identify shipped features: new operators
    (`crates/reuben-core/src/operators/`), new example rigs (`instruments/`), new engine
    capabilities, new tests asserting an invariant.
 
