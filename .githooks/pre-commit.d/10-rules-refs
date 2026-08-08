@@ -15,6 +15,17 @@
 # violation that is staged while the working copy is clean commits green, and an untracked scratch
 # file blocks a commit that has nothing to do with it. CI's `ref-guard` runs over what actually
 # landed and is the authority; this is the fast local pass, not the verdict.
+# This is the one check in the set that a Rust-only contributor may not be able to run, and a
+# public repo has those. CI's `ref-guard` is the authority and always runs, so a missing python3
+# warns and steps aside rather than blocking every commit in the clone. It says so out loud: a
+# guard that goes quiet is the failure this hook set exists to prevent, and silence here would be
+# indistinguishable from a clean tree.
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "! pre-commit: python3 not found — skipping the rules reference-linter." >&2
+    echo "  CI's ref-guard still runs it. See CONTRIBUTING.md (Toolchain)." >&2
+    exit 0
+fi
+
 python3 scripts/check_rules_refs.py "$(git rev-parse --show-toplevel)" || {
     echo "pre-commit: rules reference-linter failed (see above)" >&2
     exit 1

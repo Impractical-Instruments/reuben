@@ -123,8 +123,12 @@ jobs:
               - 'scripts/check_rules_links.py'
               - 'scripts/check_rules_refs.py'
               - 'scripts/test_check_rules_*.py'
+              # The hook set: the dispatcher that runs the guards locally, its installer, and the
+              # suite that holds the dispatcher. `.githooks/**` covers the four checks too, two of
+              # which invoke the guards above.
               - '.githooks/**'
               - 'scripts/install-hooks.sh'
+              - 'scripts/test_hook_dispatch.py'
               # absorb-adrs runs these guards over a fixture tree and asserts they go green, so a
               # guard change can break it. Its suite otherwise runs only in `check`, whose filter is
               # *workspace — which `scripts/**` does not match. That gap let a corpus-wide widening
@@ -434,6 +438,14 @@ jobs:
       # import their module by bare name.
       - name: Guard unit tests
         run: cd scripts && python3 -m unittest discover -p 'test_check_rules_*.py' -v
+
+      # The hook set's chainer, which is what makes any of the guards above run locally at all. It
+      # is named explicitly rather than folded into the discover pattern: that pattern says
+      # `test_check_rules_*`, and this suite tests neither a rule nor a check but the thing that
+      # dispatches them. It builds throwaway git repos with synthetic registries, so it needs no
+      # toolchain and takes under a second.
+      - name: Hook dispatcher tests
+        run: cd scripts && python3 -m unittest test_hook_dispatch -v
 
       # Backstop for the pre-commit hook's `--write` collation: fail if README's derived sections
       # drifted from the topic docs.

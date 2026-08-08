@@ -15,7 +15,7 @@
 #   - it may stage files; `git commit --no-verify` / `git push --no-verify` bypasses the whole set
 #
 # Nothing in this file knows anything about this repository. Every repo-specific fact is in a
-# registry entry.
+# registry entry. This file is POSIX `sh`; a registry entry uses whatever its own toolchain needs.
 set -eu
 
 hook=${1:-}
@@ -32,11 +32,27 @@ registry="$here/$hook.d"
 # Every check has to see the same stdin, and stdin can only be read once — so capture it to a file
 # and redirect each check from that. A terminal on stdin means a human ran the hook by hand:
 # reading it would block forever, so the checks get /dev/null instead.
+#
+# The capture lives in the git directory rather than in $TMPDIR: git has just written there, so it
+# exists and is writable, which `mktemp` in a misconfigured $TMPDIR is not — and a hook that
+# refuses every commit because a temp directory moved would be a worse bug than the one this file
+# fixes. A failed capture degrades to /dev/null and says so; it never blocks the hook.
+#
+# A signal has to exit rather than fall through: without that, cleanup would delete the replay file
+# and the loop would carry on, so the NEXT check would die on a missing stdin and be reported as
+# the failure. The check that never ran would take the blame.
 replay=/dev/null
 if [ ! -t 0 ]; then
-    replay=$(mktemp "${TMPDIR:-/tmp}/githook-stdin.XXXXXX")
-    trap 'rm -f "$replay"' EXIT HUP INT TERM
-    cat >"$replay"
+    capture=$(git rev-parse --git-path "githook-stdin.$$" 2>/dev/null || true)
+    if [ -n "$capture" ] && cat >"$capture" 2>/dev/null; then
+        replay=$capture
+        trap 'rm -f "$capture"' EXIT
+        trap 'rm -f "$capture"; exit 129' HUP
+        trap 'rm -f "$capture"; exit 130' INT
+        trap 'rm -f "$capture"; exit 143' TERM
+    else
+        echo "! $hook: could not capture stdin; checks that read it will see nothing" >&2
+    fi
 fi
 
 status=0

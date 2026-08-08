@@ -32,9 +32,16 @@ type is one file. [`.githooks/pre-commit`](./.githooks/pre-commit) and
     warnings`. Runs at the push boundary (not every commit) so the compile cost is paid once;
     skips pushes that touch no Rust.
 
-Every check mirrors CI exactly, and `--no-verify` bypasses the whole set for deliberate
-exceptions. They are a local pre-flight — **CI is the real gate**; skipping setup just means you
-find out at CI instead of at commit.
+`--no-verify` bypasses the whole set for deliberate exceptions. They are a local pre-flight —
+**CI is the real gate**; skipping setup just means you find out at CI instead of at commit.
+
+**None of them is a substitute for CI, and two are deliberately not the same command.** `20-rust-fmt`
+does mirror CI's format gate exactly. `10-rules-refs` reads the **working tree**, where CI reads what
+landed — so an untracked scratch file in your tree can block a commit that has nothing to do with it,
+and a violation that is staged while the working copy is clean commits green. `30-rules-index` runs
+`--write` where CI runs `--check`. `10-rust-clippy` omits CI's `--features reuben-core/bench`, so a
+lint that only fires in a `[[bench]]` target passes here and reds there; the file says so in its
+header.
 
 ### Adding a check
 
@@ -56,6 +63,9 @@ What a check can rely on, and what it owes:
   exists to prevent, at a smaller scale. So `dispatch` fails and names the file.
   `./scripts/install-hooks.sh` repairs a lost bit; retiring a check is deleting the file, where
   review can see it; skipping one run is `--no-verify`.
+- **Keep the prefix two digits wide.** Order is the shell's collation order, not numeric, so a
+  `100-` check would sort *before* `20-`. Registry entries whose names start with `.` are not run,
+  and an editor's `<name>~` backup is skipped rather than executed as a stale duplicate.
 
 ## Toolchain
 
@@ -63,6 +73,12 @@ The Rust version is pinned in [`rust-toolchain.toml`](./rust-toolchain.toml). ru
 auto-installs and uses it the first time you run any `cargo` command in the repo — you
 don't pick a toolchain. Because local and CI run the *same* version, the hooks' fmt and
 clippy verdicts match CI's exactly.
+
+**`python3` is optional but wanted.** Two of the pre-commit checks are Python — the rules
+reference-linter and the rules-index regeneration. Without `python3` on `PATH` they print a warning
+and step aside rather than blocking your commits, because CI runs both regardless. The one thing
+you lose is the automatic regeneration of `docs/rules/README.md`: commit a `docs/rules/` change
+without it and CI's `--check` will red the build.
 
 ### Bumping the Rust version
 

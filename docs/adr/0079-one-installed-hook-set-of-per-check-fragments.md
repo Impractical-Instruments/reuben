@@ -88,13 +88,26 @@ for anyone who had followed `CONTRIBUTING.md`, and `cargo fmt`/`cargo clippy` ru
 who had followed the rules index.
 
 `scripts/hooks/` is gone. The CI path filter that watched it now watches `.githooks/**` and
-`scripts/install-hooks.sh`, so a change to a hook still re-runs the rules guards.
+`scripts/install-hooks.sh`. That filter re-runs the rules guards, which validate two of the four
+checks and neither the dispatcher nor the installer — so the dispatcher gets its own suite,
+`scripts/test_hook_dispatch.py`, wired into the same job. Roughly two hundred lines of shell now sit
+in front of every commit in every clone, and this repo's habit is that a deterministic check ships
+with the tests that hold it.
+
+Two of the checks are Python, which makes `python3` a soft prerequisite it was not before on the
+`CONTRIBUTING.md` path. They warn and step aside when it is absent rather than blocking every commit
+in the clone: CI runs both regardless, and a public repo gets contributors who have a Rust toolchain
+and nothing else. The warning is loud on purpose — a guard that goes quiet is the failure this ADR
+is about, so the one thing that must never happen is skipping in silence.
 
 The set is a hair slower to fail than one merged script would be, because a failing check aborts
 before later checks report. Fail-fast is deliberate: a hook's job is to stop the commit, and a
 contributor fixing two unrelated complaints at once is rarer than one being buried under the other.
 
 This repo is public and a fork must work without reaching anything private, so the whole set stays
-committed here in POSIX `sh` with no fetch, no submodule, and no plugin. What sharing this across
-repos would mean is therefore a copy of the portable half, not a dependency on it — and the seam
-this ADR draws is the line that copy is cut along.
+committed here, with no fetch, no submodule, and no plugin. **The portable half — `dispatch`, the two
+stubs, `install-hooks.sh` — is POSIX `sh`; the registry entries are not**, and are not required to be:
+`20-rust-fmt` and `10-rust-clippy` are `bash`, using `pipefail` and here-strings. That asymmetry is the
+seam restated as a property. What sharing this across repos would mean is therefore a copy of the
+portable half, not a dependency on it, and the unportable half is where a language choice is allowed
+to follow the check.

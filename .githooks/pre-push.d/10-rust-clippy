@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Block pushes that would fail CI's clippy gate (.github/workflows/ci.yml).
-# Mirrors CI exactly: whole-workspace, all-targets, warnings-as-errors.
+# Whole-workspace, all-targets, warnings-as-errors — the same shape as CI, but NOT the same command:
+# CI adds `--features reuben-core/bench`, and without it `--all-targets` silently skips the
+# `[[bench]]` targets, which declare `required-features = ["bench"]`. So a clean run here can still
+# meet a red clippy gate on a bench-only lint. That gap predates this file; it is written down here
+# rather than papered over, because the cost of closing it is compiling the bench targets on every
+# push and that is a call for whoever owns the local/CI cost trade.
 # Runs at the push boundary (not per-commit) so the compile cost is amortized.
 # Skips when the pushed commits touch no Rust (docs/config-only pushes).
 # One check in the pre-push set, run by `.githooks/dispatch` — see CONTRIBUTING.md.
