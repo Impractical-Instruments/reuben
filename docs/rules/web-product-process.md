@@ -35,12 +35,12 @@ bytes are untrusted, so the one WAV decoder this repo ships must bounds-check it
 data-chunk length before any sample-bearing share bundle can carry a stranger's bytes.
 
 The dev process that governs the repo is deliberately small and self-verifying, and the rules below
-state it: one pinned toolchain so a local verdict equals CI's, shared hooks (which ADR-0079 makes one
-installed *set* of per-check fragments rather than a directory a second directory can displace) as a
-convenience ahead of the authoritative CI gate, `dev` as the integration branch that fast-forwards
-onto `main` to ship, an instruction-count perf gate over the render hot path (which ADR-0077 widens
-to cover graph construction, and to gate how that cost scales rather than only what it is), and
-versioned release archives for a headless CLI whose primary product is the crate.
+state it: one pinned toolchain so a local verdict equals CI's, shared hooks (which ADR-0079 makes
+one installed *set* of per-check fragments rather than a directory a second directory can
+displace) as a convenience ahead of the authoritative CI gate, `dev` as the integration branch that
+fast-forwards onto `main` to ship, an instruction-count perf gate over the render hot path (which
+ADR-0077 widens to cover graph construction, and to gate how that cost scales rather than only what
+it is), and versioned release archives for a headless CLI whose primary product is the crate.
 
 ## Rules
 
