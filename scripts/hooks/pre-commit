@@ -1,4 +1,27 @@
 #!/bin/sh
+# The rules reference-linter: no ADR number survives in code, no comment cites an issue or a rule
+# anchor, and every `see rules: <topic>` pointer resolves and stops at its topic. Same split the
+# derive block below uses — CI's always-on `ref-guard` job is the backstop, this is the front line —
+# but with no path filter: a reintroduced ADR ref or a broken pointer can hide in ANY code change,
+# so it runs on every commit. It runs FIRST because it is the one block here that is read-only and
+# can fail: everything below writes a file and re-stages it, and aborting after that would leave the
+# author a modified, staged README they never touched and were never told about.
+#
+# Run whole-tree, never over the staged subset, for two measured reasons. A whole-tree run costs
+# 0.716s over the current tree, so scoping it buys nothing worth the plumbing. And check 7
+# (`suffix_class_problems`) is inherently whole-tree — it enumerates every lane key in the repo and
+# requires each to be classified, so handing it a staged subset silently weakens it.
+#
+# What that costs, said plainly rather than left to be discovered: the guard takes its file LIST
+# from git but reads each file from DISK, so this validates the WORKING TREE and not the index. A
+# violation that is staged while the working copy is clean commits green, and an untracked scratch
+# file blocks a commit that has nothing to do with it. CI's `ref-guard` runs over what actually
+# landed and is the authority; this is the fast local pass, not the verdict.
+python3 scripts/check_rules_refs.py "$(git rev-parse --show-toplevel)" || {
+    echo "pre-commit: rules reference-linter failed (see above)" >&2
+    exit 1
+}
+
 # Keep docs/rules/README.md's derived sections in sync with the topic docs. Runs only when a
 # commit touches the rules docs; regenerates the index and re-stages it so the fix lands in the
 # same commit. CI's `check_rules_derive.py --check` is the backstop, not the front line.
@@ -9,18 +32,3 @@ if git diff --cached --name-only | grep -q '^docs/rules/'; then
     }
     git add docs/rules/README.md
 fi
-
-# The rules reference-linter: no ADR number survives in code, no comment cites an issue or a rule
-# anchor, and every `see rules: <topic>` pointer resolves and stops at its topic. Same split as
-# above — CI's always-on `ref-guard` job is the backstop, this is the front line — but with no path
-# filter: a reintroduced ADR ref or a broken pointer can hide in ANY code change, so it runs on
-# every commit.
-#
-# Run whole-tree, never over the staged subset, for two measured reasons. A whole-tree run costs
-# 0.716s over the current tree, so scoping it buys nothing worth the plumbing. And check 7
-# (`suffix_class_problems`) is inherently whole-tree — it enumerates every lane key in the repo and
-# requires each to be classified, so handing it a staged subset silently weakens it.
-python3 scripts/check_rules_refs.py "$(git rev-parse --show-toplevel)" || {
-    echo "pre-commit: rules reference-linter failed (see above)" >&2
-    exit 1
-}

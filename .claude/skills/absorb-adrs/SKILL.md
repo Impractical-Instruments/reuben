@@ -119,13 +119,22 @@ Run everything from the repo root.
    the comments this run harvested from — not every comment in the module, not every module the topic
    governs.
 
-   The pointer names a **topic and nothing else**: `// see rules: <topic>`. Never a rule anchor,
-   never the ADR number the rationale was distilled from — `check_rules_refs.py` bans both in a
-   comment, because code points at topics only and a rule reworded next sweep must not break a
-   pointer. There are two forms, picked per comment: `see rules: <topic>` resolves against this
-   repo's own `docs/rules/`, `see engine rules: <topic>` against the pinned engine submodule's
-   corpus in a consuming repo. The two corpora carry disjoint slug sets, so which form a comment
-   wants is a fact about where the topic lives, not a matter of taste.
+   The pointer names a **topic and nothing else** — `see rules: <topic>`, written in whatever comment
+   syntax the file already uses (`//`, `#`, `/* … */`). Carrying the slashes into a Python or YAML
+   file makes a line that is not a comment at all: a syntax error, and one no guard here can see.
+   Never a rule anchor, never an issue number, never the ADR number the rationale was distilled from
+   — `check_rules_refs.py` bans all three in a comment, because code points at topics only and a rule
+   reworded next sweep must not break a pointer. The issue number is the one a harvest trips most
+   often: a rescued "we do it this way because of `#<nn>`" comment carries its provenance with it, and
+   provenance belongs in the rationale you just wrote.
+
+   **Which form you write is decided by the repo you are standing in, never by the topic.** Working
+   here it is always `see rules: <topic>`, resolved against this repo's own `docs/rules/`. The
+   `see engine rules: <topic>` form belongs to a consuming repo that pins this one as a submodule,
+   where it resolves against the pinned corpus at `engine/docs/rules/<topic>.md`; this repo has no
+   such path, so a session working here never writes that form — the guard reds on every one of them.
+   The two are not interchangeable spellings of one pointer: each resolves against a different
+   corpus, and the two corpora carry their own slug sets.
 
    **No deletion authority.** Restatement you merely walked past — a comment this run took nothing
    from — is left exactly as it stands. It is pre-existing, it is owned by the whole-workspace comment
@@ -163,8 +172,10 @@ Run everything from the repo root.
 
    All three must exit 0. If `--check` reds, you edited a topic doc but didn't re-run `--write`
    (step 5). If links reds, a `[why]` target is missing or a rule has ≠1 `[why]` — re-scaffold rather
-   than hand-patch. If refs reds, it is step 4's repointing: a pointer that named a rule anchor or an
-   ADR number instead of a topic, or a slug with no `docs/rules/<topic>.md` behind it.
+   than hand-patch. If refs reds, it is step 4's repointing: a pointer that named a rule anchor, an
+   issue number or an ADR number instead of a topic; a slug with no `docs/rules/<topic>.md` behind
+   it; the `see engine rules:` form, which resolves nowhere in this repo; or a capitalised
+   `See rules:` opening a sentence — the grammar is lowercase, and only that spelling is validated.
 
 ## Scope
 
