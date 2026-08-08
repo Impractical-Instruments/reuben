@@ -74,12 +74,24 @@ use the convention would have been met with an unclassified-lane failure from an
 The one name-based exclusion that survives is an editor's `~` backup, which inherits the executable
 bit and would otherwise run as a stale duplicate of the check it shadows.
 
-**Nothing in `dispatch` or `install-hooks.sh` knows anything about this repository.** Every
-repo-specific fact — a Rust toolchain, a Python guard, a docs tree — is inside a registry entry.
-That split is deliberate and is the second reason for the shape: the portable half of a hook system
-is the dispatch and the install, and the unportable half is every check anyone actually wants to
-run. A shared installer that has to enumerate its checks is a shared installer that has to be
-edited per repo.
+**`dispatch` names no toolchain, no check, and no path outside its own directory**, so it is the
+same bytes in any repository; the stubs are two lines naming only their own hook, and
+`install-hooks.sh` knows exactly one more thing — `.githooks` itself. Every other repo-specific fact
+— a Rust toolchain, a Python guard, a docs tree — is inside a registry entry. That split is
+deliberate and is the second reason for the shape: the portable half of a hook system is the
+dispatch and the install, and the unportable half is every check anyone actually wants to run. A
+shared installer that has to enumerate its checks is a shared installer that has to be edited per
+repo.
+
+**The first version of that claim was false, and the test written to guarantee it agreed anyway.**
+`dispatch` carried a `see rules: web-product-process` comment and printed `./scripts/install-hooks.sh`
+by hand — the first an anchor into this repo's rules corpus that a consumer's own linter would
+reject, the second a path a consumer need not have. The test asked whether any of six words appeared
+and neither of those is one of them. Both are gone; the message names the registry it was handed
+instead; and the test now asserts the shape of the seam rather than sampling a blocklist. Recorded
+because the failure is instructive: a guard whose subject is "does this text mention the wrong
+thing" is only ever as good as the enumeration behind it, which is the same defect as a lane list
+nobody adds to.
 
 ## Consequences
 
@@ -90,7 +102,7 @@ who had followed the rules index.
 `scripts/hooks/` is gone. The CI path filter that watched it now watches `.githooks/**` and
 `scripts/install-hooks.sh`. That filter re-runs the rules guards, which validate two of the four
 checks and neither the dispatcher nor the installer — so the dispatcher gets its own suite,
-`scripts/test_hook_dispatch.py`, wired into the same job. Roughly two hundred lines of shell now sit
+`scripts/test_hook_dispatch.py`, wired into the same job. Some three hundred lines of shell now sit
 in front of every commit in every clone, and this repo's habit is that a deterministic check ships
 with the tests that hold it.
 

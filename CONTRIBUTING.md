@@ -35,13 +35,19 @@ type is one file. [`.githooks/pre-commit`](./.githooks/pre-commit) and
 `--no-verify` bypasses the whole set for deliberate exceptions. They are a local pre-flight —
 **CI is the real gate**; skipping setup just means you find out at CI instead of at commit.
 
-**None of them is a substitute for CI, and only one of the four is the same command CI runs.**
-`20-rust-fmt` does mirror CI's format gate exactly. `10-rules-refs` reads the **working tree**,
-where CI reads what landed — so an untracked scratch file in your tree can block a commit that has
-nothing to do with it, and a violation that is staged while the working copy is clean commits
-green. `30-rules-index` runs `--write` where CI runs `--check`. `10-rust-clippy` omits CI's
-`--features reuben-core/bench`, so a lint that only fires in a `[[bench]]` target passes here and
-reds there; the file says so in its header.
+**None of them is a substitute for CI, and the reason is structural rather than a list of
+shortcomings.** *Every* check here reads your **working tree**; CI reads **what you committed**.
+Those are the same thing right up until they are not — `git add -p`, a partial `git add`, an
+untracked scratch file — and where they differ, any of these checks can green a commit CI then
+reds. The sharp case is `20-rust-fmt`: `cargo fmt --all --check` is byte-for-byte CI's command and
+it *still* reads from disk, so staging a badly formatted hunk while the file on disk is clean
+passes here and fails the format gate. In the other direction, an untracked scratch file can make
+`10-rules-refs` block a commit that has nothing to do with it.
+
+Two checks also differ from CI in the command itself. `30-rules-index` runs `--write` where CI runs
+`--check`, which is the whole point of it. `10-rust-clippy` omits CI's `--features
+reuben-core/bench`, so a lint that only fires in a `[[bench]]` target passes here and reds there;
+the file says so in its header.
 
 ### Adding a check
 
@@ -58,14 +64,20 @@ What a check can rely on, and what it owes:
 - **A check is handed the hook's own arguments and a verbatim replay of the hook's stdin**, so
   every pre-push check sees the same pushed refs. It runs from the working-tree root and may stage
   files.
-- **A registry entry that is not executable is an error, not a skip.** It would never run, and a
-  check that never runs is indistinguishable from one that passed — the whole bug this arrangement
-  exists to prevent, at a smaller scale. So `dispatch` fails and names the file.
+- **An entry that cannot run is an error, not a skip.** Not executable, a broken symlink, or a name
+  starting with `.` that the shell's glob cannot see — each would be a check that never runs, and a
+  check that never runs is indistinguishable from one that passed. That is the whole bug this
+  arrangement exists to prevent, at a smaller scale, so `dispatch` refuses and names the file.
   `./scripts/install-hooks.sh` repairs a lost bit; retiring a check is deleting the file, where
-  review can see it; skipping one run is `--no-verify`.
+  review can see it; skipping one run is `--no-verify`. **The one thing that is skipped** is an
+  editor's `<name>~` backup, which inherits the executable bit and would otherwise run as a stale
+  duplicate of the check it shadows.
 - **Keep the prefix two digits wide.** Order is the shell's collation order, not numeric, so a
-  `100-` check would sort *before* `20-`. Registry entries whose names start with `.` are not run,
-  and an editor's `<name>~` backup is skipped rather than executed as a stale duplicate.
+  `100-` check would sort *before* `20-`.
+- **A new hook kind needs a stub beside its registry.** `.githooks/pre-commit.d/` is reached only
+  because `.githooks/pre-commit` exists — git looks a hook up by its exact filename and nothing
+  else. Copy either existing stub and change the name it passes. `install-hooks.sh` refuses a
+  registry with no stub rather than listing checks git will never call.
 
 ## Toolchain
 

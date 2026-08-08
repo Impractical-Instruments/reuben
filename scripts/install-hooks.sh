@@ -4,7 +4,6 @@
 #
 # There is exactly one command and exactly one target, which is the point: `core.hooksPath` holds a
 # single value, so a second documented way to install hooks is a way to uninstall the first.
-# see rules: web-product-process
 set -eu
 
 root=$(git rev-parse --show-toplevel)
@@ -24,15 +23,28 @@ fi
 #
 # Named precisely rather than `find .githooks -type f`: a blanket chmod would mark a future README,
 # a sourced helper, or a fixture executable, dirtying the tree on a script whose header promises it
-# is safe to re-run.
+# is safe to re-run. Symlinks are skipped rather than followed for the same reason, and it is the
+# sharper version of it: `chmod` through a link changes the mode of the TARGET, so an entry pointing
+# at a tracked file would leave that file executable, the tree dirty, and the file itself queued to
+# be run as a check.
 chmod +x .githooks/dispatch
 for hook in .githooks/*.d; do
     [ -d "$hook" ] || continue
     stub=${hook%.d}
-    [ -f "$stub" ] && chmod +x "$stub"
+    # git looks a hook up by its exact filename and nothing else, so a registry with no stub beside
+    # it is a set of checks git will never call. Refuse, rather than reporting them as installed in
+    # the roster below — a roster that lists a check nothing can run is the defect this hook set
+    # exists to prevent, printed in the one place a contributor looks to confirm the install worked.
+    if [ ! -f "$stub" ]; then
+        echo "install-hooks: $hook has no hook stub at $stub — git would never run its checks" >&2
+        exit 1
+    fi
+    [ -L "$stub" ] || chmod +x "$stub"
     for check in "$hook"/*; do
         case "$check" in *~) continue ;; esac
-        [ -f "$check" ] && chmod +x "$check"
+        if [ -f "$check" ] && [ ! -L "$check" ]; then
+            chmod +x "$check"
+        fi
     done
 done
 
