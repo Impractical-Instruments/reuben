@@ -12,6 +12,7 @@ exercise it would be evidence against that.
 """
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -51,9 +52,21 @@ class DispatchHarness(unittest.TestCase):
         path.chmod(0o755 if executable else 0o644)
         return marker
 
+    def env(self):
+        """A git environment that ignores whoever is running the suite.
+
+        Without this the tests inherit the developer's global config, and `commit.gpgsign = true`
+        — an ordinary setting to have — fails most of them with a signing error that looks nothing
+        like the thing under test.
+        """
+        return {**os.environ,
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_SYSTEM": os.devnull,
+                "HOME": str(self.tmp)}
+
     def run_git(self, *args):
         return subprocess.run(["git", "-C", str(self.tmp), *args],
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, env=self.env())
 
     def commit(self):
         return self.run_git("commit", "--allow-empty", "-q", "-m", "probe")
@@ -62,7 +75,7 @@ class DispatchHarness(unittest.TestCase):
         """Invoke the stub the way git does: from the work tree, by relative path."""
         return subprocess.run([os.path.join(".githooks", hook), *args],
                               cwd=self.tmp, input=stdin,
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, env=self.env())
 
 
 class TestEveryRegisteredCheckRuns(DispatchHarness):
@@ -147,6 +160,26 @@ class TestACheckThatCannotRunSaysSo(DispatchHarness):
         (self.hooks / "pre-commit.d" / "10-adir").mkdir()
         self.assertEqual(self.commit().returncode, 0)
 
+    def test_a_broken_symlink_is_an_error_not_a_skip(self):
+        # It satisfies neither -f nor -e, so the obvious guard steps over it exactly the way it
+        # steps over an empty registry — an entry plainly sitting there, silently never run.
+        (self.hooks / "pre-commit.d" / "10-dangling").symlink_to("/nonexistent/nothing")
+        later = self.check("20-later", "")
+        result = self.commit()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("10-dangling", result.stderr)
+        self.assertFalse(later.exists())
+
+    def test_a_dot_prefixed_entry_is_an_error_not_an_off_switch(self):
+        # The shell's glob cannot see it, so renaming a check to `.name` would disable it in
+        # silence — the one thing a registry must not offer.
+        hidden = self.hooks / "pre-commit.d" / ".10-hidden"
+        hidden.write_text("#!/bin/sh\ntrue\n")
+        hidden.chmod(0o755)
+        result = self.commit()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("10-hidden", result.stderr)
+
 
 class TestStdinIsReplayedToEveryCheck(DispatchHarness):
 
@@ -170,11 +203,24 @@ class TestStdinIsReplayedToEveryCheck(DispatchHarness):
         self.assertEqual(a.read_text(), "origin git@example.invalid:x.git")
         self.assertEqual(b.read_text(), a.read_text())
 
-    def test_the_capture_file_is_cleaned_up(self):
+    def test_the_capture_file_exists_while_running_and_is_gone_after(self):
+        # Asserting only "nothing left behind" passes just as well when the capture never happened,
+        # which is every way this could break. Record what existed DURING the run too.
+        seen = self.tmp / "seen-during"
+        self.check("10-a", "ls .git/githook-stdin.* > '%s' 2>&1; cat > /dev/null" % seen)
+        self.run_hook(stdin="payload\n")
+        self.assertEqual(len(seen.read_text().split()), 1,
+                         "expected exactly one capture file while the check ran")
+        self.assertEqual(list((self.tmp / ".git").glob("githook-stdin.*")), [])
+
+    def test_a_stale_capture_from_a_killed_run_is_reaped(self):
+        # A SIGKILL cannot run a trap, so these would otherwise accumulate forever: `git gc` and
+        # `git worktree prune` do not know about them.
+        stale = self.tmp / ".git" / "githook-stdin.999999"
+        stale.write_text("orphan\n")
         self.check("10-a", "cat > /dev/null")
         self.run_hook(stdin="payload\n")
-        leftovers = list((self.tmp / ".git").glob("githook-stdin.*"))
-        self.assertEqual(leftovers, [])
+        self.assertFalse(stale.exists())
 
 
 class TestDispatchIsRepositoryAgnostic(DispatchHarness):
@@ -194,13 +240,49 @@ class TestDispatchIsRepositoryAgnostic(DispatchHarness):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(marker.exists())
 
-    def test_it_names_nothing_about_this_repository(self):
-        # Guarded by this test rather than by review: the moment `dispatch` learns a path, a crate
-        # or a language, the shared half stops being liftable.
+    def test_it_carries_no_pointer_into_this_repository(self):
+        # The first version of this test was a blocklist of six words, and it passed while
+        # `dispatch` carried a `see rules:` anchor into this repo's rules corpus and printed a
+        # hard-coded `./scripts/install-hooks.sh`. A guard that asks "does the wrong word appear"
+        # is only ever as good as its enumeration. Assert the SHAPE instead: no rules-corpus
+        # pointer, and no path that is not the dispatcher's own directory.
         text = DISPATCH.read_text()
-        for token in ("cargo", "python3", "rust", "crates/", "docs/rules", "reuben"):
-            self.assertNotIn(token, text.lower(),
+        self.assertNotIn("see rules:", text,
+                         "dispatch anchors into a rules corpus a consumer repo need not have")
+
+        # Every path it may mention is either derived from a variable at run time, one of the two
+        # absolute paths every POSIX system has, or a bare structural fragment of the registry
+        # convention. A literal directory NAME is the thing that cannot travel.
+        structural = {"", ".", "..", ".d"}
+        for token in sorted(set(re.findall(r"[\w.$-]*/[\w./$-]*", text))):
+            if "$" in token or token in ("/bin/sh", "/dev/null"):
+                continue
+            named = [seg for seg in token.split("/") if seg not in structural]
+            self.assertEqual(
+                named, [],
+                "dispatch names the literal path `%s`; only its own directory travels" % token)
+
+    def test_it_names_no_toolchain_or_check(self):
+        text = DISPATCH.read_text().lower()
+        for token in ("cargo", "python", "rust", "crates", "reuben", "docs"):
+            self.assertNotIn(token, text,
                              "dispatch names `%s`; it must stay repo-agnostic" % token)
+
+
+class TestASignalDoesNotMisblameTheNextCheck(DispatchHarness):
+
+    def test_a_killed_check_exits_rather_than_blaming_its_successor(self):
+        # Without the traps EXITING, cleanup deletes the replay file and the loop carries on — so
+        # the NEXT check dies on a missing stdin and is reported as the failure, blamed for a run
+        # it never had. Round one shipped that bug; nothing caught it until it was written down.
+        self.check("10-slow", "kill -TERM $PPID; sleep 5")
+        later = self.check("20-later", "")
+        result = self.run_hook(stdin="refs/heads/x 1 refs/heads/x 0\n")
+        self.assertEqual(result.returncode, 143,
+                         "a TERMed hook must exit 143, not fall through the loop")
+        self.assertFalse(later.exists(), "the check after the signal ran")
+        self.assertNotIn("20-later", result.stderr, "the successor was blamed for the signal")
+        self.assertEqual(list((self.tmp / ".git").glob("githook-stdin.*")), [])
 
 
 if __name__ == "__main__":

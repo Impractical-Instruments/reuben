@@ -3,10 +3,9 @@
 #
 # `core.hooksPath` holds ONE directory and a hook type is ONE file, so two sets of checks cannot
 # both be installed — the second silently replaces the first. This file is the indirection that
-# removes the choice: `.githooks/pre-commit` and `.githooks/pre-push` are stubs that call it with
-# their own name, and each check is a separate executable under `.githooks/<hook>.d/`. Adding a
-# check is adding a file; it never displaces one.
-# see rules: web-product-process
+# removes the choice: the hook git looks up by name is a stub that calls this with its own name,
+# and each check is a separate executable under `<hooks dir>/<hook>.d/`. Adding a check is adding
+# a file; it never displaces one.
 #
 # What a check may assume:
 #   - it runs from the working-tree root, with the hook's own arguments
@@ -14,13 +13,13 @@
 #   - a non-zero exit aborts the hook, and later checks do not run
 #   - it may stage files; `git commit --no-verify` / `git push --no-verify` bypasses the whole set
 #
-# Nothing in this file knows anything about this repository. Every repo-specific fact is in a
-# registry entry. This file is POSIX `sh`; a registry entry uses whatever its own toolchain needs.
+# This file names no toolchain, no check, and no path outside its own directory, so it is the same
+# bytes in any repository. It is POSIX `sh`; a check uses whatever its own toolchain needs.
 set -eu
 
 hook=${1:-}
 if [ -z "$hook" ]; then
-    echo "dispatch: called without a hook name — see .githooks/pre-commit for the calling form" >&2
+    echo "dispatch: called without a hook name — a hook stub must pass its own name" >&2
     exit 1
 fi
 shift
@@ -28,6 +27,13 @@ shift
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 registry="$here/$hook.d"
 [ -d "$registry" ] || exit 0
+
+# Checks are written to be run from the top of the working tree, and git happens to do that
+# already. Do it here too rather than inherit it: a check invoked any other way (a test harness, a
+# human running the stub by hand) would otherwise resolve its relative paths against somewhere else
+# and fail in a way that looks like the check being wrong.
+root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+[ -n "$root" ] && cd "$root"
 
 # Every check has to see the same stdin, and stdin can only be read once — so capture it to a file
 # and redirect each check from that. A terminal on stdin means a human ran the hook by hand:
@@ -44,6 +50,13 @@ registry="$here/$hook.d"
 replay=/dev/null
 if [ ! -t 0 ]; then
     capture=$(git rev-parse --git-path "githook-stdin.$$" 2>/dev/null || true)
+    # A SIGKILL cannot run a trap, so a previous run may have left its capture behind. Nothing else
+    # ever reaps these, and they are invisible to `git gc` and `git worktree prune`.
+    if [ -n "$capture" ]; then
+        for stale in "${capture%.$$}".*; do
+            [ -f "$stale" ] && [ "$stale" != "$capture" ] && rm -f "$stale"
+        done
+    fi
     if [ -n "$capture" ] && cat >"$capture" 2>/dev/null; then
         replay=$capture
         trap 'rm -f "$capture"' EXIT
@@ -55,6 +68,23 @@ if [ ! -t 0 ]; then
     fi
 fi
 
+# Refuse a check that cannot run, rather than stepping over it. Every branch below is one way for a
+# guard to be wired to something nothing executes — reporting nothing, and therefore reading as
+# clean, which is the failure this whole arrangement exists to prevent. Retiring a check is
+# deleting the file, where review can see it; skipping one run is --no-verify.
+refuse() {
+    echo "✗ $hook: $hook.d/${1##*/} $2, so it would never run." >&2
+    echo "  Registry: $registry" >&2
+    echo "  Bypass:   --no-verify (this run only)" >&2
+    exit 1
+}
+
+# A name beginning with a dot is invisible to the glob below, so it would be a silent off-switch —
+# the one thing a registry must not have. Named here so it is an error rather than a trapdoor.
+for hidden in "$registry"/.[!.]* "$registry"/..?*; do
+    [ -f "$hidden" ] && refuse "$hidden" "begins with a dot and is not visible to the registry"
+done
+
 status=0
 for check in "$registry"/*; do
     # An editor's backup copy inherits the executable bit from the file it shadows, so without this
@@ -63,20 +93,16 @@ for check in "$registry"/*; do
     case "$check" in
         *~) continue ;;
     esac
-    # A registry with no entries leaves the glob unexpanded, which is not a file. A directory in
-    # the registry is not a check either.
-    [ -f "$check" ] || continue
-
-    # A check that lost its executable bit is a check that does not run, and stepping over it
-    # quietly would rebuild the failure this whole arrangement exists to prevent: a guard wired to
-    # something nothing executes, reporting nothing, and therefore reading as clean. Refuse instead.
-    # Retiring a check is deleting the file, which review can see; skipping one run is --no-verify.
-    if [ ! -x "$check" ]; then
-        echo "✗ $hook: $hook.d/${check##*/} is not executable, so it would never run." >&2
-        echo "  Fix:    ./scripts/install-hooks.sh" >&2
-        echo "  Bypass: --no-verify (this run only)" >&2
-        exit 1
+    # An empty registry leaves the glob unexpanded, and a directory is not a check. Everything else
+    # that exists is something someone put here meaning it to run.
+    if [ ! -e "$check" ] && [ ! -L "$check" ]; then
+        continue
     fi
+    [ -d "$check" ] && continue
+    # A dangling symlink satisfies neither -f nor -e, and used to fall through the same `continue`
+    # as an empty registry: an entry that is plainly present, and silently never run.
+    [ -f "$check" ] || refuse "$check" "is not a regular file (a broken symlink?)"
+    [ -x "$check" ] || refuse "$check" "is not executable"
 
     rc=0
     "$check" "$@" <"$replay" || rc=$?
