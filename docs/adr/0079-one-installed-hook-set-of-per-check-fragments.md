@@ -62,6 +62,18 @@ paragraph inside the single file that happened to contain both checks; it is now
 between checks that do not know about each other, which is what made splitting them possible at
 all.
 
+**A check that is present but not executable is an error, not a skip.** The generalisation this
+whole ADR turns on is that *a guard wired to something nothing executes reports nothing and
+therefore reads as clean* — and a registry that silently passed over an unexecutable file would
+reproduce that at a smaller scale, which is how the original defect would come back. So `dispatch`
+refuses and names the file. There is deliberately **no** "disabled" marker to rename a check to:
+retiring one is deleting it, where review sees it, and skipping one run is `--no-verify`. A first
+draft reserved a `.disabled` suffix and it was cut for a reason worth recording — this repo's own
+`check_rules_refs.py` requires every lane key in the tree to be classified, so the first person to
+use the convention would have been met with an unclassified-lane failure from an unrelated guard.
+The one name-based exclusion that survives is an editor's `~` backup, which inherits the executable
+bit and would otherwise run as a stale duplicate of the check it shadows.
+
 **Nothing in `dispatch` or `install-hooks.sh` knows anything about this repository.** Every
 repo-specific fact — a Rust toolchain, a Python guard, a docs tree — is inside a registry entry.
 That split is deliberate and is the second reason for the shape: the portable half of a hook system

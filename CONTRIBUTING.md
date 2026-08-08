@@ -43,7 +43,7 @@ Drop an executable file in `.githooks/pre-commit.d/` or `.githooks/pre-push.d/` 
 nothing to displace — which is the reason for the indirection, because the alternative is a second
 hooks directory that silently disables the first.
 
-Two conventions the numeric prefix carries:
+What a check can rely on, and what it owes:
 
 - **Read-only checks take the low numbers; a check that writes takes a high one.** `30-rules-index`
   regenerates and re-stages a file, and a read-only check failing after it would leave you a
@@ -51,6 +51,11 @@ Two conventions the numeric prefix carries:
 - **A check is handed the hook's own arguments and a verbatim replay of the hook's stdin**, so
   every pre-push check sees the same pushed refs. It runs from the working-tree root and may stage
   files.
+- **A registry entry that is not executable is an error, not a skip.** It would never run, and a
+  check that never runs is indistinguishable from one that passed — the whole bug this arrangement
+  exists to prevent, at a smaller scale. So `dispatch` fails and names the file.
+  `./scripts/install-hooks.sh` repairs a lost bit; retiring a check is deleting the file, where
+  review can see it; skipping one run is `--no-verify`.
 
 ## Toolchain
 

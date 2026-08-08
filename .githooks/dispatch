@@ -41,12 +41,26 @@ fi
 
 status=0
 for check in "$registry"/*; do
-    # An editor backup or a git-style `.sample` is not a registered check. A registry with no
-    # entries leaves the glob unexpanded, which the -f test below rejects.
+    # An editor's backup copy inherits the executable bit from the file it shadows, so without this
+    # the set would silently run a stale duplicate of a check. It is the one name-based exclusion,
+    # and it is here because that hazard is real rather than to reserve a convention.
     case "$check" in
-        *~ | *.sample | *.disabled) continue ;;
+        *~) continue ;;
     esac
-    [ -f "$check" ] && [ -x "$check" ] || continue
+    # A registry with no entries leaves the glob unexpanded, which is not a file. A directory in
+    # the registry is not a check either.
+    [ -f "$check" ] || continue
+
+    # A check that lost its executable bit is a check that does not run, and stepping over it
+    # quietly would rebuild the failure this whole arrangement exists to prevent: a guard wired to
+    # something nothing executes, reporting nothing, and therefore reading as clean. Refuse instead.
+    # Retiring a check is deleting the file, which review can see; skipping one run is --no-verify.
+    if [ ! -x "$check" ]; then
+        echo "✗ $hook: $hook.d/${check##*/} is not executable, so it would never run." >&2
+        echo "  Fix:    ./scripts/install-hooks.sh" >&2
+        echo "  Bypass: --no-verify (this run only)" >&2
+        exit 1
+    fi
 
     rc=0
     "$check" "$@" <"$replay" || rc=$?
