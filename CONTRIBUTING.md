@@ -56,8 +56,9 @@ two branches and breaks the fast-forward promotion until `main` is merged back i
 hotfix ever *must* land on `main` directly, immediately reconcile with `git checkout dev && git merge
 main` so `dev → main` stays fast-forwardable.
 
-After the default branch switched to `dev`, run this once locally so `origin/HEAD` — and
-`scripts/clean-merged-branches.sh`, which auto-targets the default branch — follow it:
+After the default branch switched to `dev`, run this once locally so `origin/HEAD` follows it.
+A clone that still points `origin/HEAD` at `main` will resolve `origin/HEAD` and anything built
+on it against production rather than the integration branch:
 
 ```sh
 git remote set-head origin -a
