@@ -21,7 +21,10 @@ cargo run -p reuben-core --example gen_vocabulary      # after editing docs/agen
 cargo run -p reuben-native --bin reuben -- describe    # list operators/ports/params
 ```
 
-One-time setup: `git config core.hooksPath .githooks` (fmt pre-commit, clippy pre-push).
+One-time setup: `./scripts/install-hooks.sh` — points `core.hooksPath` at [`.githooks/`](.githooks),
+where [`.githooks/dispatch`](.githooks/dispatch) chains every check registered under
+`.githooks/pre-commit.d/` (rules ref-linter, `cargo fmt`, rules-index regen) and
+`.githooks/pre-push.d/` (`cargo clippy`). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Non-negotiable invariants (every code change)
 

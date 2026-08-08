@@ -1,0 +1,61 @@
+#!/bin/sh
+# Run every check registered for one git hook, in name order, and stop at the first failure.
+#
+# `core.hooksPath` holds ONE directory and a hook type is ONE file, so two sets of checks cannot
+# both be installed — the second silently replaces the first. This file is the indirection that
+# removes the choice: `.githooks/pre-commit` and `.githooks/pre-push` are stubs that call it with
+# their own name, and each check is a separate executable under `.githooks/<hook>.d/`. Adding a
+# check is adding a file; it never displaces one.
+# see rules: web-product-process
+#
+# What a check may assume:
+#   - it runs from the working-tree root, with the hook's own arguments
+#   - it is handed the hook's stdin verbatim (git gives pre-push its pushed refs there)
+#   - a non-zero exit aborts the hook, and later checks do not run
+#   - it may stage files; `git commit --no-verify` / `git push --no-verify` bypasses the whole set
+#
+# Nothing in this file knows anything about this repository. Every repo-specific fact is in a
+# registry entry.
+set -eu
+
+hook=${1:-}
+if [ -z "$hook" ]; then
+    echo "dispatch: called without a hook name — see .githooks/pre-commit for the calling form" >&2
+    exit 1
+fi
+shift
+
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+registry="$here/$hook.d"
+[ -d "$registry" ] || exit 0
+
+# Every check has to see the same stdin, and stdin can only be read once — so capture it to a file
+# and redirect each check from that. A terminal on stdin means a human ran the hook by hand:
+# reading it would block forever, so the checks get /dev/null instead.
+replay=/dev/null
+if [ ! -t 0 ]; then
+    replay=$(mktemp "${TMPDIR:-/tmp}/githook-stdin.XXXXXX")
+    trap 'rm -f "$replay"' EXIT HUP INT TERM
+    cat >"$replay"
+fi
+
+status=0
+for check in "$registry"/*; do
+    # An editor backup or a git-style `.sample` is not a registered check. A registry with no
+    # entries leaves the glob unexpanded, which the -f test below rejects.
+    case "$check" in
+        *~ | *.sample | *.disabled) continue ;;
+    esac
+    [ -f "$check" ] && [ -x "$check" ] || continue
+
+    rc=0
+    "$check" "$@" <"$replay" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo >&2
+        echo "✗ $hook: $hook.d/${check##*/} failed — the $hook hook is aborting." >&2
+        status=$rc
+        break
+    fi
+done
+
+exit "$status"

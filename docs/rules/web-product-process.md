@@ -36,7 +36,9 @@ data-chunk length before any sample-bearing share bundle can carry a stranger's 
 
 The dev process that governs the repo is deliberately small and self-verifying, and the rules below
 state it: one pinned toolchain so a local verdict equals CI's, shared hooks as a convenience ahead
-of the authoritative CI gate, `dev` as the integration branch that fast-forwards onto `main` to
+of the authoritative CI gate (which ADR-0079 makes one installed *set* chaining per-check
+fragments, rather than a directory a second directory can displace), `dev` as the integration
+branch that fast-forwards onto `main` to
 ship, an instruction-count perf gate over the render hot path (which ADR-0077 widens to cover graph
 construction, and to gate how that cost scales rather than only what it is), and versioned release
 archives for a headless CLI whose primary product is the crate.
@@ -107,6 +109,8 @@ Superseded by: ADR-0067 (pending absorption)
 
 <a id="shared-git-hooks"></a>
 ### Git hooks are version-controlled under `.githooks/` and shared via `core.hooksPath` — pre-commit fmt, pre-push clippy — as a convenience ahead of the authoritative CI gate.
+
+Superseded by: ADR-0079 (pending absorption)
 
 [why](rationale/web-product-process/shared-git-hooks.md)
 

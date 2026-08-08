@@ -242,9 +242,10 @@ what it **rejected**); and the entry docs (`AGENTS.md`, `README.md`) must name e
 because that surface is read as navigation and an agent opens what it names.
 
 **Derived index** — the Topics list and Glossary above are collated from the topic docs; do not
-hand-edit them. The `pre-commit` hook regenerates them (`check_rules_derive.py --write`) whenever a
-commit touches `docs/rules/`, and CI runs `--check` as a backstop. Run `scripts/install-hooks.sh`
-once per clone.
+hand-edit them. The `.githooks/pre-commit.d/30-rules-index` check regenerates them
+(`check_rules_derive.py --write`) whenever a commit touches `docs/rules/`, and CI runs `--check` as
+a backstop. Run `scripts/install-hooks.sh` once per clone — that is the one command that installs
+the whole hook set, and [CONTRIBUTING.md](../../CONTRIBUTING.md) lists what is in it.
 
 **ADR lifecycle & the supersession marker** — see [docs/adr/README.md](../adr/README.md). An ADR
 number is written down in exactly two places in this corpus: a rule's `Superseded by:` marker and a

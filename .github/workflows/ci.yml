@@ -123,7 +123,8 @@ jobs:
               - 'scripts/check_rules_links.py'
               - 'scripts/check_rules_refs.py'
               - 'scripts/test_check_rules_*.py'
-              - 'scripts/hooks/**'
+              - '.githooks/**'
+              - 'scripts/install-hooks.sh'
               # absorb-adrs runs these guards over a fixture tree and asserts they go green, so a
               # guard change can break it. Its suite otherwise runs only in `check`, whose filter is
               # *workspace — which `scripts/**` does not match. That gap let a corpus-wide widening
