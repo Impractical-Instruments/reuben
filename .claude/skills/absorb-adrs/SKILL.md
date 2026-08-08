@@ -20,9 +20,8 @@ Read the S01 conventions before you touch anything — they are canonical, this 
 automatic.
 
 **Portability.** Everything below is repo-relative (`docs/rules/`, `docs/adr/`,
-`docs/rules/_templates/`, `scripts/check_rules_*.py`, and this skill's own `scaffold_rule.py`). The
-same layout exists in the web repo, so this skill runs unchanged there — never hardcode an
-engine-only path.
+`docs/rules/_templates/`, `scripts/check_rules_*.py`, and this skill's own `scaffold_rule.py`) —
+never hardcode an engine-only path.
 
 ## The topic map (topics ratified in #167; slugs proposed here)
 
@@ -111,11 +110,36 @@ Run everything from the repo root.
    cross-link with a "see also" — never share the file. The helper enforces this structurally (one
    `[why]` per rule, unique slug), but the *content* discipline is yours.
 
-4. **Harvest code-comment rationale.** Skim the code the ADR governs for inline comments that carry
-   genuine *why* (an invariant, a subtle trade-off, a "we do it this way because…"). Fold that
-   reasoning into the rationale doc so it survives. **Do not repoint the comments here** — rewriting
-   them to the `// see rules: <topic>` form is a later comment-stage job; this step only rescues the
-   reasoning into the rationale.
+4. **Harvest code-comment rationale, and repoint what you harvested.** Skim the code the ADR governs
+   for inline comments that carry genuine *why* (an invariant, a subtle trade-off, a "we do it this
+   way because…"). Fold that reasoning into the rationale doc so it survives — then, **in the same
+   pass, replace each comment you took it from** with a pointer to the topic. Leaving the comment
+   behind is what manufactures restatement: the argument now lives in two places, and the copy in the
+   code is the one that drifts silently while the build stays green. The repointing reaches exactly
+   the comments this run harvested from — not every comment in the module, not every module the topic
+   governs.
+
+   The pointer names a **topic and nothing else** — `see rules: <topic>`, written in whatever comment
+   syntax the file already uses (`//`, `#`, `/* … */`). Carrying the slashes into a Python or YAML
+   file makes a line that is not a comment at all: a syntax error, and one no guard here can see.
+   Never a rule anchor, never an issue number, never the ADR number the rationale was distilled from
+   — `check_rules_refs.py` bans all three in a comment, because code points at topics only and a rule
+   reworded next sweep must not break a pointer. The issue number is the one a harvest trips most
+   often: a rescued "we do it this way because of `#<nn>`" comment carries its provenance with it, and
+   provenance belongs in the rationale you just wrote.
+
+   **Which form you write is decided by the repo you are standing in, never by the topic.** Working
+   here it is always `see rules: <topic>`, resolved against this repo's own `docs/rules/`. The
+   `see engine rules: <topic>` form belongs to a consuming repo that pins this one as a submodule,
+   where it resolves against the pinned corpus at `engine/docs/rules/<topic>.md`; this repo has no
+   such path, so a session working here never writes that form — the guard reds on every one of them.
+   The two are not interchangeable spellings of one pointer: each resolves against a different
+   corpus, and the two corpora carry their own slug sets.
+
+   **No deletion authority.** Restatement you merely walked past — a comment this run took nothing
+   from — is left exactly as it stands. It is pre-existing, it is owned by the whole-workspace comment
+   sweep (#638), and a deletion made inside an ADR-absorption PR arrives in front of a reviewer
+   reading rules rather than code. This step repoints the duplicate it just created, and stops there.
 
 5. **Update the topic's `## Now` / `## Terms`, then regenerate the derived index.** Replace the
    skeleton's `## Now` TODO with the present-tense "now" story for the topic (prose, orienting, not a
@@ -138,16 +162,20 @@ Run everything from the repo root.
    only surviving pointer to the ADR number; git history keeps the rest. The links guard fails on a
    marker naming a deleted ADR, so step 7 catches this if you forget.
 
-7. **Self-check — both guards green before you're done:**
+7. **Self-check — all three guards green before you're done:**
 
    ```
-   python3 scripts/check_rules_links.py .          # every topic has ≥1 rule; every rule → 1 existing rationale
+   python3 scripts/check_rules_links.py .           # every topic has ≥1 rule; every rule → 1 existing rationale
    python3 scripts/check_rules_derive.py --check .  # README's derived sections match the topic docs
+   python3 scripts/check_rules_refs.py .            # no ADR number left in code; every pointer resolves and stops at its topic
    ```
 
-   Both must exit 0. If `--check` reds, you edited a topic doc but didn't re-run `--write` (step 5).
-   If links reds, a `[why]` target is missing or a rule has ≠1 `[why]` — re-scaffold rather than
-   hand-patch.
+   All three must exit 0. If `--check` reds, you edited a topic doc but didn't re-run `--write`
+   (step 5). If links reds, a `[why]` target is missing or a rule has ≠1 `[why]` — re-scaffold rather
+   than hand-patch. If refs reds, it is step 4's repointing: a pointer that named a rule anchor, an
+   issue number or an ADR number instead of a topic; a slug with no `docs/rules/<topic>.md` behind
+   it; the `see engine rules:` form, which resolves nowhere in this repo; or a capitalised
+   `See rules:` opening a sentence — the grammar is lowercase, and only that spelling is validated.
 
 ## Scope
 
@@ -156,14 +184,15 @@ Run everything from the repo root.
 | Solidified ADR → rule + rationale under `docs/rules/` | **author** (distill the "now", write the rule + condensed why) |
 | Topic doc `## Now` / `## Terms`, README derived index | **update** `## Now`/`## Terms` by hand; **regenerate** the index via `check_rules_derive.py --write` (never hand-edit derived sections) |
 | Absorbed ADR files | **delete** (`git rm`) once distilled |
-| Code-comment *reasoning* in the ADR's area | **harvest** into the rationale (do not repoint comments — a later stage) |
+| Code-comment *reasoning* in the ADR's area | **harvest** into the rationale, then **repoint** — in the same pass, the comments it came from, to `see rules: <topic>`; those only |
 | Still-moving / provisional / unripe ADRs | **leave** — absorb next pass |
 | New taxonomy / a 7th topic | **never** — the six topics are ratified; a change is its own decision |
-| Writing new ADRs, or engine/product code | **never** — this skill only distills existing ADRs |
+| Writing new ADRs, or engine/product code | **never**, with one exception — step 4's repointing of the comments this run harvested from, and nothing beyond it |
 
 ## Report
 
 End with: which ADR(s) you absorbed and into which topic(s); the rule slug(s) + one-line statement
-each; confirmation the two guards exited 0; and the ADR file(s) deleted. Flag any ADR you judged
+each; the comments you repointed; confirmation the three guards exited 0; and the ADR file(s)
+deleted. Flag any ADR you judged
 **not** ripe and left in place, and any place two decisions were close enough that you had to choose
 merge-vs-two-rules.
