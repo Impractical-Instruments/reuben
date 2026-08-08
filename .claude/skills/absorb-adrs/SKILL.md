@@ -29,8 +29,10 @@ Every rule lives under exactly one topic, and the topic set is **open** — it s
 system does. Never work from a remembered list. The current topics are the topic docs in
 [`docs/rules/`](../../../docs/rules), each with its one-line summary collated into the derived
 `## Topics` index of [`docs/rules/README.md`](../../../docs/rules/README.md#topics) — read that index
-first, then use an existing topic's kebab-case slug wherever the rule fits one. Reach for a new topic
-only when no existing one covers the decision.
+first, then use an existing topic's kebab-case slug wherever the rule fits one. Each index entry
+shows a **title**; its link target minus `.md` — the topic doc's filename — **is** that topic's
+slug. When none fits, surface the new topic to the human running the sweep — they own the
+crosswalk — before scaffolding it.
 
 A slug, once chosen, is **stable** — the same run after run — so `see rules:` code comments and
 cross-repo links never move. A topic's title and summary can be reworded freely; its slug cannot.
