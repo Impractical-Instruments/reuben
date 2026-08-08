@@ -23,26 +23,23 @@ automatic.
 `docs/rules/_templates/`, `scripts/check_rules_*.py`, and this skill's own `scaffold_rule.py`) —
 never hardcode an engine-only path.
 
-## The topic map (topics ratified in #167; slugs proposed here)
+## The topic map
 
-Every rule lives under exactly one of six topics. The **six topics** (names + summaries + the 61-ADR
-crosswalk) are ratified in #167; the **kebab-case slugs below are this skill's proposal**, to be
-confirmed or adjusted at first use (S04). Once fixed, a slug is **stable** — the same run after run —
-so `see rules:` code comments and cross-repo links never move. Use these slugs; do not invent a new
-topic without a taxonomy change.
+Every rule lives under exactly one topic, and the topic set is **open** — it shifts and grows as the
+system does. Never work from a remembered list. The current topics are the topic docs in
+[`docs/rules/`](../../../docs/rules), each with its one-line summary collated into the derived
+`## Topics` index of [`docs/rules/README.md`](../../../docs/rules/README.md#topics) — read that index
+first, then use an existing topic's kebab-case slug wherever the rule fits one. Each index entry
+shows a **title**; its link target minus `.md` — the topic doc's filename — **is** that topic's
+slug. When none fits, surface the new topic to the human running the sweep — they own the
+crosswalk — before scaffolding it.
 
-| Topic | Slug | Covers |
-|---|---|---|
-| **T1** Execution & runtime | `execution-runtime` | Plan lifecycle, RT boundary, determinism, scheduling/threading, swap, latch service, embed surface. |
-| **T2** Composition & operator model | `composition-operators` | The one recursive graph — operator contract/registration, values vs signals, the `Message`/`Arg` substrate, nesting, interface pipes. |
-| **T3** Signal / OSC / musical time / DSP | `signal-time-dsp` | OSC-only message model, clock & musical time, pitch & tuning, tonal context, DSP families (envelopes, math). |
-| **T4** Authoring surface & instrument library | `authoring-library` | Control surface, decoupled surface docs, sample/resource store, library resolution & format versioning, the Toys. |
-| **T5** Agent framework & MCP | `agent-mcp` | AI-authorability, introspection + authoring skills, the MCP sidecar / tool contracts, grounding single-source, intent vocabulary. |
-| **T6** Web/product boundary & dev process | `web-product-process` | The C-ABI web boundary, SDK-vs-private-product split, share links, branch/release strategy, toolchain pin, perf-benchmark CI. |
+A slug, once chosen, is **stable** — the same run after run — so `see rules:` code comments and
+cross-repo links never move. A topic's title and summary can be reworded freely; its slug cannot.
 
 Which ADR maps to which topic (and its supersession state) is the **crosswalk** the sweep produces —
-per run, the human hands you the ADR→topic assignment; the topic doc it lands in is one of the six
-above. A topic's `## Rules` may hold many rules from many ADRs.
+per run, the human hands you the ADR→topic assignment. A topic's `## Rules` may hold many rules from
+many ADRs.
 
 ## The sweep: which ADRs are "solidified" enough to absorb
 
@@ -186,7 +183,7 @@ Run everything from the repo root.
 | Absorbed ADR files | **delete** (`git rm`) once distilled |
 | Code-comment *reasoning* in the ADR's area | **harvest** into the rationale, then **repoint** — in the same pass, the comments it came from, to `see rules: <topic>`; those only |
 | Still-moving / provisional / unripe ADRs | **leave** — absorb next pass |
-| New taxonomy / a 7th topic | **never** — the six topics are ratified; a change is its own decision |
+| A rule that fits no existing topic | **scaffold** — the topic set is not closed; steps 2+3 create `docs/rules/<topic>.md` on demand, and the slug you pick is stable from then on |
 | Writing new ADRs, or engine/product code | **never**, with one exception — step 4's repointing of the comments this run harvested from, and nothing beyond it |
 
 ## Report
