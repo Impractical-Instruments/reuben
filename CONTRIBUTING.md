@@ -2,30 +2,84 @@
 
 ## One-time setup
 
-After cloning, point git at the shared hooks:
+After cloning, install the hook set:
 
 ```sh
-git config core.hooksPath .githooks
+./scripts/install-hooks.sh
 ```
 
-That's the only manual step. It activates:
+That's the only manual step, and it is the only one there will ever be: the script points
+`core.hooksPath` at [`.githooks/`](./.githooks), and everything else registers itself there.
 
-- **pre-commit** — `cargo fmt --all --check` (fast; skips docs-only commits). Blocks
-  commits that CI's format gate would reject.
-- **pre-push** — `cargo clippy --workspace --all-targets -- -D warnings`. Runs at the
-  push boundary (not every commit) so the compile cost is paid once; skips pushes that
-  touch no Rust.
+### The hook set
 
-Both hooks mirror CI exactly and are bypassable with `--no-verify` for deliberate
-exceptions. They are a local pre-flight — **CI is the real gate**; skipping setup just
-means you find out at CI instead of at commit.
+`core.hooksPath` names one directory and git looks a hook up by its exact filename, so a hook
+type is one file. [`.githooks/pre-commit`](./.githooks/pre-commit) and
+[`.githooks/pre-push`](./.githooks/pre-push) are therefore two-line stubs that hand off to
+[`.githooks/dispatch`](./.githooks/dispatch), which runs every executable under
+`.githooks/<hook>.d/` in filename order and stops at the first failure. What is installed today:
+
+- **pre-commit**
+  - `.githooks/pre-commit.d/10-rules-refs` — `check_rules_refs.py` over the working tree: no ADR
+    number in code, no comment citing an issue or a rule anchor, every `see rules:` pointer
+    resolving.
+  - `.githooks/pre-commit.d/20-rust-fmt` — `cargo fmt --all --check` (fast; skips docs-only
+    commits). Blocks commits that CI's format gate would reject.
+  - `.githooks/pre-commit.d/30-rules-index` — `check_rules_derive.py --write` when the commit
+    touches `docs/rules/`, re-staging the regenerated index so the fix lands in the same commit.
+- **pre-push**
+  - `.githooks/pre-push.d/10-rust-clippy` — `cargo clippy --workspace --all-targets -- -D
+    warnings`. Runs at the push boundary (not every commit) so the compile cost is paid once;
+    skips pushes that touch no Rust.
+
+`--no-verify` bypasses the whole set for deliberate exceptions. They are a local pre-flight —
+**CI is the real gate**; skipping setup just means you find out at CI instead of at commit.
+
+**None of them is a substitute for CI, and only one of the four is the same command CI runs.**
+`20-rust-fmt` does mirror CI's format gate exactly. `10-rules-refs` reads the **working tree**,
+where CI reads what landed — so an untracked scratch file in your tree can block a commit that has
+nothing to do with it, and a violation that is staged while the working copy is clean commits
+green. `30-rules-index` runs `--write` where CI runs `--check`. `10-rust-clippy` omits CI's
+`--features reuben-core/bench`, so a lint that only fires in a `[[bench]]` target passes here and
+reds there; the file says so in its header.
+
+### Adding a check
+
+Drop an executable file in `.githooks/pre-commit.d/` or `.githooks/pre-push.d/` and re-run
+`./scripts/install-hooks.sh` if the tree lost the executable bit. There is nothing to register and
+nothing to displace — which is the reason for the indirection, because the alternative is a second
+hooks directory that silently disables the first.
+
+What a check can rely on, and what it owes:
+
+- **Read-only checks take the low numbers; a check that writes takes a high one.** `30-rules-index`
+  regenerates and re-stages a file, and a read-only check failing after it would leave you a
+  modified, staged file you never touched and were never told about.
+- **A check is handed the hook's own arguments and a verbatim replay of the hook's stdin**, so
+  every pre-push check sees the same pushed refs. It runs from the working-tree root and may stage
+  files.
+- **A registry entry that is not executable is an error, not a skip.** It would never run, and a
+  check that never runs is indistinguishable from one that passed — the whole bug this arrangement
+  exists to prevent, at a smaller scale. So `dispatch` fails and names the file.
+  `./scripts/install-hooks.sh` repairs a lost bit; retiring a check is deleting the file, where
+  review can see it; skipping one run is `--no-verify`.
+- **Keep the prefix two digits wide.** Order is the shell's collation order, not numeric, so a
+  `100-` check would sort *before* `20-`. Registry entries whose names start with `.` are not run,
+  and an editor's `<name>~` backup is skipped rather than executed as a stale duplicate.
 
 ## Toolchain
 
 The Rust version is pinned in [`rust-toolchain.toml`](./rust-toolchain.toml). rustup
 auto-installs and uses it the first time you run any `cargo` command in the repo — you
-don't pick a toolchain. Because local and CI run the *same* version, the hooks' fmt and
-clippy verdicts match CI's exactly.
+don't pick a toolchain. Because local and CI run the *same* version, a given fmt or clippy command
+gives the same verdict in both places — which is what makes the hooks worth trusting. It is the
+*commands* that differ where they differ, as above, never the compiler.
+
+**`python3` is optional but wanted.** Two of the pre-commit checks are Python — the rules
+reference-linter and the rules-index regeneration. Without `python3` on `PATH` they print a warning
+and step aside rather than blocking your commits, because CI runs both regardless. The one thing
+you lose is the automatic regeneration of `docs/rules/README.md`: commit a `docs/rules/` change
+without it and CI's `--check` will red the build.
 
 ### Bumping the Rust version
 

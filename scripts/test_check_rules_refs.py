@@ -893,7 +893,7 @@ class WholeTree(unittest.TestCase):
     def test_a_githook_citing_an_issue_is_flagged(self):
         # No suffix and no dot — the format is on line one.
         self.assertEqual(
-            self.run_main({"scripts/hooks/pre-commit": "#!/bin/sh\n# run from here since #107\n"}), 1)
+            self.run_main({".githooks/pre-commit.d/10-rules-refs": "#!/bin/sh\n# run from here since #107\n"}), 1)
 
     def test_a_file_declaring_no_format_is_neither_scanned_nor_reported(self):
         # LICENSE states no comment syntax, so it has no comments for the ban to reach — and that

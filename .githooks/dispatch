@@ -1,0 +1,91 @@
+#!/bin/sh
+# Run every check registered for one git hook, in name order, and stop at the first failure.
+#
+# `core.hooksPath` holds ONE directory and a hook type is ONE file, so two sets of checks cannot
+# both be installed — the second silently replaces the first. This file is the indirection that
+# removes the choice: `.githooks/pre-commit` and `.githooks/pre-push` are stubs that call it with
+# their own name, and each check is a separate executable under `.githooks/<hook>.d/`. Adding a
+# check is adding a file; it never displaces one.
+# see rules: web-product-process
+#
+# What a check may assume:
+#   - it runs from the working-tree root, with the hook's own arguments
+#   - it is handed the hook's stdin verbatim (git gives pre-push its pushed refs there)
+#   - a non-zero exit aborts the hook, and later checks do not run
+#   - it may stage files; `git commit --no-verify` / `git push --no-verify` bypasses the whole set
+#
+# Nothing in this file knows anything about this repository. Every repo-specific fact is in a
+# registry entry. This file is POSIX `sh`; a registry entry uses whatever its own toolchain needs.
+set -eu
+
+hook=${1:-}
+if [ -z "$hook" ]; then
+    echo "dispatch: called without a hook name — see .githooks/pre-commit for the calling form" >&2
+    exit 1
+fi
+shift
+
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+registry="$here/$hook.d"
+[ -d "$registry" ] || exit 0
+
+# Every check has to see the same stdin, and stdin can only be read once — so capture it to a file
+# and redirect each check from that. A terminal on stdin means a human ran the hook by hand:
+# reading it would block forever, so the checks get /dev/null instead.
+#
+# The capture lives in the git directory rather than in $TMPDIR: git has just written there, so it
+# exists and is writable, which `mktemp` in a misconfigured $TMPDIR is not — and a hook that
+# refuses every commit because a temp directory moved would be a worse bug than the one this file
+# fixes. A failed capture degrades to /dev/null and says so; it never blocks the hook.
+#
+# A signal has to exit rather than fall through: without that, cleanup would delete the replay file
+# and the loop would carry on, so the NEXT check would die on a missing stdin and be reported as
+# the failure. The check that never ran would take the blame.
+replay=/dev/null
+if [ ! -t 0 ]; then
+    capture=$(git rev-parse --git-path "githook-stdin.$$" 2>/dev/null || true)
+    if [ -n "$capture" ] && cat >"$capture" 2>/dev/null; then
+        replay=$capture
+        trap 'rm -f "$capture"' EXIT
+        trap 'rm -f "$capture"; exit 129' HUP
+        trap 'rm -f "$capture"; exit 130' INT
+        trap 'rm -f "$capture"; exit 143' TERM
+    else
+        echo "! $hook: could not capture stdin; checks that read it will see nothing" >&2
+    fi
+fi
+
+status=0
+for check in "$registry"/*; do
+    # An editor's backup copy inherits the executable bit from the file it shadows, so without this
+    # the set would silently run a stale duplicate of a check. It is the one name-based exclusion,
+    # and it is here because that hazard is real rather than to reserve a convention.
+    case "$check" in
+        *~) continue ;;
+    esac
+    # A registry with no entries leaves the glob unexpanded, which is not a file. A directory in
+    # the registry is not a check either.
+    [ -f "$check" ] || continue
+
+    # A check that lost its executable bit is a check that does not run, and stepping over it
+    # quietly would rebuild the failure this whole arrangement exists to prevent: a guard wired to
+    # something nothing executes, reporting nothing, and therefore reading as clean. Refuse instead.
+    # Retiring a check is deleting the file, which review can see; skipping one run is --no-verify.
+    if [ ! -x "$check" ]; then
+        echo "✗ $hook: $hook.d/${check##*/} is not executable, so it would never run." >&2
+        echo "  Fix:    ./scripts/install-hooks.sh" >&2
+        echo "  Bypass: --no-verify (this run only)" >&2
+        exit 1
+    fi
+
+    rc=0
+    "$check" "$@" <"$replay" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo >&2
+        echo "✗ $hook: $hook.d/${check##*/} failed — the $hook hook is aborting." >&2
+        status=$rc
+        break
+    fi
+done
+
+exit "$status"

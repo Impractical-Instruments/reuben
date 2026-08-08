@@ -149,8 +149,9 @@ Run everything from the repo root.
    ```
 
    **Never hand-edit** README's `## Topics` / `## Glossary` bodies — they are derived from the topic
-   docs. (The pre-commit hook runs this `--write` automatically on any `docs/rules/` commit; running
-   it yourself keeps the tree clean before you self-check.)
+   docs. (`.githooks/pre-commit.d/30-rules-index` runs this `--write` automatically on any
+   `docs/rules/` commit — in a clone where `scripts/install-hooks.sh` has been run; running it
+   yourself keeps the tree clean before you self-check, and is the only guarantee if it has not.)
 
 6. **Delete the absorbed ADR file(s), and clear the markers they placed.** `git rm
    docs/adr/00xx-*.md` for each ADR fully distilled (including `FULL`-superseded culls), then drop

@@ -1,11 +1,9 @@
 #!/bin/sh
 # The rules reference-linter: no ADR number survives in code, no comment cites an issue or a rule
-# anchor, and every `see rules: <topic>` pointer resolves and stops at its topic. Same split the
-# derive block below uses — CI's always-on `ref-guard` job is the backstop, this is the front line —
+# anchor, and every `see rules: <topic>` pointer resolves and stops at its topic. Same split every
+# check in this set uses — CI's always-on `ref-guard` job is the backstop, this is the front line —
 # but with no path filter: a reintroduced ADR ref or a broken pointer can hide in ANY code change,
-# so it runs on every commit. It runs FIRST because it is the one block here that is read-only and
-# can fail: everything below writes a file and re-stages it, and aborting after that would leave the
-# author a modified, staged README they never touched and were never told about.
+# so it runs on every commit.
 #
 # Run whole-tree, never over the staged subset, for two measured reasons. A whole-tree run costs
 # 0.716s over the current tree, so scoping it buys nothing worth the plumbing. And check 7
@@ -17,18 +15,18 @@
 # violation that is staged while the working copy is clean commits green, and an untracked scratch
 # file blocks a commit that has nothing to do with it. CI's `ref-guard` runs over what actually
 # landed and is the authority; this is the fast local pass, not the verdict.
+# This is the one check in the set that a Rust-only contributor may not be able to run, and a
+# public repo has those. CI's `ref-guard` is the authority and always runs, so a missing python3
+# warns and steps aside rather than blocking every commit in the clone. It says so out loud: a
+# guard that goes quiet is the failure this hook set exists to prevent, and silence here would be
+# indistinguishable from a clean tree.
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "! pre-commit: python3 not found — skipping the rules reference-linter." >&2
+    echo "  CI's ref-guard still runs it. See CONTRIBUTING.md (Toolchain)." >&2
+    exit 0
+fi
+
 python3 scripts/check_rules_refs.py "$(git rev-parse --show-toplevel)" || {
     echo "pre-commit: rules reference-linter failed (see above)" >&2
     exit 1
 }
-
-# Keep docs/rules/README.md's derived sections in sync with the topic docs. Runs only when a
-# commit touches the rules docs; regenerates the index and re-stages it so the fix lands in the
-# same commit. CI's `check_rules_derive.py --check` is the backstop, not the front line.
-if git diff --cached --name-only | grep -q '^docs/rules/'; then
-    python3 scripts/check_rules_derive.py --write "$(git rev-parse --show-toplevel)" || {
-        echo "pre-commit: rules index has a structural problem (see above)" >&2
-        exit 1
-    }
-    git add docs/rules/README.md
-fi
