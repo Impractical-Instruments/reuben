@@ -14,7 +14,7 @@ sound would die on stdin close and two conversations could never share an engine
 rejected because it buys the churniest part of the spec (protocol sessions) for a persistence problem
 the sidecar already solves, and no surveyed audio-MCP server chose it.
 
-Two structural consequences hold today. The pure functions descend into `reuben_core::introspect`
+Two structural consequences hold today. The pure functions descend into `reuben_document::introspect`
 (they already import only core types, so core gains zero MCP awareness) and the MCP adapter is a
 **new bin crate `reuben-mcp`** — the first workspace member allowed an async runtime, with rmcp +
 tokio (measured at ~34 lock packages, `transport-io` only, a `current_thread` runtime, no network

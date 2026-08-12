@@ -7,7 +7,8 @@
 
 use std::path::PathBuf;
 
-use reuben_api::render::{install_initial, Arg, AudioConfig, RenderSlot};
+use reuben_api::engine::install_initial;
+use reuben_api::render::{Arg, AudioConfig, RenderSlot};
 use reuben_api::FsResolver;
 
 fn fixtures_dir() -> PathBuf {

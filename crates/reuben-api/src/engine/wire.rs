@@ -141,7 +141,7 @@ pub enum Request {
     Swap {
         /// The document, by value or by path.
         source: DocSource,
-        /// The opt-in concurrency guard: the [`content_hash`](reuben_core::content_hash)
+        /// The opt-in concurrency guard: the [`content_hash`](reuben_document::content_hash)
         /// the client believes is installed. A mismatch rejects the swap with
         /// `Response::Conflict` — no sessions, no leases, one off-thread hash compare.
         /// `None` is last-write-wins, the default arbitration.
@@ -292,7 +292,7 @@ impl SwapReport {
     }
 
     /// The window's reading of what the engine's Coordinator reported for a swap.
-    pub fn from_core(report: reuben_core::SwapReport) -> Self {
+    pub fn from_core(report: reuben_document::SwapReport) -> Self {
         Self {
             report: Report::from_core(report.report),
             content_hash: report.content_hash,

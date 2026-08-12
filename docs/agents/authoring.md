@@ -241,7 +241,7 @@ declared with the contract's **`constant: <param>`** keyword and lives in the pa
 are enums, but changing them rebuilds nothing — only which coefficients run — so they are **runtime
 enum inputs**, switchable live over OSC. Only genuinely topology-fixing values are `Constant`s.
 
-## The Instrument format (`crates/reuben-core/src/format/`) <!-- lanes: skills,mcp,web -->
+## The Instrument format (`crates/reuben-document/src/format/`) <!-- lanes: skills,mcp,web -->
 
 An Instrument is plain JSON data (**format v3**; see [authoring-library](../rules/authoring-library.md)). At the top
 level it **requires an `instrument` name field** (a string — the human-facing name/id) alongside
@@ -389,7 +389,7 @@ a leftover per-node `control` block or pipe `label`/`widget` — v2's retired pr
 **ignored with a `LoadWarning` naming it** (`DeprecatedControlBlock` /
 `DeprecatedPipePresentation`): never fatal, never silent, and sound is unaffected (the engine
 never read them; re-saving strips them). Migrated-vs-native renders are **bit-identical**
-(asserted in `crates/reuben-core/tests/format_v2.rs` and `format_v3.rs`). Save writes v3 — a
+(asserted in `crates/reuben-document/tests/format_v2.rs` and `format_v3.rs`). Save writes v3 — a
 migrated document never saves back under its old number. The whole normalize pipeline —
 version gate, migrations, stamp — lives in `format/normalize.rs` behind the **`NormalizedDoc`**
 type: `NormalizedDoc::from_json` is the
@@ -567,7 +567,7 @@ most one node ([signal-time-dsp](../rules/signal-time-dsp.md)).
   bit-reproducible.
 - <a id="rt-safe-render"></a>**RT-safe Render** — code that runs on the audio render
   thread(s) — the **hot** path — never allocates, locks, blocks, or panics; `render_block` is
-  allocation-free after warmup, asserted by `crates/reuben-core/tests/rt_safe.rs`. How this
+  allocation-free after warmup, asserted by `crates/reuben-document/tests/rt_safe.rs`. How this
   binds an *operator author* — the hot/cold boundary, hot-path totality, the preallocation
   idioms — lives in [operator-dev.md](operator-dev.md#rt-safe-render).
 - **OSC-only core** — the core speaks only OSC-shaped Messages. MIDI, Ableton Link, tempo

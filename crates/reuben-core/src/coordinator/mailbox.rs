@@ -3,7 +3,7 @@
 //! Two hand-rolled single-slot mailboxes on [`AtomicPtr`]: an **install slot** the
 //! Coordinator fills and the render side drains, and a **retire slot** the render side
 //! fills and the Coordinator drains. The payload type is generic/opaque — this is just the
-//! channel primitive; [`crate::coordinator::swap::InstallBundle`] is the concrete payload.
+//! channel primitive; [`InstallBundle`](super::InstallBundle) is the concrete payload.
 //!
 //! see rules: execution-runtime
 

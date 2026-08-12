@@ -65,20 +65,32 @@
 set -uo pipefail
 
 BASE_SHA="${1:-}"
-PKG="reuben-core"
+# The crate the bench *targets* live in. Not the crate they measure: every realistic workload is an
+# instrument document, so the harnesses sit with the loader, while what they time is the render path
+# below. `ENGINE_PKG` is that render crate — it owns the operator set, and so the census this script
+# reads to build the new-operator skip list.
+PKG="reuben-document"
+ENGINE_PKG="reuben-core"
 # The iai layers. Only micro_iai needs a feature — `bench`, for the crate-private `Io` bridge. That
 # feature only compiles `bench_support` (dead code for the other two), so it leaves their Ir
 # byte-stable — safe to pass on every run.
 BENCHES=("macro_iai" "micro_iai" "construct_iai")
-FEATURES="bench"
-# reuben-core's full source closure — every crate whose `src/` feeds the core build (see header).
-# These move to the baseline ref together so the snapshot is self-consistent; reuben-core/src alone
-# would leave operator `Self::contract()` calls compiled against HEAD's macro. reuben-native is
-# excluded: it is not in `cargo bench -p reuben-core`'s build graph. If a new crate joins the
-# closure and is missed here, the baseline library build fails and the hard-fail guard below trips
-# (rather than masking it as a skip).
+# `reuben-core/bench` rather than a bare `bench`: the benches live in reuben-document now (every
+# realistic workload is a document), and the `Io` bridge the micro layer needs is reuben-core's.
+# reuben-document's own `bench` feature forwards to it; naming the forwarded feature directly keeps
+# this independent of that spelling.
+FEATURES="reuben-core/bench"
+# The benched crate's full source closure — every crate whose `src/` feeds the build (see header).
+# These move to the baseline ref together so the snapshot is self-consistent; the bench crate's
+# `src/` alone would leave operator `Self::contract()` calls compiled against HEAD's macro.
+# reuben-core is named explicitly: the benches sit in reuben-document, but what they measure is
+# reuben-core's render and instantiate paths, so a perf change there must A/B with them.
+# reuben-native and reuben-api are excluded: neither is in `cargo bench -p reuben-document`'s build
+# graph. If a new crate joins the closure and is missed here, the baseline library build fails and
+# the hard-fail guard below trips (rather than masking it as a skip).
 SRC=(
   "crates/${PKG}/src"
+  "crates/${ENGINE_PKG}/src"
   crates/reuben-macros/src
   crates/reuben-contract/src
 )
@@ -130,10 +142,33 @@ run_bench() { local bench="$1"; shift; cargo bench -p "$PKG" --features "$FEATUR
 # abort under `set -e`. When the ref lacks it, HEAD's copy stays in place: those fixture bytes are
 # the pre-cull instruments/ documents verbatim, valid for the older engine.
 swap_tree() {
-  git checkout "$1" -- "${SRC[@]}" $FIXTURES $BUILD_CONFIG
+  # Hard-fail on a checkout that did not happen. `missing_at` below screens the one predictable
+  # cause (a crate the baseline predates), but ANY failure here — a dirty path, a permission, a
+  # pathspec typo — leaves the tree at HEAD, and the caller would then bench HEAD against itself and
+  # report 0% for every case. There is no `set -e` in this script, so silence is the default; a
+  # snapshot that did not apply must stop the gate rather than green it.
+  if ! git checkout "$1" -- "${SRC[@]}" $FIXTURES $BUILD_CONFIG; then
+    printf '::error title=Baseline snapshot failed::could not check out the source closure at %s — the gate would otherwise compare HEAD against itself and report no regression\n' "$1"
+    exit 1
+  fi
   if git cat-file -e "$1:$BENCH_FIXTURES" 2>/dev/null; then
     git checkout "$1" -- "$BENCH_FIXTURES"
   fi
+}
+
+# The first SRC path absent at ref $1, or empty when the ref carries all of them.
+#
+# `git checkout <ref> -- <many pathspecs>` fails ATOMICALLY on the first unknown one: it writes
+# nothing, leaves the working tree at HEAD, and — there is no `set -e` here — the run carries on to
+# "compare" HEAD against itself and report 0% for every case. That is a green gate measuring
+# nothing, the same masking shape the compile/runtime split above exists to prevent. A PR that adds
+# a crate to the closure hits this by construction, because the baseline has no such directory, so
+# it is checked rather than assumed.
+missing_at() {
+  local ref="$1" p
+  for p in "${SRC[@]}"; do
+    git cat-file -e "${ref}:${p}" 2>/dev/null || { printf '%s' "$p"; return; }
+  done
 }
 
 # Accumulates one consolidated row per benched case ("| layer | case | Ir Δ% | icon |") across both
@@ -214,13 +249,13 @@ note ""
 # ranges re-open at every later mention of the anchor in prose, and would sweep quoted snake_case
 # strings from the rest of the file into the census as phantom kinds.
 micro_kinds() { awk '/^pub const WORKLOADS/{f=1} f&&/^\];/{exit} f{print}' | grep -oE '"[a-z0-9_]+"' | tr -d '"' | LC_ALL=C sort -u; }
-head_kinds="$(micro_kinds <"crates/${PKG}/src/bench_support.rs")"
-base_kinds="$(git show "${BASE_SHA}:crates/${PKG}/src/bench_support.rs" 2>/dev/null | micro_kinds)"
+head_kinds="$(micro_kinds <"crates/${ENGINE_PKG}/src/bench_support.rs")"
+base_kinds="$(git show "${BASE_SHA}:crates/${ENGINE_PKG}/src/bench_support.rs" 2>/dev/null | micro_kinds)"
 # A census that reads as empty is never legitimate — it means the anchor moved again, and carrying on
 # would hand the bench an empty skip list and reproduce exactly the failure above. Fail loudly here,
 # where the message says what broke, rather than as a panic deep in the baseline bench run.
 if [ -z "$head_kinds" ]; then
-  printf '::error title=Operator census not found::micro_kinds() read no operators from crates/%s/src/bench_support.rs — the WORKLOADS anchor has moved. Fix the scan; an empty census silently disables the PR-new-operator skip.\n' "$PKG"
+  printf '::error title=Operator census not found::micro_kinds() read no operators from crates/%s/src/bench_support.rs — the WORKLOADS anchor has moved. Fix the scan; an empty census silently disables the PR-new-operator skip.\n' "$ENGINE_PKG"
   exit 1
 fi
 REUBEN_MICRO_BENCH_SKIP="$(comm -23 <(printf '%s\n' "$head_kinds") <(printf '%s\n' "$base_kinds") | paste -sd, -)"
@@ -231,7 +266,11 @@ if [ -n "$REUBEN_MICRO_BENCH_SKIP" ]; then
 fi
 
 overall_fail=0
+# Bench layers with no comparable baseline. Denominator is ${#BENCHES[@]}, so ONLY per-layer skips
+# belong here — the construct scaling gate is a separate check over the construct layer's output,
+# not a fourth layer, and counting it here reported "4/3 layer(s) skipped".
 skipped=0
+scaling_inert=0
 hard_broken=0
 
 # Gate one bench layer: baseline run (old src + fixtures, PR harness) -> compare PR run -> table.
@@ -259,6 +298,16 @@ gate_one() {
   #    real PR-vs-baseline compare in step 2. Capture it to a log and surface it ONLY on failure,
   #    where the runner's diagnostics (compile errors feeding the skip probe, or a runtime panic)
   #    matter. The happy-path job log thus shows just the compare run, not baseline-vs-nothing.
+  local absent
+  absent="$(missing_at "$BASE_SHA")"
+  if [ -n "$absent" ]; then
+    skipped=$((skipped + 1))
+    printf '::warning title=Perf layer skipped::%s baseline has no %s — no comparable snapshot, so this layer is not measured\n' "$bench" "$absent"
+    note "⚠️ \`$bench\`: the baseline ref carries no \`$absent\` (a crate this PR adds), so no baseline snapshot can be built. Layer skipped, non-blocking — **not** compared and reported green."
+    note ""
+    return 0
+  fi
+
   swap_tree "$BASE_SHA"
   local baselog
   baselog="$(mktemp)"
@@ -386,7 +435,7 @@ scaling_gate() {
     if [ "${harvested:-0}" -eq 0 ]; then
       both "| _(the construct layer recorded nothing — skipped; growth not checked)_ |  |  |  |"
       both ""
-      skipped=$((skipped + 1))
+      scaling_inert=1
       printf '::warning title=Scaling gate inert::the construct layer recorded no Ir — the growth factor was not checked this run\n'
       return 0
     fi
@@ -442,8 +491,14 @@ if [ "$overall_fail" -ne 0 ]; then
   both "**Result: ❌ regression over ${FAIL_PCT}%, or construct scaling over ${FAIL_GROWTH}x per doubling.**"
   exit 1
 fi
-if [ "$skipped" -ne 0 ]; then
-  both "**Result: ✅ within ${FAIL_PCT}% — but ${skipped}/${#BENCHES[@]} layer(s) skipped (partial coverage).**"
+gaps=""
+[ "$skipped" -ne 0 ] && gaps="${skipped}/${#BENCHES[@]} layer(s) skipped"
+if [ "$scaling_inert" -ne 0 ]; then
+  [ -n "$gaps" ] && gaps="${gaps}, "
+  gaps="${gaps}construct scaling not checked"
+fi
+if [ -n "$gaps" ]; then
+  both "**Result: ✅ within ${FAIL_PCT}% — but ${gaps} (partial coverage).**"
   exit 0
 fi
 both "**Result: ✅ within ${FAIL_PCT}%.**"

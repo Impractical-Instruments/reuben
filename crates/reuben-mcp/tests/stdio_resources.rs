@@ -17,7 +17,7 @@ use serde_json::Value;
 
 /// The committed checkout artifacts — compile-time bound so a deleted or stale file fails as
 /// loudly as a byte mismatch. Same relative depth from `crates/reuben-mcp/tests/` as the
-/// staleness tests that keep these files honest (`crates/reuben-core/tests/vocabulary.rs`,
+/// staleness tests that keep these files honest (`crates/reuben-document/tests/vocabulary.rs`,
 /// `crates/reuben-native/tests/library_index.rs`).
 const COMMITTED_VOCABULARY: &str = include_str!("../../../docs/agents/vocabulary.md");
 const COMMITTED_LIBRARY_INDEX: &str = include_str!("../../../instruments/index.md");

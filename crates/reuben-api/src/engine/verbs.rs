@@ -10,8 +10,8 @@
 //! could not do its job at all is a [`Refusal`]. [`get_engine_status`] cannot refuse, because
 //! answering "is it there?" is its whole job. see rules: agent-mcp
 
-use reuben_core::projection::Projector;
 use reuben_core::Registry;
+use reuben_document::projection::Projector;
 
 use crate::authoring::{Answer, Refusal, Resources};
 
@@ -84,7 +84,7 @@ pub fn get_engine_status(channel: &Channel, door_version: &str) -> Answer<Engine
         },
         sidecar: SidecarInfo {
             version: door_version.to_string(),
-            format_version: reuben_core::format::FORMAT_VERSION,
+            format_version: reuben_document::format::FORMAT_VERSION,
         },
         guidance: if reachable {
             None

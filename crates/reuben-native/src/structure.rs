@@ -547,7 +547,7 @@ mod tests {
     use super::*;
     use crate::test_support::{FakeCallback, NoResources};
     use reuben_api::engine::{ControlArg, DocSource, Request, Response, MAX_SEND_BATCH};
-    use reuben_api::render::{self, Arg, AudioConfig};
+    use reuben_api::render::{Arg, AudioConfig};
 
     fn cfg() -> AudioConfig {
         AudioConfig::new(48_000.0, 128)
@@ -598,7 +598,7 @@ mod tests {
         opened_input_channels: usize,
     ) -> (StructureState, FakeCallback, String) {
         let (coordinator, side, _warnings) =
-            render::install_initial(base, NoResources, cfg()).expect("initial install");
+            reuben_api::engine::install_initial(base, NoResources, cfg()).expect("initial install");
         let base_hash = coordinator.installed_hash();
         let (control_tx, control_rx) = std::sync::mpsc::channel::<ControlBatch>();
         let host = NativeHost::new(Diagnostics::new(), control_tx).with_render_config(Arc::new(
@@ -679,7 +679,8 @@ mod tests {
         std::fs::write(&good, envelope_doc("/eg")).expect("seed the swap target");
 
         let (coordinator, side, _warnings) =
-            render::install_initial(BASE_DOC, NoResources, cfg()).expect("initial install");
+            reuben_api::engine::install_initial(BASE_DOC, NoResources, cfg())
+                .expect("initial install");
         let (control_tx, control_rx) = std::sync::mpsc::channel::<ControlBatch>();
         let host = NativeHost::new(Diagnostics::new(), control_tx).with_render_config(Arc::new(
             HeadlessRenderConfig {
@@ -748,7 +749,7 @@ mod tests {
     #[test]
     fn get_diagnostics_reads_the_live_counters() {
         let (coordinator, side, _w) =
-            render::install_initial(BASE_DOC, NoResources, cfg()).expect("install");
+            reuben_api::engine::install_initial(BASE_DOC, NoResources, cfg()).expect("install");
         let diagnostics = Diagnostics::new();
         // This verb never touches control, but the ingress is a constructor parameter now — there
         // is no such thing as a host that cannot serve `send`.
@@ -1203,7 +1204,8 @@ mod tests {
         // the next swap. No FakeCallback here — the render side is dropped, so
         // the retiree never comes home — so the liveness gate must bail at the grace instead.
         let (coordinator, _side, _w) =
-            render::install_initial(BASE_DOC, NoResources, cfg()).expect("initial install");
+            reuben_api::engine::install_initial(BASE_DOC, NoResources, cfg())
+                .expect("initial install");
         let (control_tx, _control_rx) = std::sync::mpsc::channel::<ControlBatch>();
         let host = NativeHost::new(Diagnostics::new(), control_tx).with_render_config(Arc::new(
             HeadlessRenderConfig {

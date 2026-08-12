@@ -1,0 +1,43 @@
+//! Integration: the groovebox beatmaker (V1.3 Toy 1) loads through the full
+//! resource pipeline — three track Voicers each host a drum-synth voice patch — and self-plays a
+//! non-silent beat with no external input.
+//!
+//! (Supersedes the old `groovebox_snare_gate.rs` probes, which tapped the now-removed `voicer.gate`
+//! output and internal drum-synth nodes that moved inside the voice patches.)
+
+mod common;
+
+use common::Dir;
+use reuben_core::message::Message;
+use reuben_core::plan::Plan;
+use reuben_core::render::Renderer;
+use reuben_core::{AudioConfig, Registry};
+use reuben_document::load_instrument;
+
+const GROOVEBOX: &str = include_str!("../../../instruments/groovebox.json");
+
+#[test]
+fn groovebox_self_plays_a_non_silent_beat() {
+    // The clock-driven rig needs no external notes: the three step sequencers fire their track
+    // Voicers, each hosting a drum-synth voice. Render ~2 s (default 120 BPM, several bars) and
+    // listen for sound.
+    let graph = load_instrument(GROOVEBOX, &Registry::builtin(), &Dir("instruments"))
+        .expect("load groovebox")
+        .graph;
+    let cfg = AudioConfig::new(48_000.0, 256);
+    let mut plan = Plan::instantiate(graph, cfg).expect("instantiate");
+    let mut r = Renderer::new(&plan);
+
+    let blocks = (cfg.sample_rate * 2.0) as usize / cfg.block_size;
+    let mut buf = vec![0.0f32; cfg.block_size];
+    let mut peak = 0.0f32;
+    let no_msgs: Vec<Message> = Vec::new();
+    for _ in 0..blocks {
+        r.render_block(&mut plan, &no_msgs, &mut buf);
+        for &s in &buf {
+            assert!(s.is_finite(), "non-finite sample in groovebox render");
+            peak = peak.max(s.abs());
+        }
+    }
+    assert!(peak > 0.05, "groovebox produced near-silence (peak {peak})");
+}

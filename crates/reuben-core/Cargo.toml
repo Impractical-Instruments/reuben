@@ -9,9 +9,11 @@ description = "Portable, OS-free realtime core for reuben: graph, plan, render."
 
 [features]
 # Exposes `bench_support` (the per-operator micro-bench `Io` bridge). Non-default
-# so the bridge never ships in a normal build/publish; the micro `[[bench]]` targets below declare
-# `required-features = ["bench"]`, and CI runs the micro layer + its forcing-function test with
-# `--features bench` (locally: `cargo reuben-core-bench`, see .cargo/config.toml).
+# so the bridge never ships in a normal build/publish. The `[[bench]]` targets that consume it now
+# live in `reuben-document` (they load instrument documents), so it is reached as
+# `reuben-core/bench` — via reuben-document's own `bench` feature, which forwards to this one.
+# CI runs the micro layer + its forcing-function test with it (locally: `cargo reuben-bench`,
+# see .cargo/config.toml).
 bench = []
 # Derives `schemars::JsonSchema` on the instrument-format types (src/format) and on nothing else, so
 # the projection's completeness guard can enumerate every format field mechanically. Every advertised
@@ -36,43 +38,10 @@ reuben-contract = { path = "../reuben-contract" }
 
 [dev-dependencies]
 approx.workspace = true
+# The `first_sound` example writes a WAV. It builds its graph in Rust rather than loading a
+# document, which is what keeps it here: it is the render half demonstrated without the authoring
+# half, and the shape a bare-metal embedder copies.
 hound.workspace = true
-# Perf infra. criterion: local wall-clock. iai-callgrind: CI regression gate.
-criterion = "0.8"
-iai-callgrind = "0.16"
 
 [[example]]
 name = "first_sound"
-
-# Macro render_block benches. `harness = false` — both bring their own main().
-[[bench]]
-name = "macro_criterion"
-harness = false
-
-[[bench]]
-name = "macro_iai"
-harness = false
-
-# Construct (parse + build + instantiate) benches. Same two layers as the macro set, but swept
-# across node counts: what they measure is how build cost scales, not its absolute value.
-[[bench]]
-name = "construct_criterion"
-harness = false
-
-[[bench]]
-name = "construct_iai"
-harness = false
-
-# Per-operator micro benches. `required-features = ["bench"]` ⇒ cargo SKIPS these (no error)
-# unless the bridge feature is on, so a bare `cargo bench` runs the macro and construct layers but
-# not this one; the full run (`cargo reuben-core-bench`) covers all three. Same two layers as the
-# macro set.
-[[bench]]
-name = "micro_criterion"
-harness = false
-required-features = ["bench"]
-
-[[bench]]
-name = "micro_iai"
-harness = false
-required-features = ["bench"]

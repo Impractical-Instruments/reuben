@@ -91,7 +91,7 @@ impl RenderScratch {
             .map(|_| NodeRoute::default())
             .collect();
         let max_out_bufs = plan
-            .nodes
+            .nodes()
             .iter()
             .map(|n| n.outputs.len())
             .max()
@@ -858,7 +858,7 @@ fn process_node(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{load, AudioConfig, Registry};
+    use crate::AudioConfig;
 
     /// An `i32` value port quantizes a runtime message — round to nearest, then clamp
     /// to range — exactly as [`crate::descriptor::Port::coerce`] does for an authored literal. So
@@ -884,17 +884,18 @@ mod tests {
     /// manufactures systematically (`/fx` beside an inlined `/fx/verb/delay`). The wire from
     /// `/fx` pins the topo order, so the portless ancestor is genuinely scanned first.
     fn shadowed_plan() -> Plan {
-        const SHADOWED: &str = r#"{
-            "instrument": "shadowed",
-            "nodes": [
-                { "type": "oscillator", "address": "/fx" },
-                { "type": "delay", "address": "/fx/verb/delay",
-                  "inputs": { "audio": { "from": "/fx.audio" } } }
-            ],
-            "outputs": [ { "node": "/fx/verb/delay", "port": "audio" } ]
-        }"#;
-        let graph = load(SHADOWED, &Registry::builtin()).expect("load");
-        Plan::instantiate(graph, AudioConfig::new(48_000.0, 64)).expect("instantiate")
+        // Built graph-first rather than loaded: the loader lives in `reuben-document`, above this
+        // crate, and both tests below reach `route_messages`, which is private here. The shape is
+        // what matters — `/fx` wired into `/fx/verb/delay` pins the topo order so the portless
+        // ancestor is genuinely scanned first.
+        use crate::graph::Graph;
+        use crate::operators::{delay, oscillator, Delay, Oscillator};
+        let mut g = Graph::new();
+        let fx = g.add("/fx", Oscillator::new());
+        let deep = g.add("/fx/verb/delay", Delay::new());
+        g.connect(fx, oscillator::OUT_AUDIO, deep, delay::IN_AUDIO);
+        g.tap_output(deep, delay::OUT_AUDIO);
+        Plan::instantiate(g, AudioConfig::new(48_000.0, 64)).expect("instantiate")
     }
 
     /// Inbound OSC to a nested node must not be dropped because a shallower
@@ -903,12 +904,12 @@ mod tests {
     fn osc_in_message_reaches_a_node_shadowed_by_a_portless_ancestor() {
         let plan = shadowed_plan();
         let fx = plan
-            .nodes
+            .nodes()
             .iter()
             .position(|n| &*n.address == "/fx")
             .expect("/fx node");
         let deep = plan
-            .nodes
+            .nodes()
             .iter()
             .position(|n| &*n.address == "/fx/verb/delay")
             .expect("/fx/verb/delay node");
@@ -946,7 +947,7 @@ mod tests {
             route_messages(&mut routes, &plan, &[msg]);
             let delivered: Vec<&str> = routes
                 .iter()
-                .zip(&plan.nodes)
+                .zip(plan.nodes())
                 .filter(|(r, _)| {
                     !r.materialize_writes.is_empty() || !r.held.is_empty() || !r.events.is_empty()
                 })

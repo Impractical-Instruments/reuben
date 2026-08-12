@@ -11,7 +11,8 @@
 
 use std::path::Path;
 
-use reuben_api::render::{install_initial, AudioConfig, LoadWarning, RenderSide, RenderSlot};
+use reuben_api::engine::{install_initial, LoadWarning};
+use reuben_api::render::{AudioConfig, RenderSide, RenderSlot};
 use reuben_api::FsResolver;
 
 const LEAF: &str = r#"{

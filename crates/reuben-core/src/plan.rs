@@ -221,7 +221,7 @@ pub struct InterfaceOutput {
 /// address routable: a message to `<address>/<port.name>` delivers to the rewired consumer
 /// `(node, dst_port)` with exactly the normalization the rendered pipe applied (the pipe port
 /// types/clamps first, then the consumer port — the same two hops the node made).
-pub(crate) struct InputAlias {
+pub struct InputAlias {
     /// The dissolved pipe node's minted address (e.g. `/freq`) — the handle the dissolved node
     /// held, so the copies of one patch share it as their surviving nodes' addresses do.
     pub address: Arc<str>,
@@ -287,7 +287,9 @@ pub struct Plan {
     pub config: AudioConfig,
     /// Nodes in topological execution order. `pub(crate)`: the survivor migration seam
     /// ([`Plan::transplant_survivors`]) is the one interface that mutates node state across a Swap;
-    /// no caller indexes `.nodes[..].op` directly.
+    /// no caller indexes `.nodes[..].op` directly. Read access is [`Plan::nodes`], which hands out
+    /// a shared slice — [`PlanNode::op`] stays `pub(crate)`, so reading a node's identity cannot
+    /// become reaching its operator box.
     pub(crate) nodes: Vec<PlanNode>,
     /// Total number of edge buffers in the arena.
     pub num_buffers: usize,
@@ -333,6 +335,22 @@ pub enum PlanError {
 }
 
 impl Plan {
+    /// The nodes in topological execution order, read-only. The index is the Plan node index a
+    /// migration table pairs old against new by, and the identity fields
+    /// ([`address`](PlanNode::address), [`descriptor`](PlanNode::descriptor)) are what an
+    /// off-thread manifest fingerprints. The operator boxes stay closed.
+    pub fn nodes(&self) -> &[PlanNode] {
+        &self.nodes
+    }
+
+    /// The dissolved input pipes, read-only — the aliases `instantiate` mints when an interface
+    /// pipe collapses into the port it fed. Paired with [`Plan::nodes`]: together they are the
+    /// Plan's structural view, which is what an off-thread manifest fingerprints and what a
+    /// diagnostic reports. Neither hands out anything mutable.
+    pub fn input_aliases(&self) -> &[InputAlias] {
+        &self.input_aliases
+    }
+
     /// Convert an inbound OSC datagram — an address plus a flat list of primitive `Arg`s — into the
     /// single typed [`Message`] it routes to, driven by the **destination port's Arg type**
     /// (the boundary). Resolves the address to a node + input port via
@@ -759,7 +777,7 @@ impl Plan {
     /// see rules: execution-runtime
     ///
     /// Caller contract: each pair must already share operator type + instantiate-time identity (the
-    /// survivor key a [`MigrationTable`](crate::coordinator::manifest::MigrationTable) guarantees) —
+    /// survivor key a [`MigrationTable`](crate::coordinator::MigrationTable) guarantees) —
     /// a wrong-but-in-bounds pairing is a caller bug the bounds `debug_assert!` cannot catch. The
     /// bare `&[(usize, usize)]` signature keeps this primitive from importing the coordinator (the
     /// one-way `coordinator → plan/engine` layering); [`crate::engine::Engine`] forwards straight to
@@ -1254,115 +1272,6 @@ fn topo_order(graph: &Graph, adj: &Adjacency) -> Result<Vec<NodeKey>, PlanError>
         return Err(PlanError::Cycle);
     }
     Ok(order)
-}
-
-#[cfg(test)]
-mod dissolve_chains {
-    use super::{AudioConfig, Plan};
-    use crate::registry::Registry;
-    use crate::resources::{ResolveError, ResourceResolver, SampleBuffer};
-
-    /// A gain cell behind an `in` boundary.
-    const INNER: &str = r#"{"format_version":2,"instrument":"inner",
-        "interface":{"inputs":{"in":{"type":"f32_buffer"}},
-                     "outputs":{"out":{"from":"/g.out"}}},
-        "nodes":[{"type":"mul_f32_signal","address":"/g",
-                  "inputs":{"a":{"from":"/in"},"b":0.5}}]}"#;
-
-    /// `inner` re-exported through a second boundary — so a top-level wire reaches the gain
-    /// through *two* pipes, one per nesting level.
-    const OUTER: &str = r#"{"format_version":2,"instrument":"outer",
-        "resources":{"inner":"inner.json"},
-        "interface":{"inputs":{"in":{"type":"f32_buffer"}},
-                     "outputs":{"out":{"from":"/s.out"}}},
-        "nodes":[{"type":"subpatch","address":"/s","patch":"inner",
-                  "inputs":{"in":{"from":"/in"}}}]}"#;
-
-    const TOP: &str = r#"{"format_version":2,"instrument":"top",
-        "resources":{"outer":"outer.json"},
-        "interface":{"outputs":{"out":{"from":"/out.audio"}}},
-        "nodes":[{"type":"oscillator","address":"/o"},
-                 {"type":"subpatch","address":"/w","patch":"outer",
-                  "inputs":{"in":{"from":"/o"}}},
-                 {"type":"output","address":"/out","inputs":{"audio":{"from":"/w.out"}}}]}"#;
-
-    struct Nested;
-    impl ResourceResolver for Nested {
-        fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
-            Err(ResolveError::NotFound(source.to_string()))
-        }
-        fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
-            match source {
-                "inner.json" => Ok(INNER.to_string()),
-                "outer.json" => Ok(OUTER.to_string()),
-                _ => Err(ResolveError::NotFound(source.to_string())),
-            }
-        }
-    }
-
-    /// Two nested boundaries put two pipes in a row between the oscillator and the gain. Both
-    /// collapse, and the alias of the *outer* one — whose consumer was the inner pipe, itself
-    /// since dissolved — has to follow through to the gain rather than dangle at a node that is
-    /// no longer in the schedule.
-    ///
-    /// The follow-through is bookkeeping kept on the side of the fixpoint rather than re-derived
-    /// from it, so it is worth pinning behaviorally: an alias that stops following its hops still
-    /// names a plausible node index and goes on routing messages, to the wrong port.
-    #[test]
-    fn a_chain_of_two_pipes_collapses_and_both_aliases_land_on_the_gain() {
-        let loaded = crate::load_instrument(TOP, &Registry::builtin(), &Nested).expect("loads");
-        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
-        let plan =
-            Plan::instantiate(loaded.graph, AudioConfig::new(48_000.0, 64)).expect("instantiates");
-
-        let gain = plan
-            .nodes
-            .iter()
-            .position(|n| &*n.address == "/w/s/g")
-            .expect("the inner gain survives the splice");
-        let a = plan.nodes[gain]
-            .descriptor
-            .inputs
-            .iter()
-            .position(|p| p.name == "a")
-            .expect("`a` input");
-
-        // No pipe is left in the schedule: both levels' boundaries dissolved.
-        assert!(
-            !plan.nodes.iter().any(|n| n.descriptor.type_name == "pipe"),
-            "a pipe stayed in the schedule: {:?}",
-            plan.nodes
-                .iter()
-                .filter(|n| n.descriptor.type_name == "pipe")
-                .map(|n| &n.address)
-                .collect::<Vec<_>>()
-        );
-
-        // Both minted addresses stay addressable, and both name the gain's `a` port.
-        let mut addrs: Vec<&str> = plan
-            .input_aliases
-            .iter()
-            .map(|al| {
-                assert_eq!((al.node, al.dst_port), (gain, a), "{} dangles", al.address);
-                &*al.address
-            })
-            .collect();
-        addrs.sort_unstable();
-        assert_eq!(addrs, ["/w/in", "/w/s/in"]);
-
-        // The oscillator's buffer reaches the gain zero-copy — the collapse rewired the feeder
-        // wire through, rather than leaving the gain on a materialized scratch.
-        let osc = plan
-            .nodes
-            .iter()
-            .position(|n| &*n.address == "/o")
-            .expect("/o node");
-        assert_eq!(
-            plan.nodes[gain].inputs[a],
-            Some(plan.nodes[osc].outputs[0]),
-            "the gain does not share the oscillator's buffer"
-        );
-    }
 }
 
 #[cfg(test)]
@@ -1935,33 +1844,6 @@ mod descriptor_sharing_tests {
             assert!(
                 Arc::ptr_eq(&node.descriptor, &entry.descriptor),
                 "each plan node holds the registry's descriptor, not a copy of it"
-            );
-        }
-    }
-
-    /// The same, through the loader — the path every real graph takes. A document naming one type
-    /// N times leaves N nodes pointing at the registry's one descriptor, so the port lists do not
-    /// scale with node count. A voice pool loads each copy through here against the same registry,
-    /// so its operator nodes share too — its interface pipes do not, each minting its own ports
-    /// from its own declaration.
-    #[test]
-    fn a_document_naming_one_type_three_times_shares_one_descriptor() {
-        let registry = Registry::builtin();
-        let json = r#"{"instrument":"t","nodes":[
-            {"type":"oscillator","address":"/a"},
-            {"type":"oscillator","address":"/b"},
-            {"type":"oscillator","address":"/c"}]}"#;
-        let graph = crate::format::load(json, &registry).expect("three oscillators load");
-
-        let registered = &registry
-            .get("oscillator")
-            .expect("builtin oscillator")
-            .descriptor;
-        for address in ["/a", "/b", "/c"] {
-            let key = graph.find(address).expect("node built");
-            assert!(
-                Arc::ptr_eq(&graph.nodes[key].descriptor, registered),
-                "{address} holds the registry's descriptor, not a copy of it"
             );
         }
     }

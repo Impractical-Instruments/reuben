@@ -14,7 +14,8 @@
 //! - [`render`] — called from the audio callback, where a conversion per block *is* the cost.
 //!
 //! A browser worklet takes `default-features = false, features = ["render"]` and never compiles the
-//! authoring surface.
+//! authoring surface — nor `reuben-document` beneath it, which is what makes that build reachable
+//! for a target with no filesystem and no serde.
 //!
 //! Two seams face the other way — things a host must **provide** rather than call. The resource
 //! resolver is the one call *in*: samples and nested documents are never handed to the engine as
@@ -43,6 +44,7 @@ pub mod fs_resolver;
 #[cfg(feature = "render")]
 pub mod render;
 
+#[cfg(feature = "authoring")]
 pub mod resources;
 
 #[cfg(feature = "fs-resolver")]

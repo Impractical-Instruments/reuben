@@ -17,8 +17,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use reuben_core::introspect as core_introspect;
-use reuben_core::{contract as core_contract, edit as core_edit};
+use reuben_document::introspect as core_introspect;
+use reuben_document::{contract as core_contract, edit as core_edit};
 
 /// One diagnostic — an error or a warning — with the offending node/port when the loader localized
 /// it, so an agent can jump straight to the offending node.

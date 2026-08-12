@@ -147,7 +147,7 @@ class Index:
     def resolves_path(self, token: str, exact: bool = False) -> bool:
         """Exact match, or — unless `exact` — a unique-enough suffix. Docs legitimately write
         `format/normalize.rs` for a file that lives at
-        `crates/reuben-core/src/format/normalize.rs`, and demanding the full path everywhere would
+        `crates/reuben-document/src/format/normalize.rs`, and demanding the full path everywhere would
         be a house style this repo does not have.
 
         The entry docs are the exception (`exact=True`): AGENTS.md and README.md are a *navigation*

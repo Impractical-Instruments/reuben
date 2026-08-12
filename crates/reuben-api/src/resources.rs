@@ -15,14 +15,14 @@
 // The engine seam the adapters below present a store through; with neither half compiled there is
 // nothing to present it to.
 #[cfg(any(feature = "authoring", feature = "render", test))]
-use reuben_core::resources::ResourceResolver;
+use reuben_document::resources::ResourceResolver;
 
 /// Decoded audio, planar per channel at the file's native rate.
 pub use reuben_core::resources::SampleBuffer;
 
 /// Why a host could not produce a resource: not there, not decodable, not writable. Never fatal to
 /// a load — a document whose sample is missing loads and reports the failure as a warning.
-pub use reuben_core::resources::ResolveError;
+pub use reuben_document::resources::ResolveError;
 
 /// The host's answer to "what does this `source` name?".
 ///

@@ -4,9 +4,11 @@ members = [
     "crates/reuben-contract",
     "crates/reuben-macros",
     "crates/reuben-core",
+    "crates/reuben-document",
     "crates/reuben-api",
     "crates/reuben-native",
     "crates/reuben-mcp",
+    "crates/reuben-guide",
 ]
 
 [workspace.package]

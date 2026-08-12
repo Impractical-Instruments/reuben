@@ -8,12 +8,13 @@
 
 use std::fmt;
 
-use reuben_core::edit::{self as core_edit, EditError};
-use reuben_core::introspect::{self as core_introspect, PatchBoundary};
-use reuben_core::projection::{Projector, Selection};
-use reuben_core::resources::ResourceResolver;
-use reuben_core::vocabulary::Section;
-use reuben_core::{content_hash, LoadError, NormalizedDoc, Registry};
+use reuben_core::Registry;
+use reuben_document::edit::{self as core_edit, EditError};
+use reuben_document::introspect::{self as core_introspect, PatchBoundary};
+use reuben_document::projection::{Projector, Selection};
+use reuben_document::resources::ResourceResolver;
+use reuben_document::vocabulary::Section;
+use reuben_document::{content_hash, LoadError, NormalizedDoc};
 
 use super::args::*;
 use super::result::{Boundary, Diag, DocumentView, EditResult, OperatorInfo, Operators, Report};

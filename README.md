@@ -116,7 +116,7 @@ node's inputs are live over OSC at its address.
 (The one-feature example rigs that used to fill this table — echo, reverb, vibrato, metronome,
 sampler, and friends — were culled from the library; the ones tests and benches still exercise
 live on as frozen fixtures under `crates/*/tests/fixtures/` and
-`crates/reuben-core/benches/fixtures/`.)
+`crates/reuben-document/benches/fixtures/`.)
 
 To play an instrument from a phone/tablet, project its **surface doc** (`surfaces/<name>.json`
 — the presentation layer over its interface pipes,

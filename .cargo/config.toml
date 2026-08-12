@@ -21,6 +21,8 @@ rustflags = ["-C", "target-cpu=x86-64-v3"]
 # layer — with the `bench` feature the micro `[[bench]]` targets require. A bare
 # `cargo bench` still runs the macro layer; the micro targets declare `required-features = ["bench"]`
 # so they're skipped (not errored) without this flag. Use this alias to get everything in one word.
-reuben-core-bench = "bench -p reuben-core --features bench"
+# The benches live in reuben-document: every realistic workload is an instrument document, and the
+# loader that turns one into a Plan is that crate's. What they measure is still reuben-core.
+reuben-bench = "bench -p reuben-document --features bench"
 # Shortcut to play an instrument patch
 reuben-play = "run -p reuben-native --bin reuben -- play"

@@ -16,10 +16,12 @@ separate **private, AGPL** repo that pins this one as a git submodule and builds
 two boundaries simply coincide. The submodule pin is the version boundary — the engine version is
 a property of a cross-repo SHA, adopted when the product bumps its pin.
 
-The window is where the engine ends and a consumer begins, and that is a checked fact rather than a
-habit: no manifest in this workspace but `reuben-api`'s names `reuben-core`, dev-dependencies
-included, because a test that reaches around the window is a report that the window is missing
-something. The crate is one dependency with two feature halves — an off-thread `authoring` half that
+The window is where the engine ends and a consumer begins. It used to be a *checked* fact — no
+manifest but `reuben-api`'s naming `reuben-core`, guarded by a script — and since ADR-0082 (pending
+absorption) it is not: the engine is two crates, `reuben-document` names `reuben-core` from above,
+and the guard is gone. What replaced it checks a consequence instead of a manifest line: CI builds
+the render-only window, which fails if anything document-shaped reaches the render surface. The
+window is one dependency with two feature halves — an off-thread `authoring` half that
 declares its own types and a `render` half that re-exports what a block touches — both on by default,
 plus an off-by-default filesystem resolver, with CI building the render-only configuration the
 browser worklet takes so that fence is exercised in tree.
@@ -57,6 +59,8 @@ boundary.
 
 <a id="core-is-private-to-the-window"></a>
 ### `reuben-core` is named by `reuben-api` alone: no other manifest in the workspace declares a dependency on it, dev-dependencies included, and a guard that reads the renamed `package` field as well as the key keeps it that way.
+
+Superseded by: ADR-0082 (pending absorption)
 
 [why](rationale/web-product-process/core-is-private-to-the-window.md)
 

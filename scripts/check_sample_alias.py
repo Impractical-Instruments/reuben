@@ -65,10 +65,12 @@ ALLOWLIST = (
     # --- Incidental / domain-specific f32 vectors, not audio streams:
     "crates/reuben-core/src/plan.rs",       # `captured`: a snapshot pool of scalar interface Values
     "crates/reuben-core/src/wavetable.rs",  # a precomputed oscillator table's samples
-    # --- Bench/test harnesses: fabricate raw fixtures; not shipped audio API surface.
+    # --- Bench/test harnesses: fabricate raw fixtures; not shipped audio API surface. The bench
+    #     and integration-test trees live in reuben-document: every realistic workload is an
+    #     instrument document, so the harnesses sit with the loader that builds one.
     "crates/reuben-core/src/bench_support.rs",
-    "crates/reuben-core/benches/",
-    "crates/reuben-core/tests/",
+    "crates/reuben-document/benches/",
+    "crates/reuben-document/tests/",
     "crates/reuben-native/tests/",
     # --- The guard itself + its test literally name the forbidden forms in fixtures/messages.
     "scripts/check_sample_alias.py",

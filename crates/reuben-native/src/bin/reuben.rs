@@ -746,7 +746,8 @@ fn play(
             "audio out @ {} Hz, block {}",
             cfg.sample_rate, cfg.block_size
         );
-        render::install_initial(&instrument_json, resolver, cfg).expect("load instrument")
+        reuben_api::engine::install_initial(&instrument_json, resolver, cfg)
+            .expect("load instrument")
     })
     .unwrap_or_else(|e| panic!("start audio: {e}"));
 

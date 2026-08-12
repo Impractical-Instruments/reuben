@@ -1192,6 +1192,7 @@ version = "0.0.0"
 dependencies = [
  "hound",
  "reuben-core",
+ "reuben-document",
  "schemars",
  "serde",
  "serde_json",
@@ -1210,9 +1211,7 @@ name = "reuben-core"
 version = "0.0.0"
 dependencies = [
  "approx",
- "criterion",
  "hound",
- "iai-callgrind",
  "inventory",
  "num-traits",
  "reuben-contract",
@@ -1223,6 +1222,26 @@ dependencies = [
  "slotmap",
  "smallvec",
 ]
+
+[[package]]
+name = "reuben-document"
+version = "0.0.0"
+dependencies = [
+ "approx",
+ "criterion",
+ "hound",
+ "iai-callgrind",
+ "reuben-contract",
+ "reuben-core",
+ "schemars",
+ "serde",
+ "serde_json",
+ "slotmap",
+]
+
+[[package]]
+name = "reuben-guide"
+version = "0.0.0"
 
 [[package]]
 name = "reuben-macros"
