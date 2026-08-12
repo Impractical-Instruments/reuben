@@ -29,7 +29,8 @@
 //!
 //! see rules: authoring-library
 
-use std::sync::Arc;
+use alloc::boxed::Box;
+use alloc::sync::Arc;
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
@@ -257,7 +258,7 @@ fn silence(io: &mut Io, n: usize) {
 /// (except `Rect`) and peaks mid-grain, so overlapping grains crossfade without clicks.
 #[inline]
 fn window_env(window: GrainWindow, x: f32) -> f32 {
-    use std::f32::consts::{PI, TAU};
+    use core::f32::consts::{PI, TAU};
     let x = x.clamp(0.0, 1.0);
     match window {
         GrainWindow::Hann => 0.5 - 0.5 * (TAU * x).cos(),

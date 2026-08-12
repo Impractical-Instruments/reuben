@@ -19,6 +19,8 @@
 //!
 //! see rules: signal-time-dsp
 
+use alloc::boxed::Box;
+
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 use crate::wavetable::{shared_sine, Wavetable};
@@ -227,7 +229,7 @@ mod tests {
         d.push(IN_RATE, cut, 8.0);
         let out = d.render(n).output(OUT_OUT).to_vec();
 
-        let max_step = 2.0 * std::f32::consts::PI * 8.0 / SR * 1.05;
+        let max_step = 2.0 * core::f32::consts::PI * 8.0 / SR * 1.05;
         for i in 1..n {
             let step = (out[i] - out[i - 1]).abs();
             assert!(

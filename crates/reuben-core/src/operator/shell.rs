@@ -13,7 +13,8 @@
 //! the vectorizer — it still wins from the hoist, since that removes the per-sample bounds check
 //! either way.
 
-use std::marker::PhantomData;
+use alloc::boxed::Box;
+use core::marker::PhantomData;
 
 use super::form::{Held, SignalF32};
 use super::{In, Io, Operator, Out};

@@ -20,6 +20,9 @@
 //!
 //! see rules: execution-runtime
 
+use alloc::vec;
+use alloc::vec::Vec;
+
 use smallvec::SmallVec;
 
 use crate::descriptor::{Port, PortType};
@@ -166,8 +169,8 @@ impl<E: Executor> Renderer<E> {
         // Borrow `master`/`outbound_sink` out of `self` so `render_into` can take `&mut self` (both
         // preallocated; `take` swaps in an empty Vec, no allocation). The mono path discards
         // outbound — it has no out-parameter — so it renders into a throwaway sink.
-        let mut master = std::mem::take(&mut self.master);
-        let mut outbound = std::mem::take(&mut self.outbound_sink);
+        let mut master = core::mem::take(&mut self.master);
+        let mut outbound = core::mem::take(&mut self.outbound_sink);
         outbound.clear();
         self.render_into(plan, messages, &[], &mut master, &mut outbound);
         if let Some(ch0) = master.first() {
@@ -787,7 +790,7 @@ fn process_node(
     // inputs — no self-loops; cycles error), in signal-output port order.
     out_scratch.clear();
     for &bi in &node.outputs {
-        out_scratch.push(std::mem::take(&mut arena[bi]));
+        out_scratch.push(core::mem::take(&mut arena[bi]));
     }
     let n_inputs = node.descriptor.inputs.len();
 
@@ -851,7 +854,7 @@ fn process_node(
 
     // Return the signal-output buffers to the arena, same order they were taken.
     for (k, &bi) in node.outputs.iter().enumerate() {
-        arena[bi] = std::mem::take(&mut out_scratch[k]);
+        arena[bi] = core::mem::take(&mut out_scratch[k]);
     }
 }
 

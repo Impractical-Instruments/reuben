@@ -7,12 +7,13 @@
 //!
 //! see rules: execution-runtime
 
-use std::fmt;
-use std::marker::PhantomData;
-use std::ops::Deref;
-use std::ptr;
-use std::sync::atomic::{AtomicPtr, Ordering};
-use std::sync::Arc;
+use alloc::boxed::Box;
+use alloc::sync::Arc;
+use core::fmt;
+use core::marker::PhantomData;
+use core::ops::Deref;
+use core::ptr;
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 /// Create a connected mailbox pair: the Coordinator's end and the render side's end.
 ///
@@ -224,7 +225,12 @@ impl<T: Send> CoordinatorMailbox<T> {
     ///
     /// **The caller supplies the clock.** reuben-core is OS-free (no `std::time`, no
     /// sleeping), so the timeout is a `timed_out` predicate consulted after each empty
-    /// poll. Embed both the deadline *and* the back-off in it — e.g. a native shell:
+    /// poll. Embed both the deadline *and* the back-off in it.
+    ///
+    /// The example is written from an **OS-hosted** embedder — the `std` in it is the host's,
+    /// which is the point: it shows where a clock a portable crate cannot own comes from. A
+    /// bare-metal embedder writes the same predicate against a cycle counter or a SysTick tick,
+    /// and nothing about `reclaim` changes.
     ///
     /// ```no_run
     /// use std::time::{Duration, Instant};
@@ -266,7 +272,7 @@ impl<T: Send> CoordinatorMailbox<T> {
                 return Err(ReclaimError::TimedOut(SwapTimeout));
             }
             // If the caller's predicate doesn't sleep, at least be polite to the core.
-            std::hint::spin_loop();
+            core::hint::spin_loop();
         }
     }
 }
@@ -330,7 +336,7 @@ impl<T> fmt::Display for SwapInFlight<T> {
     }
 }
 
-impl<T> std::error::Error for SwapInFlight<T> {}
+impl<T> core::error::Error for SwapInFlight<T> {}
 
 /// Why a blocking [`reclaim`](CoordinatorMailbox::reclaim) returned no retiree.
 #[derive(Debug, PartialEq, Eq)]
@@ -356,8 +362,8 @@ impl fmt::Display for ReclaimError {
     }
 }
 
-impl std::error::Error for ReclaimError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+impl core::error::Error for ReclaimError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             ReclaimError::NotInFlight => None,
             ReclaimError::TimedOut(timeout) => Some(timeout),
@@ -375,4 +381,4 @@ impl fmt::Display for SwapTimeout {
     }
 }
 
-impl std::error::Error for SwapTimeout {}
+impl core::error::Error for SwapTimeout {}

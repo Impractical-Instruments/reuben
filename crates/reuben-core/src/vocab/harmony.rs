@@ -562,6 +562,6 @@ mod tests {
         fn assert_copy<T: Copy>() {}
         assert_copy::<Harmony>();
         // Guard against an accidental Box/Vec creeping in and ballooning the snapshot.
-        assert!(std::mem::size_of::<Harmony>() <= 64);
+        assert!(core::mem::size_of::<Harmony>() <= 64);
     }
 }

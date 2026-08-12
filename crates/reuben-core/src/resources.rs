@@ -3,8 +3,10 @@
 //!
 //! see rules: authoring-library
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use alloc::collections::BTreeMap;
+use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 /// A handle to a decoded resource within a [`ResourceStore`]. `Copy`, cheap to carry on an
 /// operator and through [`Operator::spawn`](crate::operator::Operator::spawn).

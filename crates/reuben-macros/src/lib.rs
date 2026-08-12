@@ -322,10 +322,10 @@ pub(crate) fn render_contract(struct_ident: &Ident, model: &ContractModel) -> To
                 pub fn contract() -> ::reuben_core::descriptor::Descriptor {
                     ::reuben_core::descriptor::Descriptor {
                         type_name: #type_name,
-                        inputs: ::std::vec![ #(#inputs),* ],
-                        outputs: ::std::vec![ #(#outputs),* ],
-                        constants: ::std::vec![ #(#constants),* ],
-                        resources: ::std::vec![ #(#resources),* ],
+                        inputs: ::reuben_core::__alloc::Vec::from([ #(#inputs),* ]),
+                        outputs: ::reuben_core::__alloc::Vec::from([ #(#outputs),* ]),
+                        constants: ::reuben_core::__alloc::Vec::from([ #(#constants),* ]),
+                        resources: ::reuben_core::__alloc::Vec::from([ #(#resources),* ]),
                     }
                 }
             }

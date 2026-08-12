@@ -5,6 +5,8 @@
 //!
 //! see rules: signal-time-dsp
 
+use alloc::boxed::Box;
+
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 

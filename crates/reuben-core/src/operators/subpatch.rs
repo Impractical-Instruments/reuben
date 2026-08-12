@@ -17,6 +17,8 @@
 //!
 //! see rules: composition-operators
 
+use alloc::boxed::Box;
+
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 

@@ -13,6 +13,7 @@
 //!
 //! see rules: composition-operators
 
+use alloc::boxed::Box;
 use smallvec::SmallVec;
 
 use crate::descriptor::Descriptor;

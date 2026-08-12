@@ -13,6 +13,24 @@
 // it works for any embedder. Inside this crate, that name must resolve to *us* — hence the alias.
 extern crate self as reuben_core;
 
+// The heap types this crate reaches for are named through `alloc`, not `std`, so every import
+// already reads the way it will on a target where no `std` exists to link. Declared explicitly
+// because `alloc` is never in the extern prelude, unlike `core` and `std` — that is true of any
+// crate, not just a `no_std` one, so this line does not become removable later.
+extern crate alloc;
+
+/// The two heap types the contract macros expand into, re-exported so their fully-qualified
+/// `::reuben_core::…` output stays self-contained. An operator-defining crate already depends on
+/// this one; routing `Box`/`Vec` through here means it does not additionally owe an
+/// `extern crate alloc;` of its own just to invoke the macro — `reuben-document`'s contract test is
+/// exactly such a crate. Exactly these two: the expansion builds its `Vec`s with `Vec::from` rather
+/// than `vec!` so no macro, and no whole `alloc` module, has to be re-exported to reach it.
+#[doc(hidden)]
+pub mod __alloc {
+    pub use alloc::boxed::Box;
+    pub use alloc::vec::Vec;
+}
+
 /// Crate-private `Io`-construction bridge for the per-operator micro benchmarks.
 /// Gated behind the non-default `bench` feature so the bridge never leaks into the public API:
 /// the `[[bench]]` micro targets declare `required-features = ["bench"]`, and CI runs them (plus

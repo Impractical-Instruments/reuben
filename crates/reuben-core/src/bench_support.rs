@@ -6,6 +6,10 @@
 //! operator. [`WORKLOADS`] is the single source of truth for which operators are benched and how;
 //! [`tests`] forces it to stay in sync with the registry and with `micro_iai.rs`'s CI census.
 
+use alloc::boxed::Box;
+use alloc::vec;
+use alloc::vec::Vec;
+
 use crate::descriptor::{Descriptor, PortType};
 use crate::op_driver::OpDriver;
 use crate::registry::Registry;
@@ -189,6 +193,8 @@ pub const WORKLOADS: &[Workload] = &[
 /// function carves out exactly this one kind, and [`OpHarness::for_kind`] constructs it directly
 /// instead of through the registry.
 pub mod overhead {
+    use alloc::boxed::Box;
+
     use crate::descriptor::Descriptor;
     use crate::operator::{Io, Operator};
 
@@ -369,7 +375,7 @@ fn drive_clock(driver: &mut OpDriver, desc: &Descriptor, name: &str) {
 /// runs dry) and bind it to the operator's first resource slot through the real loader path.
 fn bind_synthetic_sample(driver: &mut OpDriver, desc: &Descriptor) {
     let frames = BLOCKS * BLOCK_SIZE;
-    let step = std::f32::consts::TAU * 220.0 / SAMPLE_RATE;
+    let step = core::f32::consts::TAU * 220.0 / SAMPLE_RATE;
     let channel: Vec<f32> = (0..frames).map(|i| (i as f32 * step).sin()).collect();
     let slot = desc
         .resources
@@ -382,7 +388,7 @@ fn bind_synthetic_sample(driver: &mut OpDriver, desc: &Descriptor) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
+    use alloc::collections::BTreeSet;
 
     /// Forcing function: every registered operator must have a [`WORKLOADS`] entry, so a new
     /// operator can't silently escape the micro layer. Runs in the `check` job under

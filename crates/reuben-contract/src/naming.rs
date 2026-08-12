@@ -4,6 +4,8 @@
 //! operator's `type_name` and its Rust struct name, lives here so the macro and the scaffold can
 //! never disagree on what `freq` becomes (`FREQ`) or what `my_op` becomes (`MyOp`).
 
+use alloc::string::{String, ToString};
+
 /// `freq` -> `FREQ`. The const-name fragment for a port/param (non-alphanumerics become `_`).
 pub fn screaming(name: &str) -> String {
     name.chars()

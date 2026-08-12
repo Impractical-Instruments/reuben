@@ -21,6 +21,9 @@
 //!
 //! see rules: execution-runtime
 
+use alloc::vec;
+use alloc::vec::Vec;
+
 use crate::message::{Arg, Message};
 use crate::plan::Plan;
 use crate::render::Renderer;
@@ -129,7 +132,7 @@ impl Engine {
     /// Drain the outbound Messages produced by the most recent [`Engine::fill`], in
     /// emission order. The caller (native's OSC-out path) encodes and UDP-sends them. Empty unless
     /// the instrument has an `osc_out` sink that fired; call right after `fill`, before the next.
-    pub fn drain_outbound(&mut self) -> std::vec::Drain<'_, Message> {
+    pub fn drain_outbound(&mut self) -> alloc::vec::Drain<'_, Message> {
         self.outbound.drain(..)
     }
 
@@ -224,7 +227,7 @@ impl Engine {
     /// materializes that default (no device stream is not the same as a
     /// silent device stream). Once a stream exists, staged zeros are honest device silence.
     fn render_next(&mut self) {
-        let msgs = std::mem::take(&mut self.pending);
+        let msgs = core::mem::take(&mut self.pending);
         let inputs: &[Vec<f32>] = if self.in_dirty { &self.in_scratch } else { &[] };
         self.renderer.render_block_multi(
             &mut self.plan,

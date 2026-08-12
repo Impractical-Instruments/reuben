@@ -9,7 +9,9 @@
 //!
 //! [`Oscillator`]: crate::operators::oscillator
 
-use std::sync::OnceLock;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use once_cell::race::OnceBox;
 
 /// Samples per cycle in the built-in tables.
 ///
@@ -89,8 +91,12 @@ impl Wavetable {
 /// once rather than per voice. Built lazily on first call; call it from a cold path (an operator's
 /// `new`/`spawn`) so the audio thread only ever reads the already-built table.
 pub fn shared_sine() -> &'static Wavetable {
-    static SINE: OnceLock<Wavetable> = OnceLock::new();
-    SINE.get_or_init(|| Wavetable::sine(TABLE_SIZE))
+    // A once-cell rather than a `const` table, and a lock-free one rather than a lock: the table
+    // must live in RAM, and the cell is initialized from a cold path but read from the audio
+    // thread. `OnceBox` races on a single atomic pointer, so the loser of the race drops its own
+    // build and the reader never blocks.
+    static SINE: OnceBox<Wavetable> = OnceBox::new();
+    SINE.get_or_init(|| Box::new(Wavetable::sine(TABLE_SIZE)))
 }
 
 #[cfg(test)]
@@ -162,7 +168,7 @@ mod tests {
         let a = shared_sine();
         let b = shared_sine();
         assert!(
-            std::ptr::eq(a, b),
+            core::ptr::eq(a, b),
             "shared_sine must hand back one instance"
         );
         assert_eq!(a.size(), TABLE_SIZE);

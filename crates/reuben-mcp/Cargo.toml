@@ -32,7 +32,7 @@ reuben-api = { path = "../reuben-api", default-features = false, features = [
 rmcp = { workspace = true, features = ["server", "macros", "transport-io"] }
 # current_thread async runtime; the exact feature set measured as sufficient.
 tokio = { workspace = true, features = ["sync", "rt", "time", "io-std"] }
-serde = { workspace = true }
+serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true }
 # JSON Schema derive for the tool input/output types — the same schemars the window derives its own
 # argument and result shapes with. Nothing behind the window derives one.

@@ -6,8 +6,9 @@
 //! operator set; [`Registry::register`] lets an embedder add its own operator types
 //! (the seam for the "agents author new Operators in Rust" goal).
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 
 use crate::descriptor::Descriptor;
 use crate::operator::Operator;
@@ -34,7 +35,7 @@ macro_rules! register_operator {
     ($t:ty) => {
         inventory::submit! {
             $crate::registry::OpReg {
-                make: || Box::new(<$t>::new()),
+                make: || $crate::__alloc::Box::new(<$t>::new()),
                 descriptor: <$t>::descriptor,
             }
         }

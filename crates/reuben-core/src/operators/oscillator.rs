@@ -8,6 +8,8 @@
 //!   via `io.read(IN_WAVEFORM)`.
 //! - output 0: `audio` (`Buffer`).
 
+use alloc::boxed::Box;
+
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 use crate::vocab::Waveform;

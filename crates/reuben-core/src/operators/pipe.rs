@@ -21,6 +21,10 @@
 //!
 //! see rules: composition-operators
 
+use alloc::boxed::Box;
+use alloc::vec;
+use alloc::vec::Vec;
+
 use crate::descriptor::{Descriptor, Port};
 use crate::message::Arg;
 use crate::operator::form::{Raw, SignalF32};
@@ -126,7 +130,7 @@ mod tests {
         let run = |pipe: &mut Pipe, v: f32| -> Vec<Emit> {
             let mut sink: Vec<Emit> = Vec::new();
             let latch = [Arg::F32(v)];
-            let mut io = Io::new(48_000.0, 8, [None], std::iter::empty::<&mut [f32]>())
+            let mut io = Io::new(48_000.0, 8, [None], core::iter::empty::<&mut [f32]>())
                 .with_latched(&latch)
                 .with_emit(&mut sink, 0);
             pipe.process(&mut io);
@@ -156,7 +160,7 @@ mod tests {
         let streams: [&[Event]; 1] = [&events];
         let mut sink: Vec<Emit> = Vec::new();
         {
-            let mut io = Io::new(48_000.0, 16, [None], std::iter::empty::<&mut [f32]>())
+            let mut io = Io::new(48_000.0, 16, [None], core::iter::empty::<&mut [f32]>())
                 .with_streams(&streams)
                 .with_emit(&mut sink, 0);
             pipe.process(&mut io);
@@ -173,7 +177,7 @@ mod tests {
         let run = |pipe: &mut dyn Operator, v: f32| -> Vec<Emit> {
             let mut sink: Vec<Emit> = Vec::new();
             let latch = [Arg::F32(v)];
-            let mut io = Io::new(48_000.0, 8, [None], std::iter::empty::<&mut [f32]>())
+            let mut io = Io::new(48_000.0, 8, [None], core::iter::empty::<&mut [f32]>())
                 .with_latched(&latch)
                 .with_emit(&mut sink, 0);
             pipe.process(&mut io);

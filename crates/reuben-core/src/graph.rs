@@ -6,8 +6,11 @@
 //!
 //! see rules: composition-operators
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use alloc::boxed::Box;
+use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use slotmap::{new_key_type, SecondaryMap, SlotMap};
 
@@ -312,7 +315,7 @@ mod tests {
     use super::*;
     use crate::descriptor::{Descriptor, Port};
     use crate::operator::{Io, Operator};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use core::sync::atomic::{AtomicUsize, Ordering};
 
     /// An operator that counts its own `spawn` calls, so a test can tell a box that came through
     /// [`Operator::spawn`] from one built any other way. It carries a `binding` across the call

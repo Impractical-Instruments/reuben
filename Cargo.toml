@@ -21,8 +21,19 @@ license = "BSD-3-Clause"
 repository = "https://github.com/Impractical-Instruments/reuben"
 
 [workspace.dependencies]
-slotmap = "1"
+# `default-features = false` here rather than per-crate: cargo ignores a member's
+# `default-features = false` unless the workspace entry states one, so the render half's
+# requirement has to be the shared default. slotmap's `std` feature gates exactly one item —
+# `SparseSecondaryMap` — which no crate here names, so nothing pays for it.
+slotmap = { version = "1", default-features = false }
 smallvec = "1"
+# The shared sine table's once-cell. It has to be a cell rather than a `const` table: the image
+# executes from external QSPI, and a per-sample fetch across that bus is exactly the latency a
+# realtime block budget cannot absorb — so the table is built into RAM at boot and read locally.
+# `default-features = false` + `alloc` selects the `race` module, whose `OnceBox` is `no_std` and
+# lock-free over a single atomic pointer, which the Cortex-M7 has natively. That avoids a
+# `critical-section` implementation, which every embedder would then owe.
+once_cell = { version = "1", default-features = false, features = ["alloc"] }
 # Generic numeric traits (Zero/One/Euclid) so the pointwise math operators are written once over any
 # number type, not pinned to f32. The overflow-prone operations bind the workspace's own
 # `PointwiseNum` instead: num-traits' saturating traits are integer-only, so they cannot express the
@@ -42,10 +53,13 @@ proc-macro2 = "1"
 hound = "3"
 approx = "0.5"
 # Instrument format (serde) — portable core authoring layer.
-serde = { version = "1", features = ["derive"] }
+# The shared entry carries only `derive`, because reuben-contract is reached from a bare-metal
+# target where no `std` exists to link and a member cannot subtract a default the workspace
+# asserts. Every crate that wants the `std` impls names `std` itself.
+serde = { version = "1", default-features = false, features = ["derive"] }
 serde_json = "1"
 # JSON Schema derive for the window's advertised types: a door emits each tool's `outputSchema`
-# from these. Also optional in reuben-core behind its default-off `schemars` feature, which now
+# from these. Also optional in reuben-document behind its default-off `schemars` feature, which now
 # carries only the projection's format-completeness guard.
 schemars = "1"
 # Native layer (reuben-native) only.

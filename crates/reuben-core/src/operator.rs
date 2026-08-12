@@ -9,9 +9,11 @@
 //! the declared default, so a wrong-form read does not compile. The one type-erased held read
 //! left is [`Io::latch_arg`], the interface pipe's forwarding seam.
 
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 pub mod shell;
 
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 use smallvec::SmallVec;
 
@@ -185,7 +187,7 @@ impl<'a> Io<'a> {
 pub struct In<F: form::InForm> {
     index: usize,
     default: F::Default,
-    _form: std::marker::PhantomData<F>,
+    _form: core::marker::PhantomData<F>,
 }
 
 impl<F: form::InForm> In<F> {
@@ -197,7 +199,7 @@ impl<F: form::InForm> In<F> {
         Self {
             index,
             default,
-            _form: std::marker::PhantomData,
+            _form: core::marker::PhantomData,
         }
     }
 
@@ -230,7 +232,7 @@ impl<F: form::InForm> Copy for In<F> {}
 /// that signal outputs precede message outputs in declaration order.
 pub struct Out<F> {
     index: usize,
-    _form: std::marker::PhantomData<F>,
+    _form: core::marker::PhantomData<F>,
 }
 
 impl<F> Out<F> {
@@ -240,7 +242,7 @@ impl<F> Out<F> {
     pub const fn new(index: usize) -> Self {
         Self {
             index,
-            _form: std::marker::PhantomData,
+            _form: core::marker::PhantomData,
         }
     }
 
@@ -293,7 +295,7 @@ pub mod form {
     //! [`write`](super::Io::write) shape at compile time and so makes a wrong-form access
     //! uncompilable.
 
-    use std::marker::PhantomData;
+    use core::marker::PhantomData;
 
     use super::{EventStream, EventWriter, Io, MsgWriter};
     use crate::message::{Arg, FromArg};
@@ -523,8 +525,8 @@ impl EventWriter<'_> {
 /// sparse [`Event`]s, each decoded to `T` and frame-stamped ([`Stamped`]). A *named* type (not
 /// `impl Iterator`) so it can be a form's associated `Read` type.
 pub struct EventStream<'a, T> {
-    events: std::slice::Iter<'a, Event<'a>>,
-    _marker: std::marker::PhantomData<T>,
+    events: core::slice::Iter<'a, Event<'a>>,
+    _marker: core::marker::PhantomData<T>,
 }
 
 impl<'a, T> EventStream<'a, T> {
@@ -533,7 +535,7 @@ impl<'a, T> EventStream<'a, T> {
     pub(crate) fn over(events: &'a [Event<'a>]) -> Self {
         EventStream {
             events: events.iter(),
-            _marker: std::marker::PhantomData,
+            _marker: core::marker::PhantomData,
         }
     }
 }
@@ -633,7 +635,7 @@ mod typed_handles {
             48_000.0,
             3,
             [Some(&buf[..])],
-            std::iter::empty::<BlockMut<'_>>(),
+            core::iter::empty::<BlockMut<'_>>(),
         );
         let read = io.read(SIG);
         assert_eq!(read, &buf[..]);
@@ -650,10 +652,10 @@ mod typed_handles {
         const SUSTAIN: In<Held<f32>> = In::new(0, 0.7);
         let latch = [Arg::F32(0.25)];
         let io =
-            Io::new(48_000.0, 1, [None], std::iter::empty::<BlockMut<'_>>()).with_latched(&latch);
+            Io::new(48_000.0, 1, [None], core::iter::empty::<BlockMut<'_>>()).with_latched(&latch);
         assert_eq!(io.read(SUSTAIN), 0.25);
         // Unlatched (a hand-built Io; the engine always seeds) → the declared default.
-        let bare = Io::new(48_000.0, 1, [None], std::iter::empty::<BlockMut<'_>>());
+        let bare = Io::new(48_000.0, 1, [None], core::iter::empty::<BlockMut<'_>>());
         assert_eq!(bare.read(SUSTAIN), 0.7);
     }
 
@@ -664,9 +666,9 @@ mod typed_handles {
         const MODE: In<Held<FilterMode>> = In::new(0, FilterMode::DEFAULT);
         let latch = [Arg::from(FilterMode::Bp)];
         let io =
-            Io::new(48_000.0, 1, [None], std::iter::empty::<BlockMut<'_>>()).with_latched(&latch);
+            Io::new(48_000.0, 1, [None], core::iter::empty::<BlockMut<'_>>()).with_latched(&latch);
         assert_eq!(io.read(MODE), FilterMode::Bp);
-        let bare = Io::new(48_000.0, 1, [None], std::iter::empty::<BlockMut<'_>>());
+        let bare = Io::new(48_000.0, 1, [None], core::iter::empty::<BlockMut<'_>>());
         assert_eq!(bare.read(MODE), FilterMode::DEFAULT);
     }
 
@@ -675,7 +677,7 @@ mod typed_handles {
     #[test]
     fn read_held_harmony_defaults_to_c_major() {
         const CTX: In<Held<Harmony>> = In::new(0, Harmony::DEFAULT);
-        let bare = Io::new(48_000.0, 1, [None], std::iter::empty::<BlockMut<'_>>());
+        let bare = Io::new(48_000.0, 1, [None], core::iter::empty::<BlockMut<'_>>());
         assert_eq!(bare.read(CTX), Harmony::default());
     }
 
@@ -694,7 +696,7 @@ mod typed_handles {
             },
         ];
         let streams: [&[crate::message::Event]; 1] = [&events];
-        let io = Io::new(48_000.0, 64, [None], std::iter::empty::<BlockMut<'_>>())
+        let io = Io::new(48_000.0, 64, [None], core::iter::empty::<BlockMut<'_>>())
             .with_streams(&streams);
         let got: Vec<_> = io
             .read(NOTES)
@@ -711,8 +713,8 @@ mod typed_handles {
         let a = Arg::Str("Up".into());
         let events = [crate::message::Event { arg: &a, frame: 2 }];
         let streams: [&[crate::message::Event]; 1] = [&events];
-        let io =
-            Io::new(48_000.0, 8, [None], std::iter::empty::<BlockMut<'_>>()).with_streams(&streams);
+        let io = Io::new(48_000.0, 8, [None], core::iter::empty::<BlockMut<'_>>())
+            .with_streams(&streams);
         let got: Vec<_> = io.read(IN).map(|s| (s.frame, s.payload.clone())).collect();
         assert_eq!(got, vec![(2, Arg::Str("Up".into()))]);
     }
@@ -726,7 +728,7 @@ mod typed_handles {
             let mut io = Io::new(
                 48_000.0,
                 4,
-                std::iter::empty::<Option<BlockView<'_>>>(),
+                core::iter::empty::<Option<BlockView<'_>>>(),
                 [&mut buf[..]],
             );
             io.write(AUDIO).copy_from_slice(&[1.0, 2.0, 3.0, 4.0]);
@@ -745,8 +747,8 @@ mod typed_handles {
             let mut io = Io::new(
                 48_000.0,
                 8,
-                std::iter::empty::<Option<BlockView<'_>>>(),
-                std::iter::empty::<BlockMut<'_>>(),
+                core::iter::empty::<Option<BlockView<'_>>>(),
+                core::iter::empty::<BlockMut<'_>>(),
             )
             .with_emit(&mut sink, 0);
             let mut w = io.write(ACTIVE);
@@ -772,8 +774,8 @@ mod typed_handles {
         Io::new(
             48_000.0,
             8,
-            std::iter::empty::<Option<BlockView<'_>>>(),
-            std::iter::empty::<BlockMut<'_>>(),
+            core::iter::empty::<Option<BlockView<'_>>>(),
+            core::iter::empty::<BlockMut<'_>>(),
         )
         .with_emit(sink, frame_offset)
     }
@@ -837,7 +839,7 @@ mod typed_handles {
         const SIG: In<SignalF32> = In::new(0, 0.0);
         let hints = [false];
         let io =
-            Io::new(48_000.0, 1, [None], std::iter::empty::<BlockMut<'_>>()).with_varying(&hints);
+            Io::new(48_000.0, 1, [None], core::iter::empty::<BlockMut<'_>>()).with_varying(&hints);
         assert!(!io.varying(SIG));
         assert!(!io.varying(0));
         assert!(io.varying(7), "out of range is conservatively varying");

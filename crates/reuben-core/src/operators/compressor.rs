@@ -39,6 +39,8 @@
 //!
 //! see rules: signal-time-dsp
 
+use alloc::boxed::Box;
+
 use crate::descriptor::Descriptor;
 use crate::dsp::svf::{Svf, SvfCoeffs};
 use crate::operator::{Io, Operator};
@@ -417,7 +419,7 @@ mod tests {
         let n = 24_000;
         let audio = ac(n, 0.05);
         let low_key: Vec<f32> = (0..n)
-            .map(|i| (std::f32::consts::TAU * 60.0 * i as f32 / SR).sin())
+            .map(|i| (core::f32::consts::TAU * 60.0 * i as f32 / SR).sin())
             .collect();
         let run = |key_hp: f32| {
             OpDriver::for_type(Compressor::new(), SR)

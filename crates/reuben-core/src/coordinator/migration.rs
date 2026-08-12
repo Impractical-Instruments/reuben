@@ -4,6 +4,8 @@
 //!
 //! see rules: execution-runtime
 
+use alloc::vec::Vec;
+
 /// The precomputed **migration table**: the `(old index, new index)` survivor pairs
 /// the render side transplants by box swap. The survivor semantics — which nodes survive, how
 /// indices map — stay off-thread with the Coordinator that built it.

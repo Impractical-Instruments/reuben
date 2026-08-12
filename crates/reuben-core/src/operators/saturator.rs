@@ -24,6 +24,8 @@
 //!
 //! see rules: signal-time-dsp
 
+use alloc::boxed::Box;
+
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
@@ -81,7 +83,7 @@ impl Operator for Saturator {
         // One-pole DC-blocker pole for the ~DC_CORNER_HZ corner; a degenerate sample rate gets
         // r = 0 (the blocker becomes a plain differencer instead of dividing by zero).
         let r = if sample_rate > 0.0 {
-            (1.0 - std::f32::consts::TAU * DC_CORNER_HZ / sample_rate).max(0.0)
+            (1.0 - core::f32::consts::TAU * DC_CORNER_HZ / sample_rate).max(0.0)
         } else {
             0.0
         };
@@ -147,7 +149,7 @@ mod tests {
 
     fn sine(n: usize, freq: f32, amp: f32) -> Vec<f32> {
         (0..n)
-            .map(|i| amp * (std::f32::consts::TAU * freq * i as f32 / SR).sin())
+            .map(|i| amp * (core::f32::consts::TAU * freq * i as f32 / SR).sin())
             .collect()
     }
 
@@ -168,7 +170,7 @@ mod tests {
     fn harmonic_mag(buf: &[f32], freq: f32) -> f32 {
         let (mut s, mut c) = (0.0f64, 0.0f64);
         for (i, &x) in buf.iter().enumerate() {
-            let ph = std::f64::consts::TAU * freq as f64 * i as f64 / SR as f64;
+            let ph = core::f64::consts::TAU * freq as f64 * i as f64 / SR as f64;
             s += x as f64 * ph.sin();
             c += x as f64 * ph.cos();
         }

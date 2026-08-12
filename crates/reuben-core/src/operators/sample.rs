@@ -30,7 +30,8 @@
 //!
 //! see rules: authoring-library
 
-use std::sync::Arc;
+use alloc::boxed::Box;
+use alloc::sync::Arc;
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};

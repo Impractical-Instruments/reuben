@@ -8,6 +8,9 @@
 //!
 //! see rules: execution-runtime
 
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+
 use crate::message::{Arg, Message};
 
 use super::install::{InstallBundle, RenderSide};
@@ -56,7 +59,7 @@ impl MasterGainRamp {
         let mut curve = Vec::with_capacity(edge + 1);
         for i in 0..=edge {
             let t = i as f32 / edge as f32;
-            curve.push(0.5 * (1.0 + (std::f32::consts::PI * t).cos()));
+            curve.push(0.5 * (1.0 + (core::f32::consts::PI * t).cos()));
         }
         // Exact endpoints (guard against cos rounding): full open at 0, dead silent at edge.
         curve[0] = 1.0;
@@ -151,7 +154,7 @@ impl RenderSlot {
     }
 
     /// Drain the outbound Messages the most recent fill produced, in emission order.
-    pub fn drain_outbound(&mut self) -> std::vec::Drain<'_, Message> {
+    pub fn drain_outbound(&mut self) -> alloc::vec::Drain<'_, Message> {
         self.engine.drain_outbound()
     }
 
@@ -305,7 +308,7 @@ impl RenderSlot {
             .transplant_survivors(&mut self.engine, bundle.migration.survivors());
         // Swap the fresh Engine live; `bundle.engine` now holds the retiring one. Reusing the box's
         // storage (rather than `Box::new`) is what keeps the post allocation-free.
-        std::mem::swap(&mut self.engine, &mut bundle.engine);
+        core::mem::swap(&mut self.engine, &mut bundle.engine);
         if let Err(returned) = self.mailbox.post_retiree(bundle) {
             // Unreachable under one-in-flight: the retire slot is vacant here. Never
             // drop on the render thread — stash and retry next callback.

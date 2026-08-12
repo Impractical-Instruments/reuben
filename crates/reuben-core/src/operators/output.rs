@@ -7,6 +7,8 @@
 //! - input 0: `audio` (`Buffer`) — per-sample audio in (the wired master bus).
 //! - output 0: `audio` (`Buffer`) — copy of the input, tapped as master.
 
+use alloc::boxed::Box;
+
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 

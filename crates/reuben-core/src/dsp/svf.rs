@@ -27,7 +27,7 @@ impl SvfCoeffs {
     pub fn new(cutoff: f32, resonance: f32, sample_rate: f32) -> Self {
         let cutoff = cutoff.clamp(20.0, 0.45 * sample_rate);
         let k = (2.0 - 1.9 * resonance.clamp(0.0, 1.0)).max(0.1);
-        let g = (std::f32::consts::PI * cutoff / sample_rate).tan();
+        let g = (core::f32::consts::PI * cutoff / sample_rate).tan();
         let a1 = 1.0 / (1.0 + g * (g + k));
         let a2 = g * a1;
         let a3 = g * a2;
@@ -89,7 +89,7 @@ mod tests {
 
     fn sine(f: f32, n: usize) -> Vec<f32> {
         (0..n)
-            .map(|i| (2.0 * std::f32::consts::PI * f * i as f32 / SR).sin())
+            .map(|i| (2.0 * core::f32::consts::PI * f * i as f32 / SR).sin())
             .collect()
     }
 

@@ -27,6 +27,12 @@
 //!
 //! see rules: composition-operators
 
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
+
 use crate::config::AudioConfig;
 use crate::descriptor::Descriptor;
 use crate::graph::Graph;
@@ -242,7 +248,7 @@ impl Operator for Voicer {
     }
 
     fn on_instantiate(&mut self, config: &AudioConfig) -> Result<(), PlanError> {
-        let graphs = std::mem::take(&mut self.graphs);
+        let graphs = core::mem::take(&mut self.graphs);
         if graphs.is_empty() {
             return Ok(());
         }

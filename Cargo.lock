@@ -1214,11 +1214,9 @@ dependencies = [
  "hound",
  "inventory",
  "num-traits",
+ "once_cell",
  "reuben-contract",
  "reuben-macros",
- "schemars",
- "serde",
- "serde_json",
  "slotmap",
  "smallvec",
 ]

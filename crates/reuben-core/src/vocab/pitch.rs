@@ -8,6 +8,8 @@
 //! [`Note`] is the atomic vocab payload of an `Arg::Note`: a Pitch plus a velocity, riding
 //! **one** [`Arg`](crate::message::Arg) because a Message carries exactly one.
 
+use alloc::vec::Vec;
+
 /// A symbolic pitch — exactly one of a scale degree or an absolute MIDI coordinate.
 #[derive(Debug, Clone, Copy, PartialEq, reuben_macros::ArgValue)]
 pub enum Pitch {
