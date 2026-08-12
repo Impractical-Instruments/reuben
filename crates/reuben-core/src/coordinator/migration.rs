@@ -1,0 +1,45 @@
+//! The migration table: the survivor pairs the RT install slot transplants by.
+//!
+//! The table is *built* off-thread, by diffing two manifests in the document crate, and only ever
+//! *consumed* here — the render side applies it and never reasons about which nodes survived or
+//! why. It lives on this side of the seam because it is a field of
+//! [`InstallBundle`](super::InstallBundle), which crosses the install mailbox into the callback.
+//!
+//! see rules: execution-runtime
+
+/// The precomputed **migration table**: the `(old index, new index)` survivor pairs
+/// the render side transplants by box swap. The survivor semantics — which nodes survive, how
+/// indices map — stay off-thread with the Coordinator that built it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MigrationTable {
+    survivors: Vec<(usize, usize)>,
+}
+
+impl MigrationTable {
+    /// Wrap a computed set of `(old index, new index)` survivor pairs. The pairing rule is the
+    /// builder's; this side takes the result as given.
+    pub fn new(survivors: Vec<(usize, usize)>) -> Self {
+        Self { survivors }
+    }
+
+    /// The empty table (no survivors) — every node resets. The retiree posted back through the
+    /// mailbox carries this: a reclaimed Engine has no migration to apply.
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// The `(old index, new index)` survivor pairs, for the transplant loop.
+    pub fn survivors(&self) -> &[(usize, usize)] {
+        &self.survivors
+    }
+
+    /// Number of survivor pairs.
+    pub fn len(&self) -> usize {
+        self.survivors.len()
+    }
+
+    /// Whether the table is empty (no survivors).
+    pub fn is_empty(&self) -> bool {
+        self.survivors.is_empty()
+    }
+}

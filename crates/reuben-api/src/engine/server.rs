@@ -23,7 +23,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use reuben_core::coordinator::Coordinator;
+use reuben_document::coordinator::Coordinator;
 
 use crate::authoring::{Diag, Report};
 

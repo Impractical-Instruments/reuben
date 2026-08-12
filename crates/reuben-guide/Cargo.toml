@@ -1,0 +1,19 @@
+[package]
+name = "reuben-guide"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Docs tooling: slice the authoring guide into its per-delivery-lane cuts."
+
+# Docs tooling, not engine code. It lived in `reuben-core` and sliced markdown there, which made
+# the render crate carry 222 lines that no render path calls, so it moved out of the library.
+# It depends on nothing in the workspace — the guide is text, and this crate is the one that knows
+# how the lanes are marked.
+
+[[bin]]
+name = "guide_cut"
+path = "src/main.rs"
+
+[dependencies]

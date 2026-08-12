@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-r"""Core-privacy guard — `reuben-core` is named by `reuben-api` alone.
+r"""Core-privacy guard — the engine crates are named by `reuben-api` alone.
 
 `reuben-api` is the one window between the engine and every consumer. Rust has no crate-level
 visibility, so "the engine is private" cannot be a keyword: it means *no other crate's manifest
-declares a dependency on it*, and a crate that cannot name `reuben-core` cannot reach past the
+declares a dependency on it*, and a crate that cannot name an engine crate cannot reach past the
 window by accident. This guard is that sentence, checked.
+
+The engine is **two** crates: `reuben-core` (render) and `reuben-document` (authoring). Both are
+private, and the split adds one legitimate edge between them — `reuben-document` sits above
+`reuben-core` and names it. That one edge is allowed here and nowhere else; the reverse is not a
+policy question but a build error, since it would be a Cargo cycle.
 
 It reads every `Cargo.toml` in the workspace and fails if any dependency table
 (`[dependencies]`, `[dev-dependencies]`, `[build-dependencies]`, their `[target.*]` forms, and
@@ -26,9 +31,13 @@ import sys
 import tomllib
 from pathlib import Path
 
-# The crate behind the window, and the one crate allowed to depend on it.
-PRIVATE_CRATE = "reuben-core"
+# The crates behind the window.
+PRIVATE_CRATES = ("reuben-core", "reuben-document")
 WINDOW_MANIFEST = "crates/reuben-api/Cargo.toml"
+# Edges that are inside the engine rather than around the window: manifest -> what it may name.
+# `reuben-document` is the authoring half and imports the render half upward, which is the whole
+# shape of the split. see rules: execution-runtime
+INTERNAL_EDGES = {"crates/reuben-document/Cargo.toml": {"reuben-core"}}
 
 SKIP_DIRS = {".git", "target", "node_modules", "dist", "build"}
 # A nested checkout carries a full copy of every workspace manifest, so a walk that reads it judges
@@ -80,6 +89,7 @@ def collect_problems(root_arg: str = ".") -> list[str]:
         rel = path.relative_to(root).as_posix()
         if rel == WINDOW_MANIFEST:
             continue
+        allowed = INTERNAL_EDGES.get(rel, frozenset())
         try:
             manifest = tomllib.loads(path.read_text(encoding="utf-8"))
         except (OSError, tomllib.TOMLDecodeError) as e:
@@ -88,11 +98,14 @@ def collect_problems(root_arg: str = ".") -> list[str]:
         # The engine's own manifest names itself in `[package]`, which is not a build edge.
         for table_name, deps in _dependency_tables(manifest):
             for key, spec in deps.items():
-                if key != PRIVATE_CRATE and _renamed_package(spec) != PRIVATE_CRATE:
+                named = key if key in PRIVATE_CRATES else _renamed_package(spec)
+                if named not in PRIVATE_CRATES:
                     continue
-                spelling = key if key == PRIVATE_CRATE else f'{key} = {{ package = "{PRIVATE_CRATE}" }}'
+                if named in allowed:
+                    continue
+                spelling = key if key == named else f'{key} = {{ package = "{named}" }}'
                 problems.append(
-                    f"{rel}: [{table_name}] names {PRIVATE_CRATE} (as `{spelling}`) — every "
+                    f"{rel}: [{table_name}] names {named} (as `{spelling}`) — every "
                     f"consumer reaches the engine through reuben-api, so take the window's "
                     f"dependency instead (add what is missing to reuben-api rather than "
                     f"reaching past it)"

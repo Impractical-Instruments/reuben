@@ -10,8 +10,8 @@
 
 use crate::message::{Arg, Message};
 
+use super::install::{InstallBundle, RenderSide};
 use super::mailbox::RenderMailbox;
-use super::swap::{InstallBundle, RenderSide};
 use crate::engine::Engine;
 
 /// Master-gain ramp duration **per edge**: raised-cosine, nominal 10ms, **fixed and

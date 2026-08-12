@@ -9,7 +9,8 @@
 use std::path::{Component, Path, PathBuf};
 
 use crate::resources::Resources;
-use reuben_core::resources::{ResolveError, SampleBuffer};
+use reuben_core::resources::SampleBuffer;
+use reuben_document::resources::ResolveError;
 
 /// Resolves resource sources as filesystem paths relative to a base directory, decoding WAV.
 pub struct FsResolver {
@@ -533,7 +534,7 @@ mod tests {
         .unwrap();
 
         let resolver = FsResolver::new(&dir);
-        let loaded = reuben_core::resolve_instrument(
+        let loaded = reuben_document::resolve_instrument(
             "reuben_test_voice.json",
             &reuben_core::Registry::builtin(),
             // The engine seam this store is *presented* through, since the load path is the one

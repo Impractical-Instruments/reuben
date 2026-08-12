@@ -1,0 +1,30 @@
+[package]
+name = "reuben-document"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Authoring instrument documents and turning them into an engine Plan: the format, the edit verbs, the projections, and the Coordinator."
+
+[features]
+# Derives `schemars::JsonSchema` on the instrument-format types (src/format) and on nothing else, so
+# the projection's completeness guard can enumerate every format field mechanically. Default-off and
+# enabled by NO crate: CI names it on the test step, which is the only thing keeping that guard
+# running. Moved here with `format` — reuben-core no longer has a format to derive on.
+schemars = ["dep:schemars"]
+
+[dependencies]
+# The render half this crate builds against. Every import crosses upward: this crate names
+# reuben-core, and reuben-core names nothing here. see rules: execution-runtime
+reuben-core = { path = "../reuben-core" }
+# The type-wide NUMBER_MIN/NUMBER_MAX sentinels the authoring surface bounds against.
+reuben-contract = { path = "../reuben-contract" }
+slotmap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+schemars = { workspace = true, optional = true }
+
+[dev-dependencies]
+approx.workspace = true
+hound.workspace = true

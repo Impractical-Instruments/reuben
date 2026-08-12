@@ -41,9 +41,42 @@ pub use server::{dispatch, EngineHost, IngressClosed, StructureState};
 /// a host has to name it to build one — and reaching past the window for the *one* type its own
 /// constructor demands would make "every consumer goes through the window" false for every host
 /// there will ever be.
-pub use reuben_core::coordinator::Coordinator;
+pub use reuben_document::coordinator::Coordinator;
+/// A built-but-not-installed swap: what `Coordinator::prepare_document` returns, so a host whose
+/// render buffers are a fixed size reads the built Engine's geometry and either commits it or drops
+/// it. Re-exported because a host that holds one between the two calls has to name its type.
+pub use reuben_document::coordinator::PreparedSwap;
+/// A non-fatal resource problem from a load — a missing sample degrades to silence and says so.
+pub use reuben_document::format::LoadWarning;
+/// Why an initial install failed: the document did not load, or it loaded and would not plan.
+pub use reuben_document::FromDocumentError;
 pub use verbs::*;
 pub use wire::{
     Conflict, ControlArg, ControlMessage, DiagnosticsReport, DiffSummary, DocSource,
     DocumentSnapshot, Request, Response, SwapReport, DEFAULT_STRUCTURE_ADDR, MAX_SEND_BATCH,
 };
+
+/// Build the [`Coordinator`] + [`RenderSide`](crate::render::RenderSide) pair for `doc_json`, at
+/// `config`, resolving the document's samples and nested children through `resources`.
+///
+/// The initial Engine is installed *directly* into the render side — it does not cross the install
+/// mailbox — so the first swap is what first fills it. Resource problems are non-fatal and come
+/// back as [`LoadWarning`]s for the host to surface; only a document that will not load or will
+/// not plan is an error.
+///
+/// It sits on the authoring surface because its *input* is a document, and everything it touches to
+/// get from that string to a built Engine is `reuben-document`'s. What it hands back is the render
+/// surface's, and a host drives that half from its callback.
+#[cfg(feature = "render")]
+pub fn install_initial<R: crate::resources::Resources + Send + 'static>(
+    doc_json: &str,
+    resources: R,
+    config: reuben_core::AudioConfig,
+) -> Result<(Coordinator, crate::render::RenderSide, Vec<LoadWarning>), FromDocumentError> {
+    Coordinator::install_initial(
+        doc_json,
+        reuben_core::Registry::builtin(),
+        Box::new(crate::resources::OwnedAdapter(resources)),
+        config,
+    )
+}

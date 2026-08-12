@@ -1,12 +1,13 @@
 //! reuben-core — the portable, OS-free realtime core.
 //!
-//! Data model: [`signal`] (audio-rate) and [`message`] (discrete, OSC-shaped). Authoring:
+//! Data model: [`signal`] (audio-rate) and [`message`] (discrete, OSC-shaped). Operator surface:
 //! [`operator`] + [`descriptor`]. Composition: [`graph`] → [`plan`] (Instantiate) →
 //! [`render`] (per-block execution). Musical layer: [`vocab`] (`pitch`/`harmony`) + [`tuning`]. The MVP
 //! operator set is in [`operators`].
 //!
-//! This crate has no OS dependencies; audio I/O and protocol adapters live in the
-//! removable native layer.
+//! This crate is the render half. It has no OS dependencies and names no crate above it — authoring
+//! an instrument document and turning it into a [`Plan`] is `reuben-document`'s job, and audio I/O
+//! and protocol adapters live in the removable native layer.
 
 // The `operator_contract!` macro expands to fully-qualified `::reuben_core::…` paths so
 // it works for any embedder. Inside this crate, that name must resolve to *us* — hence the alias.
@@ -29,40 +30,26 @@ pub mod op_driver;
 
 pub mod boundary;
 pub mod config;
-pub mod contract;
 pub mod coordinator;
-pub mod describe;
 pub mod descriptor;
 pub mod dsp;
-pub mod edit;
 pub mod engine;
-pub mod format;
 pub mod graph;
-pub mod guide;
-pub mod introspect;
 pub mod message;
 pub mod operator;
 pub mod operators;
 pub mod plan;
-pub mod projection;
 pub mod registry;
 pub mod render;
 pub mod resources;
 pub mod signal;
 pub mod tuning;
 pub mod vocab;
-pub mod vocabulary;
 pub mod wavetable;
 
 pub use config::AudioConfig;
-pub use contract::{content_hash, Diag, DiffSummary, Report, SwapReport};
-pub use describe::{describe_boundary, BoundaryDesc, BoundaryPortDesc};
 pub use descriptor::Descriptor;
-pub use engine::{Engine, FromDocumentError};
-pub use format::{
-    load, load_instrument, load_instrument_doc, resolve_instrument, DocValue, InstrumentDoc,
-    InterfaceDoc, LoadError, LoadWarning, Loaded, NormalizedDoc, SCAFFOLD_DEFAULT_NAME,
-};
+pub use engine::Engine;
 pub use graph::{Graph, Interface, NodeKey};
 pub use message::{Arg, Message};
 pub use operator::{Io, Operator};
@@ -89,9 +76,7 @@ pub(crate) use registry::register_operator;
 // OSC form from its definition site, the same pattern.
 pub(crate) use boundary::register_osc_form;
 pub use render::{render_plan, RenderScratch, Renderer, SerialExecutor};
-pub use resources::{
-    ResolveError, ResolvedRefs, ResourceResolver, ResourceStore, SampleBuffer, SampleId,
-};
+pub use resources::{ResolvedRefs, ResourceStore, SampleBuffer, SampleId};
 // The audio-rate data vocabulary lives in `signal` (the single naming site for the element type +
 // its owned/borrowed buffer forms). Adopted across the render spine; a raw `f32` buffer elsewhere
 // is caught by scripts/check_sample_alias.py.

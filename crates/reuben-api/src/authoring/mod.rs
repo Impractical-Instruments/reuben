@@ -30,14 +30,14 @@ pub use verbs::*;
 /// standalone grounding can say what its punctuation means. The engine's, re-exported rather than
 /// restated: a second copy of a legend for a generated notation is a second copy that can describe
 /// the notation wrongly.
-pub use reuben_core::introspect::COMPACT_DESCRIBE_LEGEND;
+pub use reuben_document::introspect::COMPACT_DESCRIBE_LEGEND;
 
 /// The instrument document `format_version` this window loads and writes — what a door reports
 /// when a caller asks which format it speaks. The engine's constant, re-exported: a value, not a
 /// type.
-pub use reuben_core::format::FORMAT_VERSION;
+pub use reuben_document::format::FORMAT_VERSION;
 
 /// The `instrument` name a new document gets when its author does not choose one — what a door
 /// fills [`NewInstrument::name`] with for a caller that omitted it. A value, not a type: the
 /// engine's constant is the one authority on it.
-pub use reuben_core::SCAFFOLD_DEFAULT_NAME;
+pub use reuben_document::SCAFFOLD_DEFAULT_NAME;

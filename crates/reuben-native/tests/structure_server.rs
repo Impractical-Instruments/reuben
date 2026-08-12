@@ -22,7 +22,7 @@ use reuben_api::engine::{
     Conflict, ControlArg, ControlMessage, DiagnosticsReport, DocSource, DocumentSnapshot, Request,
     Response, StructureState,
 };
-use reuben_api::render::{self, Arg, AudioConfig};
+use reuben_api::render::{Arg, AudioConfig};
 use reuben_native::diagnostics::Diagnostics;
 use reuben_native::osc::{ControlBatch, OscIn};
 use reuben_native::structure::{HeadlessRenderConfig, NativeHost, StructureServer};
@@ -81,7 +81,7 @@ fn wired_watching(
     diagnostics: Arc<Diagnostics>,
 ) -> (StructureState, FakeCallback, String) {
     let (coordinator, side, _warnings) =
-        render::install_initial(doc, NoResources, cfg()).expect("initial install");
+        reuben_api::engine::install_initial(doc, NoResources, cfg()).expect("initial install");
     let base_hash = coordinator.installed_hash();
     let (control_tx, control_rx) = mpsc::channel::<ControlBatch>();
     let host = NativeHost::new(diagnostics, control_tx).with_render_config(Arc::new(
@@ -137,7 +137,8 @@ fn within<F: FnOnce() + Send + 'static>(secs: u64, f: F) {
 /// wrong document's hash consistently.
 fn expected_hash(doc: &str) -> String {
     let (coordinator, _side, _warnings) =
-        render::install_initial(doc, NoResources, cfg()).expect("install for the expected hash");
+        reuben_api::engine::install_initial(doc, NoResources, cfg())
+            .expect("install for the expected hash");
     coordinator.installed_hash()
 }
 
@@ -216,7 +217,7 @@ fn responses_come_back_one_per_request_in_pipelined_order() {
 fn get_diagnostics_reflects_live_counter_bumps() {
     // The endpoint reads the live Arc audio::start owns, not a copy frozen at startup.
     let (coordinator, side, _w) =
-        render::install_initial(BASE_DOC, NoResources, cfg()).expect("install");
+        reuben_api::engine::install_initial(BASE_DOC, NoResources, cfg()).expect("install");
     let diagnostics = Diagnostics::new();
     // This verb never touches control, but the ingress is a constructor parameter now.
     let (control_tx, control_rx) = mpsc::channel::<ControlBatch>();

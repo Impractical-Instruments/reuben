@@ -44,9 +44,10 @@ use std::time::{Duration, Instant};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, SupportedBufferSize};
 use reuben_api::authoring::Diag;
+use reuben_api::engine::{Coordinator, LoadWarning};
 use reuben_api::render::{
-    swap_pair, AudioConfig, Coordinator, CoordinatorMailbox, LoadWarning, Message, RenderMailbox,
-    RenderSide, RenderSlot, SwapInFlight,
+    swap_pair, AudioConfig, CoordinatorMailbox, Message, RenderMailbox, RenderSide, RenderSlot,
+    SwapInFlight,
 };
 
 use crate::diagnostics::Diagnostics;
@@ -1327,7 +1328,7 @@ mod tests {
         profile_map.insert(0usize, 0usize);
         profile_map.insert(3usize, 3usize); // valid only when the logical width exceeds 3
 
-        let (mut coordinator, side, _w) = reuben_api::render::install_initial(
+        let (mut coordinator, side, _w) = reuben_api::engine::install_initial(
             &width_doc(1),
             NoResources,
             AudioConfig::new(48_000.0, 128),

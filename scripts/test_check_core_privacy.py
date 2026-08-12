@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-r"""Unit tests for check_core_privacy — the "reuben-core is named by reuben-api alone" guard.
+r"""Unit tests for check_core_privacy — the "the engine crates are named by reuben-api alone" guard.
 
 Fixture trees are built with tempfile; the guard is imported as a bare module (tests run from
 `scripts/`, mirroring the other guards' idiom). Each test asserts the exact problem count, so a
@@ -42,6 +42,35 @@ class CorePrivacyGuardTest(unittest.TestCase):
             "crates/reuben-core/Cargo.toml": '[package]\nname = "reuben-core"\n',
         })
         self.assertEqual(problems, [])
+
+    def test_the_authoring_half_may_name_the_render_half(self):
+        # The one edge inside the engine: reuben-document sits above reuben-core and imports
+        # upward. Allowed here and nowhere else.
+        problems = self._problems({
+            "crates/reuben-document/Cargo.toml":
+                '[package]\nname = "reuben-document"\n\n'
+                '[dependencies]\nreuben-core = { path = "../reuben-core" }\n',
+        })
+        self.assertEqual(problems, [])
+
+    def test_a_door_naming_the_authoring_half_is_flagged(self):
+        # reuben-document is behind the window too — the split did not add a second door.
+        problems = self._problems({
+            "crates/reuben-mcp/Cargo.toml":
+                '[package]\nname = "reuben-mcp"\n\n'
+                '[dependencies]\nreuben-document = { path = "../reuben-document" }\n',
+        })
+        self.assertEqual(len(problems), 1)
+        self.assertIn("reuben-document", problems[0])
+
+    def test_the_authoring_half_may_not_name_arbitrary_private_crates(self):
+        # The allowance is one specific edge, not "reuben-document is exempt".
+        problems = self._problems({
+            "crates/reuben-document/Cargo.toml":
+                '[package]\nname = "reuben-document"\n\n'
+                '[dev-dependencies]\nengine = { package = "reuben-document", path = "." }\n',
+        })
+        self.assertEqual(len(problems), 1)
 
     def test_a_door_naming_the_engine_is_flagged(self):
         problems = self._problems({
