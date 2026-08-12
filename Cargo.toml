@@ -14,6 +14,10 @@ version = "0.0.0"
 edition = "2021"
 # MSRV — kept in lockstep with rust-toolchain.toml's `channel`. see rules: web-product-process
 # Self-verified: CI runs on the pinned toolchain, which == this floor.
+# DO NOT roll this below 1.89 once the `linkme` self-registration swap lands. see rules:
+# composition-operators. `linkme` keeps its slice entries through `#[used]`, and plain `#[used]` only
+# became `#[used(linker)]` on ELF in 1.89. Below that the linker may drop the submissions, and the
+# failure is a silently empty operator registry rather than a build error.
 rust-version = "1.96.0"
 license = "BSD-3-Clause"
 repository = "https://github.com/Impractical-Instruments/reuben"
@@ -26,7 +30,10 @@ smallvec = "1"
 # `PointwiseNum` instead: num-traits' saturating traits are integer-only, so they cannot express the
 # f32 half of a bound that has to be total at every instantiated type.
 num-traits = "0.2"
-# Compile-time operator self-registration. linkme is the no_std fallback.
+# Compile-time operator self-registration. see rules: composition-operators
+# BEING REPLACED by `linkme`: `inventory` registers via ELF `.init_array` constructors, and nothing on
+# a bare-metal target runs them — so registration silently yields an empty set there. `#![no_std]`,
+# which `inventory` does have, was never the obstacle.
 inventory = "0.3"
 # Compile-time codegen: the operator_contract! proc-macro parses its own grammar (not Rust
 # items/exprs); the ArgValue derive parses a type definition, which needs `derive`.
