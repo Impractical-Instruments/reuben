@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Structural-integrity guard for the rules-doc system. Runs in both repos.
+"""Structural-integrity guard for the rules-doc system. Runs against any repo carrying one.
+
+The repo is the ROOT argument, so one copy of this file serves every repo that adopts the
+system. Nothing here reads a repo name, a topic slug, or a count of topics.
 
 Eight checks, in three groups.
 
@@ -39,7 +42,7 @@ Green on an empty tree (no topic docs yet) — so it wires into CI from day one,
 reference-linter. Exit non-zero with `path: message` lines on any violation; print a summary.
 Stdlib only.
 
-Usage: python3 scripts/check_rules_links.py [root=.]
+Usage: python3 check_rules_links.py [root=.]
 """
 from __future__ import annotations
 import re, sys
@@ -358,3 +361,10 @@ def main(root_arg: str = ".") -> int:
 
 if __name__ == "__main__":
     sys.exit(main(*sys.argv[1:2]))
+
+# ii:begin provenance — derived from .ii/repo.toml; do not hand-edit out of sync. Regenerate with `python3 "$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py" --write .`. sha256=8ac53e40b5dfd6180a697c675dbefc2dc46d08d0e356d75b425a93577862041b
+# Source:   Impractical-Instruments/agent-tools@057c3f7a9391816263b1a4fcb46af5f4a5dc705f:plugins/impractical-doctrine/rules/check_rules_links.py
+# Fetched:  2026-08-12
+# Refresh:  gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/check_rules_links.py?ref=main' --jq '.content' | base64 -d > scripts/check_rules_links.py && python3 "$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py" --write .
+# Do not edit locally. Changes go upstream via PR against the source repo.
+# ii:end provenance

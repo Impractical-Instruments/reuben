@@ -24,6 +24,8 @@ what makes the expensive layer affordable — it reads a worklist, not a corpus.
 *Which docs.* Only the governed surface: `docs/rules/`, `docs/agents/`, the root Markdown, and the
 skills. `docs/research/`, `docs/rituals/` and `docs/adr/` are records of a moment — a research note
 naming a file that has since moved is not wrong, it is history, and git is where history is checked.
+**A generated span inside the governed surface is out too** — see `generated()`: it is authored in
+another repo, and a finding there names a defect nobody in this one can clear.
 
 *Which claims gate, per document kind.* A **rule** is present-tense and normative; a **rationale**
 is an argument, and an argument names what it rejected — `In`/`Out` "not `InPort`/`OutPort`",
@@ -61,6 +63,14 @@ PATH_EXTS = "rs|py|json|toml|md|yml|yaml|sh|tosc|lock"
 # The governed surface, as (directory, recursive) or a literal file, relative to root.
 GOVERNED_DIRS = ("docs/rules", "docs/agents", ".claude/skills")
 GOVERNED_ROOT_FILES = ("CLAUDE.md", "AGENTS.md", "README.md", "CONTRIBUTING.md")
+
+# The two doctrine-artifact markers, in the one medium this ledger reads. `generated()` uses them
+# to drop spans authored in another repo; the grammar is the generator's, not this file's, and the
+# whole-file predicate is `scripts/ii_verify.py`'s verbatim — a repo-local generator that borrowed
+# the `GENERATED from` opener is not a doctrine artifact and stays governed here.
+GENERATED_FILE_RE = re.compile(r"^<!--\s*GENERATED from .* — edit the source, not this file\.")
+REGION_BEGIN_RE = re.compile(r"^<!--\s*ii:begin\s+\S+")
+REGION_END_RE = re.compile(r"^<!--\s*ii:end\s+\S+\s*-->$")
 
 PATH_RE = re.compile(rf"`([A-Za-z0-9_./-]+\.(?:{PATH_EXTS})(?::\d+(?:-\d+)?)?)`")
 # Identifiers are read out of code spans rather than matched whole, so a qualified path yields its
@@ -205,15 +215,46 @@ def rule_spans(text: str) -> list[tuple[int, str, str]]:
     return out
 
 
+def generated(text: str) -> set[int]:
+    """1-based line numbers this repo did not author.
+
+    A doctrine artifact carries its own marker: a whole-file one under the title, or a paired
+    `ii:begin`/`ii:end` region inside a file this repo does write. Those bytes are authored in
+    another repo and rendered in, so a finding in them names a defect nobody here can fix — and
+    editing one to clear it breaks the digest `scripts/ii_verify.py` checks, which is the whole
+    point of the digest. An unclosed region runs to end of file: the generator refuses to guess
+    where a region ends, and so does this.
+    """
+    lines = text.split("\n")
+    if any(GENERATED_FILE_RE.match(ln.strip()) for ln in lines[:4]):
+        return set(range(1, len(lines) + 1))
+    out, open_at = set(), None
+    for i, line in enumerate(lines, 1):
+        s = line.strip()
+        if open_at is None:
+            if REGION_BEGIN_RE.match(s):
+                open_at = i
+                out.add(i)
+        else:
+            out.add(i)
+            if REGION_END_RE.match(s):
+                open_at = None
+    if open_at is not None:
+        out.update(range(open_at, len(lines) + 1))
+    return out
+
+
 def prose_lines(text: str) -> list[tuple[int, str]]:
-    """`(1-based lineno, line)` for lines outside fenced blocks. A shell transcript or a layout
-    diagram is an illustration, not a claim about what exists right now."""
+    """`(1-based lineno, line)` for lines outside fenced blocks and outside a generated span. A
+    shell transcript or a layout diagram is an illustration, not a claim about what exists right
+    now, and a generated span is not this repo's claim at all."""
     out, in_fence = [], False
+    skip = generated(text)
     for i, line in enumerate(text.split("\n"), 1):
         if FENCE_RE.match(line):
             in_fence = not in_fence
             continue
-        if not in_fence:
+        if not in_fence and i not in skip:
             out.append((i, line))
     return out
 

@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import check_rules_links
+from support import check_rules_links
 
 # `ADR-<n>` is banned in code by check_rules_refs — provenance lives in a rationale file, not in a
 # source file — and these fixtures are code. Composing the token keeps the fixture the real shape
@@ -27,7 +27,7 @@ def build(root: Path, topics: dict[str, str], rationales=()):
     (path, body) pair; paths are relative to docs/rules/."""
     rules = root / "docs" / "rules"
     rules.mkdir(parents=True, exist_ok=True)
-    (rules / "README.md").write_text("# reuben rules index\n", encoding="utf-8")
+    (rules / "README.md").write_text("# rules index\n", encoding="utf-8")
     for name, body in topics.items():
         (rules / name).write_text(body, encoding="utf-8")
     for entry in rationales:
@@ -465,3 +465,10 @@ class SupersessionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+# ii:begin provenance — derived from .ii/repo.toml; do not hand-edit out of sync. Regenerate with `python3 "$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py" --write .`. sha256=78bcd1ad231bbf04b478adf8f4745a330844b403cd85511924d62e3fa2aa307f
+# Source:   Impractical-Instruments/agent-tools@057c3f7a9391816263b1a4fcb46af5f4a5dc705f:plugins/impractical-doctrine/rules/tests/test_check_rules_links.py
+# Fetched:  2026-08-12
+# Refresh:  gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/tests/test_check_rules_links.py?ref=main' --jq '.content' | base64 -d > scripts/tests/test_check_rules_links.py && python3 "$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py" --write .
+# Do not edit locally. Changes go upstream via PR against the source repo.
+# ii:end provenance

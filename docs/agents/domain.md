@@ -1,53 +1,39 @@
-# Domain Docs
+# Domain docs
 
-How the engineering skills should consume this repo's domain documentation when exploring
-the codebase. reuben's now-state architecture lives as a **rules system** under
-[`docs/rules/`](../rules/README.md): one index, per-topic docs, individual rules, and a
-condensed rationale behind each rule.
+<!-- GENERATED from templates/domain.md + .ii/repo.toml by `python3 "$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py" --write .` — edit the source, not this file. sha256=fd122e6473ba6b0784239c28ff0cf0f685ec037a5f8c8dda9639990e38e28388 -->
 
-## Before exploring, read these
+Where this repo's domain documentation lives, and what kind of record each part is. Facts only — this file routes; it does not advise.
 
-Read top-down and **stop at the shallowest level that answers your question**:
+## The doc system
 
-```
-docs/rules/README.md   →  docs/rules/<topic>.md  →  a rule       →  its rationale
-index: topic summaries    the topic's "now"          present-tense    condensed "why",
-+ derived glossary        story + its rules          normative        read only when needed
-```
+This repo documents its now-state architecture as a **rules system** under `docs/rules/`: one index, a doc per topic, individual rules, and a condensed rationale behind each rule.
 
-- **[`docs/rules/README.md`](../rules/README.md)** — the front door: a short summary per topic, the
-  derived glossary (the ubiquitous language), and the "Avoid these synonyms" list. Start here.
-- **[`docs/rules/<topic>.md`](../rules/)** — the "now" story plus the rules for the area you're about
-  to work in. The index lists them; that list is derived from the topic docs, so it cannot go stale
-  the way a copy here would.
-- A rule's **rationale** (`docs/rules/rationale/<topic>/<rule>.md`) — open it only when you need the
-  *why* behind a rule; its `Distilled from:` line is the sole surviving pointer to the ADR history.
+### Read top-down
 
-[`docs/adr/`](../adr/README.md) is the **live iteration surface** — one file per decision that is
-still moving. Once a decision solidifies, the `absorb-adrs` skill distills it into a rule + rationale
-and deletes the ADR. Read a live ADR only for a decision that is still in flight; the settled design
-is in the rules.
+Stop at the shallowest level that answers your question.
 
-## Use the glossary's vocabulary
+- **`docs/rules/README.md`** — the front door: a summary per topic and the derived glossary. Start here.
+- **`docs/rules/<topic>.md`** — the "now" story plus the rules for the area you are about to work in.
+- **`docs/rules/rationale/<topic>/<rule>.md`** — the condensed *why* behind one rule. Open it only when the rule alone does not answer you. Its `Distilled from:` line names the ADRs the rule was absorbed from, and is the only surviving pointer to that history.
 
-When your output names a domain concept (an issue title, a refactor proposal, a hypothesis,
-a test name), use the term as defined in the [rules index glossary](../rules/README.md#glossary) —
-Operator, Instrument, Rig, Plan, Swap, Voice, and so on. Don't drift to the synonyms the
-[Avoid these synonyms](../rules/README.md#avoid-these-synonyms) list explicitly calls out (e.g.
-"node", "module", "patch" as a noun), or to retired terms (e.g. "Lane").
+### Topics
 
-If the concept you need isn't in the glossary yet, that's a signal — either you're inventing
-language the project doesn't use (reconsider) or there's a real gap (note it for
-`/domain-modeling`).
+- **[Agent framework & MCP](../rules/agent-mcp.md)** — How AI agents author reuben — authorability as a first-class constraint, the introspect/validate loop, the authoring skills, and the MCP sidecar whose tool contracts are one OS-free source behind every door.
+- **[Authoring surface & instrument library](../rules/authoring-library.md)** — How authoring surfaces and the instrument library sit on top of the graph — decoupled surface docs over interface pipes, Good Buttons, the sample/resource store, library resolution and format versioning, and the launch Toys.
+- **[Code as a grounding surface](../rules/code-as-grounding.md)** — How this repo's own source text is governed as grounding an agent reads — comment discipline that points at rules instead of restating them, LSP-first navigation, and pre-scoped search.
+- **[Composition & operator model](../rules/composition-operators.md)** — The one recursive graph — how operators declare and register their contract, how all data flows as one Message/Arg substrate in Value, Event, and Signal forms, and how instruments nest and expose interface pipes.
+- **[Execution & runtime](../rules/execution-runtime.md)** — How the unified block graph is scheduled, threaded, swapped, and rendered in real time — the Plan lifecycle, RT boundary, determinism, latch service, and the embed surface.
+- **[Host shell & native I/O](../rules/host-shell-io.md)** — What a host shell owes the engine at the edges it owns — devices and their foreign clocks, the resampling and drift compensation that reconcile them, the latency that buys, and the fixed, counted way every edge degrades.
+- **[Signal, OSC, musical time & DSP](../rules/signal-time-dsp.md)** — How signal and musical meaning are carried, timed, and shaped — the OSC-only Message model, the Clock and musical time, symbolic pitch and Tuning, the tonal-context bus, and the envelope/curve/math DSP families.
+- **[Web/product boundary & dev process](../rules/web-product-process.md)** — How this repo sits under the web/product boundary: the BSD SDK a private product consumes, the raw C-ABI browser contract and sample-trust obligation it owes, and the release, toolchain, and perf-benchmark process that governs it.
 
-## Flag rule conflicts
+That list is read from `docs/rules/README.md` at generation time, not stored here. Regenerating this file re-reads it.
 
-If your output contradicts an existing rule, surface it explicitly rather than silently
-overriding:
+This repo is **single-context**: one set of domain docs covers it.
 
-> _Contradicts the `osc-only-core` rule ([signal-time-dsp](../rules/signal-time-dsp.md)) — but worth
-> reopening because…_
+## What `docs/adr/` is
 
-A settled rule that genuinely needs to change is reopened as a new **ADR** under
-[`docs/adr/`](../adr/README.md) (the iteration surface), which a later `absorb-adrs` sweep folds back
-into the rules.
+The ADR surface here is **transient**.
+
+- **`durable`** means `docs/adr/` is this repo's decision record. An accepted ADR stays; a decision that changes is superseded by a new ADR rather than by editing the old one.
+- **`transient`** means `docs/adr/` is a live iteration surface and **not** the complete record. It holds one file per decision that is still moving; once a decision settles it is distilled into a rule plus its condensed rationale and the ADR is deleted. The settled design is in the rules, and the ADR history survives only as a `Distilled from:` line on a rationale.

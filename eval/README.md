@@ -212,8 +212,9 @@ tools/                     the frozen-table regenerator
 ```
 
 CI wiring: `.github/scripts/eval-gate.sh` (the gate, mirroring `perf-gate.sh`) and the
-`eval-gate` job in `.github/workflows/ci.yml`. On pushes to `main`/`dev` the numbers land as
-`eval-history.jsonl` beside `bench-history.jsonl` on the trend branch, and the dashboard grows an
+`eval-gate` job in `.github/workflows/ci.yml`, whose `bench-history` job routes each long-lived
+branch to its own trend. The numbers land as `eval-history.jsonl` beside `bench-history.jsonl`
+there, and the dashboard grows an
 eval section — one place to look, with `ir` never holding a token count.
 
 Model and tokenizer pins, with the evidence behind them:

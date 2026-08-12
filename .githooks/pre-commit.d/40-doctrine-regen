@@ -1,0 +1,45 @@
+#!/bin/sh
+# Regenerate the doctrine artifacts and stage only what the generator itself rewrote.
+#
+# Numbered above 30 because it WRITES: read-only checks take the low numbers so they cannot leave
+# the author a modified, staged file they were never told about (see CONTRIBUTING.md).
+#
+# Every failure here is a warning, never a block. The generator is plugin payload addressed through
+# $CLAUDE_PLUGIN_ROOT — set in a plugin context and nowhere else — reading templates from a private
+# repo and fetching the company glossary with a token. Unset variable, no plugin, no network, no
+# access: all properties of the machine rather than of the change, so a clone with none of them has
+# to stay committable. CI's `provenance` job is what reds, and staleness is the scheduled
+# regeneration job's.
+gen="${CLAUDE_PLUGIN_ROOT:-}/generator/ii_generate.py"
+if [ -z "${CLAUDE_PLUGIN_ROOT:-}" ] || [ ! -f "$gen" ]; then
+    echo "- doctrine regen: \$CLAUDE_PLUGIN_ROOT is unset or carries no generator — skipped." >&2
+    exit 0
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "- doctrine regen: python3 not found — skipped." >&2
+    exit 0
+fi
+
+root=$(git rev-parse --show-toplevel)
+
+# No --require-fresh: it refuses unless the tree is clean and HEAD is at the integration branch's
+# remote tip, and a pre-commit hook runs precisely when the tree is dirty. That flag belongs to the
+# scheduled job.
+#
+# Only what the generator wrote gets staged, which is what the listing on either side is for.
+# `git add -u` would sweep in every modified tracked file — a committer's unrelated work, and the
+# unstaged half of a file staged in part on purpose. A file the committer had already modified and
+# the generator then rewrote appears in both listings, so it is not staged here; that leaves their
+# own staging intact and CI is the backstop.
+before=$(git -C "$root" diff --name-only | sort)
+if python3 "$gen" --write "$root"; then
+    after=$(git -C "$root" diff --name-only | sort)
+    printf '%s\n' "$after" | while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        printf '%s\n' "$before" | grep -qxF -- "$f" && continue
+        git -C "$root" add -- "$f"
+    done
+else
+    echo "- doctrine regen: did not run cleanly; committing anyway." >&2
+    echo "  CI's provenance job checks the artifacts it would have written." >&2
+fi

@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Reference-linter for the rules-doc system. Runs in both engine and web repos.
+"""Reference-linter for the rules-doc system. Runs against any repo carrying one.
+
+The repo is the ROOT argument. Unlike its two siblings this guard also reads the repo's CODE,
+so check 7 below makes it the one validator with a per-repo surface: the lane census is a set
+of constants in this file, and a repo whose tree carries a file type the census has never met
+is REPORTED until somebody classifies it. That is the check working, but the classification
+has nowhere repo-local to live today — see the payload README, "The census is not yet
+per-repo".
 
 Seven checks:
   1. No `ADR-<n>` references survive in CODE. The only legitimate ADR mentions are
@@ -9,8 +16,9 @@ Seven checks:
      provenance line, so its scaffolder + tests name ADRs by design (see SKILL_ALLOWLIST).
   2. Every `see rules: <topic>` / `see engine rules: <topic>` code comment names a kebab-case
      slug; for the same-repo form, docs/rules/<topic>.md must exist. For the cross-repo form,
-     the topic is resolved against the pinned engine submodule's engine/docs/rules/<topic>.md
-     (the SHA web is built against) — a no-op in the engine repo, active once web bumps the pin.
+     the topic is resolved against the pinned upstream submodule's <path>/docs/rules/<topic>.md
+     at the SHA this repo is built against — inert in a repo that pins none, which is most of them,
+     and live in one that does from the moment it bumps the pin.
   3. A `//!` module doc longer than MAX_UNPOINTED_MODULE_DOC lines names a topic. Length is a
      proxy for carrying rationale: a doc that long is arguing something, and an argument in code
      has to point at the rule it belongs to.
@@ -223,9 +231,9 @@ Seven checks:
      a video file a comment opener. CI never saw it, because a clean checkout has no junk in it,
      which is the shape of bug that survives longest.
 
-Exit non-zero on any violation. Stdlib only. Wired into CI in both repos.
+Exit non-zero on any violation. Stdlib only.
 
-Usage: python3 scripts/check_rules_refs.py [root=.]
+Usage: python3 check_rules_refs.py [root=.]
 """
 from __future__ import annotations
 import bisect, re, subprocess, sys
@@ -297,7 +305,9 @@ SKIP_DIRS = {".git", "target", "node_modules", "dist", "build"}
 SKIP_PREFIXES = {(".claude", "worktrees"), ("engine",)}
 # The absorb-adrs skill is the one sanctioned home of ADR-NNNN tokens in code: it distils ADRs
 # into rules and writes each rationale's `Distilled from:` line, so its scaffolder + tests name
-# ADRs by design. Exempt the skill directory (lives in the engine repo; harmless where absent).
+# ADRs by design. Keyed on a PATH COMPONENT, so it follows the skill wherever it is installed and
+# is simply inert in a tree that has none — which is every tree that reaches the skill from a
+# plugin rather than committing it.
 SKILL_ALLOWLIST = {"absorb-adrs"}
 
 ADR_RE  = re.compile(r"\bADR-\d+\b")
@@ -1054,3 +1064,10 @@ def main(root_arg: str = ".") -> int:
 
 if __name__ == "__main__":
     sys.exit(main(*sys.argv[1:2]))
+
+# ii:begin provenance — derived from .ii/repo.toml; do not hand-edit out of sync. Regenerate with `python3 "$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py" --write .`. sha256=d1a7da31a30a2d37ef0ed45957c3632cce4f2b2134ea353e19445a380029f573
+# Source:   Impractical-Instruments/agent-tools@057c3f7a9391816263b1a4fcb46af5f4a5dc705f:plugins/impractical-doctrine/rules/check_rules_refs.py
+# Fetched:  2026-08-12
+# Refresh:  gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/check_rules_refs.py?ref=main' --jq '.content' | base64 -d > scripts/check_rules_refs.py && python3 "$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py" --write .
+# Do not edit locally. Changes go upstream via PR against the source repo.
+# ii:end provenance

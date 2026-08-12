@@ -32,8 +32,9 @@ Run from the feature branch so the diff is meaningful.
    what makes the base trustworthy rather than merely resolved
    ([`CONTRIBUTING.md`](../../../CONTRIBUTING.md#branching--release-flow)). `&&` throughout for
    the same reason — an unresolved `base` would leave `git diff --stat ..HEAD`, which git reads
-   as `HEAD..HEAD`, prints nothing for, and exits 0 on. Never hard-code `main` here: it is the
-   release branch, so its merge-base is the last promotion, not where this branch diverged.
+   as `HEAD..HEAD`, prints nothing for, and exits 0 on. Never hard-code a branch here: the release
+   branch's merge-base is the last promotion, not where this branch diverged, and which branch that
+   is comes from `.ii/repo.toml`'s `[branches]` table.
 
    Read the substantive diffs. Identify shipped features: new operators
    (`crates/reuben-core/src/operators/`), new example rigs (`instruments/`), new engine

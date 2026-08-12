@@ -1,6 +1,6 @@
 # Web/product boundary & dev process
 
-> How this repo sits under the web/product boundary: the BSD SDK a private product consumes, the raw C-ABI browser contract and sample-trust obligation it owes, and the branch, release, toolchain, and perf-benchmark process that governs it.
+> How this repo sits under the web/product boundary: the BSD SDK a private product consumes, the raw C-ABI browser contract and sample-trust obligation it owes, and the release, toolchain, and perf-benchmark process that governs it.
 
 ## Now
 
@@ -37,10 +37,13 @@ data-chunk length before any sample-bearing share bundle can carry a stranger's 
 The dev process that governs the repo is deliberately small and self-verifying, and the rules below
 state it: one pinned toolchain so a local verdict equals CI's, shared hooks (which ADR-0079 makes
 one installed *set* of per-check fragments rather than a directory a second directory can
-displace) as a convenience ahead of the authoritative CI gate, `dev` as the integration branch that
-fast-forwards onto `main` to ship, an instruction-count perf gate over the render hot path (which
-ADR-0077 widens to cover graph construction, and to gate how that cost scales rather than only what
-it is), and versioned release archives for a headless CLI whose primary product is the crate.
+displace) as a convenience ahead of the authoritative CI gate, an instruction-count perf gate over
+the render hot path (which ADR-0077 widens to cover graph construction, and to gate how that cost
+scales rather than only what it is), and versioned release archives for a headless CLI whose
+primary product is the crate.
+
+The **branch model is not stated here**: it is `.ii/repo.toml`'s `[branches]` table, read rather
+than restated.
 
 ## Rules
 
@@ -84,17 +87,7 @@ Superseded by: ADR-0067 (pending absorption)
 
 [why](rationale/web-product-process/sample-bytes-trust-boundary.md)
 
-**How a change lands** — the seven rules that answer how work is integrated, gated, and shipped.
-
-<a id="dev-integration-branch"></a>
-### `dev` is the default long-lived integration branch that every PR targets, and every push to it runs the full CI suite.
-
-[why](rationale/web-product-process/dev-integration-branch.md)
-
-<a id="ff-promotion-to-main"></a>
-### Production ships only by fast-forward-only promotion of `dev` onto `main`, run as a workflow authored by a GitHub App token, with no direct commits to `main`.
-
-[why](rationale/web-product-process/ff-promotion-to-main.md)
+**How a change lands** — how work is gated and shipped.
 
 <a id="versioned-release-archives"></a>
 ### The engine is headless — the SDK crate is the primary product and the CLI binary ships as versioned, installer-free CI release archives cut from a `v*` tag.
@@ -131,6 +124,5 @@ Superseded by: ADR-0077 (pending absorption)
 - **product repo** — the separate private AGPL repo holding the browser shell, player app, share-link codec, and chat-authoring agent, which pins this repo as a submodule.
 - **C-ABI worklet boundary** — the documented raw `extern "C"`, `(ptr, len)`-over-linear-memory interface a browser host drives per audio quantum, carrying no `wasm-bindgen` glue and shipped as a contract to rebuild against, not a maintained binding.
 - **share link** — an origin-independent encoded bundle that boots an instrument in the browser; a product-repo feature whose residue here is the sample-bytes trust obligation.
-- **promotion** — the fast-forward-only advance of `dev` onto `main` that ships production.
 - **toolchain pin** — the exact-version `rust-toolchain.toml` that local dev and CI share so their fmt/clippy verdicts are identical, kept in lockstep with the workspace MSRV.
 - **perf gate** — the CI iai-callgrind instruction-count check over the render hot path, measured base-ref-relative so toolchain drift cancels. ADR-0077 adds a construct layer and, on it, a growth-factor check that reads no baseline.

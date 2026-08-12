@@ -122,7 +122,10 @@ jobs:
               - 'scripts/check_rules_derive.py'
               - 'scripts/check_rules_links.py'
               - 'scripts/check_rules_refs.py'
-              - 'scripts/test_check_rules_*.py'
+              # The guards' own suite, vendored from the same source as the guards and living in
+              # its own directory because `support.py` asserts each module under test came from
+              # the directory above it.
+              - 'scripts/tests/**'
               # The hook set: the dispatcher that runs the guards locally, its installer, and the
               # suite that holds the dispatcher. `.githooks/**` covers the four checks too, two of
               # which invoke the guards above.
@@ -434,10 +437,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Mirror the "Skill tests" idiom: run each guard's unit suite from scripts/ so the tests can
-      # import their module by bare name.
+      # The guards' own suite, vendored beside them from `agent-tools`. Run from scripts/ with
+      # tests/ as the start directory, which is the layout its `support.py` asserts: the modules
+      # under test must be the ones in the directory above it, so a same-named copy elsewhere on
+      # the path cannot shadow them.
       - name: Guard unit tests
-        run: cd scripts && python3 -m unittest discover -p 'test_check_rules_*.py' -v
+        run: cd scripts && python3 -m unittest discover -s tests -p 'test_check_rules_*.py' -v
 
       # The hook set's chainer, which is what makes any of the guards above run locally at all. It
       # is named explicitly rather than folded into the discover pattern: that pattern says
@@ -529,6 +534,27 @@ jobs:
       - name: Core-privacy guard (only reuben-api depends on reuben-core)
         run: python3 scripts/check_core_privacy.py .
 
+  # The vendored verifier over every doctrine artifact in the tree: it recomputes the sha256 each
+  # generated span carries and needs no plugin, no network and no token. That is what public CI can
+  # run — the generator itself is plugin payload addressed through $CLAUDE_PLUGIN_ROOT, which
+  # Actions does not set, reading templates from a private repo.
+  #
+  # KNOW WHAT THIS BUYS: tamper-detection, not staleness-detection. A match proves nobody
+  # hand-edited a generated span; it does not prove the span matches the current template and
+  # manifest. Staleness is the generator's `--check`, which runs from the scheduled regeneration job
+  # on a machine that has the plugin.
+  #
+  # ALWAYS ON, and not path-filtered, because a hand-edit to a generated artifact is a change to a
+  # doc — which moves no filter in this workflow. `--require-artifacts` so an emptied tree does not
+  # exit 0 looking identical to a healthy one.
+  provenance:
+    name: generated artifacts unmodified
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Verify every generated span against its own digest
+        run: python3 scripts/ii_verify.py --require-artifacts
+
   # Always-green aggregate merge gate. A ruleset can't require the per-path-filtered jobs above
   # directly: when a job is Skipped (nothing it gates changed) the ruleset reads it as "expected but
   # never reported" and wedges the PR (see the comment at the top of this file). So the `dev` ruleset
@@ -547,7 +573,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       [changes, lockstep, check, windows, bench, eval-gate, dashboard, rules-guards, ref-guard,
-       sample-guard, doc-claims, core-privacy]
+       sample-guard, doc-claims, core-privacy, provenance]
     if: always()
     steps:
       - name: Fail if any required job failed or was cancelled (skipped is OK)

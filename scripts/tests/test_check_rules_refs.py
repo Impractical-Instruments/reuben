@@ -16,7 +16,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import check_rules_refs
+from support import check_rules_refs
 
 BUDGET = check_rules_refs.MAX_UNPOINTED_MODULE_DOC
 
@@ -893,7 +893,7 @@ class WholeTree(unittest.TestCase):
     def test_a_githook_citing_an_issue_is_flagged(self):
         # No suffix and no dot — the format is on line one.
         self.assertEqual(
-            self.run_main({".githooks/pre-commit.d/10-rules-refs": "#!/bin/sh\n# run from here since #107\n"}), 1)
+            self.run_main({"scripts/hooks/pre-commit": "#!/bin/sh\n# run from here since #107\n"}), 1)
 
     def test_a_file_declaring_no_format_is_neither_scanned_nor_reported(self):
         # LICENSE states no comment syntax, so it has no comments for the ban to reach — and that
@@ -974,3 +974,10 @@ class RepoContentNotFilesystem(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+# ii:begin provenance — derived from .ii/repo.toml; do not hand-edit out of sync. Regenerate with `python3 "$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py" --write .`. sha256=49f5236f350c0b4d355c330a72b763a0998f7ed640b802e9f37b8920e7308af7
+# Source:   Impractical-Instruments/agent-tools@057c3f7a9391816263b1a4fcb46af5f4a5dc705f:plugins/impractical-doctrine/rules/tests/test_check_rules_refs.py
+# Fetched:  2026-08-12
+# Refresh:  gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/tests/test_check_rules_refs.py?ref=main' --jq '.content' | base64 -d > scripts/tests/test_check_rules_refs.py && python3 "$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py" --write .
+# Do not edit locally. Changes go upstream via PR against the source repo.
+# ii:end provenance

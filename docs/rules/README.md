@@ -53,7 +53,7 @@ not by hope:
 - **[Execution & runtime](execution-runtime.md)** — How the unified block graph is scheduled, threaded, swapped, and rendered in real time — the Plan lifecycle, RT boundary, determinism, latch service, and the embed surface.
 - **[Host shell & native I/O](host-shell-io.md)** — What a host shell owes the engine at the edges it owns — devices and their foreign clocks, the resampling and drift compensation that reconcile them, the latency that buys, and the fixed, counted way every edge degrades.
 - **[Signal, OSC, musical time & DSP](signal-time-dsp.md)** — How signal and musical meaning are carried, timed, and shaped — the OSC-only Message model, the Clock and musical time, symbolic pitch and Tuning, the tonal-context bus, and the envelope/curve/math DSP families.
-- **[Web/product boundary & dev process](web-product-process.md)** — How this repo sits under the web/product boundary: the BSD SDK a private product consumes, the raw C-ABI browser contract and sample-trust obligation it owes, and the branch, release, toolchain, and perf-benchmark process that governs it.
+- **[Web/product boundary & dev process](web-product-process.md)** — How this repo sits under the web/product boundary: the BSD SDK a private product consumes, the raw C-ABI browser contract and sample-trust obligation it owes, and the release, toolchain, and perf-benchmark process that governs it.
 
 ## Glossary
 
@@ -103,7 +103,6 @@ not by hope:
 - **Pitch** — a symbolic scale degree or an absolute 12-TET coordinate, carried as one enum case; the resolved Hz is the result, not the Pitch. · [signal-time-dsp](signal-time-dsp.md)
 - **Plan** — the runtime artifact: the immutable, already-allocated, topologically ordered schedule that Render executes per block. · [execution-runtime](execution-runtime.md)
 - **product repo** — the separate private AGPL repo holding the browser shell, player app, share-link codec, and chat-authoring agent, which pins this repo as a submodule. · [web-product-process](web-product-process.md)
-- **promotion** — the fast-forward-only advance of `dev` onto `main` that ships production. · [web-product-process](web-product-process.md)
 - **recipe-role** — an instrument's reuse story: the first sentence of its `doc` field, trusted for selection only, never for wiring. · [authoring-library](authoring-library.md)
 - **Render** — the hard-realtime, allocation-free per-block execution of the current Plan on the audio thread. · [execution-runtime](execution-runtime.md)
 - **resource seam** — the one call *in*: the host-implemented trait through which the engine resolves a document's samples and nested children from opaque sources. · [authoring-library](authoring-library.md)
@@ -247,6 +246,102 @@ hand-edit them. The `.githooks/pre-commit.d/30-rules-index` check regenerates th
 a backstop. Run `scripts/install-hooks.sh` once per clone — that is the one command that installs
 the whole hook set, and [CONTRIBUTING.md](../../CONTRIBUTING.md) lists what is in it.
 
+**Two owners, two markers, and the rules above the region are this repo's own.** A `derived —
+collated from …` comment marks a section `check_rules_derive.py` collates from files in this repo. A
+`ii:begin`/`ii:end` pair marks a span the doctrine generator renders from another repo, and it
+carries a `sha256=` of itself so `scripts/ii_verify.py` can catch a hand-edit with no access to the
+source. Neither is the `GENERATED from …` header, which belongs to a file that is generated whole.
+
 **ADR lifecycle & the supersession marker** — see [docs/adr/README.md](../adr/README.md). An ADR
 number is written down in exactly two places in this corpus: a rule's `Superseded by:` marker and a
 rationale's `Distilled from:` line.
+
+<!-- ii:begin company-doctrine — derived from templates/company-doctrine-rules.md + .ii/repo.toml; do not hand-edit out of sync. Regenerate with `python3 "$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py" --write .`. sha256=2a44c0f8c2f0df9b8419ab7327dea0630deedbe519589212616a3b9860d0a6f2 -->
+## Company doctrine
+
+The company's doctrine is stated here once, at the front door — not restated inside the documents that depend on it. What "doctrine" means is defined in the company glossary below, like every other company term.
+
+### Company glossary
+
+- **Company layer** — the Project the rest of the company draws on: facts, routing, cross-cutting work, and the machinery and assets other repos consume. Not one repo.
+- **Doctrine** — what the company holds across its repos, as distinct from what any one repo decides for itself: the norms and definitions it states, the facts it requires every repo to state for itself, and the procedures it shares. It is authored in the company layer and reaches every repo that adopts it. **The kind decides where it is written.** A required fact is written into the repo, because a stranger — or a reader with none of this company's tooling installed — must still be able to navigate from it. A procedure is not written in: guidance that would read identically in every repo belongs with the tooling that carries it, and removing it strands no reader. **A norm is written in** — it states a rule rather than a how-to, and may not be dropped as though it were a procedure.
+- **Obligation** — an external commitment with a deadline whose state is held in no other system. Tracked as an issue in the company layer.
+- **PRD** — **retired.** It arrived as template residue and imports a product-management frame (requirements handed down by a product manager) that does not describe how work starts. The tooling had already settled it in practice. The word is still in most repos' docs; where you meet it, it means **spec**. Decided 2026-08-06.
+- **Piece / Element** — reserved. The Community Garden uses them for its individual installations and is canonical for what they mean. **Do not use these words at company altitude** to mean anything else. The company layer names Projects and nothing inside them — what a Project calls its internals is that Project's vocabulary.
+- **Project** — the company-altitude unit: a line of work that could succeed or fail independently of the rest of the company. It may have zero, one, or several repos, and that set changes over time — **repos are assets a Project accrues, never its identity.** An object with no code is a Project. So is the website.
+- **Reach** — whether a source can be read by a headless agent, an interactive session, or only by a human.
+- **Source of truth / canonical** — the one place a fact actually lives. Every other appearance of that fact is a copy and must say so.
+- **Spec** — a piece of work described completely enough that an agent can implement it without an interview: the problem, the solution, the decisions already made, and what is out of scope. Usually written up from a conversation already had. **Every spec lives in an issue; not every issue holds a spec** — the issue is the container, the record of anything with an open→closed arc, and the spec is what its body says. A one-line bug report holds no spec, and an obligation rarely does. Say `spec` for the document, `issue` for what holds it; the pair is company-wide, not a per-repo setting.
+- **Venture / Product** — **retired.** Both were proposed on 2026-08-05 and neither decided anything; "Project" replaces them everywhere. If you find either word still in use in this org, it means Project.
+
+The company glossary is authored elsewhere and read at generation time. Its provenance:
+
+```
+# Source:   Impractical-Instruments/brain@014c8362bfaf0e2f3c03433827ca8a231fa2cdbd:CONTEXT.md
+# Fetched:  2026-08-12
+# Refresh:  gh api repos/Impractical-Instruments/brain/contents/CONTEXT.md --jq '.content' | base64 -d
+# Do not edit locally. Changes go upstream via PR against the source repo.
+```
+
+**A company term means what the glossary says it means.** Redefining one for local use fails the build — two live definitions of the same word is the drift this whole arrangement exists to delete. **Extending is free:** a term this repo needs and the glossary does not carry is yours to define locally, under a name the glossary has not already claimed.
+
+### Use the glossary's vocabulary
+
+When your output names a domain concept — an issue title, a refactor proposal, a hypothesis, a test name — use the term as the glossary defines it. Do not drift to a synonym, and do not reach for a term the glossary has retired.
+
+If the concept you need is not in the glossary, that is a signal, not a licence to invent a word. Either you are naming something the project does not actually have — reconsider — or there is a real gap, and the fix is to add the term to the glossary rather than to work around it.
+
+### Work from a fresh worktree, not from the clone you are standing in
+
+A main clone is a person's workspace. It sits wherever its owner left it — behind its remote, on a feature branch, mid-review — and **that is its ordinary state, not a fault to correct.** An agent that works there silently inherits whatever it finds, then reports the past with total confidence and no error.
+
+So agent work starts by cutting a **worktree from a freshly fetched default branch**, and lands there. Another base is right where the work genuinely belongs to it — a stacked change, a release branch, a fix on top of something unmerged — but that is a deliberate choice, and the default is the default branch.
+
+Two things that follow, and both get done by accident otherwise. **Do not `git pull` someone's main clone to make room for your work** — its state is theirs, not yours to reconcile. And **do not branch off whatever it is currently sitting on**; that is the same mistake with an extra step, and it inherits the staleness while looking like a fresh start.
+
+Reading a file out of a stale checkout and reporting what it says is the failure this prevents. A working copy cannot tell you it is out of date.
+
+### A broken environment is a finding, not an obstacle
+
+When the environment does not behave — a variable the docs say is set and is not, a missing tool, a hook that never fires, a script that announces it is a skeleton — **the first hypothesis is that this machine is behind the blessed setup, and the first move is to check.** Not to route around it.
+
+Routing around it costs three things at once. The symptom is hidden rather than fixed. The next agent rediscovers it from scratch, and pays again. And where the missing piece was a **guard**, working around it is indistinguishable from switching it off — the work continues, unguarded, and nothing says so.
+
+Repairing your own environment by hand, for the length of one command, is the failure and not the fix. Repair it where the setup lives, so the next session inherits the repair.
+
+### Referring to another repo's decisions
+
+A cross-repo reference to a decision **names the topic and resolves against a pinned ref** — never a number.
+
+Numbers are repo-local: `0001` means a different decision in every repo that has one, so a bare ADR number read from another repo points at whatever happens to sit at that index. Within a single repo a number is not reliably an identifier either — nothing enforces that one is used once. And where a repo distils settled ADRs into rules and deletes them, the numbered document a reference names may not survive at all. A topic name resolved at a pinned commit survives all of that.
+
+### Canonical sources and provenance
+
+How facts move between repos and systems without drifting.
+
+1. **Read on demand.** Fetch the canonical source at the moment you need it. Store nothing locally. A live read is cheaper than a pipeline and cannot go stale.
+2. **Pointers, never values.** A routing document routes; it holds zero copied facts. Test before adding any line anywhere: *"if someone edited only this line and not the source, would anything be wrong?"* If yes, it is a value — do not write it there.
+3. **One direction.** A consumer reads from its sources. It never writes to them.
+4. **Every unavoidable copy declares its provenance.**
+
+Some consumers genuinely cannot take a live dependency — firmware, a Godot or TouchDesigner installation, an offline build. Vendoring is allowed. Silent vendoring is not. Take the highest rung you can reach:
+
+| Rung | What it means | Drift risk |
+|---|---|---|
+| **Dependency** | Package, submodule, or import resolved at build time | None |
+| **Vendored with provenance** | A copy that records where it came from and how to refresh | Visible |
+| **Freeform copy** | Someone pasted it | Silent — **not allowed** |
+
+A vendored artifact carries a provenance block beside it, naming its source, the commit, the date it was fetched, and the exact command that refreshes it. That command has to run from a bare clone of this repo: one that assumes a sibling checkout of another repo is a declared copy whose declaration does not work, which is the freeform rung wearing the middle rung's label.
+
+Provenance is what converts silent drift into visible staleness. It is the only thing that makes a copy safe.
+
+**Referring to another repo's decisions** and **Canonical sources and provenance** are restated here, not authored here. The wording is deliberately generalised — it names no repo-local path, so it stands in a repo that is not the one it came from — which is why it is not word-for-word with its source. Both sides of the restatement are pinned. The generator refuses to regenerate if this wording changes without being reconciled again, which it checks without reaching the source at all; and where it can reach the source, it reads the revision named below and checks its bytes against a digest of them. A run that could not reach the source says so in the block rather than naming a revision it did not read.
+
+```
+# Source:   Impractical-Instruments/brain@62c7b8e402e6fccefff8a2039d3328af1d3217fe:docs/agents/canonical-sources.md
+# Fetched:  2026-08-12
+# Refresh:  gh api 'repos/Impractical-Instruments/brain/contents/docs/agents/canonical-sources.md?ref=62c7b8e402e6fccefff8a2039d3328af1d3217fe' --jq '.content' | base64 -d
+# Restated, not copied. The wording is authored in the doctrine template; this names the revision it was reconciled with.
+```
+<!-- ii:end company-doctrine -->
