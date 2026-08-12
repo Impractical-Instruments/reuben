@@ -26,7 +26,10 @@ smallvec = "1"
 # `PointwiseNum` instead: num-traits' saturating traits are integer-only, so they cannot express the
 # f32 half of a bound that has to be total at every instantiated type.
 num-traits = "0.2"
-# Compile-time operator self-registration. linkme is the no_std fallback.
+# Compile-time operator self-registration. see rules: composition-operators
+# BEING REPLACED by `linkme`: `inventory` registers via ELF `.init_array` constructors, and nothing on
+# a bare-metal target runs them — so registration silently yields an empty set there. `#![no_std]`,
+# which `inventory` does have, was never the obstacle.
 inventory = "0.3"
 # Compile-time codegen: the operator_contract! proc-macro parses its own grammar (not Rust
 # items/exprs); the ArgValue derive parses a type definition, which needs `derive`.

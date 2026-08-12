@@ -13,8 +13,10 @@ single-channel stream, one block at a time — "given one input block and my sta
 block."
 
 An operator's contract is **single-sourced and self-registering**. `register_operator!` submits each
-built-in at its own definition site — `inventory` gathers them at link time, so there is no central
-list to merge-conflict on. `operator_contract!` takes one declaration of the ports, constants, and
+built-in at its own definition site — gathered into the built-in set at link time, so there is no
+central list to merge-conflict on. *(ADR-0081 replaces the gatherer: `inventory` cannot run on a
+bare-metal target, since nothing there runs the `.init_array` constructors it depends on, so `linkme`
+takes over. What self-registration protects is unchanged.)* `operator_contract!` takes one declaration of the ports, constants, and
 metadata and emits both the runtime `Descriptor` and a **typed port handle** per port
 (`In<SignalF32>`, `In<Held<f32>>`, `Out<Event<Note>>`, …); `io.read`/`io.write` dispatch on the
 handle, whose type fixes the port's form and carries its declared default, so a wrong-form read does
@@ -68,6 +70,8 @@ the patch — maps onto the rig.
 ### Each built-in operator registers itself at its own definition site through `register_operator!`/inventory, gathered into the built-in set at link time, so there is no central operator list to edit.
 
 [why](rationale/composition-operators/operator-self-registration.md)
+
+Superseded by: ADR-0081 (pending absorption)
 
 <a id="single-source-contract"></a>
 ### An operator declares its ports, constants, and metadata once in `operator_contract!`, which emits both the typed port handles and the runtime `Descriptor` from the same tokens.

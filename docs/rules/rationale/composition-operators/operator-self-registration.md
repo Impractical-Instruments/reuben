@@ -23,8 +23,15 @@ schema stay **deterministic regardless of link order**, and the duplicate-name c
 assertion only governs the built-in gathering. The one new failure mode is a linker dead-stripping
 the submissions; a non-empty + a canary test (`oscillator`/`output`/`voicer` present) turn that from
 a silent gap into a loud red test. `inventory` was chosen over `linkme` because it leans less on
-`--gc-sections` behavior; `linkme` is the documented fallback if the core ever goes `no_std`. This is
-an **operator-only** problem — Instruments are pure JSON discovered from the filesystem and never
-collide this way.
+`--gc-sections` behavior — sound reasoning, and ADR-0081 confirmed that risk was worth hedging.
+
+This line used to add that `linkme` was the fallback *"if the core ever goes `no_std`"*, which put the
+trigger on the wrong property: `inventory` is itself `#![no_std]`. The real obstacle is startup, not
+compilation — it registers through ELF `.init_array` constructors, and nothing on a bare-metal target
+runs them, so registration silently yields nothing. ADR-0081 switches to `linkme` everywhere, and the
+canary above becomes more load-bearing, not less.
+
+This is an **operator-only** problem — Instruments are pure JSON discovered from the filesystem and
+never collide this way.
 
 Distilled from: ADR-0024
