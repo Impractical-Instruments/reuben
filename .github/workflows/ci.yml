@@ -127,9 +127,9 @@ jobs:
               # the directory above it.
               - 'scripts/tests/**'
               # The hook set: the dispatcher that runs the guards locally, its installer, and the
-              # suite that holds the dispatcher. `.githooks/**` covers the four checks too, two of
+              # suite that holds the dispatcher. `scripts/hooks/**` covers the four checks too, two of
               # which invoke the guards above.
-              - '.githooks/**'
+              - 'scripts/hooks/**'
               - 'scripts/install-hooks.sh'
               - 'scripts/test_hook_dispatch.py'
               # absorb-adrs runs these guards over a fixture tree and asserts they go green, so a
@@ -553,7 +553,7 @@ jobs:
   # ought to have is a function of private templates and the manifest, and pinning the number here
   # would be the stored count the standing rule forbids — so `--require-artifacts` buys exactly one
   # thing, that an emptied tree does not read as a healthy one. What stands in front of the gap is
-  # `.githooks/pre-commit.d/40-doctrine-regen`, which stages a file the generator creates; deriving
+  # `scripts/hooks/pre-commit.d/40-doctrine-regen`, which stages a file the generator creates; deriving
   # the expected set from the manifest belongs upstream with the generator.
   provenance:
     name: generated artifacts unmodified

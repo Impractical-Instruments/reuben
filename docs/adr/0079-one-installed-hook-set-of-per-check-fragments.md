@@ -1,5 +1,15 @@
 # ADR-0079 — hooks install as one *set* of per-check fragments, not as a directory
 
+**Superseded in part — the directory only, on 2026-08-12.** Charlie reversed the choice of surviving
+directory: the set lives at `scripts/hooks/`, which is the path `agent-tools`' `bootstrap.sh`
+configures, so `scripts/hooks/` is *not* gone and every `.githooks/` path below reads as history. The
+reason was that the choice recorded here was agent-authored reasoning treated as settled doctrine
+rather than a decision he made. **Everything else this ADR decided stands** — one installed set, a
+stub per hook event, one file per check under `<hook>.d/`, and refusing a registry with no stub — and
+the current statement of it is
+[`web-product-process.md#shared-git-hooks`](../rules/web-product-process.md#shared-git-hooks) plus its
+rationale. No new ADR was written for the reversal; the fact was absorbed into that rule.
+
 **Overturns** [`web-product-process.md#shared-git-hooks`](../rules/web-product-process.md#shared-git-hooks)
 on one clause: the shared thing is no longer a directory of hooks enumerated as *"pre-commit fmt,
 pre-push clippy"*, but a single installed set whose membership is a directory listing. The rule is

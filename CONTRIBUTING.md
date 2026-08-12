@@ -2,36 +2,44 @@
 
 ## One-time setup
 
-After cloning, install the hook set:
+After cloning, install the hook set — unless `agent-tools`' `bootstrap.sh` has already run on this
+machine, which configures it for you:
 
 ```sh
 ./scripts/install-hooks.sh
 ```
 
-That's the only manual step, and it is the only one there will ever be: the script points
-`core.hooksPath` at [`.githooks/`](./.githooks), and everything else registers itself there.
+The script points `core.hooksPath` at [`scripts/hooks/`](./scripts/hooks), which is the same
+directory bootstrap configures, so the two routes agree rather than overwriting each other. Once it is
+set, a new check registers itself there and needs no further setup.
+
+**This is not the only manual step**, and an earlier version of this section said it was. A clone also
+wants `python3` on `PATH` for the checks that are not `cargo` (below), and the doctrine regeneration
+check additionally wants the `impractical-doctrine` plugin and a token that can reach `brain` — it
+warns and steps aside without them. What the one command buys is the hook set, not a finished
+environment.
 
 ### The hook set
 
 `core.hooksPath` names one directory and git looks a hook up by its exact filename, so a hook
-type is one file. [`.githooks/pre-commit`](./.githooks/pre-commit) and
-[`.githooks/pre-push`](./.githooks/pre-push) are therefore two-line stubs that hand off to
-[`.githooks/dispatch`](./.githooks/dispatch), which runs every executable under
-`.githooks/<hook>.d/` in filename order and stops at the first failure. What is installed today:
+type is one file. [`scripts/hooks/pre-commit`](./scripts/hooks/pre-commit) and
+[`scripts/hooks/pre-push`](./scripts/hooks/pre-push) are therefore two-line stubs that hand off to
+[`scripts/hooks/dispatch`](./scripts/hooks/dispatch), which runs every executable under
+`scripts/hooks/<hook>.d/` in filename order and stops at the first failure. What is installed today:
 
 - **pre-commit**
-  - `.githooks/pre-commit.d/10-rules-refs` — `check_rules_refs.py` over the working tree: no ADR
+  - `scripts/hooks/pre-commit.d/10-rules-refs` — `check_rules_refs.py` over the working tree: no ADR
     number in code, no comment citing an issue or a rule anchor, every `see rules:` pointer
     resolving.
-  - `.githooks/pre-commit.d/20-rust-fmt` — `cargo fmt --all --check` (fast; skips docs-only
+  - `scripts/hooks/pre-commit.d/20-rust-fmt` — `cargo fmt --all --check` (fast; skips docs-only
     commits). Blocks commits that CI's format gate would reject.
-  - `.githooks/pre-commit.d/30-rules-index` — `check_rules_derive.py --write` when the commit
+  - `scripts/hooks/pre-commit.d/30-rules-index` — `check_rules_derive.py --write` when the commit
     touches `docs/rules/`, re-staging the regenerated index so the fix lands in the same commit.
-  - `.githooks/pre-commit.d/40-doctrine-regen` — the doctrine generator's `--write`, staging only
+  - `scripts/hooks/pre-commit.d/40-doctrine-regen` — the doctrine generator's `--write`, staging only
     what it rewrote. **Warns and never blocks**: it needs a plugin from a private marketplace and a
     token, so a clone with neither has to stay committable. CI's `provenance` job is what reds.
 - **pre-push**
-  - `.githooks/pre-push.d/10-rust-clippy` — `cargo clippy --workspace --all-targets -- -D
+  - `scripts/hooks/pre-push.d/10-rust-clippy` — `cargo clippy --workspace --all-targets -- -D
     warnings`. Runs at the push boundary (not every commit) so the compile cost is paid once;
     skips pushes that touch no Rust.
 
@@ -54,7 +62,7 @@ the file says so in its header.
 
 ### Adding a check
 
-Drop an executable file in `.githooks/pre-commit.d/` or `.githooks/pre-push.d/` and re-run
+Drop an executable file in `scripts/hooks/pre-commit.d/` or `scripts/hooks/pre-push.d/` and re-run
 `./scripts/install-hooks.sh` if the tree lost the executable bit. There is nothing to register and
 nothing to displace — which is the reason for the indirection, because the alternative is a second
 hooks directory that silently disables the first.
@@ -77,10 +85,15 @@ What a check can rely on, and what it owes:
   duplicate of the check it shadows.
 - **Keep the prefix two digits wide.** Order is the shell's collation order, not numeric, so a
   `100-` check would sort *before* `20-`.
-- **A new hook kind needs a stub beside its registry.** `.githooks/pre-commit.d/` is reached only
-  because `.githooks/pre-commit` exists — git looks a hook up by its exact filename and nothing
+- **A new hook kind needs a stub beside its registry.** `scripts/hooks/pre-commit.d/` is reached only
+  because `scripts/hooks/pre-commit` exists — git looks a hook up by its exact filename and nothing
   else. Copy either existing stub and change the name it passes. `install-hooks.sh` refuses a
   registry with no stub rather than listing checks git will never call.
+- **Do not rename the stubs, and do not move this directory.** `agent-tools`' `bootstrap.sh` decides
+  whether a repo has hooks by looking for an executable regular file *named after a git hook event*
+  directly inside `scripts/hooks/`. `pre-commit` and `pre-push` are what it finds; `dispatch` is not a
+  hook name and would not satisfy it. Rename either stub, or move the set, and every bootstrapped
+  clone silently goes back to running no hooks at all.
 
 ## Toolchain
 
