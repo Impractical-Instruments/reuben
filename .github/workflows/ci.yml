@@ -139,6 +139,11 @@ jobs:
               - 'scripts/check_rules_derive.py'
               - 'scripts/check_rules_links.py'
               - 'scripts/check_rules_refs.py'
+              # The ADR-number guard and its suite — authored here, not vendored, and listed by
+              # name so a change to the guard (its known-collision table above all) re-runs it
+              # against the corpus it governs, the way ci.yml below re-runs the gate that reads it.
+              - 'scripts/check_adr_numbers.py'
+              - 'scripts/test_check_adr_numbers.py'
               # The guards' own suite, vendored from the same source as the guards and living in
               # its own directory because `support.py` asserts each module under test came from
               # the directory above it.
@@ -629,6 +634,54 @@ jobs:
       - name: Guard-consumer skill tests (absorb-adrs)
         run: cd .claude/skills/absorb-adrs && python3 -m unittest -v
 
+  # The ADR-number guard (check_adr_numbers.py): a number, once issued, is never carried by a second
+  # decision. docs/adr/README.md has stated that since July and nothing enforced it, so two live
+  # ADRs both numbered 0078 reached dev — two PRs the same evening, each correctly taking "the next
+  # number after the highest", neither visible to the other. The damage is not the confusion: the
+  # fold DELETES the ADR it absorbs and leaves a one-way `Distilled from:` pointer behind, so a
+  # shared number becomes permanently unresolvable the moment either file is absorbed.
+  #
+  # `fetch-depth: 0` IS THE JOB, not a detail of it. The numbers already issued live in history and
+  # nowhere else, precisely because the fold deleted the files. A default depth-1 checkout hands the
+  # guard a grafted root that reports every live file as a fresh addition and knows nothing of the
+  # seventy-odd numbers folded away — every reuse check would pass vacuously. The guard refuses to
+  # answer from a shallow clone rather than going green, so a regression here reds this job instead
+  # of hiding; the depth is what makes it able to answer at all.
+  #
+  # PATH-FILTERED on `rules` (which already carries docs/adr/**) plus the guard's own two files —
+  # unlike the always-on ref-guard/sample-guard/doc-claims below. Those three are falsified by a
+  # change somewhere else entirely (a rename, a stray buffer in any crate), so no filter built from
+  # their subject's paths can be sound. The filter here is sound in the direction that GATES: a
+  # change that INTRODUCES a duplicate number has to add or move a file under docs/adr/**, so it
+  # cannot slip past by skipping this job.
+  #
+  # It is NOT sound in the other direction, which is worth knowing before you meet it. The guard
+  # enumerates `git log --all`, and this checkout fetches +refs/heads/*:refs/remotes/origin/* —
+  # EVERY branch in the repository, not just this PR's. That is deliberate: it is what lets the
+  # guard catch two open PRs that have never seen each other, the exact scenario it was written for.
+  # The bill is that an ABANDONED branch carrying a duplicate reds this job on every PR that trips
+  # the filter, including PRs innocent of it. The fix is to delete the stale branch, not to change
+  # the PR — the finding names both files and marks the one that is not in the working tree. Gates
+  # merges via `ci-passed`'s `needs`; a Skipped job counts as a pass there.
+  adr-numbers:
+    name: no reused ADR numbers (ADR-number guard)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rules == 'true' && (github.event_name == 'push' || github.event.pull_request.draft == false)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the numbers already issued are in history; the fold deleted the files
+
+      # The guard's own suite runs here so it cannot silently rot, same as `sample-guard`. It builds
+      # throwaway git repos to exercise rename detection and the shallow-clone refusal, so it needs
+      # no toolchain and takes well under a second.
+      - name: Guard unit tests
+        run: cd scripts && python3 -m unittest test_check_adr_numbers -v
+
+      - name: ADR-number guard (a number is issued once)
+        run: python3 scripts/check_adr_numbers.py .
+
   # The rules reference-linter (check_rules_refs.py): no ADR-NNNN survives in
   # code, and every `see rules: <topic>` comment resolves to a real topic doc and stops there. Unlike the derive/link
   # guards (path-filtered to docs/rules/**), a reintroduced ADR ref or a broken topic pointer can hide
@@ -728,8 +781,8 @@ jobs:
     name: ci-passed
     runs-on: ubuntu-latest
     needs:
-      [changes, lockstep, check, windows, bench, eval-gate, dashboard, rules-guards, ref-guard,
-       sample-guard, doc-claims, provenance]
+      [changes, lockstep, check, windows, bench, eval-gate, dashboard, rules-guards, adr-numbers,
+       ref-guard, sample-guard, doc-claims, provenance]
     if: always()
     steps:
       - name: Fail if any required job failed or was cancelled (skipped is OK)

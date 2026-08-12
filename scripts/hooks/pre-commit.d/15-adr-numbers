@@ -1,0 +1,48 @@
+#!/bin/sh
+# The ADR-number guard: a number, once issued, is never carried by a second decision. The fold
+# deletes the ADR it absorbs and leaves a one-way provenance line behind, so a shared number becomes
+# permanently unresolvable the moment either file is absorbed — which makes this the cheapest thing
+# in the set to catch early and the most expensive to catch late. CI's `adr-numbers` job is the
+# backstop; this is the front line, the same split every check here uses.
+#
+# Numbered 15: read-only, so it belongs below the writers at 30 and 40 (see CONTRIBUTING.md, which
+# lists every check in the set and which of them write).
+#
+# No path filter, for the same reason as `10-rules-refs` and at a comparable price: the enumeration
+# reads one directory's history and nothing else, which measured between 0.03s and 0.08s over this
+# tree across repeated runs — the spread is cache warmth, so read that as "well under a tenth of a
+# second", not as a figure. A new ADR file is not always what stages the collision: pulling the
+# integration branch into a topic branch can hand you a duplicate in a commit that touches no
+# decision record at all, and a filter on staged paths would skip exactly that commit. Resolving
+# that merge is also where the guard's own blind spot used to be — see the module docstring on
+# merge commits. What it costs is the same thing the reference-linter costs: this
+# reads the WORKING TREE, so an untracked scratch file in the decision-record directory blocks a
+# commit that has nothing to do with it. CI reads what landed and is the authority.
+#
+# Two ways this steps aside rather than blocking, each printed out loud and only when there is
+# something staged to have had an opinion about — a warning on every commit forever is a warning
+# people stop reading, which is silence by a slower route.
+if ! command -v python3 >/dev/null 2>&1; then
+    if [ -n "$(git diff --cached --name-only)" ]; then
+        echo "! pre-commit: python3 not found — skipping the ADR-number guard." >&2
+        echo "  CI's adr-numbers job still runs it. See CONTRIBUTING.md (Toolchain)." >&2
+    fi
+    exit 0
+fi
+
+# A shallow clone cannot say which numbers were already issued and folded away, and the guard
+# refuses to answer from one. That refusal is right in CI, where the fix is a deeper checkout; here
+# it would block every commit in a clone that is merely shallow, so warn instead. CI is the
+# authority and its checkout is full-depth.
+if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
+    if [ -n "$(git diff --cached --name-only)" ]; then
+        echo "! pre-commit: shallow clone — skipping the ADR-number guard." >&2
+        echo "  It reads history the fold deleted the files from. \`git fetch --unshallow\` to run it here." >&2
+    fi
+    exit 0
+fi
+
+python3 scripts/check_adr_numbers.py "$(git rev-parse --show-toplevel)" || {
+    echo "pre-commit: ADR-number guard failed (see above)" >&2
+    exit 1
+}
