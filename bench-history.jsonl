@@ -9519,3 +9519,17 @@
 {"sha":"df04770","commit_sha":"df047704a5990861db8012ae938111f211b724bd","date":"2026-08-12T18:07:23-04:00","run_id":"31645600568","layer":"construct","case":"nest_n2048","ir":43510370}
 {"sha":"df04770","commit_sha":"df047704a5990861db8012ae938111f211b724bd","date":"2026-08-12T18:07:23-04:00","run_id":"31645600568","layer":"construct","case":"nest_n4096","ir":88816126}
 {"sha":"df04770","commit_sha":"df047704a5990861db8012ae938111f211b724bd","date":"2026-08-12T18:07:23-04:00","run_id":"31645600568","layer":"construct","case":"nest_n8192","ir":179680349}
+{"sha":"0db82f2","commit_sha":"0db82f2b890335f0ff3916fcacfc80f913913086","date":"2026-08-12T18:54:02-04:00","run_id":"31648830157","layer":"macro","case":"reverb","ir":44419915}
+{"sha":"0db82f2","commit_sha":"0db82f2b890335f0ff3916fcacfc80f913913086","date":"2026-08-12T18:54:02-04:00","run_id":"31648830157","layer":"macro","case":"echo","ir":37119158}
+{"sha":"0db82f2","commit_sha":"0db82f2b890335f0ff3916fcacfc80f913913086","date":"2026-08-12T18:54:02-04:00","run_id":"31648830157","layer":"macro","case":"auto-filter","ir":37121304}
+{"sha":"0db82f2","commit_sha":"0db82f2b890335f0ff3916fcacfc80f913913086","date":"2026-08-12T18:54:02-04:00","run_id":"31648830157","layer":"macro","case":"sampler-arp","ir":15554704}
+{"sha":"0db82f2","commit_sha":"0db82f2b890335f0ff3916fcacfc80f913913086","date":"2026-08-12T18:54:02-04:00","run_id":"31648830157","layer":"macro","case":"autotune","ir":34721787}
+{"sha":"0db82f2","commit_sha":"0db82f2b890335f0ff3916fcacfc80f913913086","date":"2026-08-12T18:54:02-04:00","run_id":"31648830157","layer":"construct","case":"wide_n2048","ir":48862758}
+{"sha":"0db82f2","commit_sha":"0db82f2b890335f0ff3916fcacfc80f913913086","date":"2026-08-12T18:54:02-04:00","run_id":"31648830157","layer":"construct","case":"wide_n4096","ir":98897814}
+{"sha":"0db82f2","commit_sha":"0db82f2b890335f0ff3916fcacfc80f913913086","date":"2026-08-12T18:54:02-04:00","run_id":"31648830157","layer":"construct","case":"wide_n8192","ir":199363073}
+{"sha":"0db82f2","commit_sha":"0db82f2b890335f0ff3916fcacfc80f913913086","date":"2026-08-12T18:54:02-04:00","run_id":"31648830157","layer":"construct","case":"deep_n2048","ir":57969429}
+{"sha":"0db82f2","commit_sha":"0db82f2b890335f0ff3916fcacfc80f913913086","date":"2026-08-12T18:54:02-04:00","run_id":"31648830157","layer":"construct","case":"deep_n4096","ir":120792627}
+{"sha":"0db82f2","commit_sha":"0db82f2b890335f0ff3916fcacfc80f913913086","date":"2026-08-12T18:54:02-04:00","run_id":"31648830157","layer":"construct","case":"deep_n8192","ir":243273177}
+{"sha":"0db82f2","commit_sha":"0db82f2b890335f0ff3916fcacfc80f913913086","date":"2026-08-12T18:54:02-04:00","run_id":"31648830157","layer":"construct","case":"nest_n2048","ir":43511020}
+{"sha":"0db82f2","commit_sha":"0db82f2b890335f0ff3916fcacfc80f913913086","date":"2026-08-12T18:54:02-04:00","run_id":"31648830157","layer":"construct","case":"nest_n4096","ir":88825904}
+{"sha":"0db82f2","commit_sha":"0db82f2b890335f0ff3916fcacfc80f913913086","date":"2026-08-12T18:54:02-04:00","run_id":"31648830157","layer":"construct","case":"nest_n8192","ir":179671249}
