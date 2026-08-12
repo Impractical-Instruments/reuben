@@ -335,13 +335,20 @@ jobs:
       # behind a bootloader: the embedder's problem, not this repo's.
       #
       # KNOW WHAT THE NUMBER IS, because it is NOT "the size of reuben-core". It is the machine code
-      # rustc chose to EMIT into the rlib, and both of its limits were measured on a probe crate at
-      # this pin rather than assumed. Generic instantiation dominates it: one `sort_unstable()` call
-      # put `core::slice::sort::quicksort` at 2990 of the probe's 3952 bytes. And below rustc's
-      # cross-crate-inlining MIR-cost threshold nothing is emitted at all, so ten added small
-      # `pub fn`s moved it by 0 while one large one moved it by 820 — what counts flips on MIR cost,
-      # not on code size. So it does not detect "this change doubled the code size", and must not be
-      # read that way. What it does detect, for free, is a new heavyweight generic being pulled in.
+      # rustc chose to EMIT into the rlib, and every limit below was measured on a probe crate at this
+      # pin rather than assumed. Generic instantiation dominates it: one `sort_unstable()` call put
+      # `core::slice::sort::quicksort` at 2990 of the probe's 3952 bytes. Below rustc's
+      # cross-crate-inlining threshold nothing is emitted at all, and that threshold reads the
+      # POST-OPTIMIZATION MIR body rather than how much code was written — a 12-byte function can be
+      # emitted while a 726-byte one is not. So it does not detect "this change doubled the code
+      # size", and must not be read that way.
+      #
+      # WHAT IT DOES DETECT is a new heavyweight generic THIS CRATE ITSELF MONOMORPHIZES, in a
+      # non-`#[inline]` function above that threshold. Miss any part of that and it is blind: a crate
+      # exposing only `pub fn sort_any<T: Ord>` measures byte-identical to an empty one while the
+      # embedder that instantiates it pays 3824 bytes, and `#[inline]` on a function worth 3862 takes
+      # it to 0. Sensitivity spans 77x across what it does catch (+3862 for `sort_unstable`, +50 for
+      # `format!`). So a jump is worth reading and silence proves nothing.
       # `--crate-type staticlib` was measured as the alternative and is worse: it emits only what is
       # reachable from `#[no_mangle]` exports, so BOTH probe deltas were 0 against a 323 KB
       # `core` + `compiler_builtins` floor — and it cannot build at all for a library that leaves the
