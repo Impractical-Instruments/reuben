@@ -266,7 +266,11 @@ if [ -n "$REUBEN_MICRO_BENCH_SKIP" ]; then
 fi
 
 overall_fail=0
+# Bench layers with no comparable baseline. Denominator is ${#BENCHES[@]}, so ONLY per-layer skips
+# belong here — the construct scaling gate is a separate check over the construct layer's output,
+# not a fourth layer, and counting it here reported "4/3 layer(s) skipped".
 skipped=0
+scaling_inert=0
 hard_broken=0
 
 # Gate one bench layer: baseline run (old src + fixtures, PR harness) -> compare PR run -> table.
@@ -431,7 +435,7 @@ scaling_gate() {
     if [ "${harvested:-0}" -eq 0 ]; then
       both "| _(the construct layer recorded nothing — skipped; growth not checked)_ |  |  |  |"
       both ""
-      skipped=$((skipped + 1))
+      scaling_inert=1
       printf '::warning title=Scaling gate inert::the construct layer recorded no Ir — the growth factor was not checked this run\n'
       return 0
     fi
@@ -487,8 +491,14 @@ if [ "$overall_fail" -ne 0 ]; then
   both "**Result: ❌ regression over ${FAIL_PCT}%, or construct scaling over ${FAIL_GROWTH}x per doubling.**"
   exit 1
 fi
-if [ "$skipped" -ne 0 ]; then
-  both "**Result: ✅ within ${FAIL_PCT}% — but ${skipped}/${#BENCHES[@]} layer(s) skipped (partial coverage).**"
+gaps=""
+[ "$skipped" -ne 0 ] && gaps="${skipped}/${#BENCHES[@]} layer(s) skipped"
+if [ "$scaling_inert" -ne 0 ]; then
+  [ -n "$gaps" ] && gaps="${gaps}, "
+  gaps="${gaps}construct scaling not checked"
+fi
+if [ -n "$gaps" ]; then
+  both "**Result: ✅ within ${FAIL_PCT}% — but ${gaps} (partial coverage).**"
   exit 0
 fi
 both "**Result: ✅ within ${FAIL_PCT}%.**"
