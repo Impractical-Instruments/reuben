@@ -20,7 +20,7 @@ reads, no RNG) so the counts are byte-stable and both layers measure identical w
 two-tier — **warn > 3%, fail > 10%** — where 10% is "major" (an accidental O(n²), a clone or alloc in
 the per-sample loop) and 3% surfaces slow creep without blocking; the hard fail is enforced by
 callgrind itself, the rest parsed best-effort so a schema shift degrades gracefully. A separate
-`main`/`dev` orphan-branch trend (`bench-history`) persists the absolute numbers as JSONL with a
+per-branch orphan-branch trend persists the absolute numbers as JSONL with a
 self-rendered dashboard, so a regression is visible before it lands rather than only in a job summary
 that ages out.
 

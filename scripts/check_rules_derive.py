@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Derive guard + collator for the rules index. Runs in both repos.
+"""Derive guard + collator for the rules index. Runs against any repo carrying one.
+
+The repo is the ROOT argument, so one copy of this file serves every repo that adopts the
+system — reached through a submodule, or vendored in and declared beside a provenance block.
+Nothing here reads a repo name, a topic slug, or a count of topics.
 
 docs/rules/README.md is DERIVED from the topic docs:
   - `## Topics`  collates each topic's `# title` + `> summary`;
@@ -11,22 +15,53 @@ Modes:
                      hook so drift is fixed locally and never reaches CI.
 
 Deterministic ordering: topics by title, terms by term. Stdlib only.
-Usage: python3 scripts/check_rules_derive.py [--check|--write] [root=.]
+Usage: python3 check_rules_derive.py [--check|--write] [root=.]
 """
 from __future__ import annotations
 import re, sys
 from pathlib import Path
 
+FENCE_RE = re.compile(r"^(?P<f>`{3,}|~{3,})(?P<info>.*)$")
 TERM_RE  = re.compile(r"-\s+\*\*(.+?)\*\*\s+—\s+(.+)")
 TOPIC_RE = re.compile(r"-\s+\*\*\[(.+?)\]\((.+?\.md)\)\*\*\s+—\s+(.+)")
 GLOSS_RE = re.compile(r"-\s+\*\*(.+?)\*\*\s+—\s+(.+?)\s+·\s+\[.+?\]\((.+?\.md)\)")
+
+
+def fenced(lines: list[str]) -> list[bool]:
+    """Per line: is it inside a fenced code block, the fence lines themselves included.
+
+    A `## ` inside a fence is an EXAMPLE of a heading, not one, and an index that documents its own
+    format carries exactly that. Nothing here used to know the difference, and the cost was not a
+    missed match but DATA LOSS: `splice` took a fenced `## Glossary` for the real section, rewrote
+    from there to the next real heading, and ate the closing fence and every line after it — after
+    which both `--check` and `--write` called the wreckage clean. `ii_generate.py` masks fences for
+    this reason; this is the same rule in the file that ships to public CI.
+    """
+    mask, opener = [], None
+    for ln in lines:
+        m = FENCE_RE.match(ln.strip())
+        if opener is None:
+            inside = bool(m)
+            if m:
+                opener = m.group("f")
+        else:
+            inside = True
+            # A closer is the same character, at least as long, and carries no info string.
+            if (m and m.group("f")[0] == opener[0] and len(m.group("f")) >= len(opener)
+                    and not m.group("info").strip()):
+                opener = None
+        mask.append(inside)
+    return mask
 
 
 def parse_topic(path: Path):
     """Return (title, summary, {term: definition})."""
     title = summary = None
     terms, in_terms = {}, False
-    for ln in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+    lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    for ln, in_fence in zip(lines, fenced(lines)):
+        if in_fence:
+            continue
         s = ln.strip()
         if title is None and s.startswith("# "):
             title = s[2:].strip()
@@ -75,7 +110,10 @@ def render_glossary(terms):
 
 def parse_readme(path: Path):
     topics, gloss, section = {}, {}, None
-    for ln in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+    lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    for ln, in_fence in zip(lines, fenced(lines)):
+        if in_fence:
+            continue
         s = ln.strip()
         if s.startswith("## "):
             section = s[3:].strip().lower()
@@ -91,25 +129,41 @@ def parse_readme(path: Path):
     return topics, gloss
 
 
-def splice(text: str, section: str, body: list[str]) -> str:
+def splice(text: str, section: str, body: list[str]) -> tuple[str, bool]:
     """Replace the list body under `## <section>` with a CANONICAL block, dropping the old body up
     to the next `## ` heading or EOF. The block is: one blank line, the section's leading HTML
     comment line(s), the collated entries (possibly empty), one trailing blank.
+
+    Returns the new text and whether the heading was there at all. An absent heading is not an
+    error here — an index that defines no terms legitimately carries no `## Glossary` — but it IS
+    the difference between "wrote the entries" and "had nowhere to write them", and only the
+    caller knows whether there were entries. Reporting it is what stops `--write` exiting 0 on a
+    tree it did not converge.
 
     Idempotent — a second `--write` yields byte-identical output for empty, populated, and
     at-EOF sections. (The old code preserved leading blanks verbatim, so on an empty section it
     re-absorbed the prior run's trailing blank and then appended a fresh one, growing the file by a
     line each run; the entries were the only "wall" stopping that, so only the empty case drifted.)"""
-    lines, out, i, n = text.split("\n"), [], 0, len(text.split("\n"))
+    lines = text.split("\n")
+    out, i, n = [], 0, len(lines)
+    mask = fenced(lines)
+    # A `## ` line only counts as a heading — to match on, or to stop at — when it is not inside a
+    # fence. Both boundary scans below consult the same mask, so an example block is opaque to all
+    # three rather than to whichever one happened to be fixed.
+    def is_heading(j: int) -> bool:
+        return lines[j].startswith("## ") and not mask[j]
+
     heading = f"## {section}".lower()
+    found = False
     while i < n:
         out.append(lines[i])
-        if lines[i].strip().lower() == heading:
+        if not mask[i] and lines[i].strip().lower() == heading:
+            found = True
             i += 1
             # Preserve the leading HTML comment(s) verbatim — single- or multi-line — skipping any
             # blank lines OUTSIDE a comment. Stop at the first real entry or the next `## ` heading.
             comments = []
-            while i < n and not lines[i].startswith("## "):
+            while i < n and not is_heading(i):
                 s = lines[i].strip()
                 if s.startswith("<!--"):
                     # Consume the whole comment through its closing `-->`, keeping every line
@@ -124,7 +178,7 @@ def splice(text: str, section: str, body: list[str]) -> str:
                 else:
                     break
             # Drop the old entries up to the next `## ` heading / EOF.
-            while i < n and not lines[i].startswith("## "):
+            while i < n and not is_heading(i):
                 i += 1
             out.append("")
             out.extend(comments)
@@ -132,7 +186,7 @@ def splice(text: str, section: str, body: list[str]) -> str:
             out.append("")
             continue
         i += 1
-    return "\n".join(out)
+    return "\n".join(out), found
 
 
 def main(argv: list[str]) -> int:
@@ -153,8 +207,24 @@ def main(argv: list[str]) -> int:
                 print(e, file=sys.stderr)
             return 1
         text = readme.read_text(encoding="utf-8")
-        text = splice(text, "Topics", render_topics(topics))
-        text = splice(text, "Glossary", render_glossary(terms))
+        # A section the index does not carry is a section `splice` cannot write into. Silently
+        # writing nothing and exiting 0 leaves `--check` red with no way to satisfy it, and the
+        # front-line fixer reporting success is worse than the drift: the pre-commit hook passes,
+        # CI reds, and the per-term message names no remedy. An index with nothing to collate
+        # legitimately omits the heading, so the refusal turns on there being entries.
+        homeless = []
+        for section, body in (("Topics", render_topics(topics)), ("Glossary", render_glossary(terms))):
+            text, found = splice(text, section, body)
+            if body and not found:
+                homeless.append(section)
+        if homeless:
+            for section in homeless:
+                print(f"{readme} has no `## {section}` section, and there is collated content for "
+                      f"it. Add the heading, with a `<!-- derived — … -->` comment beneath it that "
+                      f"says the body is collated and not to be hand-edited; or remove what feeds "
+                      f"it. Nothing was written, including the sections that were fine.",
+                      file=sys.stderr)
+            return 1
         readme.write_text(text, encoding="utf-8")
         return 0
 
@@ -185,3 +255,10 @@ def main(argv: list[str]) -> int:
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
+
+# ii:begin provenance — derived from .ii/repo.toml; do not hand-edit out of sync. Regenerate with `python3 "$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py" --write .`. sha256=618bb6cb085a98934a172b122743e8dc727338885341a67c65c9b2f9194429e9
+# Source:   Impractical-Instruments/agent-tools@057c3f7a9391816263b1a4fcb46af5f4a5dc705f:plugins/impractical-doctrine/rules/check_rules_derive.py
+# Fetched:  2026-08-12
+# Refresh:  gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/check_rules_derive.py?ref=main' --jq '.content' | base64 -d > scripts/check_rules_derive.py && python3 "$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py" --write .
+# Do not edit locally. Changes go upstream via PR against the source repo.
+# ii:end provenance

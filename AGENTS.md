@@ -23,7 +23,7 @@ cargo run -p reuben-native --bin reuben -- describe    # list operators/ports/pa
 
 One-time setup: `./scripts/install-hooks.sh` — points `core.hooksPath` at [`.githooks/`](.githooks),
 where [`.githooks/dispatch`](.githooks/dispatch) chains every check registered under
-`.githooks/pre-commit.d/` (rules ref-linter, `cargo fmt`, rules-index regen) and
+`.githooks/pre-commit.d/` (rules ref-linter, `cargo fmt`, rules-index regen, doctrine regen) and
 `.githooks/pre-push.d/` (`cargo clippy`). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Non-negotiable invariants (every code change)
@@ -47,6 +47,18 @@ comment, decide which of the three it is:
 Never cite an issue or ADR number in a comment; provenance lives in the rationale file. Guarded
 across every crate by `scripts/check_rules_refs.py`. Full rule:
 [Code as a grounding surface](docs/rules/code-as-grounding.md).
+
+## Rule conflicts (every change)
+
+**If your output contradicts a live rule, say so — never override one silently.** Name the rule and
+why it is worth reopening, in the change itself. The rules under [`docs/rules/`](docs/rules/README.md)
+state the now, so contradicting one without saying so leaves the corpus asserting something the code
+no longer does, and nothing notices.
+
+Reopening a settled rule is a new ADR under [`docs/adr/`](docs/adr/README.md), the iteration surface a
+later `absorb-adrs` sweep folds back into the rules. An ADR that overturns a rule also has to mark
+that rule in the same change — that protocol, and the guard behind it, are in
+[docs/adr/README.md](docs/adr/README.md).
 
 ## Language
 
@@ -104,8 +116,9 @@ Both of the above are rules, not preferences — see
 - **[Operator dev](docs/agents/operator-dev.md)** — operator trait, descriptor macro, adding an operator, RT-safety rules.
 - **[Intent vocabulary](docs/agents/vocabulary.md)** — the word→move table turning intent language ("warmer", "busier", "sadder") into parameter moves. Generated from `vocabulary.json`; also served as `reuben://guide/vocabulary`.
 - **[Domain docs](docs/agents/domain.md)** — the now-state architecture is the [rules index](docs/rules/README.md) → topic → rule → rationale; read the index + the relevant topic doc before exploring. `docs/adr/` is the live iteration surface a human periodically folds into rules with the `absorb-adrs` skill.
+- **[Canonical sources](docs/agents/canonical-sources.md)** — the registry of what this repo copies in from elsewhere, and how each copy is refreshed. The rule those entries obey is the company-doctrine region at the end of the [rules index](docs/rules/README.md).
 - **[Agent-surface eval](eval/README.md)** — what authoring costs a model (grounding tokens, repair rounds, freehand JSON). Gated in CI; run `cd eval && python3 -m reuben_eval.gate` after changing a tool description, the `instructions`, or `docs/agents/`.
 - **[Benchmarks](crates/reuben-core/benches/README.md)** — two workloads, each in a local wall-clock and a CI instruction-count layer: **render** (`render_block`, gated on absolute cost against the base ref) and **construct** (load + instantiate, swept across node counts and gated on how it *scales*, at no baseline). Bench case ids are matched by name across commits — renaming one drops it from its gate and orphans its history.
 - **[Issue tracker](docs/agents/issue-tracker.md)** — GitHub Issues via `gh`; external PRs are not a triage surface.
-- **[Triage labels](docs/agents/triage-labels.md)** — needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix.
-- **[CONTRIBUTING.md](CONTRIBUTING.md)** · **[Rules index](docs/rules/README.md)** · **[Live ADRs](docs/adr/README.md)** (the iteration surface)
+- **[Triage labels](docs/agents/triage-labels.md)** — the canonical state roles and the charting family, which mean the same thing in every repo, plus the labels this repo adds for itself.
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** · **[Rules index](docs/rules/README.md)** · **[Live ADRs](docs/adr/README.md)** (the iteration surface) · **[`.ii/repo.toml`](.ii/repo.toml)** — this repo as data: the branch model, the doc system, and every copy it declares. Read it rather than asking prose.

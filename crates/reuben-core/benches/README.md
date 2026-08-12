@@ -65,8 +65,9 @@ long it has been that way.
 
 ## Trend history
 
-Every push to `main` also records each case's absolute `Ir` to the `bench-history` orphan branch
-(layer 1). Read the whole cross-commit series with:
+A push to a long-lived branch also records each case's absolute `Ir` to that branch's own orphan
+trend (layer 1); `.github/workflows/ci.yml`'s `bench-history` job is the routing. Read the whole
+cross-commit series with:
 
 ```sh
 git show bench-history:bench-history.jsonl

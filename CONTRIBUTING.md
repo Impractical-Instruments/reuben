@@ -27,6 +27,9 @@ type is one file. [`.githooks/pre-commit`](./.githooks/pre-commit) and
     commits). Blocks commits that CI's format gate would reject.
   - `.githooks/pre-commit.d/30-rules-index` — `check_rules_derive.py --write` when the commit
     touches `docs/rules/`, re-staging the regenerated index so the fix lands in the same commit.
+  - `.githooks/pre-commit.d/40-doctrine-regen` — the doctrine generator's `--write`, staging only
+    what it rewrote. **Warns and never blocks**: it needs a plugin from a private marketplace and a
+    token, so a clone with neither has to stay committable. CI's `provenance` job is what reds.
 - **pre-push**
   - `.githooks/pre-push.d/10-rust-clippy` — `cargo clippy --workspace --all-targets -- -D
     warnings`. Runs at the push boundary (not every commit) so the compile cost is paid once;
@@ -59,8 +62,8 @@ hooks directory that silently disables the first.
 What a check can rely on, and what it owes:
 
 - **Read-only checks take the low numbers; a check that writes takes a high one.** `30-rules-index`
-  regenerates and re-stages a file, and a read-only check failing after it would leave you a
-  modified, staged file you never touched and were never told about.
+  and `40-doctrine-regen` regenerate and re-stage files, and a read-only check failing after either
+  would leave you a modified, staged file you never touched and were never told about.
 - **A check is handed the hook's own arguments and a verbatim replay of the hook's stdin**, so
   every pre-push check sees the same pushed refs. It runs from the working-tree root and may stage
   files.
@@ -87,11 +90,11 @@ don't pick a toolchain. Because local and CI run the *same* version, a given fmt
 gives the same verdict in both places — which is what makes the hooks worth trusting. It is the
 *commands* that differ where they differ, as above, never the compiler.
 
-**`python3` is optional but wanted.** Two of the pre-commit checks are Python — the rules
-reference-linter and the rules-index regeneration. Without `python3` on `PATH` they print a warning
-and step aside rather than blocking your commits, because CI runs both regardless. The one thing
-you lose is the automatic regeneration of `docs/rules/README.md`: commit a `docs/rules/` change
-without it and CI's `--check` will red the build.
+**`python3` is optional but wanted.** The pre-commit checks that are not `cargo` are Python.
+Without `python3` on `PATH` each prints a warning and steps aside rather than blocking your commits,
+because CI runs them regardless. What you lose is their regeneration: commit a `docs/rules/` change
+without it and CI's `--check` reds the build, and a doctrine artifact you should have regenerated
+stays as it was.
 
 ### Bumping the Rust version
 
@@ -107,24 +110,13 @@ the pinned toolchain, which equals the MSRV).
 
 ## Branching & release flow
 
-The repo runs a two-branch model (see [web-product-process](./docs/rules/web-product-process.md)):
+**The branch model is [`.ii/repo.toml`](./.ii/repo.toml)'s `[branches]` table**, and it is not
+restated here. Open every PR against the integration branch it names; the release branch advances
+only by the workflow at its `promotion_source`, dispatched by hand from the Actions tab. Prose that
+names a branch instead of reading it there goes stale the day the table changes.
 
-- **`dev`** is the default, long-lived integration branch. **Open every PR against `dev`.**
-- Pushing to `dev` runs the full CI suite. (The staging/preview *deploys* that once lived here
-  moved out with the web player — they now run in the private `reuben-web` repo, which pins this
-  one as a submodule. The promotion model below is unchanged.)
-- **`main` is production and ships by promotion, never by a direct merge.** Run the manual
-  **[Promote dev to main](./.github/workflows/promote.yml)** workflow (Actions → *Promote dev to
-  main* → Run workflow). It fast-forwards `main` to `dev` and the resulting push deploys production.
-
-**Never commit or push directly to `main`.** A commit on `main` that isn't from `dev` diverges the
-two branches and breaks the fast-forward promotion until `main` is merged back into `dev`. If a
-hotfix ever *must* land on `main` directly, immediately reconcile with `git checkout dev && git merge
-main` so `dev → main` stays fast-forwardable.
-
-After the default branch switched to `dev`, run this once locally so `origin/HEAD` follows it.
-A clone that still points `origin/HEAD` at `main` will resolve `origin/HEAD` and anything built
-on it against production rather than the integration branch:
+Point your clone's `origin/HEAD` at the default branch once, or `origin/HEAD` and anything built on
+it resolve against whatever the clone was created against:
 
 ```sh
 git remote set-head origin -a

@@ -35,6 +35,6 @@ with that ratio trains people to ignore it, which is the same failure the
 guessing at them. The forcing function is that the reason is demanded at **writing** time, while the
 author still knows whether generation was tried.
 
-Guarded by: scripts/test_check_rules_refs.py::test_parity_marker_without_a_reason_fails
+Guarded by: scripts/tests/test_check_rules_refs.py::test_parity_marker_without_a_reason_fails
 
 Decided in: issue #634 — settled directly, no ADR.

@@ -3,10 +3,12 @@
 # commit touches the rules docs; regenerates the index and re-stages it so the fix lands in the
 # same commit. CI's `check_rules_derive.py --check` is the backstop, not the front line.
 #
-# Numbered last on purpose, and the number is the whole mechanism: this is the only check in the
-# pre-commit set that WRITES. A read-only check that fails after it would leave the author a
-# modified, staged README they never touched and were never told about. So read-only checks take
-# the low numbers and writers take the high ones — see CONTRIBUTING.md.
+# Numbered high on purpose, and the number is the whole mechanism: this check WRITES. A read-only
+# check that fails after it would leave the author a modified, staged README they never touched and
+# were never told about. So read-only checks take the low numbers and writers take the high ones —
+# see CONTRIBUTING.md, which lists every check in the set and which of them write. This is not the
+# only writer: `40-doctrine-regen` runs after it and writes too, so a new read-only check belongs
+# below 30 rather than between them.
 if ! command -v python3 >/dev/null 2>&1; then
     if git diff --cached --name-only | grep -q '^docs/rules/'; then
         echo "! pre-commit: python3 not found — the rules index was NOT regenerated." >&2

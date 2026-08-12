@@ -1,0 +1,107 @@
+# Impractical-Instruments/reuben — repo manifest.
+#
+# The per-repo half of doctrine generation: this file plus the doctrine templates in
+# `agent-tools` produce this repo's generated docs. `--write` in pre-commit, and in CI the
+# vendored `scripts/ii_verify.py` checks what was written.
+#
+# Promoted from the draft at
+# agent-tools@main:plugins/impractical-doctrine/templates/fixtures/reuben/.ii/repo.toml.
+# Every value below was re-read from this tree rather than trusted from the draft.
+#
+# Committing this file makes this repo a target of the scheduled regeneration job, which
+# derives its targets from the presence of `.ii/repo.toml` on the default branch.
+
+schema = 1
+
+[repo]
+visibility = "public"
+
+[branches]
+# The branch model, and the only place this repo states it. `docs/rules/web-product-process.md`
+# carried it as two rules until this file existed; they are deleted, not restated.
+integration      = "dev"
+release          = "main"
+promotion        = "fast-forward-workflow"
+promotion_source = ".github/workflows/promote.yml"
+
+[docs]
+system         = "rules"
+single_context = true
+adr_surface    = "transient"
+
+[rules]
+machinery = "local"
+# `local`, and it stays local for the reason `plugin` cannot serve: `plugin` describes a repo
+# reaching its machinery through $CLAUDE_PLUGIN_ROOT, which CI does not set and cannot. This
+# repo is public and `agent-tools` is private, so a build-time dependency is out of reach too.
+# What changed at the extraction is where the copies come from, not how this repo reaches them.
+
+[tracker]
+prs_as_request_surface = false
+
+[labels]
+extra = ["post-v1", "design-question", "someday", "epic", "triage", "perf"]
+
+[tooling]
+formatters = ["rustfmt"]
+
+# The vendored half of the doctrine machinery. This repo authored the three rules validators;
+# `agent-tools` owns them now, and each row below is what makes the copy here declarable
+# rather than a paste. The generator stays in the plugin; CI runs these.
+
+[[consumes]]
+kind    = "vendored"
+path    = "scripts/check_rules_derive.py"
+source  = "Impractical-Instruments/agent-tools@main:plugins/impractical-doctrine/rules/check_rules_derive.py"
+refresh = "gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/check_rules_derive.py?ref=main' --jq '.content' | base64 -d > scripts/check_rules_derive.py && python3 \"$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py\" --write ."
+
+[[consumes]]
+kind    = "vendored"
+path    = "scripts/check_rules_links.py"
+source  = "Impractical-Instruments/agent-tools@main:plugins/impractical-doctrine/rules/check_rules_links.py"
+refresh = "gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/check_rules_links.py?ref=main' --jq '.content' | base64 -d > scripts/check_rules_links.py && python3 \"$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py\" --write ."
+
+[[consumes]]
+kind    = "vendored"
+path    = "scripts/check_rules_refs.py"
+source  = "Impractical-Instruments/agent-tools@main:plugins/impractical-doctrine/rules/check_rules_refs.py"
+refresh = "gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/check_rules_refs.py?ref=main' --jq '.content' | base64 -d > scripts/check_rules_refs.py && python3 \"$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py\" --write ."
+
+[[consumes]]
+kind    = "vendored"
+path    = "scripts/ii_verify.py"
+source  = "Impractical-Instruments/agent-tools@main:plugins/impractical-doctrine/verifier/ii_verify.py"
+refresh = "gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/verifier/ii_verify.py?ref=main' --jq '.content' | base64 -d > scripts/ii_verify.py && python3 \"$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py\" --write ."
+
+# The validators' own suite, taken for the same reason as the validators: CI runs it. It ships
+# as a subdirectory because `support.py` asserts each module under test was imported from the
+# directory above it, which is what stops a same-named copy elsewhere on the path shadowing it.
+
+[[consumes]]
+kind    = "vendored"
+path    = "scripts/tests/support.py"
+source  = "Impractical-Instruments/agent-tools@main:plugins/impractical-doctrine/rules/tests/support.py"
+refresh = "gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/tests/support.py?ref=main' --jq '.content' | base64 -d > scripts/tests/support.py && python3 \"$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py\" --write ."
+
+[[consumes]]
+kind    = "vendored"
+path    = "scripts/tests/test_check_rules_derive.py"
+source  = "Impractical-Instruments/agent-tools@main:plugins/impractical-doctrine/rules/tests/test_check_rules_derive.py"
+refresh = "gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/tests/test_check_rules_derive.py?ref=main' --jq '.content' | base64 -d > scripts/tests/test_check_rules_derive.py && python3 \"$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py\" --write ."
+
+[[consumes]]
+kind    = "vendored"
+path    = "scripts/tests/test_check_rules_links.py"
+source  = "Impractical-Instruments/agent-tools@main:plugins/impractical-doctrine/rules/tests/test_check_rules_links.py"
+refresh = "gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/tests/test_check_rules_links.py?ref=main' --jq '.content' | base64 -d > scripts/tests/test_check_rules_links.py && python3 \"$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py\" --write ."
+
+[[consumes]]
+kind    = "vendored"
+path    = "scripts/tests/test_check_rules_refs.py"
+source  = "Impractical-Instruments/agent-tools@main:plugins/impractical-doctrine/rules/tests/test_check_rules_refs.py"
+refresh = "gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/tests/test_check_rules_refs.py?ref=main' --jq '.content' | base64 -d > scripts/tests/test_check_rules_refs.py && python3 \"$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py\" --write ."
+
+# `docs/rules/_templates/` is byte-identical to the same three files in the plugin and is NOT
+# declared here, because a declared row appends a `provenance` region to each — and the
+# scaffolder instantiates those files, so the block would land in every rationale it writes.
+# The gap is real; it is agent-tools' to close, not this repo's to work around.

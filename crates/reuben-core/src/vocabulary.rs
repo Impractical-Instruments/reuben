@@ -573,9 +573,16 @@ impl Vocabulary {
     pub fn render(&self) -> String {
         let mut out = String::new();
         out.push_str("# Intent vocabulary — word → move\n\n");
+        // The header names its guard rather than ending in the doctrine's `— edit the source, not
+        // this file.`, which is `scripts/ii_verify.py`'s identity test for an artifact generated
+        // from templates it cannot see and so obliged to carry a `sha256=` of itself. This file's
+        // source is in this repo and the named test re-renders from it, which is strictly stronger
+        // than a digest; claiming the doctrine grammar would ask for a second, weaker mechanism.
         out.push_str(
             "<!-- GENERATED from docs/agents/vocabulary.json by \
-             `cargo run -p reuben-core --example gen_vocabulary` — edit the source, not this file. -->\n",
+             `cargo run -p reuben-core --example gen_vocabulary`; guarded by \
+             `committed_rendered_view_is_in_sync`, which re-renders from that source. Do not \
+             hand-edit. -->\n",
         );
         for line in &self.preamble {
             out.push('\n');
@@ -656,7 +663,7 @@ mod tests {
         let expected = "\
 # Intent vocabulary — word → move
 
-<!-- GENERATED from docs/agents/vocabulary.json by `cargo run -p reuben-core --example gen_vocabulary` — edit the source, not this file. -->
+<!-- GENERATED from docs/agents/vocabulary.json by `cargo run -p reuben-core --example gen_vocabulary`; guarded by `committed_rendered_view_is_in_sync`, which re-renders from that source. Do not hand-edit. -->
 
 Act on the most likely reading.
 

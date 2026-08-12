@@ -1,6 +1,6 @@
 # Intent vocabulary — word → move
 
-<!-- GENERATED from docs/agents/vocabulary.json by `cargo run -p reuben-core --example gen_vocabulary` — edit the source, not this file. -->
+<!-- GENERATED from docs/agents/vocabulary.json by `cargo run -p reuben-core --example gen_vocabulary`; guarded by `committed_rendered_view_is_in_sync`, which re-renders from that source. Do not hand-edit. -->
 
 Ambiguous ask → act on the most likely reading, then name the alternative you passed over ("took *darker* as tone color; say the word and I'll take it minor instead").
 
