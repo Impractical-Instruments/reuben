@@ -4,6 +4,12 @@ Closes the `## Open` section of [ADR-0067](0067-core-splits-and-reuben-api-is-th
 *"crate names and how many; whether `reuben-core` survives as a name or dissolves into the pieces;
 sequencing and what lands first; and feature-gating"*. ADR-0067's decision is not disturbed.
 
+Amended by: [ADR-0082](0082-the-render-document-seam-splits-four-modules-by-item.md) — the
+`### The partition` section below places `engine`, `resources` and `coordinator/` by module; executing
+the split measured four of them straddling the seam, and they split by item instead. The claim under
+`### The embedder goes through the window` that a render-only `reuben-api` is *"close to free"* is
+corrected there too. Everything else here stands.
+
 Overturns no rule. Cites [execution-runtime](../rules/execution-runtime.md) and
 [composition-operators](../rules/composition-operators.md) for context. The registration mechanism is
 a separate decision: [ADR-0081](0081-operator-self-registration-moves-to-linkme.md).
