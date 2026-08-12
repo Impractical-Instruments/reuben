@@ -26,6 +26,8 @@
 //!
 //! see rules: composition-operators
 
+use alloc::vec::Vec;
+
 use crate::descriptor::{Port, PortType};
 use crate::message::{Arg, OscArg};
 

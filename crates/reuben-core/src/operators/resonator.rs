@@ -43,6 +43,8 @@
 //!
 //! see rules: signal-time-dsp
 
+use alloc::boxed::Box;
+
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
@@ -223,10 +225,10 @@ impl Resonator {
                 self.g_exc[i] = 0.0;
                 continue;
             }
-            let w = std::f32::consts::TAU * f / sample_rate;
+            let w = core::f32::consts::TAU * f / sample_rate;
             let t = t0 / (1.0 + HF_DAMP * i as f32);
             let r = (-1.0 / (t * sample_rate)).exp().min(R_MAX);
-            let comb = (std::f32::consts::PI * n * pos).sin().abs();
+            let comb = (core::f32::consts::PI * n * pos).sin().abs();
             let amp = brightness.powi(i as i32) * comb;
             self.c[i] = 2.0 * r * w.cos();
             self.d[i] = r * r;
@@ -404,7 +406,7 @@ mod tests {
 
     fn sine(f: f32, n: usize) -> Vec<f32> {
         (0..n)
-            .map(|i| (std::f32::consts::TAU * f * i as f32 / SR).sin())
+            .map(|i| (core::f32::consts::TAU * f * i as f32 / SR).sin())
             .collect()
     }
 

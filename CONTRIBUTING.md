@@ -117,11 +117,14 @@ rustup installs it alongside the channel, so there is no `rustup target add` to 
 `reuben-core` is the crate that has to keep building for it; nothing above it in the workspace does.
 
 **The gate does not pass yet, and is not meant to.** The `no_std` port it exists to protect is
-unfinished — neither `reuben-core` nor the `reuben-contract` it depends on is `#![no_std]`, and
-several dependencies still arrive with their default `std` features on — so the build fails inside
-those dependencies before reaching this workspace's code. Because it cannot pass, CI's
-`bare-metal build (thumbv7em-none-eabihf)` job is deliberately **not** one of `ci-passed`'s
-dependencies and blocks no merge.
+unfinished. `reuben-contract` is `#![no_std]` and every dependency but one now arrives with its
+default `std` features off, so the build gets much further than it used to — but **`num-traits`
+still takes its default `std` feature**, and the build fails inside it before reaching this
+workspace's code. `reuben-core` itself does not carry `#![no_std]` yet either: the attribute lands
+with the float-math work, because until `num-traits` names a `libm` backend the attribute would sit
+on a crate whose `f32::sin`/`cos`/`exp` calls still resolve only through a `std` that the target
+does not have. Because it cannot pass, CI's `bare-metal build (thumbv7em-none-eabihf)` job is
+deliberately **not** one of `ci-passed`'s dependencies and blocks no merge.
 
 The job is two commands, and they are the two to run locally against it:
 

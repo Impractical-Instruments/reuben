@@ -18,6 +18,8 @@
 //!
 //! see rules: composition-operators
 
+use alloc::vec::Vec;
+
 /// The engine's audio element. One block of audio is a run of these.
 pub type AudioSample = f32;
 

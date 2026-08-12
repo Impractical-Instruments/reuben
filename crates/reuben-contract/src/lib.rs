@@ -10,7 +10,25 @@
 //! with a `{ .. }` meta block), `i32` (a bounded integer control / constant), `enum` (a held vocab
 //! enum, naming its shared `vocab` type), `note`, `harmony`, or `arg` (the type-agnostic
 //! pass-through). The retired `Shape`/legacy-`kind` two-surface world is gone.
+//!
+//! reuben-core re-exports this crate's meta types, so it is reached from the bare-metal target the
+//! render half builds for, where no `std` exists to link. It is therefore `no_std` + `alloc`, with
+//! no `std` feature to forget. see rules: execution-runtime
 
+#![no_std]
+
+extern crate alloc;
+
+// The test harness links `std` even for a `no_std` crate; the dev-dependency this crate's tests
+// drive serde through brings its own.
+#[cfg(test)]
+extern crate std;
+
+use alloc::collections::BTreeSet;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::fmt;
 use serde::Deserialize;
 
 pub mod naming;
@@ -281,8 +299,8 @@ impl ContractError {
     }
 }
 
-impl std::fmt::Display for ContractError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for ContractError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.message)
     }
 }
@@ -315,7 +333,7 @@ fn is_ident(name: &str) -> bool {
 fn validate_port(at: Locus, label: &str, p: &PortSpec) -> Result<(), ContractError> {
     // One range rule for both numeric metas — `f32` and `i32` share the check and the message
     // shape, differing only in the scalar type.
-    fn range<T: PartialOrd + Copy + std::fmt::Display>(
+    fn range<T: PartialOrd + Copy + fmt::Display>(
         at: Locus,
         label: &str,
         name: &str,
@@ -418,7 +436,7 @@ pub fn validate(spec: &OperatorSpec) -> Result<(), ContractError> {
 
     for (is_input, ports) in [(true, &spec.inputs), (false, &spec.outputs)] {
         let label = if is_input { "input" } else { "output" };
-        let mut seen = std::collections::BTreeSet::new();
+        let mut seen = BTreeSet::new();
         for (i, p) in ports.iter().enumerate() {
             let at = if is_input {
                 Locus::Input(i)
@@ -444,7 +462,7 @@ pub fn validate(spec: &OperatorSpec) -> Result<(), ContractError> {
         }
     }
 
-    let mut seen_const = std::collections::BTreeSet::new();
+    let mut seen_const = BTreeSet::new();
     for (i, p) in spec.constants.iter().enumerate() {
         if !seen_const.insert(p.name.as_str()) {
             return Err(ContractError::new(
@@ -460,6 +478,7 @@ pub fn validate(spec: &OperatorSpec) -> Result<(), ContractError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::string::ToString;
 
     fn spec(json: &str) -> OperatorSpec {
         serde_json::from_str(json).expect("valid json spec")

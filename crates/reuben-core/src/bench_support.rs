@@ -369,7 +369,7 @@ fn drive_clock(driver: &mut OpDriver, desc: &Descriptor, name: &str) {
 /// runs dry) and bind it to the operator's first resource slot through the real loader path.
 fn bind_synthetic_sample(driver: &mut OpDriver, desc: &Descriptor) {
     let frames = BLOCKS * BLOCK_SIZE;
-    let step = std::f32::consts::TAU * 220.0 / SAMPLE_RATE;
+    let step = core::f32::consts::TAU * 220.0 / SAMPLE_RATE;
     let channel: Vec<f32> = (0..frames).map(|i| (i as f32 * step).sin()).collect();
     let slot = desc
         .resources
@@ -382,7 +382,7 @@ fn bind_synthetic_sample(driver: &mut OpDriver, desc: &Descriptor) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
+    use alloc::collections::BTreeSet;
 
     /// Forcing function: every registered operator must have a [`WORKLOADS`] entry, so a new
     /// operator can't silently escape the micro layer. Runs in the `check` job under

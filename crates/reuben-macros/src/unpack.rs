@@ -94,14 +94,14 @@ impl UnpackInput {
                     held: #vocab,
                     /// Reusable per-block event snapshot `(frame, value)`, so `process` never
                     /// allocates once warm — the Voicer's discipline (`voicer.rs`).
-                    events: ::std::vec::Vec<(usize, #vocab)>,
+                    events: ::reuben_core::__alloc::vec::Vec<(usize, #vocab)>,
                 }
 
                 impl #struct_ident {
                     pub fn new() -> Self {
                         Self {
                             held: <#vocab as ::core::default::Default>::default(),
-                            events: ::std::vec::Vec::with_capacity(16),
+                            events: ::reuben_core::__alloc::vec::Vec::with_capacity(16),
                         }
                     }
                 }
@@ -125,8 +125,8 @@ impl UnpackInput {
                         #process
                     }
 
-                    fn spawn(&self) -> ::std::boxed::Box<dyn Operator> {
-                        ::std::boxed::Box::new(Self::new())
+                    fn spawn(&self) -> ::reuben_core::__alloc::boxed::Box<dyn Operator> {
+                        ::reuben_core::__alloc::boxed::Box::new(Self::new())
                     }
                 }
 

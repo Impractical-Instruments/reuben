@@ -26,6 +26,7 @@
 //!
 //! see rules: signal-time-dsp
 
+use alloc::boxed::Box;
 use smallvec::SmallVec;
 
 use crate::descriptor::Descriptor;

@@ -20,7 +20,7 @@ cpal.workspace = true
 rosc.workspace = true
 # Input-callback -> render-thread SPSC ring.
 rtrb.workspace = true
-serde.workspace = true
+serde = { workspace = true, features = ["std"] }
 serde_json.workspace = true
 clap.workspace = true
 

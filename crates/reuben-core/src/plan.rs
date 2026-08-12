@@ -14,8 +14,14 @@
 //!
 //! see rules: execution-runtime
 
-use std::collections::HashSet;
-use std::sync::Arc;
+use alloc::boxed::Box;
+use alloc::collections::BTreeSet;
+use alloc::format;
+use alloc::string::String;
+use alloc::string::ToString;
+use alloc::sync::Arc;
+use alloc::vec;
+use alloc::vec::Vec;
 
 use slotmap::SecondaryMap;
 
@@ -437,7 +443,10 @@ impl Plan {
         // scratch** is assigned in the node loop and never enters this table: it holds a ZOH value
         // across the block boundary and is excluded from the per-block clear, so recycling one
         // would hand an input's held value to another input.
-        let pinned: HashSet<(NodeKey, usize)> = graph
+        // Ordered rather than hashed: the element is `Ord`, this runs once per Instantiate over a
+        // handful of interface ports, and a `BTreeSet` needs no hasher — so the container costs
+        // nothing here and adds no dependency.
+        let pinned: BTreeSet<(NodeKey, usize)> = graph
             .outputs
             .iter()
             .map(|(k, p, _)| (*k, *p))
@@ -783,7 +792,7 @@ impl Plan {
     /// one-way `coordinator → plan/engine` layering); [`crate::engine::Engine`] forwards straight to
     /// here.
     ///
-    /// **RT-safe:** a bounded loop of [`std::mem::swap`] over `Box<dyn Operator>` — pointer
+    /// **RT-safe:** a bounded loop of [`core::mem::swap`] over `Box<dyn Operator>` — pointer
     /// swaps only, no allocation, no drop, no lock. Runs at the render-callback top.
     pub(crate) fn transplant_survivors(&mut self, from: &mut Plan, pairs: &[(usize, usize)]) {
         for &(old_index, new_index) in pairs {
@@ -791,7 +800,7 @@ impl Plan {
                 old_index < from.nodes.len() && new_index < self.nodes.len(),
                 "migration table index out of range — mispaired table/engine"
             );
-            std::mem::swap(&mut from.nodes[old_index].op, &mut self.nodes[new_index].op);
+            core::mem::swap(&mut from.nodes[old_index].op, &mut self.nodes[new_index].op);
             // Re-assert on-change held outputs so a consumer isn't stranded on the post-transplant
             // reset default (see rules: execution-runtime). RT-safe: no allocation.
             self.nodes[new_index].op.on_transplant();
@@ -1035,7 +1044,7 @@ struct Wires {
 
 impl Wires {
     fn take(graph: &mut Graph) -> Self {
-        let edges = std::mem::take(&mut graph.connections);
+        let edges = core::mem::take(&mut graph.connections);
         let mut out_e: SecondaryMap<NodeKey, Vec<usize>> =
             graph.nodes.keys().map(|k| (k, Vec::new())).collect();
         let mut in_e: SecondaryMap<NodeKey, Vec<usize>> =
@@ -1313,7 +1322,7 @@ mod port_kind_tests {
 /// integration tests, so they live where they can see the crate internals they assert on.
 #[cfg(test)]
 mod wire_forms {
-    use std::sync::Arc;
+    use alloc::sync::Arc;
 
     use super::{port_kind, Plan, PlanError, PortKind};
     use crate::config::AudioConfig;
@@ -1708,7 +1717,7 @@ mod wire_forms {
 /// state) moves, and that a mispaired-out-of-bounds table trips the debug guard.
 #[cfg(test)]
 mod transplant_tests {
-    use std::sync::Arc;
+    use alloc::sync::Arc;
 
     use super::Plan;
     use crate::config::AudioConfig;
@@ -1814,7 +1823,7 @@ mod transplant_tests {
 /// operator types stores K descriptors, not N.
 #[cfg(test)]
 mod descriptor_sharing_tests {
-    use std::sync::Arc;
+    use alloc::sync::Arc;
 
     use super::Plan;
     use crate::config::AudioConfig;
@@ -1855,7 +1864,7 @@ mod descriptor_sharing_tests {
 /// statement about the allocator and nothing else.
 #[cfg(test)]
 mod arena_reuse {
-    use std::sync::Arc;
+    use alloc::sync::Arc;
 
     use super::{AudioConfig, Descriptor, Graph, Plan, Port};
     use crate::graph::NodeKey;

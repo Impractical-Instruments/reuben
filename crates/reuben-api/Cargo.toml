@@ -31,7 +31,7 @@ reuben-core = { path = "../reuben-core" }
 # The authoring half. Optional and gated by the `authoring` feature — never reachable from a
 # render-only build.
 reuben-document = { path = "../reuben-document", optional = true }
-serde = { workspace = true, optional = true }
+serde = { workspace = true, optional = true, features = ["std"] }
 # The free-form leaves of the authoring surface — a node input's literal, a constant's value —
 # where the document format's own union is what the model sends and the engine type-checks.
 serde_json = { workspace = true, optional = true }

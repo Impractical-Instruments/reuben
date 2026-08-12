@@ -77,6 +77,15 @@ Three placements are not the obvious guess, and each was measured:
 
 ### `reuben-contract` is untouched, and must not be absorbed
 
+> **Corrected while executing the mechanical sweep (#736).** The last sentence below — *"`reuben-contract`
+> reaches bare metal by no path at all"* — is **false**, and one line falsifies it:
+> `reuben-core/src/descriptor.rs` does `pub use reuben_contract::{Curve, F32Meta, I32Meta};`. The
+> scalar-control metadata types are a *runtime* descriptor's fields, not an authoring-only concern,
+> so they are on the target by a direct, non-`cfg`-gated path. `reuben-contract` is therefore
+> `#![no_std]` + `alloc` too, and its `serde` arrives with `default-features = false`. The rest of
+> this section stands: the crate is still not absorbed, and `reuben-macros` still compiles for the
+> host only.
+
 Every `NUMBER_MIN`/`NUMBER_MAX` site in `reuben-core` is authoring-side, so the split alone removes
 the dependency. More generally: **`reuben-macros` is a proc-macro crate, so it and its dependencies
 compile for the host, never the target.** `reuben-contract` reaches bare metal by no path at all.

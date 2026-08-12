@@ -30,7 +30,7 @@
 //!
 //! see rules: execution-runtime
 
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 use crate::config::AudioConfig;
 use crate::descriptor::Descriptor;

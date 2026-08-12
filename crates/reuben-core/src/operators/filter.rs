@@ -20,6 +20,8 @@
 //!
 //! see rules: signal-time-dsp
 
+use alloc::boxed::Box;
+
 use crate::descriptor::Descriptor;
 use crate::dsp::svf::{Svf, SvfCoeffs, SvfTaps};
 use crate::operator::{Io, Operator};
@@ -239,7 +241,7 @@ mod tests {
     /// Generate a pure sine of frequency `f` Hz for `n` samples.
     fn sine(f: f32, sample_rate: f32, n: usize) -> Vec<f32> {
         (0..n)
-            .map(|i| (2.0 * std::f32::consts::PI * f * i as f32 / sample_rate).sin())
+            .map(|i| (2.0 * core::f32::consts::PI * f * i as f32 / sample_rate).sin())
             .collect()
     }
 

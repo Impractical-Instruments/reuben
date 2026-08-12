@@ -15,20 +15,12 @@ description = "Portable, OS-free realtime core for reuben: graph, plan, render."
 # CI runs the micro layer + its forcing-function test with it (locally: `cargo reuben-bench`,
 # see .cargo/config.toml).
 bench = []
-# Derives `schemars::JsonSchema` on the instrument-format types (src/format) and on nothing else, so
-# the projection's completeness guard can enumerate every format field mechanically. Every advertised
-# schema derives from reuben-api's own types, so the report, view and projection shapes here need no
-# derive at all and no longer carry one. Default-off and enabled by NO crate: CI names it on the test
-# step, which is the only thing keeping that guard running.
-schemars = ["dep:schemars"]
 
 [dependencies]
 slotmap.workspace = true
 smallvec.workspace = true
 num-traits.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-schemars = { workspace = true, optional = true }
+once_cell.workspace = true
 inventory.workspace = true
 # The operator_contract! macro: single-sources each operator's index consts + Descriptor.
 reuben-macros = { path = "../reuben-macros" }

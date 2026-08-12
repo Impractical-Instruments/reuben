@@ -1,10 +1,13 @@
 //! Message — the one OSC-shaped carrier the core speaks: `address + timestamp + exactly one Arg`.
 //! see rules: composition-operators
 
+use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+
 use crate::signal::BlockView;
 use crate::vocab::harmony::Harmony;
 use crate::vocab::pitch::{Note, Pitch};
-use std::sync::Arc;
 
 /// A contiguous sample buffer — the performant representation of a per-sample stream (a
 /// "Signal"). `Signal<f32>` is the only element kind built today; the
@@ -327,10 +330,10 @@ mod tests {
     #[test]
     fn arg_stays_small() {
         assert!(
-            std::mem::size_of::<Arg>() <= std::mem::size_of::<Harmony>(),
+            core::mem::size_of::<Arg>() <= core::mem::size_of::<Harmony>(),
             "Arg ({}B) must not exceed its largest payload Harmony ({}B)",
-            std::mem::size_of::<Arg>(),
-            std::mem::size_of::<Harmony>(),
+            core::mem::size_of::<Arg>(),
+            core::mem::size_of::<Harmony>(),
         );
     }
 

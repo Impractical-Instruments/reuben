@@ -8,7 +8,11 @@ repository.workspace = true
 description = "Single-source operator contract: spec types, naming, and validation shared by the operator_contract! macro and the scaffold."
 
 [dependencies]
-serde.workspace = true
+# This crate is reached from a bare-metal target — reuben-core re-exports its meta types — so its
+# dependencies have to cross-compile too. The workspace entry already withholds `std`; `alloc` is
+# what `Deserialize` needs for the `String`/`Vec` fields of the spec types.
+# see rules: execution-runtime
+serde = { workspace = true, features = ["alloc"] }
 
 [dev-dependencies]
 serde_json.workspace = true

@@ -21,6 +21,10 @@
 //!
 //! see rules: signal-time-dsp
 
+use alloc::boxed::Box;
+use alloc::vec;
+use alloc::vec::Vec;
+
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
@@ -195,7 +199,7 @@ mod tests {
         let sr = 48_000.0;
         let n = 2048;
         let input: Vec<f32> = (0..n)
-            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / sr).sin())
+            .map(|i| (2.0 * core::f32::consts::PI * 440.0 * i as f32 / sr).sin())
             .collect();
         // Even with heavy feedback, mix = 0 must pass the dry input through untouched.
         let out = render(&input, sr, 0.3, 0.9, 0.0);
@@ -215,7 +219,7 @@ mod tests {
         let n = 48_000;
         // Sustained noise-ish input driving the line at maximum feedback.
         let input: Vec<f32> = (0..n)
-            .map(|i| (2.0 * std::f32::consts::PI * 220.0 * i as f32 / sr).sin())
+            .map(|i| (2.0 * core::f32::consts::PI * 220.0 * i as f32 / sr).sin())
             .collect();
         let out = render(&input, sr, 0.05, 0.95, 0.7);
         for (i, &s) in out.iter().enumerate() {
@@ -258,7 +262,7 @@ mod tests {
         let sr = 48_000.0;
         let n = 48_000;
         let input: Vec<f32> = (0..n)
-            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / sr).sin())
+            .map(|i| (2.0 * core::f32::consts::PI * 440.0 * i as f32 / sr).sin())
             .collect();
         let mut d = OpDriver::for_type(Delay::new(), sr);
         d.set(IN_TIME, 0.5)

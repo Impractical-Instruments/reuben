@@ -5,10 +5,13 @@
 //! bad), of serialization, of connection type-checking, and of AI grounding — the `describe`
 //! projections are derived from these descriptors.
 
+use alloc::vec::Vec;
+
 // The scalar-control metadata types are owned by `reuben-contract`: one `F32Meta`/`I32Meta`/
 // `Curve` definition shared by the contract spec, the macro, and this runtime descriptor.
 // Re-exported here so the macro-emitted path `::reuben_core::descriptor::F32Meta` and every
-// in-crate `descriptor::` consumer keep working.
+// in-crate `descriptor::` consumer keep working. This line is also the only edge that puts
+// `reuben-contract` on the bare-metal target, which is why that crate builds without an OS too.
 pub use reuben_contract::{Curve, F32Meta, I32Meta};
 
 /// What a port carries — **the port's [`Arg`](crate::message::Arg) type**. Replaces
