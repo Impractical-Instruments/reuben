@@ -149,7 +149,7 @@ Run everything from the repo root.
    ```
 
    **Never hand-edit** README's `## Topics` / `## Glossary` bodies — they are derived from the topic
-   docs. (`.githooks/pre-commit.d/30-rules-index` runs this `--write` automatically on any
+   docs. (`scripts/hooks/pre-commit.d/30-rules-index` runs this `--write` automatically on any
    `docs/rules/` commit — in a clone where `scripts/install-hooks.sh` has been run; running it
    yourself keeps the tree clean before you self-check, and is the only guarantee if it has not.)
 

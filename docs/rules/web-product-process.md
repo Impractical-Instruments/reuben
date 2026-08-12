@@ -100,7 +100,7 @@ Superseded by: ADR-0067 (pending absorption)
 [why](rationale/web-product-process/toolchain-pin.md)
 
 <a id="shared-git-hooks"></a>
-### Git hooks are version-controlled under `.githooks/` and shared via `core.hooksPath` — pre-commit fmt, pre-push clippy — as a convenience ahead of the authoritative CI gate.
+### Git hooks are version-controlled under `scripts/hooks/` — the one directory the company bootstrap configures — and shared via `core.hooksPath`, as a convenience ahead of the authoritative CI gate.
 
 Superseded by: ADR-0079 (pending absorption)
 

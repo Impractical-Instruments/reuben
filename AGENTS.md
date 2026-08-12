@@ -21,10 +21,12 @@ cargo run -p reuben-core --example gen_vocabulary      # after editing docs/agen
 cargo run -p reuben-native --bin reuben -- describe    # list operators/ports/params
 ```
 
-One-time setup: `./scripts/install-hooks.sh` — points `core.hooksPath` at [`.githooks/`](.githooks),
-where [`.githooks/dispatch`](.githooks/dispatch) chains every check registered under
-`.githooks/pre-commit.d/` (rules ref-linter, `cargo fmt`, rules-index regen, doctrine regen) and
-`.githooks/pre-push.d/` (`cargo clippy`). See [CONTRIBUTING.md](CONTRIBUTING.md).
+One-time setup, unless `agent-tools`' `bootstrap.sh` already did it: `./scripts/install-hooks.sh` —
+points `core.hooksPath` at [`scripts/hooks/`](scripts/hooks), where
+[`scripts/hooks/dispatch`](scripts/hooks/dispatch) chains every check registered under
+`scripts/hooks/pre-commit.d/` (rules ref-linter, `cargo fmt`, rules-index regen, doctrine regen) and
+`scripts/hooks/pre-push.d/` (`cargo clippy`). Both routes set the same value.
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Non-negotiable invariants (every code change)
 

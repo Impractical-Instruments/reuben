@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for `.githooks/dispatch`, the hook-set chainer.
+"""Tests for `scripts/hooks/dispatch`, the hook-set chainer.
 
 Why this file exists: `dispatch` is the only thing standing between a registered check and never
 running, and it runs in front of every commit and push in every clone. Every other guard in this
@@ -19,7 +19,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-DISPATCH = Path(__file__).resolve().parent.parent / ".githooks" / "dispatch"
+DISPATCH = Path(__file__).resolve().parent.parent / "scripts/hooks" / "dispatch"
 
 
 class DispatchHarness(unittest.TestCase):
@@ -28,12 +28,12 @@ class DispatchHarness(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="hook-dispatch-"))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-        self.hooks = self.tmp / ".githooks"
+        self.hooks = self.tmp / "scripts/hooks"
         (self.hooks / "pre-commit.d").mkdir(parents=True)
         shutil.copy2(DISPATCH, self.hooks / "dispatch")
         self.stub("pre-commit")
         self.run_git("init", "-q", ".")
-        self.run_git("config", "core.hooksPath", ".githooks")
+        self.run_git("config", "core.hooksPath", "scripts/hooks")
         self.run_git("config", "user.email", "test@example.invalid")
         self.run_git("config", "user.name", "test")
 
@@ -73,7 +73,7 @@ class DispatchHarness(unittest.TestCase):
 
     def run_hook(self, hook="pre-commit", stdin="", args=()):
         """Invoke the stub the way git does: from the work tree, by relative path."""
-        return subprocess.run([os.path.join(".githooks", hook), *args],
+        return subprocess.run([os.path.join("scripts/hooks", hook), *args],
                               cwd=self.tmp, input=stdin,
                               capture_output=True, text=True, env=self.env())
 
