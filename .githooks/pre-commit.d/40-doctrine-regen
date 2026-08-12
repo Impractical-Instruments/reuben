@@ -10,6 +10,13 @@
 # access: all properties of the machine rather than of the change, so a clone with none of them has
 # to stay committable. CI's `provenance` job is what reds, and staleness is the scheduled
 # regeneration job's.
+#
+# KNOWN LIMIT, and it is why the staging below has to be right. `provenance` verifies the artifacts
+# it FINDS, by scanning for markers; it asserts nothing about which ones ought to exist. So a commit
+# that omits a generated file — or deletes one, or only its header line — lowers the count and exits
+# 0. `--require-artifacts` catches an emptied tree and nothing finer, and pinning the number here
+# would be the stored count the standing rule forbids. Deriving the expected set from the manifest is
+# upstream's to build; this check is the front line in the meantime.
 gen="${CLAUDE_PLUGIN_ROOT:-}/generator/ii_generate.py"
 if [ -z "${CLAUDE_PLUGIN_ROOT:-}" ] || [ ! -f "$gen" ]; then
     echo "- doctrine regen: \$CLAUDE_PLUGIN_ROOT is unset or carries no generator — skipped." >&2
@@ -31,9 +38,21 @@ root=$(git rev-parse --show-toplevel)
 # unstaged half of a file staged in part on purpose. A file the committer had already modified and
 # the generator then rewrote appears in both listings, so it is not staged here; that leaves their
 # own staging intact and CI is the backstop.
-before=$(git -C "$root" diff --name-only | sort)
+#
+# THE LISTING HAS TO COVER FILES THAT DO NOT EXIST YET. `git diff --name-only` reports tracked
+# modifications only, so a file the generator CREATES is untracked, absent from both listings, and
+# silently never staged — which is the shape of the very failure this check exists to prevent, since
+# the commit then carries the manifest row and not the artifact it produces. Adding a `[[consumes]]`
+# row, or a template's `when` starting to select, is exactly that case. So each listing is tracked
+# modifications plus untracked-and-unignored paths, and a file is the generator's iff it is in the
+# second listing and not the first.
+listing() {
+    git -C "$root" diff --name-only
+    git -C "$root" ls-files --others --exclude-standard
+}
+before=$(listing | sort -u)
 if python3 "$gen" --write "$root"; then
-    after=$(git -C "$root" diff --name-only | sort)
+    after=$(listing | sort -u)
     printf '%s\n' "$after" | while IFS= read -r f; do
         [ -n "$f" ] || continue
         printf '%s\n' "$before" | grep -qxF -- "$f" && continue

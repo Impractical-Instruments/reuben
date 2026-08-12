@@ -48,6 +48,18 @@ Never cite an issue or ADR number in a comment; provenance lives in the rational
 across every crate by `scripts/check_rules_refs.py`. Full rule:
 [Code as a grounding surface](docs/rules/code-as-grounding.md).
 
+## Rule conflicts (every change)
+
+**If your output contradicts a live rule, say so — never override one silently.** Name the rule and
+why it is worth reopening, in the change itself. The rules under [`docs/rules/`](docs/rules/README.md)
+state the now, so contradicting one without saying so leaves the corpus asserting something the code
+no longer does, and nothing notices.
+
+Reopening a settled rule is a new ADR under [`docs/adr/`](docs/adr/README.md), the iteration surface a
+later `absorb-adrs` sweep folds back into the rules. An ADR that overturns a rule also has to mark
+that rule in the same change — that protocol, and the guard behind it, are in
+[docs/adr/README.md](docs/adr/README.md).
+
 ## Language
 
 Use the project's exact terms (Operator, Instrument, Rig, Plan, Swap, Voice…).

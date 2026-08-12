@@ -8,10 +8,16 @@ name: Promote dev to main (production)
 # trigger downstream workflows — so the `push: [main]` CI → production deploy would silently never
 # fire — see rules: web-product-process for the maintainer setup this depends on.
 #
-# Two properties of `main`'s ruleset this push depends on, recorded here because nothing else does:
-# the App is the SOLE bypass entry, and the ruleset deliberately does not "require a pull request" —
-# that rule would block this push itself. The branch model it serves is `.ii/repo.toml`'s
-# `[branches]` table.
+# One property of `main`'s ruleset this push depends on, recorded here because nothing else does:
+# the ruleset deliberately does not "require a pull request" — that rule would block this push
+# itself. Checked 2026-08-12 against the ruleset's `rules` (deletion, non_fast_forward, creation,
+# update; no pull_request rule).
+#
+# The App needs a bypass entry, and how exclusive that entry is has NOT been checked here:
+# `bypass_actors` is not returned to a non-admin token, so no agent can read it. Treat it as needing
+# an admin's confirmation rather than as recorded fact.
+#
+# The branch model this serves is `.ii/repo.toml`'s `[branches]` table.
 
 on:
   workflow_dispatch:

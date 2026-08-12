@@ -545,8 +545,16 @@ jobs:
   # on a machine that has the plugin.
   #
   # ALWAYS ON, and not path-filtered, because a hand-edit to a generated artifact is a change to a
-  # doc — which moves no filter in this workflow. `--require-artifacts` so an emptied tree does not
-  # exit 0 looking identical to a healthy one.
+  # doc — which moves no filter in this workflow.
+  #
+  # IT DOES NOT CHECK PRESENCE, and that limit is load-bearing rather than a footnote. Artifacts are
+  # discovered by scanning for markers, so a MISSING one is not a finding: delete a generated file,
+  # or only its header line, and the count simply drops and this job exits 0. Which artifacts a repo
+  # ought to have is a function of private templates and the manifest, and pinning the number here
+  # would be the stored count the standing rule forbids — so `--require-artifacts` buys exactly one
+  # thing, that an emptied tree does not read as a healthy one. What stands in front of the gap is
+  # `.githooks/pre-commit.d/40-doctrine-regen`, which stages a file the generator creates; deriving
+  # the expected set from the manifest belongs upstream with the generator.
   provenance:
     name: generated artifacts unmodified
     runs-on: ubuntu-latest
