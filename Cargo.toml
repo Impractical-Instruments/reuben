@@ -32,7 +32,7 @@ smallvec = "1"
 # realtime block budget cannot absorb — so the table is built into RAM at boot and read locally.
 # `default-features = false` + `alloc` selects the `race` module, whose `OnceBox` is `no_std` and
 # lock-free over a single atomic pointer, which the Cortex-M7 has natively. That avoids a
-# `critical-section` implementation, which every embedder would then owe. see rules: execution-runtime
+# `critical-section` implementation, which every embedder would then owe.
 once_cell = { version = "1", default-features = false, features = ["alloc"] }
 # Generic numeric traits (Zero/One/Euclid) so the pointwise math operators are written once over any
 # number type, not pinned to f32. The overflow-prone operations bind the workspace's own

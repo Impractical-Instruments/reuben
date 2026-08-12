@@ -233,7 +233,6 @@ impl<T: Send> CoordinatorMailbox<T> {
     /// and nothing about `reclaim` changes.
     ///
     /// ```no_run
-    /// // Host-side. Everything below the `swap_pair` line is the embedder's, not this crate's.
     /// use std::time::{Duration, Instant};
     /// use reuben_core::coordinator::swap_pair;
     ///

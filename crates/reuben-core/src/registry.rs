@@ -35,7 +35,7 @@ macro_rules! register_operator {
     ($t:ty) => {
         inventory::submit! {
             $crate::registry::OpReg {
-                make: || $crate::__alloc::boxed::Box::new(<$t>::new()),
+                make: || $crate::__alloc::Box::new(<$t>::new()),
                 descriptor: <$t>::descriptor,
             }
         }

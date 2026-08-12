@@ -443,9 +443,11 @@ impl Plan {
         // scratch** is assigned in the node loop and never enters this table: it holds a ZOH value
         // across the block boundary and is excluded from the per-block clear, so recycling one
         // would hand an input's held value to another input.
-        // Ordered rather than hashed: the element is `Ord`, this runs once per Instantiate over a
-        // handful of interface ports, and a `BTreeSet` needs no hasher — so the container costs
-        // nothing here and adds no dependency.
+        // Ordered rather than hashed because `HashSet` lives in `std`, which this crate has to
+        // build without; `BTreeSet` is in `alloc`. The cost lands on the *lookups*, not on this
+        // construction: `contains` below runs once per output port of every node, so it goes
+        // O(1) -> O(log n). n is the number of pinned ports — interface outputs plus master taps,
+        // a handful — and the pass is Instantiate, off the audio thread.
         let pinned: BTreeSet<(NodeKey, usize)> = graph
             .outputs
             .iter()

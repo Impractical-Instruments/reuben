@@ -8,7 +8,13 @@ Amended by: [ADR-0082](0082-the-render-document-seam-splits-four-modules-by-item
 `### The partition` section below places `engine`, `resources` and `coordinator/` by module; executing
 the split measured four of them straddling the seam, and they split by item instead. The claim under
 `### The embedder goes through the window` that a render-only `reuben-api` is *"close to free"* is
-corrected there too. Everything else here stands.
+corrected there too.
+
+Corrected in place by the mechanical sweep (#736) — the section below now titled
+`### \`reuben-contract\` is not absorbed, and it does reach bare metal`. Its original claim that
+*"`reuben-contract` reaches bare metal by no path at all"* is **false**, falsified by one
+re-export line in `reuben-core`; the correction block sits with the claim. Everything else here
+stands.
 
 Overturns no rule. Cites [execution-runtime](../rules/execution-runtime.md) and
 [composition-operators](../rules/composition-operators.md) for context. The registration mechanism is
@@ -75,20 +81,22 @@ Three placements are not the obvious guess, and each was measured:
   `reuben-document` imports it upward, which is the permitted direction. Accepted cost: the render
   crate owns a trait its own render path never calls.
 
-### `reuben-contract` is untouched, and must not be absorbed
+### `reuben-contract` is not absorbed, and it does reach bare metal
 
-> **Corrected while executing the mechanical sweep (#736).** The last sentence below — *"`reuben-contract`
-> reaches bare metal by no path at all"* — is **false**, and one line falsifies it:
-> `reuben-core/src/descriptor.rs` does `pub use reuben_contract::{Curve, F32Meta, I32Meta};`. The
-> scalar-control metadata types are a *runtime* descriptor's fields, not an authoring-only concern,
-> so they are on the target by a direct, non-`cfg`-gated path. `reuben-contract` is therefore
-> `#![no_std]` + `alloc` too, and its `serde` arrives with `default-features = false`. The rest of
-> this section stands: the crate is still not absorbed, and `reuben-macros` still compiles for the
-> host only.
+> **Corrected in place while executing the mechanical sweep (#736); the heading above changed with
+> it.** This section was titled *"`reuben-contract` is untouched, and must not be absorbed"*, and its
+> last sentence — struck below — claimed the crate *"reaches bare metal by no path at all"*. That is
+> **false**, and one line falsifies it: `reuben-core/src/descriptor.rs` does
+> `pub use reuben_contract::{Curve, F32Meta, I32Meta};`. The scalar-control metadata types are a
+> *runtime* descriptor's own fields, not an authoring-only concern, so they are on the target by a
+> direct, un-`cfg`-gated path. `reuben-contract` is therefore `#![no_std]` + `alloc` too, and its
+> `serde` arrives with `default-features = false`. **The rest of this section stands**: the crate is
+> still not absorbed, and `reuben-macros` still compiles for the host only.
 
 Every `NUMBER_MIN`/`NUMBER_MAX` site in `reuben-core` is authoring-side, so the split alone removes
 the dependency. More generally: **`reuben-macros` is a proc-macro crate, so it and its dependencies
-compile for the host, never the target.** `reuben-contract` reaches bare metal by no path at all.
+compile for the host, never the target.** ~~`reuben-contract` reaches bare metal by no path at
+all.~~ (False — see the correction above.)
 
 It also cannot be folded into `reuben-document` — `reuben-macros` imports it and `reuben-core` depends
 on `reuben-macros`, so that creates a Cargo-rejected cycle. It stays a leaf.

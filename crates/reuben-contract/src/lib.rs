@@ -13,16 +13,11 @@
 //!
 //! reuben-core re-exports this crate's meta types, so it is reached from the bare-metal target the
 //! render half builds for, where no `std` exists to link. It is therefore `no_std` + `alloc`, with
-//! no `std` feature to forget. see rules: execution-runtime
+//! no `std` feature to forget.
 
 #![no_std]
 
 extern crate alloc;
-
-// The test harness links `std` even for a `no_std` crate; the dev-dependency this crate's tests
-// drive serde through brings its own.
-#[cfg(test)]
-extern crate std;
 
 use alloc::collections::BTreeSet;
 use alloc::format;

@@ -6,6 +6,10 @@
 //! operator. [`WORKLOADS`] is the single source of truth for which operators are benched and how;
 //! [`tests`] forces it to stay in sync with the registry and with `micro_iai.rs`'s CI census.
 
+use alloc::boxed::Box;
+use alloc::vec;
+use alloc::vec::Vec;
+
 use crate::descriptor::{Descriptor, PortType};
 use crate::op_driver::OpDriver;
 use crate::registry::Registry;
@@ -189,6 +193,8 @@ pub const WORKLOADS: &[Workload] = &[
 /// function carves out exactly this one kind, and [`OpHarness::for_kind`] constructs it directly
 /// instead of through the registry.
 pub mod overhead {
+    use alloc::boxed::Box;
+
     use crate::descriptor::Descriptor;
     use crate::operator::{Io, Operator};
 

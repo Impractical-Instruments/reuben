@@ -277,16 +277,17 @@ jobs:
   # CORRECT there: Cortex-M7 is a different float environment, and a software libm need not agree
   # with a host's `std` to the last bit. That risk belongs to the float-math port.
   #
-  # RED TODAY, ON PURPOSE, AND IT READS AS RED. Neither `reuben-core` nor the `reuben-contract` it
-  # depends on is `#![no_std]` yet, and four dependencies still arrive with their default `std`
-  # features on, so the build dies in `serde_core`/`memchr`/`num-traits`/`slotmap` before reaching
-  # this workspace's code at all. Landing the gate first is still the better order: written after the
+  # RED TODAY, ON PURPOSE, AND IT READS AS RED. WHAT is still red lives in exactly one place —
+  # CONTRIBUTING.md's "The bare-metal target" section — and is deliberately NOT restated here. An
+  # earlier version of this paragraph did restate it and drifted: it went on naming dependencies that
+  # had already left the graph while the port moved underneath it. Read the failure set there.
+  #
+  # WHY the gate landed before the port it gates is this paragraph's own to keep: written after the
   # port, it would have gated nothing that happened during it. What keeps that honest is the one
   # lever this repo has for "required" — `ci-passed`'s `needs`, which this job is deliberately absent
   # from. Nothing is muted. The job fails, blocks no merge, and says so.
-  # WHEN IT FIRST GOES GREEN: add it to `ci-passed`'s `needs`, drop the matching sentence from
-  # CONTRIBUTING.md's "The bare-metal target" section, and delete this paragraph. No check notices
-  # if that is not done.
+  # WHEN IT FIRST GOES GREEN: add it to `ci-passed`'s `needs` and update that one section. No check
+  # notices if that is not done.
   #
   # One job, one target: a second embedded triple is cost without a second consumer.
   bare-metal:

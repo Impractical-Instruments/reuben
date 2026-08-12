@@ -94,7 +94,7 @@ pub fn shared_sine() -> &'static Wavetable {
     // A once-cell rather than a `const` table, and a lock-free one rather than a lock: the table
     // must live in RAM, and the cell is initialized from a cold path but read from the audio
     // thread. `OnceBox` races on a single atomic pointer, so the loser of the race drops its own
-    // build and the reader never blocks. see rules: execution-runtime
+    // build and the reader never blocks.
     static SINE: OnceBox<Wavetable> = OnceBox::new();
     SINE.get_or_init(|| Box::new(Wavetable::sine(TABLE_SIZE)))
 }
