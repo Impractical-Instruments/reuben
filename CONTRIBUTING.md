@@ -116,22 +116,27 @@ Cortex-M7, no OS and therefore no `std` at all, because rustup ships none for an
 rustup installs it alongside the channel, so there is no `rustup target add` to remember.
 `reuben-core` is the crate that has to keep building for it; nothing above it in the workspace does.
 
-CI's `bare-metal build (thumbv7em-none-eabihf)` job is two commands, and they are the two to run
-locally when it reds:
+**The gate does not pass yet, and is not meant to.** The `no_std` port it exists to protect is
+unfinished — neither `reuben-core` nor the `reuben-contract` it depends on is `#![no_std]`, and
+several dependencies still arrive with their default `std` features on — so the build fails inside
+those dependencies before reaching this workspace's code. Because it cannot pass, CI's
+`bare-metal build (thumbv7em-none-eabihf)` job is deliberately **not** one of `ci-passed`'s
+dependencies and blocks no merge.
+
+The job is two commands, and they are the two to run locally against it:
 
 ```sh
 cargo build  -p reuben-core --target thumbv7em-none-eabihf --release
 cargo clippy -p reuben-core --target thumbv7em-none-eabihf --release -- -D warnings
 ```
 
-A `use std::…` anywhere in `crates/reuben-core/` fails both, and this is the only check in the repo
-that can see it. The job also reports the built rlib's `.text` size as a number to watch; it never
-fails on it.
-
-**The port that makes this pass is not finished, so the job is red today** and is deliberately not
-one of `ci-passed`'s dependencies, which means it blocks no merge yet.
-[`.github/workflows/ci.yml`](./.github/workflows/ci.yml) states why, how to tell an
-unfinished-port red apart from a real regression, and what changes when it first goes green.
+Once the port lands, a `use std::…` anywhere in `crates/reuben-core/` will fail both, and no other
+check in the repo can see that. Until then the build stops short of that code, so adding one there
+produces nothing you could tell apart from today's failure.
+[`.github/workflows/ci.yml`](./.github/workflows/ci.yml) carries the rest: how to read a red run,
+what the job's reported `.text` number does and does not measure — it never fails on it, and on a
+build that got no further than today's it is not reported at all — and what changes when the job
+first goes green.
 
 ### Bumping the Rust version
 
