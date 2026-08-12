@@ -183,7 +183,7 @@ jobs:
       # `[[bench]]` targets declare `required-features = ["bench"]`, so without the flag
       # `--all-targets` silently skips them.
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --features reuben-core/bench,reuben-document/bench -- -D warnings
+        run: cargo clippy --workspace --all-targets --features reuben-document/bench -- -D warnings
 
       # Same flag so the forcing-function tests run (they live in the feature-gated
       # `bench_support` module): they red CI if a new operator lacks a micro-bench workload, or if
@@ -192,7 +192,7 @@ jobs:
       # projection's completeness guard lives behind it — a new instrument-format field with
       # no projection view must red the build, and nothing else would make that happen.
       - name: Test
-        run: cargo test --workspace --features reuben-core/bench,reuben-document/schemars
+        run: cargo test --workspace --features reuben-document/bench,reuben-document/schemars
 
       # The render-only build of the window, which no in-tree consumer compiles: the browser
       # worklet is the only host that takes it, and it lives in another repository behind a
@@ -246,7 +246,7 @@ jobs:
       # Same features as `check`: compiles `bench_support` + runs the forcing-function tests
       # and the projection completeness guard on Windows too.
       - name: Test
-        run: cargo test --workspace --features reuben-core/bench,reuben-document/schemars
+        run: cargo test --workspace --features reuben-document/bench,reuben-document/schemars
 
   bench:
     name: perf gate (macro + micro + construct Ir)

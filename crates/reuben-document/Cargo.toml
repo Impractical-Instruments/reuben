@@ -38,6 +38,13 @@ hound.workspace = true
 criterion = "0.8"
 iai-callgrind = "0.16"
 
+# The OpDriver fidelity pin reaches `reuben_core::op_driver`, which is gated behind the bridge
+# feature. `required-features` so a bare `cargo test` skips it (no error) rather than failing to
+# compile — the same contract the micro benches below use.
+[[test]]
+name = "op_driver_fidelity"
+required-features = ["bench"]
+
 # Macro render_block benches. `harness = false` — both bring their own main().
 [[bench]]
 name = "macro_criterion"
