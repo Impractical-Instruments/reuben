@@ -14,10 +14,6 @@ version = "0.0.0"
 edition = "2021"
 # MSRV — kept in lockstep with rust-toolchain.toml's `channel`. see rules: web-product-process
 # Self-verified: CI runs on the pinned toolchain, which == this floor.
-# DO NOT roll this below 1.89 once the `linkme` self-registration swap lands. see rules:
-# composition-operators. `linkme` keeps its slice entries through `#[used]`, and plain `#[used]` only
-# became `#[used(linker)]` on ELF in 1.89. Below that the linker may drop the submissions, and the
-# failure is a silently empty operator registry rather than a build error.
 rust-version = "1.96.0"
 license = "BSD-3-Clause"
 repository = "https://github.com/Impractical-Instruments/reuben"
