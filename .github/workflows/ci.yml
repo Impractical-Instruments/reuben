@@ -40,6 +40,7 @@ jobs:
       lockstep: ${{ steps.filter.outputs.lockstep }}
       check: ${{ steps.filter.outputs.check }}
       windows: ${{ steps.filter.outputs.windows }}
+      bare_metal: ${{ steps.filter.outputs.bare_metal }}
       bench: ${{ steps.filter.outputs.bench }}
       rules: ${{ steps.filter.outputs.rules }}
       eval: ${{ steps.filter.outputs.eval }}
@@ -86,6 +87,22 @@ jobs:
               - '.claude/skills/**'
             windows:
               - *workspace
+            # The bare-metal cross build, and deliberately NARROWER than *workspace rather than
+            # riding it. Only the render half and the two crates below it can move this outcome:
+            # reuben-api, reuben-native and reuben-mcp all sit above reuben-core and reach the
+            # bare-metal target by no path at all, and instruments/ is test DATA no cross build
+            # reads. .cargo/config.toml is here because it sets rustflags (scoped to x86_64 today,
+            # which is exactly the kind of scoping a later edit can widen by accident).
+            bare_metal:
+              - 'crates/reuben-core/**'
+              - 'crates/reuben-macros/**'
+              - 'crates/reuben-contract/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '.cargo/config.toml'
+              - '.github/workflows/ci.yml'
+              - '.github/actions/setup-rust/**'
             # The perf gate benches the same workspace closure; add its own gate script. .cargo/
             # config.toml is already in the anchor (perf-gate.sh snapshots it into the baseline build).
             bench:
@@ -247,6 +264,141 @@ jobs:
       # and the projection completeness guard on Windows too.
       - name: Test
         run: cargo test --workspace --features reuben-document/bench,reuben-document/schemars
+
+  # The bare-metal cross build: `reuben-core` compiled for thumbv7em-none-eabihf (Cortex-M7, no OS).
+  # rustup ships no `std` for any `*-none-*` triple — std's per-platform layer needs an OS — so this is
+  # not a stricter build of the same thing, it is the one build in this file where `std` does not
+  # exist. That is what makes it a gate rather than a smoke test: one `use std::…` in a new operator
+  # is a compile error here and invisible to every other job, so without this the portable core is an
+  # event in the crate's history rather than a property of it, and the person who finds out is whoever
+  # next tries to flash a board.
+  #
+  # RED TODAY, ON PURPOSE, AND IT MUST READ AS RED. The port is not finished: the crate is not yet
+  # `#![no_std]`, and four dependencies are still taken with their default `std` features on, so the
+  # build fails inside `serde_core`, `memchr`, `num-traits` and `slotmap` before `reuben-core` is
+  # reached at all. The gate lands first anyway — written after the port, it would have gated nothing
+  # that happened during it. What keeps "red today" honest rather than noise is the ONE mechanism this
+  # repo has for "required": `ci-passed`'s `needs` list, which this job is deliberately absent from. So
+  # it blocks no merge while it cannot pass, and it is never muted — no `continue-on-error`, no
+  # `|| true`, no swallowed exit code. A reader of the checks list sees a red X and the truth.
+  # WHEN IT FIRST GOES GREEN: add it to `ci-passed`'s `needs`, drop the matching sentence from
+  # CONTRIBUTING.md's "The bare-metal target" section, and delete this paragraph — all in the same
+  # change. Nothing else in the repo says to, and no check will notice if it is not done.
+  #
+  # It goes green as the rest of the bare-metal port lands: the transcendental f32 math off `std`, the
+  # mechanical `std` -> `core`/`alloc` sweep (Arc, collections, OnceLock, Error, atomics, spin_loop),
+  # the operator self-registration question, and the dependency features above.
+  #
+  # TWO THINGS THIS JOB CANNOT DO, stated here rather than left to be inferred from its name:
+  #
+  # - IT CANNOT RUN TESTS. There is no host to run them on. Bare-metal execution needs QEMU or an
+  #   on-device harness and neither is in scope, so what this proves is that the crate COMPILES.
+  #   Behaviour stays proven by the native suite in `check` and `windows`.
+  # - IT CANNOT PROVE THE CODE IS CORRECT ON THE TARGET. Cortex-M7 is a different float environment,
+  #   and a software libm need not agree with a host's `std` to the last bit. A green run here says
+  #   nothing about the numbers a board produces; that risk belongs to the float-math port, not here.
+  #
+  # ONE JOB, ONE TARGET. Building for a second embedded triple is cost without a second consumer —
+  # this one already catches `std` creep, which is the whole failure mode.
+  bare-metal:
+    name: bare-metal build (thumbv7em-none-eabihf)
+    runs-on: ubuntu-latest
+    needs: changes
+    # Same draft-skip as `check`, AND'd with its own path gate.
+    if: needs.changes.outputs.bare_metal == 'true' && (github.event_name == 'push' || github.event.pull_request.draft == false)
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+      # NO job-level `RUSTFLAGS: -D warnings`, unlike `check` and `windows`, and the difference is
+      # deliberate: RUSTFLAGS reaches DEPENDENCY crates too, and on a target their authors do not
+      # publish for, a warning in someone else's crate is not a defect this repo can fix — it would
+      # red this gate for a reason no change here can address. The repo's `-D warnings` convention is
+      # applied where it actually binds, after clippy's `--`, which lints this workspace's code only.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # No `rustup target add` step: the target is listed in rust-toolchain.toml, so the same
+      # composite that provisions the pinned channel provisions the target with it — and a
+      # contributor's first `cargo` command in the repo gets it too, which is what makes the failure
+      # reproducible locally rather than only here.
+      - name: Setup pinned Rust toolchain
+        uses: ./.github/actions/setup-rust
+
+      - name: Cache cargo registry + build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      # The scope note goes into the run summary BEFORE the build, so it is on the page even when the
+      # compile fails in the first seconds. Deliberately says only what stays true in both eras —
+      # what a green run proves and what it does not — so it never has to be maintained.
+      - name: What this gate proves
+        run: |
+          {
+            echo "### bare-metal build (thumbv7em-none-eabihf)"
+            echo
+            echo "Proves \`reuben-core\` **compiles** with no \`std\` available."
+            echo
+            echo "- It cannot run tests: there is no host on the target."
+            echo "- It cannot prove correctness there: Cortex-M7 is a different float environment."
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      # `--release` rather than the default dev profile for two reasons that point the same way: it is
+      # the profile an embedder actually ships, and it is the profile whose `.text` figure below is
+      # worth reading. Only `-p reuben-core` — the render half is the portable one, and nothing above
+      # it in the workspace claims to reach this target.
+      - name: Cross-build reuben-core
+        run: cargo build -p reuben-core --target thumbv7em-none-eabihf --release
+
+      # A REPORTED NUMBER, NEVER A THRESHOLD — nothing here fails on size. The embedder's binding
+      # constraint is 128 KB of internal flash, which the reuben image is expected to exceed and to
+      # live in external QSPI behind a bootloader; that is the embedder's problem and not this repo's.
+      # What the number buys is that a change doubling the code size is visible on the PR that causes
+      # it instead of downstream. READ IT AS A TREND ON A FIXED PROFILE, not as flash usage: this is an
+      # rlib, so the figure is pre-link and pre-`--gc-sections`, and at `--release` rustc leaves small
+      # functions in metadata as MIR for the consumer to instantiate rather than emitting them here.
+      # `size` is GNU binutils, preinstalled on the runner and happy to read ARM objects, so this costs
+      # no extra toolchain component and no apt install. Runs before clippy so the number is still
+      # reported on a run that clippy reds.
+      - name: Report .text size
+        run: |
+          rlib=target/thumbv7em-none-eabihf/release/libreuben_core.rlib
+          # A missing `size` reports nothing and reds nothing. The gate is the build and the lint
+          # above; a number that exists to be read is not worth failing a build gate over, and a
+          # step that reds for a missing tool teaches people to ignore the job that carries it.
+          if ! command -v size >/dev/null; then
+            echo "::warning::binutils \`size\` not on PATH — .text size not reported"
+            exit 0
+          fi
+          text=$(size -A "$rlib" | awk '$1 ~ /^\.text/ { t += $2 } END { printf "%d", t+0 }')
+          echo ".text = $text bytes ($rlib)"
+          echo "\`.text\` of \`libreuben_core.rlib\` (release): **$text bytes**" >>"$GITHUB_STEP_SUMMARY"
+
+      # Clippy on the CROSS target, not only on the host. It type-checks against `core`/`alloc`
+      # instead of `std`, so it reaches a class of thing `check`'s host run cannot see, and `-D
+      # warnings` after the `--` is this repo's convention for a lint gate. No `--all-targets`: the
+      # tests, benches and the `first_sound` example are host-side by construction (a `no_std` crate's
+      # own test harness may link `std`), so linting them here would gate on code that never ships to
+      # the target.
+      - name: Clippy (cross target)
+        run: cargo clippy -p reuben-core --target thumbv7em-none-eabihf --release -- -D warnings
+
+      # Told apart by WHERE the error is, because the two readings need opposite responses and only
+      # the reader can tell them apart. Written to stay true after the port lands, so it is not a
+      # message that has to be remembered and revised.
+      - name: How to read a red run
+        if: failure()
+        run: |
+          {
+            echo
+            echo "**This gate failed. There are two readings, told apart by where the error is:**"
+            echo
+            echo "1. Inside a third-party dependency, or on a \`std\` path in \`reuben-core\` that the"
+            echo "   bare-metal port has not reached yet — the port is unfinished. This job is not in"
+            echo "   \`ci-passed\`'s \`needs\`, so it blocks no merge."
+            echo "2. On a line this change touched — \`std\` crept back into the portable core. That is"
+            echo "   the defect this gate exists to catch, and it is fixed here, not merged past."
+            echo
+            echo "Reproduce locally: \`cargo build -p reuben-core --target thumbv7em-none-eabihf --release\`"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
   bench:
     name: perf gate (macro + micro + construct Ir)
@@ -553,7 +705,10 @@ jobs:
   # requires THIS one job instead. It `needs` every merge-gating job and, with `if: always()`, runs
   # even when they skip — failing only if a required upstream reported `failure`/`cancelled`. A
   # Skipped upstream is a pass. Deliberately NOT in `needs`: `deploy-web` and `bench-history` are
-  # post-merge side-effects (deploy/persist), not merge gates.
+  # post-merge side-effects (deploy/persist), not merge gates — and `bare-metal`, for a different
+  # reason with an expiry date: it cannot pass until the rest of the bare-metal port lands, and a
+  # gate that reds every PR for a reason no PR caused is one people learn to ignore. Listing it here
+  # is the step that makes it binding, and it is taken on the first run that goes green, not before.
   ci-passed:
     # This `name` is the exact string the `dev` ruleset requires as a status check (GitHub matches
     # required checks by a job's `name`, not its id) — rename it and the ruleset goes on expecting a

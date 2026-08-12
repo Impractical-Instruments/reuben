@@ -109,6 +109,30 @@ because CI runs them regardless. What you lose is their regeneration: commit a `
 without it and CI's `--check` reds the build, and a doctrine artifact you should have regenerated
 stays as it was.
 
+### The bare-metal target
+
+[`rust-toolchain.toml`](./rust-toolchain.toml) also pins **`thumbv7em-none-eabihf`** — bare-metal
+Cortex-M7, no OS and therefore no `std` at all, because rustup ships none for any `*-none-*` triple.
+rustup installs it alongside the channel, so there is no `rustup target add` to remember.
+`reuben-core` is the crate that has to keep building for it; nothing above it in the workspace does.
+
+CI's `bare-metal build (thumbv7em-none-eabihf)` job is two commands, and they are the two to run
+locally when it reds:
+
+```sh
+cargo build  -p reuben-core --target thumbv7em-none-eabihf --release
+cargo clippy -p reuben-core --target thumbv7em-none-eabihf --release -- -D warnings
+```
+
+A `use std::…` anywhere in `crates/reuben-core/` fails both, and this is the only check in the repo
+that can see it. The job also reports the built rlib's `.text` size as a number to watch; it never
+fails on it.
+
+**The port that makes this pass is not finished, so the job is red today** and is deliberately not
+one of `ci-passed`'s dependencies, which means it blocks no merge yet.
+[`.github/workflows/ci.yml`](./.github/workflows/ci.yml) states why, how to tell an
+unfinished-port red apart from a real regression, and what changes when it first goes green.
+
 ### Bumping the Rust version
 
 The pinned version and the MSRV are kept **in lockstep** (see

@@ -10,7 +10,15 @@
 # components we actually gate on are listed explicitly below. This shrinks CI's
 # toolchain fetch on the runs where the pin has drifted behind the runner image's
 # pre-installed stable and a real download happens.
+#
+# `targets` is the same single-source idea one level down: the bare-metal triple the portable core
+# must keep building for is provisioned by the pin, not by a `rustup target add` line inside one CI
+# job — so the cross build reproduces locally with no setup step a contributor has to be told about.
+# It costs every clone and every CI toolchain install one extra `rust-std` download (~10 MB, and
+# cached by the same key as the channel). That is the price of the failure being reproducible where
+# it gets fixed rather than only where it gets reported.
 [toolchain]
 channel = "1.96.0"
 profile = "minimal"
 components = ["rustfmt", "clippy"]
+targets = ["thumbv7em-none-eabihf"]
