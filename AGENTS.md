@@ -24,8 +24,8 @@ cargo run -p reuben-native --bin reuben -- describe    # list operators/ports/pa
 One-time setup, unless `agent-tools`' `bootstrap.sh` already did it: `./scripts/install-hooks.sh` —
 points `core.hooksPath` at [`scripts/hooks/`](scripts/hooks), where
 [`scripts/hooks/dispatch`](scripts/hooks/dispatch) chains every check registered under
-`scripts/hooks/pre-commit.d/` (rules ref-linter, `cargo fmt`, rules-index regen, doctrine regen) and
-`scripts/hooks/pre-push.d/` (`cargo clippy`). Both routes set the same value.
+`scripts/hooks/pre-commit.d/` (rules ref-linter, ADR-number guard, `cargo fmt`, rules-index regen,
+doctrine regen) and `scripts/hooks/pre-push.d/` (`cargo clippy`). Both routes set the same value.
 See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Non-negotiable invariants (every code change)

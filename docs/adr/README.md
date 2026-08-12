@@ -15,10 +15,47 @@ A human runs `absorb-adrs` on a cadence — it is not automatic. Superseded and 
 are culled in the same pass; only the reasoning that still applies survives, in the rationale.
 
 **Numbers are never reused.** Because the fold deletes files, the highest number *in this directory*
-is not the highest number ever issued — a new ADR takes the next number after the highest in
-`git log --all --diff-filter=A --name-only --format="" -- 'docs/adr/*.md'`, not after the highest
-still on disk. A reused number collides with the `Distilled from:` lines the absorbed ADR left
-behind, which are the only surviving pointers to it and cannot be disambiguated after the fact.
+is not the highest number ever issued — a new ADR takes the next number after the highest **ever
+issued**, not after the highest still on disk. A reused number collides with the `Distilled from:`
+lines the absorbed ADR left behind, which are the only surviving pointers to it and cannot be
+disambiguated after the fact.
+
+**Ask the guard for the number; do not compose the query.**
+
+```sh
+python3 scripts/check_adr_numbers.py .
+# check_adr_numbers: 0 problem(s); highest number ever issued 0083, the next ADR takes 0084
+```
+
+This paragraph used to prescribe `git log --all --diff-filter=A --name-only --format="" --
+'docs/adr/*.md'`, and that command is **rename-blind**. A renumber is a `git mv`, git reports it as
+`R`, and `--diff-filter=A` excludes renames — so of this repo's three renumbers it reports ADR-0048
+and ADR-0074 as never issued, and ADR-0074 is live in this directory right now. (ADR-0047 escapes
+only by accident: a different ADR had been added directly at 0047 before being moved off it.) It is
+blind to a rename inside a **merge commit** too, where `git log` emits no diff at all — and that is
+the case that bites, because resolving a merge is when a duplicate first becomes visible. Hence the
+rule below.
+
+[`scripts/check_adr_numbers.py`](../../scripts/check_adr_numbers.py) unions additions, rename
+destinations (merge commits included), the rename you have staged but not yet committed, and what is
+on disk. It refuses to answer from a shallow clone rather than passing vacuously on a history that
+was cut off, and it reds when two decisions share a number, whether both are live or one was folded
+away months ago. It runs in CI as the `adr-numbers` job and locally from
+[`scripts/hooks/pre-commit.d/15-adr-numbers`](../../scripts/hooks/pre-commit.d/15-adr-numbers) —
+which steps aside with a warning if the clone is shallow or the machine has no `python3`, so CI is
+the authority. Its docstring argues the design and states what it deliberately does not police.
+
+**A renumber is a `git mv` plus the title line, in its own commit, and nothing else.** `52e8a69` is
+the shape to copy. Both halves of that are load-bearing:
+
+- **Nothing else in the commit.** Git recognises a renumber by file similarity, so rewriting the ADR
+  in the same commit can push it below the threshold — and a renumber git does not score as a rename
+  is one the guard cannot follow.
+- **Its own commit, never inside a merge.** A merge that pulls the integration branch into your
+  branch is usually where the duplicate first appears, and fixing it there is the obvious move. Do
+  not: the guard reads a merge against its first parent only, so a renumber of a file that arrived
+  from the *other* side leaves no trace and the guard reds on a tree you have already repaired.
+  Finish the merge, then renumber in the next commit.
 
 ## Overturning a live rule
 

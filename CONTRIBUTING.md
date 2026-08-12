@@ -31,6 +31,10 @@ type is one file. [`scripts/hooks/pre-commit`](./scripts/hooks/pre-commit) and
   - `scripts/hooks/pre-commit.d/10-rules-refs` — `check_rules_refs.py` over the working tree: no ADR
     number in code, no comment citing an issue or a rule anchor, every `see rules:` pointer
     resolving.
+  - `scripts/hooks/pre-commit.d/15-adr-numbers` — `check_adr_numbers.py` over the working tree: no
+    ADR number is carried by two decisions, live or long since folded away. **Warns and steps aside
+    in a shallow clone**, which cannot say which numbers were ever issued; CI's `adr-numbers` job
+    checks out full-depth and is the authority.
   - `scripts/hooks/pre-commit.d/20-rust-fmt` — `cargo fmt --all --check` (fast; skips docs-only
     commits). Blocks commits that CI's format gate would reject.
   - `scripts/hooks/pre-commit.d/30-rules-index` — `check_rules_derive.py --write` when the commit

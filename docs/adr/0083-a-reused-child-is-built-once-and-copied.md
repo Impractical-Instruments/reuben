@@ -1,4 +1,4 @@
-# ADR-0078 — a reused child document is built once and copied, which puts `Operator::spawn` on the load path
+# ADR-0083 — a reused child document is built once and copied, which puts `Operator::spawn` on the load path
 
 Cites [composition-operators](../rules/composition-operators.md) and
 [web-product-process](../rules/web-product-process.md) for context. It overturns no rule: a reuse
