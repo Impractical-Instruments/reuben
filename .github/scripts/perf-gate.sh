@@ -142,10 +142,33 @@ run_bench() { local bench="$1"; shift; cargo bench -p "$PKG" --features "$FEATUR
 # abort under `set -e`. When the ref lacks it, HEAD's copy stays in place: those fixture bytes are
 # the pre-cull instruments/ documents verbatim, valid for the older engine.
 swap_tree() {
-  git checkout "$1" -- "${SRC[@]}" $FIXTURES $BUILD_CONFIG
+  # Hard-fail on a checkout that did not happen. `missing_at` below screens the one predictable
+  # cause (a crate the baseline predates), but ANY failure here — a dirty path, a permission, a
+  # pathspec typo — leaves the tree at HEAD, and the caller would then bench HEAD against itself and
+  # report 0% for every case. There is no `set -e` in this script, so silence is the default; a
+  # snapshot that did not apply must stop the gate rather than green it.
+  if ! git checkout "$1" -- "${SRC[@]}" $FIXTURES $BUILD_CONFIG; then
+    printf '::error title=Baseline snapshot failed::could not check out the source closure at %s — the gate would otherwise compare HEAD against itself and report no regression\n' "$1"
+    exit 1
+  fi
   if git cat-file -e "$1:$BENCH_FIXTURES" 2>/dev/null; then
     git checkout "$1" -- "$BENCH_FIXTURES"
   fi
+}
+
+# The first SRC path absent at ref $1, or empty when the ref carries all of them.
+#
+# `git checkout <ref> -- <many pathspecs>` fails ATOMICALLY on the first unknown one: it writes
+# nothing, leaves the working tree at HEAD, and — there is no `set -e` here — the run carries on to
+# "compare" HEAD against itself and report 0% for every case. That is a green gate measuring
+# nothing, the same masking shape the compile/runtime split above exists to prevent. A PR that adds
+# a crate to the closure hits this by construction, because the baseline has no such directory, so
+# it is checked rather than assumed.
+missing_at() {
+  local ref="$1" p
+  for p in "${SRC[@]}"; do
+    git cat-file -e "${ref}:${p}" 2>/dev/null || { printf '%s' "$p"; return; }
+  done
 }
 
 # Accumulates one consolidated row per benched case ("| layer | case | Ir Δ% | icon |") across both
@@ -271,6 +294,16 @@ gate_one() {
   #    real PR-vs-baseline compare in step 2. Capture it to a log and surface it ONLY on failure,
   #    where the runner's diagnostics (compile errors feeding the skip probe, or a runtime panic)
   #    matter. The happy-path job log thus shows just the compare run, not baseline-vs-nothing.
+  local absent
+  absent="$(missing_at "$BASE_SHA")"
+  if [ -n "$absent" ]; then
+    skipped=$((skipped + 1))
+    printf '::warning title=Perf layer skipped::%s baseline has no %s — no comparable snapshot, so this layer is not measured\n' "$bench" "$absent"
+    note "⚠️ \`$bench\`: the baseline ref carries no \`$absent\` (a crate this PR adds), so no baseline snapshot can be built. Layer skipped, non-blocking — **not** compared and reported green."
+    note ""
+    return 0
+  fi
+
   swap_tree "$BASE_SHA"
   local baselog
   baselog="$(mktemp)"
