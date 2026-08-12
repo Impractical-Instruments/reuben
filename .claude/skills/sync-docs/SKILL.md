@@ -80,7 +80,7 @@ Run from the feature branch so the diff is meaningful.
      --example gen_vocabulary`, then commit `docs/agents/vocabulary.md` if it changed.
      `committed_rendered_view_is_in_sync` and
      `committed_vocabulary_references_the_live_registry`
-     (`crates/reuben-core/tests/vocabulary.rs`) fail when it's stale. Rows themselves are
+     (`crates/reuben-document/tests/vocabulary.rs`) fail when it's stale. Rows themselves are
      eval-gated content — sweep the mechanics, never hand-add a word.
    - **library index** — after adding, editing, or removing an
      `instruments/*.json` document: `cargo run -p reuben-native --example
@@ -89,7 +89,7 @@ Run from the feature branch so the diff is meaningful.
      it's stale.
    - **compact describe** (`describe_compact`, `reuben describe --compact`) —
      nothing to regenerate or commit: it's a live projection of the registry
-     (`crates/reuben-core/src/introspect.rs`), proven fresh by
+     (`crates/reuben-document/src/introspect.rs`), proven fresh by
      `describe_compact_lists_exactly_the_registry`. If you touch prose describing the
      operator listing (the rules topic docs, the authoring guide), verify it still gists the
      compact mode rather than restating its shape.

@@ -1211,9 +1211,7 @@ name = "reuben-core"
 version = "0.0.0"
 dependencies = [
  "approx",
- "criterion",
  "hound",
- "iai-callgrind",
  "inventory",
  "num-traits",
  "reuben-contract",
@@ -1230,7 +1228,9 @@ name = "reuben-document"
 version = "0.0.0"
 dependencies = [
  "approx",
+ "criterion",
  "hound",
+ "iai-callgrind",
  "reuben-contract",
  "reuben-core",
  "schemars",

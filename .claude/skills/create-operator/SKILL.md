@@ -68,7 +68,7 @@ Run all `reuben`/`cargo` commands from the repo root.
       so plain `cargo test` **won't** catch it — only CI's `check` job does) requires every registered
       operator to have one. Add, **alphabetically**, in two places: a `w("<op>", Recipe::<R>)` entry in
       `WORKLOADS`, and a `<bench id> => "<op>",` line in the `micro_bench_ops!` census in
-      [`benches/micro_iai.rs`](../../../crates/reuben-core/benches/micro_iai.rs). The bench id is
+      [`benches/micro_iai.rs`](../../../crates/reuben-document/benches/micro_iai.rs). The bench id is
       **permanent** — CI's perf gate matches HEAD against the baseline by it, so renaming one later
       silently drops that operator from the gate. Pick the `Recipe` that
       exercises your real per-sample path, not an idle early-out: `Default` (held defaults — most

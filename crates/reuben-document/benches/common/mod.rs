@@ -16,11 +16,11 @@
 
 pub mod construct;
 
-use reuben_core::resources::{ResolveError, ResourceResolver, SampleBuffer};
+use reuben_core::resources::SampleBuffer;
 use reuben_core::vocab::pitch::{Note, Pitch};
-use reuben_core::{
-    load_instrument, AudioConfig, Message, Plan, Registry, Renderer, SerialExecutor,
-};
+use reuben_core::{AudioConfig, Message, Plan, Registry, Renderer, SerialExecutor};
+use reuben_document::load_instrument;
+use reuben_document::resources::{ResolveError, ResourceResolver};
 
 /// Real shipped sample rate.
 pub const SAMPLE_RATE: f32 = 48_000.0;

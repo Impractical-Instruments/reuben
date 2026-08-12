@@ -15,7 +15,8 @@
 //!
 //! see rules: web-product-process
 
-use reuben_core::{load_instrument, AudioConfig, Plan, Registry};
+use reuben_core::{AudioConfig, Plan, Registry};
+use reuben_document::load_instrument;
 
 use super::{BLOCK_SIZE, SAMPLE_RATE};
 
@@ -34,20 +35,24 @@ const CELL_DOC: &str = "{\"format_version\":2,\"instrument\":\"cell\",\
 /// Serves [`CELL_DOC`] and nothing else. No sample ever resolves — the generated shapes reference
 /// none — so the measurement stays parse + build + instantiate with no IO in it.
 struct Generated;
-impl reuben_core::resources::ResourceResolver for Generated {
+impl reuben_document::resources::ResourceResolver for Generated {
     fn resolve(
         &self,
         source: &str,
-    ) -> Result<reuben_core::resources::SampleBuffer, reuben_core::resources::ResolveError> {
-        Err(reuben_core::resources::ResolveError::NotFound(
+    ) -> Result<reuben_core::resources::SampleBuffer, reuben_document::resources::ResolveError>
+    {
+        Err(reuben_document::resources::ResolveError::NotFound(
             source.to_string(),
         ))
     }
-    fn resolve_text(&self, source: &str) -> Result<String, reuben_core::resources::ResolveError> {
+    fn resolve_text(
+        &self,
+        source: &str,
+    ) -> Result<String, reuben_document::resources::ResolveError> {
         if source == CELL_SOURCE {
             return Ok(CELL_DOC.to_string());
         }
-        Err(reuben_core::resources::ResolveError::NotFound(
+        Err(reuben_document::resources::ResolveError::NotFound(
             source.to_string(),
         ))
     }

@@ -31,7 +31,7 @@ sampler/granulator `channel` — pinned by `the_converted_integer_control_ports_
 case: an `i32` count into a port that genuinely stays `f32` for continuous modulation.
 
 Two properties keep the check honest. It is **local, no propagation** — one arm in the pass-2 wire
-check ([format/mod.rs](../../../../crates/reuben-core/src/format/mod.rs)), in the spirit of the
+check ([format/mod.rs](../../../../crates/reuben-document/src/format/mod.rs)), in the spirit of the
 declared-form model; the widening is *not* a `same_wire_type` equality (i32 and f32 are distinct wire
 types), so the lossy reverse simply has no path. And it is **rejected at load, in boundary terms**: a
 mistyped wire into a nested boundary fails at load named as `/sub.audio`, not later at instantiate as a

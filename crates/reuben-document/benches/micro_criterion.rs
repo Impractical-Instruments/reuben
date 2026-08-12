@@ -4,7 +4,7 @@
 //! it to an operator. Dev-facing; never runs in CI (the gate is `micro_iai`).
 //!
 //! Iterates [`WORKLOADS`] at runtime, so a new operator is benched automatically once it has a
-//! workload entry. Run via `cargo reuben-core-bench --bench micro_criterion` (the alias enables the
+//! workload entry. Run via `cargo reuben-bench --bench micro_criterion` (the alias enables the
 //! `bench` feature this target requires).
 
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};

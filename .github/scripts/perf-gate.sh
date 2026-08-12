@@ -65,20 +65,27 @@
 set -uo pipefail
 
 BASE_SHA="${1:-}"
-PKG="reuben-core"
+PKG="reuben-document"
 # The iai layers. Only micro_iai needs a feature — `bench`, for the crate-private `Io` bridge. That
 # feature only compiles `bench_support` (dead code for the other two), so it leaves their Ir
 # byte-stable — safe to pass on every run.
 BENCHES=("macro_iai" "micro_iai" "construct_iai")
-FEATURES="bench"
-# reuben-core's full source closure — every crate whose `src/` feeds the core build (see header).
-# These move to the baseline ref together so the snapshot is self-consistent; reuben-core/src alone
-# would leave operator `Self::contract()` calls compiled against HEAD's macro. reuben-native is
-# excluded: it is not in `cargo bench -p reuben-core`'s build graph. If a new crate joins the
-# closure and is missed here, the baseline library build fails and the hard-fail guard below trips
-# (rather than masking it as a skip).
+# `reuben-core/bench` rather than a bare `bench`: the benches live in reuben-document now (every
+# realistic workload is a document), and the `Io` bridge the micro layer needs is reuben-core's.
+# reuben-document's own `bench` feature forwards to it; naming the forwarded feature directly keeps
+# this independent of that spelling.
+FEATURES="reuben-core/bench"
+# The benched crate's full source closure — every crate whose `src/` feeds the build (see header).
+# These move to the baseline ref together so the snapshot is self-consistent; the bench crate's
+# `src/` alone would leave operator `Self::contract()` calls compiled against HEAD's macro.
+# reuben-core is named explicitly: the benches sit in reuben-document, but what they measure is
+# reuben-core's render and instantiate paths, so a perf change there must A/B with them.
+# reuben-native and reuben-api are excluded: neither is in `cargo bench -p reuben-document`'s build
+# graph. If a new crate joins the closure and is missed here, the baseline library build fails and
+# the hard-fail guard below trips (rather than masking it as a skip).
 SRC=(
   "crates/${PKG}/src"
+  crates/reuben-core/src
   crates/reuben-macros/src
   crates/reuben-contract/src
 )

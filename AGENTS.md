@@ -69,11 +69,13 @@ The [rules index](docs/rules/README.md) carries the glossary — don't drift to 
 
 ## Repo map
 
-Six crates. `reuben-core` is ~35k lines — enter through the module that owns the concept, not a search.
+Eight crates. The engine is two of them — `reuben-core` (render) and `reuben-document` (authoring)
+— and together they are ~35k lines; enter through the module that owns the concept, not a search.
 
 | Crate | Owns |
 | --- | --- |
-| `reuben-core` | The portable, OS-free engine. No OS dependencies. **Private**: `reuben-api` is the only crate that may name it, guarded by `scripts/check_core_privacy.py`. |
+| `reuben-core` | The render half of the engine: the portable, OS-free path from a `Plan` to a block of audio. No OS dependencies, and it names no crate above it. |
+| `reuben-document` | The authoring half: the instrument format and its loader, the edit verbs, the projections, and the off-thread Coordinator. Sits above `reuben-core` and imports upward. |
 | `reuben-api` | The one window every consumer goes through: the authoring verbs, the engine verbs (swap/control/status/diagnostics) and both ends of the structure channel, plus the tool roster and its advertised prose. Two feature halves — `authoring` (off-thread, serialized) and `render` (the Coordinator + RenderSlot pair a host drives per block) — plus the resource seam both halves call and the default-off `fs-resolver` reference implementation of it. |
 | `reuben-native` | The removable native layer: cpal audio + input, OSC/UDP decode, the `reuben` CLI. Reaches the engine through nothing but the window, render half included. |
 | `reuben-mcp` | The per-conversation MCP stdio sidecar: the roster, the stdio transport, the loopback socket. Reaches `reuben-core` through nothing but the window. The only member allowed an async runtime (rmcp + tokio). |
@@ -102,8 +104,8 @@ Use Grep only for non-code text: comments, string literals, config values.
 **Never use Grep to find a function or type definition.**
 
 These files punish a whole-file Read — `documentSymbol` first, then read only the range you need:
-`crates/reuben-core/src/format/mod.rs` (4.8k lines) · `crates/reuben-mcp/src/lib.rs` (3.3k) ·
-`crates/reuben-core/src/projection.rs` (2.5k) · `crates/reuben-native/src/audio.rs` (1.5k) ·
+`crates/reuben-document/src/format/mod.rs` (4.8k lines) · `crates/reuben-mcp/src/lib.rs` (3.3k) ·
+`crates/reuben-document/src/projection.rs` (2.5k) · `crates/reuben-native/src/audio.rs` (1.5k) ·
 `crates/reuben-core/src/plan.rs` (1.5k).
 
 Search is pre-scoped by [`.ignore`](.ignore) — build output, `.git`, caches, binary fixtures.
@@ -120,7 +122,7 @@ Both of the above are rules, not preferences — see
 - **[Domain docs](docs/agents/domain.md)** — the now-state architecture is the [rules index](docs/rules/README.md) → topic → rule → rationale; read the index + the relevant topic doc before exploring. `docs/adr/` is the live iteration surface a human periodically folds into rules with the `absorb-adrs` skill.
 - **[Canonical sources](docs/agents/canonical-sources.md)** — the registry of what this repo copies in from elsewhere, and how each copy is refreshed. The rule those entries obey is the company-doctrine region at the end of the [rules index](docs/rules/README.md).
 - **[Agent-surface eval](eval/README.md)** — what authoring costs a model (grounding tokens, repair rounds, freehand JSON). Gated in CI; run `cd eval && python3 -m reuben_eval.gate` after changing a tool description, the `instructions`, or `docs/agents/`.
-- **[Benchmarks](crates/reuben-core/benches/README.md)** — two workloads, each in a local wall-clock and a CI instruction-count layer: **render** (`render_block`, gated on absolute cost against the base ref) and **construct** (load + instantiate, swept across node counts and gated on how it *scales*, at no baseline). Bench case ids are matched by name across commits — renaming one drops it from its gate and orphans its history.
+- **[Benchmarks](crates/reuben-document/benches/README.md)** — two workloads, each in a local wall-clock and a CI instruction-count layer: **render** (`render_block`, gated on absolute cost against the base ref) and **construct** (load + instantiate, swept across node counts and gated on how it *scales*, at no baseline). Bench case ids are matched by name across commits — renaming one drops it from its gate and orphans its history.
 - **[Issue tracker](docs/agents/issue-tracker.md)** — GitHub Issues via `gh`; external PRs are not a triage surface.
 - **[Triage labels](docs/agents/triage-labels.md)** — the canonical state roles and the charting family, which mean the same thing in every repo, plus the labels this repo adds for itself.
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** · **[Rules index](docs/rules/README.md)** · **[Live ADRs](docs/adr/README.md)** (the iteration surface) · **[`.ii/repo.toml`](.ii/repo.toml)** — this repo as data: the branch model, the doc system, and every copy it declares. Read it rather than asking prose.

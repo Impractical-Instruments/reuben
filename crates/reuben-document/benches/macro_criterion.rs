@@ -1,6 +1,6 @@
 //! Local wall-clock macro benchmark: end-to-end `render_block` throughput per
 //! instrument, reported as samples/sec (÷ 48 000 == ×realtime). Dev-facing — run
-//! `cargo bench -p reuben-core --bench macro_criterion`; compare across changes
+//! `cargo bench -p reuben-document --bench macro_criterion`; compare across changes
 //! with `--save-baseline <name>` / `--baseline <name>`. Never runs in CI (shared
 //! runners are too noisy for wall-clock); the CI gate is `macro_iai`.
 

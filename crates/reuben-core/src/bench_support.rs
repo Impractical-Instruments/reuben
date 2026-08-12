@@ -441,7 +441,9 @@ mod tests {
     /// The census cannot be a const here for `micro_iai.rs` to consume: the perf gate swaps
     /// `reuben-core/src` to the baseline ref while keeping the HEAD bench, so a census in this file
     /// would vanish from under the run (the same constraint that keeps the skip list in the
-    /// harness). And it cannot be introspected from the bench either, since a `harness = false`
+    /// harness). The bench itself lives in `reuben-document` — every realistic workload is an
+    /// instrument document — which is why this path climbs out of the crate; the gate never swaps
+    /// `benches/`, so reading across is reading HEAD either way. And it cannot be introspected from the bench either, since a `harness = false`
     /// bench hosts no libtest. Reading the source is what lets the list exist exactly once: the
     /// alternative was a hand-kept `MICRO_IAI_KINDS` mirror, which two lists can drift *together*
     /// and still satisfy.
@@ -451,7 +453,7 @@ mod tests {
     /// picked up `"<operator kind>"` and `"kind"` out of the doc comments. Block delimiters are
     /// structural, so prose above and below cannot leak in whatever the docs say.
     fn iai_census_kinds() -> BTreeSet<&'static str> {
-        const SRC: &str = include_str!("../benches/micro_iai.rs");
+        const SRC: &str = include_str!("../../reuben-document/benches/micro_iai.rs");
         SRC.lines()
             .skip_while(|l| !l.starts_with("micro_bench_ops! {"))
             .skip(1)

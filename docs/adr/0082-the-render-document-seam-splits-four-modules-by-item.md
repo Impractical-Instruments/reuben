@@ -77,9 +77,9 @@ than in the split: its `render` feature re-exports `Coordinator`, `format::LoadW
 entry point parses JSON.
 
 **Those four move behind the `authoring` feature**, where their dependencies already live. `render`
-keeps `RenderSlot`, `RenderSide`, `InstallBundle`, the mailbox pair, `Arg`/`Message`, `AudioConfig` and
-`osc_out_args`. This costs no consumer anything: `reuben-native` takes default features and
-`reuben-mcp` takes `authoring`, so neither builds `render` alone.
+keeps `RenderSlot`, `RenderSide`, the mailbox pair, `Arg`/`Message`, `AudioConfig` and `osc_out_args`
+— exactly the set it already had, minus the four. This costs no consumer anything: `reuben-native`
+takes default features and `reuben-mcp` takes `authoring`, so neither builds `render` alone.
 
 This is a re-filing, not a new capability. **`reuben-api`'s `render` feature still offers no
 document-free way to reach a `RenderSlot`** — `Plan`, `Graph` and `Engine` are not on the render
@@ -98,10 +98,17 @@ says.** Today it passes while the render half is document-shaped throughout, bec
 in one crate. After this it fails if anything document-shaped reaches the render surface — which is the
 gate ADR-0080 wanted and could not yet have.
 
-**`scripts/check_core_privacy.py` learns about `reuben-document`,** as ADR-0080 already anticipated.
-ADR-0080's note that the script is scaffolding rather than an invariant stands, and is not invoked
-here — the render window's portability problem turned out to be a feature-gating mistake with a cheap
-fix, not evidence that the window cannot be portable.
+**`scripts/check_core_privacy.py` is deleted rather than taught about `reuben-document`.** ADR-0080
+recorded it as *"scaffolding, not an invariant — it exists because it was a convenient way to hold the
+API refactor for the web target"*, and the scaffolding has served its purpose: the window holds
+because `reuben-api` is where the useful surface is, not because a script forbids the alternative.
+Deleting it also removes the thing that would have had to encode this ADR's one internal edge as a
+permanent exception. Decided by Charlie, 2026-08-12.
+
+Note what this does *not* relax. The render window's portability is now enforced by a real build,
+not by prose: `cargo check -p reuben-api --no-default-features --features render` fails if anything
+document-shaped reaches the render surface. That gate replaces the deleted one and is stronger,
+because it checks a consequence rather than a manifest line.
 
 ## Open
 

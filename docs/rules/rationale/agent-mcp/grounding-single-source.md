@@ -3,7 +3,7 @@
 [Rule](../../agent-mcp.md#grounding-single-source)
 
 **Code-level drift is structurally impossible; prose drift is the whole battle.** The CLI and the
-MCP sidecar descend to the same pure functions in `reuben_core::introspect` and the same loader
+MCP sidecar descend to the same pure functions in `reuben_document::introspect` and the same loader
 ([introspection-surface](introspection-surface.md), [loader-single-authority](loader-single-authority.md)),
 so the surfaces cannot disagree about facts. What *can* drift is prose — the authoring guide, the
 contract-inlining skills, and the server's `instructions` plus tool-description strings. The fix is

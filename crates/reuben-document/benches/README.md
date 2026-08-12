@@ -21,11 +21,11 @@ Realtime factor and ns-level timing for day-to-day work. Throughput is reported 
 `elem/s`; divide by 48 000 for ×realtime.
 
 ```sh
-cargo bench -p reuben-core --bench macro_criterion
+cargo bench -p reuben-document --bench macro_criterion
 
 # Before/after a change:
-git switch main && cargo bench -p reuben-core --bench macro_criterion -- --save-baseline main
-git switch -    && cargo bench -p reuben-core --bench macro_criterion -- --baseline main
+git switch main && cargo bench -p reuben-document --bench macro_criterion -- --save-baseline main
+git switch -    && cargo bench -p reuben-document --bench macro_criterion -- --baseline main
 ```
 
 ## CI gate — instruction counts (iai-callgrind)
@@ -35,7 +35,7 @@ Deterministic; this is what gates PRs. Requires `valgrind` and the matching runn
 ```sh
 sudo apt-get install valgrind
 cargo install iai-callgrind-runner --version 0.16.1   # must match the dev-dependency
-cargo bench -p reuben-core --bench macro_iai
+cargo bench -p reuben-document --bench macro_iai
 ```
 
 In CI the [`bench` job](../../../.github/workflows/ci.yml) compares the PR against its base
@@ -49,8 +49,8 @@ counts per shape — `wide` (a fan-in tree, maximum edges), `deep` (a serial cha
 and `nest` (subpatch reuse, the shape a song actually has). Same two layers:
 
 ```sh
-cargo bench -p reuben-core --bench construct_criterion   # local: sweeps 128..8192 nodes, elem/s
-cargo bench -p reuben-core --bench construct_iai         # the CI gate's three sizes per shape
+cargo bench -p reuben-document --bench construct_criterion   # local: sweeps 128..8192 nodes, elem/s
+cargo bench -p reuben-document --bench construct_iai         # the CI gate's three sizes per shape
 ```
 
 The criterion sweep reports `elem/s` per document node, so the number to watch is whether it
