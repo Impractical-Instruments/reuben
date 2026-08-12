@@ -82,8 +82,8 @@ impl MasterGainRamp {
     }
 }
 
-/// The production RT-side install slot. Built from the [`RenderSide`] a
-/// [`Coordinator`](super::swap::Coordinator) hands out, it is what the shell's audio callback drives
+/// The production RT-side install slot. Built from the [`RenderSide`] a `Coordinator` (off-thread,
+/// in `reuben-document`) hands out, it is what the shell's audio callback drives
 /// each block. See the module docs for the per-callback contract.
 ///
 /// **RT-safety requirement (drop off-thread).** Like the [`RenderMailbox`] it owns (see that type's

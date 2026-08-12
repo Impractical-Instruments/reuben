@@ -41,7 +41,7 @@ use reuben_core::coordinator::mailbox::{swap_pair, CoordinatorMailbox, ReclaimEr
 /// off-thread free like every other Coordinator-side drop. Nothing was published, so there is
 /// nothing to reclaim and the install slot never closed.
 ///
-/// It deliberately carries no [`MigrationTable`]: that table pairs Plan indices against the Engine
+/// It deliberately carries no [`MigrationTable`](reuben_core::coordinator::MigrationTable): that table pairs Plan indices against the Engine
 /// this swap will displace, which is known at commit and not before. see rules: execution-runtime
 ///
 /// **RT-safety requirement (drop off-thread), same as the [`InstallBundle`] it becomes.** Dropping
@@ -198,7 +198,7 @@ impl Coordinator {
     ///
     /// `source` is the document JSON (by-path resolution is a shell concern — the resolver seam —
     /// kept out of this OS-free core). A load/instantiate error installs nothing. On success the
-    /// report carries the real survivor/reset [`DiffSummary`] and the now-installed hash, and the
+    /// report carries the real survivor/reset [`DiffSummary`](crate::DiffSummary) and the now-installed hash, and the
     /// canonical document + manifest advance.
     ///
     /// **Arbitration here is last-write-wins, and this signature takes no `expect` guard** — the

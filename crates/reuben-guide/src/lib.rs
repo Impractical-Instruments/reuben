@@ -5,7 +5,7 @@
 //! never hand-paraphrased: every Markdown heading carries a trailing `<!-- lanes: ... -->` tag
 //! naming the lanes its section ships to, and [`lane_cut`] keeps exactly the sections tagged for
 //! the requested lane — a deterministic function of the tags + the guide, emitted by
-//! `cargo run -p reuben-core --example guide_cut -- <lane>` and held honest by the `guide_lanes`
+//! `cargo run -p reuben-guide --bin guide_cut -- <lane>` and held honest by the `guide_lanes`
 //! test (an untagged or unknown-lane heading fails, so a new section cannot silently skip the cut).
 
 use std::fmt;

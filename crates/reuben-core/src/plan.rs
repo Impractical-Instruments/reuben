@@ -777,7 +777,7 @@ impl Plan {
     /// see rules: execution-runtime
     ///
     /// Caller contract: each pair must already share operator type + instantiate-time identity (the
-    /// survivor key a [`MigrationTable`](crate::coordinator::manifest::MigrationTable) guarantees) —
+    /// survivor key a [`MigrationTable`](crate::coordinator::MigrationTable) guarantees) —
     /// a wrong-but-in-bounds pairing is a caller bug the bounds `debug_assert!` cannot catch. The
     /// bare `&[(usize, usize)]` signature keeps this primitive from importing the coordinator (the
     /// one-way `coordinator → plan/engine` layering); [`crate::engine::Engine`] forwards straight to

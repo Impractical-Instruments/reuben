@@ -1,10 +1,8 @@
-//! The resource seam: how a logical source name becomes a decoded buffer.
+//! The resource seam. The trait lives here rather than in `reuben-core` because every caller is
+//! authoring-side; the render path never resolves anything, it reads an already-decoded
+//! [`ResourceStore`](reuben_core::resources::ResourceStore).
 //!
-//! The trait lives here rather than in `reuben-core` because every caller is authoring-side — the
-//! loader, the edit verbs, the projections, the Coordinator. The render path never resolves
-//! anything; it reads an already-decoded
-//! [`ResourceStore`](reuben_core::resources::ResourceStore), which is why the store half stayed
-//! below. see rules: authoring-library
+//! see rules: authoring-library
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;

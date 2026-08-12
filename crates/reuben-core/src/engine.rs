@@ -10,7 +10,7 @@
 //! this queue.
 //!
 //! This module is the shared **embed surface**: every shell (native, web, game) constructs an
-//! Engine — usually via [`Engine::from_document`] — then drives `queue_osc` → `fill` /
+//! Engine — usually via `reuben-document`'s `from_document` — then drives `queue_osc` → `fill` /
 //! `fill_duplex` → `drain_outbound`. Protocol decode (UDP/OSC datagrams, worklet message
 //! buffers) stays in the shells; the Engine takes the already-flat primitive args.
 //!
@@ -135,7 +135,7 @@ impl Engine {
 
     /// Transplant survivor operator boxes from a `retiring` Engine into this (freshly built) one,
     /// per the Coordinator's precomputed survivor pairs — the `(old, new)` slice a
-    /// [`MigrationTable`](crate::coordinator::manifest::MigrationTable) yields via `survivors()`.
+    /// [`MigrationTable`](crate::coordinator::MigrationTable) yields via `survivors()`.
     /// Engine owns two Plans here (fresh + retiring) but no longer indexes their nodes: it forwards
     /// to the pointer-swap primitive that lives on [`Plan`] (which owns its nodes). See
     /// [`Plan::transplant_survivors`] for the box-move semantics, the pairing invariant, and the

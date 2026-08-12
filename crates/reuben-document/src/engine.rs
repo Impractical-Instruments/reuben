@@ -1,9 +1,6 @@
-//! Building an [`Engine`] from an instrument document.
-//!
-//! The Engine itself is `reuben-core`'s — it is the render vessel the audio callback drives. What
-//! lives here is the one step that needs a document: `load_instrument` → `Plan::instantiate` →
-//! `Engine::new`. It is a free function rather than a constructor on `Engine` because the type is
-//! defined below this crate, and it is the only reason an Engine ever touches the loader.
+//! The [`Engine`] is `reuben-core`'s; what lives here is the one step of building one that needs a
+//! document. A free function rather than a constructor because the type is defined below this
+//! crate.
 //!
 //! see rules: authoring-library
 

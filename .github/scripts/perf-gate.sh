@@ -65,7 +65,12 @@
 set -uo pipefail
 
 BASE_SHA="${1:-}"
+# The crate the bench *targets* live in. Not the crate they measure: every realistic workload is an
+# instrument document, so the harnesses sit with the loader, while what they time is the render path
+# below. `ENGINE_PKG` is that render crate — it owns the operator set, and so the census this script
+# reads to build the new-operator skip list.
 PKG="reuben-document"
+ENGINE_PKG="reuben-core"
 # The iai layers. Only micro_iai needs a feature — `bench`, for the crate-private `Io` bridge. That
 # feature only compiles `bench_support` (dead code for the other two), so it leaves their Ir
 # byte-stable — safe to pass on every run.
@@ -85,7 +90,7 @@ FEATURES="reuben-core/bench"
 # the hard-fail guard below trips (rather than masking it as a skip).
 SRC=(
   "crates/${PKG}/src"
-  crates/reuben-core/src
+  "crates/${ENGINE_PKG}/src"
   crates/reuben-macros/src
   crates/reuben-contract/src
 )
@@ -221,13 +226,13 @@ note ""
 # ranges re-open at every later mention of the anchor in prose, and would sweep quoted snake_case
 # strings from the rest of the file into the census as phantom kinds.
 micro_kinds() { awk '/^pub const WORKLOADS/{f=1} f&&/^\];/{exit} f{print}' | grep -oE '"[a-z0-9_]+"' | tr -d '"' | LC_ALL=C sort -u; }
-head_kinds="$(micro_kinds <"crates/${PKG}/src/bench_support.rs")"
-base_kinds="$(git show "${BASE_SHA}:crates/${PKG}/src/bench_support.rs" 2>/dev/null | micro_kinds)"
+head_kinds="$(micro_kinds <"crates/${ENGINE_PKG}/src/bench_support.rs")"
+base_kinds="$(git show "${BASE_SHA}:crates/${ENGINE_PKG}/src/bench_support.rs" 2>/dev/null | micro_kinds)"
 # A census that reads as empty is never legitimate — it means the anchor moved again, and carrying on
 # would hand the bench an empty skip list and reproduce exactly the failure above. Fail loudly here,
 # where the message says what broke, rather than as a panic deep in the baseline bench run.
 if [ -z "$head_kinds" ]; then
-  printf '::error title=Operator census not found::micro_kinds() read no operators from crates/%s/src/bench_support.rs — the WORKLOADS anchor has moved. Fix the scan; an empty census silently disables the PR-new-operator skip.\n' "$PKG"
+  printf '::error title=Operator census not found::micro_kinds() read no operators from crates/%s/src/bench_support.rs — the WORKLOADS anchor has moved. Fix the scan; an empty census silently disables the PR-new-operator skip.\n' "$ENGINE_PKG"
   exit 1
 fi
 REUBEN_MICRO_BENCH_SKIP="$(comm -23 <(printf '%s\n' "$head_kinds") <(printf '%s\n' "$base_kinds") | paste -sd, -)"

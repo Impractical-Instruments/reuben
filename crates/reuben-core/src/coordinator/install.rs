@@ -1,11 +1,8 @@
-//! The install mailbox's payload types: what crosses the RT boundary, and the render side's half
-//! of a fresh Coordinator.
+//! The install mailbox's payload types.
 //!
-//! Both are built off-thread and consumed here. They live on this side of the seam because the RT
-//! install slot ([`super::slot::RenderSlot`]) owns them by value — it holds a
-//! [`RenderMailbox<InstallBundle>`] and, when a reclaim cannot be posted back, a stranded
-//! `Box<InstallBundle>`. Nothing about either type is document-shaped: the document that produced
-//! the Engine stays with the Coordinator that loaded it.
+//! They are built off-thread and live on this side of the seam because [`super::slot::RenderSlot`]
+//! owns them by value. Neither is document-shaped: the document that produced the Engine stays with
+//! the Coordinator that loaded it.
 //!
 //! see rules: execution-runtime
 

@@ -1,9 +1,6 @@
-//! The migration table: the survivor pairs the RT install slot transplants by.
-//!
-//! The table is *built* off-thread, by diffing two manifests in the document crate, and only ever
-//! *consumed* here — the render side applies it and never reasons about which nodes survived or
-//! why. It lives on this side of the seam because it is a field of
-//! [`InstallBundle`](super::InstallBundle), which crosses the install mailbox into the callback.
+//! Built off-thread by diffing two manifests in the document crate, and only ever *consumed* here:
+//! the render side applies the table and never reasons about which nodes survived or why. It sits
+//! on this side of the seam because it is a field of [`InstallBundle`](super::InstallBundle).
 //!
 //! see rules: execution-runtime
 
@@ -16,8 +13,7 @@ pub struct MigrationTable {
 }
 
 impl MigrationTable {
-    /// Wrap a computed set of `(old index, new index)` survivor pairs. The pairing rule is the
-    /// builder's; this side takes the result as given.
+    /// The pairing rule is the builder's; this side takes the result as given.
     pub fn new(survivors: Vec<(usize, usize)>) -> Self {
         Self { survivors }
     }

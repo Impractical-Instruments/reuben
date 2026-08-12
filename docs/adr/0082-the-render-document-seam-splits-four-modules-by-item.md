@@ -6,7 +6,14 @@ section. ADR-0080's decision is otherwise untouched: two crates now, `reuben-cor
 the render half, unconditional `#![no_std]` + `alloc` with no `std` feature, `alloc` at instantiate and
 never per block, `reuben-contract` left alone.
 
-Overturns no rule. Cites [execution-runtime](../rules/execution-runtime.md) for context.
+**Overturns** [`web-product-process.md#core-is-private-to-the-window`](../rules/web-product-process.md#core-is-private-to-the-window)
+— the rule reads *"`reuben-core` is named by `reuben-api` alone … and a guard … keeps it that way."*
+The engine is two crates now, `reuben-document` names `reuben-core` from above, and the guard is
+deleted (see Consequences). What the rule protects — a consumer cannot reach past the window — is
+untouched and is now checked by a build rather than a manifest scan. The rule is marked and its
+`## Now` restatement struck in this change.
+
+Cites [execution-runtime](../rules/execution-runtime.md) for context.
 
 ## Context
 
@@ -84,7 +91,14 @@ takes default features and `reuben-mcp` takes `authoring`, so neither builds `re
 This is a re-filing, not a new capability. **`reuben-api`'s `render` feature still offers no
 document-free way to reach a `RenderSlot`** — `Plan`, `Graph` and `Engine` are not on the render
 surface, because `install_initial` used to be the only door. Building that door is separate work and
-is named in `## Open`.
+is named in `**`guide.rs` becomes a crate, which ADR-0080 asked it not to.** That ADR said *"Move it to a
+tool/script rather than assigning it a crate."* It is 222 lines of Rust with a test asserting the
+lane-tag contract, and a workspace member is how a Rust tool with a test is expressed — a script
+would mean rewriting it in another language and losing the test. `reuben-guide` depends on nothing
+in the workspace, so it costs the build graph nothing. The intent ADR-0080 was protecting — that
+docs tooling not sit in the render crate — holds.
+
+## Open`.
 
 ## Consequences
 
@@ -105,10 +119,14 @@ because `reuben-api` is where the useful surface is, not because a script forbid
 Deleting it also removes the thing that would have had to encode this ADR's one internal edge as a
 permanent exception. Decided by Charlie, 2026-08-12.
 
-Note what this does *not* relax. The render window's portability is now enforced by a real build,
-not by prose: `cargo check -p reuben-api --no-default-features --features render` fails if anything
-document-shaped reaches the render surface. That gate replaces the deleted one and is stronger,
-because it checks a consequence rather than a manifest line.
+The two gates are **not** equivalent, and it is worth being exact about what is now unguarded. The
+script forbade *any* manifest but `reuben-api`'s from naming `reuben-core`; the render-only build
+cannot see such an edge — a future `reuben-native` that depended on `reuben-core` directly would
+compile clean. What the build *does* check, which the script never could, is the consequence:
+`cargo check -p reuben-api --no-default-features --features render` fails if anything
+document-shaped reaches the render surface. So the window's *reachability* is now a convention with
+no automated backstop, while its *portability* is a fact CI enforces. That trade is the decision;
+nothing in the tree violates the unguarded half today.
 
 ## Open
 

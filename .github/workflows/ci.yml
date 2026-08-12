@@ -179,7 +179,7 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
 
-      # `--features reuben-core/bench` so clippy lints the per-operator micro-bench code: its
+      # `--features reuben-document/bench` so clippy lints the per-operator micro-bench code: its
       # `[[bench]]` targets declare `required-features = ["bench"]`, so without the flag
       # `--all-targets` silently skips them.
       - name: Clippy
@@ -204,7 +204,7 @@ jobs:
       # Skill scripts that inline an engine contract ship their own Python tests (control-surface's
       # `gen_surface.py` today); its live-engine boundary test runs `reuben describe` via `cargo
       # run` to catch format drift instead of letting the skill rot silently. That `cargo
-      # run` uses the same `--features reuben-core/bench` as the clippy/test steps above, so it
+      # run` uses the same `--features reuben-document/bench` as the clippy/test steps above, so it
       # reuses their compiled artifacts rather than triggering a featureless rebuild. Generic over
       # the skills dir so a future skill's `test_*.py` is picked up without editing CI; each suite
       # runs from its own dir because the tests import their script by bare module name.

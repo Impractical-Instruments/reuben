@@ -2,7 +2,9 @@
 //! real `load` -> `instantiate` -> `render_block` path sample-for-sample.
 //!
 //! It needs both halves — `OpDriver` from the render crate (behind its `bench` feature) and the
-//! loader from this one — so it lives here rather than beside the harness.
+//! loader from this one — so it lives here rather than beside the harness. That feature is why the
+//! target declares `required-features = ["bench"]`: a bare `cargo test` **skips** this pin. CI runs
+//! it (`--features reuben-document/bench`); locally, name the feature or you are not running it.
 
 use reuben_core::op_driver::OpDriver;
 use reuben_core::operators::{oscillator, Oscillator};
