@@ -37,10 +37,12 @@ The measured record, on the pinned toolchain:
 `linkme`'s failure is not a bug to wait out; it is a written-down boundary.
 `linkme-impl-0.3.37/src/declaration.rs:136-148` emits the slice's boundary-symbol `extern` block under
 `#[cfg(any(target_os = "none", "linux", "macos", "ios", "tvos", "android", "fuchsia", "illumos",
-"freebsd", "openbsd", "psp"))]`, and everything outside that list takes an arm whose message is
-`distributed_slice is not implemented for this platform`. `thumbv7em-none-eabihf` is `target_os =
-"none"` and is covered; **`wasm32-unknown-unknown` is `target_os = "unknown"` and is not.** Base `dev`
-builds `reuben-core` for wasm32 in ~2.8s; the `linkme` branch does not build it at all.
+"freebsd", "openbsd", "psp"))]`. `uefi` and `windows` have their own supported arm below it
+(`declaration.rs:179-194`, PE/COFF boundary elements); a target matching *neither* set falls through
+to an arm whose message is `distributed_slice is not implemented for this platform`.
+`thumbv7em-none-eabihf` is `target_os = "none"` and is covered by the first;
+**`wasm32-unknown-unknown` is `target_os = "unknown"` and is in neither.** Base `dev` builds
+`reuben-core` for wasm32 in ~2.8s; the `linkme` branch does not build it at all.
 
 Each of these crates asks a linker to collect scattered definitions into one contiguous run — a named
 ELF section swept by `__start_`/`__stop_` symbols, or a run of pre-main constructors. Both are
@@ -54,8 +56,8 @@ we no longer need one.
 The obligation that made the linker attractive was never *"collect at link time"*; it was **"adding an
 operator must not edit a central list to merge-conflict on"** ([ADR-0024](../rules/rationale/composition-operators/operator-self-registration.md)).
 That premise is what shifted. `crates/reuben-core/src/operators/mod.rs` is **already** a central,
-alphabetical, must-edit list — 57 module declarations, one per operator module, plus a re-export
-block. Every new operator edits it today. The linker was buying independence from a list that exists
+alphabetical, must-edit list — 53 `pub mod` declarations and 48 `pub use` re-exports, of which 48
+modules carry operators. Every new operator edits it today. The linker was buying independence from a list that exists
 anyway, and charging a per-target compatibility problem for it.
 
 ## Decision
@@ -91,10 +93,10 @@ that *submitted* — become `op_reg!`/`osc_form!`, expression macros that *build
 
 ## Consequences
 
-**Edits per new operator go from two to one**, which is the ergonomic claim that makes this a win
-rather than a lateral move. Before: a `pub mod` line in `operators/mod.rs` *plus* a
-`register_operator!` line at the definition site (plus, in practice, a `pub use` re-export line — the
-scaffold wrote all three). After: one census line, which is all three. Adding a *variant* to an
+**Edits per new operator go from three to one**, which is the ergonomic claim that makes this a win
+rather than a lateral move. Before: a `pub mod` line in `operators/mod.rs`, a `pub use` re-export
+line beside it, *and* a `register_operator!` line at the definition site — the scaffold wrote all
+three. After: one census line, which is all three. Adding a *variant* to an
 existing generated family stays one edit, in the `variants:` list, as today. The scaffold now makes a
 single sorted insert instead of two, and emits no registration in the operator file at all.
 
@@ -115,33 +117,65 @@ single sorted insert instead of two, and emits no registration in the operator f
   comments that explained it in terms of linker dead-stripping are corrected rather than deleted —
   the assertion is still worth its two lines, for a different and smaller reason.
 
-**The `codegen-units = 1` rule is retired on the mechanism, not on a measurement.** It exists because
-the linker only pulls an rlib's object files whose symbols are referenced, so a codegen unit holding
-nothing but operator impls and their constructors is dropped. A `const` array that
-`Registry::builtin()` reads has no such unit: the descriptor and constructor `fn` pointers are
-reachable from a symbol the caller names. Confirmed by building at `codegen-units = 256`, at
-`lto = "fat"` + `opt-level = "s"`, and at both together — 79 operators in each — including from an
-out-of-tree crate that depends on `reuben-core` by path and calls nothing but `Registry::builtin()`,
-which is the scenario the rule actually described.
+**The `codegen-units = 1` rule is retired because the mechanism is gone — and it was live and
+load-bearing right up to this commit.** It exists because the linker only pulls an rlib's object
+files whose symbols are referenced, so a codegen unit holding nothing but operator impls and their
+constructors is dropped. A `const` array that `Registry::builtin()` reads has no such unit: the
+descriptor and constructor `fn` pointers are reachable from a symbol the caller names.
 
-Worth recording honestly: **the historical failure no longer reproduces for `inventory` either.** The
-same out-of-tree probe at `codegen-units = 256` against the pre-change tree also yields 79, where the
-rule's rationale recorded 36 of 53. So the rule is retired on the strength of the mechanism no longer
-existing, not on a fresh reproduction of the harm — and anyone re-reading that rationale should know
-its measurement is from a much older toolchain. `[profile.bench] codegen-units = 1` is **untouched**:
-it pins codegen determinism for the Ir perf gate, an unrelated reason.
+**Measuring this needs the link shape the rule actually names** — *"anyone building core into a
+single statically-linked artifact, which the C-ABI browser boundary invites third parties to do"*. A
+Rust crate with a path dependency is the wrong shape and cannot show the hazard at all: rustc drives
+that link and hands the linker the whole rlib, so nothing is ever extracted per object file. Built
+the right way instead — `--crate-type staticlib`, an `extern "C"` entry calling only
+`Registry::builtin()`, consumed by a C `main` through the system linker, on the pinned 1.96.0:
+
+| tree | `cgu = 1` | `cgu = 16` | `cgu = 256` |
+| --- | ---: | ---: | ---: |
+| pre-change (`inventory`) | 79 | 79 | **0** |
+| this branch | 79 | 79 | **79** |
+
+The browser shape agrees. As a `wasm32-unknown-unknown` `cdylib`, the pre-change tree at
+`cgu = 256` retains **1** of 79 operator `type_name`s in a 39 KB image — the rest of the engine
+stripped with the constructors that were its only reference — while this branch retains all 79. Both
+trees are correct at `cgu = 1`, which is precisely what the rule was buying.
+
+So the retirement rests on *both* halves: the harm was real until this commit, and the mechanism that
+caused it no longer exists. Anyone tempted to read the old 36-of-53 figure as folklore should note it
+was, if anything, understated. `[profile.bench] codegen-units = 1` is **untouched**: it pins codegen
+determinism for the Ir perf gate, an unrelated reason.
 
 **The MSRV `SHF_GNU_RETAIN` reasoning the `linkme` branch added is never introduced.** It documented
 when `#[used]` sections survive `--gc-sections`, which bound `rust-toolchain.toml`'s bump procedure to
 linker behavior. Nothing here depends on `#[used]` or on section retention, so the toolchain pin owes
 that constraint nothing.
 
-**What is given up is real, and it is smaller than it looks.** An operator's registration is no longer
-adjacent to its definition, so the two can drift: a module can exist and not be registered. That
-failure is *loud in the direction that matters* — an unregistered operator has no `describe` row and
-no schema entry, which its own tests notice — and the reverse, a census entry naming a type that does
-not exist, is a compile error. `pipe` is deliberately declared outside the census and is the standing
-example that the distinction is intentional.
+**What is given up is real, and it had to be paid for.** An operator's registration is no longer
+adjacent to its definition, so the two can drift. One direction is free: a census entry naming a type
+that does not exist is a compile error. The other direction is **completely silent**, and this was
+checked rather than assumed. A hand-written operator added to a module the census splices with `m::*`
+builds with zero warnings — it is `pub`-reachable through the glob, so no dead-code lint fires — and
+`describe` simply does not list it; its own tests pass, because an operator test drives
+`OpDriver::for_type` directly and never consults the registry. Narrowing an `m::*` entry to
+`m::{OneType}` is quieter still: it compiles clean and drops the family's other variants, 79 → 77.
+
+So the drift is made loud by a test rather than by hope. `census_accounts_for_every_operator` reads
+`src/operators/*.rs` at test time and asserts that every hand-written `impl Operator` is named by a
+census entry, and that every module invoking a family macro is censused with the `*` form. Both sides
+are **derived from source**: a hand-maintained roster of expected operators would be precisely the
+central list this change exists to delete, and would rot the same way. `Pipe` is the one exception,
+and it is pinned rather than skipped — the test also asserts `pipe` stays *out* of the census, since
+censusing it would put a loader-built node into the document type vocabulary.
+
+**The `*` form widens `reuben_core::operators`' public surface, additively.** A family module was
+previously re-exported by hand and named two types; `pub use m::*;` now lifts every variant, so the
+`i32` ones (`AbsI32Value` and its siblings) become public where they were reachable only as
+`operators::abs::AbsI32Value` before. Additive, so nothing breaks, and it is the price of not making
+the census name types a macro generates. It also glob-re-exports each family's `OPERATORS`, which
+makes `operators::OPERATORS` ambiguous (`E0659`) — an error only at a use site, and nothing uses it,
+because `CENSUS` reaches each array by its explicit `m::OPERATORS` path rather than through the glob.
+Narrowing would mean dropping the flat re-exports of generated types altogether, which removes API
+for no in-tree gain; the ambiguity is left standing deliberately.
 
 **A third-party operator crate can no longer register into the built-in set at all.** Under `linkme`
 that was the headline property: slices are declared by the core, so an out-of-crate submitter needed

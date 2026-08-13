@@ -234,13 +234,18 @@ mod tests {
         }
     }
 
+    // Determinism is two independent properties, and each is blind to the other's mutation. They
+    // are kept as two tests so a failure says which one broke.
+
     #[test]
     fn permuting_the_census_yields_the_same_iteration_order() {
-        // Determinism, order-independently: the same entries fed forward and reversed must
-        // enumerate identically. The `BTreeMap` re-key by `type_name` is what makes that true, so
-        // this fails the moment iteration starts depending on the order entries arrived in —
-        // which an assertion that `type_names()` is *ascending* could not, being a `BTreeMap`
-        // tautology that a deliberately reversed iteration still satisfies.
+        // Property one: **output does not depend on census order.** Feed the same entries forward
+        // and reversed; the `BTreeMap` re-key by `type_name` is what makes the results identical,
+        // so this reds the moment iteration starts leaking the order entries arrived in.
+        //
+        // Asserting `type_names()` is ascending cannot see this: over a reversed *submission* the
+        // map re-keys anyway, so ascending stays trivially true — which is how the earlier attempt
+        // shipped an assertion that passed while iteration was deliberately reversed.
         let flat: Vec<&OpReg> = crate::operators::CENSUS.iter().copied().flatten().collect();
         let forward: Vec<&str> = Registry::from_census(flat.iter().copied())
             .type_names()
@@ -250,6 +255,29 @@ mod tests {
             .collect();
         assert_eq!(forward, reversed, "iteration order depends on census order");
         assert!(forward.len() > 1, "fixture: needs at least two entries");
+    }
+
+    #[test]
+    fn enumeration_is_name_ordered_and_the_two_enumerators_agree() {
+        // Property two: **output is name-ordered**, which is what makes the generated schema and
+        // `describe` byte-stable across builds. The test above is blind to this — reversing the
+        // iterator reverses both of its sides equally, so it stays green while every consumer's
+        // output silently reorders.
+        //
+        // Strictly ascending, so it doubles as the uniqueness check on the map's keys. Both
+        // enumerators are pinned: `entries()` feeds the schema and `type_names()` feeds `describe`,
+        // and a reversal of either one alone would reorder one consumer and not the other.
+        let r = Registry::builtin();
+        let names: Vec<&str> = r.type_names().collect();
+        assert!(
+            names.windows(2).all(|w| w[0] < w[1]),
+            "type_names() must be strictly ascending: {names:?}"
+        );
+        let by_entry: Vec<&str> = r.entries().map(|e| e.descriptor.type_name).collect();
+        assert_eq!(
+            names, by_entry,
+            "entries() and type_names() disagree on order"
+        );
     }
 
     // Every integer control port is an `i32` value port. One central assertion so each one — not

@@ -22,14 +22,21 @@ a *release/embed* concern; the benchmark harness pins the same flag for an unrel
 longer plants a constructor anywhere: the built-in set is a plain `const` array that
 `Registry::builtin()` reads, so every operator's descriptor and constructor `fn` pointer is reachable
 from a symbol the caller names and there is no "codegen unit nothing references" for the linker to
-drop. Confirmed at `codegen-units = 256`, at `lto = "fat"` + `opt-level = "s"`, and at both together
-— 79 operators each time, including from an out-of-tree crate depending on `reuben-core` by path,
-which is the embedder scenario above.
+drop.
 
-Two caveats for anyone re-reading this. The **36-of-53 measurement is old** and does not reproduce:
-the same out-of-tree probe at `codegen-units = 256` against the pre-change `inventory` tree yields the
-full set on the currently pinned toolchain. And `[profile.bench] codegen-units = 1` **stays** — it
-pins codegen determinism for the instruction-count perf gate, an unrelated reason
-([perf-benchmark-gate](perf-benchmark-gate.md)), as the paragraph above already noted.
+**This rule was live and load-bearing until the commit that retired it** — the measurement above is
+not a historical curiosity. Reproducing it needs the link shape this rule names, and only that shape:
+a Rust crate with a path dependency cannot show the hazard, because rustc drives that link and hands
+the linker the whole rlib, so no object file is ever left unextracted. Built as the rule describes
+instead — `--crate-type staticlib`, an `extern "C"` entry calling only `Registry::builtin()`,
+consumed by a C `main` through the system linker, on the pinned toolchain — the `inventory` tree
+registers 79 operators at `codegen-units = 1` and at `16`, and **0** at `256`. The same tree as a
+`wasm32-unknown-unknown` `cdylib` at `256` keeps **1** of 79 operator names in a 39 KB image. The
+census tree registers all 79 in every one of those configurations, which is what makes the rule
+removable rather than merely absorbed.
+
+One thing that **stays**: `[profile.bench] codegen-units = 1` pins codegen determinism for the
+instruction-count perf gate, an unrelated reason ([perf-benchmark-gate](perf-benchmark-gate.md)), as
+the paragraph above already noted.
 
 Distilled from: ADR-0040

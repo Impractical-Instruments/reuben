@@ -58,7 +58,7 @@ pub struct ScaffoldReport {
 
 /// Read a contract spec from `spec_path`, generate the operator under `core_root`
 /// (`crates/reuben-core/src`), and write the new operator file plus the edited `operators/mod.rs`
-/// — refusing to clobber an existing operator file. The operator self-registers at compile time,
+/// — refusing to clobber an existing operator file. Registration is the census line in `mod.rs`,
 /// so `registry.rs` is not touched. Best-effort `cargo fmt` finalises the re-emitted
 /// `mod.rs` lists.
 pub fn run_scaffold(spec_path: &Path, core_root: &Path) -> Result<ScaffoldReport, String> {

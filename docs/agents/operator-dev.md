@@ -254,6 +254,10 @@ never hand-writes symbol/index handling.
    A macro-generated family takes the other entry form, `<name>::*,`, which splices the module's own
    `OPERATORS` array — so adding a variant to an existing family stays a one-line edit in that
    module's `variants:` list.
+   Forgetting this line is otherwise **silent** — an uncensused operator compiles, warns nothing, and
+   passes its own tests, it just never exists to `describe` or any document — so
+   `census_accounts_for_every_operator` (in `operators/mod.rs`) derives both sides from source and
+   fails if any operator here is unaccounted for.
 3. **Test** in the operator module, test-first, with
    [`OpDriver`](../../crates/reuben-core/src/op_driver.rs) — it drives your operator through the
    **real** engine (`Plan::instantiate` + `Renderer::step_node`), so a test can never drift from how

@@ -38,7 +38,16 @@ crate of this kind covers them. Registration folded into the module declaration 
 block in `operators/mod.rs` emits each module's `pub mod`, its re-export **and** its entry in a plain
 array, so the merge-conflict argument that opened this file is served by *replacing* the central list
 rather than avoiding one. The dead-strip failure mode is gone with the linker; the non-empty check
-survives as cheap insurance rather than a canary. What still holds unchanged: function pointers not
+survives as cheap insurance rather than a canary.
+
+What the fold costs is the adjacency this file's argument leaned on: registration is no longer beside
+the definition, so the two can drift, and drift is silent — an uncensused operator compiles, warns
+nothing, and passes its own tests, because an operator test builds its type directly and never
+consults the registry. That is bought back by a forcing function rather than by care:
+`census_accounts_for_every_operator` reads `src/operators/*.rs` at test time and requires every
+hand-written `impl Operator` to be named by a census entry, and every family module to be censused
+with the `*` form. Both sides are derived from source, because a hand-maintained roster of expected
+operators would reintroduce exactly the list this whole argument is about. What still holds unchanged: function pointers not
 values, the `BTreeMap` re-key for determinism, and the duplicate check in `builtin()` rather than
 `register()`.
 
