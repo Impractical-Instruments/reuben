@@ -6,7 +6,7 @@
 //! **held `Value`** (the Event→Value latch). One declaration emits the whole operator: the
 //! contract (via the shared [`render_contract`](crate::render_contract), so it is byte-identical in
 //! shape to a hand-written `operator_contract!` op), an empty-but-for-latch struct, the `Operator`
-//! impl whose `process` is the Voicer's frame-sorted latch, `register_operator!`, and the
+//! impl whose `process` is the Voicer's frame-sorted latch, the module `OPERATORS` census, and the
 //! re-export. see rules: composition-operators
 //!
 //! ```ignore
@@ -130,9 +130,14 @@ impl UnpackInput {
                     }
                 }
 
-                crate::register_operator!(#struct_ident);
             }
             pub use #mod_ident::#struct_ident;
+
+            /// The module's `OPERATORS` array — what an `m::*` line in `operator_census!`
+            /// splices. One declaration per module: a second invocation would define `OPERATORS`
+            /// twice, which the compiler rejects.
+            pub(crate) const OPERATORS: &[crate::registry::OpReg] =
+                &[crate::op_reg!(#struct_ident)];
         }
     }
 
@@ -264,7 +269,7 @@ mod tests {
     }
 
     // `unpack_op!(Note { pitch, velocity })` expands to the `unpack_note` module + struct, the
-    // `note` event input, the two held-field outputs (a `Pitch` leaf + an `f32`), self-registration,
+    // `note` event input, the two held-field outputs (a `Pitch` leaf + an `f32`), its census entry,
     // and the re-export — the same module skeleton `number_operator_contract!` emits.
     #[test]
     fn unpack_note_emits_the_operator_module() {
@@ -273,7 +278,14 @@ mod tests {
         assert!(out.contains("pub struct UnpackNote"), "{out}");
         assert!(out.contains("type_name : \"unpack_note\""), "{out}");
         assert!(out.contains("pub use unpack_note :: UnpackNote"), "{out}");
-        assert!(out.contains("register_operator ! (UnpackNote)"), "{out}");
+        // The module census the `unpack::*` `operator_census!` entry splices.
+        assert!(
+            out.contains(
+                "pub (crate) const OPERATORS : & [crate :: registry :: OpReg] = \
+                 & [crate :: op_reg ! (UnpackNote)]"
+            ),
+            "{out}"
+        );
     }
 
     #[test]

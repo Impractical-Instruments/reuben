@@ -61,7 +61,6 @@ impl Operator for DifferentiateF32Signal {
     }
 }
 
-crate::register_operator!(DifferentiateF32Signal);
 
 #[cfg(test)]
 mod tests {

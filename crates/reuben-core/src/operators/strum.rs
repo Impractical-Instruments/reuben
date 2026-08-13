@@ -155,7 +155,6 @@ impl Operator for Strum {
     }
 }
 
-crate::register_operator!(Strum);
 
 #[cfg(test)]
 mod tests {

@@ -16,12 +16,14 @@ The shape of the fix follows the guiding principle *low-effort-to-extend, no per
 gives one product type its field operators must extend to the next by a census entry, not a new
 operator — though a type carried on a non-`note` event still has to teach the macro its input form
 first. That is the way [`number_operator_contract!`](pointwise-number-operators.md) mints a whole
-family from one declaration and `inventory` discovers them with no central match. So a **census
+family from one declaration and the census splices them with no central match. So a **census
 macro** `unpack_op!(Note { pitch, velocity })`, invoked once per product type in a single greppable
 census file, reuses the shared contract-rendering internals (`render_contract`/`Port`/`Descriptor`, the
 `naming` helpers) so a generated `unpack_note` is identical in shape to a hand-written operator — same
-typed `IN_*`/`OUT_*` handles, same `Descriptor` — and self-registers through `inventory`, no central
-match to edit. A `#[derive(Unpack)]` on the vocab struct was rejected: it lands the operator's
+typed `IN_*`/`OUT_*` handles, same `Descriptor` — and registers with no central match to edit. *(It
+did that through `inventory` until ADR-0084 removed the linker from registration; the macro now emits
+its module's own `OPERATORS` array, which one `unpack::*` line in `operators/mod.rs`'s census
+splices. The census-entry-per-type property this paragraph argues for is what that preserves.)* A `#[derive(Unpack)]` on the vocab struct was rejected: it lands the operator's
 `process`/`Descriptor`/`Operator` impl inside the pure-data vocab module, a layering inversion pushing
 operator behavior into the data layer; the census macro keeps vocab types free of operator machinery
 and puts generated operators where every operator lives. Output **ports are the field names verbatim**

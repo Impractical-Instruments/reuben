@@ -47,7 +47,6 @@ impl Operator for Output {
     }
 }
 
-crate::register_operator!(Output);
 
 #[cfg(test)]
 mod tests {

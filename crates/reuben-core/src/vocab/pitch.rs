@@ -114,7 +114,3 @@ impl crate::message::OscArg for Note {
         out.push(Arg::F32(self.velocity));
     }
 }
-
-// Self-register the flat form with the boundary's converter registry, next to the
-// `OscArg` impl it wraps — how the boundary's struct decode finds `Note` by port-type name.
-crate::register_osc_form!(Note);

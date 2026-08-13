@@ -159,9 +159,9 @@ impl Operator for Filter {
   **Input-only**, and only for a **pure carrier** — an operator that treats the payload as opaque
   (forward, buffer, drop) and never interprets it; the wired *source* port is the type authority.
   Legality is capability-keyed: any Event or Value source whose type has an **external OSC form**
-  wires in — primitives, vocab enums, and any struct vocab type whose converter is registered
-  with the boundary (`register_osc_form!` in `boundary.rs`, epic #146; `Note`'s flat form today);
-  a `Harmony` source (no OSC form — it registers none; its wire form is deferred to issue #209)
+  wires in — primitives, vocab enums, and any struct vocab type the `OSC_FORMS` census in
+  `vocab/mod.rs` names a converter for (epic #146; `Note`'s flat form today);
+  a `Harmony` source (no OSC form — the census omits it; its wire form is deferred to issue #209)
   and a Signal source are rejected at load/plan — audio never crosses the boundary. Inbound is
   asymmetric: external OSC addressed at an `arg` port crosses only as a **single atom**, numeric
   or string (the string joined once `Arg::Str` went `Arc<str>`-backed, issues #206/#207), while
@@ -214,7 +214,8 @@ Other notes:
   whole value as a `Note` event on `in` and emits each field as a held `Value` — the Event→Value
   latch expressed as a patchable node.
   Like `number_operator_contract!` it reuses the shared contract internals, so the op is
-  indistinguishable in shape from a hand-written one and self-registers via `inventory`. The census
+  indistinguishable in shape from a hand-written one, and emits its module's `OPERATORS` array for
+  the `unpack::*` line in `operators/mod.rs`'s census to splice. The census
   is one greppable file, but the macro's input event form is currently fixed to `note` (`Note` is the
   only event-carried product vocab type today), so unpacking a *different* product type is a census
   line **plus** teaching the macro that type's event input — not a one-line edit alone.
@@ -245,13 +246,19 @@ never hand-writes symbol/index handling.
    `filter.rs` (`F32` controls with defaults + an enum), or `delay.rs` (input + state) as templates.
    (`reuben scaffold-operator` writes the skeleton — see the [create-operator
    skill](../../.claude/skills/create-operator/SKILL.md).)
-2. **Wire the module** in `crates/reuben-core/src/operators/mod.rs`: `pub mod <name>;`
-   and `pub use <name>::<Type>;`.
-3. **Self-register** by adding one line at the operator's module top level, after its
-   `impl Operator` block: `crate::register_operator!(<Type>);` — a compile-time `inventory`
-   submission `Registry::builtin()` gathers,
-   so there is **no central list to edit**. (`grep -rn register_operator! operators/` is the census.)
-4. **Test** in the operator module, test-first, with
+2. **Add one census line** to the `crate::operator_census!` block in
+   `crates/reuben-core/src/operators/mod.rs`, alphabetically: `<name>::{<Type>},`. That single line
+   declares the module, re-exports the type, and registers it — there is no definition-site
+   registration call and no second list. The block *is* the census: reading it enumerates every
+   built-in. A module the block does not name is not a built-in (`pipe` is the deliberate case).
+   A macro-generated family takes the other entry form, `<name>::*,`, which splices the module's own
+   `OPERATORS` array — so adding a variant to an existing family stays a one-line edit in that
+   module's `variants:` list.
+   Forgetting this line is otherwise **silent** — an uncensused operator compiles, warns nothing, and
+   passes its own tests, it just never exists to `describe` or any document — so
+   `census_accounts_for_every_operator` (in `operators/mod.rs`) derives both sides from source and
+   fails if any operator here is unaccounted for.
+3. **Test** in the operator module, test-first, with
    [`OpDriver`](../../crates/reuben-core/src/op_driver.rs) — it drives your operator through the
    **real** engine (`Plan::instantiate` + `Renderer::step_node`), so a test can never drift from how
    the engine actually seeds and steps a node. Address ports by the generated `IN_*` / `OUT_*`

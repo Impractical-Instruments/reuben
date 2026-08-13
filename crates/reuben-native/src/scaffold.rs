@@ -1,10 +1,11 @@
 //! `scaffold-operator`: generate a new Operator's Rust skeleton and wire its
-//! registration sites from a contract spec. see rules: composition-operators
+//! registration site from a contract spec. see rules: composition-operators
 //!
-//! A new file in `operators/`, plus sorted inserts into `operators/mod.rs`; the generated file
-//! carries its own `register_operator!` line, so `registry.rs` is untouched. This lives as pure
-//! functions over source **text** — the binary does the filesystem I/O around them — so the
-//! sorted-insertion logic is tested directly.
+//! A new file in `operators/`, plus **one** sorted insert into `operators/mod.rs`'s
+//! `operator_census!` block — the line that declares the module, re-exports the type and
+//! registers it. `registry.rs` is untouched. This lives as pure functions over source **text** —
+//! the binary does the filesystem I/O around them — so the sorted-insertion logic is tested
+//! directly.
 
 use std::path::Path;
 use std::process::Command;
@@ -19,7 +20,7 @@ pub struct ScaffoldInputs<'a> {
 }
 
 /// What the scaffold produced: the new operator file plus the edited `mod.rs`. Registration is
-/// in the operator file itself (`register_operator!`), so `registry.rs` is untouched.
+/// the census line in `mod.rs`, so `registry.rs` is untouched.
 #[derive(Debug)]
 pub struct ScaffoldOutputs {
     /// File stem (also the module name), e.g. `"my_op"` — the binary writes `operators/<stem>.rs`.
@@ -57,7 +58,7 @@ pub struct ScaffoldReport {
 
 /// Read a contract spec from `spec_path`, generate the operator under `core_root`
 /// (`crates/reuben-core/src`), and write the new operator file plus the edited `operators/mod.rs`
-/// — refusing to clobber an existing operator file. The operator self-registers at compile time,
+/// — refusing to clobber an existing operator file. Registration is the census line in `mod.rs`,
 /// so `registry.rs` is not touched. Best-effort `cargo fmt` finalises the re-emitted
 /// `mod.rs` lists.
 pub fn run_scaffold(spec_path: &Path, core_root: &Path) -> Result<ScaffoldReport, String> {
@@ -103,23 +104,27 @@ pub fn run_scaffold(spec_path: &Path, core_root: &Path) -> Result<ScaffoldReport
 /// Insert `pub mod <stem>;` and `pub use <stem>::<St>;` into `operators/mod.rs`, each in sorted
 /// position within its run of like lines. Errors if the module is already declared.
 fn edit_mod(src: &str, stem: &str, st: &str) -> Result<String, String> {
-    let src = insert_line_sorted(
-        src,
-        |l| l.strip_prefix("pub mod ").and_then(|r| r.strip_suffix(';')),
-        stem,
-        &format!("pub mod {stem};"),
-        "module",
-    )?;
     insert_line_sorted(
-        &src,
-        |l| {
-            l.strip_prefix("pub use ")
-                .and_then(|r| r.split("::").next())
-        },
+        src,
+        census_module,
         stem,
-        &format!("pub use {stem}::{st};"),
-        "re-export",
+        &format!("    {stem}::{{{st}}},"),
+        "census",
     )
+}
+
+/// The module a line of the `operator_census!` block names, or `None` for any other line — the
+/// sort key `edit_mod` inserts against. Both entry forms are keyed by their module: `abs::*,` and
+/// `chord::{Chord},`. The plain `pub mod` declarations above the block are deliberately not
+/// members: an operator belongs in the census, not beside it.
+fn census_module(line: &str) -> Option<&str> {
+    let (module, rest) = line.strip_suffix(',')?.split_once("::")?;
+    let is_entry = rest == "*" || (rest.starts_with('{') && rest.ends_with('}'));
+    let named_like_a_module = !module.is_empty()
+        && module
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    (is_entry && named_like_a_module).then_some(module)
 }
 
 /// Insert a full `line` into the contiguous run of lines for which `key_of` returns a sort key,
@@ -223,9 +228,6 @@ fn render_operator(spec: &OperatorSpec) -> String {
         );
     }
     out.push_str("}\n\n");
-
-    // Compile-time self-registration.
-    out.push_str(&format!("crate::register_operator!({st});\n\n"));
 
     out.push_str(&render_test_module(spec));
     out
@@ -492,28 +494,28 @@ mod tests {
         );
     }
 
+    /// Every module the census names, in file order — the run the sorted insert maintains.
+    fn census(mod_rs: &str) -> Vec<&str> {
+        mod_rs
+            .lines()
+            .filter_map(|l| census_module(l.trim()))
+            .collect()
+    }
+
     #[test]
     fn wires_mod_rs_sorted() {
-        // "tremolo" sorts between "snap" and "voicer".
+        // "tremolo" sorts between "transpose" and "trunc".
         let out = scaffold_real(r#"{ "type_name": "tremolo" }"#);
-        assert!(out.mod_rs.contains("pub mod tremolo;"), "{}", out.mod_rs);
+        // One line does all three jobs: declare, re-export, register.
         assert!(
-            out.mod_rs.contains("pub use tremolo::Tremolo;"),
+            out.mod_rs.contains("    tremolo::{Tremolo},"),
             "{}",
             out.mod_rs
         );
-        let mods: Vec<&str> = out
-            .mod_rs
-            .lines()
-            .filter_map(|l| {
-                l.trim()
-                    .strip_prefix("pub mod ")
-                    .and_then(|r| r.strip_suffix(';'))
-            })
-            .collect();
+        let mods = census(&out.mod_rs);
         let mut sorted = mods.clone();
         sorted.sort();
-        assert_eq!(mods, sorted, "pub mod run must stay sorted: {mods:?}");
+        assert_eq!(mods, sorted, "census run must stay sorted: {mods:?}");
         assert!(
             mods.windows(2).all(|w| w[0] != w[1]),
             "no duplicate modules: {mods:?}"
@@ -529,46 +531,20 @@ mod tests {
         // `operators/mod.rs`. The mid-run insertion in `wires_mod_rs_sorted` never
         // reaches this branch.
         let out = scaffold_real(r#"{ "type_name": "zzz_op" }"#);
-        let mods: Vec<&str> = out
-            .mod_rs
-            .lines()
-            .filter_map(|l| {
-                l.trim()
-                    .strip_prefix("pub mod ")
-                    .and_then(|r| r.strip_suffix(';'))
-            })
-            .collect();
+        let mods = census(&out.mod_rs);
         let mut sorted = mods.clone();
         sorted.sort();
-        assert_eq!(mods, sorted, "pub mod run must stay sorted: {mods:?}");
+        assert_eq!(mods, sorted, "census run must stay sorted: {mods:?}");
         assert_eq!(
             mods.last(),
             Some(&"zzz_op"),
-            "the new module must land at the end of the run: {mods:?}"
-        );
-        // Same fallback, independently, for the `pub use` run.
-        let uses: Vec<&str> = out
-            .mod_rs
-            .lines()
-            .filter_map(|l| {
-                l.trim()
-                    .strip_prefix("pub use ")
-                    .and_then(|r| r.split("::").next())
-            })
-            .collect();
-        let mut sorted_uses = uses.clone();
-        sorted_uses.sort();
-        assert_eq!(uses, sorted_uses, "pub use run must stay sorted: {uses:?}");
-        assert_eq!(
-            uses.last(),
-            Some(&"zzz_op"),
-            "the new re-export must land at the end of the run: {uses:?}"
+            "the new entry must land at the end of the run: {mods:?}"
         );
     }
 
     #[test]
     fn errors_when_mod_rs_has_no_module_run() {
-        // A mod.rs with no `pub mod` lines gives `insert_line_sorted` nothing to sort
+        // A mod.rs with no census lines gives `insert_line_sorted` nothing to sort
         // against: it must refuse loudly rather than guess a position — `run_scaffold`
         // writes the result straight into real source, so a silent bad insert corrupts
         // `operators/mod.rs`.
@@ -580,20 +556,25 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            err.contains("no existing module lines"),
+            err.contains("no existing census lines"),
             "expected the empty-run error, got: {err}"
         );
     }
 
     #[test]
-    fn render_emits_self_registration() {
-        // The operator wires itself in: the generated file carries its own
-        // `register_operator!` call — there is no registry.rs edit to make.
+    fn registration_is_the_census_line_and_nothing_else() {
+        // Registration is folded into the census entry, so the generated operator file carries
+        // no registration of its own and `registry.rs` is untouched. A scaffold that also emitted
+        // a definition-site call would double-register.
         let out = scaffold_real(r#"{ "type_name": "tremolo" }"#);
         assert!(
-            out.operator_rs
-                .contains("crate::register_operator!(Tremolo);"),
-            "generated file must self-register:\n{}",
+            out.mod_rs.contains("    tremolo::{Tremolo},"),
+            "the census entry is the registration:\n{}",
+            out.mod_rs
+        );
+        assert!(
+            !out.operator_rs.contains("register_operator"),
+            "the generated file must not register separately:\n{}",
             out.operator_rs
         );
     }
@@ -646,8 +627,8 @@ mod tests {
 
     #[test]
     fn refuses_to_register_a_duplicate_type() {
-        // "reverb" already has a module in mod.rs — the sorted insert must reject it rather than
-        // emit a second `pub mod reverb;` (which would then fail to compile).
+        // "reverb" already has a census entry — the sorted insert must reject it rather than
+        // emit a second one (which would then fail to compile).
         let err = scaffold(
             &spec(r#"{ "type_name": "reverb" }"#),
             &ScaffoldInputs { mod_rs: REAL_MOD },

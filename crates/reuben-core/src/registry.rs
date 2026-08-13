@@ -5,6 +5,9 @@
 //! live operator and to enumerate every operator's self-description. [`Registry::builtin`] holds the MVP
 //! operator set; [`Registry::register`] lets an embedder add its own operator types
 //! (the seam for the "agents author new Operators in Rust" goal).
+//!
+//! The built-in set is an ordinary array the compiler can see — [`operator_census!`], invoked in
+//! `operators/mod.rs` — not a link-time collection. see rules: composition-operators
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -13,37 +16,88 @@ use alloc::sync::Arc;
 use crate::descriptor::Descriptor;
 use crate::operator::Operator;
 
-/// A compile-time operator registration, submitted at each operator's definition site via
-/// [`register_operator!`] and collected by `inventory` into a link-time slice. This
-/// replaces the hand-maintained `builtin()` list that every new operator used to edit — the
-/// merge-conflict magnet — so an operator self-registers where it is defined.
-pub struct OpReg {
+/// One operator's entry in the built-in census: how to build it, and how to ask it to describe
+/// itself. A plain `const`-constructible value, so a census is an ordinary array the compiler
+/// sees. see rules: composition-operators
+pub(crate) struct OpReg {
     /// Construct a fresh instance with default state.
     pub make: fn() -> Box<dyn Operator>,
     /// The operator's self-description (non-const: holds `Vec`s), hence a fn pointer not a value.
     pub descriptor: fn() -> Descriptor,
 }
 
-inventory::collect!(OpReg);
-
-/// Register an operator type with the built-in [`Registry`] at compile time.
+/// One [`OpReg`] **value** for an operator type, as an expression.
 ///
-/// Invoke **by path** at the operator's definition site, after its `impl Operator`:
-/// `crate::register_operator!(MyOp);`. The macro name is the greppable census of built-ins —
-/// `grep -rn 'register_operator!' src/operators/` enumerates every built-in operator.
-macro_rules! register_operator {
+/// The type needs an inherent `new()` and an `impl Operator`. `descriptor` is reached through a
+/// qualified trait path so a caller owes no `use` of its own — the census sites are module files
+/// and macro expansions that name the type and nothing else.
+macro_rules! op_reg {
     ($t:ty) => {
-        inventory::submit! {
-            $crate::registry::OpReg {
-                make: || $crate::__alloc::Box::new(<$t>::new()),
-                descriptor: <$t>::descriptor,
-            }
+        $crate::registry::OpReg {
+            make: || $crate::__alloc::Box::new(<$t>::new()),
+            descriptor: <$t as $crate::operator::Operator>::descriptor,
         }
     };
 }
-// Re-export at the crate root so operator modules can call `crate::register_operator!(..)`
-// regardless of source order (macro_rules visibility is lexical without this).
-pub(crate) use register_operator;
+pub(crate) use op_reg;
+
+/// Declare the built-in operator set: one line per module, folding that module's `pub mod`
+/// declaration, its flat re-export, and its registration into a single entry.
+///
+/// Invoked once, in `operators/mod.rs`, over an alphabetical list of two entry forms:
+///
+/// ```ignore
+/// crate::operator_census! {
+///     abs::*,               // a macro-generated family: splice the module's own `OPERATORS`
+///     chord::{Chord},       // hand-written types, named
+/// }
+/// ```
+///
+/// It emits `pub mod <m>;`, the re-export (`pub use <m>::*;` / `pub use <m>::<T>;`), and a
+/// `CENSUS: &[&[OpReg]]` whose entries are `<m>::OPERATORS` for the `*` form and an inline array
+/// for the named form. A module the census does not name is not a built-in operator — `pipe` is
+/// declared outside it deliberately.
+macro_rules! operator_census {
+    ( $($entries:tt)* ) => {
+        $crate::registry::operator_census_step!(@parse [] [] $($entries)*);
+    };
+}
+pub(crate) use operator_census;
+
+/// The token muncher behind [`operator_census!`]: one entry per step, accumulating the items to
+/// emit and the `CENSUS` elements in the two bracketed lists. Separate from the entry point
+/// because a `macro_rules!` arm cannot both consume a list and accumulate two outputs in one pass.
+macro_rules! operator_census_step {
+    (@parse [$($items:tt)*] [$($slices:tt)*]) => {
+        $($items)*
+
+        /// The built-in operator set, as data: one `&[OpReg]` per module the census names.
+        ///
+        /// A slice of slices rather than one flat array because a `const` cannot concatenate
+        /// slices — a macro-generated family contributes its module's whole `OPERATORS` array,
+        /// a hand-written module contributes an inline one. [`Registry::builtin`] flattens it.
+        pub(crate) const CENSUS: &[&[$crate::registry::OpReg]] = &[ $($slices)* ];
+    };
+
+    // `m::*,` — the module's own `OPERATORS`, emitted by whichever macro generated its operators.
+    (@parse [$($items:tt)*] [$($slices:tt)*] $m:ident :: * , $($rest:tt)*) => {
+        $crate::registry::operator_census_step!(@parse
+            [$($items)* pub mod $m; pub use $m::*;]
+            [$($slices)* $m::OPERATORS,]
+            $($rest)*
+        );
+    };
+
+    // `m::{A, B},` — hand-written types, named.
+    (@parse [$($items:tt)*] [$($slices:tt)*] $m:ident :: { $($t:ident),+ $(,)? } , $($rest:tt)*) => {
+        $crate::registry::operator_census_step!(@parse
+            [$($items)* pub mod $m; $( pub use $m::$t; )+]
+            [$($slices)* &[ $( $crate::registry::op_reg!($m::$t) ),+ ],]
+            $($rest)*
+        );
+    };
+}
+pub(crate) use operator_census_step;
 
 /// One registered operator type: how to build it, and its self-description.
 pub struct Entry {
@@ -70,15 +124,23 @@ impl Registry {
         Self::default()
     }
 
-    /// The built-in operator set, gathered from every [`register_operator!`] submission across
-    /// the crate. Each operator self-registers at its definition site, so adding one
-    /// no longer edits any central list. Iteration here is in link order; the `BTreeMap` re-keys
-    /// by `type_name` for deterministic output. Panics on a duplicate `type_name` — a build-time
-    /// assertion that two operators don't claim the same name (the override seam stays in
-    /// [`register`](Self::register), which still last-writer-wins for embedders).
+    /// The built-in operator set, built from the [`operator_census!`] array in
+    /// [`crate::operators`]. Iteration is in census (source) order; the `BTreeMap` re-keys by
+    /// `type_name`, so the census order never reaches an output.
     pub fn builtin() -> Self {
+        Self::from_census(crate::operators::CENSUS.iter().copied().flatten())
+    }
+
+    /// Build a registry from a census, panicking on a duplicate `type_name` — two built-ins
+    /// claiming one name is a build error.
+    ///
+    /// The duplicate assertion belongs **here and not in [`register`](Self::register)**:
+    /// `register` is the embedder override seam and must stay last-writer-wins. Taking the census
+    /// as an argument is what lets the determinism test feed the same entries in a different
+    /// order and compare (`permuting_the_census_yields_the_same_iteration_order`).
+    fn from_census<'a>(regs: impl IntoIterator<Item = &'a OpReg>) -> Self {
         let mut r = Self::new();
-        for reg in inventory::iter::<OpReg> {
+        for reg in regs {
             let descriptor = (reg.descriptor)();
             assert!(
                 r.get(descriptor.type_name).is_none(),
@@ -132,9 +194,8 @@ impl Registry {
 mod tests {
     use super::*;
 
-    // The built-in set is no longer an enumerated list (it self-registers), so these
-    // are churn-free invariants over whatever the `inventory` slice gathered, plus a small canary
-    // that fails loudly if the linker ever dead-strips the submissions.
+    // Churn-free invariants over whatever the census names, so adding an operator does not edit
+    // a test.
 
     #[test]
     #[should_panic(expected = "reserved")]
@@ -155,21 +216,68 @@ mod tests {
 
     #[test]
     fn builtin_is_nonempty() {
-        // If self-registration silently produced nothing (dead-stripped slice), this trips first.
+        // A directly-referenced array cannot go missing, so this is cheap insurance against an
+        // emptied census rather than the load-bearing check it was under link-time collection.
         assert!(
             Registry::builtin().type_names().count() >= 3,
-            "builtin() gathered no operators — inventory submissions may have been dropped"
+            "builtin() gathered no operators — the census is empty"
         );
     }
 
     #[test]
     fn builtin_contains_the_load_bearing_ops() {
-        // Anti-dead-strip canary: a few operators no instrument can do without. Names, not count,
-        // so it doesn't churn when operators are added — but it still proves registration ran.
+        // A few operators no instrument can do without. Names, not count, so it doesn't churn
+        // when operators are added.
         let r = Registry::builtin();
         for name in ["oscillator", "output", "voicer"] {
             assert!(r.get(name).is_some(), "built-in {name:?} not registered");
         }
+    }
+
+    // Determinism is two independent properties, and each is blind to the other's mutation. They
+    // are kept as two tests so a failure says which one broke.
+
+    #[test]
+    fn permuting_the_census_yields_the_same_iteration_order() {
+        // Property one: **output does not depend on census order.** Feed the same entries forward
+        // and reversed; the `BTreeMap` re-key by `type_name` is what makes the results identical,
+        // so this reds the moment iteration starts leaking the order entries arrived in.
+        //
+        // Asserting `type_names()` is ascending cannot see this: over a reversed *submission* the
+        // map re-keys anyway, so ascending stays trivially true — which is how the earlier attempt
+        // shipped an assertion that passed while iteration was deliberately reversed.
+        let flat: Vec<&OpReg> = crate::operators::CENSUS.iter().copied().flatten().collect();
+        let forward: Vec<&str> = Registry::from_census(flat.iter().copied())
+            .type_names()
+            .collect();
+        let reversed: Vec<&str> = Registry::from_census(flat.iter().copied().rev())
+            .type_names()
+            .collect();
+        assert_eq!(forward, reversed, "iteration order depends on census order");
+        assert!(forward.len() > 1, "fixture: needs at least two entries");
+    }
+
+    #[test]
+    fn enumeration_is_name_ordered_and_the_two_enumerators_agree() {
+        // Property two: **output is name-ordered**, which is what makes the generated schema and
+        // `describe` byte-stable across builds. The test above is blind to this — reversing the
+        // iterator reverses both of its sides equally, so it stays green while every consumer's
+        // output silently reorders.
+        //
+        // Strictly ascending, so it doubles as the uniqueness check on the map's keys. Both
+        // enumerators are pinned: `entries()` feeds the schema and `type_names()` feeds `describe`,
+        // and a reversal of either one alone would reorder one consumer and not the other.
+        let r = Registry::builtin();
+        let names: Vec<&str> = r.type_names().collect();
+        assert!(
+            names.windows(2).all(|w| w[0] < w[1]),
+            "type_names() must be strictly ascending: {names:?}"
+        );
+        let by_entry: Vec<&str> = r.entries().map(|e| e.descriptor.type_name).collect();
+        assert_eq!(
+            names, by_entry,
+            "entries() and type_names() disagree on order"
+        );
     }
 
     // Every integer control port is an `i32` value port. One central assertion so each one — not

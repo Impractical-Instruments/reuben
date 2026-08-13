@@ -58,7 +58,6 @@ impl Operator for IntegrateF32Signal {
     }
 }
 
-crate::register_operator!(IntegrateF32Signal);
 
 #[cfg(test)]
 mod tests {

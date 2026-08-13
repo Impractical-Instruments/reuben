@@ -109,7 +109,6 @@ impl Operator for Delay {
     }
 }
 
-crate::register_operator!(Delay);
 
 #[cfg(test)]
 mod tests {

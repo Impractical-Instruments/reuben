@@ -156,7 +156,6 @@ impl Operator for Euclid {
     }
 }
 
-crate::register_operator!(Euclid);
 
 #[cfg(test)]
 mod tests {

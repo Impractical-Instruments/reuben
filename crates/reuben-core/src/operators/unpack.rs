@@ -1,7 +1,12 @@
-//! `unpack` — the census of `unpack_<type>` operators.
+//! `unpack` — the `unpack_<type>` operator for `Note`.
 //!
 //! `unpack_note` turns a `Note` event into held `pitch` (a `Pitch` leaf) and `velocity` (`f32`),
 //! patchable as `unpack_note.pitch -> resolve -> osc` / `unpack_note.velocity -> envelope`.
+//!
+//! **One `unpack_op!` per module.** The macro emits this module's `OPERATORS` array, which the
+//! `unpack::*` census entry splices, so a second invocation here would define that array twice.
+//! Unpacking another product type means a new module file and a new census line — and, first,
+//! teaching the macro that type's event input form (see `unpack.rs` in `reuben-macros`).
 //!
 //! see rules: composition-operators
 

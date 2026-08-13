@@ -30,11 +30,13 @@ Because the shell left, the browser story this repo tells is a **contract, not a
 `reuben-core` compiles to `wasm32-unknown-unknown` untouched, and the documented raw C-ABI worklet
 boundary (one `Engine::fill` per audio quantum, `(ptr, len)` byte regions through linear memory,
 fetch-on-miss resource staging, a flat tagged control channel, no `wasm-bindgen`) is the reference
-a third party rebuilds their own binding from. Two obligations outlive the extracted product: any
-statically-linked or wasm embedder must build core at `codegen-units = 1` or operator
-self-registration constructors are silently dropped by the linker; and externally-sourced sample
-bytes are untrusted, so the one WAV decoder this repo ships must bounds-check its declared
-data-chunk length before any sample-bearing share bundle can carry a stranger's bytes.
+a third party rebuilds their own binding from. One obligation outlives the extracted product:
+externally-sourced sample bytes are untrusted, so the one WAV decoder this repo ships must
+bounds-check its declared data-chunk length before any sample-bearing share bundle can carry a
+stranger's bytes. *(There were two. ADR-0084 retires the `codegen-units = 1` obligation: it existed
+only because the linker drops a codegen unit holding nothing but operator self-registration
+constructors, and the built-in set is now a plain array `Registry::builtin()` reads, with no
+constructors to lose.)*
 
 The dev process that governs the repo is deliberately small and self-verifying, and the rules below
 state it: one pinned toolchain so a local verdict equals CI's, shared hooks (which ADR-0079 makes
@@ -85,6 +87,7 @@ Superseded by: ADR-0082 (pending absorption)
 [why](rationale/web-product-process/static-link-operator-registration.md)
 
 Superseded by: ADR-0067 (pending absorption)
+Superseded by: ADR-0084 (pending absorption)
 
 <a id="sample-bytes-trust-boundary"></a>
 ### Externally-sourced sample bytes are untrusted: the WAV decoder must bounds-check its declared data-chunk length before any sample-bearing share bundle can carry them.

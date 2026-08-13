@@ -18,7 +18,8 @@ stands.
 
 Overturns no rule. Cites [execution-runtime](../rules/execution-runtime.md) and
 [composition-operators](../rules/composition-operators.md) for context. The registration mechanism is
-a separate decision: [ADR-0081](0081-operator-self-registration-moves-to-linkme.md).
+a separate decision: [ADR-0084](0084-operator-registration-is-a-census-not-a-linker-feature.md),
+which supersedes the remedy in [ADR-0081](0081-operator-self-registration-moves-to-linkme.md).
 
 ## Context
 

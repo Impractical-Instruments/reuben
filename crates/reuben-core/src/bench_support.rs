@@ -188,7 +188,7 @@ pub const WORKLOADS: &[Workload] = &[
 /// (two Value inputs, one Signal output), so its entire instruction count *is* the per-node
 /// stepping overhead, gated by the same 3%/10% thresholds as any operator.
 ///
-/// It is deliberately **not registered** (`register_operator!` is never invoked): it isn't part of
+/// It is deliberately **not registered** (no `operator_census!` entry names it): it isn't part of
 /// the instrument format, must not appear in the schema / `describe` / a patchable graph, and the
 /// committed schema stays identical with and without the `bench` feature. The census forcing
 /// function carves out exactly this one kind, and [`OpHarness::for_kind`] constructs it directly

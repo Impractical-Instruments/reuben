@@ -1,5 +1,17 @@
 # ADR-0081 — operator self-registration moves to `linkme`, because `inventory` cannot run on bare metal
 
+**Superseded in the remedy — not the diagnosis — by
+[ADR-0084](0084-operator-registration-is-a-census-not-a-linker-feature.md), on 2026-08-12.** The swap
+below was implemented and abandoned: `linkme` 0.3.37 gates `#[distributed_slice]` behind a
+`target_os` allowlist with no wasm32 entry, so it fixed bare metal by breaking the browser. **The
+diagnosis here stands in full** — `inventory` registers through `.init_array` constructors that
+nothing on bare metal runs, and the silently-empty registry is the dangerous failure mode — and it is
+what forced the replacement. What does not stand is *"`linkme` replaces `inventory` … on every
+target"*, and with it the per-registry cost argument that decided it. ADR-0084 draws the general
+conclusion this ADR was one target short of: link-time distributed registration is a linker feature,
+and three targets means three linkers. Read this for why the old mechanism had to go; read ADR-0084
+for what replaced it.
+
 **Overturns** [`composition-operators.md#operator-self-registration`](../rules/composition-operators.md#operator-self-registration)
 on one clause: the rule names `inventory` as what *"gathers them at link time"*. What the rule protects
 — each built-in registering at its own definition site, with no central list to merge-conflict on — is

@@ -9,15 +9,15 @@
 //! **Dest-port-type-driven.** External OSC routes by address to a node/port; the
 //! **port's declared [`PortType`]** drives [`osc_in_arg`]. A primitive port wraps the single arg; a
 //! vocab enum resolves it via its [`EnumMeta`](crate::descriptor::EnumMeta); a struct vocab type
-//! unpacks the flat form via the converter it registered with [`register_osc_form!`] (its
+//! unpacks the flat form via the converter the [`vocab`](crate::vocab) census names for it (its
 //! [`OscArg::from_osc`], keyed by the port's declared type name). A
 //! [`Buffer`](Arg::F32Buffer) port has no OSC form, so audio cannot cross, and a struct type
 //! that registers no form (`Harmony`) cannot either — the opt-out
 //! is by construction / by omission.
 //!
-//! **The converter registry** ([`OscForm`]): struct vocab converters
-//! self-register at their definition site and are collected by `inventory` into a link-time
-//! slice, the same self-registration pattern as the operator registry. [`osc_form_by_name`] serves the inbound decode; [`has_form`]
+//! **The converter registry** ([`OscForm`]): the struct vocab converters are an ordinary array,
+//! [`OSC_FORMS`](crate::vocab::OSC_FORMS), declared where those types live — the same census
+//! pattern as the operator registry. [`osc_form_by_name`] serves the inbound decode; [`has_form`]
 //! serves [`has_osc_form`]'s capability key. Only those two sides are registry-backed:
 //! outbound ([`osc_out_args`]) stays a **closed exhaustive match** over [`Arg`] — see
 //! [`OscForm`]'s docs for why — with the
@@ -32,20 +32,17 @@ use num_traits::Float;
 use crate::descriptor::{Port, PortType};
 use crate::message::{Arg, OscArg};
 
-/// A compile-time OSC-form registration for a **struct vocab type**,
-/// submitted at the type's definition site via [`register_osc_form!`] and collected by
-/// `inventory` into a link-time slice — the same self-registration pattern as the operator
-/// registry's [`OpReg`](crate::registry::OpReg). Keyed by
-/// [`PortType::Vocab`]'s `name`, the inbound + capability authority: [`osc_form_by_name`]
-/// serves [`osc_in_arg`]'s struct decode and [`has_form`] serves [`has_osc_form`]'s
-/// capability key, so a struct type registers its external form once instead of editing
-/// hand-maintained matches here.
+/// One **struct vocab type**'s external OSC form — an entry in the
+/// [`OSC_FORMS`](crate::vocab::OSC_FORMS) census. Keyed by [`PortType::Vocab`]'s `name`, the
+/// inbound + capability authority: [`osc_form_by_name`] serves [`osc_in_arg`]'s struct decode
+/// and [`has_form`] serves [`has_osc_form`]'s capability key, so those two stay data-driven
+/// instead of hand-maintained matches here.
 ///
 /// Inbound + capability only, deliberately: [`osc_out_args`] dispatches on the **closed**
 /// [`Arg`] enum — a struct type's own variant is a central-enum addition regardless — so the
 /// outbound side stays an exhaustive match whose struct arms are one-line
 /// [`OscArg::to_osc`] delegations, never a runtime registry.
-pub struct OscForm {
+pub(crate) struct OscForm {
     /// The vocab type's name — the [`PortType::Vocab`] `name` this form is looked up by.
     pub type_name: &'static str,
     /// Build the single internal [`Arg`] from the flat external OSC arg list, or `None`
@@ -53,44 +50,34 @@ pub struct OscForm {
     pub from_osc: fn(&[Arg]) -> Option<Arg>,
 }
 
-inventory::collect!(OscForm);
-
-/// Register a struct vocab type's external OSC form at compile time, mirroring
-/// [`register_operator!`](crate::registry).
+/// One [`OscForm`] **value**, as an expression — the boundary sibling of
+/// [`op_reg!`](crate::registry::op_reg), called by the census in [`crate::vocab`].
 ///
-/// Invoke **by path** next to the type's [`OscArg`] impl: `crate::register_osc_form!(Note);`.
-/// The submitted entry wraps `<T as OscArg>::from_osc(args).map(Arg::from)`, so it requires
-/// `T: OscArg` and an `Arg` variant (via the `ArgValue`-derived `From<T>`). The macro name is
-/// the greppable census of boundary-crossing struct forms.
-macro_rules! register_osc_form {
+/// The entry wraps `<T as OscArg>::from_osc(args).map(Arg::from)`, so it requires `T: OscArg` and
+/// an `Arg` variant (via the `ArgValue`-derived `From<T>`). `type_name` is the type's own
+/// spelling, which is what [`PortType::Vocab`] carries as `name`.
+macro_rules! osc_form {
     ($t:ty) => {
-        inventory::submit! {
-            $crate::boundary::OscForm {
-                type_name: ::core::stringify!($t),
-                from_osc: |args| {
-                    <$t as $crate::message::OscArg>::from_osc(args)
-                        .map($crate::message::Arg::from)
-                },
-            }
+        $crate::boundary::OscForm {
+            type_name: ::core::stringify!($t),
+            from_osc: |args| {
+                <$t as $crate::message::OscArg>::from_osc(args).map($crate::message::Arg::from)
+            },
         }
     };
 }
-// Re-export at the crate root (via `lib.rs`) so vocab modules can call
-// `crate::register_osc_form!(..)` regardless of source order (macro_rules visibility is lexical).
-pub(crate) use register_osc_form;
+pub(crate) use osc_form;
 
 /// Look up a struct vocab type's registered [`OscForm`] by its [`PortType::Vocab`] `name`.
 /// `None` means the type has no external OSC form — the boundary opt-out (`Harmony`).
-/// A walk of the link-time slice: allocation-free, and the slice is a handful of entries.
-pub fn osc_form_by_name(name: &str) -> Option<&'static OscForm> {
-    inventory::iter::<OscForm>
-        .into_iter()
-        .find(|f| f.type_name == name)
+/// A walk of the census array: allocation-free, and it is a handful of entries.
+pub(crate) fn osc_form_by_name(name: &str) -> Option<&'static OscForm> {
+    crate::vocab::OSC_FORMS.iter().find(|f| f.type_name == name)
 }
 
 /// Whether a struct vocab type of this name has a registered external OSC form — the
-/// registry-backed half of [`has_osc_form`]'s capability key.
-pub fn has_form(name: &str) -> bool {
+/// census-backed half of [`has_osc_form`]'s capability key.
+pub(crate) fn has_form(name: &str) -> bool {
     osc_form_by_name(name).is_some()
 }
 
@@ -135,7 +122,7 @@ pub fn osc_in_arg(p: &Port, args: &[Arg]) -> Option<Arg> {
         } => args.first().and_then(|a| e.resolve_arg(a)),
         // A struct vocab type: look up its registered converter ([`OscForm`]) by the
         // port's declared type name and unpack the flat form. A name with no registration
-        // (e.g. `Harmony`) has no OSC form — opt-out by not calling `register_osc_form!`.
+        // (e.g. `Harmony`) has no OSC form — the opt-out is absence from the census.
         PortType::Vocab {
             enum_meta: None,
             name,
@@ -208,7 +195,7 @@ pub fn osc_out_args(arg: &Arg, out: &mut Vec<Arg>) -> bool {
         Arg::Enum(i) => out.push(Arg::I32(*i as i32)),
         // No external OSC form. `Pitch` is wire-internal: like
         // `Harmony`, it rides the internal wire only — no controller sends a bare pitch, so
-        // there is no `OscArg`/`register_osc_form!` for it and nothing to encode here.
+        // it has no `OscArg` impl and no census entry, and nothing to encode here.
         Arg::Harmony(_) | Arg::Pitch(_) | Arg::F32Buffer(_) => {}
     }
     out.len() > before
@@ -450,22 +437,23 @@ mod tests {
         ));
     }
 
-    /// The converter registry: `Note` self-registers its flat form via
-    /// `register_osc_form!`, so the lookup finds it by its `PortType::Vocab` name; `Harmony`
-    /// (no `OscArg` impl — the boundary opt-out) is absent by omission.
+    /// The converter registry: the `vocab` census names `Note`'s flat form, so the lookup finds
+    /// it by its `PortType::Vocab` name; `Harmony` (no `OscArg` impl — the boundary opt-out) is
+    /// absent by omission.
     #[test]
     fn registry_finds_note_by_name_and_omits_harmony() {
         assert!(osc_form_by_name("Note").is_some());
         assert!(has_form("Note"));
         assert!(osc_form_by_name("Harmony").is_none());
         assert!(!has_form("Harmony"));
-        // Anti-dead-strip canary + uniqueness: the link-time slice gathered at least Note, and
-        // no two types registered the same name (the same guard `Registry::builtin` asserts).
-        let mut names: Vec<&str> = inventory::iter::<OscForm>
-            .into_iter()
+        // Non-empty + unique: the census names at least Note, and no two types claim one name
+        // (the same guard `Registry::builtin` asserts over the operator census). Lookup is
+        // first-match, so a duplicate would shadow rather than fail loudly.
+        let mut names: Vec<&str> = crate::vocab::OSC_FORMS
+            .iter()
             .map(|f| f.type_name)
             .collect();
-        assert!(!names.is_empty(), "no OscForm submissions gathered");
+        assert!(!names.is_empty(), "the OSC-form census is empty");
         names.sort_unstable();
         let before = names.len();
         names.dedup();

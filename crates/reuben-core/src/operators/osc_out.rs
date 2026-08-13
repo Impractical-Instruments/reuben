@@ -81,7 +81,6 @@ impl Operator for OscOut {
     }
 }
 
-crate::register_operator!(OscOut);
 
 #[cfg(test)]
 mod tests {

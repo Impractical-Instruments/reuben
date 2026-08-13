@@ -139,7 +139,6 @@ impl Operator for Chord {
     }
 }
 
-crate::register_operator!(Chord);
 
 #[cfg(test)]
 mod tests {

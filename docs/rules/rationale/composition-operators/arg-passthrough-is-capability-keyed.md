@@ -21,8 +21,10 @@ registers no OSC form — producing a wire that validates cleanly and can never 
 worse than a rejected patch: it is a patch that looks connected and is silently inert. So legality
 is **capability-keyed** rather than kind-keyed: any Event or Value source whose type has a
 registered external OSC form wires in, and a form-less type is a hard error. For a struct vocab type
-that capability is exactly a converter registered through `register_osc_form!`, which makes "can this
-cross the wire" a property a type opts into once rather than a list two checkers maintain separately.
+that capability is exactly a converter the `OSC_FORMS` census in `vocab/mod.rs` names for it, which
+makes "can this cross the wire" a property a type opts into once rather than a list two checkers
+maintain separately. *(That census was `register_osc_form!` submissions gathered by `inventory` until
+ADR-0084; opting in is now a line in the array beside the types, and opting out is still absence.)*
 
 Signal sources are rejected by the same statement, and that is the second thing the rule buys:
 **audio stays off the wire by construction**, not by a special case someone has to remember. A dense

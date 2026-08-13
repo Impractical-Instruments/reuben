@@ -71,7 +71,6 @@ impl Operator for Transpose {
     }
 }
 
-crate::register_operator!(Transpose);
 
 #[cfg(test)]
 mod tests {

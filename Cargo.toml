@@ -43,11 +43,6 @@ once_cell = { version = "1", default-features = false, features = ["alloc"] }
 # `std` can neither call them nor see them. `default-features = false` because the default IS `std`
 # — reuben-core names the backend it wants per target rather than inheriting one here.
 num-traits = { version = "0.2", default-features = false }
-# Compile-time operator self-registration. see rules: composition-operators
-# BEING REPLACED by `linkme`: `inventory` registers via ELF `.init_array` constructors, and nothing on
-# a bare-metal target runs them — so registration silently yields an empty set there. `#![no_std]`,
-# which `inventory` does have, was never the obstacle.
-inventory = "0.3"
 # Compile-time codegen: the operator_contract! proc-macro parses its own grammar (not Rust
 # items/exprs); the ArgValue derive parses a type definition, which needs `derive`.
 # Neither needs the heavy `full` expression AST.

@@ -175,7 +175,6 @@ impl Operator for SamplePlayer {
     }
 }
 
-crate::register_operator!(SamplePlayer);
 
 /// Write `n` frames of silence to the audio output.
 fn silence(io: &mut Io, n: usize) {
