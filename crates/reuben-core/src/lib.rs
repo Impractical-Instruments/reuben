@@ -9,6 +9,14 @@
 //! an instrument document and turning it into a [`Plan`] is `reuben-document`'s job, and audio I/O
 //! and protocol adapters live in the removable native layer.
 
+// There is no `std` FEATURE: nothing here is additive, and no command line can forget it. The
+// `not(test)` is not a softening of that — it is the lib TEST target, which rustc links `std` into
+// while leaving the CORE prelude in place, so every `#[cfg(test)] mod tests` below would otherwise
+// owe explicit `alloc` imports for `String`/`Vec`/`format!`: ~380 of them, in code the shipped rlib
+// does not contain. The lib target itself is `no_std` on the host too, so a `use std::…` added to
+// production code fails on every machine rather than only on the target nobody builds locally.
+#![cfg_attr(not(test), no_std)]
+
 // The `operator_contract!` macro expands to fully-qualified `::reuben_core::…` paths so
 // it works for any embedder. Inside this crate, that name must resolve to *us* — hence the alias.
 extern crate self as reuben_core;
@@ -29,6 +37,20 @@ extern crate alloc;
 pub mod __alloc {
     pub use alloc::boxed::Box;
     pub use alloc::vec::Vec;
+}
+
+/// The one float operation the `ArgValue` derive expands into, re-exported for the same reason
+/// [`__alloc`] is: `f32::round` is an inherent method that only `std` defines, and the deriving
+/// crate does not necessarily depend on the numeric-trait crate this one binds — `reuben-document`
+/// derives `ArgValue` and depends on neither.
+#[doc(hidden)]
+pub mod __float {
+    /// Nearest integral value, halfway cases away from zero — `f32::round` reached off `std`.
+    #[inline]
+    #[must_use]
+    pub fn round(x: f32) -> f32 {
+        num_traits::Float::round(x)
+    }
 }
 
 /// Crate-private `Io`-construction bridge for the per-operator micro benchmarks.

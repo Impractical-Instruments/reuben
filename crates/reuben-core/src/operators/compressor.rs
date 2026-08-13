@@ -40,6 +40,7 @@
 //! see rules: signal-time-dsp
 
 use alloc::boxed::Box;
+use num_traits::Float;
 
 use crate::descriptor::Descriptor;
 use crate::dsp::svf::{Svf, SvfCoeffs};
@@ -90,7 +91,7 @@ fn ballistics_coeff(time_ms: f32, sample_rate: f32, valid_sr: bool) -> f32 {
         return 0.0;
     }
     let tau = (time_ms * 1.0e-3).max(1.0e-6);
-    (-1.0 / (tau * sample_rate)).exp()
+    Float::exp(-1.0 / (tau * sample_rate))
 }
 
 impl Operator for Compressor {
@@ -115,8 +116,8 @@ impl Operator for Compressor {
         // coeffs): the gain-computer slope, the linear threshold for the below-threshold early-out,
         // the makeup factor, the attack/release poles, and the key high-pass coefficients.
         let slope = 1.0 - 1.0 / ratio; // (1 − 1/R) ≥ 0; ratio 1 ⇒ 0 ⇒ bypass.
-        let thresh_lin = (threshold_db * LN10_OVER_20).exp(); // 10^(T/20)
-        let makeup_lin = (makeup_db * LN10_OVER_20).exp();
+        let thresh_lin = Float::exp(threshold_db * LN10_OVER_20); // 10^(T/20)
+        let makeup_lin = Float::exp(makeup_db * LN10_OVER_20);
         let alpha_a = ballistics_coeff(attack_ms, sample_rate, valid_sr);
         let alpha_r = ballistics_coeff(release_ms, sample_rate, valid_sr);
         let coeffs = if valid_sr {
@@ -150,7 +151,7 @@ impl Operator for Compressor {
             // Hard-knee gain computer in the log domain. Below threshold the reduction is exactly
             // zero, so the compare stays linear and the log is only paid when actually compressing.
             let target = if k_abs > thresh_lin {
-                (k_abs.log10() * 20.0 - threshold_db) * slope
+                (Float::log10(k_abs) * 20.0 - threshold_db) * slope
             } else {
                 0.0
             };
@@ -159,7 +160,7 @@ impl Operator for Compressor {
             env += (1.0 - coeff) * (target - env);
             // makeup − reduction, as a linear gain on the main signal.
             let gain = if env > GAIN_EPS_DB {
-                makeup_lin * (-env * LN10_OVER_20).exp()
+                makeup_lin * Float::exp(-env * LN10_OVER_20)
             } else {
                 makeup_lin
             };

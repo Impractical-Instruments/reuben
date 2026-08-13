@@ -32,6 +32,7 @@
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
+use num_traits::Float;
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
@@ -73,7 +74,7 @@ impl SamplePlayer {
 
     /// MIDI note → Hz (12-TET, A4 = 440), matching the Voicer's `freq` output convention.
     fn midi_hz(midi: f32) -> f32 {
-        440.0 * 2.0_f32.powf((midi - 69.0) / 12.0)
+        440.0 * Float::powf(2.0_f32, (midi - 69.0) / 12.0)
     }
 }
 
@@ -136,7 +137,7 @@ impl Operator for SamplePlayer {
         let out = io.write(OUT_AUDIO);
         for out_sample in out.iter_mut().take(n) {
             let s = if playing {
-                let base = playhead.floor();
+                let base = Float::floor(playhead);
                 let idx = base as usize;
                 if base < 0.0 || idx >= frames {
                     playing = false;

@@ -4,6 +4,7 @@
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use num_traits::Float;
 
 use crate::signal::BlockView;
 use crate::vocab::harmony::Harmony;
@@ -198,7 +199,7 @@ impl<'a> FromArg<'a> for i32 {
     fn from_arg(arg: &'a Arg) -> Option<Self> {
         match arg {
             Arg::I32(v) => Some(*v),
-            Arg::F32(v) => Some(v.round() as i32),
+            Arg::F32(v) => Some(Float::round(*v) as i32),
             _ => None,
         }
     }

@@ -6,6 +6,7 @@
 //! projections are derived from these descriptors.
 
 use alloc::vec::Vec;
+use num_traits::Float;
 
 // The scalar-control metadata types are owned by `reuben-contract`: one `F32Meta`/`I32Meta`/
 // `Curve` definition shared by the contract spec, the macro, and this runtime descriptor.
@@ -376,7 +377,7 @@ impl Port {
                 Some(Arg::F32(self.meta.as_ref()?.clamp(v)))
             }
             PortType::I32 { meta: Some(m) } => {
-                let v = raw.as_f32()?.round() as i32;
+                let v = Float::round(raw.as_f32()?) as i32;
                 Some(Arg::I32(m.clamp(v)))
             }
             PortType::Vocab {

@@ -31,6 +31,7 @@
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
+use num_traits::Float;
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
@@ -195,7 +196,7 @@ impl Operator for Granulator {
                 let start =
                     (pos_norm as f64 * frames as f64 + offset).clamp(0.0, (frames - 1) as f64);
                 let len = (size_ms as f64 / 1000.0 * engine_sr as f64).max(1.0);
-                let rate = 2.0_f64.powf(semis as f64 / 12.0) * sr_fold;
+                let rate = Float::powf(2.0_f64, semis as f64 / 12.0) * sr_fold;
 
                 // Skip on overflow: no free slot ⇒ density caps at the pool size (no allocation).
                 if let Some(g) = self.grains.iter_mut().find(|g| !g.active) {
@@ -261,16 +262,16 @@ fn window_env(window: GrainWindow, x: f32) -> f32 {
     use core::f32::consts::{PI, TAU};
     let x = x.clamp(0.0, 1.0);
     match window {
-        GrainWindow::Hann => 0.5 - 0.5 * (TAU * x).cos(),
+        GrainWindow::Hann => 0.5 - 0.5 * Float::cos(TAU * x),
         GrainWindow::Triangle => 1.0 - (2.0 * x - 1.0).abs(),
         GrainWindow::Tukey => {
             // Flat-top with cosine tapers over the outer 25% on each side (α = 0.5).
             const ALPHA: f32 = 0.5;
             const HALF: f32 = ALPHA / 2.0;
             if x < HALF {
-                0.5 * (1.0 + (PI * (2.0 * x / ALPHA - 1.0)).cos())
+                0.5 * (1.0 + Float::cos(PI * (2.0 * x / ALPHA - 1.0)))
             } else if x > 1.0 - HALF {
-                0.5 * (1.0 + (PI * (2.0 * x / ALPHA - 2.0 / ALPHA + 1.0)).cos())
+                0.5 * (1.0 + Float::cos(PI * (2.0 * x / ALPHA - 2.0 / ALPHA + 1.0)))
             } else {
                 1.0
             }
@@ -290,7 +291,7 @@ fn interp(
     frames: usize,
     playhead: f64,
 ) -> f32 {
-    let base = playhead.floor();
+    let base = Float::floor(playhead);
     if base < 0.0 {
         return 0.0;
     }

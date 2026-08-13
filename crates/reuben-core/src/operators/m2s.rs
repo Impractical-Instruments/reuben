@@ -29,6 +29,7 @@
 //! see rules: composition-operators
 
 use alloc::boxed::Box;
+use num_traits::Float;
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
@@ -77,9 +78,9 @@ impl Operator for M2s {
 
         // Per-sample smoothing coefficients.
         let tau_samples = (time * sr).max(1e-6);
-        let smooth_coeff = 1.0 - (-1.0 / tau_samples).exp();
+        let smooth_coeff = 1.0 - Float::exp(-1.0 / tau_samples);
         let slew_step = if sr > 0.0 { rate / sr } else { 0.0 };
-        let glide_total = (time * sr).round().max(1.0);
+        let glide_total = Float::round(time * sr).max(1.0);
 
         let mut cur = self.cur;
         let mut target = self.target;

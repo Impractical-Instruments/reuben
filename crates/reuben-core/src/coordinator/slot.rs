@@ -10,6 +10,7 @@
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use num_traits::Float;
 
 use crate::message::{Arg, Message};
 
@@ -54,12 +55,12 @@ impl MasterGainRamp {
     /// reads it). `edge` is clamped to ≥ 1 so a degenerate sample rate can never divide by zero or
     /// make a zero-length ramp.
     fn new(sample_rate: f32) -> Self {
-        let edge = ((RAMP_MS_PER_EDGE / 1000.0) * sample_rate).round() as usize;
+        let edge = Float::round((RAMP_MS_PER_EDGE / 1000.0) * sample_rate) as usize;
         let edge = edge.max(1);
         let mut curve = Vec::with_capacity(edge + 1);
         for i in 0..=edge {
             let t = i as f32 / edge as f32;
-            curve.push(0.5 * (1.0 + (core::f32::consts::PI * t).cos()));
+            curve.push(0.5 * (1.0 + Float::cos(core::f32::consts::PI * t)));
         }
         // Exact endpoints (guard against cos rounding): full open at 0, dead silent at edge.
         curve[0] = 1.0;

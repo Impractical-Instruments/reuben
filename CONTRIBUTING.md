@@ -120,15 +120,12 @@ Cortex-M7, no OS and therefore no `std` at all, because rustup ships none for an
 rustup installs it alongside the channel, so there is no `rustup target add` to remember.
 `reuben-core` is the crate that has to keep building for it; nothing above it in the workspace does.
 
-**The gate does not pass yet, and is not meant to.** The `no_std` port it exists to protect is
-unfinished. `reuben-contract` is `#![no_std]` and every dependency but one now arrives with its
-default `std` features off, so the build gets much further than it used to — but **`num-traits`
-still takes its default `std` feature**, and the build fails inside it before reaching this
-workspace's code. `reuben-core` itself does not carry `#![no_std]` yet either: the attribute lands
-with the float-math work, because until `num-traits` names a `libm` backend the attribute would sit
-on a crate whose `f32::sin`/`cos`/`exp` calls still resolve only through a `std` that the target
-does not have. Because it cannot pass, CI's `bare-metal build (thumbv7em-none-eabihf)` job is
-deliberately **not** one of `ci-passed`'s dependencies and blocks no merge.
+**The gate passes.** The port is finished: `reuben-core` and `reuben-contract` both carry the
+`no_std` attribute, every dependency arrives with its default `std` features off, and the
+transcendental `f32` math that only `std` defines now reaches the target through
+`num_traits::Float`. CI's `bare-metal build (thumbv7em-none-eabihf)` job is nonetheless still
+**not** one of `ci-passed`'s dependencies, so it blocks no merge — wiring it in is a separate
+change that has not been made yet, and until it is, a red run here is easy to miss.
 
 The job is two commands, and they are the two to run locally against it:
 
@@ -137,13 +134,34 @@ cargo build  -p reuben-core --target thumbv7em-none-eabihf --release
 cargo clippy -p reuben-core --target thumbv7em-none-eabihf --release -- -D warnings
 ```
 
-Once the port lands, a `use std::…` anywhere in `crates/reuben-core/` will fail both, and no other
-check in the repo can see that. Until then the build stops short of that code, so adding one there
-produces nothing you could tell apart from today's failure.
-[`.github/workflows/ci.yml`](./.github/workflows/ci.yml) carries the rest: how to read a red run,
-what the job's reported `.text` number does and does not measure — it never fails on it, and on a
-build that got no further than today's it is not reported at all — and what changes when the job
-first goes green.
+A `use std::…` anywhere in `crates/reuben-core/` now fails both, and no other check in the repo can
+see that. [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) carries the rest: how to read a
+red run, and what the job's reported `.text` number does and does not measure — it never fails on
+it.
+
+**Two things about the attribute and the math, because neither reads off the source.**
+
+`reuben-core` is `#![cfg_attr(not(test), no_std)]` rather than a bare `#![no_std]`, and there is no
+`std` *feature* anywhere — nothing is additive and no command line can forget it. The `not(test)`
+covers exactly one thing: rustc links `std` into the lib **test** target while leaving the *core*
+prelude in place, so without it every `#[cfg(test)] mod tests` in the crate would owe explicit
+`alloc` imports for `String`/`Vec`/`format!` — about 380 of them, in code the shipped rlib does not
+contain. The lib target itself builds `no_std` on the host too, which is what makes an ordinary
+`cargo clippy --workspace --all-targets` catch a stray `use std::…` in production code on any
+machine.
+
+`num-traits`' `Float` backend is chosen **by target** in
+[`crates/reuben-core/Cargo.toml`](./crates/reuben-core/Cargo.toml) — `libm` for `target_os = "none"`,
+`std` everywhere else — and that file carries the measurements behind the choice. Two consequences
+worth knowing before reading a number off either side:
+
+- The host test run proves the crate **compiles** with no `std` to reach, and it proves the host's
+  numerics. It does not prove the target's: the bare-metal build is the only one that touches
+  `libm` at all, and it cannot run.
+- On `thumbv7em-none-eabihf`, `libm` ships no ARM path, so `sqrt` lowers to a software routine
+  rather than the FPU's `VSQRT.F32`, and `floor`/`ceil`/`round`/`trunc` to software rather than
+  `VRINT*`. On x86-64 and aarch64 `libm` does reach the hardware instruction. That gap is
+  upstream's, and nobody has run the target yet.
 
 ### Bumping the Rust version
 

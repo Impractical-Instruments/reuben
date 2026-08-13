@@ -16,6 +16,8 @@
 //!
 //! see rules: signal-time-dsp
 
+use num_traits::Float;
+
 /// The op's scalar math: a unipolar power curve. The `max(0.0)` is `power`'s **op-local** NaN
 /// guard (a fractional exponent over a negative base is NaN); it lives here, inherited by no
 /// other op.
@@ -28,7 +30,7 @@
 /// type.
 #[inline]
 fn shape(x: f32, exponent: f32) -> f32 {
-    x.max(0.0).powf(exponent)
+    Float::powf(x.max(0.0), exponent)
 }
 
 // One declaration -> PowerF32Value + PowerF32Signal. `x` defaults to 0 over the full

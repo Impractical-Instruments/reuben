@@ -3,6 +3,7 @@
 //! 12-TET is the only Tuning implemented today. see rules: signal-time-dsp
 
 use crate::vocab::pitch::Pitch;
+use num_traits::Float;
 
 /// Resolves a symbolic Pitch to a concrete frequency.
 pub trait Tuning: Send {
@@ -33,6 +34,6 @@ impl Tuning for TwelveTet {
             Pitch::Absolute(m) => m,
             Pitch::Degree(d) => 60.0 + d as f32,
         };
-        self.ref_hz * 2.0_f32.powf((midi - self.ref_midi) / 12.0)
+        self.ref_hz * Float::powf(2.0_f32, (midi - self.ref_midi) / 12.0)
     }
 }

@@ -20,6 +20,7 @@
 //! see rules: signal-time-dsp
 
 use alloc::boxed::Box;
+use num_traits::Float;
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
@@ -85,10 +86,10 @@ impl Operator for Lfo {
             // below 1.0 up to 1.0, so fold it back to meet `lookup`'s [0, 1) contract. The f64
             // accumulator below keeps the modulation grid drift-free regardless.
             let pf = phase as f32;
-            let pf = pf - pf.floor();
+            let pf = pf - Float::floor(pf);
             *s = center + depth * sine.lookup(pf);
             phase += dt;
-            phase -= phase.floor();
+            phase -= Float::floor(phase);
         }
         self.phase = phase;
     }

@@ -193,7 +193,9 @@ fn expand_enum(ast: &DeriveInput, data: &syn::DataEnum) -> TokenStream {
                     Arg::Enum(i) => Self::from_index(*i as usize),
                     Arg::Str(s) => Self::from_symbol(s),
                     Arg::I32(i) => usize::try_from(*i).ok().and_then(Self::from_index),
-                    Arg::F32(f) => usize::try_from(f.round() as i64).ok().and_then(Self::from_index),
+                    Arg::F32(f) => usize::try_from(::reuben_core::__float::round(*f) as i64)
+                        .ok()
+                        .and_then(Self::from_index),
                     _ => ::core::option::Option::None,
                 }
             }

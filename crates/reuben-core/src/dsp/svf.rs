@@ -8,6 +8,8 @@
 //! from (cutoff, resonance, sample rate) outside the sample loop; [`Svf`] is a tiny `Copy`
 //! value threaded through the block in registers ([`crate::dsp`]).
 
+use num_traits::Float;
+
 /// Precomputed TPT / zero-delay-feedback SVF coefficients for one (cutoff, resonance,
 /// sample rate) triple. Compute via [`SvfCoeffs::new`] whenever a control changes; reuse
 /// freely while controls hold (the mapping is pure, so caching is bit-identical).
@@ -27,7 +29,7 @@ impl SvfCoeffs {
     pub fn new(cutoff: f32, resonance: f32, sample_rate: f32) -> Self {
         let cutoff = cutoff.clamp(20.0, 0.45 * sample_rate);
         let k = (2.0 - 1.9 * resonance.clamp(0.0, 1.0)).max(0.1);
-        let g = (core::f32::consts::PI * cutoff / sample_rate).tan();
+        let g = Float::tan(core::f32::consts::PI * cutoff / sample_rate);
         let a1 = 1.0 / (1.0 + g * (g + k));
         let a2 = g * a1;
         let a3 = g * a2;

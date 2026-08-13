@@ -36,6 +36,8 @@
 //!
 //! see rules: composition-operators
 
+use num_traits::Float;
+
 /// A number type that can be rounded **into** `Out` — the seam the rounding operators' scalar fns
 /// are written over, so one fn body serves the same-type operator and the converter alike.
 ///
@@ -59,19 +61,19 @@ pub trait RoundInto<Out>: Copy {
 impl RoundInto<f32> for f32 {
     #[inline]
     fn round_into(self) -> f32 {
-        self.round()
+        Float::round(self)
     }
     #[inline]
     fn floor_into(self) -> f32 {
-        self.floor()
+        Float::floor(self)
     }
     #[inline]
     fn ceil_into(self) -> f32 {
-        self.ceil()
+        Float::ceil(self)
     }
     #[inline]
     fn trunc_into(self) -> f32 {
-        self.trunc()
+        Float::trunc(self)
     }
 }
 
@@ -81,19 +83,19 @@ impl RoundInto<f32> for f32 {
 impl RoundInto<i32> for f32 {
     #[inline]
     fn round_into(self) -> i32 {
-        self.round() as i32
+        Float::round(self) as i32
     }
     #[inline]
     fn floor_into(self) -> i32 {
-        self.floor() as i32
+        Float::floor(self) as i32
     }
     #[inline]
     fn ceil_into(self) -> i32 {
-        self.ceil() as i32
+        Float::ceil(self) as i32
     }
     #[inline]
     fn trunc_into(self) -> i32 {
-        self.trunc() as i32
+        Float::trunc(self) as i32
     }
 }
 

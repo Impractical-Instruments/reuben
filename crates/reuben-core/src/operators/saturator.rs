@@ -25,6 +25,7 @@
 //! see rules: signal-time-dsp
 
 use alloc::boxed::Box;
+use num_traits::Float;
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
@@ -107,11 +108,11 @@ impl Operator for Saturator {
             if drive[i] != last_drive {
                 last_drive = drive[i];
                 d = drive[i].clamp(DRIVE_MIN, DRIVE_MAX);
-                inv = 1.0 / d.tanh();
+                inv = 1.0 / Float::tanh(d);
             }
             let w = warmth[i].clamp(WARMTH_MIN, WARMTH_MAX);
             // Peak-normalized tanh drive: full-scale peaks stay near ±1 at any drive.
-            let s = (d * audio[i]).tanh() * inv;
+            let s = Float::tanh(d * audio[i]) * inv;
             // Even-harmonic warmth on the *shaped* signal (see module docs): monotonic for any
             // input because `s` is tanh-bounded, strongest at gentle drive.
             let v = s + 0.5 * w * s * s;

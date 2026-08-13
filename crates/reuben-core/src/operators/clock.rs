@@ -27,6 +27,7 @@
 //! see rules: signal-time-dsp
 
 use alloc::boxed::Box;
+use num_traits::Float;
 use smallvec::SmallVec;
 
 use crate::descriptor::Descriptor;
@@ -132,7 +133,7 @@ impl Operator for Clock {
                 }
                 // Sub-beat phasor: phase·division wrapped to [0,1); gate high for its first
                 // half. division 1 reduces to `phase < 0.5` exactly (bit-identical default).
-                let sub = (phase * division).fract();
+                let sub = Float::fract(phase * division);
                 let now_high = sub < 0.5;
                 if now_high != high {
                     out.set(i, if now_high { 1.0 } else { 0.0 });

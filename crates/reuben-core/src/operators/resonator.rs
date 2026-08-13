@@ -44,6 +44,7 @@
 //! see rules: signal-time-dsp
 
 use alloc::boxed::Box;
+use num_traits::Float;
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
@@ -208,16 +209,16 @@ impl Resonator {
         let nyq = 0.45 * sample_rate;
         let b = structure.clamp(0.0, 1.0) * INHARM;
         // Normalize so mode 0 lands exactly on `freq` regardless of the stretch.
-        let ratio1 = (1.0 + b).sqrt();
+        let ratio1 = Float::sqrt(1.0 + b);
         let damping = damping.clamp(0.0, 1.0);
-        let t0 = T_MIN * (T_MAX / T_MIN).powf(damping);
+        let t0 = T_MIN * Float::powf(T_MAX / T_MIN, damping);
         // Map position to a musical strike point in [0.05, 0.5] — never the degenerate 0 (silence).
         let pos = 0.05 + 0.45 * position.clamp(0.0, 1.0);
         let brightness = brightness.clamp(0.0, 1.0);
 
         for i in 0..NUM_MODES {
             let n = (i + 1) as f32;
-            let f = freq * n * (1.0 + b * n * n).sqrt() / ratio1;
+            let f = freq * n * Float::sqrt(1.0 + b * n * n) / ratio1;
             if f <= 0.0 || f >= nyq {
                 self.c[i] = 0.0;
                 self.d[i] = 0.0;
@@ -227,16 +228,16 @@ impl Resonator {
             }
             let w = core::f32::consts::TAU * f / sample_rate;
             let t = t0 / (1.0 + HF_DAMP * i as f32);
-            let r = (-1.0 / (t * sample_rate)).exp().min(R_MAX);
-            let comb = (core::f32::consts::PI * n * pos).sin().abs();
-            let amp = brightness.powi(i as i32) * comb;
-            self.c[i] = 2.0 * r * w.cos();
+            let r = Float::exp(-1.0 / (t * sample_rate)).min(R_MAX);
+            let comb = Float::sin(core::f32::consts::PI * n * pos).abs();
+            let amp = Float::powi(brightness, i as i32) * comb;
+            self.c[i] = 2.0 * r * Float::cos(w);
             self.d[i] = r * r;
             // Sustained input: (1 - r²) normalizes the resonant peak, bounding the bank as r → 1.
             self.g[i] = (1.0 - r * r) * amp;
             // Struck input: sin(w) cancels the 1/sin(w) in the impulse response, so a ping peaks at
             // `amp` regardless of how long the mode rings or how high it is tuned.
-            self.g_exc[i] = w.sin() * amp;
+            self.g_exc[i] = Float::sin(w) * amp;
         }
     }
 
@@ -315,7 +316,8 @@ impl Operator for Resonator {
         let gate = io.read(IN_GATE);
         let gate_hi = gate > 0.5;
         if gate_hi && !self.prev_gate {
-            let contact = (BURST_K / freq.max(1.0).sqrt()).clamp(BURST_MIN_SECS, BURST_MAX_SECS);
+            let contact =
+                (BURST_K / Float::sqrt(freq.max(1.0))).clamp(BURST_MIN_SECS, BURST_MAX_SECS);
             self.burst_len = ((contact * sample_rate) as i32).max(1);
             self.burst_remaining = self.burst_len;
             self.burst_amp = gate.clamp(0.0, 1.0);

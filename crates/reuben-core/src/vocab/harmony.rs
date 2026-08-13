@@ -5,6 +5,7 @@
 //! nearest in-scale degree), `chord_tone` — so followers stay dumb (`io.read(IN_HARMONY).hz(p)`).
 
 use crate::vocab::pitch::Pitch;
+use num_traits::Float;
 
 /// Max scale degrees in a `Harmony` (within a 12-TET period). The registry-side full tuning
 /// ladder (large MOS / Scala) is a separate, deferred axis.
@@ -22,7 +23,7 @@ const EPS: f32 = 1e-4;
 
 /// MIDI (12-TET coordinate / absolute step) → frequency in Hz.
 fn midi_to_hz(midi: f32) -> f32 {
-    REF_HZ * 2.0_f32.powf((midi - REF_MIDI) / 12.0)
+    REF_HZ * Float::powf(2.0_f32, (midi - REF_MIDI) / 12.0)
 }
 
 /// An ordered set of within-period **step** offsets plus a length — the Scale field of a
@@ -274,7 +275,7 @@ impl Harmony {
     /// swaps. Allocation-free.
     pub fn snap(&self, midi: f32, policy: SnapPolicy) -> Pitch {
         let len = self.scale.len() as i32;
-        let base_oct = ((midi - self.root as f32) / PERIOD as f32).round() as i32;
+        let base_oct = Float::round((midi - self.root as f32) / PERIOD as f32) as i32;
         let mut best: Option<Cand> = None;
 
         let mut consider = |step: i32, degree: Option<i32>, is_chord: bool| {
