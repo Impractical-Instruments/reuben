@@ -23,6 +23,7 @@
 //! see rules: composition-operators
 
 use crate::vocab::MapCurve;
+use num_traits::Float;
 
 /// Affine (optionally exponential) remap of `v` from `[in_min, in_max]` onto `[out_min, out_max]`,
 /// clamped to the input range. The `curve` mode lives here: exponential is used only when both
@@ -35,7 +36,7 @@ fn remap(v: f32, in_min: f32, in_max: f32, out_min: f32, out_max: f32, curve: Ma
         ((v - in_min) / span).clamp(0.0, 1.0)
     };
     if curve == MapCurve::Exponential && out_min > 0.0 && out_max > 0.0 {
-        out_min * (out_max / out_min).powf(t)
+        out_min * Float::powf(out_max / out_min, t)
     } else {
         out_min + t * (out_max - out_min)
     }

@@ -24,6 +24,7 @@
 use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
+use num_traits::Float;
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
@@ -65,7 +66,7 @@ impl Operator for Delay {
         let sample_rate = io.sample_rate();
 
         // Lazily size the ring buffer to the max delay (sample_rate isn't known in `new`).
-        let cap = (MAX_DELAY_SECS * sample_rate).ceil() as usize;
+        let cap = Float::ceil(MAX_DELAY_SECS * sample_rate) as usize;
         let cap = cap.max(1);
         if self.buf.len() != cap {
             self.buf = vec![0.0f32; cap];
@@ -87,8 +88,8 @@ impl Operator for Delay {
 
             // Fractional read position `delay_samples` behind the write head.
             let read_pos = self.head as f32 + len as f32 - delay_samples;
-            let base = read_pos.floor() as usize;
-            let frac = read_pos - read_pos.floor();
+            let base = Float::floor(read_pos) as usize;
+            let frac = read_pos - Float::floor(read_pos);
             let i0 = base % len;
             let i1 = (base + 1) % len;
             let delayed = self.buf[i0] * (1.0 - frac) + self.buf[i1] * frac;

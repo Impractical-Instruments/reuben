@@ -11,6 +11,7 @@
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use num_traits::Float;
 use once_cell::race::OnceBox;
 
 /// Samples per cycle in the built-in tables.
@@ -60,7 +61,7 @@ impl Wavetable {
 
     /// A single cycle of `sin(2π·phase)` sampled into `size` points.
     pub fn sine(size: usize) -> Self {
-        Self::from_phase_fn(size, |p| (core::f32::consts::TAU * p).sin())
+        Self::from_phase_fn(size, |p| Float::sin(core::f32::consts::TAU * p))
     }
 
     /// Samples per cycle (excludes the guard sample).

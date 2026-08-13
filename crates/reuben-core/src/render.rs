@@ -22,6 +22,7 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
+use num_traits::Float;
 
 use smallvec::SmallVec;
 
@@ -507,7 +508,7 @@ pub(crate) fn held_arg(p: &Port, arg: &Arg) -> Option<Arg> {
         // declared range. So an `i32` pipe driven `/steps/in 12.7` latches `13`, not `12.7`; the
         // "int control" promise holds for live OSC input, not only authored defaults.
         PortType::I32 { meta } => arg.as_f32().map(|v| {
-            let i = v.round() as i32;
+            let i = Float::round(v) as i32;
             Arg::I32(meta.as_ref().map(|m| m.clamp(i)).unwrap_or(i))
         }),
         PortType::Vocab {

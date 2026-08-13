@@ -17,6 +17,7 @@
 //! see rules: composition-operators
 
 use alloc::boxed::Box;
+use num_traits::Float;
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
@@ -57,8 +58,8 @@ impl Operator for Pan {
             // Equal-power law: map [-1, 1] -> [0, π/2], split with cos/sin. cos²+sin²=1 keeps
             // total power constant across the sweep; center (p=0) is cos(π/4)=sin(π/4)≈0.707.
             let theta = (p.clamp(-1.0, 1.0) + 1.0) * (core::f32::consts::FRAC_PI_4);
-            let l = a * theta.cos();
-            let r = a * theta.sin();
+            let l = a * Float::cos(theta);
+            let r = a * Float::sin(theta);
             io.write(OUT_LEFT)[i] = l;
             io.write(OUT_RIGHT)[i] = r;
         }

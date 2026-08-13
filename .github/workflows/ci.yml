@@ -279,20 +279,21 @@ jobs:
   # TWO THINGS IT CANNOT DO, because the name implies otherwise. It cannot run TESTS — there is no
   # host on the target and QEMU or an on-device harness is out of scope — so it proves the crate
   # COMPILES, and behaviour stays proven by `check`/`windows`. And it cannot prove the code is
-  # CORRECT there: Cortex-M7 is a different float environment, and a software libm need not agree
-  # with a host's `std` to the last bit. That risk belongs to the float-math port.
+  # CORRECT there: Cortex-M7 is a different float environment, and the software libm this target
+  # resolves need not agree with the host's `std` to the last bit. Only this job touches libm at all.
   #
-  # RED TODAY, ON PURPOSE, AND IT READS AS RED. WHAT is still red lives in exactly one place —
-  # CONTRIBUTING.md's "The bare-metal target" section — and is deliberately NOT restated here. An
-  # earlier version of this paragraph did restate it and drifted: it went on naming dependencies that
-  # had already left the graph while the port moved underneath it. Read the failure set there.
+  # GREEN NOW — the port landed, and a red run here is a REAL FAILURE rather than the documented
+  # expected-red state an earlier era of this comment described. WHAT the port consists of lives in
+  # exactly one place, CONTRIBUTING.md's "The bare-metal target" section, and is deliberately NOT
+  # restated here: an earlier version of this paragraph did restate it and drifted, naming
+  # dependencies that had already left the graph while the port moved underneath it. Do not restate
+  # it again — this paragraph now carries only the fact that the job passes.
   #
   # WHY the gate landed before the port it gates is this paragraph's own to keep: written after the
-  # port, it would have gated nothing that happened during it. What keeps that honest is the one
-  # lever this repo has for "required" — `ci-passed`'s `needs`, which this job is deliberately absent
-  # from. Nothing is muted. The job fails, blocks no merge, and says so.
-  # WHEN IT FIRST GOES GREEN: add it to `ci-passed`'s `needs` and update that one section. No check
-  # notices if that is not done.
+  # port, it would have gated nothing that happened during it.
+  # STILL ABSENT FROM `ci-passed`'s `needs`, so it blocks no merge. That is now the only thing
+  # standing between this job and being enforced, and wiring it in is its own tracked change — not
+  # an oversight of the port. Until it happens, a red run here is easy to miss and no check notices.
   #
   # One job, one target: a second embedded triple is cost without a second consumer.
   bare-metal:

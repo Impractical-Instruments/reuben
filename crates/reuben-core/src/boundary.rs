@@ -27,6 +27,7 @@
 //! see rules: composition-operators
 
 use alloc::vec::Vec;
+use num_traits::Float;
 
 use crate::descriptor::{Port, PortType};
 use crate::message::{Arg, OscArg};
@@ -111,7 +112,7 @@ pub fn osc_in_arg(p: &Port, args: &[Arg]) -> Option<Arg> {
             .first()
             .and_then(|a| match a {
                 Arg::I32(i) => Some(*i),
-                Arg::F32(f) => Some(f.round() as i32),
+                Arg::F32(f) => Some(Float::round(*f) as i32),
                 _ => None,
             })
             .map(Arg::I32),

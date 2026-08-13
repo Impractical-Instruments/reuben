@@ -9,6 +9,7 @@
 use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
+use num_traits::Float;
 
 use crate::descriptor::{Descriptor, PortType};
 use crate::op_driver::OpDriver;
@@ -376,7 +377,7 @@ fn drive_clock(driver: &mut OpDriver, desc: &Descriptor, name: &str) {
 fn bind_synthetic_sample(driver: &mut OpDriver, desc: &Descriptor) {
     let frames = BLOCKS * BLOCK_SIZE;
     let step = core::f32::consts::TAU * 220.0 / SAMPLE_RATE;
-    let channel: Vec<f32> = (0..frames).map(|i| (i as f32 * step).sin()).collect();
+    let channel: Vec<f32> = (0..frames).map(|i| Float::sin(i as f32 * step)).collect();
     let slot = desc
         .resources
         .first()

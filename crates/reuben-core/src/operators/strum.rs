@@ -29,6 +29,7 @@
 //! see rules: signal-time-dsp
 
 use alloc::boxed::Box;
+use num_traits::Float;
 use smallvec::SmallVec;
 
 use crate::descriptor::Descriptor;
@@ -78,7 +79,7 @@ impl Strum {
     /// exactly 1.0 sits on the top string, not one past it).
     fn string_at(position: f32, strings: i64) -> i64 {
         let p = position.clamp(0.0, 1.0);
-        ((p * strings as f32).floor() as i64).clamp(0, strings - 1)
+        (Float::floor(p * strings as f32) as i64).clamp(0, strings - 1)
     }
 
     /// The scale degree plucked by string `k` given the octave span.
@@ -87,13 +88,13 @@ impl Strum {
             return 0.0;
         }
         let span = octaves * DEGREES_PER_OCTAVE;
-        (k as f32 * span / (strings as f32 - 1.0)).round()
+        Float::round(k as f32 * span / (strings as f32 - 1.0))
     }
 }
 
 /// A degree note from a (possibly fractional) degree value.
 fn degree_note(degree: f32, velocity: f32) -> Note {
-    Note::new(Pitch::Degree(degree.round() as i32), velocity)
+    Note::new(Pitch::Degree(Float::round(degree) as i32), velocity)
 }
 
 impl Operator for Strum {
@@ -103,7 +104,7 @@ impl Operator for Strum {
 
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
-        let strings = (io.read(IN_STRINGS).round() as i64).clamp(1, 32);
+        let strings = (Float::round(io.read(IN_STRINGS)) as i64).clamp(1, 32);
         let octaves = io.read(IN_OCTAVES).max(1.0);
         let velocity = io.read(IN_VELOCITY).clamp(0.0, 1.0);
 

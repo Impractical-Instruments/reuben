@@ -17,6 +17,7 @@
 use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
+use num_traits::Float;
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
@@ -111,7 +112,7 @@ impl Reverb {
 
     /// Scale a 44100 Hz tuning to `sample_rate` and round to whole samples (min 1).
     fn scaled(len: usize, sample_rate: f32) -> usize {
-        ((len as f32 * sample_rate / 44_100.0).round() as usize).max(1)
+        (Float::round(len as f32 * sample_rate / 44_100.0) as usize).max(1)
     }
 }
 

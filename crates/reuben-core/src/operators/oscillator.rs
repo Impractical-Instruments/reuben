@@ -9,6 +9,7 @@
 //! - output 0: `audio` (`Buffer`).
 
 use alloc::boxed::Box;
+use num_traits::Float;
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
@@ -90,7 +91,7 @@ impl Operator for Oscillator {
 
             // Advance and wrap the phase accumulator (kept continuous across calls).
             phase += dt;
-            phase -= phase.floor();
+            phase -= Float::floor(phase);
         }
         self.phase = phase;
     }

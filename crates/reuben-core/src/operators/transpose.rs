@@ -14,6 +14,7 @@
 //! see rules: composition-operators
 
 use alloc::boxed::Box;
+use num_traits::Float;
 use smallvec::SmallVec;
 
 use crate::descriptor::Descriptor;
@@ -30,7 +31,7 @@ crate::operator_contract!(Transpose {
 /// (rounded); an `Absolute` MIDI pitch by the same count of semitones.
 fn transpose_note(n: Note, amount: f32) -> Note {
     let pitch = match n.pitch {
-        Pitch::Degree(d) => Pitch::Degree(d + amount.round() as i32),
+        Pitch::Degree(d) => Pitch::Degree(d + Float::round(amount) as i32),
         Pitch::Absolute(m) => Pitch::Absolute(m + amount),
     };
     Note::new(pitch, n.velocity)

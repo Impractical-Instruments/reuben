@@ -34,6 +34,7 @@
 //! see rules: signal-time-dsp
 
 use alloc::boxed::Box;
+use num_traits::Float;
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
@@ -106,7 +107,7 @@ impl Sequencer {
 
 /// A degree note from a (possibly fractional) degree value, rounded to the nearest scale degree.
 fn degree_note(degree: f32, velocity: f32) -> Note {
-    Note::new(Pitch::Degree(degree.round() as i32), velocity)
+    Note::new(Pitch::Degree(Float::round(degree) as i32), velocity)
 }
 
 impl Operator for Sequencer {
@@ -115,7 +116,7 @@ impl Operator for Sequencer {
     }
 
     fn process(&mut self, io: &mut Io) {
-        let length = (io.read(IN_LENGTH).round() as i64).clamp(1, NUM_STEPS as i64);
+        let length = (Float::round(io.read(IN_LENGTH)) as i64).clamp(1, NUM_STEPS as i64);
         let gate_mode = io.read(IN_GATE_MODE) == GateMode::Gate;
         let pitch = io.read(IN_PITCH);
 

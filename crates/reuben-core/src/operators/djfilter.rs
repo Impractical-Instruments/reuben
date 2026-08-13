@@ -32,6 +32,7 @@
 //! see rules: signal-time-dsp
 
 use alloc::boxed::Box;
+use num_traits::Float;
 
 use crate::descriptor::Descriptor;
 use crate::dsp::svf::{Svf, SvfCoeffs};
@@ -67,7 +68,7 @@ impl Djfilter {
 /// filter sweep needs. `start`/`end` are assumed positive (cutoffs in Hz).
 #[inline]
 fn geom(start: f32, end: f32, amt: f32) -> f32 {
-    start * (end / start).powf(amt)
+    start * Float::powf(end / start, amt)
 }
 
 /// Map the knob to a filter mode + cutoff. Negative (CCW) → low-pass sweeping `lp_start`→`lp_end`;
