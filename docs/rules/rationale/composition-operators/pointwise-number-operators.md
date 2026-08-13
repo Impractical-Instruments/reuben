@@ -12,9 +12,12 @@ a call helper.
 `number_operator_contract!` takes a base name, a `variants:` list, an operand list, and a scalar-fn
 call-shape, and for each variant emits a submodule (isolating the `IN_`/`OUT_` consts) with the
 contract, a stateless op carrier whose `ValueOp`/`SignalOp` impl names those very consts as its
-handles, a `pub type` alias binding that carrier to its shell, `register_operator!`, and a
+handles, a `pub type` alias binding that carrier to its shell, and a
 contract-derived `defaults_are_data` test
 ([number_op.rs](../../../../crates/reuben-macros/src/number_op.rs)).
+It also emits the module's `OPERATORS` array — the family's registration, spliced by one `module::*`
+line in `operators/mod.rs`'s census (ADR-0084), so adding a `variants:` entry stays a one-line edit
+*here* rather than becoming two.
 `process` itself is **not** emitted: it belongs to the two shells
 ([shell.rs](../../../../crates/reuben-core/src/operator/shell.rs)), written once per carrier. Keeping
 the per-sample loop in one place is what lets the signal shell hoist each operand's slice read out of

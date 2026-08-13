@@ -18,4 +18,18 @@ which the [C-ABI browser boundary](wasm-c-abi-boundary.md) invites third parties
 a *release/embed* concern; the benchmark harness pins the same flag for an unrelated reason (see
 [perf-benchmark-gate](perf-benchmark-gate.md)).
 
+**ADR-0084 retires this rule, on the mechanism rather than on a re-measurement.** Registration no
+longer plants a constructor anywhere: the built-in set is a plain `const` array that
+`Registry::builtin()` reads, so every operator's descriptor and constructor `fn` pointer is reachable
+from a symbol the caller names and there is no "codegen unit nothing references" for the linker to
+drop. Confirmed at `codegen-units = 256`, at `lto = "fat"` + `opt-level = "s"`, and at both together
+— 79 operators each time, including from an out-of-tree crate depending on `reuben-core` by path,
+which is the embedder scenario above.
+
+Two caveats for anyone re-reading this. The **36-of-53 measurement is old** and does not reproduce:
+the same out-of-tree probe at `codegen-units = 256` against the pre-change `inventory` tree yields the
+full set on the currently pinned toolchain. And `[profile.bench] codegen-units = 1` **stays** — it
+pins codegen determinism for the instruction-count perf gate, an unrelated reason
+([perf-benchmark-gate](perf-benchmark-gate.md)), as the paragraph above already noted.
+
 Distilled from: ADR-0040

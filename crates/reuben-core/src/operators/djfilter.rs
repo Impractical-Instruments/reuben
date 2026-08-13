@@ -138,7 +138,6 @@ impl Operator for Djfilter {
     }
 }
 
-crate::register_operator!(Djfilter);
 
 #[cfg(test)]
 mod tests {

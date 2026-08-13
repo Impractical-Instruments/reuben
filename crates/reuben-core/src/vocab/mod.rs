@@ -8,9 +8,9 @@
 //! Adding a domain type = define it here (or beside its logic), derive `ArgValue`, and add one
 //! variant to [`Arg`](crate::message::Arg). A struct type that should cross the OSC boundary
 //! also hand-implements [`OscArg`](crate::message::OscArg) (its flat multi-arg form,
-//! `from_osc`/`to_osc`) and self-registers the converter beside that impl with
-//! `crate::register_osc_form!` — [`Note`] does; [`Harmony`] deliberately does
-//! neither (the boundary opt-out; it has no external wire form yet).
+//! `from_osc`/`to_osc`) and names itself in the `OSC_FORMS` census below — [`Note`] does;
+//! [`Harmony`] deliberately does neither (the boundary opt-out; it has no external wire form
+//! yet).
 //!
 //! Types live next to their behavior — [`Harmony`] and its resolver in the [`harmony`]
 //! submodule, [`Pitch`]/[`Note`] in [`pitch`] — and are re-exported here so a
@@ -21,6 +21,15 @@ pub mod pitch;
 
 pub use harmony::{Chord, ChordTag, Harmony, ScaleField, SnapDir, SnapPolicy, SnapTarget};
 pub use pitch::{Note, Pitch};
+
+/// The census of struct vocab types that cross the OSC boundary, as data — the counterpart of
+/// `operators/mod.rs`'s operator census. It lives here rather than in `boundary.rs` because it is
+/// a statement about *these types*; the boundary consumes it
+/// ([`osc_form_by_name`](crate::boundary::osc_form_by_name)) and owns nothing in it.
+///
+/// Absence is the opt-out: a struct vocab type not named here has no external OSC form, and the
+/// boundary reports so. `Harmony` and `Pitch` are wire-internal by omission.
+pub(crate) const OSC_FORMS: &[crate::boundary::OscForm] = &[crate::osc_form!(Note)];
 
 /// How a sequencer step drives its output (the sequencer's `gate_mode`). A shared *vocab* enum
 /// (`Arg::Enum`): emit a pitched **degree** per step, or a bare **gate** trigger.

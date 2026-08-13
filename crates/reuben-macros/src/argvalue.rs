@@ -8,8 +8,8 @@
 //! same tokens. see rules: composition-operators
 //!
 //! The OSC flat-multi-arg conversion for structs (`Note ↔ /note pitch vel`) is not derived
-//! here: the type hand-implements `OscArg` beside its definition and self-registers the
-//! converter with the boundary's registry (`register_osc_form!` in `boundary.rs`).
+//! here: the type hand-implements `OscArg` beside its definition and names itself in the
+//! `OSC_FORMS` census in `vocab/mod.rs`.
 //!
 //! [`Arg`]: ../../reuben_core/message/enum.Arg.html
 //! [`EnumMeta`]: ../../reuben_core/descriptor/struct.EnumMeta.html

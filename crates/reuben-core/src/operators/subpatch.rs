@@ -55,7 +55,6 @@ impl Operator for Subpatch {
     }
 }
 
-crate::register_operator!(Subpatch);
 
 #[cfg(test)]
 mod tests {

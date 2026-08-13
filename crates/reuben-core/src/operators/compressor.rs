@@ -175,7 +175,6 @@ impl Operator for Compressor {
     }
 }
 
-crate::register_operator!(Compressor);
 
 #[cfg(test)]
 mod tests {

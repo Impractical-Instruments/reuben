@@ -7,9 +7,9 @@ description: Author a new reuben Operator in Rust — the unit of DSP behind eve
 
 An Operator is one unit of DSP — authored **single-Voice** (one mono stream; polyphony comes from the
 Voicer hosting voice sub-patches) as a Rust file in [`crates/reuben-core/src/operators/`](../../../crates/reuben-core/src/operators):
-index consts, a state struct, and `impl Operator` (`descriptor` / `process` / `spawn`), declared in
-`operators/mod.rs` and self-registered by its own `register_operator!` line (no central list to
-edit). This skill authors that end-to-end. The **canonical
+index consts, a state struct, and `impl Operator` (`descriptor` / `process` / `spawn`), declared and
+registered by one line in `operators/mod.rs`'s `operator_census!` block. This skill authors that
+end-to-end. The **canonical
 operator-development contract** — the trait, the `operator_contract!` macro, registration,
 `OpDriver`, the RT-safety rules — lives in
 [docs/agents/operator-dev.md](../../../docs/agents/operator-dev.md); this skill is the workflow
@@ -40,9 +40,9 @@ Run all `reuben`/`cargo` commands from the repo root.
 
 2. **Scaffold.** Write the contract to a JSON file (format below) and run:
    `cargo run -q -p reuben-native --bin reuben -- scaffold-operator --spec <contract.json>`
-   This writes `operators/<name>.rs` (descriptor filled in, a silence-writing `process` stub, its
-   own `register_operator!` self-registration line, and an **intentionally-red placeholder test**)
-   and the sorted `mod.rs` inserts — `registry.rs` is not touched. It refuses to clobber
+   This writes `operators/<name>.rs` (descriptor filled in, a silence-writing `process` stub, and an
+   **intentionally-red placeholder test**) and the one sorted census insert in `mod.rs` that declares,
+   re-exports and registers it — `registry.rs` is not touched. It refuses to clobber
    and rejects a malformed spec.
 
 3. **Implement `process` test-first** — lean on the `tdd` skill. The scaffold starts you **red**;

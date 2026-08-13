@@ -98,7 +98,7 @@ pub use plan::{Plan, PlanError};
 pub use vocab::{Chord, ChordTag, Harmony, ScaleField, SnapDir, SnapPolicy, SnapTarget};
 pub use wavetable::Wavetable;
 // The single-source operator contract macro. Re-exported at the crate root so operator
-// modules can call `crate::operator_contract!(..)`, mirroring `register_operator!`.
+// modules can call `crate::operator_contract!(..)` regardless of module declaration order.
 pub use registry::Registry;
 pub use reuben_macros::operator_contract;
 // The pointwise-number-operator family macro: one scalar fn -> value+signal variants
@@ -110,12 +110,12 @@ pub use reuben_macros::number_operator_contract;
 pub use reuben_macros::unpack_op;
 // `#[derive(ArgValue)]`: integrates a shared `vocab` type with the central `Arg`.
 pub use reuben_macros::ArgValue;
-// Re-export the self-registration macro at the crate root so operator modules can call
-// `crate::register_operator!(..)` regardless of module declaration order.
-pub(crate) use registry::register_operator;
-// Its boundary sibling: `crate::register_osc_form!(..)` submits a struct vocab type's external
-// OSC form from its definition site, the same pattern.
-pub(crate) use boundary::register_osc_form;
+// Re-export the census macros at the crate root: `crate::operator_census!` declares the built-in
+// operator set in `operators/mod.rs`, and `crate::op_reg!` builds one entry — the family macros'
+// expansions call it by that path regardless of module declaration order. Their boundary sibling
+// `crate::osc_form!` builds one struct-vocab OSC-form entry for `vocab`'s census.
+pub(crate) use boundary::osc_form;
+pub(crate) use registry::{op_reg, operator_census};
 pub use render::{render_plan, RenderScratch, Renderer, SerialExecutor};
 pub use resources::{ResolvedRefs, ResourceStore, SampleBuffer, SampleId};
 // The audio-rate data vocabulary lives in `signal` (the single naming site for the element type +

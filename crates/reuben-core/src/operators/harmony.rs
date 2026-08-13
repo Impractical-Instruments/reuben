@@ -150,7 +150,6 @@ impl Operator for HarmonyOp {
     }
 }
 
-crate::register_operator!(HarmonyOp);
 
 #[cfg(test)]
 mod tests {

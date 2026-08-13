@@ -6,7 +6,7 @@
 //! It is **loader-built, not registered**: a pipe exists only because an `interface.inputs`
 //! entry declared it, its descriptor is synthesized per entry (the declared `Arg` type, range,
 //! default), and it never appears in the operator registry, the schema's `type` enum, or
-//! `describe`'s operator list. There is deliberately no `register_operator!` here.
+//! `describe`'s operator list. The `operator_census!` block deliberately does not name it.
 //!
 //! Per-form behavior (all allocation-free — hot path):
 //!
@@ -102,9 +102,6 @@ impl Operator for Pipe {
         Box::new(Self::new(self.kind))
     }
 }
-
-// Deliberately NOT `register_operator!`-ed: pipes are declared through `interface.inputs`
-// entries only; a document cannot name `"type": "pipe"` on a node.
 
 #[cfg(test)]
 mod tests {

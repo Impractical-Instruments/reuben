@@ -1670,8 +1670,8 @@ mod wire_forms {
     /// A no-OSC-form Value source (`Harmony`, the documented boundary opt-out) is equally a hard
     /// error: legality into the pass-through is capability-keyed (`boundary::has_osc_form`), so a
     /// wire that could never send anything is rejected at plan, not left silently dead. Struct
-    /// converters land through the boundary registry (`register_osc_form!`); `Harmony`
-    /// registers none — its wire form is a deferred boundary decision.
+    /// converters land through `vocab`'s `OSC_FORMS` census; `Harmony` is absent from it — its
+    /// wire form is a deferred boundary decision.
     #[test]
     fn harmony_into_passthrough_is_a_hard_error_naming_the_opt_out() {
         let harmony = Port {

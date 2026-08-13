@@ -131,7 +131,6 @@ impl Operator for Saturator {
     }
 }
 
-crate::register_operator!(Saturator);
 
 #[cfg(test)]
 mod tests {

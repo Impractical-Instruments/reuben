@@ -176,7 +176,6 @@ impl Operator for Envelope {
     }
 }
 
-crate::register_operator!(Envelope);
 
 #[cfg(test)]
 mod tests {

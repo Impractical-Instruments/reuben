@@ -70,7 +70,6 @@ impl Operator for Pan {
     }
 }
 
-crate::register_operator!(Pan);
 
 #[cfg(test)]
 mod tests {

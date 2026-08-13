@@ -12,11 +12,13 @@ apply it at every scale. An operator is authored the simplest possible way: a si
 single-channel stream, one block at a time — "given one input block and my state, produce one output
 block."
 
-An operator's contract is **single-sourced and self-registering**. `register_operator!` submits each
-built-in at its own definition site — gathered into the built-in set at link time, so there is no
-central list to merge-conflict on. *(ADR-0081 replaces the gatherer: `inventory` cannot run on a
-bare-metal target, since nothing there runs the `.init_array` constructors it depends on, so `linkme`
-takes over. What self-registration protects is unchanged.)* `operator_contract!` takes one declaration of the ports, constants, and
+An operator's contract is **single-sourced and declared in one census line**. *(ADR-0084 replaces
+both the gatherer and the definition-site submission: link-time collection is a linker feature, and
+this repo's three targets have three different linkers — `inventory` registers nothing on bare metal
+and `linkme` does not compile for wasm32. `operators/mod.rs`'s `operator_census!` block folds each
+module's declaration, re-export and registration into one line of a plain array. What
+self-registration protected — no second central list to merge-conflict on — is unchanged, because
+that block replaces the `pub mod` list rather than joining it.)* `operator_contract!` takes one declaration of the ports, constants, and
 metadata and emits both the runtime `Descriptor` and a **typed port handle** per port
 (`In<SignalF32>`, `In<Held<f32>>`, `Out<Event<Note>>`, …); `io.read`/`io.write` dispatch on the
 handle, whose type fixes the port's form and carries its declared default, so a wrong-form read does
@@ -24,7 +26,9 @@ not compile and no default can drift. The stateless-pointwise math family goes o
 `number_operator_contract!` generates a whole value/signal operator family from a single scalar
 function — and the same census-macro idea gives a product vocab type its field-destructure
 operator: one `unpack_op!(Note { pitch, velocity })` census entry mints `unpack_note`, so a mono
-voice can be wired as a patch instead of hidden inside the Voicer.
+voice can be wired as a patch instead of hidden inside the Voicer. *(Per ADR-0084 both generated
+families carry their module's own `OPERATORS` array rather than submitting to a gatherer, which is
+what a `module::*` census entry splices.)*
 
 All data on the graph is **one substrate**: a `Message = { address, frame, Arg }` carrying exactly
 one `Arg` (OSC primitives, shared vocab types like `Note`/`Harmony`, an all-unit enum's erased index,
@@ -72,6 +76,7 @@ the patch — maps onto the rig.
 [why](rationale/composition-operators/operator-self-registration.md)
 
 Superseded by: ADR-0081 (pending absorption)
+Superseded by: ADR-0084 (pending absorption)
 
 <a id="single-source-contract"></a>
 ### An operator declares its ports, constants, and metadata once in `operator_contract!`, which emits both the typed port handles and the runtime `Descriptor` from the same tokens.
@@ -149,6 +154,8 @@ Superseded by: ADR-0075 (pending absorption)
 ### A product vocab type gets a generated `unpack_<type>` operator from an `unpack_op!` census entry that reuses the shared contract internals and self-registers through inventory, emitting every field as a ZOH-held Value defaulting to the type's `Default`.
 
 [why](rationale/composition-operators/product-type-unpack-operators.md)
+
+Superseded by: ADR-0084 (pending absorption)
 
 <a id="one-blanket-held-read"></a>
 ### Every vocab enum's held read comes from core's one blanket `InForm for Held<T>` impl, so the derive generates no per-type read glue and there is a single place the zero-order-hold read can be changed.

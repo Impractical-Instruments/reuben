@@ -248,7 +248,6 @@ impl Operator for Granulator {
     }
 }
 
-crate::register_operator!(Granulator);
 
 /// Write `n` frames of silence to the audio output.
 fn silence(io: &mut Io, n: usize) {

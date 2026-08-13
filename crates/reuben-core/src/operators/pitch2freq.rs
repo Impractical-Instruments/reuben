@@ -67,7 +67,6 @@ impl Operator for Pitch2Freq {
     }
 }
 
-crate::register_operator!(Pitch2Freq);
 
 #[cfg(test)]
 mod tests {

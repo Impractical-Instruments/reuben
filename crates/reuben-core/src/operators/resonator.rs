@@ -350,7 +350,6 @@ impl Operator for Resonator {
     }
 }
 
-crate::register_operator!(Resonator);
 
 #[cfg(test)]
 mod tests {

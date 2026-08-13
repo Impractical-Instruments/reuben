@@ -28,8 +28,19 @@ a silent gap into a loud red test. `inventory` was chosen over `linkme` because 
 This line used to add that `linkme` was the fallback *"if the core ever goes `no_std`"*, which put the
 trigger on the wrong property: `inventory` is itself `#![no_std]`. The real obstacle is startup, not
 compilation — it registers through ELF `.init_array` constructors, and nothing on a bare-metal target
-runs them, so registration silently yields nothing. ADR-0081 switches to `linkme` everywhere, and the
-canary above becomes more load-bearing, not less.
+runs them, so registration silently yields nothing. ADR-0081 switched to `linkme` on that finding.
+
+**Everything above about a *gatherer* is now history, mechanism and consequences alike.** The `linkme`
+swap was implemented and abandoned — it does not compile for `wasm32-unknown-unknown`, which is
+outside its `target_os` allowlist — and ADR-0084 draws the general conclusion: link-time distributed
+registration is a linker feature, and this repo's three targets have three different linkers, so no
+crate of this kind covers them. Registration folded into the module declaration instead: a census
+block in `operators/mod.rs` emits each module's `pub mod`, its re-export **and** its entry in a plain
+array, so the merge-conflict argument that opened this file is served by *replacing* the central list
+rather than avoiding one. The dead-strip failure mode is gone with the linker; the non-empty check
+survives as cheap insurance rather than a canary. What still holds unchanged: function pointers not
+values, the `BTreeMap` re-key for determinism, and the duplicate check in `builtin()` rather than
+`register()`.
 
 This is an **operator-only** problem — Instruments are pure JSON discovered from the filesystem and
 never collide this way.

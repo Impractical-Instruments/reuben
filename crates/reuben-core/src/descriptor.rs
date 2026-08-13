@@ -66,8 +66,8 @@ pub enum PortType {
     ///
     /// **Input-only** — the contract validator closes an `arg` output or constant — and what may
     /// wire in is keyed on [`has_osc_form`](crate::boundary::has_osc_form), the one predicate the
-    /// load-time and plan-time checks share. A struct vocab type opts in by registering a
-    /// converter via `register_osc_form!` ([`OscForm`](crate::boundary::OscForm)).
+    /// load-time and plan-time checks share. A struct vocab type opts in by naming itself in
+    /// `vocab`'s `OSC_FORMS` census.
     /// see rules: composition-operators
     Arg,
 }
