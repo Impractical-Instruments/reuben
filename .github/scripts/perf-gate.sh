@@ -75,11 +75,14 @@ ENGINE_PKG="reuben-core"
 # feature only compiles `bench_support` (dead code for the other two), so it leaves their Ir
 # byte-stable — safe to pass on every run.
 BENCHES=("macro_iai" "micro_iai" "construct_iai")
-# `reuben-core/bench` rather than a bare `bench`: the benches live in reuben-document now (every
-# realistic workload is a document), and the `Io` bridge the micro layer needs is reuben-core's.
-# reuben-document's own `bench` feature forwards to it; naming the forwarded feature directly keeps
-# this independent of that spelling.
-FEATURES="reuben-core/bench"
+# reuben-document's OWN `bench` feature, NOT the `reuben-core/bench` it forwards to. Naming the
+# forwarded feature looks equivalent and is not: the micro `[[bench]]` targets declare
+# `required-features = ["bench"]`, and cargo matches that against THIS package's feature names — so
+# `--features reuben-core/bench` enables the bridge and still leaves those targets unbuilt. Cargo
+# reports it as an error, which the layer-skip probe below classified as a harness gap, so the micro
+# layer reported green having never run. Same string as `cargo reuben-bench` in
+# `.cargo/config.toml`; keep the two in step.
+FEATURES="bench"
 # The benched crate's full source closure — every crate whose `src/` feeds the build (see header).
 # These move to the baseline ref together so the snapshot is self-consistent; the bench crate's
 # `src/` alone would leave operator `Self::contract()` calls compiled against HEAD's macro.
@@ -320,7 +323,26 @@ gate_one() {
     # src has no `bench_support`, so HEAD's `use ...::OpHarness` won't compile). Probe exactly that
     # with `--no-run` against the still-checked-out baseline src; its compile errors are already in
     # the log above, so the exit code is all we need.
-    if ! cargo bench -p "$PKG" --features "$FEATURES" --bench "$bench" --no-run >/dev/null 2>&1; then
+    local probelog
+    probelog="$(mktemp)"
+    if ! cargo bench -p "$PKG" --features "$FEATURES" --bench "$bench" --no-run >"$probelog" 2>&1; then
+      # An unsatisfied `required-features` is NOT an API gap. It means this layer never built on
+      # EITHER tree, because the invocation does not enable the feature the `[[bench]]` declares —
+      # and cargo signals it with the same non-zero exit as a real compile failure. Classifying it as
+      # a skip is precisely how a layer reports green while never running, which is the masking the
+      # runtime-crash branch below refuses for the same reason.
+      if grep -q "requires the features" "$probelog"; then
+        cat "$probelog"
+        rm -f "$probelog"
+        swap_tree HEAD
+        hard_broken=1
+        overall_fail=1
+        printf '::error title=Perf layer never ran::%s declares required-features that --features %s does not enable — the gate is blind here, not skipping\n' "$bench" "$FEATURES"
+        note "❌ \`$bench\`: the target declares \`required-features\` that \`--features $FEATURES\` does not enable, so it never built on either tree. **Not** a skip — the gate was not measuring this layer at all."
+        note ""
+        return 0
+      fi
+      rm -f "$probelog"
       swap_tree HEAD
       skipped=$((skipped + 1))
       printf '::warning title=Perf layer skipped::%s HEAD bench harness does not compile against the baseline — no comparison for this layer\n' "$bench"
@@ -328,6 +350,7 @@ gate_one() {
       note ""
       return 0
     fi
+    rm -f "$probelog"
     # Compiles but the run failed: a panic/abort at RUNTIME, not an API gap. New operators no longer
     # crash here (the gate skips them via REUBEN_MICRO_BENCH_SKIP), so a surviving run failure is real
     # — fail the gate. Treating a runtime crash as a skip is exactly the masking bug we are closing.
