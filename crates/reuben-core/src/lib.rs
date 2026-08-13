@@ -40,9 +40,10 @@ pub mod __alloc {
 }
 
 /// The one float operation the `ArgValue` derive expands into, re-exported for the same reason
-/// [`__alloc`] is: `f32::round` is an inherent method that only `std` defines, and the deriving
-/// crate does not necessarily depend on the numeric-trait crate this one binds — `reuben-document`
-/// derives `ArgValue` and depends on neither.
+/// [`__alloc`] is: the expansion has to name a path that resolves wherever it lands. `f32::round`
+/// is an inherent method that only `std` defines, so it does not compile in this crate's own
+/// `not(test)` lib target — where every current derive site sits — and `reuben-macros` emits
+/// absolute `::reuben_core::…` paths rather than assuming what the deriving crate depends on.
 #[doc(hidden)]
 pub mod __float {
     /// Nearest integral value, halfway cases away from zero — `f32::round` reached off `std`.

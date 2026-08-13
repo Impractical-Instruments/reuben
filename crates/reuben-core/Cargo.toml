@@ -39,15 +39,25 @@ reuben-contract = { path = "../reuben-contract" }
 # LFO's.
 #
 # This is NOT a `std` feature on this crate, and it reintroduces none of what one would cost. The
-# crate is `#![no_std]` in every build shape, so nothing can be forgotten and nothing is additive;
-# both num-traits backends present the same `Float` API, so the ordinary host build still proves
-# every call site compiles with no `std` to reach.
+# crate is `no_std` in every SHIPPED build shape — the one exception is the lib *test* target, which
+# `cfg_attr(not(test), …)` exempts and which nothing ships — so nothing can be forgotten and nothing
+# is additive; both num-traits backends present the same `Float` API, so the ordinary host build
+# still proves every call site compiles with no `std` to reach.
 #
-# A single `libm` entry for both was measured and rejected: `chrono` (reuben-mcp -> rmcp ->
-# schemars) turns `num-traits/std` on, so a workspace build would resolve to the std backend while
-# `cargo build -p reuben-core` resolved to libm. Same source, same host, two different sounds,
-# decided by which packages happened to be in the invocation — which the determinism invariant
+# A single `libm` entry for both was measured and rejected. `criterion` — a DEV-dependency of
+# reuben-document — declares num-traits with `features = ["std"]` unconditionally, and `plotters`
+# beneath it enables `num-traits/default`, which is the same thing. So the split is NOT workspace
+# against single package: with a global `libm` entry, `cargo tree --workspace -e normal` stays on
+# libm. It is `cargo build`, which resolves libm, against any invocation that pulls
+# dev-dependencies — `cargo test`, `cargo bench` — which resolves std. That is the worst available
+# division, because it ships an rlib carrying math the test suite never ran. Same source, same host,
+# two different sounds, decided by which invocation reached it — which the determinism invariant
 # cannot carry.
+#
+# The enabler is named precisely because getting it wrong is how these two entries get collapsed
+# back into one. `criterion` is a BENCH dependency, so no amount of pruning the authoring-side tree
+# — dropping reuben-mcp, rmcp, schemars, chrono — retires the hazard. Re-measure before collapsing:
+# `cargo tree --workspace -e all -f "{p} {f}" | grep num-traits`.
 [target.'cfg(target_os = "none")'.dependencies]
 num-traits = { workspace = true, features = ["libm"] }
 

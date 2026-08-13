@@ -121,9 +121,9 @@ rustup installs it alongside the channel, so there is no `rustup target add` to 
 `reuben-core` is the crate that has to keep building for it; nothing above it in the workspace does.
 
 **The gate passes.** The port is finished: `reuben-core` and `reuben-contract` both carry the
-`no_std` attribute, every dependency arrives with its default `std` features off, and the
-transcendental `f32` math that only `std` defines now reaches the target through
-`num_traits::Float`. CI's `bare-metal build (thumbv7em-none-eabihf)` job is nonetheless still
+`no_std` attribute, every dependency reaching **this target** arrives with its default `std`
+features off, and the transcendental `f32` math that only `std` defines now reaches the target
+through `num_traits::Float`. CI's `bare-metal build (thumbv7em-none-eabihf)` job is nonetheless still
 **not** one of `ci-passed`'s dependencies, so it blocks no merge — wiring it in is a separate
 change that has not been made yet, and until it is, a red run here is easy to miss.
 
