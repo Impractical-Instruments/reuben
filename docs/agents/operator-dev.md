@@ -214,7 +214,7 @@ Other notes:
   whole value as a `Note` event on `in` and emits each field as a held `Value` — the Event→Value
   latch expressed as a patchable node.
   Like `number_operator_contract!` it reuses the shared contract internals, so the op is
-  indistinguishable in shape from a hand-written one and self-registers via `inventory`. The census
+  indistinguishable in shape from a hand-written one and self-registers into the link-time slice. The census
   is one greppable file, but the macro's input event form is currently fixed to `note` (`Note` is the
   only event-carried product vocab type today), so unpacking a *different* product type is a census
   line **plus** teaching the macro that type's event input — not a one-line edit alone.
@@ -248,7 +248,7 @@ never hand-writes symbol/index handling.
 2. **Wire the module** in `crates/reuben-core/src/operators/mod.rs`: `pub mod <name>;`
    and `pub use <name>::<Type>;`.
 3. **Self-register** by adding one line at the operator's module top level, after its
-   `impl Operator` block: `crate::register_operator!(<Type>);` — a compile-time `inventory`
+   `impl Operator` block: `crate::register_operator!(<Type>);` — a compile-time `linkme`
    submission `Registry::builtin()` gathers,
    so there is **no central list to edit**. (`grep -rn register_operator! operators/` is the census.)
 4. **Test** in the operator module, test-first, with

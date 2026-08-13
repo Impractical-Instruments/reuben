@@ -7,8 +7,8 @@
 //! asked to skip (a PR-new operator with no baseline — see [`setup`]), so that operator is dropped
 //! from the comparison instead of crashing the baseline run.
 //!
-//! iai's `#[bench::…]` list is compile-time, so it can't iterate the registry (which is
-//! `inventory`-collected, and so only readable at runtime). **This file is therefore the one
+//! iai's `#[bench::…]` list is compile-time, so it can't iterate the registry (which the linker
+//! gathers, and so is only readable at runtime). **This file is therefore the one
 //! hand-maintained census of benched operators** — one `id => "kind"` line each, expanded into the
 //! attributes by [`micro_bench_ops!`].
 //!

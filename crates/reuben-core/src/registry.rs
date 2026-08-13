@@ -10,11 +10,13 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 
+use linkme::distributed_slice;
+
 use crate::descriptor::Descriptor;
 use crate::operator::Operator;
 
 /// A compile-time operator registration, submitted at each operator's definition site via
-/// [`register_operator!`] and collected by `inventory` into a link-time slice. This
+/// [`register_operator!`] and gathered into the [`OP_REGS`] link-time slice. This
 /// replaces the hand-maintained `builtin()` list that every new operator used to edit — the
 /// merge-conflict magnet — so an operator self-registers where it is defined.
 pub struct OpReg {
@@ -24,7 +26,12 @@ pub struct OpReg {
     pub descriptor: fn() -> Descriptor,
 }
 
-inventory::collect!(OpReg);
+/// Every [`register_operator!`] submission in the linked image, in link order.
+///
+/// Contents are decided by the linker, so the slice is empty in any link that dropped the
+/// submissions; [`Registry::builtin`] and its canary tests are what make that loud.
+#[distributed_slice]
+pub static OP_REGS: [OpReg];
 
 /// Register an operator type with the built-in [`Registry`] at compile time.
 ///
@@ -33,12 +40,15 @@ inventory::collect!(OpReg);
 /// `grep -rn 'register_operator!' src/operators/` enumerates every built-in operator.
 macro_rules! register_operator {
     ($t:ty) => {
-        inventory::submit! {
-            $crate::registry::OpReg {
+        // Wrapped in an anonymous const so the submitted static needs no per-operator name:
+        // one is required per element, and `$t` is a type, which cannot be pasted into an ident.
+        const _: () = {
+            #[::linkme::distributed_slice($crate::registry::OP_REGS)]
+            static REG: $crate::registry::OpReg = $crate::registry::OpReg {
                 make: || $crate::__alloc::Box::new(<$t>::new()),
                 descriptor: <$t>::descriptor,
-            }
-        }
+            };
+        };
     };
 }
 // Re-export at the crate root so operator modules can call `crate::register_operator!(..)`
@@ -78,7 +88,7 @@ impl Registry {
     /// [`register`](Self::register), which still last-writer-wins for embedders).
     pub fn builtin() -> Self {
         let mut r = Self::new();
-        for reg in inventory::iter::<OpReg> {
+        for reg in OP_REGS {
             let descriptor = (reg.descriptor)();
             assert!(
                 r.get(descriptor.type_name).is_none(),
@@ -133,8 +143,11 @@ mod tests {
     use super::*;
 
     // The built-in set is no longer an enumerated list (it self-registers), so these
-    // are churn-free invariants over whatever the `inventory` slice gathered, plus a small canary
+    // are churn-free invariants over whatever the link-time slice gathered, plus a small canary
     // that fails loudly if the linker ever dead-strips the submissions.
+    //
+    // These run on the host only — `cargo test` builds no bare-metal target — so they prove
+    // registration where they run and nowhere else.
 
     #[test]
     #[should_panic(expected = "reserved")]
@@ -158,7 +171,7 @@ mod tests {
         // If self-registration silently produced nothing (dead-stripped slice), this trips first.
         assert!(
             Registry::builtin().type_names().count() >= 3,
-            "builtin() gathered no operators — inventory submissions may have been dropped"
+            "builtin() gathered no operators — the link-time submissions may have been dropped"
         );
     }
 
@@ -169,6 +182,23 @@ mod tests {
         let r = Registry::builtin();
         for name in ["oscillator", "output", "voicer"] {
             assert!(r.get(name).is_some(), "built-in {name:?} not registered");
+        }
+    }
+
+    #[test]
+    fn iteration_is_name_ordered_not_link_ordered() {
+        // The gathered slice arrives in link order, which is the linker's business and not
+        // reproducible across builds. The `BTreeMap` re-key is what makes iteration — and every
+        // projection generated from it, the schema included — a function of the names alone.
+        let r = Registry::builtin();
+        let names: Vec<&str> = r.type_names().collect();
+        for pair in names.windows(2) {
+            assert!(
+                pair[0] < pair[1],
+                "type_names must be strictly ascending, got {:?} before {:?}",
+                pair[0],
+                pair[1]
+            );
         }
     }
 

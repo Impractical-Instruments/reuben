@@ -150,6 +150,8 @@ Superseded by: ADR-0075 (pending absorption)
 
 [why](rationale/composition-operators/product-type-unpack-operators.md)
 
+Superseded by: ADR-0081 (pending absorption)
+
 <a id="one-blanket-held-read"></a>
 ### Every vocab enum's held read comes from core's one blanket `InForm for Held<T>` impl, so the derive generates no per-type read glue and there is a single place the zero-order-hold read can be changed.
 

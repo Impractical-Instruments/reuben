@@ -21,7 +21,7 @@ slotmap.workspace = true
 smallvec.workspace = true
 num-traits.workspace = true
 once_cell.workspace = true
-inventory.workspace = true
+linkme.workspace = true
 # The operator_contract! macro: single-sources each operator's index consts + Descriptor.
 reuben-macros = { path = "../reuben-macros" }
 # The type-wide NUMBER_MIN/NUMBER_MAX sentinels: interface pipes default

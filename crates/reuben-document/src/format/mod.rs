@@ -5952,7 +5952,7 @@ mod tests {
                     }
                 }
             }
-            // `inventory` submissions can be dead-stripped, and a table that swept nothing would
+            // Self-registration submissions can be dead-stripped, and a table that swept nothing would
             // pass every assertion above (the `builtin_is_nonempty` canary exists for the same
             // reason). The built-in set is in the low hundreds of ports.
             assert!(seen > 100, "the census swept only {seen} ports");

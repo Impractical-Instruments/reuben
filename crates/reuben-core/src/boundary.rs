@@ -16,7 +16,7 @@
 //! is by construction / by omission.
 //!
 //! **The converter registry** ([`OscForm`]): struct vocab converters
-//! self-register at their definition site and are collected by `inventory` into a link-time
+//! self-register at their definition site and are gathered into the [`OSC_FORMS`] link-time
 //! slice, the same self-registration pattern as the operator registry. [`osc_form_by_name`] serves the inbound decode; [`has_form`]
 //! serves [`has_osc_form`]'s capability key. Only those two sides are registry-backed:
 //! outbound ([`osc_out_args`]) stays a **closed exhaustive match** over [`Arg`] — see
@@ -28,12 +28,14 @@
 
 use alloc::vec::Vec;
 
+use linkme::distributed_slice;
+
 use crate::descriptor::{Port, PortType};
 use crate::message::{Arg, OscArg};
 
 /// A compile-time OSC-form registration for a **struct vocab type**,
-/// submitted at the type's definition site via [`register_osc_form!`] and collected by
-/// `inventory` into a link-time slice — the same self-registration pattern as the operator
+/// submitted at the type's definition site via [`register_osc_form!`] and gathered into the
+/// [`OSC_FORMS`] link-time slice — the same self-registration pattern as the operator
 /// registry's [`OpReg`](crate::registry::OpReg). Keyed by
 /// [`PortType::Vocab`]'s `name`, the inbound + capability authority: [`osc_form_by_name`]
 /// serves [`osc_in_arg`]'s struct decode and [`has_form`] serves [`has_osc_form`]'s
@@ -52,7 +54,12 @@ pub struct OscForm {
     pub from_osc: fn(&[Arg]) -> Option<Arg>,
 }
 
-inventory::collect!(OscForm);
+/// Every [`register_osc_form!`] submission in the linked image, in link order.
+///
+/// Contents are decided by the linker, so the slice is empty in any link that dropped the
+/// submissions; `registry_finds_note_by_name_and_omits_harmony` is what makes that loud.
+#[distributed_slice]
+pub static OSC_FORMS: [OscForm];
 
 /// Register a struct vocab type's external OSC form at compile time, mirroring
 /// [`register_operator!`](crate::registry).
@@ -63,15 +70,17 @@ inventory::collect!(OscForm);
 /// the greppable census of boundary-crossing struct forms.
 macro_rules! register_osc_form {
     ($t:ty) => {
-        inventory::submit! {
-            $crate::boundary::OscForm {
+        // Wrapped in an anonymous const so the submitted static needs no per-type name:
+        // one is required per element, and `$t` is a type, which cannot be pasted into an ident.
+        const _: () = {
+            #[::linkme::distributed_slice($crate::boundary::OSC_FORMS)]
+            static FORM: $crate::boundary::OscForm = $crate::boundary::OscForm {
                 type_name: ::core::stringify!($t),
                 from_osc: |args| {
-                    <$t as $crate::message::OscArg>::from_osc(args)
-                        .map($crate::message::Arg::from)
+                    <$t as $crate::message::OscArg>::from_osc(args).map($crate::message::Arg::from)
                 },
-            }
-        }
+            };
+        };
     };
 }
 // Re-export at the crate root (via `lib.rs`) so vocab modules can call
@@ -82,9 +91,7 @@ pub(crate) use register_osc_form;
 /// `None` means the type has no external OSC form — the boundary opt-out (`Harmony`).
 /// A walk of the link-time slice: allocation-free, and the slice is a handful of entries.
 pub fn osc_form_by_name(name: &str) -> Option<&'static OscForm> {
-    inventory::iter::<OscForm>
-        .into_iter()
-        .find(|f| f.type_name == name)
+    OSC_FORMS.into_iter().find(|f| f.type_name == name)
 }
 
 /// Whether a struct vocab type of this name has a registered external OSC form — the
@@ -460,10 +467,7 @@ mod tests {
         assert!(!has_form("Harmony"));
         // Anti-dead-strip canary + uniqueness: the link-time slice gathered at least Note, and
         // no two types registered the same name (the same guard `Registry::builtin` asserts).
-        let mut names: Vec<&str> = inventory::iter::<OscForm>
-            .into_iter()
-            .map(|f| f.type_name)
-            .collect();
+        let mut names: Vec<&str> = OSC_FORMS.into_iter().map(|f| f.type_name).collect();
         assert!(!names.is_empty(), "no OscForm submissions gathered");
         names.sort_unstable();
         let before = names.len();

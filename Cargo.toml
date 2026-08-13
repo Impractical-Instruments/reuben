@@ -16,6 +16,9 @@ version = "0.0.0"
 edition = "2021"
 # MSRV — kept in lockstep with rust-toolchain.toml's `channel`. see rules: web-product-process
 # Self-verified: CI runs on the pinned toolchain, which == this floor.
+# The floor also has to stay >= 1.89: self-registration's link-time slices survive `--gc-sections`
+# only because `#[used]` marks their section `SHF_GNU_RETAIN` on ELF, which rustc emits from 1.89
+# on. Below it the registry can link clean and enumerate nothing.
 rust-version = "1.96.0"
 license = "BSD-3-Clause"
 repository = "https://github.com/Impractical-Instruments/reuben"
@@ -40,10 +43,7 @@ once_cell = { version = "1", default-features = false, features = ["alloc"] }
 # f32 half of a bound that has to be total at every instantiated type.
 num-traits = "0.2"
 # Compile-time operator self-registration. see rules: composition-operators
-# BEING REPLACED by `linkme`: `inventory` registers via ELF `.init_array` constructors, and nothing on
-# a bare-metal target runs them — so registration silently yields an empty set there. `#![no_std]`,
-# which `inventory` does have, was never the obstacle.
-inventory = "0.3"
+linkme = "0.3"
 # Compile-time codegen: the operator_contract! proc-macro parses its own grammar (not Rust
 # items/exprs); the ArgValue derive parses a type definition, which needs `derive`.
 # Neither needs the heavy `full` expression AST.
