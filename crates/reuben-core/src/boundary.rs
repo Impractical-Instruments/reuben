@@ -16,7 +16,7 @@
 //! is by construction / by omission.
 //!
 //! **The converter registry** ([`OscForm`]): struct vocab converters
-//! self-register at their definition site and are gathered into the [`OSC_FORMS`] link-time
+//! self-register at their definition site and are gathered into the `OSC_FORMS` link-time
 //! slice, the same self-registration pattern as the operator registry. [`osc_form_by_name`] serves the inbound decode; [`has_form`]
 //! serves [`has_osc_form`]'s capability key. Only those two sides are registry-backed:
 //! outbound ([`osc_out_args`]) stays a **closed exhaustive match** over [`Arg`] — see
@@ -35,7 +35,7 @@ use crate::message::{Arg, OscArg};
 
 /// A compile-time OSC-form registration for a **struct vocab type**,
 /// submitted at the type's definition site via [`register_osc_form!`] and gathered into the
-/// [`OSC_FORMS`] link-time slice — the same self-registration pattern as the operator
+/// `OSC_FORMS` link-time slice — the same self-registration pattern as the operator
 /// registry's [`OpReg`](crate::registry::OpReg). Keyed by
 /// [`PortType::Vocab`]'s `name`, the inbound + capability authority: [`osc_form_by_name`]
 /// serves [`osc_in_arg`]'s struct decode and [`has_form`] serves [`has_osc_form`]'s
@@ -59,7 +59,7 @@ pub struct OscForm {
 /// Contents are decided by the linker, so the slice is empty in any link that dropped the
 /// submissions; `registry_finds_note_by_name_and_omits_harmony` is what makes that loud.
 #[distributed_slice]
-pub static OSC_FORMS: [OscForm];
+pub(crate) static OSC_FORMS: [OscForm];
 
 /// Register a struct vocab type's external OSC form at compile time, mirroring
 /// [`register_operator!`](crate::registry).

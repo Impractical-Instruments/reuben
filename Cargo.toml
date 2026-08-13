@@ -14,11 +14,10 @@ members = [
 [workspace.package]
 version = "0.0.0"
 edition = "2021"
-# MSRV — kept in lockstep with rust-toolchain.toml's `channel`. see rules: web-product-process
+# MSRV — kept in lockstep with rust-toolchain.toml's `channel`, and constrained beyond that
+# lockstep by what operator self-registration needs from the linker, so a rollback is not free.
+# see rules: web-product-process
 # Self-verified: CI runs on the pinned toolchain, which == this floor.
-# The floor also has to stay >= 1.89: self-registration's link-time slices survive `--gc-sections`
-# only because `#[used]` marks their section `SHF_GNU_RETAIN` on ELF, which rustc emits from 1.89
-# on. Below it the registry can link clean and enumerate nothing.
 rust-version = "1.96.0"
 license = "BSD-3-Clause"
 repository = "https://github.com/Impractical-Instruments/reuben"

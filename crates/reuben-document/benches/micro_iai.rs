@@ -8,9 +8,9 @@
 //! from the comparison instead of crashing the baseline run.
 //!
 //! iai's `#[bench::…]` list is compile-time, so it can't iterate the registry (which the linker
-//! gathers, and so is only readable at runtime). **This file is therefore the one
-//! hand-maintained census of benched operators** — one `id => "kind"` line each, expanded into the
-//! attributes by [`micro_bench_ops!`].
+//! gathers, and so is only readable at runtime). **This file is therefore the one hand-maintained
+//! census of benched operators** — one `id => "kind"` line each, expanded into the attributes by
+//! [`micro_bench_ops!`].
 //!
 //! It lives *here*, in the never-swapped bench harness, rather than in `bench_support`, for the same
 //! reason the skip list does (see [`setup`]): the perf gate swaps `reuben-core/src` to the baseline

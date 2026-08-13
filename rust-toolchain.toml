@@ -6,6 +6,10 @@
 # Bump procedure (keep MSRV in lockstep):
 #   1. edit `channel` below
 #   2. edit `rust-version` in Cargo.toml [workspace.package] to the SAME version
+#   3. going BACKWARDS is the direction with a constraint: operator self-registration's
+#      link-time sections are held by a pairing of default linker and `#[used]` semantics that
+#      moved inside the range this pin has spanned, so a rollback has to be checked rather than
+#      assumed. see rules: web-product-process
 # `profile = "minimal"` keeps installs lean (rustc + std + cargo only); the two
 # components we actually gate on are listed explicitly below. This shrinks CI's
 # toolchain fetch on the runs where the pin has drifted behind the runner image's

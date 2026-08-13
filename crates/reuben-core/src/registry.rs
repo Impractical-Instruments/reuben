@@ -16,7 +16,7 @@ use crate::descriptor::Descriptor;
 use crate::operator::Operator;
 
 /// A compile-time operator registration, submitted at each operator's definition site via
-/// [`register_operator!`] and gathered into the [`OP_REGS`] link-time slice. This
+/// [`register_operator!`] and gathered into the `OP_REGS` link-time slice. This
 /// replaces the hand-maintained `builtin()` list that every new operator used to edit — the
 /// merge-conflict magnet — so an operator self-registers where it is defined.
 pub struct OpReg {
@@ -31,7 +31,7 @@ pub struct OpReg {
 /// Contents are decided by the linker, so the slice is empty in any link that dropped the
 /// submissions; [`Registry::builtin`] and its canary tests are what make that loud.
 #[distributed_slice]
-pub static OP_REGS: [OpReg];
+pub(crate) static OP_REGS: [OpReg];
 
 /// Register an operator type with the built-in [`Registry`] at compile time.
 ///
@@ -186,10 +186,35 @@ mod tests {
     }
 
     #[test]
-    fn iteration_is_name_ordered_not_link_ordered() {
-        // The gathered slice arrives in link order, which is the linker's business and not
-        // reproducible across builds. The `BTreeMap` re-key is what makes iteration — and every
-        // projection generated from it, the schema included — a function of the names alone.
+    fn permuting_the_slice_yields_the_same_iteration_order() {
+        // The property the gathering mechanism has to preserve: the slice arrives in link order,
+        // which is the linker's business, and iteration — with every projection generated from it,
+        // the schema included — must be a function of the names alone. Link order cannot be
+        // controlled from a test, but it does not need to be: feeding the same entries in two
+        // different orders is the same question, and a registry that leaked arrival order would
+        // disagree with itself here.
+        let mut fwd = Registry::new();
+        for reg in OP_REGS {
+            fwd.register(reg.make, (reg.descriptor)());
+        }
+        let mut rev = Registry::new();
+        for reg in OP_REGS.into_iter().rev() {
+            rev.register(reg.make, (reg.descriptor)());
+        }
+        assert_eq!(
+            fwd.type_names().collect::<Vec<_>>(),
+            rev.type_names().collect::<Vec<_>>(),
+            "iteration order followed the order entries were gathered in"
+        );
+    }
+
+    #[test]
+    fn type_names_iterate_in_ascending_name_order() {
+        // Weaker than it reads, and named for what it can actually see: `type_names()` is a
+        // `BTreeMap`'s keys, so this holds for any input permutation and is blind to arrival
+        // order — `permuting_the_slice_yields_the_same_iteration_order` is what covers that.
+        // What this one catches is the map being swapped for a sequence that keeps insertion
+        // order, which would make the generated schema a function of the link.
         let r = Registry::builtin();
         let names: Vec<&str> = r.type_names().collect();
         for pair in names.windows(2) {
