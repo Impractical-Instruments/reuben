@@ -3,7 +3,7 @@
   "instrument": "granular-cloud",
   "doc": "Granular sampler demo: one recorded WAV re-read as a cloud of overlapping windowed grains, exposing the whole granular face — scrub position, grain size, transposition, density, spray and window shape — through a lowpass-and-reverb space. Reach for it to turn any recording into a texture, or as the worked example of the sample-resource workflow. Record over `granular-source.wav` next to this document with your own audio; until a readable file is there the granulator degrades to silence and `validate` says so.",
   "resources": {
-    "source": "granular-source.wav",
+    "source": "samples/testvox.wav",
     "space": "patches/space.json"
   },
   "interface": {
