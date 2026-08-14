@@ -1,0 +1,131 @@
+{
+  "format_version": 3,
+  "instrument": "granular-cloud",
+  "doc": "Granular sampler demo: one recorded WAV re-read as a cloud of overlapping windowed grains, exposing the whole granular face — scrub position, grain size, transposition, density, spray and window shape — through a lowpass-and-reverb space. Reach for it to turn any recording into a texture, or as the worked example of the sample-resource workflow. Record over `granular-source.wav` next to this document with your own audio; until a readable file is there the granulator degrades to silence and `validate` says so.",
+  "resources": {
+    "source": "granular-source.wav",
+    "space": "patches/space.json"
+  },
+  "interface": {
+    "inputs": {
+      "density": {
+        "type": "f32",
+        "default": 25.0,
+        "min": 1.0,
+        "max": 200.0,
+        "curve": "exp",
+        "unit": "Hz"
+      },
+      "gain": {
+        "type": "f32",
+        "default": 0.8,
+        "min": 0.0,
+        "max": 4.0,
+        "curve": "lin"
+      },
+      "grain_size": {
+        "type": "f32_buffer",
+        "default": 120.0,
+        "min": 5.0,
+        "max": 500.0,
+        "curve": "lin",
+        "unit": "ms"
+      },
+      "pitch": {
+        "type": "f32_buffer",
+        "default": 0.0,
+        "min": -24.0,
+        "max": 24.0,
+        "curve": "lin",
+        "unit": "st"
+      },
+      "position": {
+        "type": "f32_buffer",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0,
+        "curve": "lin"
+      },
+      "space": {
+        "type": "f32",
+        "default": 0.35,
+        "min": 0.0,
+        "max": 1.0,
+        "curve": "lin"
+      },
+      "spray": {
+        "type": "f32",
+        "default": 40.0,
+        "min": 0.0,
+        "max": 1000.0,
+        "curve": "lin",
+        "unit": "ms"
+      },
+      "tone": {
+        "type": "f32_buffer",
+        "default": 6000.0,
+        "min": 20.0,
+        "max": 20000.0,
+        "curve": "exp",
+        "unit": "Hz"
+      },
+      "window": {
+        "type": "GrainWindow",
+        "default": "Hann"
+      }
+    },
+    "outputs": {
+      "out": {
+        "from": "/verb.out"
+      }
+    }
+  },
+  "nodes": [
+    {
+      "type": "granulator",
+      "address": "/cloud",
+      "doc": "The grain cloud: reads the recorded sample at `position`, firing `grain_size`-long windowed grains at `density` per second with `spray` of random scatter.",
+      "inputs": {
+        "density": {
+          "from": "/density"
+        },
+        "gain": {
+          "from": "/gain"
+        },
+        "grain_size": {
+          "from": "/grain_size"
+        },
+        "pitch": {
+          "from": "/pitch"
+        },
+        "position": {
+          "from": "/position"
+        },
+        "spray": {
+          "from": "/spray"
+        },
+        "window": {
+          "from": "/window"
+        }
+      },
+      "sample": "source"
+    },
+    {
+      "type": "subpatch",
+      "address": "/verb",
+      "doc": "Reused `patches/space.json` — the lowpass-into-Freeverb send that gives the cloud its room.",
+      "inputs": {
+        "in": {
+          "from": "/cloud.audio"
+        },
+        "space": {
+          "from": "/space"
+        },
+        "tone": {
+          "from": "/tone"
+        }
+      },
+      "patch": "space"
+    }
+  ]
+}
