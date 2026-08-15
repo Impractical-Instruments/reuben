@@ -1,6 +1,6 @@
 # Domain docs
 
-<!-- GENERATED from templates/domain.md + .ii/repo.toml by `python3 "$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py" --write .` — edit the source, not this file. sha256=fd122e6473ba6b0784239c28ff0cf0f685ec037a5f8c8dda9639990e38e28388 -->
+<!-- GENERATED from templates/domain.md + .ii/repo.toml by `ii-generate --write .` — edit the source, not this file. sha256=da2bdf5fef982da466189f0a25de3aa61f2de0aa8106f85134c73e1924b34919 -->
 
 Where this repo's domain documentation lives, and what kind of record each part is. Facts only — this file routes; it does not advise.
 
@@ -14,7 +14,7 @@ Stop at the shallowest level that answers your question.
 
 - **`docs/rules/README.md`** — the front door: a summary per topic and the derived glossary. Start here.
 - **`docs/rules/<topic>.md`** — the "now" story plus the rules for the area you are about to work in.
-- **`docs/rules/rationale/<topic>/<rule>.md`** — the condensed *why* behind one rule. Open it only when the rule alone does not answer you. Its `Distilled from:` line names the ADRs the rule was absorbed from, and is the only surviving pointer to that history.
+- **`docs/rules/rationale/<topic>/<rule>.md`** — the *why* behind one rule: the concrete problem it solves and the alternatives ruled out. Optional, and absent where the rule's sentence carries its own reasoning. Open it only when the rule alone does not answer you.
 
 ### Topics
 
@@ -36,4 +36,4 @@ This repo is **single-context**: one set of domain docs covers it.
 The ADR surface here is **transient**.
 
 - **`durable`** means `docs/adr/` is this repo's decision record. An accepted ADR stays; a decision that changes is superseded by a new ADR rather than by editing the old one.
-- **`transient`** means `docs/adr/` is a live iteration surface and **not** the complete record. It holds one file per decision that is still moving; once a decision settles it is distilled into a rule plus its condensed rationale and the ADR is deleted. The settled design is in the rules, and the ADR history survives only as a `Distilled from:` line on a rationale.
+- **`transient`** means `docs/adr/` is a live iteration surface and **not** the complete record. It holds one file per decision that is still moving; once a decision settles it is distilled into a rule plus its rationale and the ADR is deleted. The settled design is in the rules; nothing points back at the deleted ADR, and git history keeps what it argued.

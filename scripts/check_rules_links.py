@@ -4,13 +4,15 @@
 The repo is the ROOT argument, so one copy of this file serves every repo that adopts the
 system. Nothing here reads a repo name, a topic slug, or a count of topics.
 
-Eight checks, in three groups.
+The checks, in three groups.
 
 **Rule -> rationale** (walks each top-level `docs/rules/<topic>.md`; README.md excluded,
 `_templates/` and `rationale/` never scanned as topics):
 
   (a) the topic has >=1 rule section (an `<a id="slug"></a>` anchor + `### heading`);
-  (b) every rule anchor carries exactly one `[why](...)` link;
+  (b) a rule anchor carries at most one `[why](...)` link. Rationale is optional: a rule whose
+      reasoning is contained in its own sentence generates no file, and only a second competing
+      rationale is a defect.
   (c) every such link resolves to a file that exists, relative to docs/rules/.
 
 **Corpus-wide** (walks every `.md` under docs/rules/ except `_templates/`) — the ladder is only
@@ -20,20 +22,15 @@ navigable if every rung resolves, and the rungs below the topic docs were previo
       `<a id>` or heading in it. Rationale files link each other and link back up to their rule,
       and those links were unguarded — an absorption pass that deletes a rule anchor leaves them
       pointing at nothing while the build stays green.
-  (e) rationale <-> rule is a bijection: every file under `rationale/` is the [why] target of
-      exactly one rule, and sits at `rationale/<topic>/` for a topic doc that exists. Catches the
-      orphan a deleted rule leaves behind, and the file two rules quietly share.
-  (f) every rationale file carries a provenance line (`Distilled from:` / `Decided in:`) — the
-      convention that keeps ADR and issue numbers out of code by giving them one home.
+  (e) rationale -> rule is injective: every file under `rationale/` is the [why] target of exactly
+      one rule, and sits at `rationale/<topic>/` for a topic doc that exists. Catches the orphan a
+      deleted rule leaves behind, and the file two rules quietly share.
 
-**ADR -> rule** (walks the live ADRs under docs/adr/, README.md excluded) — absorption runs on a
-human's cadence, so between a decision and its fold the corpus states the old now in the present
-tense with nothing marking it. That window is where a rule goes quietly false:
+**ADR -> rule** (walks the live ADRs under docs/adr/, README.md excluded):
 
-  (g) an ADR naming a rule anchor means that rule carries `Superseded by: ADR-00xx (pending
-      absorption)`. Naming the anchor is the trigger: a machine cannot tell overturning from
-      citing, and an ADR that only wants context names the topic, as every other pointer does.
-  (h) no marker names a dead ADR — absorption deletes the ADR, and this deletes the marker with it.
+  (f) a rule anchor an ADR names resolves — the topic doc exists and carries that anchor. An ADR
+      is the one surface that may name a rule and be named in turn; the rules corpus never points
+      back, so this is the only direction there is to check.
 
 Links inside fenced blocks and inline code spans are not links — prose about Markdown (a rationale
 quoting the `[`x`](crate::x)` markup a doc comment shipped) must not be read as one.
@@ -60,13 +57,9 @@ FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
 # A backtick run and everything to its matching run — inline code, whatever is inside it.
 INLINE_CODE_RE = re.compile(r"(`+)(?:(?!\1).)*\1", re.S)
 HEADING_RE = re.compile(r"^\s*#{1,6}\s+(.*?)\s*#*\s*$")
-PROVENANCE_RE = re.compile(r"^(?:Distilled from:|Decided in:)\s*\S")
-# Checks (g)+(h). A rule anchor as an ADR spells it: a link target or bare prose, either way
-# `<topic>.md#<slug>`. The marker is the one place in the corpus a topic doc names an ADR — the
-# `Distilled from:` line in a rationale is the other, and both are Markdown, out of the
-# code-side ADR ban's reach.
+# Check (f). A rule anchor as an ADR spells it: a link target or bare prose, either way
+# `<topic>.md#<slug>`.
 RULE_ANCHOR_RE = re.compile(r"\b([a-z0-9-]+)\.md#([a-z0-9-]+)")
-SUPERSEDED_RE = re.compile(r"^Superseded by:\s*(ADR-\d{4})\b", re.M)
 ADR_ID_RE = re.compile(r"^(\d{4})-")
 # Targets this guard has no way to resolve, and no business guessing at.
 EXTERNAL_PREFIXES = ("http://", "https://", "mailto:", "ftp://")
@@ -152,9 +145,9 @@ def check_topic(path: Path, rules: Path, rel: str) -> list[str]:
         return problems
 
     for slug, whys in rules_found:
-        if len(whys) != 1:
+        if len(whys) > 1:
             problems.append(
-                f"{rel}: rule '{slug}' has {len(whys)} [why] link(s) (expected exactly 1)")
+                f"{rel}: rule '{slug}' has {len(whys)} [why] links (expected at most 1)")
         for target in whys:
             if not (rules / target).exists():
                 problems.append(
@@ -201,8 +194,8 @@ def check_link_targets(root: Path, rules: Path) -> list[str]:
 
 
 def check_rationale_bijection(root: Path, rules: Path) -> list[str]:
-    """Check (e): rationale files and rule [why] links are one-to-one, and each rationale sits
-    under a directory named for a real topic."""
+    """Check (e): every rationale file is linked by exactly one rule, and sits under a directory
+    named for a real topic. The other direction is not required — a rule may carry no rationale."""
     problems: list[str] = []
     rationale_dir = rules / "rationale"
     topics = {p.stem for p in rules.glob("*.md") if p.name != "README.md"}
@@ -264,30 +257,23 @@ def live_adrs(root: Path) -> dict[str, Path]:
     return out
 
 
-def check_supersession(root: Path, rules: Path) -> list[str]:
-    """Checks (g) and (h): the corpus is never silently wrong between an ADR and its absorption.
+def check_adr_rule_anchors(root: Path, rules: Path) -> list[str]:
+    """Check (f): a rule anchor an ADR names resolves.
 
-    `absorb-adrs` runs on a human's cadence by design, so a decision can overturn a rule months
-    before the fold. The gap is the whole defect: the rule keeps stating the old now in the
-    present tense, with nothing marking it. So an ADR that overturns a rule marks it in the same
-    change, and the two directions are held here:
+    References run one way. Nothing committed names an issue, PR, ADR or commit, so a rule never
+    points at the ADR that produced it and a rationale carries no provenance line. ADRs are the
+    exception, being temporary by design: one may name the rule it overturns, and that pointer is
+    how a pending absorption is found — grep the live ADRs for rule anchors.
 
-      (g) an ADR naming a rule anchor -> that rule carries `Superseded by: ADR-00xx …`. Naming the
-          anchor IS the trigger: a machine cannot tell overturning from citing, and the corpus
-          already says pointers reach a TOPIC unless they mean a specific rule. An ADR that only
-          wants context names the topic and trips nothing.
-      (h) a marker naming an ADR that no longer exists is stale — absorption deletes the ADR, and
-          this is what makes it delete the marker too.
-
-    A gate rather than a step in the skill: a procedure a human has to remember, enforced by
-    nothing, is the failure mode being fixed.
+    An unresolvable pointer is the defect this catches. A rule renamed or deleted after the ADR
+    was written leaves the ADR aimed at nothing, and the absorption pass that would have noticed
+    is the one that never runs because the pointer no longer resolves.
     """
     problems: list[str] = []
-    adrs = live_adrs(root)
     spans = {p.stem: rule_spans(p) for p in rules.glob("*.md") if p.name != "README.md"} \
         if rules.is_dir() else {}
 
-    for adr_id, path in adrs.items():
+    for path in live_adrs(root).values():
         rel = path.relative_to(root).as_posix()
         seen: set[tuple[str, str]] = set()
         for lineno, line in unfenced_lines(path.read_text(encoding="utf-8", errors="ignore")):
@@ -301,34 +287,6 @@ def check_supersession(root: Path, rules: Path) -> list[str]:
                 elif slug not in spans[topic]:
                     problems.append(f"{rel}:{lineno}: names '{topic}#{slug}', which is not a rule "
                                     f"anchor in that topic")
-                elif not SUPERSEDED_RE.search(spans[topic][slug]):
-                    problems.append(
-                        f"{rel}:{lineno}: overturns '{topic}#{slug}' with no marker on the rule — "
-                        f"add `Superseded by: {adr_id} (pending absorption)` to it in this change, "
-                        f"or name the topic instead if this ADR only cites the rule")
-
-    for topic, by_slug in spans.items():
-        rel = (rules / f"{topic}.md").relative_to(root).as_posix()
-        for slug, span in by_slug.items():
-            for adr_id in SUPERSEDED_RE.findall(span):
-                if adr_id not in adrs:
-                    problems.append(f"{rel}: rule '{slug}' is marked superseded by {adr_id}, which "
-                                    f"is not a live ADR — absorbed decisions leave no marker")
-    return problems
-
-
-def check_provenance(root: Path, rules: Path) -> list[str]:
-    """Check (f): every rationale states where its reasoning came from."""
-    problems: list[str] = []
-    rationale_dir = rules / "rationale"
-    if not rationale_dir.is_dir():
-        return problems
-    for path in sorted(rationale_dir.rglob("*.md")):
-        text = path.read_text(encoding="utf-8", errors="ignore")
-        if not any(PROVENANCE_RE.match(ln) for _, ln in prose_lines(text)):
-            rel = path.relative_to(root).as_posix()
-            problems.append(
-                f"{rel}: no provenance line (expected `Distilled from: …` or `Decided in: …`)")
     return problems
 
 
@@ -344,10 +302,9 @@ def collect_problems(root_arg: str = ".") -> list[str]:
             problems.extend(check_topic(path, rules, rel))
         problems.extend(check_link_targets(root, rules))
         problems.extend(check_rationale_bijection(root, rules))
-        problems.extend(check_provenance(root, rules))
-    # Outside the `rules.is_dir()` guard: a live ADR overturning a rule is a finding even in a
-    # tree that has no corpus yet, and that is exactly when the topic doc is missing.
-    problems.extend(check_supersession(root, rules))
+    # Outside the `rules.is_dir()` guard: an ADR naming a rule anchor is a finding even in a tree
+    # that has no corpus yet, and that is exactly when the topic doc is missing.
+    problems.extend(check_adr_rule_anchors(root, rules))
     return problems
 
 
@@ -362,9 +319,9 @@ def main(root_arg: str = ".") -> int:
 if __name__ == "__main__":
     sys.exit(main(*sys.argv[1:2]))
 
-# ii:begin provenance — derived from .ii/repo.toml; do not hand-edit out of sync. Regenerate with `python3 "$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py" --write .`. sha256=8ac53e40b5dfd6180a697c675dbefc2dc46d08d0e356d75b425a93577862041b
-# Source:   Impractical-Instruments/agent-tools@057c3f7a9391816263b1a4fcb46af5f4a5dc705f:plugins/impractical-doctrine/rules/check_rules_links.py
-# Fetched:  2026-08-12
-# Refresh:  gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/check_rules_links.py?ref=main' --jq '.content' | base64 -d > scripts/check_rules_links.py && python3 "$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py" --write .
+# ii:begin provenance — derived from .ii/repo.toml; do not hand-edit out of sync. Regenerate with `ii-generate --write .`. sha256=4bd999e68c65312ed1c41c075f099e31c06f9a1bfd12cae31596bb40602e14a9
+# Source:   Impractical-Instruments/agent-tools@df737e6e04aaffbfac28864101c723e1e1a06997:plugins/impractical-doctrine/rules/check_rules_links.py
+# Fetched:  2026-08-15
+# Refresh:  gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/check_rules_links.py?ref=main' --jq '.content' | base64 -d > scripts/check_rules_links.py && ii-generate --write .
 # Do not edit locally. Changes go upstream via PR against the source repo.
 # ii:end provenance

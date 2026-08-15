@@ -1,6 +1,6 @@
 # Issue tracker: GitHub Issues
 
-<!-- GENERATED from templates/issue-tracker.md + .ii/repo.toml by `python3 "$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py" --write .` — edit the source, not this file. sha256=a14f81b94b3b6e4b0d15d165d7d4fc2f71c450771e6f3775256e1534129dc19e -->
+<!-- GENERATED from templates/issue-tracker.md + .ii/repo.toml by `ii-generate --write .` — edit the source, not this file. sha256=afe41d08981a06f6f1ac99569ab132220a0331aad603b68f0903245bc8cd2496 -->
 
 Issues and specs for this repo live as GitHub Issues. Use the `gh` CLI for all operations.
 
@@ -14,6 +14,38 @@ Issues and specs for this repo live as GitHub Issues. Use the `gh` CLI for all o
 - **Close**: `gh issue close <number> --comment "..."`
 
 Infer the repo from `git remote -v` — `gh` does this automatically when run inside a clone.
+
+## Labels
+
+Labels are **all-repo or one-repo, and nothing in between.** The state roles below and the `wayfinder:*` family under "Wayfinding operations" are all-repo: the same strings with the same meanings in every repo this document reaches, because they are shared triage vocabulary rather than a per-repo setting. Anything a repo adds for itself is one-repo, and no other repo needs to know it.
+
+**Label strings are exact.** `gh` matches them literally, spaces and all — a label whose name carries a space is not reachable by the same string without it, and `gh issue edit --add-label` fails rather than guessing. Copy the strings below character for character.
+
+The meanings here are what a label *is*; a label's description field in GitHub is set on the tracker and is not claimed to match.
+
+### State roles
+
+The state axis answers **who acts next**. When an instruction names a role ("apply the AFK-ready triage label"), use the matching label.
+
+- **`ready-for-agent`** — fully specified and safe to run unattended; the dispatcher claims these.
+- **`ready-for-human`** — needs a human in the loop, including work an agent could mostly do.
+
+`ready-for-agent` is read by the dispatcher, so applying it starts unattended work. Carrying neither role is a query rather than a third label:
+
+```
+is:issue state:open (-label:ready-for-agent AND -label:ready-for-human)
+```
+
+### Labels this repo adds for itself
+
+The one-repo case. This repo declares these labels because they are useful here; no other repo needs to know them. The tracker may carry others — stock labels, or ones added by hand; this is the declared set, not an inventory of everything on it.
+
+- `post-v1`
+- `design-question`
+- `someday`
+- `epic`
+- `triage`
+- `perf`
 
 ## Pull requests as a triage surface
 
@@ -29,7 +61,7 @@ Run `gh issue view <number> --comments`. The issue is the container; the spec is
 
 ## Wayfinding operations
 
-Used when charting an initiative whose shape is not yet known, and working it until the route is clear. The **map** is a single issue; the work hangs off it as **child** issues. The labels are the same wherever this document is generated:
+Used when charting an initiative whose shape is not yet known, and working it until the route is clear. The **map** is a single issue; the work hangs off it as **child** issues. This family is all-repo, like the state roles above:
 
 - **`wayfinder:map`** — the initiative map, holding Notes / Decisions-so-far / Fog.
 - **`wayfinder:research`** — a child ticket resolved by fact-finding against primary sources.

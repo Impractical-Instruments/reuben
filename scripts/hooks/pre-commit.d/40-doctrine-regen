@@ -4,12 +4,11 @@
 # Numbered above 30 because it WRITES: read-only checks take the low numbers so they cannot leave
 # the author a modified, staged file they were never told about (see CONTRIBUTING.md).
 #
-# Every failure here is a warning, never a block. The generator is plugin payload addressed through
-# $CLAUDE_PLUGIN_ROOT — set in a plugin context and nowhere else — reading templates from a private
-# repo and fetching the company glossary with a token. Unset variable, no plugin, no network, no
-# access: all properties of the machine rather than of the change, so a clone with none of them has
-# to stay committable. CI's `provenance` job is what reds, and staleness is the scheduled
-# regeneration job's.
+# Every failure here is a warning, never a block. `ii-generate` is a wrapper on PATH, installed by
+# the brain checkout's bootstrap.sh, and it reads templates from a private repo and fetches the
+# company glossary with a token. No wrapper, no network, no access: all properties of the machine
+# rather than of the change, so a clone with none of them has to stay committable. CI's `provenance`
+# job is what reds, and staleness is the scheduled regeneration job's.
 #
 # KNOWN LIMIT, and it is why the staging below has to be right. `provenance` verifies the artifacts
 # it FINDS, by scanning for markers; it asserts nothing about which ones ought to exist. So a commit
@@ -17,13 +16,9 @@
 # 0. `--require-artifacts` catches an emptied tree and nothing finer, and pinning the number here
 # would be the stored count the standing rule forbids. Deriving the expected set from the manifest is
 # upstream's to build; this check is the front line in the meantime.
-gen="${CLAUDE_PLUGIN_ROOT:-}/generator/ii_generate.py"
-if [ -z "${CLAUDE_PLUGIN_ROOT:-}" ] || [ ! -f "$gen" ]; then
-    echo "- doctrine regen: \$CLAUDE_PLUGIN_ROOT is unset or carries no generator — skipped." >&2
-    exit 0
-fi
-if ! command -v python3 >/dev/null 2>&1; then
-    echo "- doctrine regen: python3 not found — skipped." >&2
+if ! command -v ii-generate >/dev/null 2>&1; then
+    echo "- doctrine regen: ii-generate is not on PATH — skipped." >&2
+    echo "  It is installed by bootstrap.sh in the brain checkout." >&2
     exit 0
 fi
 
@@ -51,7 +46,7 @@ listing() {
     git -C "$root" ls-files --others --exclude-standard
 }
 before=$(listing | sort -u)
-if python3 "$gen" --write "$root"; then
+if ii-generate --write "$root"; then
     after=$(listing | sort -u)
     printf '%s\n' "$after" | while IFS= read -r f; do
         [ -n "$f" ] || continue
