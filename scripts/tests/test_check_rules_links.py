@@ -83,7 +83,8 @@ class LinksGuardTest(unittest.TestCase):
         )
         self.assertEqual(problems, [])
 
-    def test_anchor_with_no_why_link(self):
+    def test_anchor_with_no_why_link_is_clean(self):
+        # Rationale is optional: a rule whose sentence carries its own reasoning generates no file.
         body = """# Clock
 
 > How musical time works.
@@ -93,7 +94,7 @@ class LinksGuardTest(unittest.TestCase):
 <a id="tempo-is-immutable"></a>
 ### Tempo is immutable within a block.
 """
-        self.assertEqual(len(self._problems({"clock.md": body})), 1)
+        self.assertEqual(self._problems({"clock.md": body}), [])
 
     def test_anchor_with_two_why_links(self):
         body = """# Clock
@@ -184,10 +185,10 @@ No rules here yet.
         self.assertEqual(problems, [])
 
     def test_multi_rule_first_missing_why_no_leakage(self):
-        # First rule has NO [why]; second is well-formed. Correct span logic stops the first
-        # rule at the second anchor, so the first counts 0 links -> exactly 1 problem, on the
-        # first rule only. A boundary bug (span bleeding into the next rule) would let the
-        # second rule's [why] satisfy the first and report 0 — this test catches that.
+        # First rule has NO [why] — legal — and the second has TWO. Correct span logic stops the
+        # first rule at the second anchor, so the over-count lands on the second rule alone. A
+        # boundary bug (span bleeding into the next rule) would give the first rule both links
+        # too and report twice; a count assertion catches that.
         body = """# Clock
 
 > How musical time works.
@@ -201,6 +202,7 @@ No rules here yet.
 ### A block renders atomically.
 
 [why](rationale/clock/block-is-atomic.md)
+[why](rationale/clock/block-is-atomic.md)
 
 ## Terms
 
@@ -211,8 +213,8 @@ No rules here yet.
             rationales=["rationale/clock/block-is-atomic.md"],
         )
         self.assertEqual(len(problems), 1)
-        self.assertIn("tempo-is-immutable", problems[0])
-        self.assertNotIn("block-is-atomic", problems[0])
+        self.assertIn("block-is-atomic", problems[0])
+        self.assertNotIn("tempo-is-immutable", problems[0])
 
     def test_multi_rule_first_has_two_whys_no_leakage(self):
         # First rule has TWO [why]; second is well-formed. Exactly 1 problem, attributed to the
@@ -363,29 +365,20 @@ class CorpusIntegrityTest(unittest.TestCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("not a topic doc", problems[0])
 
-    # --- (f) provenance ---
-
-    def test_rationale_without_provenance(self):
-        problems = self._clock("# Why\n\nBecause.\n")
-        self.assertEqual(len(problems), 1)
-        self.assertIn("provenance", problems[0])
-
-    def test_decided_in_satisfies_provenance(self):
-        self.assertEqual(
-            self._clock("# Why\n\nBecause.\n\nDecided in: issue #12 — settled directly, no ADR.\n"),
-            [],
-        )
+    def test_rationale_needs_no_provenance_line(self):
+        # A rationale states the problem the rule solves and the alternatives ruled out. It names
+        # no issue, PR, ADR or commit, so there is no provenance line left to require.
+        self.assertEqual(self._clock("# Why\n\nBecause.\n"), [])
 
 
-class SupersessionTest(unittest.TestCase):
-    """Checks (g) + (h): a rule an ADR has overturned says so, and the marker dies with the ADR.
+class AdrRuleAnchorTest(unittest.TestCase):
+    """Check (f): a rule anchor an ADR names resolves.
 
-    The live corpus has no ADRs, so this class is the only place these two run against real
-    input. Every `ADR-<n>` token is composed rather than written, for the same reason the module
-    header explains — these fixtures are code, and code does not name ADRs.
+    An ADR is the one surface that may name a rule — grepping the live ADRs for rule anchors is
+    how a pending absorption is found. The rules corpus never points back, so an unresolvable
+    pointer is the only defect there is to catch.
     """
 
-    ADR = f"ADR-{1:04d}"
     RATIONALE = ["rationale/clock/tempo-is-immutable.md"]
 
     def _problems(self, adrs: dict[str, str], topic: str = WELL_FORMED):
@@ -398,24 +391,16 @@ class SupersessionTest(unittest.TestCase):
                 (adr_dir / name).write_text(body, encoding="utf-8")
             return check_rules_links.collect_problems(str(root))
 
-    def marked(self, adr: str | None = None) -> str:
-        """WELL_FORMED with the supersession marker on its one rule."""
-        marker = f"Superseded by: {adr or self.ADR} (pending absorption)"
-        return WELL_FORMED.replace("### Tempo is immutable within a block.\n",
-                                   f"### Tempo is immutable within a block.\n\n{marker}\n")
-
-    # --- (g) an ADR that overturns a rule marks it ---
-
-    def test_an_adr_naming_an_unmarked_rule_fails(self):
-        problems = self._problems({"0001-tempo.md": "# Tempo\n\nOverturns `clock.md#tempo-is-immutable`.\n"})
-        self.assertEqual(len(problems), 1)
-        self.assertIn("no marker", problems[0])
-        self.assertIn(self.ADR, problems[0])
-
-    def test_a_marked_rule_satisfies_the_adr(self):
+    def test_an_adr_naming_a_live_rule_is_clean(self):
+        # Naming a rule is what an ADR is for. The pointer resolves, so there is nothing to report
+        # — and the rule it points at carries no marker back.
         self.assertEqual(
-            self._problems({"0001-tempo.md": "# Tempo\n\nOverturns [it](../rules/clock.md#tempo-is-immutable).\n"},
-                           topic=self.marked()),
+            self._problems({"0001-tempo.md": "# Tempo\n\nOverturns `clock.md#tempo-is-immutable`.\n"}),
+            [])
+
+    def test_an_adr_naming_a_live_rule_by_link_is_clean(self):
+        self.assertEqual(
+            self._problems({"0001-tempo.md": "# Tempo\n\nOverturns [it](../rules/clock.md#tempo-is-immutable).\n"}),
             [])
 
     def test_an_adr_naming_only_a_topic_trips_nothing(self):
@@ -425,8 +410,8 @@ class SupersessionTest(unittest.TestCase):
             self._problems({"0001-tempo.md": "# Tempo\n\nSee [clock](../rules/clock.md).\n"}), [])
 
     def test_the_same_anchor_named_twice_is_one_finding(self):
-        body = ("# Tempo\n\nOverturns `clock.md#tempo-is-immutable`.\n\n"
-                "As established, `clock.md#tempo-is-immutable` no longer holds.\n")
+        body = ("# Tempo\n\nOverturns `clock.md#no-such-rule`.\n\n"
+                "As established, `clock.md#no-such-rule` no longer holds.\n")
         self.assertEqual(len(self._problems({"0001-tempo.md": body})), 1)
 
     def test_an_anchor_inside_a_fenced_block_is_not_a_claim(self):
@@ -448,27 +433,13 @@ class SupersessionTest(unittest.TestCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("not a rule anchor", problems[0])
 
-    # --- (h) the marker dies with the ADR ---
-
-    def test_a_marker_naming_a_dead_adr_fails(self):
-        # What absorption leaves behind: the ADR is deleted, the rule still claims to be pending.
-        problems = self._problems({}, topic=self.marked())
-        self.assertEqual(len(problems), 1)
-        self.assertIn("not a live ADR", problems[0])
-
-    def test_a_marker_naming_a_different_live_adr_still_fails(self):
-        problems = self._problems({"0001-tempo.md": "# T\n\nSee [clock](../rules/clock.md).\n"},
-                                  topic=self.marked(adr=f"ADR-{9:04d}"))
-        self.assertEqual(len(problems), 1)
-        self.assertIn("not a live ADR", problems[0])
-
 
 if __name__ == "__main__":
     unittest.main()
 
-# ii:begin provenance — derived from .ii/repo.toml; do not hand-edit out of sync. Regenerate with `python3 "$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py" --write .`. sha256=78bcd1ad231bbf04b478adf8f4745a330844b403cd85511924d62e3fa2aa307f
-# Source:   Impractical-Instruments/agent-tools@057c3f7a9391816263b1a4fcb46af5f4a5dc705f:plugins/impractical-doctrine/rules/tests/test_check_rules_links.py
-# Fetched:  2026-08-12
-# Refresh:  gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/tests/test_check_rules_links.py?ref=main' --jq '.content' | base64 -d > scripts/tests/test_check_rules_links.py && python3 "$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py" --write .
+# ii:begin provenance — derived from .ii/repo.toml; do not hand-edit out of sync. Regenerate with `ii-generate --write .`. sha256=ff02389ded3ba804fdf8a496eecd1f042ab1d971d85f2e0d7352ab0d5c943f4c
+# Source:   Impractical-Instruments/agent-tools@df737e6e04aaffbfac28864101c723e1e1a06997:plugins/impractical-doctrine/rules/tests/test_check_rules_links.py
+# Fetched:  2026-08-15
+# Refresh:  gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/tests/test_check_rules_links.py?ref=main' --jq '.content' | base64 -d > scripts/tests/test_check_rules_links.py && ii-generate --write .
 # Do not edit locally. Changes go upstream via PR against the source repo.
 # ii:end provenance

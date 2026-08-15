@@ -734,14 +734,14 @@ jobs:
         run: python3 scripts/check_sample_alias.py .
 
   # The vendored verifier over every doctrine artifact in the tree: it recomputes the sha256 each
-  # generated span carries and needs no plugin, no network and no token. That is what public CI can
-  # run — the generator itself is plugin payload addressed through $CLAUDE_PLUGIN_ROOT, which
-  # Actions does not set, reading templates from a private repo.
+  # generated span carries and needs no machinery, no network and no token. That is what public CI
+  # can run — the generator itself is `ii-generate`, a wrapper into a private checkout that Actions
+  # does not have, reading templates from a private repo.
   #
   # KNOW WHAT THIS BUYS: tamper-detection, not staleness-detection. A match proves nobody
   # hand-edited a generated span; it does not prove the span matches the current template and
   # manifest. Staleness is the generator's `--check`, which runs from the scheduled regeneration job
-  # on a machine that has the plugin.
+  # on a machine that has the machinery checkout.
   #
   # ALWAYS ON, and not path-filtered, because a hand-edit to a generated artifact is a change to a
   # doc — which moves no filter in this workflow.

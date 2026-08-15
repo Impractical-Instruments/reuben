@@ -256,7 +256,7 @@ source. Neither is the `GENERATED from …` header, which belongs to a file that
 number is written down in exactly two places in this corpus: a rule's `Superseded by:` marker and a
 rationale's `Distilled from:` line.
 
-<!-- ii:begin company-doctrine — derived from templates/company-doctrine-rules.md + .ii/repo.toml; do not hand-edit out of sync. Regenerate with `python3 "$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py" --write .`. sha256=2a44c0f8c2f0df9b8419ab7327dea0630deedbe519589212616a3b9860d0a6f2 -->
+<!-- ii:begin company-doctrine — derived from templates/company-doctrine-rules.md + .ii/repo.toml; do not hand-edit out of sync. Regenerate with `ii-generate --write .`. sha256=3af7d0b3a83680c64643f174a05554ac8c323e112859fb5f4a1abe35f42c221c -->
 ## Company doctrine
 
 The company's doctrine is stated here once, at the front door — not restated inside the documents that depend on it. What "doctrine" means is defined in the company glossary below, like every other company term.
@@ -277,8 +277,8 @@ The company's doctrine is stated here once, at the front door — not restated i
 The company glossary is authored elsewhere and read at generation time. Its provenance:
 
 ```
-# Source:   Impractical-Instruments/brain@014c8362bfaf0e2f3c03433827ca8a231fa2cdbd:CONTEXT.md
-# Fetched:  2026-08-12
+# Source:   Impractical-Instruments/brain@440034f0365465428b89668736b6ae506e7c564c:CONTEXT.md
+# Fetched:  2026-08-15
 # Refresh:  gh api repos/Impractical-Instruments/brain/contents/CONTEXT.md --jq '.content' | base64 -d
 # Do not edit locally. Changes go upstream via PR against the source repo.
 ```
@@ -308,6 +308,16 @@ When the environment does not behave — a variable the docs say is set and is n
 Routing around it costs three things at once. The symptom is hidden rather than fixed. The next agent rediscovers it from scratch, and pays again. And where the missing piece was a **guard**, working around it is indistinguishable from switching it off — the work continues, unguarded, and nothing says so.
 
 Repairing your own environment by hand, for the length of one command, is the failure and not the fix. Repair it where the setup lives, so the next session inherits the repair.
+
+### Every open issue says who acts next
+
+An open issue carries exactly one state role: `ready-for-agent` or `ready-for-human`. The issue-tracker document holds the vocabulary; the obligation is here.
+
+**Whoever files applies it, and an agent applies it at filing rather than deferring** — an agent knows whether it could have done the work, and that judgement is expensive to reconstruct from a title later. Filing without a role is a human's prerogative, not an agent's.
+
+**`ready-for-agent` asserts the body is implementable without an interview, and the dispatcher acts on it.** Applying it starts unattended work, so it is applied by someone who read the body and **never mechanically**: no script, hook, template or scheduled job adds a state role. A checker may report that a role is missing — choosing one is not mechanisable.
+
+`ready-for-human` means a human is in the loop, including work an agent could mostly do. It is not a holding pen for unread issues; an issue carrying no role is already that, and the dispatcher cannot see it.
 
 ### Referring to another repo's decisions
 

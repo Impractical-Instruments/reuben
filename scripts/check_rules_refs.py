@@ -9,11 +9,12 @@ has nowhere repo-local to live today — see the payload README, "The census is 
 per-repo".
 
 Seven checks:
-  1. No `ADR-<n>` references survive in CODE. The only legitimate ADR mentions are
-     `Distilled from:` lines in docs/rules/rationale/** and the live ADRs in docs/adr/**
-     (both are Markdown, which this linter does not scan as code), plus the `absorb-adrs`
-     skill itself — the tool that distils ADRs into rules and stamps each rationale's
-     provenance line, so its scaffolder + tests name ADRs by design (see SKILL_ALLOWLIST).
+  1. No `ADR-<n>` references survive in CODE. Nothing committed names an issue, PR, ADR or
+     commit; the live ADRs in docs/adr/** are the exception, being temporary by design (and
+     Markdown, which this linter does not scan as code), plus the `absorb-adrs` skill itself —
+     the tool that distils ADRs into rules, so its scaffolder + tests name ADRs by design
+     (see SKILL_ALLOWLIST). A commit SHA used to pin a dependency or declare the provenance of
+     generated, vendored or copied content is not a reference in this sense and is untouched.
   2. Every `see rules: <topic>` / `see engine rules: <topic>` code comment names a kebab-case
      slug; for the same-repo form, docs/rules/<topic>.md must exist. For the cross-repo form,
      the topic is resolved against the pinned upstream submodule's <path>/docs/rules/<topic>.md
@@ -23,12 +24,13 @@ Seven checks:
      proxy for carrying rationale: a doc that long is arguing something, and an argument in code
      has to point at the rule it belongs to.
   4. No COMMENT cites an issue (`#<nn>`, `reuben#<nn>`) or a rule anchor (`agent-mcp.md#some-rule`).
-     An issue number is provenance, and provenance lives in a rationale file's `Decided in:` /
-     `Distilled from:` line — the same reason check 1 bans `ADR-<n>`. In code it is an unresolvable
-     pointer to a closed argument, and it reliably marks a comment that is retelling history rather
-     than stating mechanics. A rule anchor is the deeper half of the same mistake: code points at
-     topics only. (The examples above are written with a placeholder because this file is scanned by
-     its own check, the same reason check 1 spells `ADR-<n>` that way.)
+     An issue number in code is an unresolvable pointer to a closed argument, and it reliably marks
+     a comment retelling history rather than stating mechanics — the same reason check 1 bans
+     `ADR-<n>`. There is no sanctioned home to move it to: the reasoning that earned the citation
+     goes in a rule or its rationale, stated as reasoning, and the number is dropped. A rule anchor
+     is the deeper half of the same mistake: code points at topics only. (The examples above are
+     written with a placeholder because this file is scanned by its own check, the same reason
+     check 1 spells `ADR-<n>` that way.)
 
      The rule is about prose, not about a language, so this runs over every lane in CODE_EXTS. What
      it does NOT reach is decided by ONE test, applied per lane: **does the language generate this
@@ -57,10 +59,10 @@ Seven checks:
      syntax: guessing wrong turns code into prose (the reason HASH_EXTS is keyed off the suffix
      rather than sniffed), so a lane still earns its row before it is scanned — the row is what
      reading costs, not what reach costs. And it is not a claim that nothing is ever out. Markdown is
-     out because provenance's one sanctioned home IS a Markdown file — a rationale's `Distilled from:`
-     / `Decided in:` line, and the live ADRs — so scanning it would red on the very text the rule
-     points at. A lane is out when another rule already governs the same text, or when nothing can
-     read it yet and that is written down; never merely because no one got to it.
+     out because the one surface allowed to name an ADR IS a Markdown file — the live ADRs themselves
+     — so scanning it would red on the very text the exception exists for. A lane is out when another
+     rule already governs the same text, or when nothing can read it yet and that is written down;
+     never merely because no one got to it.
 
      RUST — `///`, `/** … */` and `/*! … */` are out of reach. A doc comment on a `JsonSchema` type
      is generated into the advertised `description` a model reads over the wire; this linter cannot
@@ -256,9 +258,8 @@ CODE_EXTS = {".rs", ".py", ".mjs", ".js", ".ts", ".jsx", ".tsx", ".go", ".c", ".
 #
 # Deliberately out of reach: first-party source the guard does not read, and why not.
 OUT_OF_REACH_EXTS = {
-    ".md": "provenance's one sanctioned home is a Markdown file — a rationale's `Distilled from:` / "
-           "`Decided in:` line, and the live ADRs — so scanning it would red on the very text the "
-           "rule points at",
+    ".md": "the one surface allowed to name an ADR is a Markdown file — the live ADRs themselves, "
+           "temporary by design — so scanning it would red on the very text the exception exists for",
 }
 # Not a prose surface at all. Three reasons cover every entry, so they are named once and shared:
 # writing sixteen bespoke paragraphs about image formats would be the ritual, not the argument.
@@ -303,9 +304,8 @@ SKIP_DIRS = {".git", "target", "node_modules", "dist", "build"}
 # repo's own CI. A directory is not exempt for being NAMED `engine` — only for BEING the submodule,
 # which only the root position says.
 SKIP_PREFIXES = {(".claude", "worktrees"), ("engine",)}
-# The absorb-adrs skill is the one sanctioned home of ADR-NNNN tokens in code: it distils ADRs
-# into rules and writes each rationale's `Distilled from:` line, so its scaffolder + tests name
-# ADRs by design. Keyed on a PATH COMPONENT, so it follows the skill wherever it is installed and
+# The absorb-adrs skill is the one sanctioned home of ADR-NNNN tokens in code: it reads ADRs and
+# distils them into rules, so its scaffolder + tests name ADRs by design. Keyed on a PATH COMPONENT, so it follows the skill wherever it is installed and
 # is simply inert in a tree that has none — which is every tree that reaches the skill from a
 # plugin rather than committing it.
 SKILL_ALLOWLIST = {"absorb-adrs"}
@@ -907,8 +907,8 @@ def comment_ref_problems(rel: str, text: str, lane: str = "rust") -> list[str]:
     for off, body, read_as in pieces:
         i = line_at(off)
         for ref in ISSUE_RE.findall(body):
-            problems.append(f"{rel}:{i}: issue citation `{ref}` in a comment — provenance belongs "
-                            f"in a rationale file, not in code; point at a topic instead"
+            problems.append(f"{rel}:{i}: issue citation `{ref}` in a comment — nothing committed "
+                            f"names an issue; state the reasoning, or point at a topic"
                             + (COLOUR_HINT if read_as == "css" and SHORT_HEX_RE.match(ref) else ""))
         for ref in RULE_ANCHOR_RE.findall(body):
             problems.append(f"{rel}:{i}: rule-level pointer `{ref}` in a comment — point at the "
@@ -1065,9 +1065,9 @@ def main(root_arg: str = ".") -> int:
 if __name__ == "__main__":
     sys.exit(main(*sys.argv[1:2]))
 
-# ii:begin provenance — derived from .ii/repo.toml; do not hand-edit out of sync. Regenerate with `python3 "$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py" --write .`. sha256=d1a7da31a30a2d37ef0ed45957c3632cce4f2b2134ea353e19445a380029f573
-# Source:   Impractical-Instruments/agent-tools@057c3f7a9391816263b1a4fcb46af5f4a5dc705f:plugins/impractical-doctrine/rules/check_rules_refs.py
-# Fetched:  2026-08-12
-# Refresh:  gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/check_rules_refs.py?ref=main' --jq '.content' | base64 -d > scripts/check_rules_refs.py && python3 "$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py" --write .
+# ii:begin provenance — derived from .ii/repo.toml; do not hand-edit out of sync. Regenerate with `ii-generate --write .`. sha256=fab99f4f621989e6757a85beb7af458cefdf640a394825cd8a7a0b6c0cf091ed
+# Source:   Impractical-Instruments/agent-tools@df737e6e04aaffbfac28864101c723e1e1a06997:plugins/impractical-doctrine/rules/check_rules_refs.py
+# Fetched:  2026-08-15
+# Refresh:  gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/check_rules_refs.py?ref=main' --jq '.content' | base64 -d > scripts/check_rules_refs.py && ii-generate --write .
 # Do not edit locally. Changes go upstream via PR against the source repo.
 # ii:end provenance
