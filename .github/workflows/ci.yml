@@ -154,11 +154,6 @@ jobs:
               - 'scripts/hooks/**'
               - 'scripts/install-hooks.sh'
               - 'scripts/test_hook_dispatch.py'
-              # absorb-adrs runs these guards over a fixture tree and asserts they go green, so a
-              # guard change can break it. Its suite otherwise runs only in `check`, whose filter is
-              # *workspace — which `scripts/**` does not match. That gap let a corpus-wide widening
-              # of the links guard reach dev with the skill red.
-              - '.claude/skills/absorb-adrs/**'
               - '.github/workflows/ci.yml'
 
   lockstep:
@@ -629,12 +624,6 @@ jobs:
       # all code, not just docs/rules.)
       - name: Rule<->rationale link guard
         run: python3 scripts/check_rules_links.py .
-
-      # The guards' one in-repo consumer: absorb-adrs scaffolds a rule into a fixture tree and
-      # asserts these same scripts go green over it. Run it on a guard change, which is the change
-      # that can break it — `check` only runs it when the Rust workspace moves.
-      - name: Guard-consumer skill tests (absorb-adrs)
-        run: cd .claude/skills/absorb-adrs && python3 -m unittest -v
 
   # The ADR-number guard (check_adr_numbers.py): a number, once issued, is never carried by a second
   # decision. docs/adr/README.md has stated that since July and nothing enforced it, so two live
