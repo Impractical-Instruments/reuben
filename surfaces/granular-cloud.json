@@ -1,0 +1,17 @@
+{
+  "surface_version": 1,
+  "instrument": "granular-cloud",
+  "cols": 4,
+  "controls": [
+    { "bind": "position", "label": "Position", "widget": "fader", "group": "scrub" },
+
+    { "bind": "grain_size", "label": "Grain Size", "widget": "radial", "group": "grain" },
+    { "bind": "density", "label": "Density", "widget": "radial", "group": "grain" },
+    { "bind": "spray", "label": "Spray", "widget": "radial", "group": "grain", "max": 500 },
+    { "bind": "pitch", "label": "Pitch", "widget": "radial", "group": "grain" },
+
+    { "bind": "tone", "label": "Tone", "widget": "radial", "group": "out" },
+    { "bind": "space", "label": "Space", "widget": "radial", "group": "out" },
+    { "bind": "gain", "label": "Level", "widget": "radial", "group": "out" }
+  ]
+}
