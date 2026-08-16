@@ -498,7 +498,7 @@ fn new_instrument_creates_a_valid_document_and_refuses_to_overwrite() {
     let result = new_instrument(SRC, "fresh", &registry, &resolver).expect("new");
     assert!(result.report.ok);
     assert!(result.written);
-    // The minimal required document and nothing else — see rules: agent-mcp
+    // The minimal required document and nothing else
     assert_eq!(
         readback(&resolver),
         json!({ "format_version": 3, "instrument": "fresh", "nodes": [] }),

@@ -7,8 +7,6 @@
 //! `unpack::*` census entry splices, so a second invocation here would define that array twice.
 //! Unpacking another product type means a new module file and a new census line — and, first,
 //! teaching the macro that type's event input form (see `unpack.rs` in `reuben-macros`).
-//!
-//! see rules: composition-operators
 
 use crate::vocab::Note;
 

@@ -6,7 +6,7 @@ name: Promote dev to main (production)
 # GitHub App token. The App token, not GITHUB_TOKEN, does the write for two reasons: `main`'s
 # ruleset restricts pushes to the App's bypass entry, and a GITHUB_TOKEN-authored push does NOT
 # trigger downstream workflows — so the `push: [main]` CI → production deploy would silently never
-# fire — see rules: web-product-process for the maintainer setup this depends on.
+# fire. The maintainer setup this depends on is in CONTRIBUTING.md.
 #
 # One property of `main`'s ruleset this push depends on, recorded here because nothing else does:
 # the ruleset deliberately does not "require a pull request" — that rule would block this push
@@ -19,7 +19,7 @@ name: Promote dev to main (production)
 # read it and no future agent can re-check this line. Re-confirming it means asking an admin, the way
 # a `last-verified` date in brain's MAP.md does. The sentence above it, by contrast, was checked.
 #
-# The branch model this serves is `.ii/repo.toml`'s `[branches]` table.
+# The branch model this serves — `dev` integrates, `main` releases — is stated in CONTRIBUTING.md.
 
 on:
   workflow_dispatch:

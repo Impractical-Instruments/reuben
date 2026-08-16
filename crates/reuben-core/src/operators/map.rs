@@ -19,8 +19,6 @@
 //! - inputs 1–4: `in_min`, `in_max`, `out_min`, `out_max` (`Float`).
 //! - input 5: `curve` (`Enum` [`MapCurve`] {Linear, Exponential}).
 //! - output 0: `out` — the remapped value.
-//!
-//! see rules: composition-operators
 
 use crate::vocab::MapCurve;
 use num_traits::Float;

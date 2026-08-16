@@ -13,8 +13,6 @@
 //!   Unwired default 0 (center).
 //! - output 0: `left` (Signal) — `audio · cos(θ)`.
 //! - output 1: `right` (Signal) — `audio · sin(θ)`, where `θ = (pan + 1)·π/4`.
-//!
-//! see rules: composition-operators
 
 use alloc::boxed::Box;
 use num_traits::Float;
@@ -46,7 +44,7 @@ impl Operator for Pan {
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
 
-        // Flat locals for the block loop (see rules: execution-runtime): each read returns a
+        // Flat locals for the block loop: each read returns a
         // block-lifetime slice, so both coexist with the output writes. The two writes are the
         // exception and stay in the loop — `io.write` takes `&mut io`, so `OUT_LEFT` and
         // `OUT_RIGHT` can't both be held; a split-borrow accessor is future work.

@@ -8,7 +8,7 @@
 //! The split is the same one the authoring half draws: a verb that *ran* and reported a problem is
 //! an [`Answer`] (a rejected swap, an `expect` conflict — the guard guarding), and only a verb that
 //! could not do its job at all is a [`Refusal`]. [`get_engine_status`] cannot refuse, because
-//! answering "is it there?" is its whole job. see rules: agent-mcp
+//! answering "is it there?" is its whole job.
 
 use reuben_core::Registry;
 use reuben_document::projection::Projector;

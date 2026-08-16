@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # Append per-commit benchmark instruction counts to a per-branch orphan trend (layer 1).
-# see rules: web-product-process
 #
 # The perf gate compares each commit to its parent and then discards the numbers — they live only in
 # the job's step summary, which ages out. This script persists HEAD's absolute Ir per benched case,

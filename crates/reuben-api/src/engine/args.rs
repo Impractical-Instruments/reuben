@@ -3,7 +3,7 @@
 //!
 //! Three of the five verbs take nothing at all (`get_engine_status`, `get_current_instrument`,
 //! `get_engine_diagnostics` each ask the one question their name asks), so only two structs live
-//! here. see rules: agent-mcp
+//! here.
 
 use serde::{Deserialize, Serialize};
 

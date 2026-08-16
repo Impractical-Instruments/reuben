@@ -4,12 +4,11 @@
 //! What a door still decides is how to *carry* it — MCP stamps these onto its tool roster, a
 //! generated wrapper writes them into its manifest — and a door whose surface is not the roster
 //! (the native CLI's five merged subcommands) advertises its own help instead.
-//! see rules: agent-mcp
 //!
 //! Every string here ships to a model, under the same rule the argument and result docs follow: no
 //! rustdoc link syntax, no issue numbers, no crate paths — a model can resolve none of them. Notes
 //! for humans go in `//` comments. Guarded over the real advertised surface by
-//! `advertised_prose_is_model_facing`. see rules: code-as-grounding
+//! `advertised_prose_is_model_facing`.
 
 // --- pure reads -----------------------------------------------------------------------------------
 

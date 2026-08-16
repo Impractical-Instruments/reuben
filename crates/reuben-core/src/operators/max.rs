@@ -8,8 +8,6 @@
 //! - input 0: `a` (`Float`) — first operand. Unwired default `0`.
 //! - input 1: `b` (`Float`) — second operand. Unwired default `-1e6` (the range min — a no-op).
 //! - output 0: `out` — `max(a, b)`.
-//!
-//! see rules: composition-operators
 
 /// The op's scalar math, generic over any `PartialOrd` number: the greater of the two operands
 /// (ties return `a`). Hand-written rather than [`Ord::max`] so it covers `f32`, which is only

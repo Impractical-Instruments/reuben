@@ -33,7 +33,6 @@ node minted at `/<name>`, its `in` port — the same address `describe` and the 
 subcommand use. Note pipes take a `[note|degree, gate]` payload at that same port.
 """
 
-# see rules: authoring-library
 
 import argparse
 import json

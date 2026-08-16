@@ -1,5 +1,5 @@
 //! Shared diagnostics counter surface — the one place every counted degradation lands, output
-//! and input alike. see rules: host-shell-io
+//! and input alike.
 //!
 //! [`Diagnostics`] is designed to be bumped from an RT thread and read from an ordinary one: every
 //! field is an [`AtomicU64`], every write a single `fetch_add`, and reads take a [`Snapshot`]

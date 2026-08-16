@@ -3,7 +3,7 @@
 //! A *stateless pointwise* math op (output sample = fn of this sample's inputs only) whose operands
 //! are numbers (and optionally held enum modes) is pure boilerplate apart from its scalar function
 //! and its operand defaults. This macro takes that one scalar function plus an operand list and emits
-//! the **whole** family from one `variants:` list. see rules: composition-operators
+//! the **whole** family from one `variants:` list.
 //!
 //! Each entry is `<number type> [-> <number type>] <carrier>` and names exactly one operator to
 //! emit: the **number type** (`f32`, `i32`) fixes the ports' scalar type and the type the scalar fn
@@ -400,7 +400,7 @@ impl NumberOpInput {
     /// The per-variant [`OperatorSpec`] — ports typed for **this variant's number type and
     /// carrier** — reusing the shared validator + builder so the contract is identical to a
     /// hand-written `operator_contract!`. This is where the declared number type reaches the
-    /// ports (see rules: composition-operators).
+    /// ports.
     fn to_spec(&self, type_name: &str, v: Variant) -> syn::Result<OperatorSpec> {
         let inputs = self
             .inputs
@@ -962,8 +962,8 @@ mod tests {
         assert!(!out.contains("thing_f32_value"), "{out}");
     }
 
-    // Regression coverage for the declared number type reaching the ports (see rules:
-    // composition-operators): pin the whole path from the declaration to the ports — the port
+    // Regression coverage for the declared number type reaching the ports: pin the whole path
+    // from the declaration to the ports — the port
     // type, the handle form, the emitted default literal, and the type the scalar fn is called at.
     #[test]
     fn i32_variant_types_its_ports_i32() {

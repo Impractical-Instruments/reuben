@@ -19,8 +19,6 @@
 //!   no degree); wire to a Voicer.
 //!
 //! Emits one note stream, upstream of the Voicer that fans it out to voices.
-//!
-//! see rules: signal-time-dsp
 
 use alloc::boxed::Box;
 use smallvec::SmallVec;

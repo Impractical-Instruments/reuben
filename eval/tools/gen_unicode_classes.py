@@ -2,7 +2,7 @@
 """Regenerate `reuben_eval/tokenizer/unicode_classes.py` — the frozen `\\p{L}`/`\\p{N}` tables.
 
 Running this is a **deliberate, reviewable act with a visible baseline reset**, which is the whole
-point. see rules: agent-mcp
+point.
 
 The gate's tokenizer must produce the same token count for the same bytes across years, or the
 `eval-history.jsonl` trend silently re-baselines and cross-commit comparison becomes a lie. The
@@ -82,7 +82,7 @@ def render() -> str:
 
 Frozen `\\\\p{{L}}` / `\\\\p{{N}}` codepoint ranges for the cl100k_base pre-tokenizer, so the gate's
 token counts never move when the CI runner's CPython bundles a new Unicode version. Hash-pinned in
-`pins.json`; regenerating is a deliberate baseline reset. see rules: agent-mcp
+`pins.json`; regenerating is a deliberate baseline reset.
 
 Unicode {unicodedata.unidata_version} · {len(letters)} letter ranges · {len(numbers)} number ranges
 """

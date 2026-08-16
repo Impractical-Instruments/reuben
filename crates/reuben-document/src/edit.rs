@@ -19,8 +19,6 @@
 //! verbs is green under any such table, which is exactly how a node input literal and an interface
 //! pipe's seed came to be written by two different verbs. The witness is a reader, or the consumer
 //! that had to guess which verb it wanted.
-//!
-//! see rules: agent-mcp
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -115,7 +113,7 @@ enum Echo {
 
 /// A value edit's whole effect: the slot the caller addressed, what was in it, and what is in it
 /// now. Not a projection — the prior document is gone by the time one could be cut, so `from` is
-/// carried out of the mutation itself. see rules: agent-mcp
+/// carried out of the mutation itself.
 struct ValueChange {
     address: String,
     input: String,
@@ -390,7 +388,7 @@ fn cascade_unwire(doc: &mut InstrumentDoc, address: &str) -> Vec<String> {
 /// input, and what reaches it instead.
 ///
 /// A pipe address is not absent, so it must never be reported as absent; that is the whole point of
-/// the shared namespace. see rules: agent-mcp
+/// the shared namespace.
 fn node_index_for(
     doc: &InstrumentDoc,
     address: &str,
@@ -696,7 +694,7 @@ pub fn set_instrument_node_description(
 /// spelled `default`.
 ///
 /// Refuses an input that currently holds a wire rather than severing it, naming
-/// [`unwire_instrument_input`] as the way through. see rules: agent-mcp
+/// [`unwire_instrument_input`] as the way through.
 pub fn set_instrument_input(
     source: &str,
     address: &str,
@@ -763,7 +761,7 @@ pub fn set_instrument_input(
 /// selection grammar, and `section` picks a reading when a word has more than one. A wired input is
 /// followed rather than severed — the seed of the interface input pipe feeding it moves instead,
 /// sized against that pipe's own declared range — and targets arriving at the same pipe are one
-/// edit. A move with nothing to move is a **skip**, not a failure. see rules: agent-mcp
+/// edit. A move with nothing to move is a **skip**, not a failure.
 pub fn set_instrument_inputs_by_intent(
     source: &str,
     word: &str,
@@ -786,7 +784,7 @@ pub fn set_instrument_inputs_by_intent(
 ///
 /// This document's own interface input pipes are addressable here and **refuse**: a boundary input
 /// is fed from outside the graph, so a wire from inside it would stop it being a boundary. Wiring
-/// *from* one is ordinary and unaffected. see rules: agent-mcp
+/// *from* one is ordinary and unaffected.
 pub fn wire_instrument_input(
     source: &str,
     address: &str,
@@ -818,7 +816,7 @@ pub fn wire_instrument_input(
 /// set) is reported, not an error.
 ///
 /// This document's own interface input pipes are addressable here and **refuse**: nothing inside
-/// the graph feeds a boundary input, so there is no wire on one to clear. see rules: agent-mcp
+/// the graph feeds a boundary input, so there is no wire on one to clear.
 pub fn unwire_instrument_input(
     source: &str,
     address: &str,
@@ -853,7 +851,6 @@ pub fn unwire_instrument_input(
 ///
 /// This document's own interface input pipes are addressable here and **refuse**: a pipe is a
 /// loader-built pass-through with no `config` block, so it has no plan-time constant to set.
-/// see rules: agent-mcp
 pub fn set_instrument_constant(
     source: &str,
     address: &str,
@@ -1018,7 +1015,6 @@ pub fn remove_instrument_interface_output(
 ///
 /// The pipe's seed is **not** here — a pipe's value is set through
 /// [`set_instrument_input`], in the one address space that also reaches every node input.
-/// see rules: agent-mcp
 #[allow(clippy::too_many_arguments)]
 pub fn set_instrument_interface_input_meta(
     source: &str,

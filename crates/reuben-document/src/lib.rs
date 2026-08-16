@@ -11,8 +11,6 @@
 //! lets it compile for a target that has no filesystem and no serde. A type that the audio callback
 //! touches belongs below, even when the thing that builds it lives here: `Manifest::diff` is the
 //! clearest case, producing a [`reuben_core::coordinator::MigrationTable`] the RT slot applies.
-//!
-//! see rules: execution-runtime
 
 pub mod contract;
 pub mod coordinator;

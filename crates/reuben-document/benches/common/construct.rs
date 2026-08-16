@@ -12,8 +12,6 @@
 //! same JSON on both sides keeps the two runs comparable no matter which sizes a later PR picks.
 //! They are emitted at `format_version` 2, the version the frozen fixtures already prove loadable
 //! across the engine revisions the gate compares.
-//!
-//! see rules: web-product-process
 
 use reuben_core::{AudioConfig, Plan, Registry};
 use reuben_document::load_instrument;

@@ -20,8 +20,6 @@
 //!
 //! - input 0: `x` (`Float`) — the value to round. Unwired default `0`.
 //! - output 0: `out` — `x` rounded to nearest, halves away from zero (`-2.5` → `-3`, `2.5` → `3`).
-//!
-//! see rules: composition-operators
 
 use crate::operators::rounding::RoundInto;
 

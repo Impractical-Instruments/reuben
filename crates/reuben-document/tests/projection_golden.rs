@@ -7,7 +7,7 @@
 //! being inverted, or a marker that stops appearing shows up as a diff.
 //!
 //! It doubles as the surface's size record. Projection bytes **are** tokens-per-turn for an agent
-//! that never reads the document (see rules: agent-mcp), so a change that quietly inflates a view
+//! that never reads the document, so a change that quietly inflates a view
 //! is a cost regression, and the golden file is where it becomes visible in review.
 //!
 //! The fixture is the hard case: 53 nodes, 90 interface pipes, 5 voice resources (two levels deep

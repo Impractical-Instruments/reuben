@@ -3,7 +3,7 @@
 //! Every operator declares its ports and constants once; the
 //! [`operator_contract!`](../reuben_macros) proc-macro and the [`scaffold`](../reuben_native) both
 //! turn that one declaration into code, so the spec types, the naming rules, and [`validate`] live
-//! here, in a crate both depend on. see rules: composition-operators
+//! here, in a crate both depend on.
 //!
 //! A port carries an **[`Arg`](reuben_core::message::Arg) type**, named by
 //! [`PortSpec::ty`]: `f32_buffer` (a dense per-sample signal), `f32` (a materialized scalar control
@@ -48,7 +48,7 @@ pub const NUMBER_MAX: f32 = 1_000_000.0;
 /// Deliberately not `i32::MIN`/`i32::MAX`, for the reason [`NUMBER_MIN`] gives and one more: the
 /// family's arithmetic then stays far from the type's edges, so an author reading a `±1e6` range on
 /// an integer port is reading the same knob-able promise they read on a float one — staying inside
-/// the type is not what makes the arithmetic safe (see rules: composition-operators).
+/// the type is not what makes the arithmetic safe.
 pub const NUMBER_MIN_I32: i32 = NUMBER_MIN as i32;
 /// The upper half of the type-wide default range for an `i32` operand. See [`NUMBER_MIN_I32`].
 pub const NUMBER_MAX_I32: i32 = NUMBER_MAX as i32;
@@ -406,7 +406,6 @@ pub fn validate(spec: &OperatorSpec) -> Result<(), ContractError> {
     // Refused here — the one validator both the macro and the scaffold pass through — so a
     // scaffolded or hand-written `pipe` operator fails before any code is generated. The registry
     // carries the same reservation for embedders registering descriptors directly.
-    // see rules: composition-operators
     if name == "pipe" {
         return Err(ContractError::new(
             Locus::TypeName,

@@ -2,8 +2,6 @@
 //!
 //! - input 0: `in` (`Float`) — the signal to differentiate. Unwired default 0.
 //! - output 0: `out` (`Buffer`) — `in[i] - in[i-1]`.
-//!
-//! see rules: signal-time-dsp
 
 use alloc::boxed::Box;
 
@@ -43,7 +41,7 @@ impl Operator for DifferentiateF32Signal {
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
         let mut last = self.last;
-        // Flat locals for the block loop. see rules: execution-runtime
+        // Flat locals for the block loop.
         let input = io.read(IN_IN);
         let out = io.write(OUT_OUT);
         for i in 0..n {

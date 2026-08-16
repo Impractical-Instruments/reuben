@@ -1,8 +1,6 @@
 //! `PointwiseNum` — the saturating arithmetic the pointwise number family's scalar fns are
 //! generic over, so `f32` and `i32` both total every op rather than panicking, wrapping, or
 //! relying on the declared port range (which `mul` alone can escape).
-//!
-//! see rules: composition-operators
 
 /// A number type the pointwise math family can instantiate at, with **total** arithmetic: every
 /// operation returns a value of the type for every input, saturating at the type's limits rather

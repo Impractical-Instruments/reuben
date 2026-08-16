@@ -16,8 +16,6 @@
 //! hides the registry (there is one operator set, and a host that had to name it would be naming
 //! the engine to get its own constructor) and takes the window's own [`Resources`] seam, so a host
 //! implements one resolver trait rather than two. Both cost a load, not a block.
-//!
-//! see rules: execution-runtime
 
 /// The render side of a fresh pair — the initial Engine plus the mailbox a swap installs through.
 /// [`RenderSlot::new`] takes it; nothing else does.

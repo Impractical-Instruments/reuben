@@ -10,8 +10,6 @@
 //! - input 0: `notes` (`Note`) — incoming note events.
 //! - input 1: `amount` (`Float`) — transpose amount in steps/semitones (held).
 //! - output 0: `notes` (`Note`) — the shifted note events.
-//!
-//! see rules: composition-operators
 
 use alloc::boxed::Box;
 use num_traits::Float;

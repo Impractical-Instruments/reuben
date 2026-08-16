@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Assert the lockstep invariant (see rules: web-product-process): the pinned toolchain channel in
+# Assert the lockstep invariant: the pinned toolchain channel in
 # rust-toolchain.toml must equal the workspace MSRV (rust-version) in Cargo.toml.
 # They're bumped together by hand, so this gate turns drift into a CI failure
 # instead of a silently unverified MSRV claim. Pure text — no toolchain needed.

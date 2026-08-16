@@ -1,5 +1,4 @@
 //! Message — the one OSC-shaped carrier the core speaks: `address + timestamp + exactly one Arg`.
-//! see rules: composition-operators
 
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -52,7 +51,7 @@ impl<T> Signal<T> {
     }
 }
 
-/// The single typed payload of a [`Message`]. see rules: composition-operators
+/// The single typed payload of a [`Message`].
 ///
 /// A **closed, central** enum with three families:
 /// - **OSC primitives** — [`F32`](Arg::F32) / [`I32`](Arg::I32) / [`Str`](Arg::Str);
@@ -122,14 +121,13 @@ pub enum Arg {
     Harmony(Harmony),
     /// A symbolic [`Pitch`] riding the wire on its own — leaf-promoted rather than type-erased
     /// through [`Enum`](Arg::Enum), which would drop the `Degree`/`Absolute` payload.
-    /// see rules: composition-operators
     ///
     /// Wire-internal only (no external OSC form, like [`Harmony`](Arg::Harmony)); the field
     /// `unpack_note` emits on its `pitch` output, consumed by `pitch2freq`.
     Pitch(Pitch),
 
     /// Any **vocab enum** value, type-erased to its bare variant **index**; type identity lives
-    /// in the port descriptor's [`EnumMeta`](crate::descriptor::EnumMeta). see rules: composition-operators
+    /// in the port descriptor's [`EnumMeta`](crate::descriptor::EnumMeta).
     ///
     /// The operator names the concrete type in its handle's form (`io.read` on an
     /// `In<Held<FilterMode>>` → `FilterMode::from_index`), and port-authority guarantees a latch

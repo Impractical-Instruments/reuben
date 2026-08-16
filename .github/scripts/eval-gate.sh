@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Agent-surface eval gate — deterministic tier. see rules: agent-mcp
+# Agent-surface eval gate — deterministic tier.
 #
 # Sibling of perf-gate.sh, same idiom, different axis: that one watches what the ENGINE costs the
 # CPU, this one watches what the AGENT SURFACE costs a model. Grounding-token bloat is a real and

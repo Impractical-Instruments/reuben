@@ -42,7 +42,6 @@ jobs:
       windows: ${{ steps.filter.outputs.windows }}
       bare_metal: ${{ steps.filter.outputs.bare_metal }}
       bench: ${{ steps.filter.outputs.bench }}
-      rules: ${{ steps.filter.outputs.rules }}
       eval: ${{ steps.filter.outputs.eval }}
       dashboard: ${{ steps.filter.outputs.dashboard }}
     steps:
@@ -108,10 +107,6 @@ jobs:
             bench:
               - *workspace
               - '.github/scripts/perf-gate.sh'
-            # Rules-doc system (docs/rules/ + its guard scripts + hooks). A docs-only rules change
-            # touches nothing in *workspace, so check/windows/bench all skip and `ci-passed` would
-            # green vacuously — the derive + links guards would never run. This dedicated gate makes
-            # them execute on their own path set. ci.yml is here too so a change to the gate re-runs it.
             # The agent-surface eval gate. Its trigger set is DIFFERENT from *workspace, and
             # deliberately wider in one direction: `docs/agents/**` is served to models as MCP
             # resources (the authoring guide, the intent vocabulary), so a docs-only edit there is a
@@ -129,31 +124,6 @@ jobs:
             dashboard:
               - '.github/scripts/bench-dashboard.py'
               - '.github/scripts/test_bench_dashboard.py'
-              - '.github/workflows/ci.yml'
-            rules:
-              - 'docs/rules/**'
-              # The supersession gate reads the ADRs: an ADR overturning a rule must mark it in the
-              # same change. That change touches docs/adr/ and NOT docs/rules/ — which is the whole
-              # defect — so without this line the check would skip exactly the commit it exists for.
-              - 'docs/adr/**'
-              - 'scripts/check_rules_derive.py'
-              - 'scripts/check_rules_links.py'
-              - 'scripts/check_rules_refs.py'
-              # The ADR-number guard and its suite — authored here, not vendored, and listed by
-              # name so a change to the guard (its known-collision table above all) re-runs it
-              # against the corpus it governs, the way ci.yml below re-runs the gate that reads it.
-              - 'scripts/check_adr_numbers.py'
-              - 'scripts/test_check_adr_numbers.py'
-              # The guards' own suite, vendored from the same source as the guards and living in
-              # its own directory because `support.py` asserts each module under test came from
-              # the directory above it.
-              - 'scripts/tests/**'
-              # The hook set: the dispatcher that runs the guards locally, its installer, and the
-              # suite that holds the dispatcher. `scripts/hooks/**` covers the four checks too, two of
-              # which invoke the guards above.
-              - 'scripts/hooks/**'
-              - 'scripts/install-hooks.sh'
-              - 'scripts/test_hook_dispatch.py'
               - '.github/workflows/ci.yml'
 
   lockstep:
@@ -416,7 +386,7 @@ jobs:
     needs: changes
     # Same draft-skip as `check`, then the path gate OR an unconditional run on every push to main/dev.
     # The path gate alone punched holes in the bench trend: a push to main/dev that moved no benched
-    # path (docs-only, rules-doc, …) skipped this job, so `bench-history` below found no artifact and
+    # path (docs-only, …) skipped this job, so `bench-history` below found no artifact and
     # recorded no point. Recording a history point for EVERY main/dev push is the intent the
     # concurrency block already encodes (SHA-unique group, cancellation off); this clause makes the
     # per-job gate honor it. PRs and other-branch pushes stay purely path-gated. Runs in parallel —
@@ -585,106 +555,19 @@ jobs:
       - name: Dashboard eval-trend tests
         run: cd .github/scripts && python3 -m unittest test_bench_dashboard -v
 
-  # Rules-doc guards (S01). The rules-doc system's derive + links guards are stdlib-only Python. Same
-  # draft-skip as the Rust jobs; `python3` is preinstalled on ubuntu-latest, so no setup step. Gated on
-  # the `rules` path filter (see the `changes` job) — a docs-only rules change moves none of the
-  # *workspace jobs, so without this gate `ci-passed` would green vacuously and the invariant would
-  # never be enforced. (The reference-linter is NOT here — it scans ALL code, not just docs/rules, so
-  # it runs unconditionally in the always-on `ref-guard` job below.)
-  rules-guards:
-    name: rules-doc guards
+  # The hook set's chainer (test_hook_dispatch.py), which is what makes every pre-commit and
+  # pre-push check run locally at all. It builds throwaway git repos with synthetic registries, so
+  # it needs no toolchain and takes under a second.
+  #
+  # ALWAYS runs, and not path-filtered: no remaining filter covers `scripts/hooks/**`, and a job
+  # this cheap does not earn one of its own. Gates merges via `ci-passed`'s `needs`.
+  hook-dispatch:
+    name: hook dispatcher (chainer suite)
     runs-on: ubuntu-latest
-    needs: changes
-    if: needs.changes.outputs.rules == 'true' && (github.event_name == 'push' || github.event.pull_request.draft == false)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # The guards' own suite, vendored beside them from `brain`. Run from scripts/ with
-      # tests/ as the start directory, which is the layout its `support.py` asserts: the modules
-      # under test must be the ones in the directory above it, so a same-named copy elsewhere on
-      # the path cannot shadow them.
-      - name: Guard unit tests
-        run: cd scripts && python3 -m unittest discover -s tests -p 'test_check_rules_*.py' -v
-
-      # The hook set's chainer, which is what makes any of the guards above run locally at all. It
-      # is named explicitly rather than folded into the discover pattern: that pattern says
-      # `test_check_rules_*`, and this suite tests neither a rule nor a check but the thing that
-      # dispatches them. It builds throwaway git repos with synthetic registries, so it needs no
-      # toolchain and takes under a second.
       - name: Hook dispatcher tests
         run: cd scripts && python3 -m unittest test_hook_dispatch -v
-
-      # Backstop for the pre-commit hook's `--write` collation: fail if README's derived sections
-      # drifted from the topic docs.
-      - name: Derive-drift guard
-        run: python3 scripts/check_rules_derive.py --check .
-
-      # The epic's core invariant: every topic has >=1 rule; every rule links exactly one rationale
-      # that exists. (check_rules_refs.py runs separately in the always-on ref-guard job — it scans
-      # all code, not just docs/rules.)
-      - name: Rule<->rationale link guard
-        run: python3 scripts/check_rules_links.py .
-
-  # The ADR-number guard (check_adr_numbers.py): a number, once issued, is never carried by a second
-  # decision. docs/adr/README.md has stated that since July and nothing enforced it, so two live
-  # ADRs both numbered 0078 reached dev — two PRs the same evening, each correctly taking "the next
-  # number after the highest", neither visible to the other. The damage is not the confusion: the
-  # fold DELETES the ADR it absorbs and leaves a one-way `Distilled from:` pointer behind, so a
-  # shared number becomes permanently unresolvable the moment either file is absorbed.
-  #
-  # `fetch-depth: 0` IS THE JOB, not a detail of it. The numbers already issued live in history and
-  # nowhere else, precisely because the fold deleted the files. A default depth-1 checkout hands the
-  # guard a grafted root that reports every live file as a fresh addition and knows nothing of the
-  # seventy-odd numbers folded away — every reuse check would pass vacuously. The guard refuses to
-  # answer from a shallow clone rather than going green, so a regression here reds this job instead
-  # of hiding; the depth is what makes it able to answer at all.
-  #
-  # PATH-FILTERED on `rules` (which already carries docs/adr/**) plus the guard's own two files —
-  # unlike the always-on ref-guard/sample-guard/doc-claims below. Those three are falsified by a
-  # change somewhere else entirely (a rename, a stray buffer in any crate), so no filter built from
-  # their subject's paths can be sound. The filter here is sound in the direction that GATES: a
-  # change that INTRODUCES a duplicate number has to add or move a file under docs/adr/**, so it
-  # cannot slip past by skipping this job.
-  #
-  # It is NOT sound in the other direction, which is worth knowing before you meet it. The guard
-  # enumerates `git log --all`, and this checkout fetches +refs/heads/*:refs/remotes/origin/* —
-  # EVERY branch in the repository, not just this PR's. That is deliberate: it is what lets the
-  # guard catch two open PRs that have never seen each other, the exact scenario it was written for.
-  # The bill is that an ABANDONED branch carrying a duplicate reds this job on every PR that trips
-  # the filter, including PRs innocent of it. The fix is to delete the stale branch, not to change
-  # the PR — the finding names both files and marks the one that is not in the working tree. Gates
-  # merges via `ci-passed`'s `needs`; a Skipped job counts as a pass there.
-  adr-numbers:
-    name: no reused ADR numbers (ADR-number guard)
-    runs-on: ubuntu-latest
-    needs: changes
-    if: needs.changes.outputs.rules == 'true' && (github.event_name == 'push' || github.event.pull_request.draft == false)
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0 # the numbers already issued are in history; the fold deleted the files
-
-      # The guard's own suite runs here so it cannot silently rot, same as `sample-guard`. It builds
-      # throwaway git repos to exercise rename detection and the shallow-clone refusal, so it needs
-      # no toolchain and takes well under a second.
-      - name: Guard unit tests
-        run: cd scripts && python3 -m unittest test_check_adr_numbers -v
-
-      - name: ADR-number guard (a number is issued once)
-        run: python3 scripts/check_adr_numbers.py .
-
-  # The rules reference-linter (check_rules_refs.py): no ADR-NNNN survives in
-  # code, and every `see rules: <topic>` comment resolves to a real topic doc and stops there. Unlike the derive/link
-  # guards (path-filtered to docs/rules/**), a reintroduced ADR ref or a broken topic pointer can hide
-  # in ANY code change, so this ALWAYS runs. The absorb-adrs skill — the tool that stamps `Distilled
-  # from:` provenance — is exempt by the guard's SKILL_ALLOWLIST.
-  ref-guard:
-    name: no ADR refs in code (rules ref-linter)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: ADR-in-code + pointer-resolution guard
-        run: python3 scripts/check_rules_refs.py .
 
   # The doc-claim ledger (extract_doc_claims.py): every file path and code identifier the
   # governed docs name resolves against the real tree, and a `Guarded by:` line names a test that
@@ -692,10 +575,9 @@ jobs:
   # are routed to a reviewer by `--review` and never fail a build, because a gate that guesses at
   # the undecidable half is a gate people learn to ignore.
   #
-  # ALWAYS runs, for the same reason as the ref-linter above and unlike the path-filtered
-  # rules-guards: a doc claim is falsified by a RENAME. The commit that breaks it touches code and
-  # not one line of docs, so any path filter built from doc paths would miss exactly the change
-  # that caused the defect.
+  # ALWAYS runs, and not path-filtered: a doc claim is falsified by a RENAME. The commit that
+  # breaks it touches code and not one line of docs, so any path filter built from doc paths would
+  # miss exactly the change that caused the defect.
   doc-claims:
     name: doc claims resolve (claim ledger)
     runs-on: ubuntu-latest
@@ -709,7 +591,7 @@ jobs:
   # The Sample-alias guard (check_sample_alias.py): the engine's audio element type is named
   # once in crates/reuben-core/src/signal.rs, and a raw f32 slice or vector buffer form may appear
   # only there or in the script's justified allowlist (device layer, resource decode, operator DSP
-  # arithmetic, test/bench harnesses). Like `ref-guard`, a stray raw buffer can slip into ANY code
+  # arithmetic, test/bench harnesses). Like `doc-claims`, a stray raw buffer can slip into ANY code
   # change, so this ALWAYS runs (stdlib-only Python; no toolchain setup). Its unit suite runs here
   # too so the guard can't silently rot. Gates merges via `ci-passed`'s `needs`.
   sample-guard:
@@ -721,35 +603,6 @@ jobs:
         run: cd scripts && python3 -m unittest test_check_sample_alias -v
       - name: Sample-alias guard (single naming site for the audio element type)
         run: python3 scripts/check_sample_alias.py .
-
-  # The vendored verifier over every doctrine artifact in the tree: it recomputes the sha256 each
-  # generated span carries and needs no machinery, no network and no token. That is what public CI
-  # can run — the generator itself is `ii-generate`, a wrapper into a private checkout that Actions
-  # does not have, reading templates from a private repo.
-  #
-  # KNOW WHAT THIS BUYS: tamper-detection, not staleness-detection. A match proves nobody
-  # hand-edited a generated span; it does not prove the span matches the current template and
-  # manifest. Staleness is the generator's `--check`, which runs from the scheduled regeneration job
-  # on a machine that has the machinery checkout.
-  #
-  # ALWAYS ON, and not path-filtered, because a hand-edit to a generated artifact is a change to a
-  # doc — which moves no filter in this workflow.
-  #
-  # IT DOES NOT CHECK PRESENCE, and that limit is load-bearing rather than a footnote. Artifacts are
-  # discovered by scanning for markers, so a MISSING one is not a finding: delete a generated file,
-  # or only its header line, and the count simply drops and this job exits 0. Which artifacts a repo
-  # ought to have is a function of private templates and the manifest, and pinning the number here
-  # would be the stored count the standing rule forbids — so `--require-artifacts` buys exactly one
-  # thing, that an emptied tree does not read as a healthy one. What stands in front of the gap is
-  # `scripts/hooks/pre-commit.d/40-doctrine-regen`, which stages a file the generator creates; deriving
-  # the expected set from the manifest belongs upstream with the generator.
-  provenance:
-    name: generated artifacts unmodified
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Verify every generated span against its own digest
-        run: python3 scripts/ii_verify.py --require-artifacts
 
   # Always-green aggregate merge gate. A ruleset can't require the per-path-filtered jobs above
   # directly: when a job is Skipped (nothing it gates changed) the ruleset reads it as "expected but
@@ -767,13 +620,13 @@ jobs:
     # required checks by a job's `name`, not its id) — rename it and the ruleset goes on expecting a
     # check that never reports, wedging every PR exactly as a Skipped filtered job would (see the
     # comment at the top of this file). So a rename is never one edit: move the ruleset with it, and
-    # grep for `ci-passed` first — the literal string is spelled out in prose both here and under
-    # `docs/rules/`, and none of those copies are guarded.
+    # grep for `ci-passed` first — the literal string is spelled out in prose elsewhere in the
+    # tree, and none of those copies are guarded.
     name: ci-passed
     runs-on: ubuntu-latest
     needs:
-      [changes, lockstep, check, windows, bench, eval-gate, dashboard, rules-guards, adr-numbers,
-       ref-guard, sample-guard, doc-claims, provenance]
+      [changes, lockstep, check, windows, bench, eval-gate, dashboard, hook-dispatch,
+       sample-guard, doc-claims]
     if: always()
     steps:
       - name: Fail if any required job failed or was cancelled (skipped is OK)

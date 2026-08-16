@@ -9,8 +9,6 @@
 //! What is *not* here is the socket. A door supplies the [`Transport`]: loopback TCP for the MCP
 //! sidecar, whatever an in-process host has instead. The framing, the timeout policy and the
 //! response classification are the window's, so two doors cannot disagree about what a reply means.
-//!
-//! see rules: agent-mcp
 
 use std::fmt;
 use std::io;
@@ -54,7 +52,7 @@ impl ChannelError {
         ChannelError::Unreachable(format!("{ENGINE_UNREACHABLE_GUIDANCE} (cause: {cause})"))
     }
 
-    /// Whether this is the unreachable-engine case. see rules: agent-mcp
+    /// Whether this is the unreachable-engine case.
     pub fn is_unreachable(&self) -> bool {
         matches!(self, ChannelError::Unreachable(_))
     }
@@ -73,7 +71,7 @@ impl fmt::Display for ChannelError {
 impl std::error::Error for ChannelError {}
 
 /// The outcome of a `swap` that reached the engine — both arms are answers, not failures
-/// (transport failures are [`ChannelError`]). see rules: agent-mcp
+/// (transport failures are [`ChannelError`]).
 #[derive(Debug, Clone, PartialEq)]
 pub enum SwapOutcome {
     /// The engine processed the swap and returned its [`SwapReport`] (success or load-failure).
@@ -89,8 +87,6 @@ pub enum SwapOutcome {
 /// parsing, the unreachable/protocol split — is exercised rather than replaced by a test double.
 /// Below it live the socket mechanics, which are the door's — a loopback TCP one ships with the
 /// MCP sidecar and is driven over a real socket there.
-///
-/// see rules: agent-mcp
 pub trait Transport: Send + Sync + fmt::Debug {
     /// One request line out, one response line back. `read_timeout` is per-call because `ping`
     /// runs on a tighter budget than the other verbs. Any I/O failure — refused connect,
@@ -137,7 +133,7 @@ impl Channel {
     }
 
     /// Liveness: `Ok(())` iff the channel answered [`Response::Pong`]. The only probe on the
-    /// channel — every other verb acts and maps its own failure. see rules: agent-mcp
+    /// channel — every other verb acts and maps its own failure.
     pub fn ping(&self) -> Result<(), ChannelError> {
         match self.exchange_with(&Request::Ping, self.ping_read_timeout)? {
             Response::Pong => Ok(()),
@@ -174,8 +170,6 @@ impl Channel {
     /// `Ok` means "received and queued", NOT "applied": a message whose address routes nowhere is
     /// dropped at the engine's ingress. An empty or over-long batch is refused by the engine as a
     /// [`Channel`](ChannelError::Channel) error rather than acked.
-    ///
-    /// see rules: agent-mcp
     pub fn send(&self, messages: Vec<ControlMessage>) -> Result<(), ChannelError> {
         match self.exchange(&Request::Send { messages })? {
             Response::Sent => Ok(()),

@@ -13,8 +13,6 @@
 //! - input 1: `exponent` (`Float`) — the power. Default 2 (a musical amplitude curve); 1 is a
 //!   pass-through.
 //! - output 0: `out` — `x^exponent`.
-//!
-//! see rules: signal-time-dsp
 
 use num_traits::Float;
 

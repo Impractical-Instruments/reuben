@@ -7,8 +7,6 @@
 //! There is no roster check here: `stamp_window_prose` refuses to construct the server unless the
 //! router and the roster are the same name-set, so a surface that is not the roster never reaches
 //! this wire to be observed.
-//!
-//! see rules: agent-mcp, code-as-grounding
 
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
@@ -103,7 +101,7 @@ fn advertises_the_window_prose() {
     // because rmcp's `#[tool]` takes only a literal. Left unstamped, the macro falls back to the
     // method's rustdoc — prose written for a Rust reader, and a silent regression the schema test
     // above passes straight through, since it iterates names and never reads a sentence. So this
-    // reads the real wire and demands the window's string exactly. see rules: agent-mcp
+    // reads the real wire and demands the window's string exactly.
     let out = drive(&[TOOLS_LIST]);
     let response = response_with_id(&out, 2);
     let tools = response["result"]["tools"]
@@ -350,7 +348,7 @@ fn every_advertised_property_constrains_its_value() {
     // that coerces arguments against the advertised schema then has nothing to coerce to and sends
     // a number as a string, which the engine correctly refuses — a whole verb dead on the wire while
     // every hand-built request in the test suite stays green. So this reads the schemas as a client
-    // does. see rules: agent-mcp
+    // does.
 
     // Teeth first: one planted schema carrying a typeless leaf behind every descent the walker
     // claims to make, so no arm of it can be deleted with the suite still green. Finding these and
@@ -567,7 +565,6 @@ fn advertised_prose_is_model_facing() {
     // Reads what the door advertises rather than what a type declares, so it cannot drift from the
     // wire: schema `description`s are generated from doc comments, and the model on the other end
     // can resolve none of the rustdoc markup a Rust reader is served by.
-    // see rules: code-as-grounding
     let out = drive(&[RESOURCES_LIST, TOOLS_LIST]);
 
     let mut advertised = Vec::new();

@@ -1,4 +1,4 @@
-//! reuben-native — the removable native layer. see rules: execution-runtime
+//! reuben-native — the removable native layer.
 //!
 //! Wraps the window's render surface ([`reuben_api::render`]: the Coordinator + RenderSlot pair,
 //! `queue_osc`, `fill`/`fill_duplex`, `drain_outbound`) with OS-specific I/O: [`osc`] decodes

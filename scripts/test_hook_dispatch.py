@@ -242,13 +242,10 @@ class TestDispatchIsRepositoryAgnostic(DispatchHarness):
 
     def test_it_carries_no_pointer_into_this_repository(self):
         # The first version of this test was a blocklist of six words, and it passed while
-        # `dispatch` carried a `see rules:` anchor into this repo's rules corpus and printed a
-        # hard-coded `./scripts/install-hooks.sh`. A guard that asks "does the wrong word appear"
-        # is only ever as good as its enumeration. Assert the SHAPE instead: no rules-corpus
-        # pointer, and no path that is not the dispatcher's own directory.
+        # `dispatch` printed a hard-coded `./scripts/install-hooks.sh`. A guard that asks "does the
+        # wrong word appear" is only ever as good as its enumeration. Assert the SHAPE instead: no
+        # path that is not the dispatcher's own directory.
         text = DISPATCH.read_text()
-        self.assertNotIn("see rules:", text,
-                         "dispatch anchors into a rules corpus a consumer repo need not have")
 
         # Every path it may mention is either derived from a variable at run time, one of the two
         # absolute paths every POSIX system has, or a bare structural fragment of the registry

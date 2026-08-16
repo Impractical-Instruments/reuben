@@ -1,5 +1,4 @@
 //! OpDriver — drive a single operator through the **real engine** for tests and benches.
-//! see rules: composition-operators
 //!
 //! It builds a one-node [`Graph`], instantiates a real [`Plan`], and steps it with a real
 //! [`Renderer`] via [`Renderer::step_node`] — purely an **injection + observation** harness over
@@ -27,8 +26,6 @@
 //! how a loader-built signal `Pipe` (an interface input pipe's runtime node) is driven with
 //! deterministic audio in tests, the same carve-out as [`Renderer::render_block_multi`]'s `inputs`
 //! parameter at the graph level.
-//!
-//! see rules: execution-runtime
 
 use alloc::boxed::Box;
 use alloc::format;

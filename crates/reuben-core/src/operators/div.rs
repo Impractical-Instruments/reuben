@@ -11,8 +11,6 @@
 //! - input 0: `a` (`Float`) — the dividend. Unwired default `0`.
 //! - input 1: `b` (`Float`) — the divisor. Unwired default `1`; a `0` divisor yields `0`.
 //! - output 0: `out` — `a / b` (or `0` when `b == 0`).
-//!
-//! see rules: composition-operators
 
 /// The op's scalar math, generic over the number type. The `b == 0` check is `div`'s **op-local**
 /// guard against an `inf`/`NaN` (or integer divide panic) blowing up the graph; it lives here,

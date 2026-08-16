@@ -1,4 +1,4 @@
-//! CI regression gate, micro layer (see rules: web-product-process): deterministic instruction
+//! CI regression gate, micro layer: deterministic instruction
 //! count of each operator's `process` over the fixed 1 s schedule, via callgrind. The macro layer
 //! catches a graph getting slower; this layer says which operator.
 //!

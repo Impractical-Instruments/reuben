@@ -36,8 +36,6 @@
 //! - input 6: `makeup` (dB) — output gain applied after compression.
 //! - input 7: `key_hp` (Hz) — high-pass on the key before detection (20 Hz ≈ off).
 //! - output 0: `audio` — the compressed / ducked signal.
-//!
-//! see rules: signal-time-dsp
 
 use alloc::boxed::Box;
 use num_traits::Float;

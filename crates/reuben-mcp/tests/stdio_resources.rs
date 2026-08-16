@@ -5,8 +5,6 @@
 //!
 //! What it holds: every resource is served byte-equal to the checkout, and every `INSTRUCTIONS`
 //! pointer resolves to one that exists.
-//!
-//! see rules: agent-mcp
 
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Perf regression gate. see rules: web-product-process
+# Perf regression gate.
 #
 # Compares instruction counts (callgrind `Ir`) between the PR's library code and a baseline
 # ref, using the PR's *own* bench harness for both sides — so a bench that doesn't exist yet

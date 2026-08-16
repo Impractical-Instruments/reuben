@@ -1,4 +1,4 @@
-"""A stdlib-only `cl100k_base` encoder — the gate's size proxy. see rules: agent-mcp
+"""A stdlib-only `cl100k_base` encoder — the gate's size proxy.
 
 This exists so `.github/scripts/` stays stdlib-only (the same rule `bench-dashboard.py` states as
 "the runner's system python3 is the whole toolchain"). `tiktoken` would be a Rust extension plus two

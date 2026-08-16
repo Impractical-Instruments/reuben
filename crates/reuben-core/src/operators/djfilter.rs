@@ -28,8 +28,6 @@
 //! - input 5: `hp_start` (`Float`, Hz) — high-pass cutoff at North (open end of the CW sweep).
 //! - input 6: `hp_end`   (`Float`, Hz) — high-pass cutoff fully CW (position +1).
 //! - output 0: `audio` (`Float`) — filtered output.
-//!
-//! see rules: signal-time-dsp
 
 use alloc::boxed::Box;
 use num_traits::Float;
@@ -112,7 +110,6 @@ impl Operator for Djfilter {
         let mut use_hp = false;
         let mut c = SvfCoeffs::default();
         // Flat locals for the block loop, SVF stored back once after it.
-        // see rules: execution-runtime
         let position = io.read(IN_POSITION);
         let audio = io.read(IN_AUDIO);
         let out = io.write(OUT_AUDIO);

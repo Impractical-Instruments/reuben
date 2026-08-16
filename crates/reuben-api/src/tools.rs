@@ -14,8 +14,6 @@
 //!
 //! Not every window verb is a roster entry: `describe_boundary` answers a door that reads a
 //! document structurally rather than a tool a model calls, so it has no advertised sentence to own.
-//!
-//! see rules: agent-mcp
 
 use crate::authoring::prose as authoring_prose;
 use crate::engine::prose as engine_prose;
@@ -83,7 +81,7 @@ macro_rules! roster {
         ///
         /// Every name follows the `verb_instrument_object` convention, and no contract carries an
         /// instrument document by value: a document is named by an opaque `source` the door's
-        /// resolver interprets, and read back as a projection — see rules: agent-mcp.
+        /// resolver interprets, and read back as a projection.
         pub const CONTRACTS: &[Contract] = &[$(
             Contract {
                 name: names::$symbol,

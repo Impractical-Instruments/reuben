@@ -4,7 +4,7 @@
 //! Every mutating verb funnels through [`run_edit`], which owns the two things a door would
 //! otherwise re-implement: the `expect` write guard, and the split between a verb that *ran and
 //! reported a problem* (an ordinary [`Answer`] carrying `ok: false`) and one that could not do the
-//! job at all (a [`Refusal`]). see rules: agent-mcp
+//! job at all (a [`Refusal`]).
 
 use std::fmt;
 
@@ -346,7 +346,6 @@ pub fn set_instrument_input(
 
 /// Apply one intent word as a batch of value edits. The one place a `section` word becomes a
 /// section, and an unknown one is a refusal rather than a broadened search.
-/// see rules: agent-mcp
 pub fn set_instrument_inputs_by_intent(
     args: &SetInstrumentInputsByIntent,
     resources: &dyn Resources,

@@ -1,7 +1,5 @@
 //! Resources — decoded audio, held in a central [`ResourceStore`] and read by pure
 //! `(id, channel, frame)` accessors.
-//!
-//! see rules: authoring-library
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -73,7 +71,6 @@ impl SampleBuffer {
 
 /// The decoded-resource store: built by the loader/Coordinator, read immutable by Render.
 /// Resident-only in v1.1 — every resource is decoded up front and held forever.
-/// see rules: authoring-library
 #[derive(Debug, Default)]
 pub struct ResourceStore {
     /// `Arc` so several stores can share one decoded buffer: each subpatch reuse and voice
@@ -127,7 +124,7 @@ impl ResourceStore {
     }
 
     /// One decoded sample at `(id, channel, frame)`; `0.0` out of range. A pure function of
-    /// its arguments — the bank-ready read seam. see rules: authoring-library
+    /// its arguments — the bank-ready read seam.
     pub fn sample(&self, id: SampleId, channel: usize, frame: usize) -> f32 {
         self.buf(id).sample(channel, frame)
     }

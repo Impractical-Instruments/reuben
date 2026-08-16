@@ -68,7 +68,6 @@ pub enum PortType {
     /// wire in is keyed on [`has_osc_form`](crate::boundary::has_osc_form), the one predicate the
     /// load-time and plan-time checks share. A struct vocab type opts in by naming itself in
     /// `vocab`'s `OSC_FORMS` census.
-    /// see rules: composition-operators
     Arg,
 }
 

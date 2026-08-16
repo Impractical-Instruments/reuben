@@ -11,8 +11,6 @@
 //!
 //! - input 0: `x` (`Float`) — the value to floor. Unwired default `0`.
 //! - output 0: `out` — the greatest whole number `<= x`.
-//!
-//! see rules: composition-operators
 
 use crate::operators::rounding::RoundInto;
 

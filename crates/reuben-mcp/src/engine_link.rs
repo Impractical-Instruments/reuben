@@ -3,8 +3,6 @@
 //! The window owns the channel — framing, timeouts, what a reply means. What is left here is this
 //! door's transport: a fresh, bounded, blocking loopback TCP connection per exchange, retaining
 //! nothing between calls, so the link survives the engine restarting under it.
-//!
-//! see rules: agent-mcp
 
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpStream, ToSocketAddrs};

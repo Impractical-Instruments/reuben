@@ -2,7 +2,7 @@
 
 Frozen `\\p{L}` / `\\p{N}` codepoint ranges for the cl100k_base pre-tokenizer, so the gate's
 token counts never move when the CI runner's CPython bundles a new Unicode version. Hash-pinned in
-`pins.json`; regenerating is a deliberate baseline reset. see rules: agent-mcp
+`pins.json`; regenerating is a deliberate baseline reset.
 
 Unicode 16.0.0 · 677 letter ranges · 144 number ranges
 """

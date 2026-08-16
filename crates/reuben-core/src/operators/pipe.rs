@@ -18,8 +18,6 @@
 //!   its seed once on the first block and then only on change — downstream latches see the same
 //!   change frames a direct wire would have delivered.
 //! - **Event** (`note`): re-emit every routed event at its frame, verbatim.
-//!
-//! see rules: composition-operators
 
 use alloc::boxed::Box;
 use alloc::vec;
@@ -65,7 +63,7 @@ impl Operator for Pipe {
     fn process(&mut self, io: &mut Io) {
         match self.kind {
             PortKind::Signal => {
-                // Buffer-presence invariant (see rules: composition-operators): the input is
+                // Buffer-presence invariant: the input is
                 // always a dense length-n buffer (wired share, or materialized default/silence)
                 // — the handle read debug-asserts it — so `copy_from_slice` asserts the
                 // equal-length invariant instead of zip-truncating around a breach. The handle's

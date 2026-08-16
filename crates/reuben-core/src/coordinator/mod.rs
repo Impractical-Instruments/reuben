@@ -8,8 +8,6 @@
 //!
 //! The structure channel's NDJSON envelope used to live here beside them. It does not: both of its
 //! ends are doors, so it is the window's — nothing in this crate serializes it.
-//!
-//! see rules: execution-runtime
 
 pub mod install;
 pub mod mailbox;

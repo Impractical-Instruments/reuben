@@ -11,8 +11,6 @@
 //!
 //! - input 0: `x` (`Float`) — the value to truncate. Unwired default `0`.
 //! - output 0: `out` — `x` with its fraction dropped, toward zero.
-//!
-//! see rules: composition-operators
 
 use crate::operators::rounding::RoundInto;
 

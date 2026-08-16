@@ -11,8 +11,6 @@
 //! arena buffer, and every output port either owns arena buffers (a Buffer/signal output) or
 //! routes emitted Messages to downstream input ports (a message output). The old context-arena /
 //! enum-latch / param lanes and the separate `msg_targets` / `ctx_targets` routing are unified.
-//!
-//! see rules: execution-runtime
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
@@ -431,7 +429,7 @@ impl Plan {
             index_of.insert(*key, i);
         }
 
-        // 1. Arena liveness — see rules: execution-runtime. A Buffer output port needs a slot only
+        // 1. Arena liveness. A Buffer output port needs a slot only
         // while something still has to read it, so record when each one dies: the execution index
         // of its last consumer, or the producer's own index when nothing reads it. Bucketed by that
         // index, so the assignment walk below returns freed slots in the same single pass.
@@ -785,7 +783,6 @@ impl Plan {
     /// precomputed migration table: each `(old_index, new_index)` pair moves the box —
     /// `from.nodes[old_index]` → `self.nodes[new_index]` — and the displaced cold box lands back in
     /// `from` to free off-thread with it. Wiring and latches stay this Plan's; only the box moves.
-    /// see rules: execution-runtime
     ///
     /// Caller contract: each pair must already share operator type + instantiate-time identity (the
     /// survivor key a [`MigrationTable`](crate::coordinator::MigrationTable) guarantees) —
@@ -804,14 +801,14 @@ impl Plan {
             );
             core::mem::swap(&mut from.nodes[old_index].op, &mut self.nodes[new_index].op);
             // Re-assert on-change held outputs so a consumer isn't stranded on the post-transplant
-            // reset default (see rules: execution-runtime). RT-safe: no allocation.
+            // reset default. RT-safe: no allocation.
             self.nodes[new_index].op.on_transplant();
         }
     }
 }
 
 /// Collapse pass-through **interface pipes** out of the execution schedule, so the rendered
-/// schedule is what a hand-flattened patch would have been. see rules: execution-runtime
+/// schedule is what a hand-flattened patch would have been.
 ///
 /// Each dissolvable pipe node is removed and rewired around:
 ///
@@ -873,7 +870,7 @@ fn dissolve_interface_pipes(graph: &mut Graph) -> Vec<DissolvedPipe> {
     // nothing dissolution does can change that — *except* for the pipes feeding what it
     // dissolves, which the rewind at the bottom of the loop brings back into view. Re-deriving
     // "the first dissolvable pipe" by scanning from the top instead costs the whole graph per
-    // pipe, which is a flattened song's dominant cost. see rules: execution-runtime
+    // pipe, which is a flattened song's dominant cost.
     let mut pos = 0usize;
     loop {
         // One dissolve per scan, to fixpoint: rewiring can make another pipe dissolvable
@@ -1126,7 +1123,7 @@ impl Wires {
     }
 }
 
-/// Local per-wire form check — see rules: composition-operators.
+/// Local per-wire form check.
 /// One destination-side exception local to this checker: a type-agnostic
 /// [`Arg`](PortType::Arg) pass-through input spans the Event/Value split, admitting any source
 /// [`has_osc_form`](crate::boundary::has_osc_form) accepts.
@@ -1204,7 +1201,7 @@ fn check_wire_forms(graph: &Graph) -> Result<(), PlanError> {
 /// given input port and the wires leaving a given output port. Answering each of those by scanning
 /// the whole list is a linear scan per node, so the build as a whole grows with the square of the
 /// patch — which is invisible on a hand-authored instrument and a frozen main thread on a
-/// generated one. see rules: execution-runtime
+/// generated one.
 ///
 /// Each per-node list preserves `connections` order, so a reader that takes the *first* match
 /// still takes the same wire it did when it scanned the flat list — Instantiate stays
@@ -1311,7 +1308,7 @@ mod port_kind_tests {
     }
 }
 
-/// Wire-form oracle + per-wire checker fixtures — see rules: composition-operators. These
+/// Wire-form oracle + per-wire checker fixtures. These
 /// fixtures wire **synthetic single-port operators** (one declared form each) so a plan's buffer
 /// count isolates the wire under test:
 /// [`signal_buffer_count`] == *simultaneously live* declared-Signal ports + materialized

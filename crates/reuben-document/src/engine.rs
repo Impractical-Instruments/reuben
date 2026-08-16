@@ -1,8 +1,6 @@
 //! The [`Engine`] is `reuben-core`'s; what lives here is the one step of building one that needs a
 //! document. A free function rather than a constructor because the type is defined below this
 //! crate.
-//!
-//! see rules: authoring-library
 
 use reuben_core::{AudioConfig, Engine, Plan, PlanError, Registry};
 

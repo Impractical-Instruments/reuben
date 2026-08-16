@@ -15,8 +15,6 @@
 //!
 //! Adopting an alias elsewhere is not optional: `scripts/check_sample_alias.py` fails the build on
 //! a raw `f32` slice or `Vec` outside this file and its justified allowlist.
-//!
-//! see rules: composition-operators
 
 use alloc::vec::Vec;
 

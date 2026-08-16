@@ -40,8 +40,6 @@
 //! - input 5: `damping` (`Float`) — ring time 0..1.
 //! - input 6: `position` (`Float`) — excitation comb 0..1.
 //! - output 0: `out` (`Buffer`) — the pure-wet resonator output.
-//!
-//! see rules: signal-time-dsp
 
 use alloc::boxed::Box;
 use num_traits::Float;
@@ -327,7 +325,7 @@ impl Operator for Resonator {
         // Mallet noise colour: bright → a more open lowpass on the burst.
         let lp_alpha = 0.1 + 0.9 * brightness.clamp(0.0, 1.0);
 
-        // Flat locals for the block loop (see rules: execution-runtime): the input read returns a
+        // Flat locals for the block loop: the input read returns a
         // block-lifetime slice, so it coexists with the output's mutable borrow.
         let audio = io.read(IN_IN);
         let out = io.write(OUT_OUT);

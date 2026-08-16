@@ -14,8 +14,6 @@
 //! - input 0: `a` (`Float`) — the dividend. Unwired default `0`.
 //! - input 1: `b` (`Float`) — the modulus. Unwired default `1`; a `0` modulus yields `0`.
 //! - output 0: `out` — `a.rem_euclid(b)`, in `[0, b)` for `b > 0`.
-//!
-//! see rules: composition-operators
 
 /// The op's scalar math, generic over the number type: a Euclidean modulo. The `b == 0` check is
 /// `modulo`'s **op-local** guard against a `NaN` (or integer remainder panic) poisoning the graph;

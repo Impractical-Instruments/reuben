@@ -4,8 +4,6 @@
 //!
 //! Every case seeds a real file, since a document is always named by `source`, and every call is
 //! bounded by a watchdog so a protocol regression fails loudly instead of hanging CI.
-//!
-//! see rules: agent-mcp
 
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};

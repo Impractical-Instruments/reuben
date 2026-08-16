@@ -10,16 +10,15 @@ appears anywhere OUTSIDE the naming site and an explicit, justified allowlist. F
 
 Why a text linter and not clippy's `disallowed-types`: a primitive slice/Vec of a primitive has no
 nameable type *path* to disallow (`[f32]` is not a nominal type). The naming discipline is therefore
-enforced textually, in the same spirit as `scripts/check_rules_refs.py` (walk the tree, skip build
-dirs, exit non-zero on any violation, stdlib only).
+enforced textually: walk the tree, skip build dirs, exit non-zero on any violation, stdlib only.
 
 The allowlist is deliberately tight. Each entry is a site where the `f32` is legitimately *not* a
 logical audio buffer — a device-native frame, decoded resource data, per-sample DSP arithmetic, a
 scalar-capture pool — or a test/bench harness that fabricates raw fixtures. The partition it draws
 (audio vs. incidental `f32`) is the point of the exercise, so every entry carries its reason.
 
-Exit non-zero on any violation. Stdlib only. Runs unconditionally in CI (it can catch a raw buffer
-in ANY code change, like the reference-linter's always-on `ref-guard`).
+Exit non-zero on any violation. Stdlib only. Runs unconditionally in CI, because a raw buffer can
+slip into ANY code change and no path filter built from this guard's subject would be sound.
 
 Usage: python3 scripts/check_sample_alias.py [root=.]
 """

@@ -1,4 +1,4 @@
-"""The live tier: a ladder of hardware bands, run on demand. see rules: agent-mcp
+"""The live tier: a ladder of hardware bands, run on demand.
 
 The question this tier answers is **not** "does it pass" but **where the pass line sits**. Rungs are
 memory bands — fits in 8 / 16 / 32 GB of unified memory at usable speed — and the model filling each

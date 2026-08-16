@@ -28,8 +28,6 @@
 //!   outbound tap (`Plan.outbound_taps`) drains an `osc_out` node's emissions past the boundary,
 //!   where the flat OSC form is encoded. The incoming event's local address is dropped; the node's
 //!   address is stamped on drain.
-//!
-//! see rules: signal-time-dsp
 
 use alloc::boxed::Box;
 

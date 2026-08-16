@@ -1,8 +1,6 @@
 //! The resource seam. The trait lives here rather than in `reuben-core` because every caller is
 //! authoring-side; the render path never resolves anything, it reads an already-decoded
 //! [`ResourceStore`](reuben_core::resources::ResourceStore).
-//!
-//! see rules: authoring-library
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -11,7 +9,7 @@ use std::fmt;
 use reuben_core::resources::SampleBuffer;
 
 /// Why resolving a resource failed. Always surfaced as a
-/// [`LoadWarning`](crate::format::LoadWarning) — never fatal. see rules: authoring-library
+/// [`LoadWarning`](crate::format::LoadWarning) — never fatal.
 #[derive(Debug, Clone)]
 pub enum ResolveError {
     /// The source could not be opened or read.
@@ -38,7 +36,6 @@ impl std::error::Error for ResolveError {}
 
 /// Resolves a logical source (a file path today) to a decoded [`SampleBuffer`]. An eager,
 /// non-RT authoring step; `reuben-native` provides the WAV/filesystem implementation.
-/// see rules: authoring-library
 pub trait ResourceResolver {
     /// Decode `source` (e.g. a path from the instrument's `resources` table) to a buffer.
     fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError>;
@@ -69,7 +66,7 @@ pub trait ResourceResolver {
 
     /// Write `text` **back** to `source` — the symmetric half of [`resolve_text`](Self::resolve_text):
     /// the door that resolved a source can also persist to it. `source` is opaque and
-    /// door-resolved (a filesystem path natively, a store key on web). see rules: agent-mcp
+    /// door-resolved (a filesystem path natively, a store key on web).
     ///
     /// The loader canonicalizes `source` before calling [`resolve_text`](Self::resolve_text),
     /// and a write receives that **same** canonical form, so two spellings of one source stay

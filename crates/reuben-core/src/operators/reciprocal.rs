@@ -12,8 +12,6 @@
 //!
 //! - input 0: `x` (`Float`) — the value to invert. Unwired default `1` (so `1/1 == 1`, the identity).
 //! - output 0: `out` — `1 / x` (or `0` when `x == 0`).
-//!
-//! see rules: composition-operators
 
 /// The op's scalar math, generic over the number type. The `x == 0` check is `reciprocal`'s
 /// **op-local** guard against an `inf` (or integer divide panic) poisoning the graph; it lives

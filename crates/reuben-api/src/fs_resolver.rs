@@ -1,5 +1,5 @@
 //! Filesystem + WAV resource resolution — the reference implementation of the resource seam, for a
-//! host whose sources are files. see rules: authoring-library
+//! host whose sources are files.
 //!
 //! Fills the [`Resources`] seam with a filesystem resolver that decodes **WAV**
 //! (`hound`; PCM int + float); compressed formats and non-file sources drop in behind the same

@@ -1,4 +1,4 @@
-//! Tonal context — the latched harmony value followers resolve against. see rules: signal-time-dsp
+//! Tonal context — the latched harmony value followers resolve against.
 //!
 //! A [`Harmony`] is a small **`Copy`** value so the engine can snapshot it onto the Message wire
 //! allocation-free. It owns the resolver — `hz` (degree → Hz), `snap` (arbitrary pitch →

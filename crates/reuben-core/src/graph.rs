@@ -3,8 +3,6 @@
 //! A Graph is plain data: operator instances (nodes) plus connections between their
 //! ports. It carries no execution order — that is produced by Instantiate
 //! ([`crate::plan::Plan::instantiate`]).
-//!
-//! see rules: composition-operators
 
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};

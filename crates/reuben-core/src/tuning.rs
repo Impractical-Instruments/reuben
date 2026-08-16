@@ -1,6 +1,6 @@
 //! Tuning — resolves symbolic [`Pitch`] to frequency in Hz.
 //!
-//! 12-TET is the only Tuning implemented today. see rules: signal-time-dsp
+//! 12-TET is the only Tuning implemented today.
 
 use crate::vocab::pitch::Pitch;
 use num_traits::Float;

@@ -1,4 +1,4 @@
-//! Ready-made instrument graphs. see rules: authoring-library
+//! Ready-made instrument graphs.
 //!
 //! The default rig is `instruments/default.json`, embedded so the binary is self-contained. Notes
 //! arrive as OSC at `/voicer/notes [midi, gate]`. Its `voicer` hosts a voice sub-patch

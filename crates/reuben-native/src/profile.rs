@@ -1,7 +1,7 @@
 //! Device profile: the `--io-map <file>` document — binds an instrument's *logical* master
 //! channels to a real device's channels, selects a non-default device by name substring, and
 //! states sample-rate/buffer-size preferences the engine requests against the device's supported
-//! configs. see rules: composition-operators
+//! configs.
 //!
 //! **Structural** problems (malformed JSON, an unknown field, a map key/value that isn't a
 //! channel index) are load errors — [`ProfileError`], surfaced by [`DeviceProfile::load`].

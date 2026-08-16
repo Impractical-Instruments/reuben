@@ -3,8 +3,6 @@
 //! They are built off-thread and live on this side of the seam because [`super::slot::RenderSlot`]
 //! owns them by value. Neither is document-shaped: the document that produced the Engine stays with
 //! the Coordinator that loaded it.
-//!
-//! see rules: execution-runtime
 
 use crate::engine::Engine;
 

@@ -218,7 +218,7 @@ enum Samples {
 }
 
 /// The CLI door's reading of an opaque document `source`: a filesystem path, with the library root
-/// as the fallback for anything it references. see rules: agent-mcp
+/// as the fallback for anything it references.
 fn store(source: &str, root: Option<PathBuf>, samples: Samples) -> FsResolver {
     let store = FsResolver::for_document(source);
     let store = match root {
@@ -250,7 +250,7 @@ fn print_json<T: serde::Serialize>(value: &T) {
 }
 
 /// `new-instrument`: land a guaranteed-valid minimal instrument document **at a path** — the
-/// first-creation start move. see rules: agent-mcp
+/// first-creation start move.
 ///
 /// The window's `new_instrument`, the very verb the sidecar calls, so both doors create a document
 /// by exactly one procedure and the result is validated and written by the same code.
@@ -512,7 +512,7 @@ fn cmd_describe_boundary(source: &str, json: bool, root: Option<PathBuf>) -> Exi
 ///
 /// `--json` wraps the rendered view rather than emitting a per-view structured shape: the compact
 /// line grammar is the projection's deliverable, and a door does not carry a second serialization
-/// of it. see rules: agent-mcp
+/// of it.
 ///
 /// A document that fails to load still projects (`loadable: false` in the header): `validate` is
 /// the single authority on validity, and going blind is the worst way to report invalidity. So this
@@ -593,8 +593,6 @@ fn cmd_validate(path: &Path, json: bool, root: Option<PathBuf>) -> ExitCode {
 /// process — the OSC socket, the structure channel, the streams — is never torn down. The
 /// [`Coordinator`](render::Coordinator) the structure channel owns is the single writer of graph
 /// structure.
-///
-/// see rules: execution-runtime
 fn play(
     path: Option<PathBuf>,
     osc_out_target: Option<String>,

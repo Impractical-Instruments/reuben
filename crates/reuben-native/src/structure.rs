@@ -24,8 +24,6 @@
 //!
 //! reuben-native stays **tokio-free** (the async runtime is fenced to reuben-mcp): the server is a
 //! dedicated std thread doing blocking line I/O, never an async runtime.
-//!
-//! see rules: execution-runtime
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};

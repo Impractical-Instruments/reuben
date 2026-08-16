@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Claim ledger for the doc surface — the layer that decides what a machine can check.
 
-The corpus states things that can be *wrong*: a file path, a code identifier, a count, a claim that
-something is single-sourced. This walks the governed docs, extracts each such statement as a typed
-**claim**, and splits them by whether a machine can decide the claim at all:
+The corpus states things that can be *wrong*: a file path, a code identifier, a count. This walks
+the governed docs, extracts each such statement as a typed **claim**, and splits them by whether a
+machine can decide the claim at all:
 
   DECIDABLE — resolved here, and a failure fails the build:
     path          a backticked path (contains `/`) resolves to a real file, exactly or by suffix
@@ -13,28 +13,18 @@ something is single-sourced. This walks the governed docs, extracts each such st
 
   UNDECIDABLE — extracted, ranked, and routed to a reviewer; never gates:
     count            "two spellings" — a machine cannot know what to count
-    single-sourcing  "generated from one source" — the claim is about a mechanism, not a token
 
 The split is the point. A gate that guesses at the undecidable half trains people to ignore it; a
 reviewer handed all 300-odd claims reads none of them. Extracting cheaply and routing honestly is
 what makes the expensive layer affordable — it reads a worklist, not a corpus.
 
-**Two scoping rules, both load-bearing.**
+**One scoping rule, load-bearing.** Only the governed surface is read: `docs/agents/`, the root
+Markdown, and the skills. `docs/research/` and `docs/rituals/` are records of a moment — a research
+note naming a file that has since moved is not wrong, it is history, and git is where history is
+checked.
 
-*Which docs.* Only the governed surface: `docs/rules/`, `docs/agents/`, the root Markdown, and the
-skills. `docs/research/`, `docs/rituals/` and `docs/adr/` are records of a moment — a research note
-naming a file that has since moved is not wrong, it is history, and git is where history is checked.
-**A generated span inside the governed surface is out too** — see `generated()`: it is authored in
-another repo, and a finding there names a defect nobody in this one can clear.
-
-*Which claims gate, per document kind.* A **rule** is present-tense and normative; a **rationale**
-is an argument, and an argument names what it rejected — `In`/`Out` "not `InPort`/`OutPort`",
-`pitch2freq` over the rejected `degree_to_freq`, the `upload_sample` tool that was turned down. Those
-identifiers must NOT exist, so requiring them to resolve inverts the corpus's own meaning. Identifier
-claims therefore gate on now-state docs and route to review inside `rationale/`. Path claims gate
-everywhere: a rejected *name* is common, a rejected *file path* is not — and in the **entry docs**
-(AGENTS.md and friends) they must resolve in full, because that surface is read as navigation and an
-agent opens what it names.
+In the **entry docs** (AGENTS.md and friends) a path claim must resolve in full, because that
+surface is read as navigation and an agent opens what it names.
 
 Stdlib only. Green on an empty tree. Usage:
 
@@ -61,16 +51,8 @@ SOURCE_EXTS = {".rs", ".py", ".json", ".toml", ".yml", ".yaml", ".sh", ".js", ".
 PATH_EXTS = "rs|py|json|toml|md|yml|yaml|sh|tosc|lock"
 
 # The governed surface, as (directory, recursive) or a literal file, relative to root.
-GOVERNED_DIRS = ("docs/rules", "docs/agents", ".claude/skills")
+GOVERNED_DIRS = ("docs/agents", ".claude/skills")
 GOVERNED_ROOT_FILES = ("CLAUDE.md", "AGENTS.md", "README.md", "CONTRIBUTING.md")
-
-# The two doctrine-artifact markers, in the one medium this ledger reads. `generated()` uses them
-# to drop spans authored in another repo; the grammar is the generator's, not this file's, and the
-# whole-file predicate is `scripts/ii_verify.py`'s verbatim — a repo-local generator that borrowed
-# the `GENERATED from` opener is not a doctrine artifact and stays governed here.
-GENERATED_FILE_RE = re.compile(r"^<!--\s*GENERATED from .* — edit the source, not this file\.")
-REGION_BEGIN_RE = re.compile(r"^<!--\s*ii:begin\s+\S+")
-REGION_END_RE = re.compile(r"^<!--\s*ii:end\s+\S+\s*-->$")
 
 PATH_RE = re.compile(rf"`([A-Za-z0-9_./-]+\.(?:{PATH_EXTS})(?::\d+(?:-\d+)?)?)`")
 # Identifiers are read out of code spans rather than matched whole, so a qualified path yields its
@@ -101,11 +83,7 @@ ROSTER_COUNT_RE = re.compile(
     r"\b(three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|"
     r"sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|\d{1,4})\s+"
     r"(?:[a-z]+\s+)?(?:tools?|verbs?|contracts?)\b", re.I)
-SINGLE_SOURCE_RE = re.compile(
-    r"\b(single-sourced?|single source|one source|generated from|derived from|source of truth|"
-    r"one declaration|exactly one place|cannot drift|never drift)\b", re.I)
 FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
-ANCHOR_RE = re.compile(r'<a\s+id="([^"]+)"\s*>\s*</a>')
 
 # Identifiers that resolve outside this repo's source, with the reason each is legitimately absent.
 # An entry here is a claim that the name is NOT ours; it is not a place to park a stale reference.
@@ -117,14 +95,14 @@ KNOWN_EXTERNAL = {
     "HashMap": "Rust std",
     "assert_no_alloc": "third-party crate",
     "data_len": "product-repo staging seam, not this repo",
-    "upload_sample": "the rejected tool name, argued against by name",
     "enum_index": "named as the API that must not appear on the hot path",
+    "node_id": "GitHub REST field, named to say which id NOT to pass",
 }
 
 
 @dataclass
 class Claim:
-    kind: str          # path | identifier | guard | count | single-sourcing
+    kind: str          # path | identifier | guard | count | roster-count
     file: str
     line: int
     text: str          # the claim exactly as written
@@ -196,65 +174,15 @@ def governed_docs(root: Path) -> list[Path]:
     return sorted(set(out))
 
 
-def rule_spans(text: str) -> list[tuple[int, str, str]]:
-    """`(1-based anchor line, rule slug, the rule's text)` for each rule in a topic doc.
-
-    A rule runs from its `<a id>` anchor to the next anchor or the next H2, whichever comes first —
-    the same span the link guard walks. Claims about rules are keyed by the RULE, not by the line:
-    a slug that happens to contain "single-source" appears on its anchor line and again in its
-    `[why]` link, and reporting those as three findings buries the one that is real."""
-    lines = text.split("\n")
-    anchors = [(i, m.group(1)) for i, ln in enumerate(lines)
-               for m in (ANCHOR_RE.search(ln),) if m]
-    h2 = [i for i, ln in enumerate(lines) if ln.lstrip().startswith("## ")]
-    out = []
-    for idx, (a_line, slug) in enumerate(anchors):
-        next_anchor = anchors[idx + 1][0] if idx + 1 < len(anchors) else len(lines)
-        next_h2 = next((h for h in h2 if h > a_line), len(lines))
-        out.append((a_line + 1, slug, "\n".join(lines[a_line:min(next_anchor, next_h2)])))
-    return out
-
-
-def generated(text: str) -> set[int]:
-    """1-based line numbers this repo did not author.
-
-    A doctrine artifact carries its own marker: a whole-file one under the title, or a paired
-    `ii:begin`/`ii:end` region inside a file this repo does write. Those bytes are authored in
-    another repo and rendered in, so a finding in them names a defect nobody here can fix — and
-    editing one to clear it breaks the digest `scripts/ii_verify.py` checks, which is the whole
-    point of the digest. An unclosed region runs to end of file: the generator refuses to guess
-    where a region ends, and so does this.
-    """
-    lines = text.split("\n")
-    if any(GENERATED_FILE_RE.match(ln.strip()) for ln in lines[:4]):
-        return set(range(1, len(lines) + 1))
-    out, open_at = set(), None
-    for i, line in enumerate(lines, 1):
-        s = line.strip()
-        if open_at is None:
-            if REGION_BEGIN_RE.match(s):
-                open_at = i
-                out.add(i)
-        else:
-            out.add(i)
-            if REGION_END_RE.match(s):
-                open_at = None
-    if open_at is not None:
-        out.update(range(open_at, len(lines) + 1))
-    return out
-
-
 def prose_lines(text: str) -> list[tuple[int, str]]:
-    """`(1-based lineno, line)` for lines outside fenced blocks and outside a generated span. A
-    shell transcript or a layout diagram is an illustration, not a claim about what exists right
-    now, and a generated span is not this repo's claim at all."""
+    """`(1-based lineno, line)` for lines outside fenced blocks. A shell transcript or a layout
+    diagram is an illustration, not a claim about what exists right now."""
     out, in_fence = [], False
-    skip = generated(text)
     for i, line in enumerate(text.split("\n"), 1):
         if FENCE_RE.match(line):
             in_fence = not in_fence
             continue
-        if not in_fence and i not in skip:
+        if not in_fence:
             out.append((i, line))
     return out
 
@@ -273,9 +201,6 @@ def identifiers_in(line: str) -> list[str]:
 
 def extract(path: Path, root: Path, idx: Index) -> list[Claim]:
     rel = path.relative_to(root).as_posix()
-    # A rationale argues; everything else states the now. See the module docstring.
-    is_argument = "rationale" in path.parts
-    is_topic = path.parent == root / "docs" / "rules" and path.name != "README.md"
     is_entry_doc = path.parent == root and path.name in GOVERNED_ROOT_FILES
     claims: list[Claim] = []
 
@@ -303,9 +228,6 @@ def extract(path: Path, root: Path, idx: Index) -> list[Claim]:
             elif token in KNOWN_EXTERNAL:
                 claims.append(Claim("identifier", rel, lineno, token, True, "ok",
                                     KNOWN_EXTERNAL[token]))
-            elif is_argument:
-                claims.append(Claim("identifier", rel, lineno, token, False, "needs-review",
-                                    "absent from source, in a doc that argues about names"))
             else:
                 claims.append(Claim("identifier", rel, lineno, token, True, "unresolved",
                                     "names code that does not exist"))
@@ -335,15 +257,6 @@ def extract(path: Path, root: Path, idx: Index) -> list[Claim]:
             for m in COUNT_RE.finditer(bare):
                 claims.append(Claim("count", rel, lineno, m.group(0), False, "needs-review",
                                     "counts something the line names"))
-
-    # Only a RULE makes a normative single-sourcing claim, and that set is what this ledger audits
-    # for a nameable guard. A rationale re-argues the claim and a skill repeats it; routing those
-    # buries the handful that matter under eighty that do not.
-    if is_topic:
-        for lineno, slug, span in rule_spans(text):
-            if SINGLE_SOURCE_RE.search(span):
-                claims.append(Claim("single-sourcing", rel, lineno, f"#{slug}", False,
-                                    "needs-review", "claims one source — can it name a guard?"))
 
     return claims
 

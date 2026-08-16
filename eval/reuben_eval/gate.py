@@ -5,7 +5,7 @@ byte-reproducible. What it measures is what the *surface* costs a perfect caller
 handed back by the sidecar, failed-validate rounds, and freehand-JSON characters.
 
 That floor is exactly what a new verb moves, which is why this tier gates and the live tier does
-not. see rules: agent-mcp
+not.
 
     python3 -m reuben_eval.gate --json out.json          # measure
     python3 -m reuben_eval.gate --compare base.json      # measure and gate against a baseline

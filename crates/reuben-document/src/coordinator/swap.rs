@@ -10,8 +10,6 @@
 //! the retired bundle off-thread. "Off-thread" is a property of the *caller* — this module is a
 //! plain OS-free function with no clock, threads, or I/O — and single-writer discipline is enforced
 //! by `&mut self`.
-//!
-//! see rules: execution-runtime
 
 use crate::contract::{content_hash, Diag, Report, SwapReport};
 use crate::engine::FromDocumentError;
@@ -42,7 +40,7 @@ use reuben_core::coordinator::mailbox::{swap_pair, CoordinatorMailbox, ReclaimEr
 /// nothing to reclaim and the install slot never closed.
 ///
 /// It deliberately carries no [`MigrationTable`](reuben_core::coordinator::MigrationTable): that table pairs Plan indices against the Engine
-/// this swap will displace, which is known at commit and not before. see rules: execution-runtime
+/// this swap will displace, which is known at commit and not before.
 ///
 /// **RT-safety requirement (drop off-thread), same as the [`InstallBundle`] it becomes.** Dropping
 /// one frees a whole Engine — a heap free the audio thread may never do. Nothing in this API can
@@ -202,7 +200,7 @@ impl Coordinator {
     /// canonical document + manifest advance.
     ///
     /// **Arbitration here is last-write-wins, and this signature takes no `expect` guard** — the
-    /// optimistic-concurrency guard is a *door* concern (see rules: agent-mcp). A door with
+    /// optimistic-concurrency guard is a *door* concern. A door with
     /// concurrent clients compares the hash its client holds against
     /// [`installed_hash`](Coordinator::installed_hash) and answers in its own shape before calling
     /// in. That compare is the whole guard — not logic worth centralizing — and the doors that
@@ -519,7 +517,7 @@ mod tests {
 
     #[test]
     fn a_survivor_keeps_state_a_reset_starts_fresh() {
-        // Survivor identity is address + type + fingerprint (see rules: execution-runtime); a
+        // Survivor identity is address + type + fingerprint; a
         // rename is a remove+add, not a survivor. Warm the envelope to sustain, then swap.
         let base = envelope_doc("/env");
 
@@ -577,8 +575,8 @@ mod tests {
 
     #[test]
     fn a_changed_runtime_param_leaves_the_survivor_ringing() {
-        // A runtime `inputs` param is never part of the survivor key (see rules:
-        // execution-runtime), so editing only `attack` here must leave the node a survivor — the
+        // A runtime `inputs` param is never part of the survivor key, so editing only `attack`
+        // here must leave the node a survivor — the
         // counterpart to `a_survivor_keeps_state_a_reset_starts_fresh`, where it must NOT reset.
         let (mut coord, side, _w) = Coordinator::install_initial(
             &envelope_doc_attack(0.5),
@@ -651,8 +649,8 @@ mod tests {
 
     #[test]
     fn bumping_voices_resets_the_voicer_unchanged_survives() {
-        // `voices` is an instantiate-time Constant, part of the survivor fingerprint (see rules:
-        // execution-runtime): bumping it 4→8 is a different instantiation, so the voicer resets to
+        // `voices` is an instantiate-time Constant, part of the survivor fingerprint: bumping it
+        // 4→8 is a different instantiation, so the voicer resets to
         // a fresh, silent pool rather than surviving.
         let ringing = voicer_peak_after_swap(4);
         let reset = voicer_peak_after_swap(8);
@@ -724,8 +722,8 @@ mod tests {
 
     #[test]
     fn reresolving_a_sample_to_different_bytes_resets_the_player() {
-        // A sample's survivor identity is its decoded bytes, not its path (see rules:
-        // execution-runtime): re-uploading different bytes at the same path is a different
+        // A sample's survivor identity is its decoded bytes, not its path: re-uploading
+        // different bytes at the same path is a different
         // instantiation, so the player resets rather than surviving.
         let same_bytes = sample_peak_after_swap(false);
         let changed_bytes = sample_peak_after_swap(true);
@@ -744,8 +742,8 @@ mod tests {
     #[test]
     fn installed_hash_advances_on_install_and_is_retained_by_a_rejected_swap() {
         // `installed_hash` is the token every door hands its clients, and the one a door with
-        // concurrent clients compares its `expect` against (see rules: agent-mcp — the guard is
-        // the door's, not this method's). What core owes them: the hash advances when a document
+        // concurrent clients compares its `expect` against (the guard is the door's, not this
+        // method's). What core owes them: the hash advances when a document
         // installs, and a rejected swap neither advances it nor lies about it — the report names
         // what *keeps playing*, so a client that re-reads gets the doc it can actually hear.
         let (mut coord, _side, _w) = Coordinator::install_initial(

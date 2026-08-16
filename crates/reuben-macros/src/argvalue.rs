@@ -5,7 +5,7 @@
 //! `Copy` leaf. An **all-unit enum** (`SnapTarget`, `GateMode`) instead type-erases to the single
 //! `Arg::Enum(index)` variant — plus the Enum-over-OSC table (`VARIANTS` / `DEFAULT_INDEX` /
 //! `from_index` / `to_index` / `from_symbol` / `resolve_arg`) and an `enum_meta()` built from the
-//! same tokens. see rules: composition-operators
+//! same tokens.
 //!
 //! The OSC flat-multi-arg conversion for structs (`Note ↔ /note pitch vel`) is not derived
 //! here: the type hand-implements `OscArg` beside its definition and names itself in the
@@ -245,7 +245,7 @@ mod tests {
         );
         assert!(out.contains("Arg :: Enum (i) =>"), "{out}");
         // No per-enum read glue is generated. Asserted negatively on purpose: adding it would be
-        // an easy, plausible-looking change. see rules: composition-operators
+        // an easy, plausible-looking change.
         assert!(!out.contains("IoInput"), "{out}");
         assert!(!out.contains("input_held"), "{out}");
     }

@@ -20,7 +20,7 @@ bench = ["reuben-core/bench"]
 
 [dependencies]
 # The render half this crate builds against. Every import crosses upward: this crate names
-# reuben-core, and reuben-core names nothing here. see rules: execution-runtime
+# reuben-core, and reuben-core names nothing here.
 reuben-core = { path = "../reuben-core" }
 # The type-wide NUMBER_MIN/NUMBER_MAX sentinels the authoring surface bounds against.
 reuben-contract = { path = "../reuben-contract" }

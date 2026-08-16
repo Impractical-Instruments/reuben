@@ -1,4 +1,4 @@
-//! The generated **library index** over the available-set. see rules: authoring-library
+//! The generated **library index** over the available-set.
 //!
 //! This module is the IO glue around the window's pure projection
 //! [`reuben_api::authoring::library_index_line`]: sweep every instrument document under a

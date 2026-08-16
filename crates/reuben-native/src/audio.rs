@@ -1,4 +1,4 @@
-//! Live audio out via cpal. see rules: execution-runtime
+//! Live audio out via cpal.
 //!
 //! Opens an output device (the host default, or a [`DeviceProfile`]'s `output.device` substring
 //! selection), builds a [`Coordinator`] + its RT-side [`RenderSlot`] matched to the device sample
@@ -19,7 +19,7 @@
 //! *logical* master channels onto the real device's channel count (an explicit `output.map` in the
 //! profile overrides that implicit policy — [`OutputMap::Explicit`]), and
 //! [`negotiate_output_config`] requests the profile's sample-rate/buffer-size preferences against
-//! the device's supported configs and adopts whatever is granted. see rules: composition-operators
+//! the device's supported configs and adopts whatever is granted.
 //!
 //! It also measures the callback against its own real-time budget: a render that takes longer than
 //! the audio time it produced is an output xrun, counted through the shared

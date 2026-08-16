@@ -4,7 +4,7 @@
 //! The same rule the authoring results carry applies here: every field `///` is advertised prose,
 //! and so is the type `///` of anything that lands in `$defs` ([`StatusEndpoints`],
 //! [`SidecarInfo`]). Write them as if they ship, because they do — no rustdoc markup, no issue
-//! numbers, no crate paths. see rules: code-as-grounding
+//! numbers, no crate paths.
 
 use serde::{Deserialize, Serialize};
 

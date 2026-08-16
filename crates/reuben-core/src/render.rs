@@ -17,8 +17,6 @@
 //! uses stack [`SmallVec`]s; routed events are zero-copy views onto the caller's Messages.
 //!
 //! The [`Executor`] trait is the pluggable-executor seam.
-//!
-//! see rules: execution-runtime
 
 use alloc::vec;
 use alloc::vec::Vec;

@@ -11,9 +11,7 @@
 //! So write every `///` here as if it ships. Advertised prose takes no rustdoc link syntax, no
 //! issue numbers and no crate paths — a model can resolve none of them; notes for humans go in
 //! `//` comments, which schemars does not pick up. Guarded end-to-end over the real advertised
-//! surface by `advertised_prose_is_model_facing`. see rules: code-as-grounding
-//!
-//! see rules: agent-mcp
+//! surface by `advertised_prose_is_model_facing`.
 
 use serde::{Deserialize, Serialize};
 
@@ -191,7 +189,6 @@ pub struct DocumentView {
 // `pub(crate)` associated functions rather than `From` impls: a public `impl From<reuben_core::…>`
 // would put the engine's types in this crate's public API and its rustdoc, which is the leak the
 // boundary exists to close. One direction only — the window is where the engine's answers stop.
-// see rules: agent-mcp
 
 impl Diag {
     pub(crate) fn from_core(d: &core_contract::Diag) -> Self {

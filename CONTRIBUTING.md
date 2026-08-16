@@ -13,12 +13,7 @@ The script points `core.hooksPath` at [`scripts/hooks/`](./scripts/hooks), which
 directory bootstrap configures, so the two routes agree rather than overwriting each other. Once it is
 set, a new check registers itself there and needs no further setup.
 
-**This is not the only manual step**, and an earlier version of this section said it was. A clone also
-wants `python3` on `PATH` for the checks that are not `cargo` (below), and the doctrine regeneration
-check additionally wants `ii-generate` on `PATH` — a wrapper into a `brain` checkout, put there by
-that repo's `bootstrap.sh` — and a token that can reach `brain`; it warns and steps aside without
-them. What the one command buys is the hook set, not a finished
-environment.
+What the one command buys is the hook set, not a finished environment.
 
 ### The hook set
 
@@ -29,21 +24,8 @@ type is one file. [`scripts/hooks/pre-commit`](./scripts/hooks/pre-commit) and
 `scripts/hooks/<hook>.d/` in filename order and stops at the first failure. What is installed today:
 
 - **pre-commit**
-  - `scripts/hooks/pre-commit.d/10-rules-refs` — `check_rules_refs.py` over the working tree: no ADR
-    number in code, no comment citing an issue or a rule anchor, every `see rules:` pointer
-    resolving.
-  - `scripts/hooks/pre-commit.d/15-adr-numbers` — `check_adr_numbers.py` over the working tree: no
-    ADR number is carried by two decisions, live or long since folded away. **Warns and steps aside
-    in a shallow clone**, which cannot say which numbers were ever issued; CI's `adr-numbers` job
-    checks out full-depth and is the authority.
   - `scripts/hooks/pre-commit.d/20-rust-fmt` — `cargo fmt --all --check` (fast; skips docs-only
     commits). Blocks commits that CI's format gate would reject.
-  - `scripts/hooks/pre-commit.d/30-rules-index` — `check_rules_derive.py --write` when the commit
-    touches `docs/rules/`, re-staging the regenerated index so the fix lands in the same commit.
-  - `scripts/hooks/pre-commit.d/40-doctrine-regen` — the doctrine generator's `--write`, staging only
-    what it rewrote. **Warns and never blocks**: it needs `ii-generate` on `PATH` — a wrapper into a
-    private `brain` checkout — and a token, so a clone with neither has to stay committable. CI's
-    `provenance` job is what reds.
 - **pre-push**
   - `scripts/hooks/pre-push.d/10-rust-clippy` — `cargo clippy --workspace --all-targets -- -D
     warnings`. Runs at the push boundary (not every commit) so the compile cost is paid once;
@@ -58,11 +40,9 @@ Those are the same thing right up until they are not — `git add -p`, a partial
 untracked scratch file — and where they differ, any of these checks can green a commit CI then
 reds. The sharp case is `20-rust-fmt`: `cargo fmt --all --check` is byte-for-byte CI's command and
 it *still* reads from disk, so staging a badly formatted hunk while the file on disk is clean
-passes here and fails the format gate. In the other direction, an untracked scratch file can make
-`10-rules-refs` block a commit that has nothing to do with it.
+passes here and fails the format gate.
 
-Two checks also differ from CI in the command itself. `30-rules-index` runs `--write` where CI runs
-`--check`, which is the whole point of it. `10-rust-clippy` omits CI's `--features
+One check also differs from CI in the command itself: `10-rust-clippy` omits CI's `--features
 reuben-core/bench`, so a lint that only fires in a `[[bench]]` target passes here and reds there;
 the file says so in its header.
 
@@ -75,9 +55,9 @@ hooks directory that silently disables the first.
 
 What a check can rely on, and what it owes:
 
-- **Read-only checks take the low numbers; a check that writes takes a high one.** `30-rules-index`
-  and `40-doctrine-regen` regenerate and re-stage files, and a read-only check failing after either
-  would leave you a modified, staged file you never touched and were never told about.
+- **Read-only checks take the low numbers; a check that writes takes a high one.** A check that
+  regenerates and re-stages files, with a read-only check failing after it, would leave you a
+  modified, staged file you never touched and were never told about.
 - **A check is handed the hook's own arguments and a verbatim replay of the hook's stdin**, so
   every pre-push check sees the same pushed refs. It runs from the working-tree root and may stage
   files.
@@ -109,11 +89,10 @@ don't pick a toolchain. Because local and CI run the *same* version, a given fmt
 gives the same verdict in both places — which is what makes the hooks worth trusting. It is the
 *commands* that differ where they differ, as above, never the compiler.
 
-**`python3` is optional but wanted.** The pre-commit checks that are not `cargo` are Python.
-Without `python3` on `PATH` each prints a warning and steps aside rather than blocking your commits,
-because CI runs them regardless. What you lose is their regeneration: commit a `docs/rules/` change
-without it and CI's `--check` reds the build, and a doctrine artifact you should have regenerated
-stays as it was.
+**`python3` is wanted for CI parity, not for the hooks.** Every installed hook is `cargo`; the
+Python guards (the sample-alias guard, the doc-claim ledger, the hook-dispatcher suite) run in CI
+only. `python3 scripts/check_sample_alias.py .` and `python3 scripts/extract_doc_claims.py --check .`
+run them locally before you push.
 
 ### The bare-metal target
 
@@ -167,8 +146,7 @@ worth knowing before reading a number off either side:
 
 ### Bumping the Rust version
 
-The pinned version and the MSRV are kept **in lockstep** (see
-[web-product-process](./docs/rules/web-product-process.md)). To move to a new Rust:
+The pinned version and the MSRV are kept **in lockstep**. To move to a new Rust:
 
 1. `channel` in `rust-toolchain.toml`
 2. `rust-version` in `Cargo.toml` `[workspace.package]` — set to the **same** version
@@ -179,10 +157,9 @@ the pinned toolchain, which equals the MSRV).
 
 ## Branching & release flow
 
-**The branch model is [`.ii/repo.toml`](./.ii/repo.toml)'s `[branches]` table**, and it is not
-restated here. Open every PR against the integration branch it names; the release branch advances
-only by the workflow at its `promotion_source`, dispatched by hand from the Actions tab. Prose that
-names a branch instead of reading it there goes stale the day the table changes.
+**`dev` is the integration branch; `main` is the release branch.** Open every PR against `dev`.
+`main` advances only by [`.github/workflows/promote.yml`](./.github/workflows/promote.yml), a
+fast-forward promotion dispatched by hand from the Actions tab — never by a merge button.
 
 Point your clone's `origin/HEAD` at the default branch once, or `origin/HEAD` and anything built on
 it resolve against whatever the clone was created against:

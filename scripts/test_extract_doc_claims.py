@@ -113,15 +113,6 @@ class ClaimLedgerTest(unittest.TestCase):
         claim = self._one({"docs/agents/guide.md": "Preallocate `RenderContext`.\n"}, "identifier")
         self.assertEqual((claim.decidable, claim.status), (True, "unresolved"))
 
-    def test_identifier_absent_from_a_rationale_is_routed_not_failed(self):
-        # A rationale names what it REJECTED. Requiring those to exist inverts its meaning.
-        claim = self._one(
-            {"docs/rules/x.md": "# X\n\n> s\n\n## Rules\n\n<a id=\"r\"></a>\n### R.\n\n"
-                                "[why](rationale/x/r.md)\n",
-             "docs/rules/rationale/x/r.md": "The names are `In`/`Out`, not `InPort`.\n"},
-            "identifier")
-        self.assertEqual((claim.decidable, claim.status), (False, "needs-review"))
-
     def test_qualified_identifier_yields_its_segments(self):
         claim = self._one({"docs/agents/guide.md": "Call `RenderContext::new` early.\n"},
                           "identifier")
@@ -152,17 +143,13 @@ class ClaimLedgerTest(unittest.TestCase):
 
     def test_guard_line_naming_a_real_test_passes(self):
         claim = self._one(
-            {"docs/rules/x.md": "# X\n\n> s\n\n## Rules\n\n<a id=\"r\"></a>\n### R.\n\n"
-                                "Guarded by: tests/wire.rs::schemas_match\n\n[why](rationale/x/r.md)\n",
-             "docs/rules/rationale/x/r.md": "why\n",
+            {"docs/agents/x.md": "# X\n\nGuarded by: tests/wire.rs::schemas_match\n",
              "crates/core/tests/wire.rs": "#[test]\nfn schemas_match() {}\n"}, "guard")
         self.assertEqual((claim.decidable, claim.status), (True, "ok"))
 
     def test_guard_line_naming_a_missing_test_fails(self):
         claim = self._one(
-            {"docs/rules/x.md": "# X\n\n> s\n\n## Rules\n\n<a id=\"r\"></a>\n### R.\n\n"
-                                "Guarded by: tests/wire.rs::nope\n\n[why](rationale/x/r.md)\n",
-             "docs/rules/rationale/x/r.md": "why\n",
+            {"docs/agents/x.md": "# X\n\nGuarded by: tests/wire.rs::nope\n",
              "crates/core/tests/wire.rs": "#[test]\nfn schemas_match() {}\n"}, "guard")
         self.assertEqual((claim.decidable, claim.status), (True, "unresolved"))
 
@@ -210,25 +197,6 @@ class ClaimLedgerTest(unittest.TestCase):
             [c for c in self._claims({"docs/agents/g.md": "There are two devices.\n"})
              if c.kind == "count"],
             [])
-
-    def test_single_sourcing_is_keyed_by_rule_not_by_line(self):
-        # The slug appears on its anchor AND in its [why] link; that is one claim, not three.
-        body = ("# X\n\n> s\n\n## Rules\n\n<a id=\"single-source-contract\"></a>\n"
-                "### It is single-sourced from one declaration.\n\n"
-                "[why](rationale/x/single-source-contract.md)\n")
-        claims = self._claims({"docs/rules/x.md": body,
-                               "docs/rules/rationale/x/single-source-contract.md": "why\n"})
-        ss = [c for c in claims if c.kind == "single-sourcing"]
-        self.assertEqual(len(ss), 1)
-        self.assertEqual(ss[0].text, "#single-source-contract")
-
-    def test_single_sourcing_in_a_rationale_is_not_extracted(self):
-        # A rationale re-argues the claim; only the rule is normative and owes a guard.
-        claims = self._claims(
-            {"docs/rules/x.md": "# X\n\n> s\n\n## Rules\n\n<a id=\"r\"></a>\n### R.\n\n"
-                                "[why](rationale/x/r.md)\n",
-             "docs/rules/rationale/x/r.md": "It is single-sourced, generated from one source.\n"})
-        self.assertEqual([c for c in claims if c.kind == "single-sourcing"], [])
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-//! Pitch & Note — symbolic pitch and the note vocab type. see rules: signal-time-dsp
+//! Pitch & Note — symbolic pitch and the note vocab type.
 //!
 //! [`Pitch`] is **either** a scale degree (resolved to Hz through the active
 //! [`Harmony`](crate::vocab::harmony::Harmony)) **or** an absolute float-MIDI coordinate (60.0 =

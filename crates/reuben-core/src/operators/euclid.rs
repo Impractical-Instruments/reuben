@@ -36,8 +36,6 @@
 //!   F32 `0.0` on the following falling edge.
 //!
 //! Emits a single mono trigger line, upstream of any Voicer that fans it out to voices.
-//!
-//! see rules: signal-time-dsp
 
 use alloc::boxed::Box;
 

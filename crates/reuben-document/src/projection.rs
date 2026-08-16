@@ -2,7 +2,7 @@
 //!
 //! The sibling of [`introspect`](crate::introspect): that module projects the *operator set* and a
 //! nested document's *boundary*; this one projects **one document's structure**, because the agent
-//! never reads instrument JSON (see rules: agent-mcp). Every door cuts its views from the contract
+//! never reads instrument JSON. Every door cuts its views from the contract
 //! types here, so what the CLI, the MCP sidecar and the web in-page layer show an agent cannot
 //! drift — cross-door drift is a compile error, not a runtime surprise.
 //!

@@ -3,8 +3,6 @@
 //! `describe_patch` a nested instrument's boundary, `validate` an instrument without touching
 //! audio hardware, and project an instrument's `library_index_line` — the generated library
 //! index's signature line.
-//!
-//! see rules: agent-mcp
 
 use crate::contract::{Diag, Report};
 use crate::describe::{describe_boundary, BoundaryPortDesc};
@@ -74,7 +72,6 @@ pub struct PortInfo {
 fn port_kind(ty: &PortType) -> &'static str {
     match ty {
         // The two numeric port forms — Value vs Signal — wire one way only.
-        // see rules: composition-operators
         PortType::F32 => "value",
         PortType::F32Buffer => "signal",
         PortType::Vocab { name: "Note", .. } => "message",
@@ -235,7 +232,6 @@ impl OperatorInfo {
 
     fn from_descriptor(d: &Descriptor) -> Self {
         // One input surface: runtime inputs, then plan-time constants.
-        // see rules: composition-operators
         let mut inputs: Vec<PortInfo> = d
             .inputs
             .iter()
@@ -993,7 +989,6 @@ mod tests {
 
     // IGNORED for its absolute 6,000-char arm, which is a flat ~122-chars-per-operator tax that
     // fails after roughly five more operators regardless of what they carry.
-    // see rules: agent-mcp
     //
     // While this is ignored, NOTHING watches the size of the compact listing.
     #[test]

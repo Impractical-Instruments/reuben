@@ -5,8 +5,6 @@
 //! the master-gain ramp state that ducks a Swap install to silence. The per-callback contract is
 //! documented on [`RenderSlot::fill_duplex`]; everything on this path is RT-safe (no alloc, lock,
 //! syscall, or drop on the render thread).
-//!
-//! see rules: execution-runtime
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
