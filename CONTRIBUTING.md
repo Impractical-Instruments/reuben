@@ -15,8 +15,9 @@ set, a new check registers itself there and needs no further setup.
 
 **This is not the only manual step**, and an earlier version of this section said it was. A clone also
 wants `python3` on `PATH` for the checks that are not `cargo` (below), and the doctrine regeneration
-check additionally wants the `impractical-doctrine` plugin and a token that can reach `brain` — it
-warns and steps aside without them. What the one command buys is the hook set, not a finished
+check additionally wants `ii-generate` on `PATH` — a wrapper into a `brain` checkout, put there by
+that repo's `bootstrap.sh` — and a token that can reach `brain`; it warns and steps aside without
+them. What the one command buys is the hook set, not a finished
 environment.
 
 ### The hook set
@@ -40,8 +41,9 @@ type is one file. [`scripts/hooks/pre-commit`](./scripts/hooks/pre-commit) and
   - `scripts/hooks/pre-commit.d/30-rules-index` — `check_rules_derive.py --write` when the commit
     touches `docs/rules/`, re-staging the regenerated index so the fix lands in the same commit.
   - `scripts/hooks/pre-commit.d/40-doctrine-regen` — the doctrine generator's `--write`, staging only
-    what it rewrote. **Warns and never blocks**: it needs a plugin from a private marketplace and a
-    token, so a clone with neither has to stay committable. CI's `provenance` job is what reds.
+    what it rewrote. **Warns and never blocks**: it needs `ii-generate` on `PATH` — a wrapper into a
+    private `brain` checkout — and a token, so a clone with neither has to stay committable. CI's
+    `provenance` job is what reds.
 - **pre-push**
   - `scripts/hooks/pre-push.d/10-rust-clippy` — `cargo clippy --workspace --all-targets -- -D
     warnings`. Runs at the push boundary (not every commit) so the compile cost is paid once;
