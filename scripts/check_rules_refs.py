@@ -1065,7 +1065,7 @@ def main(root_arg: str = ".") -> int:
 if __name__ == "__main__":
     sys.exit(main(*sys.argv[1:2]))
 
-# ii:begin provenance — derived from .ii/repo.toml; do not hand-edit out of sync. Regenerate with `ii-generate --write .`. sha256=fab99f4f621989e6757a85beb7af458cefdf640a394825cd8a7a0b6c0cf091ed
+# ii:begin provenance — derived from .ii/repo.toml; do not hand-edit out of sync. Regenerate with `python3 "$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py" --write .`. sha256=fab99f4f621989e6757a85beb7af458cefdf640a394825cd8a7a0b6c0cf091ed
 # Source:   Impractical-Instruments/agent-tools@df737e6e04aaffbfac28864101c723e1e1a06997:plugins/impractical-doctrine/rules/check_rules_refs.py
 # Fetched:  2026-08-15
 # Refresh:  gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/check_rules_refs.py?ref=main' --jq '.content' | base64 -d > scripts/check_rules_refs.py && ii-generate --write .

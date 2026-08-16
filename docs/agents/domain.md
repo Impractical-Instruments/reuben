@@ -1,6 +1,6 @@
 # Domain docs
 
-<!-- GENERATED from templates/domain.md + .ii/repo.toml by `ii-generate --write .` — edit the source, not this file. sha256=da2bdf5fef982da466189f0a25de3aa61f2de0aa8106f85134c73e1924b34919 -->
+<!-- GENERATED from templates/domain.md + .ii/repo.toml by `python3 "$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py" --write .` — edit the source, not this file. sha256=da2bdf5fef982da466189f0a25de3aa61f2de0aa8106f85134c73e1924b34919 -->
 
 Where this repo's domain documentation lives, and what kind of record each part is. Facts only — this file routes; it does not advise.
 

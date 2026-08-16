@@ -975,7 +975,7 @@ class RepoContentNotFilesystem(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ii:begin provenance — derived from .ii/repo.toml; do not hand-edit out of sync. Regenerate with `ii-generate --write .`. sha256=04ce5305b93eb14d59a04a538690a2f05b8ab1c45343e2d93d35a6b225732cbf
+# ii:begin provenance — derived from .ii/repo.toml; do not hand-edit out of sync. Regenerate with `python3 "$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py" --write .`. sha256=04ce5305b93eb14d59a04a538690a2f05b8ab1c45343e2d93d35a6b225732cbf
 # Source:   Impractical-Instruments/agent-tools@057c3f7a9391816263b1a4fcb46af5f4a5dc705f:plugins/impractical-doctrine/rules/tests/test_check_rules_refs.py
 # Fetched:  2026-08-12
 # Refresh:  gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/tests/test_check_rules_refs.py?ref=main' --jq '.content' | base64 -d > scripts/tests/test_check_rules_refs.py && ii-generate --write .

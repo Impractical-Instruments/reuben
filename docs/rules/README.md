@@ -256,7 +256,7 @@ source. Neither is the `GENERATED from …` header, which belongs to a file that
 number is written down in exactly two places in this corpus: a rule's `Superseded by:` marker and a
 rationale's `Distilled from:` line.
 
-<!-- ii:begin company-doctrine — derived from templates/company-doctrine-rules.md + .ii/repo.toml; do not hand-edit out of sync. Regenerate with `ii-generate --write .`. sha256=3af7d0b3a83680c64643f174a05554ac8c323e112859fb5f4a1abe35f42c221c -->
+<!-- ii:begin company-doctrine — derived from templates/company-doctrine-rules.md + .ii/repo.toml; do not hand-edit out of sync. Regenerate with `python3 "$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py" --write .`. sha256=3af7d0b3a83680c64643f174a05554ac8c323e112859fb5f4a1abe35f42c221c -->
 ## Company doctrine
 
 The company's doctrine is stated here once, at the front door — not restated inside the documents that depend on it. What "doctrine" means is defined in the company glossary below, like every other company term.

@@ -437,7 +437,7 @@ class AdrRuleAnchorTest(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ii:begin provenance — derived from .ii/repo.toml; do not hand-edit out of sync. Regenerate with `ii-generate --write .`. sha256=ff02389ded3ba804fdf8a496eecd1f042ab1d971d85f2e0d7352ab0d5c943f4c
+# ii:begin provenance — derived from .ii/repo.toml; do not hand-edit out of sync. Regenerate with `python3 "$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py" --write .`. sha256=ff02389ded3ba804fdf8a496eecd1f042ab1d971d85f2e0d7352ab0d5c943f4c
 # Source:   Impractical-Instruments/agent-tools@df737e6e04aaffbfac28864101c723e1e1a06997:plugins/impractical-doctrine/rules/tests/test_check_rules_links.py
 # Fetched:  2026-08-15
 # Refresh:  gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/tests/test_check_rules_links.py?ref=main' --jq '.content' | base64 -d > scripts/tests/test_check_rules_links.py && ii-generate --write .

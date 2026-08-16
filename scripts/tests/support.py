@@ -31,7 +31,7 @@ for _mod in (check_rules_derive, check_rules_links, check_rules_refs):
     assert Path(_mod.__file__).resolve() == _expected, (
         f"{_mod.__name__} was imported from {_mod.__file__}, not {_expected}")
 
-# ii:begin provenance — derived from .ii/repo.toml; do not hand-edit out of sync. Regenerate with `ii-generate --write .`. sha256=a9dcd27442f6746a1250727424edb2f673c3602f47df1b90f70316f13c508bb3
+# ii:begin provenance — derived from .ii/repo.toml; do not hand-edit out of sync. Regenerate with `python3 "$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py" --write .`. sha256=a9dcd27442f6746a1250727424edb2f673c3602f47df1b90f70316f13c508bb3
 # Source:   Impractical-Instruments/agent-tools@057c3f7a9391816263b1a4fcb46af5f4a5dc705f:plugins/impractical-doctrine/rules/tests/support.py
 # Fetched:  2026-08-12
 # Refresh:  gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/tests/support.py?ref=main' --jq '.content' | base64 -d > scripts/tests/support.py && ii-generate --write .

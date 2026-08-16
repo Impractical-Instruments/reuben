@@ -1,6 +1,6 @@
 # Canonical sources
 
-<!-- GENERATED from templates/canonical-sources.md + .ii/repo.toml by `ii-generate --write .` — edit the source, not this file. sha256=13c5d2cabac44103f4993b51c8e78dd351e4a0a34ad391d6e2c447c4e632e1f8 -->
+<!-- GENERATED from templates/canonical-sources.md + .ii/repo.toml by `python3 "$CLAUDE_PLUGIN_ROOT/generator/ii_generate.py" --write .` — edit the source, not this file. sha256=13c5d2cabac44103f4993b51c8e78dd351e4a0a34ad391d6e2c447c4e632e1f8 -->
 
 The registry of what this repo takes from elsewhere. One entry per declared source: what it is, where it comes from, and how it stays current.
 
