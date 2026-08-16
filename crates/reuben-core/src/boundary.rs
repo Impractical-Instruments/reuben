@@ -23,8 +23,6 @@
 //! [`OscForm`]'s docs for why — with the
 //! `has_osc_form_matches_what_the_drain_can_send` test pinning the name-keyed registry to the
 //! variant-keyed drain.
-//!
-//! see rules: composition-operators
 
 use alloc::vec::Vec;
 use num_traits::Float;

@@ -24,8 +24,8 @@ cargo run -p reuben-native --bin reuben -- describe    # list operators/ports/pa
 One-time setup, unless `brain`'s `bootstrap.sh` already did it: `./scripts/install-hooks.sh` —
 points `core.hooksPath` at [`scripts/hooks/`](scripts/hooks), where
 [`scripts/hooks/dispatch`](scripts/hooks/dispatch) chains every check registered under
-`scripts/hooks/pre-commit.d/` (rules ref-linter, ADR-number guard, `cargo fmt`, rules-index regen,
-doctrine regen) and `scripts/hooks/pre-push.d/` (`cargo clippy`). Both routes set the same value.
+`scripts/hooks/pre-commit.d/` (`cargo fmt`) and `scripts/hooks/pre-push.d/` (`cargo clippy`).
+Both routes set the same value.
 See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Non-negotiable invariants (every code change)
@@ -36,36 +36,20 @@ core · single-writer Coordinator. Details + enforcing tests:
 
 ## Comments (every code change)
 
-**Rationale is a rule; mechanics is a comment; restating the code is neither.** Before writing a
-comment, decide which of the three it is:
+**Mechanics is a comment; restating the code is not.** Before writing a comment, decide which it is:
 
-- **Rationale** — argues a position, explains a tradeoff, or states a constraint that binds beyond
-  this file → it belongs in a `docs/rules/` topic, and the comment becomes `// see rules: <topic>`.
 - **Mechanics** — a local fact the code cannot state itself (`SAFETY:`, an invariant a caller must
   uphold, why a constant is *this* number, a non-obvious step, the signature-level `///`) → keep it.
 - **Restatement** — anything `hover`, `goToDefinition`, `findReferences`, or a grep would answer →
   don't write it. It is a second copy that can go stale while the build stays green.
 
-Never cite an issue or ADR number in a comment; provenance lives in the rationale file. Guarded
-across every crate by `scripts/check_rules_refs.py`. Full rule:
-[Code as a grounding surface](docs/rules/code-as-grounding.md).
-
-## Rule conflicts (every change)
-
-**If your output contradicts a live rule, say so — never override one silently.** Name the rule and
-why it is worth reopening, in the change itself. The rules under [`docs/rules/`](docs/rules/README.md)
-state the now, so contradicting one without saying so leaves the corpus asserting something the code
-no longer does, and nothing notices.
-
-Reopening a settled rule is a new ADR under [`docs/adr/`](docs/adr/README.md), the iteration surface a
-later `absorb-adrs` sweep folds back into the rules. An ADR that overturns a rule also has to mark
-that rule in the same change — that protocol, and the guard behind it, are in
-[docs/adr/README.md](docs/adr/README.md).
+Never cite an issue number in a comment: it dates the code to a conversation a reader cannot open,
+and the comment outlives the thread. Say the thing itself, or say nothing.
 
 ## Language
 
-Use the project's exact terms (Operator, Instrument, Rig, Plan, Swap, Voice…).
-The [rules index](docs/rules/README.md) carries the glossary — don't drift to synonyms its [Avoid these synonyms](docs/rules/README.md#avoid-these-synonyms) list calls out.
+Use the project's exact terms (Operator, Instrument, Rig, Plan, Swap, Voice…) — don't drift to
+synonyms.
 
 ## Repo map
 
@@ -112,18 +96,15 @@ These files punish a whole-file Read — `documentSymbol` first, then read only 
 Search is pre-scoped by [`.ignore`](.ignore) — build output, `.git`, caches, binary fixtures.
 Don't bypass it with `--no-ignore`; nothing it hides is a source of truth.
 
-Both of the above are rules, not preferences — see
-[Code as a grounding surface](docs/rules/code-as-grounding.md).
+Both of the above are requirements, not preferences.
 
 ## Guides
 
 - **[Authoring](docs/agents/authoring.md)** — the instrument-authoring guide: JSON format, type system + wiring, addressing, the authoring loop.
 - **[Operator dev](docs/agents/operator-dev.md)** — operator trait, descriptor macro, adding an operator, RT-safety rules.
 - **[Intent vocabulary](docs/agents/vocabulary.md)** — the word→move table turning intent language ("warmer", "busier", "sadder") into parameter moves. Generated from `vocabulary.json`; also served as `reuben://guide/vocabulary`.
-- **[Domain docs](docs/agents/domain.md)** — the now-state architecture is the [rules index](docs/rules/README.md) → topic → rule → rationale; read the index + the relevant topic doc before exploring. `docs/adr/` is the live iteration surface a human periodically folds into rules with the `absorb-adrs` skill.
-- **[Canonical sources](docs/agents/canonical-sources.md)** — the registry of what this repo copies in from elsewhere, and how each copy is refreshed. The rule those entries obey is the company-doctrine region at the end of the [rules index](docs/rules/README.md).
 - **[Agent-surface eval](eval/README.md)** — what authoring costs a model (grounding tokens, repair rounds, freehand JSON). Gated in CI; run `cd eval && python3 -m reuben_eval.gate` after changing a tool description, the `instructions`, or `docs/agents/`.
 - **[Benchmarks](crates/reuben-document/benches/README.md)** — two workloads, each in a local wall-clock and a CI instruction-count layer: **render** (`render_block`, gated on absolute cost against the base ref) and **construct** (load + instantiate, swept across node counts and gated on how it *scales*, at no baseline). Bench case ids are matched by name across commits — renaming one drops it from its gate and orphans its history.
 - **[Issue tracker](docs/agents/issue-tracker.md)** — GitHub Issues via `gh`; external PRs are not a triage surface.
 - **[Triage labels](docs/agents/issue-tracker.md)**, under `## Labels` — the state roles and the charting family, which mean the same thing in every repo, plus the labels this repo adds for itself.
-- **[CONTRIBUTING.md](CONTRIBUTING.md)** · **[Rules index](docs/rules/README.md)** · **[Live ADRs](docs/adr/README.md)** (the iteration surface) · **[`.ii/repo.toml`](.ii/repo.toml)** — this repo as data: the branch model, the doc system, and every copy it declares. Read it rather than asking prose.
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — the branch model, the toolchain, and the hook set.

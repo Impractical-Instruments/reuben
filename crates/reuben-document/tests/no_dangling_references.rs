@@ -5,9 +5,6 @@
 //! greppable (docs, skills, code, tool/resource descriptions) may still point a reader at the
 //! retired machinery. Grow the test class by adding a retired artifact's tokens here when the
 //! artifact goes; the tripwire keeps it from leaking back into live prose.
-//!
-//! `docs/adr/` is exempt: ADRs are decision history, and the history names the schema on
-//! purpose (history does not relocate).
 
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -2,7 +2,6 @@
 //! the engine's logical input master. The input callback produces into a lock-free SPSC ring
 //! ([`InputMap`] mapping device frames onto logical channels); [`InputStage`], owned by the
 //! output callback, drains it and resamples to the engine rate at a servoed ratio.
-//! see rules: host-shell-io
 //!
 //! Two invariants callers depend on: the producer commits **whole frames at a time**, so the
 //! consumer never observes a torn frame; and both callbacks are RT-safe after startup — the ring

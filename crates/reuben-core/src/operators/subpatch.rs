@@ -14,8 +14,6 @@
 //! (the graph API could still instantiate one by hand; it renders nothing).
 //!
 //! - resource `patch` — the referenced instrument patch (instrument-resource).
-//!
-//! see rules: composition-operators
 
 use alloc::boxed::Box;
 

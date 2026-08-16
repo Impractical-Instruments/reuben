@@ -1,7 +1,5 @@
 # Issue tracker: GitHub Issues
 
-<!-- GENERATED from templates/issue-tracker.md + .ii/repo.toml by `ii-generate --write .` — edit the source, not this file. sha256=afe41d08981a06f6f1ac99569ab132220a0331aad603b68f0903245bc8cd2496 -->
-
 Issues and specs for this repo live as GitHub Issues. Use the `gh` CLI for all operations.
 
 ## Conventions

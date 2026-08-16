@@ -7,7 +7,7 @@
 //! contract (via the shared [`render_contract`](crate::render_contract), so it is byte-identical in
 //! shape to a hand-written `operator_contract!` op), an empty-but-for-latch struct, the `Operator`
 //! impl whose `process` is the Voicer's frame-sorted latch, the module `OPERATORS` census, and the
-//! re-export. see rules: composition-operators
+//! re-export.
 //!
 //! ```ignore
 //! unpack_op!(Note {

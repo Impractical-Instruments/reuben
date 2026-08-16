@@ -1,4 +1,4 @@
-//! Guards the checked-in M1 verification fixtures against rot. see rules: agent-mcp
+//! Guards the checked-in M1 verification fixtures against rot.
 //!
 //! The device-gap ritual (`docs/mcp-swap-ritual.md`) and the demo bar
 //! (`docs/rituals/m1-demo-bar.md`) are the scripted-human-ritual half of verification; their

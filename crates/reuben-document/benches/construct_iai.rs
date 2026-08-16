@@ -1,4 +1,4 @@
-//! CI regression gate, construct layer (see rules: web-product-process): deterministic
+//! CI regression gate, construct layer: deterministic
 //! instruction count of parse + build + instantiate at three node counts per shape.
 //!
 //! The macro and micro layers gate *render* — cost paid per block, forever. This one gates the

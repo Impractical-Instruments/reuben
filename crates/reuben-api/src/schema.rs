@@ -1,7 +1,7 @@
 //! The advertised shape of the argument slots that accept more than one JSON form.
 //!
 //! Each token here exists only to carry a `JsonSchema` impl a field points at with
-//! `#[schemars(with = …)]`; the field itself stays raw JSON. see rules: agent-mcp
+//! `#[schemars(with = …)]`; the field itself stays raw JSON.
 
 use std::borrow::Cow;
 

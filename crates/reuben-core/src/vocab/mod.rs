@@ -1,5 +1,4 @@
 //! vocab — the shared concrete types that ride the central [`Arg`](crate::message::Arg).
-//! see rules: composition-operators
 //!
 //! Each type carries `#[derive(ArgValue)]` (`crate::ArgValue`), which generates its `Arg`
 //! integration — `From`/`TryFrom` — plus, for enums, the Enum-over-OSC table (`VARIANTS` /

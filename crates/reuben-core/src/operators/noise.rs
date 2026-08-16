@@ -11,8 +11,6 @@
 //! - inputs: none.
 //! - output 0: `out` (`Buffer`) — uniform white noise in ~[-1, 1], roughly zero-mean.
 //! - params: none.
-//!
-//! see rules: signal-time-dsp
 
 use alloc::boxed::Box;
 

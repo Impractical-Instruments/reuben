@@ -10,8 +10,6 @@
 //!
 //! - input 0: `x` (`Float`) — the value to raise. Unwired default `0`.
 //! - output 0: `out` — the least whole number `>= x`.
-//!
-//! see rules: composition-operators
 
 use crate::operators::rounding::RoundInto;
 

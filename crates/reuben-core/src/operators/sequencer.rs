@@ -30,8 +30,6 @@
 //!   the degree through the tonal context.
 //!
 //! Emits one mono note line, upstream of the downstream Voicer that fans it out to voices.
-//!
-//! see rules: signal-time-dsp
 
 use alloc::boxed::Box;
 use num_traits::Float;

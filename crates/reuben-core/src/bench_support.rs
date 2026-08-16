@@ -1,4 +1,4 @@
-//! Per-operator micro-benchmark bridge. see rules: web-product-process
+//! Per-operator micro-benchmark bridge.
 //!
 //! The macro layer ([`benches/macro_*`](../../benches)) benches end-to-end `render_block` of a
 //! real instrument; this module drives one operator's [`Operator::process`] directly, through the

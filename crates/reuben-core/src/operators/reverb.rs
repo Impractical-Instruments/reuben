@@ -11,8 +11,6 @@
 //! - input 2: `damp` (`Float`) — high-frequency damping (0..1).
 //! - input 3: `mix` (`Float`) — dry/wet (0..1).
 //! - output 0: `audio` (`Float`) — dry+wet mix.
-//!
-//! see rules: signal-time-dsp
 
 use alloc::boxed::Box;
 use alloc::vec;
@@ -149,7 +147,7 @@ impl Operator for Reverb {
         let wet = mix;
         let dry = 1.0 - mix;
 
-        // Flat locals for the block loop. see rules: execution-runtime
+        // Flat locals for the block loop.
         let audio = io.read(IN_AUDIO);
         let out = io.write(OUT_AUDIO);
         for i in 0..n {

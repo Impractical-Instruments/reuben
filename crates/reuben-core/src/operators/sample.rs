@@ -27,8 +27,6 @@
 //! Pitch (the per-hit rate) is **latched at the trigger frame** and fixed for that hit; live
 //! pitch-tracking is a deferred param. The fractional playhead is a per-voice `f64` cursor,
 //! persistent across blocks (like the oscillator's phase) and reset by [`Operator::spawn`].
-//!
-//! see rules: authoring-library
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -133,7 +131,7 @@ impl Operator for SamplePlayer {
         }
         self.prev_gate = g;
 
-        // Flat local for the block loop. see rules: execution-runtime
+        // Flat local for the block loop.
         let out = io.write(OUT_AUDIO);
         for out_sample in out.iter_mut().take(n) {
             let s = if playing {

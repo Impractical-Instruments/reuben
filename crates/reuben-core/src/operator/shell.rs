@@ -4,7 +4,7 @@
 //! typed handle, call the scalar fn, write the output. The shells hold that logic once — one
 //! `process` for the value carrier ([`ValueShell`]) and one for the signal carrier
 //! ([`SignalShell`]) — because keeping the per-sample loop in one place is what lets
-//! [`SignalShell`] hoist each operand's slice read out of it — see rules: composition-operators
+//! [`SignalShell`] hoist each operand's slice read out of it
 //! for why this beats a `process` emitted per operator.
 //!
 //! The binary ops — `add`, `sub`, `mul`, `min`, `max`, `clamp` — were fully scalar before the

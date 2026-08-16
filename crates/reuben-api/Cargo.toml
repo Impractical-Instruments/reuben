@@ -15,7 +15,7 @@ default = ["authoring", "render"]
 # here is on the audio callback's path, so the cost is irrelevant.
 # `reuben-document` is an authoring dependency and only an authoring one: the render half must
 # stay buildable for a target that has no serde and no filesystem, which is the whole point of
-# the crate split below it. see rules: execution-runtime
+# the crate split below it.
 authoring = ["dep:reuben-document", "dep:serde", "dep:serde_json", "dep:schemars"]
 # The render half: what a host drives per block. Carries no serialization — a conversion
 # here would be paid once per block, which is the whole cost.

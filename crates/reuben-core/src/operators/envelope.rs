@@ -18,8 +18,6 @@
 //!   **voice-liveness** source the Voicer reads to know a voice is truly finished (not merely
 //!   gate-off), so a voice in its release tail is never stolen while an idle one exists. Emitted as a
 //!   sparse `MsgWriter` change (one event per true↔false transition), like `euclid.gate`.
-//!
-//! see rules: signal-time-dsp
 
 use alloc::boxed::Box;
 

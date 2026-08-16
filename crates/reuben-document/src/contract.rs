@@ -2,7 +2,6 @@
 //! and the [`content_hash`] over a document's canonical bytes. They still derive serde both ways for
 //! core's own round-trip tests, but none of them is a wire type any more and no schema is derived
 //! here: the window declares the shape a door advertises and converts these into it.
-//! see rules: agent-mcp
 
 use serde::{Deserialize, Serialize};
 
@@ -11,7 +10,7 @@ use crate::format::{LoadError, LoadWarning, NormalizedDoc};
 /// The content identity of a normalized document: a hash over the canonical
 /// [`to_json_pretty`](crate::format::InstrumentDoc::to_json_pretty) bytes — the exact bytes
 /// a save writes — so two equal [`NormalizedDoc`]s hash equal regardless of how their source
-/// text was formatted. A door's `expect` guard compares it — see rules: agent-mcp.
+/// text was formatted. A door's `expect` guard compares it.
 ///
 /// The string is an **opaque token**: compare it for equality, never parse it. It carries no
 /// cryptographic claim, so a future dedup-by-hash consumer must byte-verify a match rather than
@@ -114,7 +113,7 @@ impl Diag {
 /// and do not flip `ok`; a `{ok: false}` report is a tool *working*, not a tool failure.
 // The `///` above is NOT a comment: it is the advertised `$defs/Report` schema `description` on 19
 // tools, so a model reads it. Keep it prose a model can act on — no pointers, no rustdoc links, and
-// nothing added here that you would not say to a model. see rules: code-as-grounding
+// nothing added here that you would not say to a model.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Report {
     pub ok: bool,
@@ -132,8 +131,6 @@ pub struct Report {
 // Everything above ships to models as the `$defs.DiffSummary` description in the `swap` tool's
 // advertised outputSchema, so it stays about what the fields mean. Notes for humans go below this
 // line, where schemars will not pick them up.
-//
-// see rules: execution-runtime
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiffSummary {
     pub survived: usize,
@@ -145,7 +142,7 @@ pub struct DiffSummary {
 /// What a `swap` returns: the validation [`Report`], the
 /// **installed** document's [`content_hash`] (on `ok: false` nothing installed — the hash
 /// still names what keeps playing), and, on success, the [`DiffSummary`]. The `Report`
-/// flattens so the wire shape is one flat object — see rules: agent-mcp.
+/// flattens so the wire shape is one flat object.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SwapReport {
     #[serde(flatten)]
@@ -158,8 +155,8 @@ pub struct SwapReport {
 }
 
 impl SwapReport {
-    /// The nothing-was-installed report, defined once — see rules: agent-mcp for why a door needs
-    /// this shape even when it rejects a swap before the loader runs.
+    /// The nothing-was-installed report, defined once. A door needs this shape even when it
+    /// rejects a swap before the loader runs.
     ///
     /// `content_hash` is **what keeps playing** — the conflict's `actual`, never the `expected` the
     /// client asked for.

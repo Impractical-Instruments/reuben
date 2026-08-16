@@ -7,7 +7,7 @@
 //! (the seam for the "agents author new Operators in Rust" goal).
 //!
 //! The built-in set is an ordinary array the compiler can see — [`operator_census!`], invoked in
-//! `operators/mod.rs` — not a link-time collection. see rules: composition-operators
+//! `operators/mod.rs` — not a link-time collection.
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -18,7 +18,7 @@ use crate::operator::Operator;
 
 /// One operator's entry in the built-in census: how to build it, and how to ask it to describe
 /// itself. A plain `const`-constructible value, so a census is an ordinary array the compiler
-/// sees. see rules: composition-operators
+/// sees.
 pub(crate) struct OpReg {
     /// Construct a fresh instance with default state.
     pub make: fn() -> Box<dyn Operator>,
@@ -283,7 +283,7 @@ mod tests {
     // Every integer control port is an `i32` value port. One central assertion so each one — not
     // only `euclid.steps` — is pinned to its type; a silent regression of any one back to `f32`
     // would restore the round-in-`process` dance and reopen the F32→I32 wire that widening exists
-    // to avoid (see rules: composition-operators).
+    // to avoid.
     #[test]
     fn the_converted_integer_control_ports_are_i32() {
         use crate::descriptor::PortType;

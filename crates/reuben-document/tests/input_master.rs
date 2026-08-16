@@ -1,4 +1,4 @@
-//! The core input master and its logical channel. see rules: composition-operators
+//! The core input master and its logical channel.
 //!
 //! These pin the whole contract through the real load → instantiate → render path: sample-exact
 //! carriage, fan-out at the master, dark-degrade to the declared default, offline

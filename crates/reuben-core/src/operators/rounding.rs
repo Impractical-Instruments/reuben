@@ -33,8 +33,6 @@
 //! resolves to the inherent one inside the `impl` body, so `fn round(self) -> f32 { self.round() }`
 //! would silently mean something different from what it reads as. The `_into` suffix keeps the
 //! recursion impossible rather than merely absent.
-//!
-//! see rules: composition-operators
 
 use num_traits::Float;
 

@@ -1,4 +1,4 @@
-"""One task run: the surfaces wired together, the three numbers collected. see rules: agent-mcp
+"""One task run: the surfaces wired together, the three numbers collected.
 
 Both tiers share this. The gate tier replays a reference solution through it with no inference; the
 live tier lets a model choose the calls. Identical accounting either way, which is what makes the

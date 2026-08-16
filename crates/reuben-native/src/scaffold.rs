@@ -1,5 +1,5 @@
 //! `scaffold-operator`: generate a new Operator's Rust skeleton and wire its
-//! registration site from a contract spec. see rules: composition-operators
+//! registration site from a contract spec.
 //!
 //! A new file in `operators/`, plus **one** sorted insert into `operators/mod.rs`'s
 //! `operator_census!` block — the line that declares the module, re-exports the type and

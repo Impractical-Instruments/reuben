@@ -18,8 +18,6 @@
 //! interpolation, write `input + feedback*delayed` at the head, and output the dry/wet
 //! mix. The ring buffer and head index are continuous across calls / block slices, and
 //! `process` allocates nothing in steady state.
-//!
-//! see rules: signal-time-dsp
 
 use alloc::boxed::Box;
 use alloc::vec;
@@ -80,7 +78,7 @@ impl Operator for Delay {
         let delay_samples = (time * sample_rate).clamp(1.0, (cap - 1) as f32);
 
         let len = self.buf.len();
-        // Flat locals for the block loop. see rules: execution-runtime
+        // Flat locals for the block loop.
         let audio = io.read(IN_AUDIO);
         let out = io.write(OUT_AUDIO);
         for i in 0..n {

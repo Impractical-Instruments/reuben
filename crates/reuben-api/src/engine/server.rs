@@ -18,8 +18,6 @@
 //!
 //! The Coordinator is single-writer, so it sits behind one [`Mutex`] here and concurrent
 //! connections serialize on it.
-//!
-//! see rules: execution-runtime
 
 use std::sync::{Arc, Mutex};
 
@@ -196,7 +194,7 @@ fn handle_send(state: &StructureState, messages: Vec<ControlMessage>) -> Respons
 ///    host. A read failure is a rejected report (no install, prior retained), not a channel error.
 /// 2. **Arbitrate**: a stale `expect` rejects with the real installed hash as [`Response::Conflict`]
 ///    and does **not** swap. Absent `expect` is last-write-wins. Done here rather than inside the
-///    Coordinator's swap, which owns no guard at all, by design (see rules: agent-mcp).
+///    Coordinator's swap, which owns no guard at all, by design.
 /// 3. **Swap**: the Coordinator validates + builds a whole new Engine off-thread, fills the install
 ///    mailbox, and returns the real report. A load/plan error aborts with `ok: false` and the prior
 ///    hash — the old engine keeps playing (retain-prior).

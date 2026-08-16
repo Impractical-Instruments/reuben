@@ -5,8 +5,6 @@
 //!
 //! - input 0: `x` (`Float`) — the value to rectify. Unwired default `0`.
 //! - output 0: `out` — `|x|`.
-//!
-//! see rules: composition-operators
 
 use crate::operators::pointwise::PointwiseNum;
 

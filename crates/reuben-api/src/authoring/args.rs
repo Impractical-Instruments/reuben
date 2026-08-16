@@ -10,7 +10,7 @@
 //! re-implemented per door.
 //!
 //! Every struct here is `deny_unknown_fields`, which schemars carries onto the wire as
-//! `additionalProperties: false`. see rules: agent-mcp
+//! `additionalProperties: false`.
 
 use std::collections::BTreeMap;
 
@@ -96,7 +96,7 @@ pub struct DescribeBoundary {
 ///
 // There is no inline `document` arm: a model that can hand the verb a whole document is a model
 // that had to hold one. `source` is opaque and door-resolved (a path natively), exactly as it is on
-// every document verb. see rules: agent-mcp
+// every document verb.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ValidateInstrument {
@@ -459,7 +459,7 @@ mod tests {
 
     /// An argument this verb does not declare is an error, not a dropped key. Serde's default is to
     /// drop, which would answer a caller written against a slot that has moved with a clean
-    /// `written: true` for an edit that did not happen. see rules: agent-mcp
+    /// `written: true` for an edit that did not happen.
     #[test]
     fn a_key_the_verb_does_not_declare_is_refused() {
         // The exact regression: `default` moved off the meta verb onto the value verb, and every

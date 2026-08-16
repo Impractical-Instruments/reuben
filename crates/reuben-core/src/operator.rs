@@ -1,8 +1,7 @@
 //! Operator — the authoring contract.
 //!
 //! An operator is authored as one single-voice, single-channel stream: `process` is
-//! allocation-free and sees held values constant for the whole (sub)block — see rules:
-//! composition-operators.
+//! allocation-free and sees held values constant for the whole (sub)block.
 //!
 //! Reads and writes go through typed handles: `operator_contract!` emits one [`In`]/[`Out`]
 //! const per port whose [`form`] marker fixes what [`Io::read`]/[`Io::write`] return and carries
@@ -606,7 +605,7 @@ pub trait Operator: Send {
     }
 
     /// Called on a **surviving** operator box just after it is transplanted into a freshly built
-    /// Plan across a Swap — see rules: execution-runtime. A Swap resets every consumer's
+    /// Plan across a Swap. A Swap resets every consumer's
     /// held-input latch to its declared default, so an operator that publishes a held output only
     /// **on change** (comparing against a dedup baseline it keeps in its box) must clear that
     /// baseline here, or the first post-swap block stays silent and strands the consumer on the

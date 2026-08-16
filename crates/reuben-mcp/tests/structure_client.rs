@@ -5,8 +5,6 @@
 //! round-trip a document; a connect against a dead port fails fast with the "start `reuben play`"
 //! guidance, not a hang or panic. Every case is bounded by a watchdog so a wedged
 //! client fails loudly instead of hanging CI.
-//!
-//! see rules: agent-mcp
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener};

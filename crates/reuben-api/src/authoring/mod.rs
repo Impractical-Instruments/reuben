@@ -9,8 +9,6 @@
 //!
 //! The types a door serializes are the window's own, not the engine's; the two types crossing the
 //! resource seam are the engine's, re-exported. [`crate::resources`] states that split and why.
-//!
-//! see rules: agent-mcp
 
 mod args;
 pub mod prose;

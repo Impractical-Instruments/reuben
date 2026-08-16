@@ -1,4 +1,4 @@
-//! Instrument format — the JSON canonical document (**v2**, **v3**). see rules: authoring-library
+//! Instrument format — the JSON canonical document (**v2**, **v3**).
 //!
 //! A node's `inputs` entry is either a **literal** or a **wire-ref** to another node's output
 //! (`{ "from": "/osc.audio" }`, or `{ "from": "/osc" }` when the source has a single output —
@@ -47,7 +47,7 @@ pub const SCAFFOLD_DEFAULT_NAME: &str = "untitled";
 ///
 /// This type and everything it reaches derive `JsonSchema` behind the default-off `schemars`
 /// feature — not to publish a document schema (the format's authority is the loader, and an agent
-/// is grounded, not schema-fed; see rules: agent-mcp), but so the **projection completeness guard**
+/// is grounded, not schema-fed), but so the **projection completeness guard**
 /// can enumerate the format's leaf fields mechanically and fail the build when one lands with no
 /// view in [`FIELD_COVERAGE`](crate::projection::FIELD_COVERAGE). The play/CLI build never compiles
 /// schemars.
@@ -526,7 +526,6 @@ pub enum LoadError {
     /// The JSON itself was malformed.
     Json(serde_json::Error),
     /// The document declares a `format_version` newer than this engine understands.
-    /// see rules: authoring-library
     UnsupportedVersion { found: u32, supported: u32 },
     /// A node names an operator type that isn't registered.
     UnknownType { address: String, type_name: String },
@@ -571,14 +570,12 @@ pub enum LoadError {
     /// A `config` name is not a declared [`Constant`](Descriptor::constants).
     UnknownConfig { node: String, name: String },
     /// A `Constant` (e.g. `voices`) appears in `inputs` — it must live in `config`.
-    /// see rules: composition-operators
     ConstantInInputs { node: String, name: String },
     /// A wire-ref uses the sole-output sugar (`"/node"`) but the source has more than one output,
     /// so the intended port is ambiguous.
     AmbiguousWire { node: String, reference: String },
     /// A wire joins two ports of incompatible [`PortType`]s. On a nested boundary wire, `from`/`to`
     /// name the **boundary** port (`/sub.audio`), never the prefixed internals.
-    /// see rules: composition-operators
     TypeMismatch {
         from: String,
         from_type: Box<PortType>,
@@ -806,11 +803,10 @@ pub enum LoadWarning {
     /// error. Wrapped in [`Nested`](Self::Nested) with the hosting node.
     InertChannelBinding { name: String },
     /// The node carried a retired v2 `control` block, dropped. Ignored, never fatal: sound is
-    /// unaffected. see rules: authoring-library
+    /// unaffected.
     DeprecatedControlBlock { node: String },
     /// The interface entry carried retired pipe presentation (`label`/`widget`), dropped; `field`
     /// names which. Ignored, never fatal: the pipe keeps its quantity contract.
-    /// see rules: authoring-library
     DeprecatedPipePresentation { name: String, field: &'static str },
 }
 
@@ -1449,7 +1445,6 @@ impl InstrumentDoc {
         let mut graph = Graph::new();
         let mut warnings = Vec::new();
         // No anonymous-`outputs` re-check: every route here starts from a `NormalizedDoc`.
-        // see rules: authoring-library
         debug_assert!(
             self.outputs.is_empty(),
             "a normalized document carries no anonymous outputs"
@@ -2031,7 +2026,7 @@ impl InstrumentDoc {
                     sample: node.sample_id.clone(),
                     voice: node.voice_id.clone(),
                     // A subpatch dissolves at build, so from_graph only emits the inlined
-                    // children, never the reference — see rules: authoring-library
+                    // children, never the reference
                     patch: None,
                     // Presentation lives in a surface doc now, not the graph.
                     control: None,
@@ -2043,7 +2038,7 @@ impl InstrumentDoc {
         // Reconstruct the boundary in v2 pipe form: outputs re-emit the canonical explicit
         // `/node.port` feed (never the sole-output sugar) plus channel binding, so a
         // load -> save -> reload round-trip is stable. Presentational fields (label/unit/widget)
-        // aren't reconstructed here — see rules: authoring-library.
+        // aren't reconstructed here.
         let iface = &graph.interface;
         let out_ref = |(key, port): &(reuben_core::graph::NodeKey, usize)| {
             let n = &graph.nodes[*key];
@@ -2683,7 +2678,7 @@ pub fn doc_value(port: &reuben_core::descriptor::Port, arg: &Arg) -> DocValue {
     }
 }
 
-/// Enforce the presentational-override law — see rules: authoring-library.
+/// Enforce the presentational-override law.
 ///
 /// A `min`/`max` override must land on a port with a numeric range, stay within the
 /// engine-enforced bounds, and not invert; `effective` (inputs only — v1 migration) additionally
@@ -5345,7 +5340,6 @@ mod tests {
     fn patch_ref_round_trips_through_the_document() {
         // The nested reference lives in the *document*: parse → re-serialize preserves `patch`
         // via serde. A built graph holds only the flattened equivalent — see the test below.
-        // see rules: authoring-library
         let doc = NormalizedDoc::from_json(PARENT_WITH_SUBPATCH, &reg(), None).expect("parse");
         let reparsed =
             NormalizedDoc::from_json(&doc.to_json_pretty(), &reg(), None).expect("reparse");
@@ -5357,7 +5351,7 @@ mod tests {
     fn from_graph_saves_the_flattened_equivalent() {
         // The subpatch dissolves at build, so saving a built graph emits the inlined
         // child nodes under their prefixed addresses — no `subpatch` node, no `patch` ref: the
-        // deliberate one-way flatten. see rules: authoring-library
+        // deliberate one-way flatten.
         let loaded = load_instrument(PARENT_WITH_SUBPATCH, &reg(), &PatchResolver(VOICE_IFACE))
             .expect("load");
         let saved = NormalizedDoc::from_graph(&loaded.graph, "p", &reg());

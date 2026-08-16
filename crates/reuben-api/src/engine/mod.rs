@@ -18,8 +18,6 @@
 //!
 //! This module is compiled with the `authoring` feature: it is the control half of the
 //! authoring/control side of the window — off-thread, serialized, and never on a block.
-//!
-//! see rules: agent-mcp
 
 mod args;
 mod channel;

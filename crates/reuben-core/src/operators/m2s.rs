@@ -25,8 +25,6 @@
 //! blocks. The target `in` is a held Value: the engine block-slices at every change
 //! frame, so each `process` call reads one constant target and a mid-block retarget stays
 //! sample-accurate; the smoothing itself runs per-sample toward that held target.
-//!
-//! see rules: composition-operators
 
 use alloc::boxed::Box;
 use num_traits::Float;

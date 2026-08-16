@@ -9,8 +9,6 @@
 //! it: a document verb reads and writes through it, and so does the load that builds the initial
 //! Engine a host renders ([`render::install_initial`](crate::render::install_initial)). One seam,
 //! whichever half a host compiles.
-//!
-//! see rules: authoring-library
 
 // The engine seam the adapters below present a store through; with neither half compiled there is
 // nothing to present it to.

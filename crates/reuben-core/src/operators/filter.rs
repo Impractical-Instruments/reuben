@@ -17,8 +17,6 @@
 //! - input 2: `resonance` (`Float`) — per-sample resonance 0..1 (materialized default 0.2).
 //! - input 3: `mode` (`Enum` [`FilterMode`] {Lp, Hp, Bp}) — output tap; default `Lp`.
 //! - output 0: `audio` (`Buffer`) — the selected response (lowpass / highpass / bandpass).
-//!
-//! see rules: signal-time-dsp
 
 use alloc::boxed::Box;
 
@@ -113,7 +111,7 @@ impl Operator for Filter {
         let sample_rate = io.sample_rate();
         let mode = io.read(IN_MODE);
 
-        // Block-local SVF, stored back once after the loop. see rules: execution-runtime
+        // Block-local SVF, stored back once after the loop.
         let mut svf = self.svf;
 
         // `cutoff`/`resonance` are Signal inputs — always a buffer (wired source or materialized

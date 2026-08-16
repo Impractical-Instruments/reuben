@@ -19,8 +19,6 @@
 //!
 //! `process` is a pure lookup (`freq = harmony.hz(pitch)`) on `Copy` inputs — stateless,
 //! allocation-free, hot-path-trivial.
-//!
-//! see rules: signal-time-dsp
 
 use alloc::boxed::Box;
 

@@ -3,7 +3,7 @@
 //! An operator declares its ports/params **once**, inside `operator_contract!`. The macro plants,
 //! at module scope, the `IN_`/`OUT_`/`P_` index consts *and* an inherent `fn contract() ->
 //! Descriptor`; the author's `impl Operator` delegates `fn descriptor()` to it with a one-liner —
-//! `fn descriptor() -> Descriptor { Self::contract() }`. see rules: composition-operators
+//! `fn descriptor() -> Descriptor { Self::contract() }`.
 //!
 //! ```ignore
 //! operator_contract!(Oscillator {

@@ -11,8 +11,7 @@ franca**, in and out.
 
 This repo is the **engine and its SDK**:
 
-- **`reuben-core`** — the portable engine and its **embed surface**
-  ([execution-runtime](docs/rules/execution-runtime.md)): construct from a document, push
+- **`reuben-core`** — the portable engine and its **embed surface**: construct from a document, push
   OSC in, pull audio out. No OS dependency; compiles to `wasm32-unknown-unknown` untouched. You
   reach it through `reuben-api`, which is the only crate that depends on it.
 - **`reuben-api`** — the one window between the engine and every consumer, in two feature halves:
@@ -24,8 +23,8 @@ This repo is the **engine and its SDK**:
   reimplement.
 - **`reuben-native`** — the `reuben` CLI and its audio/OSC/filesystem host, built on the window
   like any other consumer.
-- **`reuben-mcp`** — a stdio MCP sidecar, so an agent can author instruments against a live engine
-  ([agent-mcp](docs/rules/agent-mcp.md)).
+- **`reuben-mcp`** — a stdio MCP sidecar, so an agent can author instruments against a live
+  engine.
 - **`instruments/`** + **`surfaces/`** — the instrument library and the presentation docs over
   their interface pipes.
 - **`.claude/skills/`** — the **authoring and developer agent skills** that run inside [Claude
@@ -119,8 +118,7 @@ live on as frozen fixtures under `crates/*/tests/fixtures/` and
 `crates/reuben-document/benches/fixtures/`.)
 
 To play an instrument from a phone/tablet, project its **surface doc** (`surfaces/<name>.json`
-— the presentation layer over its interface pipes,
-[authoring-library](docs/rules/authoring-library.md)) to a
+— the presentation layer over its interface pipes) to a
 TouchOSC layout with the `control-surface` skill. A surface doc is a portable presentation
 contract, not a TouchOSC file: any host can render one.
 (The v1.4-era walkthrough, [docs/v1.4-control-surface-testing.md](docs/v1.4-control-surface-testing.md),
@@ -158,7 +156,7 @@ A typical first session, by hand or by skill:
    cargo run -p reuben-native --bin reuben -- describe          # list all operators
    cargo run -p reuben-native --bin reuben -- describe filter   # one operator's ports/params
    ```
-   This is the same introspection the `patcher` skill reads ([agent-mcp](docs/rules/agent-mcp.md)).
+   This is the same introspection the `patcher` skill reads.
 2. **Patch.** Copy an instrument in `instruments/`, rewire node `inputs` (a literal or a wire-ref `{"from":"/node.port"}`), or ask the
    `patcher` skill for a sound.
 3. **Validate before you play** — load + plan with no audio, surfacing errors/warnings:
@@ -167,22 +165,18 @@ A typical first session, by hand or by skill:
    ```
 4. **Play it** with `cargo reuben-play instruments/my-rig.json` (above).
 5. **Play it on a tablet.** Player-facing controls are the instrument's `interface` input
-   pipes; presentation lives in a **surface doc** (`surfaces/<name>.json`,
-   [authoring-library](docs/rules/authoring-library.md)) — or is
+   pipes; presentation lives in a **surface doc** (`surfaces/<name>.json`) — or is
    auto-derived from the pipes when no doc exists. The `control-surface` skill authors the doc
    and projects it to a [TouchOSC](https://hexler.net/touchosc) layout (`.tosc` files land in
    `control-surfaces/`); other hosts render the same doc directly, with no emit step.
    `surfaces/groovebox.json` and `surfaces/euclidean-drums.json` are worked examples.
 
 Need behavior no operator provides? That's a new **Operator** in Rust — `scaffold-operator`
-(or the `create-operator` skill) generates the skeleton and wires its registration
-([composition-operators](docs/rules/composition-operators.md)); see
+(or the `create-operator` skill) generates the skeleton and wires its registration; see
 [docs/agents/operator-dev.md](docs/agents/operator-dev.md) for the operator contract.
 
 ## Going deeper
 
-- **[docs/rules/README.md](docs/rules/README.md)** — the rules index: the now-state architecture as rules, plus the glossary and the "avoid these synonyms" list. The single front door (the merged home of the old design narrative and glossary). Start here.
-- **[docs/adr/](docs/adr/)** — the architectural decisions and the reasoning behind them.
 - **[docs/agents/authoring.md](docs/agents/authoring.md)** — authoring Instruments and Rigs (the guide for agents and contributors).
 - **[docs/agents/operator-dev.md](docs/agents/operator-dev.md)** — building new Operators in Rust.
 

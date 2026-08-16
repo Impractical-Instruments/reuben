@@ -12,8 +12,6 @@
 //! - input 1: `lo` (`Float`) — the lower bound. Unwired default `-1`.
 //! - input 2: `hi` (`Float`) — the upper bound. Unwired default `1`.
 //! - output 0: `out` — `x` bounded to `[lo, hi]`.
-//!
-//! see rules: composition-operators
 
 /// The op's scalar math, generic over any `PartialOrd` number — see the module doc for why it is
 /// composed as `max(lo)` then `min(hi)` rather than [`Ord::clamp`].

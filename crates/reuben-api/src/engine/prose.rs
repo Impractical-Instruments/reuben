@@ -4,11 +4,9 @@
 //! Same rule as the authoring half's prose: every string here ships to a model, so no rustdoc link
 //! syntax, no issue numbers, no crate paths. Notes for humans go in `//` comments. Guarded over the
 //! real advertised surface by `advertised_prose_is_model_facing`.
-//! see rules: code-as-grounding
 
 /// What an engine verb says when the engine is not there. One string, because the fix is one
 /// action and a per-verb wording would be a per-verb opinion about whose fault it is.
-/// see rules: agent-mcp
 pub const ENGINE_UNREACHABLE_GUIDANCE: &str =
     "The reuben engine is not reachable. Start it in another terminal with `reuben play`, then retry.";
 

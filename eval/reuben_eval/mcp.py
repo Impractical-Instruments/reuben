@@ -1,4 +1,4 @@
-"""A minimal MCP stdio client that drives the real `reuben-mcp` sidecar. see rules: agent-mcp
+"""A minimal MCP stdio client that drives the real `reuben-mcp` sidecar.
 
 Both tiers go through this, so the surface being measured is **the actual door** — real tool
 schemas, the real server `instructions`, real `Report`/`Diag` shapes. Nothing can drift from what a

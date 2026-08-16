@@ -5,8 +5,6 @@
 //! [`set_instrument_inputs_by_intent`](super::set_instrument_inputs_by_intent) hands to
 //! `edit_existing`, so the batch is atomic: one validation, one write, one hash, and a
 //! half-applied document that cannot be represented.
-//!
-//! see rules: agent-mcp
 
 use std::collections::BTreeSet;
 
@@ -70,7 +68,7 @@ fn land(moved: f64, min: f64, max: f64) -> Result<Scalar, String> {
 /// wrong for an assignment, which names a specific thing: a minor 3rd, a rotation of 0. A clamped
 /// assignment is a *different* value, and the row's own description then labels it, so
 /// `s2 → 5` would be reported as "a minor 3rd" while being a perfect 4th. Out of range is not a
-/// smaller move here; it is another one. see rules: agent-mcp
+/// smaller move here; it is another one.
 fn assign(asked: f64, min: f64, max: f64) -> Result<Scalar, String> {
     match land(asked, min, max)? {
         Scalar::Number(got) if got == asked => Ok(Scalar::Number(got)),
@@ -239,7 +237,6 @@ fn note_skip(skipped: &mut Vec<SkippedMove>, op: &str, input: &str, reason: Stri
 
 /// The whole batch's effect: what moved, what did not, and the two things the caller might have
 /// meant differently — a reading passed over, and a `target` term that named nothing.
-/// see rules: agent-mcp
 pub(super) struct IntentReport {
     word: String,
     section: Section,
@@ -326,7 +323,7 @@ struct Target {
 /// An omitted `min`/`max` is not a range — the loader fills it with the type-wide ±1e6 sentinel, and
 /// a quarter of that is ±500,000 written into the document. An omitted `curve` is not an assertion
 /// of linearity either. What the pipe says wins, because that is the range a human authored; what it
-/// does not say, the port it feeds already knows. see rules: agent-mcp
+/// does not say, the port it feeds already knows.
 fn pipe_contract(pipe: &InputPipeDoc, mut declared: Port, fed: &Port) -> Port {
     let bare_range = pipe.min.is_none() || pipe.max.is_none();
     // Neither side declares a span to take a fraction of, so there is no contract to move against.
@@ -362,7 +359,7 @@ fn pipe_contract(pipe: &InputPipeDoc, mut declared: Port, fed: &Port) -> Port {
 /// Does one of the addresses this target is reachable through pass the caller's narrowing?
 ///
 /// A pipe address counts, because it is the address the report hands back: narrowing by an address
-/// this verb just echoed has to reach the same slot. see rules: agent-mcp
+/// this verb just echoed has to reach the same slot.
 fn selected(sel: &Selection, addresses: &[&str]) -> bool {
     match sel {
         Selection::All => true,
@@ -594,7 +591,6 @@ fn write_target(
     // A move that arrives where it started is not a move. This is the one thing the report cannot
     // afford to get wrong: it is the only account of the edit there is, so "3 applied" over a
     // byte-identical document has the agent telling someone it changed the sound.
-    // see rules: agent-mcp
     if to == from {
         return Err(format!(
             "`{address}.{input}` is already {}, so this move changes nothing",

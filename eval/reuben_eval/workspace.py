@@ -1,4 +1,4 @@
-"""The task workspace and the host tools the model can reach. see rules: agent-mcp
+"""The task workspace and the host tools the model can reach.
 
 **Why there is no file tool here.** There was, and it was a measurement rather than a crutch: a real
 client still has `Read`/`Write`, so leaving them on the namespace was what let the harness watch a

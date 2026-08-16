@@ -4,8 +4,6 @@
 //! Coordinator fills and the render side drains, and a **retire slot** the render side
 //! fills and the Coordinator drains. The payload type is generic/opaque — this is just the
 //! channel primitive; [`InstallBundle`](super::InstallBundle) is the concrete payload.
-//!
-//! see rules: execution-runtime
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -283,7 +281,7 @@ impl<T: Send> RenderMailbox<T> {
     /// down-ramp, then drains with [`take_install`](Self::take_install) once the ramp reaches
     /// zero; peeking rather than draining on the steady-state miss avoids stealing the install
     /// slot's cache line, the same reason [`try_reclaim`](CoordinatorMailbox::try_reclaim)
-    /// peeks the retire slot first — see rules: execution-runtime.
+    /// peeks the retire slot first.
     pub fn has_install(&self) -> bool {
         self.shared.install.is_occupied()
     }

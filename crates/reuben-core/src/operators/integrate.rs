@@ -5,8 +5,6 @@
 //!
 //! - input 0: `in` (`Float`) — the signal to integrate. Unwired default 0.
 //! - output 0: `out` (`Buffer`) — the running sum including the current sample.
-//!
-//! see rules: signal-time-dsp
 
 use alloc::boxed::Box;
 

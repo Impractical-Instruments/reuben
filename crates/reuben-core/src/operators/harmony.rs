@@ -18,8 +18,6 @@
 //! - input `set` (`Harmony`, held) — adopts its `chord` field.
 //! - inputs `root`, `degrees`, `s0`..`s11` (`i32`, held) — the static key/scale fields.
 //! - output `harmony` (`harmony`) — the latched tonal context followers read.
-//!
-//! see rules: signal-time-dsp
 
 use alloc::boxed::Box;
 

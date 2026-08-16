@@ -2,8 +2,6 @@
 //! builds and installs swaps off-thread, and the production [`RenderSlot`] runs the same
 //! callback-side install step the audio callback calls. Part (a) is Coordinator-direct
 //! behavioral survivor/reset; part (b) is install-path allocation-counting.
-//!
-//! see rules: agent-mcp
 
 mod rt_alloc;
 mod swap_rt_safe;

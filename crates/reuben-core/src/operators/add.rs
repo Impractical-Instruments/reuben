@@ -7,8 +7,6 @@
 //! - input 0: `a` (`Float`) — first operand. Unwired default `0`.
 //! - input 1: `b` (`Float`) — second operand. Unwired default `0`.
 //! - output 0: `out` — `a + b`.
-//!
-//! see rules: composition-operators
 
 use crate::operators::pointwise::PointwiseNum;
 

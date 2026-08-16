@@ -1,8 +1,6 @@
 //! Built off-thread by diffing two manifests in the document crate, and only ever *consumed* here:
 //! the render side applies the table and never reasons about which nodes survived or why. It sits
 //! on this side of the seam because it is a field of [`InstallBundle`](super::InstallBundle).
-//!
-//! see rules: execution-runtime
 
 use alloc::vec::Vec;
 

@@ -6,7 +6,6 @@ derived default surface, OSC addressing, layout, and the zlib/XML round-trip. Wh
 emitted .tosc *loads in TouchOSC* is the on-device verify step the skill calls out; it cannot
 be asserted here."""
 
-# see rules: authoring-library
 
 import json
 import shutil

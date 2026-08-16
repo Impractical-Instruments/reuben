@@ -1,4 +1,4 @@
-//! Integration: filesystem resolution for nested instruments. see rules: authoring-library
+//! Integration: filesystem resolution for nested instruments.
 //!
 //! Two properties the unit tests can't show end-to-end:
 //! - **Per-document base**: a nested patch's own references resolve relative to *its*

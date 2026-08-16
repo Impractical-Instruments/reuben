@@ -3,8 +3,6 @@
 //! the ramp, a non-survivor's cut lands at master-zero (inaudible) and stays cold after, and
 //! steady state (no swap pending) passes the Engine's audio through unchanged. Driven through
 //! the production [`RenderSlot`], not a synchronous test stand-in.
-//!
-//! see rules: agent-mcp
 
 use reuben_core::coordinator::RenderSlot;
 use reuben_core::{AudioConfig, Registry};

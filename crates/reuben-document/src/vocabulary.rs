@@ -11,8 +11,6 @@
 //!
 //! No relation to [`reuben_core::vocab`], the shared module of concrete `Arg` value types — this is
 //! the *agent-facing descriptor* vocabulary, a docs artifact swept against the registry.
-//!
-//! see rules: agent-mcp
 
 use std::collections::HashSet;
 use std::fmt;
@@ -573,11 +571,8 @@ impl Vocabulary {
     pub fn render(&self) -> String {
         let mut out = String::new();
         out.push_str("# Intent vocabulary — word → move\n\n");
-        // The header names its guard rather than ending in the doctrine's `— edit the source, not
-        // this file.`, which is `scripts/ii_verify.py`'s identity test for an artifact generated
-        // from templates it cannot see and so obliged to carry a `sha256=` of itself. This file's
-        // source is in this repo and the named test re-renders from it, which is strictly stronger
-        // than a digest; claiming the doctrine grammar would ask for a second, weaker mechanism.
+        // The header names its guard rather than a digest of itself: this file's source is in this
+        // repo, and the named test re-renders from it, which is strictly stronger than a digest.
         out.push_str(
             "<!-- GENERATED from docs/agents/vocabulary.json by \
              `cargo run -p reuben-core --example gen_vocabulary`; guarded by \

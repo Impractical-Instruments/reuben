@@ -26,8 +26,6 @@
 //! - input 6: `channel` (`i32`) — `-1` downmixes (averages) all channels; `≥0` picks that channel.
 //! - input 7: `window` ([`GrainWindow`]) — the grain amplitude envelope (Hann/Triangle/Tukey/Rect).
 //! - output 0: `audio` (`Buffer`) — the summed grain cloud.
-//!
-//! see rules: authoring-library
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;

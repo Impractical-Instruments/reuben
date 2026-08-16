@@ -1,7 +1,5 @@
 //! The reuben MCP shim binary, and the composition root: it builds the `current_thread` tokio
 //! runtime, injects the real [`EngineLink`], and drives the stdio server to completion.
-//!
-//! see rules: agent-mcp
 
 use reuben_mcp::EngineLink;
 

@@ -12,8 +12,6 @@
 //! Framing is newline-delimited JSON
 //! ([`Request::to_ndjson`]/[`Request::from_ndjson`] and the `Response` pair) so the channel
 //! stays netcat-debuggable and std-only.
-//!
-//! see rules: agent-mcp
 
 use serde::{Deserialize, Serialize};
 
@@ -24,7 +22,6 @@ use crate::authoring::Report;
 /// The structure channel's default loopback bind/target: `127.0.0.1` only, shared here so the
 /// reuben-native server (`reuben play`) and the reuben-mcp client bind and dial the *same*
 /// address. A taken port is non-fatal on the server side (see `play`).
-/// see rules: agent-mcp
 pub const DEFAULT_STRUCTURE_ADDR: &str = "127.0.0.1:9124";
 
 /// Where a swap's document comes from (accepted **by value or by path**, both
@@ -249,8 +246,6 @@ pub struct DocumentSnapshot {
 // Everything above ships to models as the `$defs.DiffSummary` description in the `swap` tool's
 // advertised outputSchema, so it stays about what the fields mean. Notes for humans go below this
 // line, where schemars will not pick them up.
-//
-// see rules: execution-runtime
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct DiffSummary {
     pub survived: usize,
@@ -274,8 +269,8 @@ pub struct SwapReport {
 }
 
 impl SwapReport {
-    /// The nothing-was-installed report, defined once — see rules: agent-mcp for why a door needs
-    /// this shape even when it rejects a swap before the loader runs.
+    /// The nothing-was-installed report, defined once. A door needs this shape even when it
+    /// rejects a swap before the loader runs.
     ///
     /// `content_hash` is **what keeps playing** — the conflict's `actual`, never the `expected` the
     /// client asked for.

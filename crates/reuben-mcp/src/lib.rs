@@ -33,8 +33,6 @@
 //! The one thing left that is genuinely this door's is the socket: `reuben-mcp` reaches a
 //! *separate process*, so it supplies a loopback TCP transport where an in-process host supplies
 //! none at all.
-//!
-//! see rules: agent-mcp
 
 use std::path::Path;
 
@@ -64,7 +62,7 @@ pub use reuben_api::engine::{
 };
 
 /// The tool surface this door advertises, in roster order — the exact spellings on `tools/list`,
-/// so the wire surface can only change by changing the roster. see rules: agent-mcp
+/// so the wire surface can only change by changing the roster.
 pub fn tool_names() -> Vec<&'static str> {
     reuben_api::tools::names()
 }
@@ -94,7 +92,7 @@ pub const LIBRARY_INDEX_RESOURCE_URI: &str = "reuben://guide/library-index";
 pub const LIBRARY_INDEX_RESOURCE_MIME: &str = "text/markdown";
 
 /// The server `instructions`: the one-breath authoring gist, pointing at the three guide
-/// resources rather than restating them. see rules: agent-mcp
+/// resources rather than restating them.
 const INSTRUCTIONS: &str = "reuben authoring sidecar. The instrument document is the durable \
      truth; keep it in sync with the sound. **Never open, read or write an instrument file \
      yourself** — name it by `source` and let these tools do it: `describe_instrument` reads its \
@@ -114,8 +112,6 @@ const INSTRUCTIONS: &str = "reuben authoring sidecar. The instrument document is
 /// Default absolute path to the authoring guide (`docs/agents/authoring.md`). Only the *path* is
 /// compile-time — the file itself is read at request time — and it is valid only in the checkout
 /// the sidecar was built in; a deploy outside one overrides it with [`AUTHORING_GUIDE_ENV`].
-///
-/// see rules: agent-mcp
 const AUTHORING_GUIDE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../docs/agents/authoring.md"
@@ -354,7 +350,7 @@ impl ReubenServer {
     // Each is one delegation, like the document verbs above: the batch bounds, the argument
     // conversion, the unreachable/other split, the guard-miss shape and the glosses all live behind
     // `engine`. What this door still owns is the socket under the channel, the advertised schema,
-    // and the isError decision. see rules: agent-mcp
+    // and the isError decision.
 
     #[tool(
         name = "send_live_controls",
@@ -422,7 +418,7 @@ impl ReubenServer {
     // the `expect` guard, the write-iff-valid pipeline, the projection echo, the one-line gloss and
     // the advertised sentence all live behind `authoring`, so a second door gets them without a
     // second copy. What the door still owns is the roster spelling, the advertised schema, and the
-    // isError decision. see rules: agent-mcp
+    // isError decision.
 
     #[tool(
         name = "new_instrument",
@@ -677,8 +673,6 @@ impl ReubenServer {
 /// advertises is decided in one place for every door. Without this the macro falls back to each
 /// method's rustdoc, which is written for a Rust reader — so `advertises_the_window_prose` asserts
 /// the stamp actually landed rather than trusting it.
-///
-/// see rules: agent-mcp
 fn stamp_window_prose(router: &mut ToolRouter<ReubenServer>) {
     // These two assertions are also what makes the advertised surface *be* the roster, in both
     // directions and at construction: a route the roster does not name keeps rmcp's rustdoc
@@ -756,7 +750,7 @@ impl ServerHandler for ReubenServer {
     }
 
     /// Read one static resource from disk at request time, at its env-overridable checkout path.
-    /// An unknown URI is `resource_not_found`. see rules: agent-mcp
+    /// An unknown URI is `resource_not_found`.
     async fn read_resource(
         &self,
         request: ReadResourceRequestParams,
@@ -797,7 +791,6 @@ fn structured_ok<T: Serialize>(value: &T, summary: String) -> Result<CallToolRes
 /// is what a human reading the transcript sees. A [`Refusal`] is `isError` — the call could not do
 /// its job, so the model must act on the message rather than treat it as a deliverable. Note what
 /// is *not* here: a rejected edit and a failing validation are Answers, because the tool worked.
-/// see rules: agent-mcp
 fn answered<T: Serialize>(answer: Result<Answer<T>, Refusal>) -> Result<CallToolResult, McpError> {
     match answer {
         Ok(answer) => structured_ok(&answer.output, answer.summary),
@@ -817,7 +810,6 @@ fn edit_result_schema() -> std::sync::Arc<rmcp::model::JsonObject> {
 
 /// The FS door's reading of an opaque document `source`: a filesystem path. Stat-only because no
 /// authoring path renders — introspection reports port metadata without decoding referenced audio.
-/// see rules: agent-mcp
 fn store(source: &str) -> FsResolver {
     FsResolver::for_document(source).stat_only()
 }
@@ -863,7 +855,7 @@ mod tests {
     ///
     /// It substitutes only the *bytes on the wire*: the request line is parsed here, so a malformed
     /// one fails the test, and an unconfigured verb returns the same [`io::Error`] a dead socket
-    /// would. see rules: agent-mcp
+    /// would.
     #[derive(Debug, Default)]
     struct FakeTransport {
         ping: Option<Response>,
@@ -1975,7 +1967,7 @@ mod tests {
         // The no-document-in-context claim as a build-time property rather than a cleanup that
         // happened once. It bites on the field NAME, walked over every input and output schema
         // including `$defs`, because that is how the retired arms spelled it and how a
-        // re-introduction would spell it too. see rules: agent-mcp
+        // re-introduction would spell it too.
         fn walk(node: &serde_json::Value, tool: &str, whose: &str, path: &str) {
             match node {
                 serde_json::Value::Object(map) => {
@@ -1985,7 +1977,7 @@ mod tests {
                                 name, "document",
                                 "{tool}'s {whose} schema carries a `document` field at {path} — no \
                                  arm moves instrument JSON; name the document by `source` and \
-                                 answer with a projection (see rules: agent-mcp)"
+                                 answer with a projection"
                             );
                         }
                     }

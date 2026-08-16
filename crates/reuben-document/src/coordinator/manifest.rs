@@ -4,8 +4,6 @@
 //! manifests into the migration table the render side transplants by box swap.
 //!
 //! This is off-thread load-time work (no RT constraint) and, like the rest of core, OS-free.
-//!
-//! see rules: execution-runtime
 
 use std::collections::BTreeMap;
 

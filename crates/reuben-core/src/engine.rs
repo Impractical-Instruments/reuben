@@ -18,8 +18,6 @@
 //! message handoff (the `pending` Vec) still churns the heap when messages flow, so the
 //! audio callback isn't fully allocation-free yet. A lock-free, preallocated handoff is
 //! tracked for later.
-//!
-//! see rules: execution-runtime
 
 use alloc::vec;
 use alloc::vec::Vec;

@@ -78,7 +78,7 @@ fn forwards_a_wired_value_source_for_control_feedback() {
     );
 }
 
-/// Outbound frames are block-absolute. see rules: signal-time-dsp
+/// Outbound frames are block-absolute.
 ///
 /// Two held changes to the map's `in` split its block into segments [0,100) and [100,256); the
 /// second emission is produced at segment-relative frame 0, so a regression passing 0 instead of

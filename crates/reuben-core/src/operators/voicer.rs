@@ -24,8 +24,6 @@
 //! - constant 0: `voices` (`i32`, `1..=32`) — voice-pool size (read by the loader to decide how many
 //!   sub-patches to build).
 //! - resource `voice` — the voice patch (instrument-resource).
-//!
-//! see rules: composition-operators
 
 use alloc::boxed::Box;
 use alloc::format;
@@ -259,7 +257,7 @@ impl Operator for Voicer {
         let block = config.block_size;
         let mut slots = Vec::with_capacity(graphs.len());
         for g in graphs {
-            // Hosted voice plans get **no input-master plumbing** (see rules: composition-operators):
+            // Hosted voice plans get **no input-master plumbing**:
             // the loader's
             // voice-resource pass cleared each copy's channel bindings (hosted inertness is
             // enforced at that one altitude, for every host), so `Plan::instantiate` derives

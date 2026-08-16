@@ -12,7 +12,7 @@ thing actually happen". Both are needed: `new_instrument` already lands a valid 
 "change nothing" would otherwise score as success on the from-scratch task.
 
 The assertions are deliberately strict about *collateral damage*. A single-value tweak that also
-drops the document's `doc` prose is a failure, not a pass (see rules: agent-mcp), and a metric blind
+drops the document's `doc` prose is a failure, not a pass, and a metric blind
 to it would let the thing this map is chasing pass unnoticed. Two different mechanisms produce that
 damage — re-emitting the whole document, and a second, unasked-for verb call — so the failure names
 *what* moved and leaves the cause to the trace.
@@ -180,7 +180,7 @@ def assert_only_changed(
     # A document verb migrates `format_version` on write, and several committed fixtures are still
     # on an older one — so the field moves under any model that edits through the roster rather than
     # re-emitting the file. That is the engine's edit, not the model's, and whether the result is
-    # legal is `validate_instrument`'s to say, not this assertion's (see rules: agent-mcp).
+    # legal is `validate_instrument`'s to say, not this assertion's.
     expected.pop("format_version", None)
     produced = {key: entry for key, entry in produced.items() if key != "format_version"}
 

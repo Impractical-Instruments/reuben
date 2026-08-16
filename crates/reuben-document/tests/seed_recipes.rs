@@ -1,4 +1,4 @@
-//! The seed-recipe guard (see rules: authoring-library):
+//! The seed-recipe guard:
 //! euclidean-drums, re-expressed through the seed recipes (`voices/kick-voice.json` ×2,
 //! `voices/snare-voice.json`, `voices/hat-voice.json`, each through `patches/dj-strip.json`),
 //! renders **bit-identically** to the pre-recipe inline version — at rest and under driven

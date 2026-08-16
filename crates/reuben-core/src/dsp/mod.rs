@@ -5,6 +5,6 @@
 //! when coefficients are recomputed) and embed these components for the sample math.
 //!
 //! Components are **value-oriented**: state is a small `Copy` struct rather than a `&mut self`
-//! object, so a `process` loop can hold it in registers. see rules: execution-runtime
+//! object, so a `process` loop can hold it in registers.
 
 pub mod svf;

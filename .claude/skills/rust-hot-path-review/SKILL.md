@@ -53,7 +53,7 @@ These are **defects, not opinions** — they glitch or crash the audio thread. E
 - **Lock / blocking** → `make-total` (move it off-thread). Tells: `Mutex::lock`, blocking `recv`,
   syscalls, file I/O, logging.
 - **`unsafe`** → `benchmark-or-remove`. **Hard line.** Admissible *only* with a committed benchmark
-  ([the perf gate](../../../docs/rules/web-product-process.md)) proving it's a measured hot path and
+  (the CI perf gate) proving it's a measured hot path and
   safe Rust was the bottleneck. The core has **zero `unsafe`** today; keep it that way unless a number
   says otherwise.
 - **Determinism** (one-line scan, not this skill's chapter — see

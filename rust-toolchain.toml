@@ -1,4 +1,4 @@
-# Pinned toolchain — single source of truth for local dev AND CI. see rules: web-product-process
+# Pinned toolchain — single source of truth for local dev AND CI.
 # rustup auto-honors this file: any cargo invocation in this repo uses exactly
 # this version and auto-installs it + the components below if missing.
 # Pinning makes the local hooks' fmt/clippy verdict identical to CI's.

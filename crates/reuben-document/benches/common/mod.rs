@@ -10,8 +10,6 @@
 //!
 //! [`construct`] is the other workload: the load + instantiate pair that runs *before* any of
 //! this, sized by node count rather than fixed, because what it measures is scaling.
-//!
-//! see rules: web-product-process
 #![allow(dead_code)]
 
 pub mod construct;
@@ -201,7 +199,7 @@ pub fn build_state(name: &str) -> BenchState {
     let loaded =
         load_instrument(fx.json, &Registry::builtin(), &FixturesDir).expect("fixture loads");
     // A resource that fails to resolve degrades to silence + a warning rather than failing the
-    // load (see rules: authoring-library), so a warning here would mean the bench silently
+    // load, so a warning here would mean the bench silently
     // rendered the degraded empty-voicer workload instead of the real one. Treat it as fatal.
     assert!(
         loaded.warnings.is_empty(),

@@ -7,10 +7,9 @@
 //! the destination port's single typed `Arg` happens downstream, at the render slot's
 //! [`queue_osc`](reuben_api::render::RenderSlot::queue_osc). [`encode`] is the inverse: it packs the
 //! already-flattened args produced by [`reuben_api::render::osc_out_args`] into one datagram.
-//! see rules: signal-time-dsp
 //!
 //! Incoming OSC is stamped `frame = 0` ("now") and bundle timetags are ignored — block-quantized
-//! by design. see rules: execution-runtime
+//! by design.
 
 use reuben_api::render::Arg;
 use rosc::{OscMessage, OscPacket, OscType};

@@ -23,8 +23,6 @@
 //! `tempo`/`division` are Value inputs: read held, so a change block-slices and takes effect at the
 //! exact sample of the change — and each can be *wired* and modulated (`division` by an `i32`
 //! source).
-//!
-//! see rules: signal-time-dsp
 
 use alloc::boxed::Box;
 use num_traits::Float;

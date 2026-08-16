@@ -21,8 +21,6 @@
 //! - input 2: `warmth` — 0..1 even-harmonic amount.
 //! - input 3: `level` (x) — output trim.
 //! - output 0: `audio` — the saturated signal.
-//!
-//! see rules: signal-time-dsp
 
 use alloc::boxed::Box;
 use num_traits::Float;
@@ -90,7 +88,7 @@ impl Operator for Saturator {
         };
         let level = io.read(IN_LEVEL).clamp(LEVEL_MIN, LEVEL_MAX);
 
-        // Flat locals for the block loop (see rules: execution-runtime). All are exactly `n`
+        // Flat locals for the block loop. All are exactly `n`
         // frames (buffer-presence invariant).
         let audio = io.read(IN_AUDIO);
         let drive = io.read(IN_DRIVE);
