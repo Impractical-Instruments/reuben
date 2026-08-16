@@ -975,9 +975,9 @@ class RepoContentNotFilesystem(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ii:begin provenance — derived from .ii/repo.toml; do not hand-edit out of sync. Regenerate with `ii-generate --write .`. sha256=04ce5305b93eb14d59a04a538690a2f05b8ab1c45343e2d93d35a6b225732cbf
-# Source:   Impractical-Instruments/agent-tools@057c3f7a9391816263b1a4fcb46af5f4a5dc705f:plugins/impractical-doctrine/rules/tests/test_check_rules_refs.py
-# Fetched:  2026-08-12
-# Refresh:  gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/tests/test_check_rules_refs.py?ref=main' --jq '.content' | base64 -d > scripts/tests/test_check_rules_refs.py && ii-generate --write .
+# ii:begin provenance — derived from .ii/repo.toml; do not hand-edit out of sync. Regenerate with `ii-generate --write .`. sha256=157b945008c3b9b1fad1254df21795fc6d2ee5c597a3761e8ca39e967aa62a9a
+# Source:   Impractical-Instruments/brain@440034f0365465428b89668736b6ae506e7c564c:machinery/rules/tests/test_check_rules_refs.py
+# Fetched:  2026-08-16
+# Refresh:  gh api 'repos/Impractical-Instruments/brain/contents/machinery/rules/tests/test_check_rules_refs.py?ref=main' --jq '.content' | base64 -d > scripts/tests/test_check_rules_refs.py && ii-generate --write .
 # Do not edit locally. Changes go upstream via PR against the source repo.
 # ii:end provenance

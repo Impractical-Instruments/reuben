@@ -319,9 +319,9 @@ def main(root_arg: str = ".") -> int:
 if __name__ == "__main__":
     sys.exit(main(*sys.argv[1:2]))
 
-# ii:begin provenance — derived from .ii/repo.toml; do not hand-edit out of sync. Regenerate with `ii-generate --write .`. sha256=4bd999e68c65312ed1c41c075f099e31c06f9a1bfd12cae31596bb40602e14a9
-# Source:   Impractical-Instruments/agent-tools@df737e6e04aaffbfac28864101c723e1e1a06997:plugins/impractical-doctrine/rules/check_rules_links.py
-# Fetched:  2026-08-15
-# Refresh:  gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/check_rules_links.py?ref=main' --jq '.content' | base64 -d > scripts/check_rules_links.py && ii-generate --write .
+# ii:begin provenance — derived from .ii/repo.toml; do not hand-edit out of sync. Regenerate with `ii-generate --write .`. sha256=bcf2cb1fe93f7e33ad6bf2c12e2c19333086b2517401a3acbf1396ccebe57d01
+# Source:   Impractical-Instruments/brain@440034f0365465428b89668736b6ae506e7c564c:machinery/rules/check_rules_links.py
+# Fetched:  2026-08-16
+# Refresh:  gh api 'repos/Impractical-Instruments/brain/contents/machinery/rules/check_rules_links.py?ref=main' --jq '.content' | base64 -d > scripts/check_rules_links.py && ii-generate --write .
 # Do not edit locally. Changes go upstream via PR against the source repo.
 # ii:end provenance

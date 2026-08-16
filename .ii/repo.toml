@@ -1,12 +1,13 @@
 # Impractical-Instruments/reuben — repo manifest.
 #
 # The per-repo half of doctrine generation: this file plus the doctrine templates in
-# `agent-tools` produce this repo's generated docs. `--write` in pre-commit, and in CI the
+# `brain` produce this repo's generated docs. `--write` in pre-commit, and in CI the
 # vendored `scripts/ii_verify.py` checks what was written.
 #
 # Promoted from the draft at
-# agent-tools@main:plugins/impractical-doctrine/templates/fixtures/reuben/.ii/repo.toml.
-# Every value below was re-read from this tree rather than trusted from the draft.
+# Impractical-Instruments/brain@bf70b8be3001405344262660925ba2b25ec8c9a7:docs/prototypes/repo-manifests/reuben.repo.toml
+# — pinned rather than named at a ref, because `docs/prototypes/` is exactly the kind of path that
+# moves. Every value below was re-read from this tree rather than trusted from the draft.
 #
 # Committing this file makes this repo a target of the scheduled regeneration job, which
 # derives its targets from the presence of `.ii/repo.toml` on the default branch.
@@ -31,9 +32,11 @@ adr_surface    = "transient"
 
 [rules]
 machinery = "local"
-# `local`, and it stays local for the reason `plugin` cannot serve: `plugin` describes a repo
-# reaching its machinery through $CLAUDE_PLUGIN_ROOT, which CI does not set and cannot. This
-# repo is public and `agent-tools` is private, so a build-time dependency is out of reach too.
+# The schema offers `local`, `submodule` and `authored`, and the other two are out of reach here
+# rather than merely unwanted. `authored` belongs to the repo that authors the machinery, which is
+# `brain`. `submodule` means reaching it through a submodule — and this repo is public while
+# `brain` is private, so a build-time dependency on it is barred by access, not by preference.
+# That leaves `local`: the copies live in this repo's `scripts/` and CI runs them from there.
 # What changed at the extraction is where the copies come from, not how this repo reaches them.
 
 [tracker]
@@ -46,32 +49,32 @@ extra = ["post-v1", "design-question", "someday", "epic", "triage", "perf"]
 formatters = ["rustfmt"]
 
 # The vendored half of the doctrine machinery. This repo authored the three rules validators;
-# `agent-tools` owns them now, and each row below is what makes the copy here declarable
-# rather than a paste. The generator stays in the plugin; CI runs these.
+# `brain` owns them now, and each row below is what makes the copy here declarable
+# rather than a paste. The generator stays in `brain`; CI runs these.
 
 [[consumes]]
 kind    = "vendored"
 path    = "scripts/check_rules_derive.py"
-source  = "Impractical-Instruments/agent-tools@main:plugins/impractical-doctrine/rules/check_rules_derive.py"
-refresh = "gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/check_rules_derive.py?ref=main' --jq '.content' | base64 -d > scripts/check_rules_derive.py && ii-generate --write ."
+source  = "Impractical-Instruments/brain@main:machinery/rules/check_rules_derive.py"
+refresh = "gh api 'repos/Impractical-Instruments/brain/contents/machinery/rules/check_rules_derive.py?ref=main' --jq '.content' | base64 -d > scripts/check_rules_derive.py && ii-generate --write ."
 
 [[consumes]]
 kind    = "vendored"
 path    = "scripts/check_rules_links.py"
-source  = "Impractical-Instruments/agent-tools@main:plugins/impractical-doctrine/rules/check_rules_links.py"
-refresh = "gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/check_rules_links.py?ref=main' --jq '.content' | base64 -d > scripts/check_rules_links.py && ii-generate --write ."
+source  = "Impractical-Instruments/brain@main:machinery/rules/check_rules_links.py"
+refresh = "gh api 'repos/Impractical-Instruments/brain/contents/machinery/rules/check_rules_links.py?ref=main' --jq '.content' | base64 -d > scripts/check_rules_links.py && ii-generate --write ."
 
 [[consumes]]
 kind    = "vendored"
 path    = "scripts/check_rules_refs.py"
-source  = "Impractical-Instruments/agent-tools@main:plugins/impractical-doctrine/rules/check_rules_refs.py"
-refresh = "gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/check_rules_refs.py?ref=main' --jq '.content' | base64 -d > scripts/check_rules_refs.py && ii-generate --write ."
+source  = "Impractical-Instruments/brain@main:machinery/rules/check_rules_refs.py"
+refresh = "gh api 'repos/Impractical-Instruments/brain/contents/machinery/rules/check_rules_refs.py?ref=main' --jq '.content' | base64 -d > scripts/check_rules_refs.py && ii-generate --write ."
 
 [[consumes]]
 kind    = "vendored"
 path    = "scripts/ii_verify.py"
-source  = "Impractical-Instruments/agent-tools@main:plugins/impractical-doctrine/verifier/ii_verify.py"
-refresh = "gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/verifier/ii_verify.py?ref=main' --jq '.content' | base64 -d > scripts/ii_verify.py && ii-generate --write ."
+source  = "Impractical-Instruments/brain@main:machinery/verifier/ii_verify.py"
+refresh = "gh api 'repos/Impractical-Instruments/brain/contents/machinery/verifier/ii_verify.py?ref=main' --jq '.content' | base64 -d > scripts/ii_verify.py && ii-generate --write ."
 
 # The validators' own suite, taken for the same reason as the validators: CI runs it. It ships
 # as a subdirectory because `support.py` asserts each module under test was imported from the
@@ -80,28 +83,35 @@ refresh = "gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/im
 [[consumes]]
 kind    = "vendored"
 path    = "scripts/tests/support.py"
-source  = "Impractical-Instruments/agent-tools@main:plugins/impractical-doctrine/rules/tests/support.py"
-refresh = "gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/tests/support.py?ref=main' --jq '.content' | base64 -d > scripts/tests/support.py && ii-generate --write ."
+source  = "Impractical-Instruments/brain@main:machinery/rules/tests/support.py"
+refresh = "gh api 'repos/Impractical-Instruments/brain/contents/machinery/rules/tests/support.py?ref=main' --jq '.content' | base64 -d > scripts/tests/support.py && ii-generate --write ."
 
 [[consumes]]
 kind    = "vendored"
 path    = "scripts/tests/test_check_rules_derive.py"
-source  = "Impractical-Instruments/agent-tools@main:plugins/impractical-doctrine/rules/tests/test_check_rules_derive.py"
-refresh = "gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/tests/test_check_rules_derive.py?ref=main' --jq '.content' | base64 -d > scripts/tests/test_check_rules_derive.py && ii-generate --write ."
+source  = "Impractical-Instruments/brain@main:machinery/rules/tests/test_check_rules_derive.py"
+refresh = "gh api 'repos/Impractical-Instruments/brain/contents/machinery/rules/tests/test_check_rules_derive.py?ref=main' --jq '.content' | base64 -d > scripts/tests/test_check_rules_derive.py && ii-generate --write ."
 
 [[consumes]]
 kind    = "vendored"
 path    = "scripts/tests/test_check_rules_links.py"
-source  = "Impractical-Instruments/agent-tools@main:plugins/impractical-doctrine/rules/tests/test_check_rules_links.py"
-refresh = "gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/tests/test_check_rules_links.py?ref=main' --jq '.content' | base64 -d > scripts/tests/test_check_rules_links.py && ii-generate --write ."
+source  = "Impractical-Instruments/brain@main:machinery/rules/tests/test_check_rules_links.py"
+refresh = "gh api 'repos/Impractical-Instruments/brain/contents/machinery/rules/tests/test_check_rules_links.py?ref=main' --jq '.content' | base64 -d > scripts/tests/test_check_rules_links.py && ii-generate --write ."
 
 [[consumes]]
 kind    = "vendored"
 path    = "scripts/tests/test_check_rules_refs.py"
-source  = "Impractical-Instruments/agent-tools@main:plugins/impractical-doctrine/rules/tests/test_check_rules_refs.py"
-refresh = "gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/tests/test_check_rules_refs.py?ref=main' --jq '.content' | base64 -d > scripts/tests/test_check_rules_refs.py && ii-generate --write ."
+source  = "Impractical-Instruments/brain@main:machinery/rules/tests/test_check_rules_refs.py"
+refresh = "gh api 'repos/Impractical-Instruments/brain/contents/machinery/rules/tests/test_check_rules_refs.py?ref=main' --jq '.content' | base64 -d > scripts/tests/test_check_rules_refs.py && ii-generate --write ."
 
-# `docs/rules/_templates/` is byte-identical to the same three files in the plugin and is NOT
-# declared here, because a declared row appends a `provenance` region to each — and the
-# scaffolder instantiates those files, so the block would land in every rationale it writes.
-# The gap is real; it is agent-tools' to close, not this repo's to work around.
+# `docs/rules/_templates/` is a copy of the same three files in the shared machinery, and is NOT
+# declared here, because a declared row appends a `provenance` region to each — and the scaffolder
+# instantiates those files, so the block would land in every rationale it writes.
+#
+# It does NOT still match, and an earlier version of this comment asserted it did. Measured
+# 2026-08-16 against brain's `machinery/rules/_templates/`: `topic.md` is identical, `rule.md` and
+# `rationale.md` are not, and brain's `rationale.md` carries no `Distilled from:` line — the line
+# this repo's ADR-to-rules chain leaves behind as an absorbed ADR's only surviving pointer. An
+# undeclared copy is precisely the copy nothing compares, so "resyncing" from upstream on the
+# assumption the two agree would silently stop the scaffolder writing that line, and no guard here
+# governs this file. The gap is real; it is `brain`'s to close, not this repo's to work around.

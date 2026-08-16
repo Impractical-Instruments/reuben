@@ -2,7 +2,7 @@
 
 ## One-time setup
 
-After cloning, install the hook set — unless `agent-tools`' `bootstrap.sh` has already run on this
+After cloning, install the hook set — unless `brain`'s `bootstrap.sh` has already run on this
 machine, which configures it for you:
 
 ```sh
@@ -15,8 +15,9 @@ set, a new check registers itself there and needs no further setup.
 
 **This is not the only manual step**, and an earlier version of this section said it was. A clone also
 wants `python3` on `PATH` for the checks that are not `cargo` (below), and the doctrine regeneration
-check additionally wants the `impractical-doctrine` plugin and a token that can reach `brain` — it
-warns and steps aside without them. What the one command buys is the hook set, not a finished
+check additionally wants `ii-generate` on `PATH` — a wrapper into a `brain` checkout, put there by
+that repo's `bootstrap.sh` — and a token that can reach `brain`; it warns and steps aside without
+them. What the one command buys is the hook set, not a finished
 environment.
 
 ### The hook set
@@ -40,8 +41,9 @@ type is one file. [`scripts/hooks/pre-commit`](./scripts/hooks/pre-commit) and
   - `scripts/hooks/pre-commit.d/30-rules-index` — `check_rules_derive.py --write` when the commit
     touches `docs/rules/`, re-staging the regenerated index so the fix lands in the same commit.
   - `scripts/hooks/pre-commit.d/40-doctrine-regen` — the doctrine generator's `--write`, staging only
-    what it rewrote. **Warns and never blocks**: it needs a plugin from a private marketplace and a
-    token, so a clone with neither has to stay committable. CI's `provenance` job is what reds.
+    what it rewrote. **Warns and never blocks**: it needs `ii-generate` on `PATH` — a wrapper into a
+    private `brain` checkout — and a token, so a clone with neither has to stay committable. CI's
+    `provenance` job is what reds.
 - **pre-push**
   - `scripts/hooks/pre-push.d/10-rust-clippy` — `cargo clippy --workspace --all-targets -- -D
     warnings`. Runs at the push boundary (not every commit) so the compile cost is paid once;
@@ -93,7 +95,7 @@ What a check can rely on, and what it owes:
   because `scripts/hooks/pre-commit` exists — git looks a hook up by its exact filename and nothing
   else. Copy either existing stub and change the name it passes. `install-hooks.sh` refuses a
   registry with no stub rather than listing checks git will never call.
-- **Do not rename the stubs, and do not move this directory.** `agent-tools`' `bootstrap.sh` decides
+- **Do not rename the stubs, and do not move this directory.** `brain`'s `bootstrap.sh` decides
   whether a repo has hooks by looking for an executable regular file *named after a git hook event*
   directly inside `scripts/hooks/`. `pre-commit` and `pre-push` are what it finds; `dispatch` is not a
   hook name and would not satisfy it. Rename either stub, or move the set, and every bootstrapped

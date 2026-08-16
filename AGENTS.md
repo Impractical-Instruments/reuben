@@ -21,7 +21,7 @@ cargo run -p reuben-core --example gen_vocabulary      # after editing docs/agen
 cargo run -p reuben-native --bin reuben -- describe    # list operators/ports/params
 ```
 
-One-time setup, unless `agent-tools`' `bootstrap.sh` already did it: `./scripts/install-hooks.sh` —
+One-time setup, unless `brain`'s `bootstrap.sh` already did it: `./scripts/install-hooks.sh` —
 points `core.hooksPath` at [`scripts/hooks/`](scripts/hooks), where
 [`scripts/hooks/dispatch`](scripts/hooks/dispatch) chains every check registered under
 `scripts/hooks/pre-commit.d/` (rules ref-linter, ADR-number guard, `cargo fmt`, rules-index regen,

@@ -5,7 +5,7 @@
 # There is exactly one command and exactly one target, which is the point: `core.hooksPath` holds a
 # single value, so a second documented way to install hooks is a way to uninstall the first.
 #
-# The target is `scripts/hooks/`, which is the directory `agent-tools`' `bootstrap.sh` configures —
+# The target is `scripts/hooks/`, which is the directory `brain`'s `bootstrap.sh` configures —
 # so a bootstrapped machine and a machine that ran this script end up at the same value instead of
 # overwriting each other's. Bootstrap's own test is an executable regular file named after a git hook
 # event directly inside that directory, which `pre-commit` and `pre-push` are; `dispatch` is not, and
