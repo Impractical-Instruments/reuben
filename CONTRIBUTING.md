@@ -2,7 +2,7 @@
 
 ## One-time setup
 
-After cloning, install the hook set — unless `agent-tools`' `bootstrap.sh` has already run on this
+After cloning, install the hook set — unless `brain`'s `bootstrap.sh` has already run on this
 machine, which configures it for you:
 
 ```sh
@@ -93,7 +93,7 @@ What a check can rely on, and what it owes:
   because `scripts/hooks/pre-commit` exists — git looks a hook up by its exact filename and nothing
   else. Copy either existing stub and change the name it passes. `install-hooks.sh` refuses a
   registry with no stub rather than listing checks git will never call.
-- **Do not rename the stubs, and do not move this directory.** `agent-tools`' `bootstrap.sh` decides
+- **Do not rename the stubs, and do not move this directory.** `brain`'s `bootstrap.sh` decides
   whether a repo has hooks by looking for an executable regular file *named after a git hook event*
   directly inside `scripts/hooks/`. `pre-commit` and `pre-push` are what it finds; `dispatch` is not a
   hook name and would not satisfy it. Rename either stub, or move the set, and every bootstrapped

@@ -361,9 +361,9 @@ A topic doc may quote the shape it follows:
 if __name__ == "__main__":
     unittest.main()
 
-# ii:begin provenance — derived from .ii/repo.toml; do not hand-edit out of sync. Regenerate with `ii-generate --write .`. sha256=67efafbb68c055efce7631876bdebd511994ad6c790ab4b69f657ed44424b7bf
-# Source:   Impractical-Instruments/agent-tools@057c3f7a9391816263b1a4fcb46af5f4a5dc705f:plugins/impractical-doctrine/rules/tests/test_check_rules_derive.py
-# Fetched:  2026-08-12
-# Refresh:  gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/tests/test_check_rules_derive.py?ref=main' --jq '.content' | base64 -d > scripts/tests/test_check_rules_derive.py && ii-generate --write .
+# ii:begin provenance — derived from .ii/repo.toml; do not hand-edit out of sync. Regenerate with `ii-generate --write .`. sha256=6eed0c28236fccce7f8e5c49f7d50f7b9d4b7292578b0bb69dfb42775425408d
+# Source:   Impractical-Instruments/brain@440034f0365465428b89668736b6ae506e7c564c:machinery/rules/tests/test_check_rules_derive.py
+# Fetched:  2026-08-16
+# Refresh:  gh api 'repos/Impractical-Instruments/brain/contents/machinery/rules/tests/test_check_rules_derive.py?ref=main' --jq '.content' | base64 -d > scripts/tests/test_check_rules_derive.py && ii-generate --write .
 # Do not edit locally. Changes go upstream via PR against the source repo.
 # ii:end provenance

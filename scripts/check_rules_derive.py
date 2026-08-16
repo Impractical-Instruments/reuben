@@ -256,9 +256,9 @@ def main(argv: list[str]) -> int:
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 
-# ii:begin provenance — derived from .ii/repo.toml; do not hand-edit out of sync. Regenerate with `ii-generate --write .`. sha256=422de29065f2bde169f00ec759e940e273bff3f41ab8e1d7b8a4b7f098a1a6b1
-# Source:   Impractical-Instruments/agent-tools@057c3f7a9391816263b1a4fcb46af5f4a5dc705f:plugins/impractical-doctrine/rules/check_rules_derive.py
-# Fetched:  2026-08-12
-# Refresh:  gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/rules/check_rules_derive.py?ref=main' --jq '.content' | base64 -d > scripts/check_rules_derive.py && ii-generate --write .
+# ii:begin provenance — derived from .ii/repo.toml; do not hand-edit out of sync. Regenerate with `ii-generate --write .`. sha256=b42e1ae509abfbd3a9f37edfb84c6b656b8a8f97586b27bd7ab7d6e9d0ada2cb
+# Source:   Impractical-Instruments/brain@440034f0365465428b89668736b6ae506e7c564c:machinery/rules/check_rules_derive.py
+# Fetched:  2026-08-16
+# Refresh:  gh api 'repos/Impractical-Instruments/brain/contents/machinery/rules/check_rules_derive.py?ref=main' --jq '.content' | base64 -d > scripts/check_rules_derive.py && ii-generate --write .
 # Do not edit locally. Changes go upstream via PR against the source repo.
 # ii:end provenance

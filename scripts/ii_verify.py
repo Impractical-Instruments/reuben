@@ -504,9 +504,9 @@ def main(argv: "list[str]", stream=None) -> int:
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 
-# ii:begin provenance — derived from .ii/repo.toml; do not hand-edit out of sync. Regenerate with `ii-generate --write .`. sha256=fd9dc9fcd7cf0477420cd213accc0d8e86ff80a0dd582490a10892c3c2291207
-# Source:   Impractical-Instruments/agent-tools@4c5f337afe09ba5eab5567c67918ea66f97f3ad7:plugins/impractical-doctrine/verifier/ii_verify.py
-# Fetched:  2026-08-12
-# Refresh:  gh api 'repos/Impractical-Instruments/agent-tools/contents/plugins/impractical-doctrine/verifier/ii_verify.py?ref=main' --jq '.content' | base64 -d > scripts/ii_verify.py && ii-generate --write .
+# ii:begin provenance — derived from .ii/repo.toml; do not hand-edit out of sync. Regenerate with `ii-generate --write .`. sha256=6928c1322b15cf67b89eba0d70469d89d4c0f1200a92ca05a06bbac90ee963b8
+# Source:   Impractical-Instruments/brain@440034f0365465428b89668736b6ae506e7c564c:machinery/verifier/ii_verify.py
+# Fetched:  2026-08-16
+# Refresh:  gh api 'repos/Impractical-Instruments/brain/contents/machinery/verifier/ii_verify.py?ref=main' --jq '.content' | base64 -d > scripts/ii_verify.py && ii-generate --write .
 # Do not edit locally. Changes go upstream via PR against the source repo.
 # ii:end provenance

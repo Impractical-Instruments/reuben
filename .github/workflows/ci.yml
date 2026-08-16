@@ -599,7 +599,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # The guards' own suite, vendored beside them from `agent-tools`. Run from scripts/ with
+      # The guards' own suite, vendored beside them from `brain`. Run from scripts/ with
       # tests/ as the start directory, which is the layout its `support.py` asserts: the modules
       # under test must be the ones in the directory above it, so a same-named copy elsewhere on
       # the path cannot shadow them.
