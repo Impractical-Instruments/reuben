@@ -12,6 +12,9 @@
 //! Every struct here is `deny_unknown_fields`, which schemars carries onto the wire as
 //! `additionalProperties: false`.
 
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -454,6 +457,8 @@ pub struct RemoveInstrumentResource {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use super::*;
     use serde_json::json;
 

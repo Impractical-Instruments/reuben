@@ -87,13 +87,16 @@ jobs:
             windows:
               - *workspace
             # The bare-metal cross build, and deliberately NARROWER than *workspace rather than
-            # riding it. Only the render half and the two crates below it can move this outcome:
-            # reuben-api, reuben-native and reuben-mcp all sit above reuben-core and reach the
+            # riding it. The packages cross-built are reuben-core and reuben-api's render half, so
+            # only those and the crates below them can move this outcome. reuben-document
+            # is not here: it is an optional dependency of `authoring`, which the render-only build
+            # does not enable. reuben-native and reuben-mcp sit above the window and reach the
             # bare-metal target by no path at all, and instruments/ is test DATA no cross build
             # reads. .cargo/config.toml is here because it sets rustflags (scoped to x86_64 today,
             # which is exactly the kind of scoping a later edit can widen by accident).
             bare_metal:
               - 'crates/reuben-core/**'
+              - 'crates/reuben-api/**'
               - 'crates/reuben-macros/**'
               - 'crates/reuben-contract/**'
               - 'Cargo.toml'
@@ -181,12 +184,20 @@ jobs:
       - name: Test
         run: cargo test --workspace --features reuben-document/bench,reuben-document/schemars
 
-      # The render-only build of the window, which no in-tree consumer compiles: the browser
-      # worklet is the only host that takes it, and it lives in another repository behind a
+      # The render-only build of the window, which no in-tree consumer compiles: the hosts that
+      # take it — the browser worklet, a bare-metal embedder — live in other repositories behind a
       # submodule pin. Without this step the authoring/render fence would be an intention that
       # first fails for someone else, on a bump, days later.
+      #
+      # `test`, not `check`: the render module's tests walk the document-free path, and only this
+      # feature set proves it works without the authoring half compiled beside it.
+      #
+      # It is also the only step here that can see a stray `use std::…` in the render half —
+      # `authoring` declares `extern crate std`, which resolves crate-wide under the default
+      # features. The `bare-metal` job cross-builds the same feature set and is stronger, but it is
+      # not in `ci-passed`'s `needs`, so this run is the one that gates a merge.
       - name: Render-only feature fence (reuben-api)
-        run: cargo check -p reuben-api --no-default-features --features render
+        run: cargo test -p reuben-api --no-default-features --features render
 
       # Skill scripts that inline an engine contract ship their own Python tests (control-surface's
       # `gen_surface.py` today); its live-engine boundary test runs `reuben describe` via `cargo
@@ -235,15 +246,16 @@ jobs:
       - name: Test
         run: cargo test --workspace --features reuben-document/bench,reuben-document/schemars
 
-  # `reuben-core` cross-built for thumbv7em-none-eabihf (Cortex-M7, no OS). rustup ships no `std` for
+  # The render path cross-built for thumbv7em-none-eabihf (Cortex-M7, no OS): `reuben-core`, and
+  # the render-only build of `reuben-api`, the window an embedder calls. rustup ships no `std` for
   # any `*-none-*` triple, so this is the one job here where `std` does not exist — which is what
-  # makes it a gate rather than a smoke test. A `use std::…` in a new operator is a compile error
-  # here and invisible to every other job, so without it the portable core is an event in the crate's
-  # history rather than a property of it.
+  # makes it a gate rather than a smoke test. A `use std::…` in a new operator, or in the render
+  # half of the window, is a compile error here and invisible to every other job, so without it the
+  # portable path is an event in these crates' history rather than a property of them.
   #
   # TWO THINGS IT CANNOT DO, because the name implies otherwise. It cannot run TESTS — there is no
-  # host on the target and QEMU or an on-device harness is out of scope — so it proves the crate
-  # COMPILES, and behaviour stays proven by `check`/`windows`. And it cannot prove the code is
+  # host on the target and QEMU or an on-device harness is out of scope — so it proves the crates
+  # COMPILE, and behaviour stays proven by `check`/`windows`. And it cannot prove the code is
   # CORRECT there: Cortex-M7 is a different float environment, and the software libm this target
   # resolves need not agree with the host's `std` to the last bit. Only this job touches libm at all.
   #
@@ -285,22 +297,28 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # Before the build, so it is on the summary page even when the compile dies in the first
-      # seconds. Says only what stays true in both eras, so it never needs maintaining.
+      # seconds. It names what is cross-built; the limits below stay true whatever that is.
       - name: What this gate proves
         run: |
           {
             echo "### bare-metal build (thumbv7em-none-eabihf)"
             echo
-            echo "Proves \`reuben-core\` **compiles** with no \`std\` available."
+            echo "Proves \`reuben-core\` and \`reuben-api\`'s render half **compile** with no \`std\` available."
             echo
             echo "- It cannot run tests: there is no host on the target."
             echo "- It cannot prove correctness there: Cortex-M7 is a different float environment."
           } >>"$GITHUB_STEP_SUMMARY"
 
-      # `--release` because that is what an embedder ships. Only `-p reuben-core`: nothing above the
-      # render half claims to reach this target.
+      # `--release` because that is what an embedder ships. No more than these: the render half,
+      # and the window's render-only door onto it. Nothing above the window claims to reach this
+      # target.
       - name: Cross-build reuben-core
         run: cargo build -p reuben-core --target thumbv7em-none-eabihf --release
+
+      # `--no-default-features --features render` is the whole point: the default features pull in
+      # `authoring`, and `reuben-document` with it, which no `*-none-*` triple can build.
+      - name: Cross-build reuben-api (render half)
+        run: cargo build -p reuben-api --no-default-features --features render --target thumbv7em-none-eabihf --release
 
       # A REPORTED NUMBER, NEVER A THRESHOLD — nothing here fails on size. The embedder's 128 KB of
       # internal flash is a constraint the image is expected to exceed and to live in external QSPI
@@ -315,7 +333,7 @@ jobs:
       # emitted while a 726-byte one is not. So it does not detect "this change doubled the code
       # size", and must not be read that way.
       #
-      # WHAT IT DOES DETECT is a new heavyweight generic THIS CRATE ITSELF MONOMORPHIZES, in a
+      # WHAT IT DOES DETECT is a new heavyweight generic A MEASURED CRATE ITSELF MONOMORPHIZES, in a
       # non-`#[inline]` function above that threshold. Miss any part of that and it is blind: a crate
       # exposing only `pub fn sort_any<T: Ord>` measures byte-identical to an empty one while the
       # embedder that instantiates it pays 3824 bytes, and `#[inline]` on a function worth 3862 takes
@@ -332,36 +350,44 @@ jobs:
           set -o pipefail
           shopt -s nullglob
           # Globbed rather than hardcoded: cargo uplifts exactly the requested package's lib into
-          # this directory, and a `[lib] name = …` would silently move a fixed path. Every failure
+          # this directory, and a `[lib] name = …` would silently move a fixed path. Each
+          # cross-build above uplifts one and neither displaces the other, so this reports a line
+          # PER rlib rather than asserting how many there are. Every failure
           # below reports NOTHING and reds nothing — never "0 bytes", which would read as a
           # measurement. `run:` steps get `bash -e` without pipefail, hence the first line.
           rlibs=(target/thumbv7em-none-eabihf/release/*.rlib)
-          if [ "${#rlibs[@]}" -ne 1 ]; then
-            echo "::warning::expected 1 uplifted rlib, found ${#rlibs[@]} — .text size not reported"
+          if [ "${#rlibs[@]}" -eq 0 ]; then
+            echo "::warning::no uplifted rlib found — .text size not reported"
             exit 0
           fi
           if ! command -v size >/dev/null; then
             echo "::warning::binutils \`size\` not on PATH — .text size not reported"
             exit 0
           fi
-          if ! text=$(size -A "${rlibs[0]}" | awk '$1 ~ /^\.text/ { t += $2 } END { printf "%d", t+0 }'); then
-            echo "::warning::\`size\` could not read ${rlibs[0]} — .text size not reported"
-            exit 0
-          fi
-          echo ".text = $text bytes (${rlibs[0]})"
-          if [ "$text" -eq 0 ]; then
-            echo "::warning::.text is 0 — rustc emitted no machine code for this target. A finding, not a size."
-          fi
-          echo "\`.text\` emitted into \`${rlibs[0]##*/}\` (release): **$text bytes**" >>"$GITHUB_STEP_SUMMARY"
+          for rlib in "${rlibs[@]}"; do
+            if ! text=$(size -A "$rlib" | awk '$1 ~ /^\.text/ { t += $2 } END { printf "%d", t+0 }'); then
+              echo "::warning::\`size\` could not read $rlib — .text size not reported"
+              continue
+            fi
+            echo ".text = $text bytes ($rlib)"
+            if [ "$text" -eq 0 ]; then
+              echo "::warning::.text is 0 for ${rlib##*/} — rustc emitted no machine code for this target. A finding, not a size."
+            fi
+            echo "\`.text\` emitted into \`${rlib##*/}\` (release): **$text bytes**" >>"$GITHUB_STEP_SUMMARY"
+          done
 
       # Clippy on the CROSS target: it type-checks against `core`/`alloc` instead of `std`, so it
-      # reaches a class of thing `check`'s host run cannot see. No `--all-targets` — the tests,
-      # benches and the `first_sound` example are host-side by construction and may link `std`.
+      # reaches a class of thing `check`'s host run cannot see. No `--all-targets` on either: the
+      # non-lib targets under these packages are their lib test targets and `reuben-core`'s
+      # `first_sound` example, all host-side by construction and each free to link `std`.
       - name: Clippy (cross target)
         run: cargo clippy -p reuben-core --target thumbv7em-none-eabihf --release -- -D warnings
 
+      - name: Clippy reuben-api render half (cross target)
+        run: cargo clippy -p reuben-api --no-default-features --features render --target thumbv7em-none-eabihf --release -- -D warnings
+
       # Three readings, because they need different responses and only a reader can tell them apart.
-      # Written to stay true after the port lands, so it never has to be revised.
+      # Every command this job runs appears in the reproduce block, or a reader reproduces half.
       - name: How to read a red run
         if: failure()
         run: |
@@ -369,15 +395,21 @@ jobs:
             echo
             echo "**This gate failed. Which of three it is depends on where the error is:**"
             echo
-            echo "1. Before the build — checkout or toolchain provisioning. Infrastructure, not this"
-            echo "   crate; neither reading below applies."
-            echo "2. Inside a third-party dependency, or on a \`std\` path in \`reuben-core\` that the"
-            echo "   bare-metal port has not reached yet — the port is unfinished. This job is not in"
-            echo "   \`ci-passed\`'s \`needs\`, so it blocks no merge."
-            echo "3. On a line this change touched — \`std\` crept back into the portable core. That is"
-            echo "   the defect this gate exists to catch, and it is fixed here, not merged past."
+            echo "1. Before the build — checkout or toolchain provisioning. Infrastructure, not the"
+            echo "   crates; neither reading below applies."
+            echo "2. Inside a third-party dependency reached only on this target — someone else's"
+            echo "   crate, on a triple its author never publishes for. This job is not in"
+            echo "   \`ci-passed\`'s \`needs\`, so it blocks no merge while that is sorted out."
+            echo "3. On a line this change touched — \`std\` crept back into the portable core, or into"
+            echo "   the render half of the window. That is the defect this gate exists to catch, and"
+            echo "   it is fixed here, not merged past."
             echo
-            echo "Reproduce locally: \`cargo build -p reuben-core --target thumbv7em-none-eabihf --release\`"
+            echo "Reproduce locally — all of them; the clippy pair reds this job on its own:"
+            echo
+            echo "    cargo build  -p reuben-core --target thumbv7em-none-eabihf --release"
+            echo "    cargo clippy -p reuben-core --target thumbv7em-none-eabihf --release -- -D warnings"
+            echo "    cargo build  -p reuben-api --no-default-features --features render --target thumbv7em-none-eabihf --release"
+            echo "    cargo clippy -p reuben-api --no-default-features --features render --target thumbv7em-none-eabihf --release -- -D warnings"
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
   bench:
@@ -611,10 +643,9 @@ jobs:
   # even when they skip — failing only if a required upstream reported `failure`/`cancelled`. A
   # Skipped upstream is a pass. Deliberately NOT in `needs`: `bench-history`, which is a post-merge
   # persist rather than a merge gate (`deploy-web` was named here beside it until the web extraction
-  # took that job with it) — and `bare-metal`, for a different reason, with an expiry date. That one
-  # cannot pass until the rest of the bare-metal port lands, and a gate that reds every PR for a
-  # reason no PR caused is one people learn to ignore. Listing it here is the step that makes it
-  # binding, and it is taken on the first run that goes green, not before.
+  # took that job with it) — and `bare-metal`, which now passes, so the first-green-run trigger for
+  # listing it has fired. Taking that step is a tracked follow-up of its own: it turns an advisory
+  # job into a merge blocker. Until it is taken, a red run there blocks nothing.
   ci-passed:
     # This `name` is the exact string the `dev` ruleset requires as a status check (GitHub matches
     # required checks by a job's `name`, not its id) — rename it and the ruleset goes on expecting a

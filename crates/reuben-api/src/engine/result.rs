@@ -6,6 +6,8 @@
 //! [`SidecarInfo`]). Write them as if they ship, because they do — no rustdoc markup, no issue
 //! numbers, no crate paths.
 
+use alloc::string::String;
+
 use serde::{Deserialize, Serialize};
 
 use super::wire::{Conflict, SwapReport};

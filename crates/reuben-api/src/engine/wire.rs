@@ -13,6 +13,11 @@
 //! ([`Request::to_ndjson`]/[`Request::from_ndjson`] and the `Response` pair) so the channel
 //! stays netcat-debuggable and std-only.
 
+use alloc::format;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
+
 use serde::{Deserialize, Serialize};
 
 use reuben_core::message::Arg;
@@ -389,6 +394,8 @@ fn to_ndjson_line<T: Serialize>(value: &T) -> String {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use super::*;
     use crate::authoring::{Diag, Report};
 

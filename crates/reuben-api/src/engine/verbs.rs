@@ -10,6 +10,10 @@
 //! could not do its job at all is a [`Refusal`]. [`get_engine_status`] cannot refuse, because
 //! answering "is it there?" is its whole job.
 
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+
 use reuben_core::Registry;
 use reuben_document::projection::Projector;
 
@@ -268,6 +272,8 @@ fn swap_summary(report: &SwapReport) -> String {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use super::super::args::ControlSendMessage;
     use super::super::channel::Transport;
     use super::*;

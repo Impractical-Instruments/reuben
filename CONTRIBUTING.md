@@ -99,26 +99,43 @@ run them locally before you push.
 [`rust-toolchain.toml`](./rust-toolchain.toml) also pins **`thumbv7em-none-eabihf`** — bare-metal
 Cortex-M7, no OS and therefore no `std` at all, because rustup ships none for any `*-none-*` triple.
 rustup installs it alongside the channel, so there is no `rustup target add` to remember.
-`reuben-core` is the crate that has to keep building for it; nothing above it in the workspace does.
+The packages that have to keep building for it are `reuben-core`, and `reuben-api` with
+`--no-default-features --features render` — the render half of the window. Nothing above it does.
 
-**The gate passes.** The port is finished: `reuben-core` and `reuben-contract` both carry the
-`no_std` attribute, every dependency reaching **this target** arrives with its default `std`
-features off, and the transcendental `f32` math that only `std` defines now reaches the target
+**The gate passes.** The port is finished: `reuben-core`, `reuben-contract` and `reuben-api` all
+carry the `no_std` attribute, every dependency reaching **this target** arrives with its default
+`std` features off, and the transcendental `f32` math that only `std` defines now reaches the target
 through `num_traits::Float`. CI's `bare-metal build (thumbv7em-none-eabihf)` job is nonetheless still
 **not** one of `ci-passed`'s dependencies, so it blocks no merge — wiring it in is a separate
 change that has not been made yet, and until it is, a red run here is easy to miss.
 
-The job is two commands, and they are the two to run locally against it:
+These are the job's commands, and the ones to run locally against it:
 
 ```sh
 cargo build  -p reuben-core --target thumbv7em-none-eabihf --release
 cargo clippy -p reuben-core --target thumbv7em-none-eabihf --release -- -D warnings
+cargo build  -p reuben-api --no-default-features --features render --target thumbv7em-none-eabihf --release
+cargo clippy -p reuben-api --no-default-features --features render --target thumbv7em-none-eabihf --release -- -D warnings
 ```
 
-A `use std::…` anywhere in `crates/reuben-core/` now fails both, and no other check in the repo can
-see that. [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) carries the rest: how to read a
-red run, and what the job's reported `.text` number does and does not measure — it never fails on
-it.
+A `use std::…` in `reuben-core`'s lib fails all of them; the `reuben-api` pair compiles
+`reuben-core` beneath it. One in `reuben-api`'s render half fails only the `reuben-api` pair —
+neither `-p reuben-core` command builds the window.
+
+**`cargo clippy --workspace --all-targets` catches the first and not the second.** `reuben-core`'s
+lib target is `no_std` on every host, so a stray import in its production code fails there too (only
+its lib *test* target links `std`). `reuben-api`'s `authoring` feature declares `extern crate std`,
+which resolves crate-wide, so a stray import in its render half survives every workspace-wide
+command. Only the render-only build rejects it:
+
+```sh
+cargo clippy -p reuben-api --no-default-features --features render --all-targets -- -D warnings
+```
+
+CI runs the host half of that as the `check` job's render-only feature fence, which *does* gate a
+merge, and the cross half as the commands above, which does not yet.
+[`.github/workflows/ci.yml`](./.github/workflows/ci.yml) carries the rest: how to read a red run,
+and what the job's reported `.text` number does and does not measure — it never fails on it.
 
 **Two things about the attribute and the math, because neither reads off the source.**
 
@@ -130,6 +147,11 @@ prelude in place, so without it every `#[cfg(test)] mod tests` in the crate woul
 contain. The lib target itself builds `no_std` on the host too, which is what makes an ordinary
 `cargo clippy --workspace --all-targets` catch a stray `use std::…` in production code on any
 machine.
+
+`reuben-api` takes the bare `#![no_std]`: the same exemption would spare a handful of `alloc`
+imports there rather than hundreds, and paying them leaves its lib test target `no_std` too. It
+declares `extern crate std` under `authoring`, which needs `std::fs` and a `std`-shaped
+serde/schemars stack; the render-only build declares nothing and links no `std`.
 
 `num-traits`' `Float` backend is chosen **by target** in
 [`crates/reuben-core/Cargo.toml`](./crates/reuben-core/Cargo.toml) — `libm` for `target_os = "none"`,

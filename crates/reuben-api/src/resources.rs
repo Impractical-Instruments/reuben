@@ -5,14 +5,14 @@
 //! implementation is the host's. [`FsResolver`](crate::FsResolver) is one, behind a default-off
 //! feature.
 //!
-//! It sits above both halves rather than inside [`authoring`](crate::authoring) because both call
-//! it: a document verb reads and writes through it, and so does the load that builds the initial
-//! Engine a host renders ([`render::install_initial`](crate::render::install_initial)). One seam,
-//! whichever half a host compiles.
+//! Compiled with the `authoring` feature and only with it: a source to resolve is a document's.
+//! Both of that half's callers reach it — a document verb reads and writes through it, and so does
+//! the load behind [`engine::install_initial`](crate::engine::install_initial).
 
-// The engine seam the adapters below present a store through; with neither half compiled there is
-// nothing to present it to.
-#[cfg(any(feature = "authoring", feature = "render", test))]
+use alloc::format;
+use alloc::string::{String, ToString};
+
+// The engine seam the adapters below present a store through.
 use reuben_document::resources::ResourceResolver;
 
 /// Decoded audio, planar per channel at the file's native rate.

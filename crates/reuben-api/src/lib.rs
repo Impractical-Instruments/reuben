@@ -13,9 +13,9 @@
 //!   of the structure channel, and [`tools`] is the roster the two are advertised through.
 //! - [`render`] — called from the audio callback, where a conversion per block *is* the cost.
 //!
-//! A browser worklet takes `default-features = false, features = ["render"]` and never compiles the
-//! authoring surface — nor `reuben-document` beneath it, which is what makes that build reachable
-//! for a target with no filesystem and no serde.
+//! A browser worklet or a bare-metal embedder takes `default-features = false,
+//! features = ["render"]`, which compiles neither the authoring surface nor `reuben-document`
+//! beneath it, and links no `std`.
 //!
 //! Two seams face the other way — things a host must **provide** rather than call. The resource
 //! resolver is the one call *in*: samples and nested documents are never handed to the engine as
@@ -23,6 +23,25 @@
 //! filesystem implementation to share rather than reimplement, behind a default-off feature. The
 //! other is [`engine::EngineHost`]: the device map, the counters, the control ingress and the
 //! clock the deferred free waits on — what only a host can know.
+
+// Unconditional rather than `reuben-core`'s `cfg_attr(not(test), no_std)`: the exemption would
+// spare a handful of `alloc` imports here against ~380 there, and paying them leaves the lib test
+// target `no_std` too. No `std` feature — nothing is additive and no command line can forget it.
+#![no_std]
+
+// Heap types are named through `alloc` in both halves. Never in the extern prelude, in any crate,
+// so this line does not become removable later.
+extern crate alloc;
+
+// The authoring half needs an OS: `fs_resolver` calls `std::fs`, and the serde/schemars stack is
+// `std`-shaped. With `render` alone this line is absent and the crate links no `std`.
+//
+// THE HOLE: a crate-root declaration resolves `std` from anywhere in the crate, the render half
+// included, so a stray `use std::…` there survives every workspace-wide command. Only a
+// render-only build catches it — CI runs one, and locally it is
+// `cargo clippy -p reuben-api --no-default-features --features render`.
+#[cfg(feature = "authoring")]
+extern crate std;
 
 #[cfg(feature = "authoring")]
 pub mod authoring;

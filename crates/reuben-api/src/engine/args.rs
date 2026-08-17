@@ -5,6 +5,9 @@
 //! `get_engine_diagnostics` each ask the one question their name asks), so only two structs live
 //! here.
 
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use serde::{Deserialize, Serialize};
 
 /// One control message in a `send` batch: an address and its primitive args.
