@@ -6,6 +6,11 @@
 //! reported a problem* (an ordinary [`Answer`] carrying `ok: false`) and one that could not do the
 //! job at all (a [`Refusal`]).
 
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
+
 use std::fmt;
 
 use reuben_core::Registry;

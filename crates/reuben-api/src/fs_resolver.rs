@@ -6,6 +6,11 @@
 //! trait later. [`FsResolver::canonical`] lexically normalizes the winning absolute path, so
 //! `a.json`, `./a.json`, and `x/../a.json` are one cycle-guard/dedup key.
 
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
+
 use std::path::{Component, Path, PathBuf};
 
 use crate::resources::Resources;

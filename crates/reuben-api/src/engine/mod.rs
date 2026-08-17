@@ -19,6 +19,13 @@
 //! This module is compiled with the `authoring` feature: it is the control half of the
 //! authoring/control side of the window — off-thread, serialized, and never on a block.
 
+// Both are reached only from `install_initial` below, which is `render`-gated: an `authoring`-only
+// build compiles neither, and an ungated import would be an unused one there.
+#[cfg(feature = "render")]
+use alloc::boxed::Box;
+#[cfg(feature = "render")]
+use alloc::vec::Vec;
+
 mod args;
 mod channel;
 pub mod prose;

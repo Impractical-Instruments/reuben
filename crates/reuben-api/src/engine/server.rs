@@ -19,6 +19,12 @@
 //! The Coordinator is single-writer, so it sits behind one [`Mutex`] here and concurrent
 //! connections serialize on it.
 
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
+
 use std::sync::{Arc, Mutex};
 
 use reuben_document::coordinator::Coordinator;

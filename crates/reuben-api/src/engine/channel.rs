@@ -10,6 +10,11 @@
 //! sidecar, whatever an in-process host has instead. The framing, the timeout policy and the
 //! response classification are the window's, so two doors cannot disagree about what a reply means.
 
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+
 use std::fmt;
 use std::io;
 use std::time::Duration;

@@ -13,6 +13,9 @@
 //! `//` comments, which schemars does not pick up. Guarded end-to-end over the real advertised
 //! surface by `advertised_prose_is_model_facing`.
 
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use serde::{Deserialize, Serialize};
 
 use reuben_document::introspect as core_introspect;

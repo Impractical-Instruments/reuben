@@ -15,6 +15,8 @@
 //! Not every window verb is a roster entry: `describe_boundary` answers a door that reads a
 //! document structurally rather than a tool a model calls, so it has no advertised sentence to own.
 
+use alloc::vec::Vec;
+
 use crate::authoring::prose as authoring_prose;
 use crate::engine::prose as engine_prose;
 
