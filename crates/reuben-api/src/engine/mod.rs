@@ -19,8 +19,7 @@
 //! This module is compiled with the `authoring` feature: it is the control half of the
 //! authoring/control side of the window — off-thread, serialized, and never on a block.
 
-// Both are reached only from `install_initial` below, which is `render`-gated: an `authoring`-only
-// build compiles neither, and an ungated import would be an unused one there.
+// Used only by `install_initial`, which is `render`-gated; ungated they would be unused imports.
 #[cfg(feature = "render")]
 use alloc::boxed::Box;
 #[cfg(feature = "render")]

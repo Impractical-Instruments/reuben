@@ -100,8 +100,7 @@ run them locally before you push.
 Cortex-M7, no OS and therefore no `std` at all, because rustup ships none for any `*-none-*` triple.
 rustup installs it alongside the channel, so there is no `rustup target add` to remember.
 Two packages have to keep building for it: `reuben-core`, and `reuben-api` with
-`--no-default-features --features render` — the render half of the window, which is what an embedder
-that builds its graph in Rust actually calls. Nothing above the window does.
+`--no-default-features --features render` — the render half of the window. Nothing above it does.
 
 **The gate passes.** The port is finished: `reuben-core`, `reuben-contract` and `reuben-api` all
 carry the `no_std` attribute, every dependency reaching **this target** arrives with its default
@@ -119,17 +118,15 @@ cargo build  -p reuben-api --no-default-features --features render --target thum
 cargo clippy -p reuben-api --no-default-features --features render --target thumbv7em-none-eabihf --release -- -D warnings
 ```
 
-A `use std::…` in `reuben-core`'s lib fails all four — the `reuben-api` pair compiles `reuben-core`
-beneath it. **The converse does not hold**: one in `reuben-api`'s render half fails only the last
-two, because neither `-p reuben-core` command builds the window at all. **Which *other* check
-catches each also differs between the two crates, and is worth knowing before trusting a green
-local run.**
-`crates/reuben-core/`'s **lib** target is `no_std` on every host too — only its lib *test* target
-links `std`, by the exemption explained below — so a stray import in its production code fails an
-ordinary `cargo clippy --workspace --all-targets` as well. `crates/reuben-api/` does not: its
-`authoring` feature declares `extern crate std`, so a stray `use std::…` in the *render* half still
-resolves in any build that also compiled the authoring half — which every workspace-wide command
-does. Only the render-only build rejects it, so that is the one to run:
+A `use std::…` in `reuben-core`'s lib fails all four; the `reuben-api` pair compiles `reuben-core`
+beneath it. One in `reuben-api`'s render half fails only the last two — neither `-p reuben-core`
+command builds the window.
+
+**`cargo clippy --workspace --all-targets` catches the first and not the second.** `reuben-core`'s
+lib target is `no_std` on every host, so a stray import in its production code fails there too (only
+its lib *test* target links `std`). `reuben-api`'s `authoring` feature declares `extern crate std`,
+which resolves crate-wide, so a stray import in its render half survives every workspace-wide
+command. Only the render-only build rejects it:
 
 ```sh
 cargo clippy -p reuben-api --no-default-features --features render --all-targets -- -D warnings
@@ -151,12 +148,10 @@ contain. The lib target itself builds `no_std` on the host too, which is what ma
 `cargo clippy --workspace --all-targets` catch a stray `use std::…` in production code on any
 machine.
 
-`reuben-api` takes the bare `#![no_std]` instead, and the difference is arithmetic rather than
-principle: the same exemption would spare *three* `alloc` imports there, not 380 — and paying them
-buys a stronger attribute, since the lib test target is then `no_std` too. It declares
-`extern crate std` under its `authoring` feature, because that half genuinely needs an OS
-(`fs_resolver` calls `std::fs`, and the serde/schemars stack is `std`-shaped throughout); the
-render-only build declares nothing and links no `std` at all.
+`reuben-api` takes the bare `#![no_std]`: the same exemption would spare *three* `alloc` imports
+there rather than 380, and paying them leaves its lib test target `no_std` too. It declares
+`extern crate std` under `authoring`, which needs `std::fs` and a `std`-shaped serde/schemars
+stack; the render-only build declares nothing and links no `std`.
 
 `num-traits`' `Float` backend is chosen **by target** in
 [`crates/reuben-core/Cargo.toml`](./crates/reuben-core/Cargo.toml) — `libm` for `target_os = "none"`,

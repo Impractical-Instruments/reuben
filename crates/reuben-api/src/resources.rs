@@ -5,13 +5,9 @@
 //! implementation is the host's. [`FsResolver`](crate::FsResolver) is one, behind a default-off
 //! feature.
 //!
-//! It sits beside [`authoring`](crate::authoring) rather than inside it because both of that
-//! half's callers reach it: a document verb reads and writes through it, and so does the load
-//! behind [`engine::install_initial`](crate::engine::install_initial), which builds the initial
-//! Engine a host then renders. It compiles with the `authoring` feature and only with it — a
-//! source to resolve is a document's, and the render half's own door
-//! ([`render::install_graph`](crate::render::install_graph)) takes a graph built in Rust, which
-//! names no sources at all.
+//! Compiled with the `authoring` feature and only with it: a source to resolve is a document's.
+//! Both of that half's callers reach it — a document verb reads and writes through it, and so does
+//! the load behind [`engine::install_initial`](crate::engine::install_initial).
 
 use alloc::format;
 use alloc::string::{String, ToString};

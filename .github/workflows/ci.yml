@@ -87,14 +87,13 @@ jobs:
             windows:
               - *workspace
             # The bare-metal cross build, and deliberately NARROWER than *workspace rather than
-            # riding it. Two packages are cross-built — reuben-core, and reuben-api's render half —
-            # so what can move this outcome is those two plus the two crates below them.
-            # reuben-document is NOT here even though reuben-api names it: it is an optional
-            # dependency of the `authoring` feature, which the render-only build does not enable,
-            # so no cross build resolves it. reuben-native and reuben-mcp sit above the window and
-            # reach the bare-metal target by no path at all, and instruments/ is test DATA no cross
-            # build reads. .cargo/config.toml is here because it sets rustflags (scoped to x86_64
-            # today, which is exactly the kind of scoping a later edit can widen by accident).
+            # riding it. Two packages are cross-built — reuben-core and reuben-api's render half —
+            # so only those two and the two crates below them can move this outcome. reuben-document
+            # is not here: it is an optional dependency of `authoring`, which the render-only build
+            # does not enable. reuben-native and reuben-mcp sit above the window and reach the
+            # bare-metal target by no path at all, and instruments/ is test DATA no cross build
+            # reads. .cargo/config.toml is here because it sets rustflags (scoped to x86_64 today,
+            # which is exactly the kind of scoping a later edit can widen by accident).
             bare_metal:
               - 'crates/reuben-core/**'
               - 'crates/reuben-api/**'
@@ -190,16 +189,13 @@ jobs:
       # submodule pin. Without this step the authoring/render fence would be an intention that
       # first fails for someone else, on a bump, days later.
       #
-      # `test`, not `check`: the render module's own tests walk the whole document-free path
-      # (`Graph` -> `install_graph` -> `RenderSlot` -> `fill`), and under the default features they
-      # would prove only that the path works for a host that also compiled the authoring half.
-      # Running them with exactly the embedder's feature set is what makes them a fence.
+      # `test`, not `check`: the render module's tests walk the document-free path, and only this
+      # feature set proves it works without the authoring half compiled beside it.
       #
-      # It is also the only step here that can see a stray `use std::…` in the render half: the
-      # crate is `#![no_std]`, but its `authoring` feature declares `extern crate std`, so under the
-      # default features `std` resolves from anywhere in it — including code that must never reach
-      # it. The `bare-metal` job below cross-builds this same feature set and is the stronger check,
-      # but it is not in `ci-passed`'s `needs`, so this host run is the one that gates a merge.
+      # It is also the only step here that can see a stray `use std::…` in the render half —
+      # `authoring` declares `extern crate std`, which resolves crate-wide under the default
+      # features. The `bare-metal` job cross-builds the same feature set and is stronger, but it is
+      # not in `ci-passed`'s `needs`, so this run is the one that gates a merge.
       - name: Render-only feature fence (reuben-api)
         run: cargo test -p reuben-api --no-default-features --features render
 
@@ -251,13 +247,11 @@ jobs:
         run: cargo test --workspace --features reuben-document/bench,reuben-document/schemars
 
   # The render path cross-built for thumbv7em-none-eabihf (Cortex-M7, no OS): `reuben-core`, and
-  # the render-only build of `reuben-api` — the window an embedder actually calls, which until it
-  # took the `no_std` attribute was the one crate standing between a Rust-built graph and bare
-  # metal. rustup ships no `std` for any `*-none-*` triple, so this is the one job here where `std`
-  # does not exist — which is what makes it a gate rather than a smoke test. A `use std::…` in a new
-  # operator, or in the render half of the window, is a compile error here and invisible to every
-  # other job, so without it the portable path is an event in these crates' history rather than a
-  # property of them.
+  # the render-only build of `reuben-api`, the window an embedder calls. rustup ships no `std` for
+  # any `*-none-*` triple, so this is the one job here where `std` does not exist — which is what
+  # makes it a gate rather than a smoke test. A `use std::…` in a new operator, or in the render
+  # half of the window, is a compile error here and invisible to every other job, so without it the
+  # portable path is an event in these crates' history rather than a property of them.
   #
   # TWO THINGS IT CANNOT DO, because the name implies otherwise. It cannot run TESTS — there is no
   # host on the target and QEMU or an on-device harness is out of scope — so it proves the crates
@@ -303,8 +297,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # Before the build, so it is on the summary page even when the compile dies in the first
-      # seconds. It names WHAT is cross-built, which is the one thing here a change can move; the
-      # two limits below it stay true whatever that list becomes.
+      # seconds. It names what is cross-built; the two limits below stay true whatever that is.
       - name: What this gate proves
         run: |
           {
@@ -317,9 +310,8 @@ jobs:
           } >>"$GITHUB_STEP_SUMMARY"
 
       # `--release` because that is what an embedder ships. Two packages and no more: the render
-      # half itself, and the window's render-only door onto it — which is the shape an embedder
-      # compiles, so it is the shape that has to keep building. Nothing above the window claims to
-      # reach this target.
+      # half, and the window's render-only door onto it. Nothing above the window claims to reach
+      # this target.
       - name: Cross-build reuben-core
         run: cargo build -p reuben-core --target thumbv7em-none-eabihf --release
 
@@ -360,9 +352,8 @@ jobs:
           # Globbed rather than hardcoded: cargo uplifts exactly the requested package's lib into
           # this directory, and a `[lib] name = …` would silently move a fixed path. Each
           # cross-build above uplifts one and neither displaces the other, so this reports a line
-          # PER rlib rather than asserting how many there are — an assertion of "exactly 1" is what
-          # a second cross-build would turn into a silent skip of the whole measurement. Every
-          # failure below reports NOTHING and reds nothing — never "0 bytes", which would read as a
+          # PER rlib rather than asserting how many there are. Every failure
+          # below reports NOTHING and reds nothing — never "0 bytes", which would read as a
           # measurement. `run:` steps get `bash -e` without pipefail, hence the first line.
           rlibs=(target/thumbv7em-none-eabihf/release/*.rlib)
           if [ "${#rlibs[@]}" -eq 0 ]; then
@@ -388,9 +379,7 @@ jobs:
       # Clippy on the CROSS target: it type-checks against `core`/`alloc` instead of `std`, so it
       # reaches a class of thing `check`'s host run cannot see. No `--all-targets` on either: the
       # non-lib targets under these two packages are the two lib test targets and `reuben-core`'s
-      # `first_sound` example, all host-side by construction and each free to link `std`. (Neither
-      # package has benches — the `[[bench]]` targets are `reuben-document`'s, which is not
-      # cross-built at all.)
+      # `first_sound` example, all host-side by construction and each free to link `std`.
       - name: Clippy (cross target)
         run: cargo clippy -p reuben-core --target thumbv7em-none-eabihf --release -- -D warnings
 
@@ -398,8 +387,7 @@ jobs:
         run: cargo clippy -p reuben-api --no-default-features --features render --target thumbv7em-none-eabihf --release -- -D warnings
 
       # Three readings, because they need different responses and only a reader can tell them apart.
-      # The readings themselves have outlived the port; the reproduce lines under them have not, and
-      # every command this job runs has to appear there or a reader is sent to reproduce half of it.
+      # Every command this job runs appears in the reproduce block, or a reader reproduces half.
       - name: How to read a red run
         if: failure()
         run: |
@@ -416,8 +404,7 @@ jobs:
             echo "   the render half of the window. That is the defect this gate exists to catch, and"
             echo "   it is fixed here, not merged past."
             echo
-            echo "Reproduce locally — all four, in this order, because the clippy pair carries"
-            echo "\`-D warnings\` and reds this job on its own:"
+            echo "Reproduce locally — all four; the clippy pair reds this job on its own:"
             echo
             echo "    cargo build  -p reuben-core --target thumbv7em-none-eabihf --release"
             echo "    cargo clippy -p reuben-core --target thumbv7em-none-eabihf --release -- -D warnings"
@@ -656,13 +643,9 @@ jobs:
   # even when they skip — failing only if a required upstream reported `failure`/`cancelled`. A
   # Skipped upstream is a pass. Deliberately NOT in `needs`: `bench-history`, which is a post-merge
   # persist rather than a merge gate (`deploy-web` was named here beside it until the web extraction
-  # took that job with it) — and `bare-metal`, for a different reason, whose condition has since
-  # been met. It was left out while it could not pass, because a gate that reds every PR for a
-  # reason no PR caused is one people learn to ignore. It passes now: the port landed, and the
-  # render half of the window is cross-built beside `reuben-core` on top of it. So the trigger this
-  # paragraph set — list it on the first green run — has fired, and taking that step is a tracked
-  # follow-up of its own, not a line to slip into an unrelated change: it turns an advisory job into
-  # a merge blocker. Until it is taken, a red run there blocks nothing and is easy to miss.
+  # took that job with it) — and `bare-metal`, which now passes and has therefore met the condition
+  # this paragraph set for listing it. Taking that step is a tracked follow-up of its own: it turns
+  # an advisory job into a merge blocker. Until it is taken, a red run there blocks nothing.
   ci-passed:
     # This `name` is the exact string the `dev` ruleset requires as a status check (GitHub matches
     # required checks by a job's `name`, not its id) — rename it and the ruleset goes on expecting a

@@ -15,14 +15,11 @@ default = ["authoring", "render"]
 # here is on the audio callback's path, so the cost is irrelevant.
 # `reuben-document` is an authoring dependency and only an authoring one: the render half must
 # stay buildable for a target that has no serde, no filesystem and no `std`, which is the whole
-# point of the crate split below it. This feature is also what declares `extern crate std` — see
-# the crate root.
+# point of the crate split below it.
 authoring = ["dep:reuben-document", "dep:serde", "dep:serde_json", "dep:schemars"]
 # The render half: what a host drives per block, plus `install_graph` for a host that builds its
 # graph in Rust. Carries no serialization — a conversion here would be paid once per block, which
-# is the whole cost. Empty because it enables no dependency: `reuben-core` is unconditional, and
-# everything this half needs is already in it. CI cross-builds exactly this feature set for
-# thumbv7em-none-eabihf, which is what keeps it free of `std`.
+# is the whole cost. CI cross-builds exactly this feature set, which is what keeps it free of `std`.
 render = []
 # The shareable reference filesystem resolver, for a host whose sources are files. Off by
 # default — the resource seam is host-implemented; this is one implementation, not the seam.
