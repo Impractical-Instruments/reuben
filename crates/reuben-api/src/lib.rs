@@ -25,8 +25,8 @@
 //! clock the deferred free waits on — what only a host can know.
 
 // Unconditional rather than `reuben-core`'s `cfg_attr(not(test), no_std)`: the exemption would
-// spare four `alloc` imports here against ~380 there, and paying them leaves the lib test target
-// `no_std` too. No `std` feature — nothing is additive and no command line can forget it.
+// spare a handful of `alloc` imports here against ~380 there, and paying them leaves the lib test
+// target `no_std` too. No `std` feature — nothing is additive and no command line can forget it.
 #![no_std]
 
 // Heap types are named through `alloc` in both halves. Never in the extern prelude, in any crate,

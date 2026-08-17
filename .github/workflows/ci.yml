@@ -87,8 +87,8 @@ jobs:
             windows:
               - *workspace
             # The bare-metal cross build, and deliberately NARROWER than *workspace rather than
-            # riding it. Two packages are cross-built — reuben-core and reuben-api's render half —
-            # so only those two and the two crates below them can move this outcome. reuben-document
+            # riding it. The packages cross-built are reuben-core and reuben-api's render half, so
+            # only those and the crates below them can move this outcome. reuben-document
             # is not here: it is an optional dependency of `authoring`, which the render-only build
             # does not enable. reuben-native and reuben-mcp sit above the window and reach the
             # bare-metal target by no path at all, and instruments/ is test DATA no cross build
@@ -297,7 +297,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # Before the build, so it is on the summary page even when the compile dies in the first
-      # seconds. It names what is cross-built; the two limits below stay true whatever that is.
+      # seconds. It names what is cross-built; the limits below stay true whatever that is.
       - name: What this gate proves
         run: |
           {
@@ -309,9 +309,9 @@ jobs:
             echo "- It cannot prove correctness there: Cortex-M7 is a different float environment."
           } >>"$GITHUB_STEP_SUMMARY"
 
-      # `--release` because that is what an embedder ships. Two packages and no more: the render
-      # half, and the window's render-only door onto it. Nothing above the window claims to reach
-      # this target.
+      # `--release` because that is what an embedder ships. No more than these: the render half,
+      # and the window's render-only door onto it. Nothing above the window claims to reach this
+      # target.
       - name: Cross-build reuben-core
         run: cargo build -p reuben-core --target thumbv7em-none-eabihf --release
 
@@ -378,7 +378,7 @@ jobs:
 
       # Clippy on the CROSS target: it type-checks against `core`/`alloc` instead of `std`, so it
       # reaches a class of thing `check`'s host run cannot see. No `--all-targets` on either: the
-      # non-lib targets under these two packages are the two lib test targets and `reuben-core`'s
+      # non-lib targets under these packages are their lib test targets and `reuben-core`'s
       # `first_sound` example, all host-side by construction and each free to link `std`.
       - name: Clippy (cross target)
         run: cargo clippy -p reuben-core --target thumbv7em-none-eabihf --release -- -D warnings
@@ -404,7 +404,7 @@ jobs:
             echo "   the render half of the window. That is the defect this gate exists to catch, and"
             echo "   it is fixed here, not merged past."
             echo
-            echo "Reproduce locally — all four; the clippy pair reds this job on its own:"
+            echo "Reproduce locally — all of them; the clippy pair reds this job on its own:"
             echo
             echo "    cargo build  -p reuben-core --target thumbv7em-none-eabihf --release"
             echo "    cargo clippy -p reuben-core --target thumbv7em-none-eabihf --release -- -D warnings"

@@ -8,7 +8,7 @@
 //! The shape a host wires up is the same everywhere: something builds a [`RenderSide`], the
 //! callback wraps it in a [`RenderSlot`] and calls [`fill`](RenderSlot::fill) or
 //! [`fill_duplex`](RenderSlot::fill_duplex). The install mailbox, the survivor transplant and the
-//! master-gain ramp all happen inside those two calls, so a host never sequences them.
+//! master-gain ramp all happen inside those calls, so a host never sequences them.
 //!
 //! What differs between hosts is graph construction, not rendering. [`install_graph`] takes a
 //! [`Graph`] built in Rust: no document, no serde, no filesystem. The document-loading route is
@@ -65,7 +65,7 @@ pub use reuben_core::boundary::osc_out_args;
 /// feature can fill it (`InstallBundle` is not re-exported). Swapping is the document door's.
 ///
 /// [`PlanError`] is not the whole failure surface: an out-of-range port index panics inside
-/// Instantiate, and the three port positions disagree; the tests pin what each does.
+/// Instantiate, and the port positions disagree about it; the tests pin what each does.
 ///
 /// Allocates; the Instantiate phase, not the audio thread.
 pub fn install_graph(graph: Graph, config: AudioConfig) -> Result<RenderSide, PlanError> {
@@ -88,8 +88,8 @@ mod tests {
     /// re-export dropped from the render feature fails here rather than in an embedder's repo.
     #[test]
     fn a_rust_built_graph_reaches_audio_through_install_graph() {
-        // Neither field matches `AudioConfig::default()` (48 kHz / 128), so the asserts below fail
-        // if `install_graph` instantiates against anything but what it was handed.
+        // Neither field matches `AudioConfig::default()`, so the asserts below fail if
+        // `install_graph` instantiates against anything but what it was handed.
         let cfg = AudioConfig::new(44_100.0, 64);
 
         let mut g = Graph::new();
@@ -133,7 +133,7 @@ mod tests {
         }
     }
 
-    /// An oscillator and an output, so the four port-index tests differ by exactly the wire.
+    /// An oscillator and an output, so the port-index tests differ by exactly the wire.
     fn patched(wire: impl FnOnce(&mut Graph, NodeKey, NodeKey)) -> Result<RenderSide, PlanError> {
         let mut g = Graph::new();
         let osc = g.add("/osc", Oscillator::new());
