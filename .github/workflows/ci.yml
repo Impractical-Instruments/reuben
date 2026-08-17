@@ -643,9 +643,9 @@ jobs:
   # even when they skip — failing only if a required upstream reported `failure`/`cancelled`. A
   # Skipped upstream is a pass. Deliberately NOT in `needs`: `bench-history`, which is a post-merge
   # persist rather than a merge gate (`deploy-web` was named here beside it until the web extraction
-  # took that job with it) — and `bare-metal`, which now passes and has therefore met the condition
-  # this paragraph set for listing it. Taking that step is a tracked follow-up of its own: it turns
-  # an advisory job into a merge blocker. Until it is taken, a red run there blocks nothing.
+  # took that job with it) — and `bare-metal`, which now passes, so the first-green-run trigger for
+  # listing it has fired. Taking that step is a tracked follow-up of its own: it turns an advisory
+  # job into a merge blocker. Until it is taken, a red run there blocks nothing.
   ci-passed:
     # This `name` is the exact string the `dev` ruleset requires as a status check (GitHub matches
     # required checks by a job's `name`, not its id) — rename it and the ruleset goes on expecting a

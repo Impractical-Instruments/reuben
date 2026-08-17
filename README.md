@@ -19,8 +19,9 @@ This repo is the **engine and its SDK**:
   `RenderSide`/`RenderSlot` pair a host drives per block), so a host compiles only the one it
   drives. The render half is `no_std`, cross-built for bare metal, and carries `install_graph` for
   a host that builds its graph in Rust. It owns the tool roster, the sentence each verb is
-  advertised by, both ends of the structure channel, and the resource seam a host fills. This is what you link against to put reuben inside something else.
-  Ships a default-off filesystem resolver to share rather than reimplement.
+  advertised by, both ends of the structure channel, and the resource seam a host fills. This is
+  what you link against to put reuben inside something else. Ships a default-off filesystem
+  resolver to share rather than reimplement.
 - **`reuben-native`** — the `reuben` CLI and its audio/OSC/filesystem host, built on the window
   like any other consumer.
 - **`reuben-mcp`** — a stdio MCP sidecar, so an agent can author instruments against a live

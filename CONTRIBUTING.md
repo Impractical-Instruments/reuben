@@ -148,7 +148,7 @@ contain. The lib target itself builds `no_std` on the host too, which is what ma
 `cargo clippy --workspace --all-targets` catch a stray `use std::…` in production code on any
 machine.
 
-`reuben-api` takes the bare `#![no_std]`: the same exemption would spare *three* `alloc` imports
+`reuben-api` takes the bare `#![no_std]`: the same exemption would spare *four* `alloc` imports
 there rather than 380, and paying them leaves its lib test target `no_std` too. It declares
 `extern crate std` under `authoring`, which needs `std::fs` and a `std`-shaped serde/schemars
 stack; the render-only build declares nothing and links no `std`.
