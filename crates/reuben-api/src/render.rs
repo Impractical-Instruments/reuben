@@ -20,23 +20,19 @@
 //! which the engine verbs then drive) and the load warnings a resolver produced. A host that
 //! compiles both drives the same [`RenderSlot`] either way.
 //!
-//! **What is deliberately not here**: `Plan`, `Registry`, `Coordinator`, and `Renderer`'s
-//! `render_block` family — [`install_graph`] is the only way through.
+//! **One handle reaches a host that this module never names.** [`RenderSide`] holds an `Engine` in
+//! a `pub` field, so [`install_graph`] hands one over whether or not the type is nameable here —
+//! `side.engine.fill(…)` and the rest of its API come with it. Nothing render-only could construct
+//! a `RenderSide` before this door existed, which is why that surface was uninhabited rather than
+//! closed. What keeps a host on [`RenderSlot`] is convention, not the type system; what it gets for
+//! staying is the install mailbox and the master-gain ramp, which a bare `Engine` has neither of.
 //!
-//! **`Engine` is the exception, and naming it here is the honest thing to do.** [`RenderSide`]
-//! holds it in a `pub` field, so the door hands one over whether or not the type is nameable on
-//! this feature: `side.engine.fill(…)`, `queue_osc`, `drain_outbound` and the rest are all
-//! reachable through it. Nothing render-only could construct a `RenderSide` before this door
-//! existed, which is why that surface was uninhabited rather than closed. What keeps a host on
-//! [`RenderSlot`] is convention, not the type system — and what it gets for staying is the install
-//! mailbox and the master-gain ramp, which a bare `Engine` has neither of.
-//!
-//! `Registry` is the one worth a paragraph of its own: a Rust-built graph names an operator type by
-//! its constructor, and `Registry::builtin()` flattens a `const` census that names every operator's
-//! `make`/`descriptor` fn pointer, so exposing it is what would pull the whole operator set into an
-//! image where size binds. Re-exporting [`mod@operators`] costs nothing by contrast — a `pub use`
-//! re-exports names, and only the operators a graph actually constructs are codegen'd. Adding an
-//! export later is non-breaking; un-exposing one is not.
+//! **`Registry` is kept out on purpose, and that one is a size decision.** A Rust-built graph names
+//! an operator type by its constructor, and `Registry::builtin()` flattens a `const` census that
+//! names every operator's `make`/`descriptor` fn pointer — so exposing it is what would pull the
+//! whole operator set into an image where size binds. Re-exporting [`mod@operators`] costs nothing
+//! by contrast: a `pub use` re-exports names, and only the operators a graph actually constructs
+//! are codegen'd. Adding an export later is non-breaking; un-exposing one is not.
 
 /// The render side of a fresh pair — the initial Engine plus the mailbox a swap installs through.
 /// [`RenderSlot::new`] takes it; nothing else does.
@@ -58,9 +54,8 @@ pub use reuben_core::message::{Arg, Message};
 /// The operator set, constructors and port-index consts alike — what a [`Graph`] is built out of
 /// when there is no document to name a type by string.
 pub use reuben_core::operators;
-/// Why [`install_graph`] *refused* the graph: a cycle, or two wire ends whose forms cannot
-/// connect. Those two variants are the whole enum, and the enum is not the whole failure surface —
-/// [`install_graph`] names the port index that panics instead of arriving here.
+/// Why [`install_graph`] *refused* the graph — and not everything that can go wrong with one; see
+/// [`install_graph`].
 pub use reuben_core::plan::PlanError;
 /// The sample rate and block size a Plan is instantiated against — a host's device geometry,
 /// which is why it is a parameter rather than a policy.
@@ -76,44 +71,19 @@ pub use reuben_core::boundary::osc_out_args;
 /// The document-free sibling of `engine::install_initial`: instantiate a Rust-built [`Graph`] and
 /// hand back the [`RenderSide`] a callback drives.
 ///
-/// Set against the document door this drops three things, each because there is nothing behind it
-/// to carry: the `Coordinator` (a graph handed over by value has no later swap to write), the load
-/// warnings (no resources were resolved), and the registry (a constructor names its operator type,
-/// so no string ever has to be looked up).
+/// Nothing here produces the document door's extra returns: no resources were resolved (no load
+/// warnings), a graph handed over by value has no later swap to write (no `Coordinator`), and a
+/// constructor names its own operator type (no registry to look a string up in).
 ///
-/// The pair's Coordinator end is built and dropped here rather than never built: [`swap_pair`] is
-/// what mints the shared slots, and both ends hold an `Arc` of them, so dropping one leaves the
-/// render end whole. What it costs is a swap — the install mailbox stays empty for the life of the
-/// slot, so [`RenderSlot::fill`] never ramps and never transplants.
+/// **Dropping that Coordinator end is safe** — both ends hold an `Arc` of the shared slots, so the
+/// render end is whole without it. **What it costs is a swap**: the install mailbox stays empty for
+/// the life of the slot, so [`RenderSlot::fill`] never ramps and never transplants, and nothing on
+/// this feature can fill it (`InstallBundle` is not re-exported). A host that needs to swap takes
+/// the document door.
 ///
-/// **There is no render-only way to get that swap back**, and the narrowness is deliberate:
-/// `InstallBundle`, the payload the install mailbox carries, is not re-exported on this feature, so
-/// nothing here can fill one. A host that needs to swap takes the document door. ([`swap_pair`] is
-/// re-exported for a host's *own* RT-side payload — the native door's device output map — not for a
-/// second engine install.)
-///
-/// **[`PlanError`] is not the whole failure surface: a port index outside the operator's declared
-/// ports panics inside Instantiate rather than coming back here.** The handles are typed and a port
-/// carries its direction in its type — `oscillator::OUT_AUDIO` is an `Out<SignalF32>`,
-/// `oscillator::IN_WAVEFORM` an `In<Held<Waveform>>` — but [`Graph::connect`] takes
-/// `impl PortIndex` in *both* port positions, and [`Graph::tap_output`] in its one, so a handle
-/// pointing the wrong way type-checks there. `IN_WAVEFORM`'s ordinal is `1`, the oscillator
-/// declares one output, and Instantiate indexes the outputs list with it.
-///
-/// It is not uniform across the three positions. An out-of-range **source** port and an
-/// out-of-range **tap** port both panic. An out-of-range **destination** port plans `Ok` and drops
-/// the wire as a *data* path — but it survives as an *ordering* edge, because the topological sort
-/// counts every connection while only the data wiring checks the port against the descriptor. So it
-/// still constrains evaluation order, and a back edge into one still comes back as
-/// [`PlanError::Cycle`].
-///
-/// What avoids all of it is passing the const whose direction matches the position: an `OUT_*` in a
-/// source or tap position, an `IN_*` in a destination one. A bare `usize` also satisfies the bound,
-/// but it is the escape hatch for computed ports and the loader's resolved ordinals rather than the
-/// wiring vocabulary.
-///
-/// This is worth more attention on a bare-metal target than the `Result` is — there, a panic is the
-/// embedder's `panic_handler`, which is a dark board rather than an error it can read.
+/// **[`PlanError`] is not the whole failure surface** — an out-of-range port index panics inside
+/// Instantiate rather than arriving here, and the three port positions do not agree about it. The
+/// tests in this module pin what each one does.
 ///
 /// Allocates, and is not for the audio thread: it is the Instantiate phase, paid at setup.
 pub fn install_graph(graph: Graph, config: AudioConfig) -> Result<RenderSide, PlanError> {
@@ -183,6 +153,80 @@ mod tests {
         match install_graph(g, cfg) {
             Err(e) => assert_eq!(e, PlanError::Cycle),
             Ok(_) => panic!("a cyclic graph instantiated"),
+        }
+    }
+
+    /// An oscillator and an output, wired by a closure so the four port-index tests below differ
+    /// by exactly the wire under test.
+    fn patched(wire: impl FnOnce(&mut Graph, NodeKey, NodeKey)) -> Result<RenderSide, PlanError> {
+        let mut g = Graph::new();
+        let osc = g.add("/osc", Oscillator::new());
+        let out = g.add("/out", Output::new());
+        wire(&mut g, osc, out);
+        install_graph(g, AudioConfig::new(48_000.0, 64))
+    }
+
+    /// Pins current behaviour that is a known defect, tracked as reuben#770: a **source** port
+    /// index outside the operator's outputs panics inside Instantiate instead of returning
+    /// [`PlanError`]. `IN_WAVEFORM` is an input handle that `connect` accepts in the source
+    /// position, and the oscillator declares one output. Whoever fixes #770 should expect this
+    /// test to fail — it is the change-detector, not something they broke.
+    #[test]
+    #[should_panic(expected = "index out of bounds")]
+    fn an_out_of_range_source_port_panics_instead_of_refusing() {
+        let _ = patched(|g, osc, out| {
+            g.connect(osc, oscillator::IN_WAVEFORM, out, output::IN_AUDIO);
+            g.tap_output(out, output::OUT_AUDIO);
+        });
+    }
+
+    /// Pins current behaviour that is a known defect, tracked as reuben#770: same panic from the
+    /// **tap** position, which reaches it by a different path than the wire above.
+    #[test]
+    #[should_panic(expected = "index out of bounds")]
+    fn an_out_of_range_tap_port_panics_instead_of_refusing() {
+        let _ = patched(|g, osc, out| {
+            g.connect(osc, oscillator::OUT_AUDIO, out, output::IN_AUDIO);
+            g.tap_output(out, oscillator::IN_WAVEFORM);
+        });
+    }
+
+    /// Pins current behaviour that is a known defect, tracked as reuben#770: the **destination**
+    /// position does not panic — it plans, and the wire it dropped renders as silence. The
+    /// asymmetry against the two tests above is the defect, not this test's expectation.
+    #[test]
+    fn an_out_of_range_destination_port_plans_and_renders_silence() {
+        let side = patched(|g, osc, out| {
+            g.connect(osc, oscillator::OUT_AUDIO, out, 99);
+            g.tap_output(out, output::OUT_AUDIO);
+        })
+        .expect("an out-of-range destination port did not refuse the graph");
+
+        let mut slot = RenderSlot::new(side);
+        let mut buf = vec![0.0f32; slot.block_size() * slot.channels()];
+        slot.fill(&mut buf);
+
+        assert!(
+            buf.iter().all(|s| *s == 0.0),
+            "the dropped wire fed the master anyway"
+        );
+    }
+
+    /// Pins current behaviour that is a known defect, tracked as reuben#770, and the half of it
+    /// that is easy to miss: a dropped destination wire is dropped as a *data* path only. It
+    /// survives as a topological edge, so a back edge into an out-of-range destination port still
+    /// closes a cycle — which means such a wire silently constrains evaluation order too.
+    #[test]
+    fn an_out_of_range_destination_port_still_closes_a_cycle() {
+        let refusal = patched(|g, osc, out| {
+            g.connect(osc, oscillator::OUT_AUDIO, out, output::IN_AUDIO);
+            g.connect(out, output::OUT_AUDIO, osc, 99);
+            g.tap_output(out, output::OUT_AUDIO);
+        });
+
+        match refusal {
+            Err(e) => assert_eq!(e, PlanError::Cycle),
+            Ok(_) => panic!("the out-of-range back edge left the graph acyclic"),
         }
     }
 }
