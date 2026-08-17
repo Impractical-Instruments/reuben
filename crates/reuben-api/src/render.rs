@@ -93,15 +93,27 @@ pub use reuben_core::boundary::osc_out_args;
 /// second engine install.)
 ///
 /// **[`PlanError`] is not the whole failure surface: a port index outside the operator's declared
-/// ports panics inside Instantiate rather than coming back here.** [`Graph::connect`] and
-/// [`Graph::tap_output`] take bare `usize`es, and an operator's `IN_*`/`OUT_*` consts share one
-/// namespace and one type, so handing `oscillator::IN_WAVEFORM` (`1`) to the source position
-/// type-checks and then indexes past a one-output node. It is not even uniform across the three
-/// positions: an out-of-range **source** port and an out-of-range **tap** port both panic, while an
-/// out-of-range **destination** port plans `Ok` and silently drops the wire. Passing the operator
-/// module's own consts is what avoids all three. This is worth more attention on a bare-metal
-/// target than the `Result` is — there, a panic is the embedder's `panic_handler`, which is a dark
-/// board rather than an error it can read.
+/// ports panics inside Instantiate rather than coming back here.** The handles are typed and a port
+/// carries its direction in its type — `oscillator::OUT_AUDIO` is an `Out<SignalF32>`,
+/// `oscillator::IN_WAVEFORM` an `In<Held<Waveform>>` — but [`Graph::connect`] takes
+/// `impl PortIndex` in *both* port positions, and [`Graph::tap_output`] in its one, so a handle
+/// pointing the wrong way type-checks there. `IN_WAVEFORM`'s ordinal is `1`, the oscillator
+/// declares one output, and Instantiate indexes the outputs list with it.
+///
+/// It is not uniform across the three positions. An out-of-range **source** port and an
+/// out-of-range **tap** port both panic. An out-of-range **destination** port plans `Ok` and drops
+/// the wire as a *data* path — but it survives as an *ordering* edge, because the topological sort
+/// counts every connection while only the data wiring checks the port against the descriptor. So it
+/// still constrains evaluation order, and a back edge into one still comes back as
+/// [`PlanError::Cycle`].
+///
+/// What avoids all of it is passing the const whose direction matches the position: an `OUT_*` in a
+/// source or tap position, an `IN_*` in a destination one. A bare `usize` also satisfies the bound,
+/// but it is the escape hatch for computed ports and the loader's resolved ordinals rather than the
+/// wiring vocabulary.
+///
+/// This is worth more attention on a bare-metal target than the `Result` is — there, a panic is the
+/// embedder's `panic_handler`, which is a dark board rather than an error it can read.
 ///
 /// Allocates, and is not for the audio thread: it is the Instantiate phase, paid at setup.
 pub fn install_graph(graph: Graph, config: AudioConfig) -> Result<RenderSide, PlanError> {
