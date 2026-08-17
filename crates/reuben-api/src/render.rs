@@ -14,10 +14,11 @@
 //! **What differs between hosts is graph construction, not rendering, and this module carries only
 //! the document-free way in.** [`install_graph`] takes a [`Graph`] built in Rust — no document, no
 //! serde, no filesystem — and hands back the render side. The document-loading route,
-//! `engine::install_initial`, is behind the `authoring` feature with the rest of the loader, and
-//! additionally returns the off-thread `Coordinator` (the single writer of graph structure, which
-//! the engine verbs then drive) and the load warnings a resolver produced. A host that compiles
-//! both drives the same [`RenderSlot`] either way.
+//! `engine::install_initial`, needs `authoring` **and** `render` — it takes a document through the
+//! loader and hands back a render side, so a build with either feature alone does not have it —
+//! and additionally returns the off-thread `Coordinator` (the single writer of graph structure,
+//! which the engine verbs then drive) and the load warnings a resolver produced. A host that
+//! compiles both drives the same [`RenderSlot`] either way.
 //!
 //! **What is deliberately not here**: `Plan`, `Registry`, `Coordinator`, and `Renderer`'s
 //! `render_block` family — [`install_graph`] is the only way through.
@@ -57,7 +58,9 @@ pub use reuben_core::message::{Arg, Message};
 /// The operator set, constructors and port-index consts alike — what a [`Graph`] is built out of
 /// when there is no document to name a type by string.
 pub use reuben_core::operators;
-/// Why [`install_graph`] refused the graph: a cycle, or two wire ends whose forms cannot connect.
+/// Why [`install_graph`] *refused* the graph: a cycle, or two wire ends whose forms cannot
+/// connect. Those two variants are the whole enum, and the enum is not the whole failure surface —
+/// [`install_graph`] names the port index that panics instead of arriving here.
 pub use reuben_core::plan::PlanError;
 /// The sample rate and block size a Plan is instantiated against — a host's device geometry,
 /// which is why it is a parameter rather than a policy.
@@ -88,6 +91,17 @@ pub use reuben_core::boundary::osc_out_args;
 /// nothing here can fill one. A host that needs to swap takes the document door. ([`swap_pair`] is
 /// re-exported for a host's *own* RT-side payload — the native door's device output map — not for a
 /// second engine install.)
+///
+/// **[`PlanError`] is not the whole failure surface: a port index outside the operator's declared
+/// ports panics inside Instantiate rather than coming back here.** [`Graph::connect`] and
+/// [`Graph::tap_output`] take bare `usize`es, and an operator's `IN_*`/`OUT_*` consts share one
+/// namespace and one type, so handing `oscillator::IN_WAVEFORM` (`1`) to the source position
+/// type-checks and then indexes past a one-output node. It is not even uniform across the three
+/// positions: an out-of-range **source** port and an out-of-range **tap** port both panic, while an
+/// out-of-range **destination** port plans `Ok` and silently drops the wire. Passing the operator
+/// module's own consts is what avoids all three. This is worth more attention on a bare-metal
+/// target than the `Result` is — there, a panic is the embedder's `panic_handler`, which is a dark
+/// board rather than an error it can read.
 ///
 /// Allocates, and is not for the audio thread: it is the Instantiate phase, paid at setup.
 pub fn install_graph(graph: Graph, config: AudioConfig) -> Result<RenderSide, PlanError> {

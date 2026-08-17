@@ -119,8 +119,11 @@ cargo build  -p reuben-api --no-default-features --features render --target thum
 cargo clippy -p reuben-api --no-default-features --features render --target thumbv7em-none-eabihf --release -- -D warnings
 ```
 
-A `use std::…` in either lib fails all four. **Which *other* check also catches it differs between
-the two crates, and the difference is worth knowing before trusting a green local run.**
+A `use std::…` in `reuben-core`'s lib fails all four — the `reuben-api` pair compiles `reuben-core`
+beneath it. **The converse does not hold**: one in `reuben-api`'s render half fails only the last
+two, because neither `-p reuben-core` command builds the window at all. **Which *other* check
+catches each also differs between the two crates, and is worth knowing before trusting a green
+local run.**
 `crates/reuben-core/`'s **lib** target is `no_std` on every host too — only its lib *test* target
 links `std`, by the exemption explained below — so a stray import in its production code fails an
 ordinary `cargo clippy --workspace --all-targets` as well. `crates/reuben-api/` does not: its
