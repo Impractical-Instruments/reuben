@@ -660,9 +660,9 @@ jobs:
   # been met. It was left out while it could not pass, because a gate that reds every PR for a
   # reason no PR caused is one people learn to ignore. It passes now: the port landed, and the
   # render half of the window is cross-built beside `reuben-core` on top of it. So the trigger this
-  # paragraph set — list it on the first green run — has fired, and taking that step is the tracked
-  # follow-up #749, not a line to slip into an unrelated change: it turns an advisory job into a
-  # merge blocker. Until it is taken, a red run there blocks nothing and is easy to miss.
+  # paragraph set — list it on the first green run — has fired, and taking that step is a tracked
+  # follow-up of its own, not a line to slip into an unrelated change: it turns an advisory job into
+  # a merge blocker. Until it is taken, a red run there blocks nothing and is easy to miss.
   ci-passed:
     # This `name` is the exact string the `dev` ruleset requires as a status check (GitHub matches
     # required checks by a job's `name`, not its id) — rename it and the ruleset goes on expecting a
