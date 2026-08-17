@@ -19,13 +19,23 @@
 //! the engine verbs then drive) and the load warnings a resolver produced. A host that compiles
 //! both drives the same [`RenderSlot`] either way.
 //!
-//! **What is deliberately not here**: `Plan`, `Engine`, `Registry`, `Coordinator`, and the
-//! `render_block` family — [`install_graph`] is the only way through. `Registry` most of all: a
-//! Rust-built graph names an operator type by its constructor, and `Registry::builtin()` flattens a
-//! `const` census that names every operator's `make`/`descriptor` fn pointer, so exposing it is
-//! what would pull the whole operator set into an image where size binds. Re-exporting [`mod@operators`] costs
-//! nothing by contrast — a `pub use` re-exports names, and only the operators a graph actually
-//! constructs are codegen'd. Adding an export later is non-breaking; un-exposing one is not.
+//! **What is deliberately not here**: `Plan`, `Registry`, `Coordinator`, and `Renderer`'s
+//! `render_block` family — [`install_graph`] is the only way through.
+//!
+//! **`Engine` is the exception, and naming it here is the honest thing to do.** [`RenderSide`]
+//! holds it in a `pub` field, so the door hands one over whether or not the type is nameable on
+//! this feature: `side.engine.fill(…)`, `queue_osc`, `drain_outbound` and the rest are all
+//! reachable through it. Nothing render-only could construct a `RenderSide` before this door
+//! existed, which is why that surface was uninhabited rather than closed. What keeps a host on
+//! [`RenderSlot`] is convention, not the type system — and what it gets for staying is the install
+//! mailbox and the master-gain ramp, which a bare `Engine` has neither of.
+//!
+//! `Registry` is the one worth a paragraph of its own: a Rust-built graph names an operator type by
+//! its constructor, and `Registry::builtin()` flattens a `const` census that names every operator's
+//! `make`/`descriptor` fn pointer, so exposing it is what would pull the whole operator set into an
+//! image where size binds. Re-exporting [`mod@operators`] costs nothing by contrast — a `pub use`
+//! re-exports names, and only the operators a graph actually constructs are codegen'd. Adding an
+//! export later is non-breaking; un-exposing one is not.
 
 /// The render side of a fresh pair — the initial Engine plus the mailbox a swap installs through.
 /// [`RenderSlot::new`] takes it; nothing else does.
@@ -71,8 +81,13 @@ pub use reuben_core::boundary::osc_out_args;
 /// The pair's Coordinator end is built and dropped here rather than never built: [`swap_pair`] is
 /// what mints the shared slots, and both ends hold an `Arc` of them, so dropping one leaves the
 /// render end whole. What it costs is a swap — the install mailbox stays empty for the life of the
-/// slot, so [`RenderSlot::fill`] never ramps and never transplants. A host that wants one takes the
-/// document door, or builds its own pair from [`swap_pair`].
+/// slot, so [`RenderSlot::fill`] never ramps and never transplants.
+///
+/// **There is no render-only way to get that swap back**, and the narrowness is deliberate:
+/// `InstallBundle`, the payload the install mailbox carries, is not re-exported on this feature, so
+/// nothing here can fill one. A host that needs to swap takes the document door. ([`swap_pair`] is
+/// re-exported for a host's *own* RT-side payload — the native door's device output map — not for a
+/// second engine install.)
 ///
 /// Allocates, and is not for the audio thread: it is the Instantiate phase, paid at setup.
 pub fn install_graph(graph: Graph, config: AudioConfig) -> Result<RenderSide, PlanError> {
@@ -97,7 +112,11 @@ mod tests {
     /// fails here rather than in someone else's repository.
     #[test]
     fn a_rust_built_graph_reaches_audio_through_install_graph() {
-        let cfg = AudioConfig::new(48_000.0, 256);
+        // Neither field matches `AudioConfig::default()` (48 kHz / 128), so the geometry asserts
+        // below fail if `install_graph` ever instantiates against anything but what it was handed.
+        // Non-silence alone would not notice: `fill_duplex` is chunk-size independent, and a sine
+        // is a sine at any rate.
+        let cfg = AudioConfig::new(44_100.0, 64);
 
         let mut g = Graph::new();
         // `osc.freq` is left unwired — it materializes 440 Hz from its meta default, so the graph
@@ -108,6 +127,9 @@ mod tests {
         g.tap_output(out, output::OUT_AUDIO);
 
         let mut slot = RenderSlot::new(install_graph(g, cfg).expect("instantiate"));
+        assert_eq!(slot.sample_rate(), cfg.sample_rate, "rate not from config");
+        assert_eq!(slot.block_size(), cfg.block_size, "block not from config");
+
         let mut buf = vec![0.0f32; cfg.block_size * slot.channels()];
         slot.fill(&mut buf);
 

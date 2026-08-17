@@ -121,11 +121,12 @@ cargo clippy -p reuben-api --no-default-features --features render --target thum
 
 A `use std::…` in either lib fails all four. **Which *other* check also catches it differs between
 the two crates, and the difference is worth knowing before trusting a green local run.**
-`crates/reuben-core/` links no `std` in any build shape, so a stray import there fails an ordinary
-`cargo clippy --workspace --all-targets` as well. `crates/reuben-api/` does not: its `authoring`
-feature declares `extern crate std`, so a stray `use std::…` in the *render* half still resolves in
-any build that also compiled the authoring half — which every workspace-wide command does. Only the
-render-only build rejects it, so that is the one to run:
+`crates/reuben-core/`'s **lib** target is `no_std` on every host too — only its lib *test* target
+links `std`, by the exemption explained below — so a stray import in its production code fails an
+ordinary `cargo clippy --workspace --all-targets` as well. `crates/reuben-api/` does not: its
+`authoring` feature declares `extern crate std`, so a stray `use std::…` in the *render* half still
+resolves in any build that also compiled the authoring half — which every workspace-wide command
+does. Only the render-only build rejects it, so that is the one to run:
 
 ```sh
 cargo clippy -p reuben-api --no-default-features --features render --all-targets -- -D warnings

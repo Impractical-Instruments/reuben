@@ -386,9 +386,11 @@ jobs:
           done
 
       # Clippy on the CROSS target: it type-checks against `core`/`alloc` instead of `std`, so it
-      # reaches a class of thing `check`'s host run cannot see. No `--all-targets` on either — the
-      # tests, benches and the `first_sound` example are host-side by construction and link `std`
-      # through the test harness.
+      # reaches a class of thing `check`'s host run cannot see. No `--all-targets` on either: the
+      # non-lib targets under these two packages are the two lib test targets and `reuben-core`'s
+      # `first_sound` example, all host-side by construction and each free to link `std`. (Neither
+      # package has benches — the `[[bench]]` targets are `reuben-document`'s, which is not
+      # cross-built at all.)
       - name: Clippy (cross target)
         run: cargo clippy -p reuben-core --target thumbv7em-none-eabihf --release -- -D warnings
 
@@ -414,10 +416,13 @@ jobs:
             echo "   the render half of the window. That is the defect this gate exists to catch, and"
             echo "   it is fixed here, not merged past."
             echo
-            echo "Reproduce locally, in this order:"
+            echo "Reproduce locally — all four, in this order, because the clippy pair carries"
+            echo "\`-D warnings\` and reds this job on its own:"
             echo
-            echo "    cargo build -p reuben-core --target thumbv7em-none-eabihf --release"
-            echo "    cargo build -p reuben-api --no-default-features --features render --target thumbv7em-none-eabihf --release"
+            echo "    cargo build  -p reuben-core --target thumbv7em-none-eabihf --release"
+            echo "    cargo clippy -p reuben-core --target thumbv7em-none-eabihf --release -- -D warnings"
+            echo "    cargo build  -p reuben-api --no-default-features --features render --target thumbv7em-none-eabihf --release"
+            echo "    cargo clippy -p reuben-api --no-default-features --features render --target thumbv7em-none-eabihf --release -- -D warnings"
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
   bench:
@@ -651,10 +656,13 @@ jobs:
   # even when they skip — failing only if a required upstream reported `failure`/`cancelled`. A
   # Skipped upstream is a pass. Deliberately NOT in `needs`: `bench-history`, which is a post-merge
   # persist rather than a merge gate (`deploy-web` was named here beside it until the web extraction
-  # took that job with it) — and `bare-metal`, for a different reason, with an expiry date. That one
-  # cannot pass until the rest of the bare-metal port lands, and a gate that reds every PR for a
-  # reason no PR caused is one people learn to ignore. Listing it here is the step that makes it
-  # binding, and it is taken on the first run that goes green, not before.
+  # took that job with it) — and `bare-metal`, for a different reason, whose condition has since
+  # been met. It was left out while it could not pass, because a gate that reds every PR for a
+  # reason no PR caused is one people learn to ignore. It passes now: the port landed, and the
+  # render half of the window is cross-built beside `reuben-core` on top of it. So the trigger this
+  # paragraph set — list it on the first green run — has fired, and taking that step is the tracked
+  # follow-up #749, not a line to slip into an unrelated change: it turns an advisory job into a
+  # merge blocker. Until it is taken, a red run there blocks nothing and is easy to miss.
   ci-passed:
     # This `name` is the exact string the `dev` ruleset requires as a status check (GitHub matches
     # required checks by a job's `name`, not its id) — rename it and the ruleset goes on expecting a
