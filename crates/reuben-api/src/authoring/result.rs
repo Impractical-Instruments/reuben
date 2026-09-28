@@ -187,6 +187,24 @@ pub struct DocumentView {
     pub text: String,
 }
 
+/// One target's answer to a wire compatibility query.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WireVerdict {
+    pub target: super::WireTarget,
+    /// Whether the wire's port types are accepted. A wire that would close a cycle can still be
+    /// `true`: that is reported when the edit is written.
+    pub ok: bool,
+    /// Why not, when `ok` is false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// What `wire_compatibility` answers: one verdict per target, in the order asked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WireVerdicts {
+    pub verdicts: Vec<WireVerdict>,
+}
+
 // --- filling the window's shapes from the engine's ------------------------------------------------
 //
 // `pub(crate)` associated functions rather than `From` impls: a public `impl From<reuben_core::…>`

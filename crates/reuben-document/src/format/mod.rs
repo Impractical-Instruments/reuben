@@ -9,8 +9,10 @@
 //! other way.
 
 mod normalize;
+mod wiring;
 
 pub use normalize::NormalizedDoc;
+pub use wiring::{WirePorts, WireSource, WireTarget};
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
@@ -1516,6 +1518,21 @@ impl InstrumentDoc {
         ctx: &mut LoadCtx,
         referrer: Option<&str>,
     ) -> Result<Loaded, LoadError> {
+        let resolved = self.resolve_ports(registry, resolver, ctx, referrer)?;
+        self.wire_resolved(resolved)
+    }
+
+    /// [`build_nested`](Self::build_nested) up to pass 2: every node minted, every `subpatch`
+    /// child spliced and its face synthesized, no wire-ref resolved yet — the state every wire
+    /// endpoint resolves against. [`wire_resolved`](Self::wire_resolved) finishes the build from it;
+    /// [`WirePorts`] answers wire questions from it without wiring anything.
+    fn resolve_ports(
+        &self,
+        registry: &Registry,
+        resolver: Option<&dyn ResourceResolver>,
+        ctx: &mut LoadCtx,
+        referrer: Option<&str>,
+    ) -> Result<Resolved, LoadError> {
         let mut graph = Graph::new();
         let mut warnings = Vec::new();
         // No anonymous-`outputs` re-check: every route here starts from a `NormalizedDoc`.
@@ -1838,6 +1855,28 @@ impl InstrumentDoc {
             faces.insert(n.address.clone(), face);
         }
 
+        Ok(Resolved {
+            graph,
+            warnings,
+            by_addr,
+            faces,
+            dark,
+            interface,
+        })
+    }
+
+    /// Pass 2 and the output pipes: resolve every wire-ref and `interface.outputs` feed against
+    /// `resolved`, type-checking each, and finish the build.
+    fn wire_resolved(&self, resolved: Resolved) -> Result<Loaded, LoadError> {
+        let Resolved {
+            mut graph,
+            mut warnings,
+            by_addr,
+            faces,
+            dark,
+            mut interface,
+        } = resolved;
+
         // Pass 2: wire-refs -> edges (Arg-type-checked). A subpatch endpoint resolves through its
         // synthesized boundary face to the inner `(node, port)` its interface
         // names — the same check that guards every other wire covers boundary wires, and the edge
@@ -1871,38 +1910,7 @@ impl InstrumentDoc {
                     continue;
                 };
 
-                // Equal types wire directly. An `F32` source into a `Buffer` port is the **one
-                // implicit bridge** — Value→Signal, ZOH-materialized at the sink. The
-                // reverse, a `Buffer` source into an `F32` control port, is Signal→Value: a hard
-                // error with no implicit sample-and-hold (an explicit sig→val converter
-                // op is the sanctioned path). It is rejected *here*, not left to the plan's form
-                // check, so a mistyped wire into a nested boundary fails at load named in boundary
-                // terms (`/sub.audio`) instead of surfacing at instantiate as a FormMismatch on
-                // the prefixed internals. A type-agnostic `Arg` pass-through input is
-                // **capability-keyed**: it accepts any source whose type has an
-                // external OSC form (`boundary::has_osc_form`, the single statement shared with
-                // the plan check) — the primitives, a vocab enum, `Note`'s registered flat form.
-                // A `Buffer` never emits Messages (audio stays off the wire) and
-                // `Harmony` has no OSC form (it registers no converter) — a wire that could never
-                // send anything is rejected here, not left silently dead. Anything else is illegal.
-                let compatible = same_wire_type(&from_ty, &to_ty)
-                    || matches!((&from_ty, &to_ty), (PortType::F32, PortType::F32Buffer))
-                    // Numeric widening: an `I32` source into an `F32`/`F32Buffer` sink
-                    // is lossless and total (every int is a distinct float; the read coerces via
-                    // `Arg::as_f32`), and both are the numeric wiring class — so it widens
-                    // implicitly, the same directional favour as `F32→F32Buffer` above. The
-                    // reverse, `F32→I32`, is lossy (it needs a rounding decision) and stays a hard
-                    // error: an explicit quantizer op is the sanctioned path, mirroring the
-                    // `Signal→Value` rule. The four that name the decision ship —
-                    // `round`/`floor`/`ceil`/`trunc`'s `*_f32_i32_value` converters — so refusing
-                    // here sends the author to a choice, not to a dead end.
-                    || matches!(
-                        (&from_ty, &to_ty),
-                        (PortType::I32 { .. }, PortType::F32)
-                            | (PortType::I32 { .. }, PortType::F32Buffer)
-                    )
-                    || (matches!(to_ty, PortType::Arg) && reuben_core::boundary::has_osc_form(&from_ty));
-                if !compatible {
+                if !wire_type_compatible(&from_ty, &to_ty) {
                     return Err(LoadError::TypeMismatch {
                         from: from_label,
                         from_type: Box::new(from_ty),
@@ -1947,36 +1955,19 @@ impl InstrumentDoc {
                     });
                     continue;
                 };
-                // Presentational min/max stay a truthful subset of the feeding port's
-                // engine-enforced range (the subset law, outputs half).
-                check_range_override(
+                check_output_feed(
                     name,
-                    feed.min,
-                    feed.max,
+                    feed,
+                    &feed.from,
                     &graph.nodes[key].descriptor.outputs[idx],
-                    None,
                 )?;
-                let signal = ty.is_buffer();
                 match feed.channel {
-                    Some(_) if !signal => {
-                        return Err(LoadError::InterfacePipe {
-                            name: name.clone(),
-                            reason: format!(
-                                "`channel` binds hardware channels, which carry signals — \
-                                 {:?} feeds from a message-domain port",
-                                feed.from
-                            ),
-                        });
-                    }
                     Some(ch) => {
-                        // Same structural bound as the input side: the logical output width
-                        // sizes real per-channel master buffers.
-                        check_logical_channel(name, ch)?;
                         graph.tap_output_channel(key, idx, ch);
                         interface.output_channels.insert(name.clone(), ch);
                     }
                     // A signal pipe with no binding keeps today's broadcast master meaning.
-                    None if signal => graph.tap_output(key, idx),
+                    None if ty.is_buffer() => graph.tap_output(key, idx),
                     // A message-typed pipe (a voice's `active`) is boundary-only — no tap.
                     None => {}
                 }
@@ -2312,6 +2303,21 @@ fn lookup<'a>(
         .get(node)
         .map(|(k, d)| (*k, &**d))
         .ok_or_else(|| LoadError::UnknownNode(node.to_string()))
+}
+
+/// Everything a wire endpoint resolves against, held between [`InstrumentDoc::resolve_ports`] and
+/// [`InstrumentDoc::wire_resolved`]: the graph with every node minted and every child spliced,
+/// and the three maps pass 2 reads.
+struct Resolved {
+    graph: Graph,
+    warnings: Vec<LoadWarning>,
+    /// Document nodes and interface input pipes only — spliced subpatch internals are not
+    /// wireable; the boundary face is the contract.
+    by_addr: BTreeMap<Arc<str>, (reuben_core::graph::NodeKey, Arc<Descriptor>)>,
+    faces: BTreeMap<String, BoundaryFace>,
+    /// Subpatch addresses that dissolved dark: a wire touching one is dropped, not checked.
+    dark: BTreeSet<String>,
+    interface: Interface,
 }
 
 /// The synthesized boundary face of a `subpatch` node: one port per `interface`
@@ -3112,6 +3118,70 @@ pub(crate) fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<MintedP
         kind,
         enum_default,
     })
+}
+
+/// Whether output pipe `name`, declared as `feed`, accepts the resolved `port` feeding it — the
+/// output-pipe half of the wire rule. A pipe declares no type of its own, so there is no type to
+/// match; what it can refuse is its own declaration against the feeding port. The pipe loop and
+/// [`WirePorts`] both ask it. `from` is the wire-ref naming `port`, for the error text.
+fn check_output_feed(
+    name: &str,
+    feed: &OutputPipeDoc,
+    from: &str,
+    port: &Port,
+) -> Result<(), LoadError> {
+    // Presentational min/max stay a truthful subset of the feeding port's engine-enforced range
+    // (the subset law, outputs half).
+    check_range_override(name, feed.min, feed.max, port, None)?;
+    let Some(ch) = feed.channel else {
+        return Ok(());
+    };
+    if !port.ty.is_buffer() {
+        return Err(LoadError::InterfacePipe {
+            name: name.to_string(),
+            reason: format!(
+                "`channel` binds hardware channels, which carry signals — \
+                 {from:?} feeds from a message-domain port"
+            ),
+        });
+    }
+    // Same structural bound as the input side: the logical output width sizes real per-channel
+    // master buffers.
+    check_logical_channel(name, ch)
+}
+
+/// The loader's wire **type** rule: whether a source of type `from` may feed a sink of type `to`.
+/// The one statement of it — the pass-2 wire check and [`WirePorts`] both ask it, so what the
+/// editor offers and what `validate` accepts cannot drift.
+///
+/// Equal types wire directly. An `F32` source into a `Buffer` port is the **one implicit bridge**
+/// — Value→Signal, ZOH-materialized at the sink. The reverse, a `Buffer` source into an `F32`
+/// control port, is Signal→Value: a hard error with no implicit sample-and-hold (an explicit
+/// sig→val converter op is the sanctioned path). It is rejected at load, not left to the plan's
+/// form check, so a mistyped wire into a nested boundary fails named in boundary terms
+/// (`/sub.audio`) instead of surfacing at instantiate as a FormMismatch on the prefixed internals.
+/// A type-agnostic `Arg` pass-through input is **capability-keyed**: it accepts any source whose
+/// type has an external OSC form (`boundary::has_osc_form`, the single statement shared with the
+/// plan check) — the primitives, a vocab enum, `Note`'s registered flat form. A `Buffer` never
+/// emits Messages (audio stays off the wire) and `Harmony` has no OSC form (it registers no
+/// converter) — a wire that could never send anything is rejected, not left silently dead.
+/// Anything else is illegal.
+fn wire_type_compatible(from: &PortType, to: &PortType) -> bool {
+    same_wire_type(from, to)
+        || matches!((from, to), (PortType::F32, PortType::F32Buffer))
+        // Numeric widening: an `I32` source into an `F32`/`F32Buffer` sink is lossless and total
+        // (every int is a distinct float; the read coerces via `Arg::as_f32`), and both are the
+        // numeric wiring class — so it widens implicitly, the same directional favour as
+        // `F32→F32Buffer` above. The reverse, `F32→I32`, is lossy (it needs a rounding decision)
+        // and stays a hard error: an explicit quantizer op is the sanctioned path, mirroring the
+        // `Signal→Value` rule. The four that name the decision ship —
+        // `round`/`floor`/`ceil`/`trunc`'s `*_f32_i32_value` converters — so refusing here sends
+        // the author to a choice, not to a dead end.
+        || matches!(
+            (from, to),
+            (PortType::I32 { .. }, PortType::F32) | (PortType::I32 { .. }, PortType::F32Buffer)
+        )
+        || (matches!(to, PortType::Arg) && reuben_core::boundary::has_osc_form(from))
 }
 
 /// Whether two ports carry the same **`Arg` type** for wiring (the equal-types arm of the
