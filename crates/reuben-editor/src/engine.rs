@@ -2,7 +2,7 @@
 //! channel `reuben-mcp` dials — owned by the editor for as long as its window is open.
 //!
 //! Starting never panics. Whatever [`reuben_native::engine::start`] reports becomes a [`Line`] the
-//! window shows, printed to the terminal as well, in `reuben play`'s wording.
+//! window shows, printed to the terminal as well.
 
 use std::fmt;
 use std::io;
@@ -317,11 +317,28 @@ mod tests {
     #[test]
     fn a_path_that_does_not_load_is_reported_not_started() {
         let bad = seed("bad", r#"{"format_version":3,"instrument":"t","nodes":[{"#);
-        for path in [bad.clone(), library("does-not-exist.json")] {
-            let engine = Engine::start_with(config(path.clone()), start_headless);
-            assert!(engine.running().is_none());
-            assert_eq!(errors(&engine).len(), 1, "{:?}", engine.report());
-        }
+        let missing = library("does-not-exist.json");
+        let reported = within(HANG_SECS, {
+            let bad = bad.clone();
+            move || {
+                [bad, missing].map(|path| {
+                    let engine = Engine::start_with(config(path), start_headless);
+                    assert!(engine.running().is_none());
+                    errors(&engine)
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+            }
+        });
+        let [bad_errors, missing_errors] = reported;
+        assert_eq!(bad_errors.len(), 1, "{bad_errors:?}");
+        assert!(
+            bad_errors[0].starts_with("load instrument"),
+            "{bad_errors:?}"
+        );
+        assert_eq!(missing_errors.len(), 1, "{missing_errors:?}");
+        assert!(missing_errors[0].starts_with("read "), "{missing_errors:?}");
         let _ = std::fs::remove_file(&bad);
     }
 
@@ -329,18 +346,27 @@ mod tests {
     fn a_taken_osc_port_is_reported_by_name() {
         let taken = UdpSocket::bind("127.0.0.1:0").expect("hold a port");
         let addr = taken.local_addr().expect("bound").to_string();
-        let engine = Engine::start_with(
-            EngineConfig {
-                osc_in: Some(addr.clone()),
-                ..config(library("acid-techno.json"))
-            },
-            start_headless,
-        );
-        assert!(engine.running().is_none());
-        let errors = errors(&engine);
-        assert_eq!(errors.len(), 1);
-        assert!(errors[0].contains("OSC-in"), "{}", errors[0]);
-        assert!(errors[0].contains(&addr), "{}", errors[0]);
+        let reported = within(HANG_SECS, {
+            let addr = addr.clone();
+            move || {
+                let engine = Engine::start_with(
+                    EngineConfig {
+                        osc_in: Some(addr),
+                        ..config(library("acid-techno.json"))
+                    },
+                    start_headless,
+                );
+                assert!(engine.running().is_none());
+                errors(&engine)
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            }
+        });
+        drop(taken);
+        assert_eq!(reported.len(), 1, "{reported:?}");
+        assert!(reported[0].contains("OSC-in"), "{}", reported[0]);
+        assert!(reported[0].contains(&addr), "{}", reported[0]);
     }
 
     #[test]

@@ -15,8 +15,8 @@ clap.workspace = true
 reuben-native = { path = "../reuben-native" }
 
 [dev-dependencies]
-# The tests reach the embedded engine the way the sidecar does: its link over the loopback socket,
-# and the window's engine verbs on it.
+# The tests reach the embedded engine the way the sidecar does: reuben-mcp's own link over the
+# loopback socket (the TCP transport lives only there), and the window's engine verbs on it.
 reuben-api = { path = "../reuben-api" }
 reuben-mcp = { path = "../reuben-mcp" }
 
