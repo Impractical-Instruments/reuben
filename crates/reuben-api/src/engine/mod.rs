@@ -41,7 +41,8 @@ pub use result::{
     CurrentInstrument, EngineStatus, SendOutput, SidecarInfo, StatusEndpoints, SwapResult,
 };
 pub use server::{
-    dispatch, EngineHost, InProcess, IngressClosed, StructureState, IN_PROCESS_ENDPOINT,
+    dispatch, EngineHost, InProcess, IngressClosed, StructureState, COORDINATOR_POISONED,
+    IN_PROCESS_ENDPOINT,
 };
 
 /// The single-writer graph owner an [`StructureState`] serves. The engine's type, re-exported because

@@ -18,8 +18,8 @@ use rosc::{OscMessage, OscPacket, OscType};
 /// controllers (a hardware knob, a TouchOSC surface) reach it. Bound on `0.0.0.0` (all interfaces),
 /// unlike the loopback-only structure channel.
 ///
-/// It lives here, in the OSC codec, because this module *is* that edge and
-/// [`crate::engine`] is its only consumer. It used to live beside `DEFAULT_STRUCTURE_ADDR` in the wire envelope, back
+/// It lives here, in the OSC codec, because this module *is* that edge and [`crate::engine`] is
+/// its only consumer. It used to live beside `DEFAULT_STRUCTURE_ADDR` in the wire envelope, back
 /// when the reuben-mcp sidecar dialed it to deliver `send` — two ends that had to agree on one
 /// literal. The sidecar's control now rides the structure channel, so there is no second end left
 /// to drift from, and core carries no network plumbing.

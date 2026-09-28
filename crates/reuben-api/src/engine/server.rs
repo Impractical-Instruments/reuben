@@ -25,7 +25,8 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use reuben_document::coordinator::Coordinator;
@@ -96,7 +97,18 @@ pub struct StructureState {
     /// because it is only ever written under the Coordinator lock (so the pair still advances
     /// together) and read beside it — no path takes this lock first, so the ordering cannot invert.
     installed_source: Arc<Mutex<Option<String>>>,
+    /// Set by [`close`](StructureState::close) when the host tears the engine down.
+    closed: Arc<AtomicBool>,
 }
+
+/// What every structure verb answers once a panic has poisoned the Coordinator lock.
+///
+/// The poison is never cleared: the panic may have left the Coordinator between two halves of a
+/// swap, and recovering the guard would hand that state to the next writer. Refusing is what keeps
+/// the single writer's invariants rather than just its exclusivity.
+pub const COORDINATOR_POISONED: &str =
+    "the engine's Coordinator panicked mid-operation and refuses further structure requests; \
+     restart the engine";
 
 impl StructureState {
     /// Wrap a Coordinator the host built (with `install_initial`) and the seam it serves through.
@@ -105,7 +117,28 @@ impl StructureState {
             coordinator: Arc::new(Mutex::new(coordinator)),
             host,
             installed_source: Arc::new(Mutex::new(None)),
+            closed: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Mark the engine torn down, for every clone of this state: an [`InProcess`] transport over
+    /// it then fails each exchange as a dead socket would, instead of answering from a Coordinator
+    /// whose render side is gone. A host calls it before it stops its server.
+    pub fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether [`close`](Self::close) has been called on any clone.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
+    }
+
+    fn coordinator(&self) -> Result<MutexGuard<'_, Coordinator>, Poisoned> {
+        self.coordinator.lock().map_err(|_| Poisoned)
+    }
+
+    fn installed_source(&self) -> Result<MutexGuard<'_, Option<String>>, Poisoned> {
+        self.installed_source.lock().map_err(|_| Poisoned)
     }
 
     /// Name the source the *initial* document was installed from. A builder step because it has a
@@ -121,8 +154,22 @@ impl StructureState {
     }
 }
 
+/// A lock a panic poisoned; answered as [`COORDINATOR_POISONED`].
+struct Poisoned;
+
+impl From<Poisoned> for Response {
+    fn from(_: Poisoned) -> Self {
+        Response::Error {
+            message: COORDINATOR_POISONED.to_string(),
+        }
+    }
+}
+
 /// Dispatch one request line to its response. Pure over [`StructureState`], so a host can drive it
 /// without a socket and the framing loop stays the host's.
+///
+/// A panic under the Coordinator lock unwinds out of this call and poisons the lock; every later
+/// structure verb, from any door, then answers [`COORDINATOR_POISONED`] as a channel error.
 ///
 /// An unreadable line is a channel-level [`Response::Error`] (distinct from a domain answer that
 /// reports failure), so a malformed request still gets exactly one framed reply and the
@@ -130,27 +177,7 @@ impl StructureState {
 pub fn dispatch(state: &StructureState, line: &str) -> Response {
     match Request::from_ndjson(line) {
         Ok(Request::Ping) => Response::Pong,
-        Ok(Request::GetDocument) => {
-            // The Coordinator owns the canonical document; serialize it + its hash under the lock
-            // so `get_document` never sees a half-installed pair.
-            let coordinator = state
-                .coordinator
-                .lock()
-                .expect("coordinator mutex poisoned");
-            let document = serde_json::to_value(&**coordinator.document())
-                .expect("canonical instrument document serializes to JSON");
-            Response::Document(DocumentSnapshot {
-                document,
-                content_hash: coordinator.installed_hash(),
-                // Read under the Coordinator lock too, so the source and the hash a caller compares
-                // it against can never come from different installs.
-                source: state
-                    .installed_source
-                    .lock()
-                    .expect("installed-source mutex poisoned")
-                    .clone(),
-            })
-        }
+        Ok(Request::GetDocument) => get_document(state).unwrap_or_else(Response::from),
         Ok(Request::GetDiagnostics) => Response::Diagnostics(state.host.diagnostics()),
         Ok(Request::Swap { source, expect }) => handle_swap(state, source, expect),
         Ok(Request::Send { messages }) => handle_send(state, messages),
@@ -158,6 +185,21 @@ pub fn dispatch(state: &StructureState, line: &str) -> Response {
             message: format!("unreadable request: {e}"),
         },
     }
+}
+
+/// The Coordinator owns the canonical document; serialize it + its hash under the lock so
+/// `get_document` never sees a half-installed pair.
+fn get_document(state: &StructureState) -> Result<Response, Poisoned> {
+    let coordinator = state.coordinator()?;
+    let document = serde_json::to_value(&**coordinator.document())
+        .expect("canonical instrument document serializes to JSON");
+    Ok(Response::Document(DocumentSnapshot {
+        document,
+        content_hash: coordinator.installed_hash(),
+        // Read under the Coordinator lock too, so the source and the hash a caller compares it
+        // against can never come from different installs.
+        source: state.installed_source()?.clone(),
+    }))
 }
 
 /// The structure channel with no socket under it: a [`Transport`] that hands each request line to
@@ -168,9 +210,13 @@ pub fn dispatch(state: &StructureState, line: &str) -> Response {
 /// away: the framing and the response classification are then the ones a socket client gets, so an
 /// in-process caller and the MCP sidecar cannot see different answers to the same request.
 ///
-/// `round_trip` never fails and ignores its `read_timeout` — there is no peer to go silent. What
-/// bounds a call is `dispatch` itself: a swap blocks on the Coordinator lock behind any in-flight
-/// swap, and its reclaim poll is bounded by the host's [`EngineHost::retire_poll`] gate.
+/// `round_trip` fails in exactly the two cases a socket client would see a dead peer: the host has
+/// [closed](StructureState::close) the state (the engine is torn down), or the request panicked —
+/// which is caught here rather than unwound into the caller's thread, the way a panicking server
+/// thread only drops its connection. Both are an [`io::Error`](std::io::Error), so the channel
+/// reports the engine unreachable. It ignores `read_timeout`, there being no peer to go silent:
+/// what bounds a call is `dispatch` itself — a swap blocks on the Coordinator lock behind any
+/// in-flight swap, and its reclaim poll is bounded by the host's [`EngineHost::retire_poll`] gate.
 #[derive(Clone)]
 pub struct InProcess {
     state: StructureState,
@@ -191,7 +237,17 @@ impl core::fmt::Debug for InProcess {
 
 impl Transport for InProcess {
     fn round_trip(&self, line: &str, _read_timeout: Duration) -> std::io::Result<String> {
-        Ok(dispatch(&self.state, line).to_ndjson())
+        if self.state.is_closed() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "the engine has shut down",
+            ));
+        }
+        // Unwind-safe in the sense that matters: the only state a panic can leave half-written
+        // is behind the Coordinator lock, which the panic poisons and `dispatch` then refuses.
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dispatch(&self.state, line)))
+            .map(|response| response.to_ndjson())
+            .map_err(|_| std::io::Error::other("the engine panicked answering the request"))
     }
 
     fn endpoint(&self) -> &str {
@@ -264,13 +320,13 @@ fn handle_swap(state: &StructureState, source: DocSource, expect: Option<String>
 
     let json = match resolve_source(source, state.host.as_ref()) {
         Ok(json) => json,
-        Err(message) => return rejected_swap(&state.coordinator, message),
+        Err(message) => return rejected_swap(state, message),
     };
 
-    let mut coordinator = state
-        .coordinator
-        .lock()
-        .expect("coordinator mutex poisoned");
+    let mut coordinator = match state.coordinator() {
+        Ok(coordinator) => coordinator,
+        Err(poisoned) => return poisoned.into(),
+    };
 
     if let Some(expected) = &expect {
         let actual = coordinator.installed_hash();
@@ -287,10 +343,10 @@ fn handle_swap(state: &StructureState, source: DocSource, expect: Option<String>
     if report.report.ok {
         // The installed document advanced, so the source that named it does too — under the
         // Coordinator lock, so the two never disagree about which install a reader is looking at.
-        *state
-            .installed_source
-            .lock()
-            .expect("installed-source mutex poisoned") = installed_from;
+        match state.installed_source() {
+            Ok(mut source) => *source = installed_from,
+            Err(poisoned) => return poisoned.into(),
+        }
 
         let logical = coordinator.installed_channels();
         let input_channels = coordinator.installed_input_channels();
@@ -321,11 +377,11 @@ fn reclaim_retired(coordinator: &mut Coordinator, host: &dyn EngineHost) {
 /// A rejected swap that never reached the Coordinator (a source read failure): `ok: false`, the
 /// message, no diff, and the still-installed hash — the report names what keeps playing
 /// (retain-prior).
-fn rejected_swap(coordinator: &Arc<Mutex<Coordinator>>, message: String) -> Response {
-    let content_hash = coordinator
-        .lock()
-        .expect("coordinator mutex poisoned")
-        .installed_hash();
+fn rejected_swap(state: &StructureState, message: String) -> Response {
+    let content_hash = match state.coordinator() {
+        Ok(coordinator) => coordinator.installed_hash(),
+        Err(poisoned) => return poisoned.into(),
+    };
     Response::SwapReport(SwapReport {
         report: Report {
             ok: false,
@@ -348,5 +404,99 @@ fn resolve_source(source: DocSource, host: &dyn EngineHost) -> Result<String, St
         DocSource::Document(value) => serde_json::to_string(&value)
             .map_err(|e| format!("serialize inline swap document: {e}")),
         DocSource::Path(path) => host.read_document(&path),
+    }
+}
+
+#[cfg(all(test, feature = "render"))]
+mod tests {
+    use super::*;
+    use crate::authoring::{ResolveError, Resources, SampleBuffer};
+    use crate::engine::{get_engine_status, Channel, ChannelError};
+
+    const DOC: &str = r#"{"format_version":3,"instrument":"t",
+        "interface":{"outputs":{"out":{"from":"/osc.audio"}}},
+        "nodes":[{"type":"oscillator","address":"/osc"}]}"#;
+
+    struct NoStore;
+
+    impl Resources for NoStore {
+        fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+            Err(ResolveError::NotFound(source.to_string()))
+        }
+    }
+
+    /// A host that panics under the Coordinator lock — `publish_render_config` runs inside a swap's
+    /// critical section — when `panic_on_publish` is set.
+    struct Host {
+        panic_on_publish: bool,
+    }
+
+    impl EngineHost for Host {
+        fn read_document(&self, path: &str) -> Result<String, String> {
+            Err(format!("no file {path}"))
+        }
+        fn deliver_control(&self, _: Vec<ControlMessage>) -> Result<(), IngressClosed> {
+            Ok(())
+        }
+        fn diagnostics(&self) -> DiagnosticsReport {
+            DiagnosticsReport::default()
+        }
+        fn publish_render_config(&self, _: usize, _: usize) -> Vec<Diag> {
+            assert!(!self.panic_on_publish, "host panicked mid-swap");
+            Vec::new()
+        }
+        fn retire_poll(&self) -> Box<dyn FnMut() -> bool + Send + '_> {
+            Box::new(|| true)
+        }
+    }
+
+    fn state(panic_on_publish: bool) -> StructureState {
+        let (coordinator, _side, _) =
+            crate::engine::install_initial(DOC, NoStore, reuben_core::AudioConfig::new(48e3, 128))
+                .expect("install");
+        StructureState::new(coordinator, Arc::new(Host { panic_on_publish }))
+    }
+
+    fn swap_by_value(channel: &Channel) -> Result<super::super::SwapOutcome, ChannelError> {
+        channel.swap(
+            DocSource::Document(serde_json::from_str(DOC).expect("doc json")),
+            None,
+        )
+    }
+
+    #[test]
+    fn a_panic_under_the_lock_is_unreachable_then_every_verb_refuses_without_panicking() {
+        let state = state(true);
+        let channel = Channel::new(InProcess::new(state.clone()));
+
+        let first = swap_by_value(&channel).expect_err("the panicking swap has no answer");
+        assert!(first.is_unreachable(), "{first}");
+
+        // Poisoned now: in-process and over any other door, an error rather than a panic.
+        for err in [
+            swap_by_value(&channel).expect_err("poisoned"),
+            channel.get_document().expect_err("poisoned"),
+        ] {
+            match err {
+                ChannelError::Channel(message) => assert_eq!(message, COORDINATOR_POISONED),
+                other => panic!("expected the poisoned refusal, got {other}"),
+            }
+        }
+        match dispatch(&state, &Request::GetDocument.to_ndjson()) {
+            Response::Error { message } => assert_eq!(message, COORDINATOR_POISONED),
+            other => panic!("expected the poisoned refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_closed_state_is_unreachable_in_process() {
+        let state = state(false);
+        let channel = Channel::new(InProcess::new(state.clone()));
+        assert!(get_engine_status(&channel, "test").output.reachable);
+        state.close();
+        assert!(!get_engine_status(&channel, "test").output.reachable);
+        assert!(swap_by_value(&channel)
+            .expect_err("closed")
+            .is_unreachable());
     }
 }

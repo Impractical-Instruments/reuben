@@ -188,8 +188,8 @@ impl RunningEngine {
     /// Each call runs on the caller's thread: a swap validates and builds the new Engine there,
     /// behind any swap already holding the Coordinator lock, so a UI thread should not make it.
     /// The channel is owned and `Send` for exactly that — move it to a worker. One kept past
-    /// shutdown keeps the Coordinator alive until it drops; its `send` is then refused (the control
-    /// ingress is gone) and a swap installs into a mailbox nothing drains.
+    /// shutdown fails every call as unreachable, the way a dead socket would, and keeps the
+    /// Coordinator's memory until it drops.
     pub fn channel(&self) -> Channel {
         let state = self
             .state
@@ -247,6 +247,11 @@ impl RunningEngine {
     }
 
     fn teardown(&mut self) {
+        // First, so a channel a caller still holds is unreachable from here on rather than
+        // answering from a Coordinator whose render side is about to go.
+        if let Some(state) = &self.state {
+            state.close();
+        }
         if let Some(server) = self.structure.take() {
             server.shutdown();
         }
@@ -280,16 +285,21 @@ pub fn start(config: EngineConfig) -> Result<RunningEngine, StartError> {
 }
 
 /// How the render side is driven.
-pub(crate) enum Render {
+pub(crate) enum Render<'a> {
     /// A cpal output stream on the profile's device.
     Device,
-    /// No device: [`FakeCallback`] drives the render side at this config, output-only.
-    Headless(AudioConfig),
+    /// No device: [`FakeCallback`] drives the render side at `config`, output-only.
+    Headless {
+        config: AudioConfig,
+        /// When `Some`, receives a clone of the render callback's outbound sender — a test's
+        /// stand-in for a device callback that outlives its stream's drop.
+        outbound: Option<&'a mut Option<Sender<Message>>>,
+    },
 }
 
 pub(crate) fn start_with(
     config: EngineConfig,
-    render: Render,
+    render: Render<'_>,
 ) -> Result<RunningEngine, StartError> {
     let EngineConfig {
         instrument,
@@ -302,9 +312,10 @@ pub(crate) fn start_with(
         log_osc,
     } = config;
 
-    if let Some(addr) = &structure {
-        require_loopback(addr)?;
-    }
+    let structure = match structure {
+        Some(addr) => Some(resolve_structure(&addr)?),
+        None => None,
+    };
     let (instrument_json, resolver, initial_source) = read_instrument(instrument, instrument_root)?;
 
     // The one control ingress into the render callback. Two producers — the UDP listener (the
@@ -355,8 +366,14 @@ pub(crate) fn start_with(
                 audio_config,
             )
         }
-        Render::Headless(cfg) => {
+        Render::Headless {
+            config: cfg,
+            outbound,
+        } => {
             let (coordinator, side, warnings) = build(cfg).map_err(StartError::Instrument)?;
+            if let Some(slot) = outbound {
+                *slot = osc_out_tx.clone();
+            }
             (
                 Output::Headless(FakeCallback::drive(side, osc_rx, osc_out_tx)),
                 Diagnostics::new(),
@@ -378,10 +395,11 @@ pub(crate) fn start_with(
     let state =
         StructureState::new(coordinator, Arc::new(host)).with_installed_source(initial_source);
     let (structure, structure_error) = match structure {
-        Some(addr) => match StructureServer::bind(addr.as_str(), state.clone()) {
+        Some(Ok(addrs)) => match StructureServer::bind(&addrs[..], state.clone()) {
             Ok(server) => (Some(server), None),
             Err(e) => (None, Some(e)),
         },
+        Some(Err(e)) => (None, Some(e)),
         None => (None, None),
     };
 
@@ -400,18 +418,20 @@ pub(crate) fn start_with(
     })
 }
 
-/// Refuse a structure address that resolves to anything but loopback. One that does not resolve
-/// is left to the bind, whose failure is non-fatal.
-fn require_loopback(addr: &str) -> Result<(), StartError> {
-    let Ok(resolved) = addr.to_socket_addrs() else {
-        return Ok(());
+/// Resolve the structure address once, refusing one that resolves to anything but loopback. The
+/// inner error is a resolution failure, which is non-fatal like a failed bind.
+fn resolve_structure(addr: &str) -> Result<io::Result<Vec<SocketAddr>>, StartError> {
+    let resolved = match addr.to_socket_addrs() {
+        Ok(resolved) => resolved.collect::<Vec<_>>(),
+        Err(e) => return Ok(Err(e)),
     };
-    for candidate in resolved {
-        if !candidate.ip().is_loopback() {
-            return Err(StartError::StructureNotLoopback(addr.to_string()));
-        }
+    if resolved
+        .iter()
+        .any(|candidate| !candidate.ip().is_loopback())
+    {
+        return Err(StartError::StructureNotLoopback(addr.to_string()));
     }
-    Ok(())
+    Ok(Ok(resolved))
 }
 
 /// The instrument's JSON, the resolver its references resolve through, and the source name

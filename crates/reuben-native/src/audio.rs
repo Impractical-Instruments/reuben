@@ -222,7 +222,25 @@ impl fmt::Display for AudioError {
     }
 }
 
-impl std::error::Error for AudioError {}
+impl std::error::Error for AudioError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            AudioError::DevicesQuery(e) | AudioError::InputDevicesQuery(e) => Some(e),
+            AudioError::Config(e) | AudioError::InputConfig(e) => Some(e),
+            AudioError::SupportedConfigs(e) | AudioError::InputSupportedConfigs(e) => Some(e),
+            AudioError::Build(e) | AudioError::BuildInput(e) => Some(e),
+            AudioError::Play(e) | AudioError::PlayInput(e) => Some(e),
+            AudioError::Instrument(e) => Some(e),
+            AudioError::NoDevice
+            | AudioError::NoMatchingDevice(_)
+            | AudioError::UnsupportedFormat(_)
+            | AudioError::NoInputDevice
+            | AudioError::NoMatchingInputDevice(_)
+            | AudioError::UnsupportedInputFormat(_)
+            | AudioError::NoInputChannels => None,
+        }
+    }
+}
 
 /// The live cpal streams [`start`] returns — keep the whole struct alive for audio to keep
 /// flowing. `input` is `Some` only when the played instrument binds input channels:
@@ -275,12 +293,12 @@ pub struct LiveAudio {
 /// structure channel, and a build error is [`AudioError::Instrument`]. `osc_out` is the optional
 /// OSC-out sink: when `Some`, the callback forwards each outbound Message to it (a sender thread
 /// encodes + UDP-sends, off the audio thread); when `None`, outbound is drained and dropped, with
-/// one warning the first time a rig sends. `profile`
-/// selects the devices, negotiates sample-rate/buffer-size preferences, and overrides the channel
-/// maps — pass [`DeviceProfile::default`] for today's behavior (default devices, identity maps).
-/// The device output map is returned as [`LiveAudio::render_config`] ([`NativeRenderConfig`]). When
-/// the built engine binds input channels, the input side opens on the profile's `input.device`
-/// (default input device otherwise) through [`crate::input::InputStage`].
+/// one warning the first time a rig sends. `profile` selects the devices, negotiates
+/// sample-rate/buffer-size preferences, and overrides the channel maps — pass
+/// [`DeviceProfile::default`] for today's behavior (default devices, identity maps). The device
+/// output map is returned as [`LiveAudio::render_config`] ([`NativeRenderConfig`]). When the built
+/// engine binds input channels, the input side opens on the profile's `input.device` (default
+/// input device otherwise) through [`crate::input::InputStage`].
 pub fn start<F>(
     osc_rx: Receiver<ControlBatch>,
     block_size: usize,
