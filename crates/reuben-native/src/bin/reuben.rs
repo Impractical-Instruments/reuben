@@ -19,18 +19,15 @@ use reuben_api::authoring::{
 };
 use reuben_api::engine::DEFAULT_STRUCTURE_ADDR;
 use reuben_api::FsResolver;
-use reuben_native::cli::{self, EngineFlags};
+use reuben_native::cli::{EngineFlags, InstrumentRoot, LOG_OSC_ENV};
 use reuben_native::engine::{self, Instrument};
 use reuben_native::scaffold;
 
 #[derive(Parser)]
 #[command(name = "reuben", about = "Play and author reuben instruments.")]
 struct Cli {
-    /// Instrument library root: a sample or nested-patch reference that does not exist next
-    /// to the file referencing it is looked up under this directory instead (sibling-first
-    /// search). Falls back to the `REUBEN_INSTRUMENT_ROOT` env var.
-    #[arg(long, global = true, value_name = "DIR")]
-    instrument_root: Option<PathBuf>,
+    #[command(flatten)]
+    instrument_root: InstrumentRoot,
     #[command(subcommand)]
     command: Command,
 }
@@ -142,7 +139,7 @@ fn window_view(view: InstrumentView) -> authoring::InstrumentView {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let root = cli::instrument_root(cli.instrument_root);
+    let root = cli.instrument_root.resolve();
     match cli.command {
         Command::Play { path, engine } => play(path, engine, root),
         Command::Describe {
@@ -545,7 +542,6 @@ fn cmd_validate(path: &Path, json: bool, root: Option<PathBuf>) -> ExitCode {
 /// Everything it starts is [`engine::start`]'s; what is left here is the terminal — the flags, the
 /// startup lines, and the signal that ends the session.
 fn play(path: Option<PathBuf>, flags: EngineFlags, root: Option<PathBuf>) -> ExitCode {
-    let io_map = flags.io_map.clone();
     let instrument = path.map_or(Instrument::Default, Instrument::Path);
     // A malformed profile is a structural load error — fatal, like any other bad input this
     // binary reads.
@@ -556,7 +552,7 @@ fn play(path: Option<PathBuf>, flags: EngineFlags, root: Option<PathBuf>) -> Exi
             return ExitCode::FAILURE;
         }
     };
-    if let Some(path) = &io_map {
+    if let Some(path) = &flags.io_map {
         println!("io-map: {}", path.display());
         if config.profile.has_input() {
             println!(
@@ -585,7 +581,7 @@ fn play(path: Option<PathBuf>, flags: EngineFlags, root: Option<PathBuf>) -> Exi
     if let Some(addr) = running.osc_in_addr() {
         println!("OSC-in listening on {addr}  (send /voicer/notes [midi, gate])");
         if !log_osc {
-            println!("  (set REUBEN_LOG_OSC=1 to log received OSC)");
+            println!("  (set {LOG_OSC_ENV}=1 to log received OSC)");
         }
     }
     println!(

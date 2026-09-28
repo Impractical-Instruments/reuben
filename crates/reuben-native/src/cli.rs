@@ -1,5 +1,5 @@
 //! The command line `reuben play` starts the engine from, shared with every binary that starts it
-//! the same way: the engine flags, the library-root fallback, and the OSC log switch. A binary
+//! the same way: the library root, the engine flags, and the OSC log switch. A binary
 //! embedding the engine takes these rather than its own copies, so `reuben play` and it read one
 //! set of flags and environment variables to one [`EngineConfig`].
 
@@ -15,9 +15,22 @@ pub const INSTRUMENT_ROOT_ENV: &str = "REUBEN_INSTRUMENT_ROOT";
 /// Set (to anything) to log every OSC message received and sent to stdout.
 pub const LOG_OSC_ENV: &str = "REUBEN_LOG_OSC";
 
-/// The effective library root: the `--instrument-root` flag, else [`INSTRUMENT_ROOT_ENV`].
-pub fn instrument_root(flag: Option<PathBuf>) -> Option<PathBuf> {
-    flag.or_else(|| std::env::var_os(INSTRUMENT_ROOT_ENV).map(PathBuf::from))
+/// The library root flag. `global`, so a binary with subcommands takes it before or after any.
+#[derive(clap::Args, Debug, Clone, Default)]
+pub struct InstrumentRoot {
+    /// Instrument library root: a sample or nested-patch reference that does not exist next
+    /// to the file referencing it is looked up under this directory instead (sibling-first
+    /// search). Falls back to the `REUBEN_INSTRUMENT_ROOT` env var.
+    #[arg(long, global = true, value_name = "DIR")]
+    pub instrument_root: Option<PathBuf>,
+}
+
+impl InstrumentRoot {
+    /// The effective library root: the flag, else [`INSTRUMENT_ROOT_ENV`].
+    pub fn resolve(self) -> Option<PathBuf> {
+        self.instrument_root
+            .or_else(|| std::env::var_os(INSTRUMENT_ROOT_ENV).map(PathBuf::from))
+    }
 }
 
 /// Whether [`LOG_OSC_ENV`] is set.
@@ -45,18 +58,21 @@ impl EngineFlags {
     /// malformed profile is an error: a structural problem in a document the user named, never
     /// silently replaced by the default devices.
     pub fn config(
-        self,
+        &self,
         instrument: Instrument,
         instrument_root: Option<PathBuf>,
     ) -> Result<EngineConfig, IoMapError> {
-        let profile = match self.io_map {
-            Some(path) => DeviceProfile::load(&path).map_err(|error| IoMapError { path, error })?,
+        let profile = match &self.io_map {
+            Some(path) => DeviceProfile::load(path).map_err(|error| IoMapError {
+                path: path.clone(),
+                error,
+            })?,
             None => DeviceProfile::default(),
         };
         Ok(EngineConfig {
             instrument_root,
             profile,
-            osc_out: self.osc_out,
+            osc_out: self.osc_out.clone(),
             log_osc: log_osc(),
             ..EngineConfig::new(instrument)
         })
