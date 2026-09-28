@@ -13,13 +13,17 @@ which consumes this one as a submodule.
 ## Commands
 
 ```sh
-cargo test --workspace
+cargo test                                             # every member but reuben-editor
 cargo fmt --all --check                                # CI format gate
-cargo clippy --workspace --all-targets -- -D warnings  # CI lint gate
+cargo clippy --all-targets -- -D warnings              # CI lint gate
+cargo clippy -p reuben-editor --all-targets -- -D warnings  # the editor's own gate
 cargo run -p reuben-native --example gen_library_index # after ANY instrument change
 cargo run -p reuben-core --example gen_vocabulary      # after editing docs/agents/vocabulary.json
 cargo run -p reuben-native --bin reuben -- describe    # list operators/ports/params
 ```
+
+`reuben-editor` is outside `default-members`, so bare `cargo` commands skip the egui tree. Don't add
+`--workspace` to a gate: it overrides `default-members` and builds the editor too.
 
 One-time setup, unless `brain`'s `bootstrap.sh` already did it: `./scripts/install-hooks.sh` —
 points `core.hooksPath` at [`scripts/hooks/`](scripts/hooks), where
@@ -53,7 +57,7 @@ synonyms.
 
 ## Repo map
 
-Eight crates. The engine is two of them — `reuben-core` (render) and `reuben-document` (authoring)
+Nine crates. The engine is two of them — `reuben-core` (render) and `reuben-document` (authoring)
 — and together they are ~35k lines; enter through the module that owns the concept, not a search.
 
 | Crate | Owns |
@@ -65,6 +69,7 @@ Eight crates. The engine is two of them — `reuben-core` (render) and `reuben-d
 | `reuben-mcp` | The per-conversation MCP stdio sidecar: the roster, the stdio transport, the loopback socket. Reaches `reuben-core` through nothing but the window. The only member allowed an async runtime (rmcp + tokio). |
 | `reuben-contract` | The single source of an Operator's port/constant contract, shared by the macro and scaffold. |
 | `reuben-macros` | `operator_contract!` — emits the index consts *and* the `Descriptor` from one declaration. |
+| `reuben-editor` | The desktop instrument editor (eframe/egui). Outside `default-members`; its own CI job builds and lints it. |
 | `reuben-guide` | Docs tooling, not engine code: slices `docs/agents/authoring.md` into its per-delivery-lane cuts. Depends on nothing in the workspace. |
 
 Inside `reuben-core` (the full version is the `crates/reuben-core/src/lib.rs` doc comment):

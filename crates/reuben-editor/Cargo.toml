@@ -1,0 +1,16 @@
+[package]
+name = "reuben-editor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Desktop instrument editor for reuben."
+publish = false
+
+[dependencies]
+eframe.workspace = true
+
+[[bin]]
+name = "reuben-editor"
+path = "src/main.rs"

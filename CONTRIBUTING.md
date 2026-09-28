@@ -27,9 +27,9 @@ type is one file. [`scripts/hooks/pre-commit`](./scripts/hooks/pre-commit) and
   - `scripts/hooks/pre-commit.d/20-rust-fmt` — `cargo fmt --all --check` (fast; skips docs-only
     commits). Blocks commits that CI's format gate would reject.
 - **pre-push**
-  - `scripts/hooks/pre-push.d/10-rust-clippy` — `cargo clippy --workspace --all-targets -- -D
-    warnings`. Runs at the push boundary (not every commit) so the compile cost is paid once;
-    skips pushes that touch no Rust.
+  - `scripts/hooks/pre-push.d/10-rust-clippy` — `cargo clippy --all-targets -- -D warnings`
+    over every `default-members` crate (`reuben-editor` has its own CI job). Runs at the push
+    boundary (not every commit) so the compile cost is paid once; skips pushes that touch no Rust.
 
 `--no-verify` bypasses the whole set for deliberate exceptions. They are a local pre-flight —
 **CI is the real gate**; skipping setup just means you find out at CI instead of at commit.
@@ -122,7 +122,7 @@ A `use std::…` in `reuben-core`'s lib fails all of them; the `reuben-api` pair
 `reuben-core` beneath it. One in `reuben-api`'s render half fails only the `reuben-api` pair —
 neither `-p reuben-core` command builds the window.
 
-**`cargo clippy --workspace --all-targets` catches the first and not the second.** `reuben-core`'s
+**`cargo clippy --all-targets` catches the first and not the second.** `reuben-core`'s
 lib target is `no_std` on every host, so a stray import in its production code fails there too (only
 its lib *test* target links `std`). `reuben-api`'s `authoring` feature declares `extern crate std`,
 which resolves crate-wide, so a stray import in its render half survives every workspace-wide
@@ -145,7 +145,7 @@ covers exactly one thing: rustc links `std` into the lib **test** target while l
 prelude in place, so without it every `#[cfg(test)] mod tests` in the crate would owe explicit
 `alloc` imports for `String`/`Vec`/`format!` — about 380 of them, in code the shipped rlib does not
 contain. The lib target itself builds `no_std` on the host too, which is what makes an ordinary
-`cargo clippy --workspace --all-targets` catch a stray `use std::…` in production code on any
+`cargo clippy --all-targets` catch a stray `use std::…` in production code on any
 machine.
 
 `reuben-api` takes the bare `#![no_std]`: the same exemption would spare a handful of `alloc`
