@@ -8,31 +8,20 @@
 //! /voicer/notes  [69.0, 0.0]   # note-off (gate 0)
 //! ```
 
-use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::mpsc;
-use std::thread;
 
 use clap::{Parser, Subcommand};
 
 use reuben_api::authoring::{
     self, Diag, PortInfo, Refusal, COMPACT_DESCRIBE_LEGEND, SCAFFOLD_DEFAULT_NAME,
 };
-use reuben_api::render::{self, Message};
+use reuben_api::engine::DEFAULT_STRUCTURE_ADDR;
 use reuben_api::FsResolver;
+use reuben_native::engine::{self, EngineConfig, Instrument};
 use reuben_native::profile::DeviceProfile;
-use reuben_native::rigs::DEFAULT_JSON;
-use reuben_native::structure::NativeHost;
-use reuben_native::{audio, osc, scaffold, structure};
-
-const BLOCK_SIZE: usize = 256;
-/// The structure channel's default loopback bind, hoisted to a shared const in the window so this
-/// server and the sidecar's client dial the *same* address and can never drift. `127.0.0.1` only —
-/// structure edits are more powerful than OSC control, so unlike OSC's `0.0.0.0:9000` this must
-/// never be network-exposed; a taken port is non-fatal (see `play`).
-use reuben_api::engine::DEFAULT_STRUCTURE_ADDR as STRUCTURE_BIND;
-use reuben_native::osc::DEFAULT_OSC_PORT;
+use reuben_native::scaffold;
 
 #[derive(Parser)]
 #[command(name = "reuben", about = "Play and author reuben instruments.")]
@@ -172,10 +161,7 @@ fn main() -> ExitCode {
             path,
             osc_out,
             io_map,
-        } => {
-            play(path, osc_out, io_map, root);
-            ExitCode::SUCCESS
-        }
+        } => play(path, osc_out, io_map, root),
         Command::Describe {
             op,
             json,
@@ -345,21 +331,6 @@ fn print_ports(dir: &str, ps: &[PortInfo]) {
         }
         println!("{s}");
     }
-}
-
-/// Read an instrument file to its JSON text, paired with a resolver rooted at its directory —
-/// resource paths (samples, nested instruments) resolve relative to the referencing file,
-/// falling back to the library `root` when configured. `play`'s loading preamble: it hands the
-/// text and the resolver to the Coordinator, which is a different need from the authoring
-/// commands', where the window reads the document itself through [`store`].
-fn read_instrument(path: &Path, root: Option<PathBuf>) -> Result<(String, FsResolver), String> {
-    let json =
-        std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
-    let mut resolver = FsResolver::for_instrument(path);
-    if let Some(root) = root {
-        resolver = resolver.with_root(root);
-    }
-    Ok((json, resolver))
 }
 
 /// `describe`'s argument is an instrument **path** by shape alone: it ends in `.json` or contains a
@@ -588,25 +559,25 @@ fn cmd_validate(path: &Path, json: bool, root: Option<PathBuf>) -> ExitCode {
 
 /// `play`: the live audio path — load an instrument and render it, driven by incoming OSC.
 ///
-/// Streams are opened once here and fixed for the session: a swap fills the install mailbox, the
-/// RT callback drains it and box-transplants survivors under a master-gain ramp, and this
-/// process — the OSC socket, the structure channel, the streams — is never torn down. The
-/// [`Coordinator`](render::Coordinator) the structure channel owns is the single writer of graph
-/// structure.
+/// Everything it starts is [`engine::start`]'s; what is left here is the terminal — the flags, the
+/// startup lines, and the signal that ends the session.
 fn play(
     path: Option<PathBuf>,
-    osc_out_target: Option<String>,
+    osc_out: Option<String>,
     io_map: Option<PathBuf>,
     root: Option<PathBuf>,
-) {
-    // Device profile: `--io-map <file>` loads logical↔device channel maps, device
-    // selection, and sample-rate/buffer-size preferences. No flag -> the default profile, which
-    // is identity map + the default device (today's behavior, unchanged). A malformed profile is
-    // a structural load error — fatal, like any other bad instrument input this binary reads.
+) -> ExitCode {
+    // A malformed profile is a structural load error — fatal, like any other bad input this
+    // binary reads.
     let profile = match &io_map {
         Some(path) => {
-            let profile = DeviceProfile::load(path)
-                .unwrap_or_else(|e| panic!("io-map {}: {e}", path.display()));
+            let profile = match DeviceProfile::load(path) {
+                Ok(profile) => profile,
+                Err(e) => {
+                    eprintln!("error: io-map {}: {e}", path.display());
+                    return ExitCode::FAILURE;
+                }
+            };
             println!("io-map: {}", path.display());
             if profile.has_input() {
                 println!(
@@ -619,179 +590,60 @@ fn play(
         None => DeviceProfile::default(),
     };
 
-    // The control ingress feeding the audio callback. Streams are fixed for the session
-    // — a swap installs via the mailbox and never reopens the callback — so this single
-    // receiver lives in the callback for the whole run and each producer forwards straight through
-    // its own `osc_tx` clone. No swappable sink, no lock anywhere near the audio path.
-    //
-    // **Two producers, one ingress**: the UDP decode thread below (the foreign edge, where external
-    // controllers arrive) and the structure channel's `send` verb (the loopback authoring door).
-    // Both converge here, so a `send` and an external datagram are indistinguishable downstream.
-    let (osc_tx, osc_rx) = mpsc::channel::<osc::ControlBatch>();
-
-    // Log incoming/outgoing OSC only when asked: this runs on the I/O paths, and the stdout
-    // lock would add latency/jitter if it fired on every message while playing. Off by
-    // default; flip on to confirm wiring during bring-up.
-    let log_osc = std::env::var_os("REUBEN_LOG_OSC").is_some();
-
-    // OSC-out sender thread: bind a UDP socket to the static `--osc-out host:port`
-    // target and encode + send each outbound Message off the audio thread. `None` when no target
-    // is configured — the engine still drains its outbound route, but audio.rs drops it (warning
-    // once if a rig actually sends). Mirrors the OSC-in receiver thread below.
-    let osc_out_tx = osc_out_target.map(|target| {
-        let socket = UdpSocket::bind("0.0.0.0:0").expect("bind OSC-out socket");
-        socket
-            .connect(&target)
-            .unwrap_or_else(|e| panic!("connect OSC-out {target}: {e}"));
-        println!("OSC-out sending to {target}");
-        let (out_tx, out_rx) = mpsc::channel::<Message>();
-        thread::spawn(move || {
-            // Each outbound Message carries one typed Arg; expand it to the flat OSC primitive form
-            // at the boundary before encoding the datagram.
-            let mut flat = Vec::new();
-            for m in out_rx {
-                flat.clear();
-                // `false` means the Arg has no OSC form and expanded to nothing — skip the
-                // datagram (the rule is `osc_out_args`' contract, see its docs).
-                if !render::osc_out_args(&m.arg, &mut flat) {
-                    continue;
-                }
-                match osc::encode(&m.address, &flat) {
-                    Ok(bytes) => {
-                        if log_osc {
-                            println!("send {} {:?}", m.address, flat);
-                        }
-                        let _ = socket.send(&bytes);
-                    }
-                    Err(e) => eprintln!("OSC encode error: {e}"),
-                }
-            }
-        });
-        out_tx
-    });
-
-    // OSC/UDP receiver thread: decode datagrams and forward Messages straight to the audio callback
-    // through `udp_tx`. The callback (and its receiver) live for the whole session now, so a forward
-    // never races a swap — the mailbox swap keeps the same callback alive.
-    // Host `0.0.0.0` (all interfaces) on the engine's own OSC-in port. This is the FOREIGN edge —
-    // hardware knobs, TouchOSC, anything speaking OSC-the-binary-protocol. The reuben-mcp sidecar is
-    // not among them: its `send` rides the loopback structure channel below, so this port has one
-    // owner and nothing to drift against.
-    let osc_bind = format!("0.0.0.0:{DEFAULT_OSC_PORT}");
-    let socket = UdpSocket::bind(&osc_bind).expect("bind OSC socket");
-    println!("OSC-in listening on {osc_bind}  (send /voicer/notes [midi, gate])");
-    if !log_osc {
-        println!("  (set REUBEN_LOG_OSC=1 to log received OSC)");
-    }
-    let udp_tx = osc_tx.clone();
-    thread::spawn(move || {
-        let mut buf = [0u8; 1024];
-        loop {
-            match socket.recv_from(&mut buf) {
-                Ok((n, _)) => match osc::decode(&buf[..n]) {
-                    Ok(batch) => {
-                        if log_osc {
-                            for m in &batch {
-                                println!("recv {} {:?}", m.address, m.args.as_slice());
-                            }
-                        }
-                        // One datagram, one batch: a bundle's messages stay together, so the
-                        // callback applies them to the same block — which is what a bundle means.
-                        let _ = udp_tx.send(batch);
-                    }
-                    Err(e) => eprintln!("OSC decode error: {e}"),
-                },
-                Err(e) => {
-                    eprintln!("OSC recv error: {e}");
-                    break;
-                }
-            }
-        }
-    });
-
-    // Instrument source: a path argument, else the embedded default. Resource paths (sample files)
-    // resolve through this `resolver`, anchored at the instrument file's directory (the embedded
-    // default roots at the current directory) with the optional library `root` fallback. The
-    // Coordinator owns this resolver for the session; a by-path swap resolves its resources through
-    // it too — the session does not re-anchor per swap source, so a by-path document's
-    // relative resources resolve against the initial anchor + the library root.
-    // The source name `get_document` reports for the run's first document, so an agent joining a
-    // session it did not start can still tell *which file* is playing. The built-in default rig has
-    // no source to name.
-    let initial_source = path.as_ref().map(|p| p.display().to_string());
-    let (instrument_json, resolver) = match path {
+    let instrument = match path {
         Some(path) => {
             println!("instrument: {}", path.display());
-            read_instrument(&path, root).unwrap_or_else(|e| panic!("{e}"))
+            Instrument::Path(path)
         }
         None => {
             println!("instrument: <default> (pass a path to load your own)");
-            let resolver = match root {
-                Some(root) => FsResolver::new(".").with_root(root),
-                None => FsResolver::new("."),
-            };
-            (DEFAULT_JSON.to_string(), resolver)
+            Instrument::Default
         }
     };
 
-    // Start live audio: open the device once, build the Coordinator + its RT
-    // RenderSide at the device rate, and drive the RenderSlot in the callback. `install_initial`
-    // mints the canonical document the structure channel then owns (`get_document` reports exactly
-    // what plays). Streams are fixed for the session — a swap installs via the mailbox, never a
-    // restart, so the device is opened here and never reopened.
-    let live = audio::start(osc_rx, BLOCK_SIZE, osc_out_tx, &profile, |cfg| {
-        println!(
-            "audio out @ {} Hz, block {}",
-            cfg.sample_rate, cfg.block_size
-        );
-        reuben_api::engine::install_initial(&instrument_json, resolver, cfg)
-            .expect("load instrument")
-    })
-    .unwrap_or_else(|e| panic!("start audio: {e}"));
+    let log_osc = std::env::var_os("REUBEN_LOG_OSC").is_some();
+    let config = EngineConfig {
+        instrument_root: root,
+        profile,
+        osc_out,
+        log_osc,
+        ..EngineConfig::new(instrument)
+    };
+    let running = match engine::start(config) {
+        Ok(running) => running,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
 
+    if let Some(target) = running.osc_out_target() {
+        println!("OSC-out sending to {target}");
+    }
+    if let Some(addr) = running.osc_in_addr() {
+        println!("OSC-in listening on {addr}  (send /voicer/notes [midi, gate])");
+        if !log_osc {
+            println!("  (set REUBEN_LOG_OSC=1 to log received OSC)");
+        }
+    }
+    println!(
+        "audio out @ {} Hz, block {}",
+        running.sample_rate(),
+        running.block_size()
+    );
     // Resource problems are non-fatal: the rig still plays, but surface them.
-    for w in &live.warnings {
+    for w in running.warnings() {
         eprintln!("warning: {w}");
     }
+    match (running.structure_addr(), running.structure_error()) {
+        (Some(addr), _) => println!("structure channel on {addr}"),
+        (None, Some(e)) => eprintln!(
+            "warning: structure channel unavailable on {DEFAULT_STRUCTURE_ADDR} ({e}); MCP \
+             structure ops (get_document/get_diagnostics/swap) are disabled this run"
+        ),
+        (None, None) => {}
+    }
 
-    let audio::LiveAudio {
-        streams,
-        diagnostics,
-        coordinator,
-        render_config,
-        warnings: _,
-    } = live;
-
-    // The structure channel: a loopback-TCP/NDJSON server answering the MCP sidecar's
-    // ping/get_document/get_diagnostics/swap/send off dedicated std threads (no async runtime keeps
-    // reuben-native tokio-free). It owns the Coordinator — the single writer of graph
-    // structure — and publishes each swap's freshly-validated device output map
-    // through the native render seam. Non-fatal: audio is the primary function, so a taken port
-    // disables the channel with a warning rather than killing playback.
-    //
-    // Its control sink is a clone of the very sender the UDP thread holds, so `send` converges with
-    // external OSC at the callback's `queue_osc` and this door needs no wire format of its own.
-    let host = NativeHost::new(diagnostics.clone(), osc_tx).with_render_config(render_config);
-    let state = reuben_api::engine::StructureState::new(coordinator, std::sync::Arc::new(host))
-        .with_installed_source(initial_source);
-    let structure_server = match structure::StructureServer::bind(STRUCTURE_BIND, state) {
-        Ok(server) => {
-            println!("structure channel on {}", server.local_addr());
-            Some(server)
-        }
-        Err(e) => {
-            eprintln!(
-                "warning: structure channel unavailable on {STRUCTURE_BIND} ({e}); MCP structure \
-                 ops (get_document/get_diagnostics/swap) are disabled this run"
-            );
-            None
-        }
-    };
-
-    // Clean shutdown: a SIGINT/SIGTERM handler wakes this thread, which
-    // then tears down in order — stop the structure channel (joining its threads, which drops the
-    // Coordinator and frees any last retired Engine off-thread), stop audio (dropping `streams`
-    // stops the callback), and flush a final diagnostics snapshot (the exit-time log).
     let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
     install_shutdown_handler(shutdown_tx.clone());
 
@@ -801,11 +653,8 @@ fn play(
     let _ = shutdown_rx.recv();
     println!("shutting down…");
 
-    if let Some(server) = structure_server {
-        server.shutdown();
-    }
-    drop(streams);
-    reuben_native::diagnostics::log_snapshot(&diagnostics.snapshot());
+    reuben_native::diagnostics::log_snapshot(&running.shutdown());
+    ExitCode::SUCCESS
 }
 
 /// Install the SIGINT/SIGTERM → shutdown bridge (unix). `std` has no signal API, so this uses
@@ -837,12 +686,12 @@ fn install_shutdown_handler(tx: mpsc::Sender<()>) {
             on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t,
         );
     }
-    thread::spawn(move || loop {
+    std::thread::spawn(move || loop {
         if SIGNALED.load(Ordering::SeqCst) {
             let _ = tx.send(());
             break;
         }
-        thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(100));
     });
 }
 

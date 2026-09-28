@@ -6,14 +6,15 @@
 //! one place instead of drifting between two mirrors.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use reuben_api::render::{RenderSide, RenderSlot};
+use reuben_api::render::{AudioConfig, Message, RenderSide, RenderSlot};
 use reuben_api::resources::{ResolveError, Resources, SampleBuffer};
 
+use crate::engine::{start_with, EngineConfig, Render, RunningEngine, StartError};
 use crate::osc::{ControlBatch, OscIn};
 
 /// A store with nothing in it, for the self-contained documents these tests install: no samples, no
@@ -58,6 +59,25 @@ pub struct FakeCallback {
 impl FakeCallback {
     /// Start driving `side`, draining `control_rx` into the slot's `queue_osc`.
     pub fn spawn(side: RenderSide, control_rx: Receiver<ControlBatch>) -> Self {
+        Self::start(side, control_rx, None, true)
+    }
+
+    /// The headless engine's driver: forwards outbound Messages to `outbound` the way the device
+    /// callback does, and keeps no log of what it fed, since it may run for as long as a session.
+    pub(crate) fn drive(
+        side: RenderSide,
+        control_rx: Receiver<ControlBatch>,
+        outbound: Option<Sender<Message>>,
+    ) -> Self {
+        Self::start(side, control_rx, outbound, false)
+    }
+
+    fn start(
+        side: RenderSide,
+        control_rx: Receiver<ControlBatch>,
+        outbound: Option<Sender<Message>>,
+        record: bool,
+    ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = Arc::clone(&stop);
         let queued = Arc::new(Mutex::new(Vec::new()));
@@ -72,17 +92,24 @@ impl FakeCallback {
                 // applied without splitting, so a gesture reaches one block. Flat args in, typed at
                 // the slot's Engine where the destination port's type is known.
                 while let Ok(batch) = control_rx.try_recv() {
-                    batches_thread.lock().expect("batch log").push(batch.len());
                     for m in &batch {
                         slot.queue_osc(&m.address, &m.args);
                     }
-                    queued_thread.lock().expect("queued log").extend(batch);
+                    if record {
+                        batches_thread.lock().expect("batch log").push(batch.len());
+                        queued_thread.lock().expect("queued log").extend(batch);
+                    }
                 }
                 let ch = slot.channels().max(1);
                 if buf.len() != BLOCK * ch {
                     buf.resize(BLOCK * ch, 0.0);
                 }
                 slot.fill(&mut buf);
+                for m in slot.drain_outbound() {
+                    if let Some(tx) = &outbound {
+                        let _ = tx.send(m);
+                    }
+                }
                 // Pace the loop like a device would: fast enough that a swap's ramp completes in a
                 // few ms, slow enough not to spin a core.
                 std::thread::sleep(Duration::from_millis(1));
@@ -115,11 +142,97 @@ impl FakeCallback {
         self.batches.lock().expect("batch log").clone()
     }
 
-    /// Stop the loop and join the thread.
-    pub fn stop(mut self) {
+    /// Stop the loop and join the thread. Dropping it does the same.
+    pub fn stop(self) {}
+}
+
+impl Drop for FakeCallback {
+    fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
+        }
+    }
+}
+
+/// [`engine::start`](crate::engine::start) with a [`FakeCallback`] in place of the audio device, at
+/// 48 kHz and the fake's block size: everything else — the instrument load, the OSC sockets, the
+/// structure server, the teardown — is the real entry point's. The profile and `block_size` are
+/// ignored and the render side is output-only.
+pub fn start_headless(config: EngineConfig) -> Result<RunningEngine, StartError> {
+    start_with(
+        config,
+        Render::Headless {
+            config: headless_config(),
+            outbound: None,
+        },
+    )
+}
+
+/// [`start_headless`], plus a clone of the render callback's outbound sender held by the caller —
+/// the stand-in for a device callback that outlives its stream's drop (cpal on macOS keeps a
+/// non-default device's callback alive through its disconnect listener). With it held, the OSC-out
+/// thread never sees its channel disconnect, so only the engine's own stop can end it; once that
+/// thread has exited, a `send` on the clone fails. `None` when `config.osc_out` is.
+pub fn start_headless_holding_outbound(
+    config: EngineConfig,
+) -> Result<(RunningEngine, Option<Sender<Message>>), StartError> {
+    let mut held = None;
+    let engine = start_with(
+        config,
+        Render::Headless {
+            config: headless_config(),
+            outbound: Some(&mut held),
+        },
+    )?;
+    Ok((engine, held))
+}
+
+fn headless_config() -> AudioConfig {
+    AudioConfig::new(48_000.0, BLOCK)
+}
+
+/// How long a whole engine teardown may take. Its own polls add up to well under this (the structure
+/// read poll is the longest, at 250 ms), so a teardown that nears it is waiting on a thread that
+/// is not being woken.
+pub const SHUTDOWN_BOUND: Duration = Duration::from_secs(1);
+
+/// Tear `engine` down — [`shutdown`](RunningEngine::shutdown), or a plain drop when `by_drop` —
+/// and fail if that took [`SHUTDOWN_BOUND`] or longer. Pair it with [`within`], which catches the
+/// teardown that never returns at all.
+pub fn timed_teardown(engine: RunningEngine, by_drop: bool) {
+    let started = Instant::now();
+    if by_drop {
+        drop(engine);
+    } else {
+        engine.shutdown();
+    }
+    let took = started.elapsed();
+    assert!(
+        took < SHUTDOWN_BOUND,
+        "teardown took {took:?}, over the {SHUTDOWN_BOUND:?} bound"
+    );
+}
+
+/// Run `f` on a fresh thread and fail if it has not returned within `secs` — a hang assertion that
+/// still reports a panic inside `f` as that panic. A [`RunningEngine`] is not `Send`, so a test
+/// starts and stops one inside `f`.
+pub fn within<T: Send + 'static>(secs: u64, f: impl FnOnce() -> T + Send + 'static) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    match rx.recv_timeout(Duration::from_secs(secs)) {
+        Ok(value) => {
+            let _ = handle.join();
+            value
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => match handle.join() {
+            Err(panic) => std::panic::resume_unwind(panic),
+            Ok(()) => unreachable!("the thread sent before returning"),
+        },
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            panic!("did not complete within {secs}s — it hung")
         }
     }
 }
