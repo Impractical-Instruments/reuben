@@ -14,7 +14,8 @@
 //!   classification, the result shapes and the glosses.
 //! - [`server`] — the serving side, over an [`EngineHost`] seam. A host supplies its device map,
 //!   its control ingress, its counters and the clock its deferred free waits on; the window
-//!   decides what each verb *means*, the expect guard included.
+//!   decides what each verb *means*, the expect guard included. [`InProcess`] is the transport a
+//!   host embedding the engine uses to reach its own server state with no socket between.
 //!
 //! This module is compiled with the `authoring` feature: it is the control half of the
 //! authoring/control side of the window — off-thread, serialized, and never on a block.
@@ -39,7 +40,9 @@ pub use prose::ENGINE_UNREACHABLE_GUIDANCE;
 pub use result::{
     CurrentInstrument, EngineStatus, SendOutput, SidecarInfo, StatusEndpoints, SwapResult,
 };
-pub use server::{dispatch, EngineHost, IngressClosed, StructureState};
+pub use server::{
+    dispatch, EngineHost, InProcess, IngressClosed, StructureState, IN_PROCESS_ENDPOINT,
+};
 
 /// The single-writer graph owner an [`StructureState`] serves. The engine's type, re-exported because
 /// a host has to name it to build one — and reaching past the window for the *one* type its own

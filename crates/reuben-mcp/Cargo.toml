@@ -37,3 +37,9 @@ serde_json = { workspace = true }
 # JSON Schema derive for the tool input/output types — the same schemars the window derives its own
 # argument and result shapes with. Nothing behind the window derives one.
 schemars = { workspace = true }
+
+[dev-dependencies]
+# Test-only, and never the other way round: `native_engine` starts the engine through
+# reuben-native's entry point and dials it with this door's own transport — the pairing a user runs
+# as two processes, in one test.
+reuben-native = { path = "../reuben-native" }

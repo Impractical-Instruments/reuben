@@ -5,9 +5,9 @@
 //! field is an [`AtomicU64`], every write a single `fetch_add`, and reads take a [`Snapshot`]
 //! copy so a logger never holds a reference into the live struct.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Atomic counters for the conditions reuben must "know and say": an output
 /// render that missed its deadline, and the input ring's empty-read and
@@ -115,8 +115,7 @@ impl Snapshot {
 }
 
 /// Emit one snapshot to stderr. Shared wording for periodic and exit logging so both read the
-/// same line format. Exposed as a free function precisely so an exit hook can call it later with
-/// no change to this module.
+/// same line format.
 pub fn log_snapshot(s: &Snapshot) {
     eprintln!(
         "diagnostics: output_xruns={} input_ring_underruns={} input_ring_overruns={} \
@@ -128,28 +127,55 @@ pub fn log_snapshot(s: &Snapshot) {
 /// Spawn a background thread that logs a [`Diagnostics`] snapshot every `interval`, but only
 /// when something counted has changed since the last log — a healthy run stays silent instead
 /// of spamming stderr. Not RT: this thread never touches the audio callback's control flow, it
-/// only reads the shared atomics on a plain sleep loop. Logging is periodic only: `reuben play`
-/// has no clean shutdown path today (it parks the main thread forever; Ctrl-C is an uncaught
-/// `SIGINT`), so there is no exit hook to log from yet.
+/// only reads the shared atomics on a plain timed wait.
 ///
-/// The returned `JoinHandle` runs for the life of the process (the loop never exits); callers
-/// keep it only to signal intent that the thread is deliberately detached-in-practice, matching
-/// `play`'s other background threads (OSC-in/out).
-pub fn spawn_periodic_logger(
-    diag: Arc<Diagnostics>,
-    interval: Duration,
-) -> std::thread::JoinHandle<()> {
-    std::thread::spawn(move || {
-        let mut prior = Snapshot::default();
-        loop {
-            std::thread::sleep(interval);
-            let now = diag.snapshot();
-            if now.changed_since(&prior) {
-                log_snapshot(&now);
-                prior = now;
+/// The thread runs until the returned [`PeriodicLogger`] is dropped, which wakes it at once rather
+/// than after the rest of the current `interval`.
+pub fn spawn_periodic_logger(diag: Arc<Diagnostics>, interval: Duration) -> PeriodicLogger {
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = Arc::clone(&stop);
+    let handle = std::thread::Builder::new()
+        .name("diagnostics-log".to_string())
+        .spawn(move || {
+            let mut prior = Snapshot::default();
+            let mut next = Instant::now() + interval;
+            while !thread_stop.load(Ordering::SeqCst) {
+                // `park_timeout` may wake spuriously, so the cadence is kept by the deadline, not
+                // by the park returning.
+                let now = Instant::now();
+                if now < next {
+                    std::thread::park_timeout(next - now);
+                    continue;
+                }
+                next = now + interval;
+                let snapshot = diag.snapshot();
+                if snapshot.changed_since(&prior) {
+                    log_snapshot(&snapshot);
+                    prior = snapshot;
+                }
             }
+        })
+        .expect("spawn diagnostics-log thread");
+    PeriodicLogger {
+        stop,
+        handle: Some(handle),
+    }
+}
+
+/// The running [`spawn_periodic_logger`] thread. Dropping it stops and joins the thread.
+pub struct PeriodicLogger {
+    stop: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for PeriodicLogger {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.handle.take() {
+            handle.thread().unpark();
+            let _ = handle.join();
         }
-    })
+    }
 }
 
 #[cfg(test)]

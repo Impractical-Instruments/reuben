@@ -11,9 +11,10 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use reuben_api::render::{RenderSide, RenderSlot};
+use reuben_api::render::{AudioConfig, RenderSide, RenderSlot};
 use reuben_api::resources::{ResolveError, Resources, SampleBuffer};
 
+use crate::engine::{start_with, EngineConfig, Render, RunningEngine, StartError};
 use crate::osc::{ControlBatch, OscIn};
 
 /// A store with nothing in it, for the self-contained documents these tests install: no samples, no
@@ -115,11 +116,23 @@ impl FakeCallback {
         self.batches.lock().expect("batch log").clone()
     }
 
-    /// Stop the loop and join the thread.
-    pub fn stop(mut self) {
+    /// Stop the loop and join the thread. Dropping it does the same.
+    pub fn stop(self) {}
+}
+
+impl Drop for FakeCallback {
+    fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
     }
+}
+
+/// [`engine::start`](crate::engine::start) with a [`FakeCallback`] in place of the audio device, at
+/// 48 kHz and the fake's block size: everything else — the instrument load, the OSC sockets, the
+/// structure server, the teardown — is the real entry point's. The profile is ignored and the render
+/// side is output-only.
+pub fn start_headless(config: EngineConfig) -> Result<RunningEngine, StartError> {
+    start_with(config, Render::Headless(AudioConfig::new(48_000.0, BLOCK)))
 }

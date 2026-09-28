@@ -26,10 +26,13 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use reuben_document::coordinator::Coordinator;
 
 use crate::authoring::{Diag, Report};
+
+use super::channel::Transport;
 
 use super::wire::{
     over_long_batch_refusal, Conflict, ControlMessage, DiagnosticsReport, DocSource,
@@ -156,6 +159,48 @@ pub fn dispatch(state: &StructureState, line: &str) -> Response {
         },
     }
 }
+
+/// The structure channel with no socket under it: a [`Transport`] that hands each request line to
+/// [`dispatch`] on the caller's thread, so a host embedding the engine drives the same verbs over
+/// the same [`StructureState`] its loopback server serves.
+///
+/// The request still crosses the NDJSON envelope. That is the point, not an overhead to optimize
+/// away: the framing and the response classification are then the ones a socket client gets, so an
+/// in-process caller and the MCP sidecar cannot see different answers to the same request.
+///
+/// `round_trip` never fails and ignores its `read_timeout` — there is no peer to go silent. What
+/// bounds a call is `dispatch` itself: a swap blocks on the Coordinator lock behind any in-flight
+/// swap, and its reclaim poll is bounded by the host's [`EngineHost::retire_poll`] gate.
+#[derive(Clone)]
+pub struct InProcess {
+    state: StructureState,
+}
+
+impl InProcess {
+    /// A transport over `state` — typically a clone of the one the host's server also serves.
+    pub fn new(state: StructureState) -> Self {
+        Self { state }
+    }
+}
+
+impl core::fmt::Debug for InProcess {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("InProcess")
+    }
+}
+
+impl Transport for InProcess {
+    fn round_trip(&self, line: &str, _read_timeout: Duration) -> std::io::Result<String> {
+        Ok(dispatch(&self.state, line).to_ndjson())
+    }
+
+    fn endpoint(&self) -> &str {
+        IN_PROCESS_ENDPOINT
+    }
+}
+
+/// What [`InProcess::endpoint`] reports: not an address, since nothing is dialed.
+pub const IN_PROCESS_ENDPOINT: &str = "in-process";
 
 /// Control traffic: hand the batch to the host's ingress **as one unit** and ack it.
 ///

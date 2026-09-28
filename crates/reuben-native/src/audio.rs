@@ -44,7 +44,7 @@ use std::time::{Duration, Instant};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, SupportedBufferSize};
 use reuben_api::authoring::Diag;
-use reuben_api::engine::{Coordinator, LoadWarning};
+use reuben_api::engine::{Coordinator, FromDocumentError, LoadWarning};
 use reuben_api::render::{
     swap_pair, AudioConfig, CoordinatorMailbox, Message, RenderMailbox, RenderSide, RenderSlot,
     SwapInFlight,
@@ -54,10 +54,6 @@ use crate::diagnostics::Diagnostics;
 use crate::osc::ControlBatch;
 use crate::profile::DeviceProfile;
 use crate::structure::{dark_degrade_warning, RenderConfigPublisher, RenderLiveness, SwapPollGate};
-
-/// How often the periodic diagnostics logger wakes to check the counters. It only
-/// emits a line when something changed, so a healthy run stays quiet at this cadence regardless.
-const DIAGNOSTICS_LOG_INTERVAL: Duration = Duration::from_secs(5);
 
 /// How long [`NativeRenderConfig::publish`] polls to install a swap's output map before giving up.
 /// The map mailbox is one-in-flight: install is refused until the *previous*
@@ -175,6 +171,9 @@ pub enum AudioError {
     BuildInput(cpal::BuildStreamError),
     /// Starting input capture failed.
     PlayInput(cpal::PlayStreamError),
+    /// The instrument would not load or plan at the negotiated device config. Reached before any
+    /// stream is built, so nothing was opened.
+    Instrument(FromDocumentError),
 }
 
 impl fmt::Display for AudioError {
@@ -218,6 +217,7 @@ impl fmt::Display for AudioError {
             }
             AudioError::BuildInput(e) => write!(f, "build input stream: {e}"),
             AudioError::PlayInput(e) => write!(f, "play input stream: {e}"),
+            AudioError::Instrument(e) => write!(f, "{e}"),
         }
     }
 }
@@ -258,7 +258,7 @@ pub struct LiveAudio {
 /// `block_size` is the core render block size; `build` constructs the [`Coordinator`] + its RT
 /// [`RenderSide`] once the device sample rate is known (so the Plan's tuning matches the hardware)
 /// — typically a call to [`Coordinator::install_initial`]; the Coordinator is returned for the
-/// structure channel. `osc_out` is the optional OSC-out sink: when `Some`, the callback forwards
+/// structure channel, and a build error is [`AudioError::Instrument`]. `osc_out` is the optional OSC-out sink: when `Some`, the callback forwards
 /// each outbound Message to it (a sender thread encodes + UDP-sends, off the audio thread); when
 /// `None`, outbound is drained and dropped, with one warning the first time a rig sends. `profile`
 /// selects the devices, negotiates sample-rate/buffer-size preferences, and overrides the channel
@@ -274,7 +274,9 @@ pub fn start<F>(
     build: F,
 ) -> Result<LiveAudio, AudioError>
 where
-    F: FnOnce(AudioConfig) -> (Coordinator, RenderSide, Vec<LoadWarning>),
+    F: FnOnce(
+        AudioConfig,
+    ) -> Result<(Coordinator, RenderSide, Vec<LoadWarning>), FromDocumentError>,
 {
     let host = cpal::default_host();
     let device = select_output_device(&host, profile.output.device.as_deref())?;
@@ -292,7 +294,8 @@ where
 
     // Build the Coordinator + RT RenderSide at the device rate. The RenderSlot drives the Engine in
     // the callback; the Coordinator goes to the structure channel.
-    let (coordinator, render_side, warnings) = build(AudioConfig::new(sample_rate, block_size));
+    let (coordinator, render_side, warnings) =
+        build(AudioConfig::new(sample_rate, block_size)).map_err(AudioError::Instrument)?;
     let mut slot = RenderSlot::new(render_side);
     let logical = slot.channels();
     let in_channels = slot.input_channels();
@@ -321,7 +324,6 @@ where
 
     let diagnostics = Diagnostics::new();
     let diag_for_callback = Arc::clone(&diagnostics);
-    crate::diagnostics::spawn_periodic_logger(Arc::clone(&diagnostics), DIAGNOSTICS_LOG_INTERVAL);
 
     // Render-callback liveness heartbeat: the callback ticks it every block so a
     // swap's off-thread reclaim/install poll can tell a running device from a stopped one. Seeded
