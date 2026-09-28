@@ -302,11 +302,6 @@ Other errors are specific, and each says what to do next:
 
 See `instruments/*.json` for worked examples.
 
-A node and an `interface` entry may also carry **`layout`** — `{ "x": 120.0, "y": 40.0 }`, the
-desktop editor's canvas position. It is **editor-owned**: the engine ignores it, no
-`describe_instrument` view shows it, none of your verbs writes it, and every one carries it
-through unchanged. Leave it as you find it.
-
 ### The `interface` block: named pipes at the boundary ([composition-operators](../rules/composition-operators.md)) <!-- lanes: skills,mcp,web -->
 
 `interface.inputs` / `interface.outputs` entries are **named pipes** — the single boundary
