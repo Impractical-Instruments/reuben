@@ -19,8 +19,8 @@ use reuben_api::authoring::{
 };
 use reuben_api::engine::DEFAULT_STRUCTURE_ADDR;
 use reuben_api::FsResolver;
-use reuben_native::engine::{self, EngineConfig, Instrument};
-use reuben_native::profile::DeviceProfile;
+use reuben_native::cli::{self, EngineFlags};
+use reuben_native::engine::{self, Instrument};
 use reuben_native::scaffold;
 
 #[derive(Parser)]
@@ -35,27 +35,14 @@ struct Cli {
     command: Command,
 }
 
-/// The effective library root: the `--instrument-root` flag, else `REUBEN_INSTRUMENT_ROOT`.
-fn instrument_root(flag: Option<PathBuf>) -> Option<PathBuf> {
-    flag.or_else(|| std::env::var_os("REUBEN_INSTRUMENT_ROOT").map(PathBuf::from))
-}
-
 #[derive(Subcommand)]
 enum Command {
     /// Render an instrument live, driven by OSC over UDP (default: the built-in rig).
     Play {
         /// Instrument JSON to play; omit for the built-in default rig.
         path: Option<PathBuf>,
-        /// Send OSC out to this `host:port` (e.g. `127.0.0.1:9001`) — the static target an
-        /// `osc_out` node's Messages are encoded and UDP-sent to. Omit to disable.
-        #[arg(long, value_name = "HOST:PORT")]
-        osc_out: Option<String>,
-        /// Device profile JSON: logical↔device channel maps, device selection by
-        /// name substring, and sample-rate/buffer-size preferences — outside the patch, so the
-        /// same instrument plays on any rig. Omit for the default device and identity map,
-        /// bit-identical to today's behavior. See docs/device-profile.md.
-        #[arg(long, value_name = "FILE")]
-        io_map: Option<PathBuf>,
+        #[command(flatten)]
+        engine: EngineFlags,
     },
     /// Print the operator set, one operator's ports/params/resources, or — given an instrument
     /// JSON path — a structural view of that instrument.
@@ -155,13 +142,9 @@ fn window_view(view: InstrumentView) -> authoring::InstrumentView {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let root = instrument_root(cli.instrument_root);
+    let root = cli::instrument_root(cli.instrument_root);
     match cli.command {
-        Command::Play {
-            path,
-            osc_out,
-            io_map,
-        } => play(path, osc_out, io_map, root),
+        Command::Play { path, engine } => play(path, engine, root),
         Command::Describe {
             op,
             json,
@@ -561,54 +544,33 @@ fn cmd_validate(path: &Path, json: bool, root: Option<PathBuf>) -> ExitCode {
 ///
 /// Everything it starts is [`engine::start`]'s; what is left here is the terminal — the flags, the
 /// startup lines, and the signal that ends the session.
-fn play(
-    path: Option<PathBuf>,
-    osc_out: Option<String>,
-    io_map: Option<PathBuf>,
-    root: Option<PathBuf>,
-) -> ExitCode {
+fn play(path: Option<PathBuf>, flags: EngineFlags, root: Option<PathBuf>) -> ExitCode {
+    let io_map = flags.io_map.clone();
+    let instrument = path.map_or(Instrument::Default, Instrument::Path);
     // A malformed profile is a structural load error — fatal, like any other bad input this
     // binary reads.
-    let profile = match &io_map {
-        Some(path) => {
-            let profile = match DeviceProfile::load(path) {
-                Ok(profile) => profile,
-                Err(e) => {
-                    eprintln!("error: io-map {}: {e}", path.display());
-                    return ExitCode::FAILURE;
-                }
-            };
-            println!("io-map: {}", path.display());
-            if profile.has_input() {
-                println!(
-                    "  note: input.* takes effect only when the played instrument binds input \
-                     channels; an instrument without input pipes never opens an input device"
-                );
-            }
-            profile
+    let config = match flags.config(instrument, root) {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
         }
-        None => DeviceProfile::default(),
     };
+    if let Some(path) = &io_map {
+        println!("io-map: {}", path.display());
+        if config.profile.has_input() {
+            println!(
+                "  note: input.* takes effect only when the played instrument binds input \
+                 channels; an instrument without input pipes never opens an input device"
+            );
+        }
+    }
+    match &config.instrument {
+        Instrument::Path(path) => println!("instrument: {}", path.display()),
+        Instrument::Default => println!("instrument: <default> (pass a path to load your own)"),
+    }
 
-    let instrument = match path {
-        Some(path) => {
-            println!("instrument: {}", path.display());
-            Instrument::Path(path)
-        }
-        None => {
-            println!("instrument: <default> (pass a path to load your own)");
-            Instrument::Default
-        }
-    };
-
-    let log_osc = std::env::var_os("REUBEN_LOG_OSC").is_some();
-    let config = EngineConfig {
-        instrument_root: root,
-        profile,
-        osc_out,
-        log_osc,
-        ..EngineConfig::new(instrument)
-    };
+    let log_osc = config.log_osc;
     let running = match engine::start(config) {
         Ok(running) => running,
         Err(e) => {

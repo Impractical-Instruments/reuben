@@ -10,6 +10,15 @@ publish = false
 
 [dependencies]
 eframe.workspace = true
+clap.workspace = true
+# As a library: the engine entry point `reuben play` is a caller of, and the flags it starts from.
+reuben-native = { path = "../reuben-native" }
+
+[dev-dependencies]
+# The tests reach the embedded engine the way the sidecar does: its link over the loopback socket,
+# and the window's engine verbs on it.
+reuben-api = { path = "../reuben-api" }
+reuben-mcp = { path = "../reuben-mcp" }
 
 [[bin]]
 name = "reuben-editor"
