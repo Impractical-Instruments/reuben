@@ -13,6 +13,7 @@ use reuben_core::render::Renderer;
 use reuben_core::resources::SampleBuffer;
 use reuben_core::{AudioConfig, Registry};
 use reuben_document::edit;
+use reuben_document::format::Layout;
 use reuben_document::projection::{Projector, Selection};
 use reuben_document::resources::{ResolveError, ResourceResolver};
 use reuben_document::{load_instrument, MemoryResolver, NormalizedDoc};
@@ -223,6 +224,49 @@ fn an_edit_verb_carries_layout_it_does_not_touch() {
             ("inputs.freq".to_string(), (1.5, 2.5)),
             ("outputs.audio".to_string(), (300.0, 2.5)),
         ]
+    );
+}
+
+#[test]
+fn a_layout_only_write_leaves_the_plan_as_it_was() {
+    const DOC: &str = r#"{
+        "format_version": 3,
+        "instrument": "t",
+        "interface": {
+            "inputs": { "freq": { "type": "f32", "default": 220.0 } },
+            "outputs": { "audio": { "from": "/amp" } }
+        },
+        "nodes": [
+            { "type": "oscillator", "address": "/osc", "inputs": { "freq": { "from": "/freq" } } },
+            { "type": "mul_f32_signal", "address": "/amp",
+              "inputs": { "a": { "from": "/osc" }, "b": 0.5 } }
+        ]
+    }"#;
+    let registry = Registry::builtin();
+    let mut mem = MemoryResolver::new();
+    mem.insert_text("t.json", DOC);
+    let at = |i: usize| -> Layout { serde_json::from_value(position(i)).expect("a position") };
+
+    let result = edit::set_instrument_layout(
+        "t.json",
+        &[
+            (edit::LayoutTarget::Node("/osc".into()), at(0)),
+            (edit::LayoutTarget::Node("/amp".into()), at(1)),
+            (edit::LayoutTarget::Node("/freq".into()), at(2)),
+            (edit::LayoutTarget::Output("audio".into()), at(3)),
+        ],
+        &registry,
+        &mem,
+    )
+    .expect("every target exists");
+    assert!(result.written, "{:?}", result.report);
+
+    let after = mem.resolve_text("t.json").expect("saved");
+    assert_eq!(layouts(&after).len(), 4, "{after}");
+    assert_eq!(
+        shape(&instantiate(DOC, &mem)),
+        shape(&instantiate(&after, &mem)),
+        "a layout-only write changed the Plan"
     );
 }
 
