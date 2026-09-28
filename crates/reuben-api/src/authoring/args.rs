@@ -12,7 +12,6 @@
 //! Every struct here is `deny_unknown_fields`, which schemars carries onto the wire as
 //! `additionalProperties: false`.
 
-use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -490,19 +489,33 @@ pub enum LayoutTarget {
 
 impl<'de> Deserialize<'de> for LayoutTarget {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        use serde::de::Error;
-        use serde_json::Value;
         // By shape, by hand: derived `untagged` would also take serde's `["main"]` sequence form of
-        // `OutputTarget`, and would bury a misspelled key under "did not match any variant".
-        match Value::deserialize(deserializer)? {
-            Value::String(address) => Ok(LayoutTarget::Node(address)),
-            Value::Object(map) => serde_json::from_value(Value::Object(map))
-                .map(LayoutTarget::Output)
-                .map_err(D::Error::custom),
-            other => Err(D::Error::custom(format!(
-                "a layout target is a node address string or `{{\"output\": name}}`, not `{other}`"
-            ))),
+        // `OutputTarget`, and would bury a misspelled key under "did not match any variant". The
+        // map goes straight to the derived impl rather than through a buffered `Value`, which
+        // would keep only the last of two duplicate keys and hide the duplicate.
+        struct Shape;
+
+        impl<'de> serde::de::Visitor<'de> for Shape {
+            type Value = LayoutTarget;
+
+            fn expecting(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                f.write_str("a node address string or `{\"output\": name}`")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, address: &str) -> Result<LayoutTarget, E> {
+                Ok(LayoutTarget::Node(address.into()))
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<LayoutTarget, A::Error> {
+                OutputTarget::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+                    .map(LayoutTarget::Output)
+            }
         }
+
+        deserializer.deserialize_any(Shape)
     }
 }
 
@@ -581,6 +594,13 @@ mod tests {
             serde_json::from_value::<LayoutPosition>(json!({ "target": "/osc", "x": 0.0 }))
                 .is_err(),
             "both coordinates are required"
+        );
+        // Text, not `json!`: a `Value` has already kept only the last of two duplicate keys.
+        let twice = r#"{ "target": { "output": "a", "output": "b" }, "x": 0.0, "y": 0.0 }"#;
+        let err = serde_json::from_str::<LayoutPosition>(twice).expect_err("a repeated key");
+        assert!(
+            err.to_string().contains("duplicate field `output`"),
+            "{err}"
         );
     }
 
