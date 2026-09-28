@@ -11,70 +11,69 @@
 <text x="56" y="46" text-anchor="end" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" fill="#898781">Ir (M)</text>
 <line x1="64" y1="306" x2="730" y2="306" stroke="#c3c2b7" stroke-width="1"/>
 <text x="64.0" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-12</text>
-<text x="103.5" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-16</text>
-<text x="202.1" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-19</text>
-<text x="340.3" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-22</text>
-<text x="424.1" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-25</text>
-<text x="527.7" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-28</text>
-<text x="621.5" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-31</text>
-<text x="660.9" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">08-12</text>
-<path d="M591.9,246.3 L596.8,246.3 L601.7,249.1 L606.7,254.9 L611.6,252.0 L616.5,252.0 L621.5,253.7 L626.4,253.7 L631.3,253.7 L636.3,253.7 L641.2,253.7 L646.1,253.7 L651.1,253.7 L656.0,253.7 L660.9,253.7 L665.9,253.7 L670.8,253.7 L675.7,253.7 L680.7,253.5 L685.6,253.5 L690.5,252.1 L695.5,252.1 L700.4,252.1 L705.3,253.7 L710.3,253.7 L715.2,253.7 L720.1,253.7 L725.1,253.7 L730.0,253.7" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="730.0" cy="253.7" r="6" fill="#fcfcfb"/>
-<circle cx="730.0" cy="253.7" r="4" fill="#2a78d6"/>
-<path d="M591.9,185.7 L596.8,185.7 L601.7,191.5 L606.7,199.7 L611.6,197.1 L616.5,197.1 L621.5,197.0 L626.4,197.0 L631.3,197.0 L636.3,197.0 L641.2,197.0 L646.1,197.0 L651.1,197.0 L656.0,197.0 L660.9,197.0 L665.9,197.0 L670.8,197.0 L675.7,197.0 L680.7,196.6 L685.6,196.6 L690.5,196.9 L695.5,196.9 L700.4,196.9 L705.3,197.0 L710.3,197.0 L715.2,197.0 L720.1,197.1 L725.1,197.1 L730.0,197.0" fill="none" stroke="#1baf7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="730.0" cy="197.0" r="6" fill="#fcfcfb"/>
-<circle cx="730.0" cy="197.0" r="4" fill="#1baf7a"/>
-<path d="M591.9,56.0 L596.8,56.0 L601.7,75.4 L606.7,91.6 L611.6,86.4 L616.5,86.4 L621.5,86.5 L626.4,86.5 L631.3,86.5 L636.3,86.5 L641.2,86.5 L646.1,86.5 L651.1,86.5 L656.0,86.5 L660.9,86.5 L665.9,86.5 L670.8,86.5 L675.7,86.5 L680.7,85.7 L685.6,85.7 L690.5,86.4 L695.5,86.4 L700.4,86.4 L705.3,86.4 L710.3,86.3 L715.2,86.3 L720.1,86.3 L725.1,86.3 L730.0,86.3" fill="none" stroke="#eda100" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="730.0" cy="86.3" r="6" fill="#fcfcfb"/>
-<circle cx="730.0" cy="86.3" r="4" fill="#eda100"/>
-<path d="M591.9,254.9 L596.8,254.9 L601.7,258.9 L606.7,261.0 L611.6,260.5 L616.5,266.8 L621.5,266.8 L626.4,266.8 L631.3,266.8 L636.3,266.8 L641.2,266.8 L646.1,266.8 L651.1,266.8 L656.0,266.8 L660.9,266.8 L665.9,266.8 L670.8,266.8 L675.7,266.8 L680.7,266.6 L685.6,266.6 L690.5,266.7 L695.5,266.7 L700.4,266.7 L705.3,266.5 L710.3,266.5 L715.2,266.5 L720.1,266.5 L725.1,266.5 L730.0,266.5" fill="none" stroke="#008300" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="142.4" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-17</text>
+<text x="289.3" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-21</text>
+<text x="421.5" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-25</text>
+<text x="578.2" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-29</text>
+<text x="632.1" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">08-08</text>
+<text x="730.0" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">09-28</text>
+<path d="M588.0,246.3 L592.9,246.3 L597.8,249.1 L602.7,254.9 L607.6,252.0 L612.5,252.0 L617.4,253.7 L622.3,253.7 L627.2,253.7 L632.1,253.7 L637.0,253.7 L641.9,253.7 L646.8,253.7 L651.6,253.7 L656.5,253.7 L661.4,253.7 L666.3,253.7 L671.2,253.7 L676.1,253.5 L681.0,253.5 L685.9,252.1 L690.8,252.1 L695.7,252.1 L700.6,253.7 L705.5,253.7 L710.4,253.7 L715.3,253.7 L720.2,253.7 L725.1,253.7 L730.0,253.6" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="730.0" cy="253.6" r="6" fill="#fcfcfb"/>
+<circle cx="730.0" cy="253.6" r="4" fill="#2a78d6"/>
+<path d="M588.0,185.7 L592.9,185.7 L597.8,191.5 L602.7,199.7 L607.6,197.1 L612.5,197.1 L617.4,197.0 L622.3,197.0 L627.2,197.0 L632.1,197.0 L637.0,197.0 L641.9,197.0 L646.8,197.0 L651.6,197.0 L656.5,197.0 L661.4,197.0 L666.3,197.0 L671.2,197.0 L676.1,196.6 L681.0,196.6 L685.9,196.9 L690.8,196.9 L695.7,196.9 L700.6,197.0 L705.5,197.0 L710.4,197.0 L715.3,197.1 L720.2,197.1 L725.1,197.0 L730.0,196.7" fill="none" stroke="#1baf7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="730.0" cy="196.7" r="6" fill="#fcfcfb"/>
+<circle cx="730.0" cy="196.7" r="4" fill="#1baf7a"/>
+<path d="M588.0,56.0 L592.9,56.0 L597.8,75.4 L602.7,91.6 L607.6,86.4 L612.5,86.4 L617.4,86.5 L622.3,86.5 L627.2,86.5 L632.1,86.5 L637.0,86.5 L641.9,86.5 L646.8,86.5 L651.6,86.5 L656.5,86.5 L661.4,86.5 L666.3,86.5 L671.2,86.5 L676.1,85.7 L681.0,85.7 L685.9,86.4 L690.8,86.4 L695.7,86.4 L700.6,86.4 L705.5,86.3 L710.4,86.3 L715.3,86.3 L720.2,86.3 L725.1,86.3 L730.0,86.0" fill="none" stroke="#eda100" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="730.0" cy="86.0" r="6" fill="#fcfcfb"/>
+<circle cx="730.0" cy="86.0" r="4" fill="#eda100"/>
+<path d="M588.0,254.9 L592.9,254.9 L597.8,258.9 L602.7,261.0 L607.6,260.5 L612.5,266.8 L617.4,266.8 L622.3,266.8 L627.2,266.8 L632.1,266.8 L637.0,266.8 L641.9,266.8 L646.8,266.8 L651.6,266.8 L656.5,266.8 L661.4,266.8 L666.3,266.8 L671.2,266.8 L676.1,266.6 L681.0,266.6 L685.9,266.7 L690.8,266.7 L695.7,266.7 L700.6,266.5 L705.5,266.5 L710.4,266.5 L715.3,266.5 L720.2,266.5 L725.1,266.5 L730.0,266.5" fill="none" stroke="#008300" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
 <circle cx="730.0" cy="266.5" r="6" fill="#fcfcfb"/>
 <circle cx="730.0" cy="266.5" r="4" fill="#008300"/>
-<path d="M591.9,202.0 L596.8,202.0 L601.7,209.8 L606.7,214.1 L611.6,213.0 L616.5,225.7 L621.5,225.9 L626.4,225.9 L631.3,225.9 L636.3,225.9 L641.2,225.9 L646.1,225.9 L651.1,225.9 L656.0,225.9 L660.9,225.9 L665.9,225.9 L670.8,225.9 L675.7,225.9 L680.7,225.6 L685.6,225.6 L690.5,225.7 L695.5,225.7 L700.4,225.7 L705.3,225.3 L710.3,225.3 L715.2,225.3 L720.1,225.3 L725.1,225.3 L730.0,225.3" fill="none" stroke="#4a3aa7" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="730.0" cy="225.3" r="6" fill="#fcfcfb"/>
-<circle cx="730.0" cy="225.3" r="4" fill="#4a3aa7"/>
-<path d="M591.9,97.4 L596.8,97.4 L601.7,113.4 L606.7,121.8 L611.6,119.4 L616.5,144.8 L621.5,144.0 L626.4,144.0 L631.3,144.0 L636.3,144.0 L641.2,144.0 L646.1,144.0 L651.1,144.0 L656.0,144.0 L660.9,144.0 L665.9,144.0 L670.8,144.0 L675.7,144.0 L680.7,143.3 L685.6,143.3 L690.5,143.4 L695.5,143.4 L700.4,143.4 L705.3,142.9 L710.3,142.9 L715.2,142.9 L720.1,142.9 L725.1,142.9 L730.0,142.9" fill="none" stroke="#e34948" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="730.0" cy="142.9" r="6" fill="#fcfcfb"/>
-<circle cx="730.0" cy="142.9" r="4" fill="#e34948"/>
-<path d="M591.9,256.2 L596.8,256.2 L601.7,259.4 L606.7,263.2 L611.6,261.9 L616.5,261.9 L621.5,261.9 L626.4,261.9 L631.3,261.9 L636.3,261.9 L641.2,261.9 L646.1,261.9 L651.1,261.9 L656.0,261.9 L660.9,261.9 L665.9,261.9 L670.8,261.9 L675.7,261.9 L680.7,261.7 L685.6,261.7 L690.5,262.0 L695.5,262.0 L700.4,262.0 L705.3,261.9 L710.3,261.9 L715.2,261.9 L720.1,261.9 L725.1,261.9 L730.0,261.9" fill="none" stroke="#e87ba4" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="730.0" cy="261.9" r="6" fill="#fcfcfb"/>
-<circle cx="730.0" cy="261.9" r="4" fill="#e87ba4"/>
-<path d="M591.9,200.8 L596.8,200.8 L601.7,211.8 L606.7,219.3 L611.6,216.8 L616.5,216.8 L621.5,216.8 L626.4,216.8 L631.3,216.8 L636.3,216.8 L641.2,216.8 L646.1,216.8 L651.1,216.8 L656.0,216.8 L660.9,216.8 L665.9,216.8 L670.8,216.8 L675.7,216.8 L680.7,216.4 L685.6,216.4 L690.5,216.7 L695.5,216.7 L700.4,216.7 L705.3,216.8 L710.3,216.8 L715.2,216.8 L720.1,216.8 L725.1,216.8 L730.0,216.8" fill="none" stroke="#eb6834" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="730.0" cy="216.8" r="6" fill="#fcfcfb"/>
-<circle cx="730.0" cy="216.8" r="4" fill="#eb6834"/>
-<path d="M591.9,93.8 L596.8,93.8 L601.7,116.4 L606.7,131.5 L611.6,126.3 L616.5,126.3 L621.5,126.2 L626.4,126.2 L631.3,126.2 L636.3,126.2 L641.2,126.2 L646.1,126.2 L651.1,126.2 L656.0,126.2 L660.9,126.2 L665.9,126.2 L670.8,126.2 L675.7,126.2 L680.7,125.4 L685.6,125.4 L690.5,125.8 L695.5,125.8 L700.4,125.8 L705.3,125.9 L710.3,125.9 L715.2,125.9 L720.1,125.9 L725.1,125.9 L730.0,125.9" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M588.0,202.0 L592.9,202.0 L597.8,209.8 L602.7,214.1 L607.6,213.0 L612.5,225.7 L617.4,225.9 L622.3,225.9 L627.2,225.9 L632.1,225.9 L637.0,225.9 L641.9,225.9 L646.8,225.9 L651.6,225.9 L656.5,225.9 L661.4,225.9 L666.3,225.9 L671.2,225.9 L676.1,225.6 L681.0,225.6 L685.9,225.7 L690.8,225.7 L695.7,225.7 L700.6,225.3 L705.5,225.3 L710.4,225.3 L715.3,225.3 L720.2,225.3 L725.1,225.3 L730.0,225.5" fill="none" stroke="#4a3aa7" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="730.0" cy="225.5" r="6" fill="#fcfcfb"/>
+<circle cx="730.0" cy="225.5" r="4" fill="#4a3aa7"/>
+<path d="M588.0,97.4 L592.9,97.4 L597.8,113.4 L602.7,121.8 L607.6,119.4 L612.5,144.8 L617.4,144.0 L622.3,144.0 L627.2,144.0 L632.1,144.0 L637.0,144.0 L641.9,144.0 L646.8,144.0 L651.6,144.0 L656.5,144.0 L661.4,144.0 L666.3,144.0 L671.2,144.0 L676.1,143.3 L681.0,143.3 L685.9,143.4 L690.8,143.4 L695.7,143.4 L700.6,142.9 L705.5,142.9 L710.4,142.9 L715.3,142.9 L720.2,142.9 L725.1,142.9 L730.0,143.1" fill="none" stroke="#e34948" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="730.0" cy="143.1" r="6" fill="#fcfcfb"/>
+<circle cx="730.0" cy="143.1" r="4" fill="#e34948"/>
+<path d="M588.0,256.2 L592.9,256.2 L597.8,259.4 L602.7,263.2 L607.6,261.9 L612.5,261.9 L617.4,261.9 L622.3,261.9 L627.2,261.9 L632.1,261.9 L637.0,261.9 L641.9,261.9 L646.8,261.9 L651.6,261.9 L656.5,261.9 L661.4,261.9 L666.3,261.9 L671.2,261.9 L676.1,261.7 L681.0,261.7 L685.9,262.0 L690.8,262.0 L695.7,262.0 L700.6,261.9 L705.5,261.9 L710.4,261.9 L715.3,261.9 L720.2,261.9 L725.1,261.9 L730.0,262.0" fill="none" stroke="#e87ba4" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="730.0" cy="262.0" r="6" fill="#fcfcfb"/>
+<circle cx="730.0" cy="262.0" r="4" fill="#e87ba4"/>
+<path d="M588.0,200.8 L592.9,200.8 L597.8,211.8 L602.7,219.3 L607.6,216.8 L612.5,216.8 L617.4,216.8 L622.3,216.8 L627.2,216.8 L632.1,216.8 L637.0,216.8 L641.9,216.8 L646.8,216.8 L651.6,216.8 L656.5,216.8 L661.4,216.8 L666.3,216.8 L671.2,216.8 L676.1,216.4 L681.0,216.4 L685.9,216.7 L690.8,216.7 L695.7,216.7 L700.6,216.8 L705.5,216.8 L710.4,216.8 L715.3,216.8 L720.2,216.8 L725.1,216.8 L730.0,216.7" fill="none" stroke="#eb6834" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="730.0" cy="216.7" r="6" fill="#fcfcfb"/>
+<circle cx="730.0" cy="216.7" r="4" fill="#eb6834"/>
+<path d="M588.0,93.8 L592.9,93.8 L597.8,116.4 L602.7,131.5 L607.6,126.3 L612.5,126.3 L617.4,126.2 L622.3,126.2 L627.2,126.2 L632.1,126.2 L637.0,126.2 L641.9,126.2 L646.8,126.2 L651.6,126.2 L656.5,126.2 L661.4,126.2 L666.3,126.2 L671.2,126.2 L676.1,125.4 L681.0,125.4 L685.9,125.8 L690.8,125.8 L695.7,125.8 L700.6,125.9 L705.5,125.9 L710.4,125.9 L715.3,125.9 L720.2,125.9 L725.1,125.9 L730.0,125.9" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
 <circle cx="730.0" cy="125.9" r="6" fill="#fcfcfb"/>
 <circle cx="730.0" cy="125.9" r="4" fill="#2a78d6"/>
-<line x1="736.0" y1="86.3" x2="740.0" y2="59.3" stroke="#c3c2b7" stroke-width="1"/>
+<line x1="736.0" y1="86.0" x2="740.0" y2="59.3" stroke="#c3c2b7" stroke-width="1"/>
 <circle cx="745.0" cy="55.8" r="3.5" fill="#eda100"/>
 <text x="753.0" y="59.3" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#0b0b0b">deep_n8192</text>
-<text x="753.0" y="71.3" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#52514e">242.5M</text>
-<line x1="736.0" y1="125.9" x2="740.0" y2="98.8" stroke="#c3c2b7" stroke-width="1"/>
-<circle cx="745.0" cy="95.3" r="3.5" fill="#2a78d6"/>
-<text x="753.0" y="98.8" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#0b0b0b">wide_n8192</text>
-<text x="753.0" y="110.8" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#52514e">198.9M</text>
-<line x1="736.0" y1="142.9" x2="740.0" y2="126.8" stroke="#c3c2b7" stroke-width="1"/>
-<circle cx="745.0" cy="123.3" r="3.5" fill="#e34948"/>
-<text x="753.0" y="126.8" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#0b0b0b">nest_n8192</text>
-<text x="753.0" y="138.8" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#52514e">180.1M</text>
-<line x1="736.0" y1="197.0" x2="740.0" y2="170.0" stroke="#c3c2b7" stroke-width="1"/>
+<text x="753.0" y="71.3" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#52514e">242.9M</text>
+<line x1="736.0" y1="125.9" x2="740.0" y2="99.2" stroke="#c3c2b7" stroke-width="1"/>
+<circle cx="745.0" cy="95.7" r="3.5" fill="#2a78d6"/>
+<text x="753.0" y="99.2" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#0b0b0b">wide_n8192</text>
+<text x="753.0" y="111.2" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#52514e">198.9M</text>
+<line x1="736.0" y1="143.1" x2="740.0" y2="127.2" stroke="#c3c2b7" stroke-width="1"/>
+<circle cx="745.0" cy="123.7" r="3.5" fill="#e34948"/>
+<text x="753.0" y="127.2" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#0b0b0b">nest_n8192</text>
+<text x="753.0" y="139.2" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#52514e">179.9M</text>
+<line x1="736.0" y1="196.7" x2="740.0" y2="170.0" stroke="#c3c2b7" stroke-width="1"/>
 <circle cx="745.0" cy="166.5" r="3.5" fill="#1baf7a"/>
 <text x="753.0" y="170.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#0b0b0b">deep_n4096</text>
-<text x="753.0" y="182.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#52514e">120.3M</text>
-<line x1="736.0" y1="216.8" x2="740.0" y2="198.0" stroke="#c3c2b7" stroke-width="1"/>
+<text x="753.0" y="182.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#52514e">120.7M</text>
+<line x1="736.0" y1="216.7" x2="740.0" y2="198.0" stroke="#c3c2b7" stroke-width="1"/>
 <circle cx="745.0" cy="194.5" r="3.5" fill="#eb6834"/>
 <text x="753.0" y="198.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#0b0b0b">wide_n4096</text>
-<text x="753.0" y="210.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#52514e">98.5M</text>
+<text x="753.0" y="210.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#52514e">98.6M</text>
 <circle cx="745.0" cy="222.5" r="3.5" fill="#4a3aa7"/>
 <text x="753.0" y="226.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#0b0b0b">nest_n4096</text>
-<text x="753.0" y="238.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#52514e">89.1M</text>
+<text x="753.0" y="238.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#52514e">88.9M</text>
 <circle cx="745.0" cy="250.5" r="3.5" fill="#2a78d6"/>
 <text x="753.0" y="254.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#0b0b0b">deep_n2048</text>
-<text x="753.0" y="266.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#52514e">57.7M</text>
-<line x1="736.0" y1="261.9" x2="740.0" y2="282.0" stroke="#c3c2b7" stroke-width="1"/>
+<text x="753.0" y="266.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#52514e">57.9M</text>
+<line x1="736.0" y1="262.0" x2="740.0" y2="282.0" stroke="#c3c2b7" stroke-width="1"/>
 <circle cx="745.0" cy="278.5" r="3.5" fill="#e87ba4"/>
 <text x="753.0" y="282.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#0b0b0b">wide_n2048</text>
-<text x="753.0" y="294.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#52514e">48.7M</text>
+<text x="753.0" y="294.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#52514e">48.6M</text>
 <line x1="736.0" y1="266.5" x2="740.0" y2="310.0" stroke="#c3c2b7" stroke-width="1"/>
 <circle cx="745.0" cy="306.5" r="3.5" fill="#008300"/>
 <text x="753.0" y="310.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#0b0b0b">nest_n2048</text>
