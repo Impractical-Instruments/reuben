@@ -21,6 +21,7 @@ pub use crate::resources::{ResolveError, Resources, SampleBuffer};
 pub use args::*;
 pub use result::{
     Boundary, Diag, DocumentView, EditResult, OperatorInfo, Operators, PortInfo, Report,
+    WireVerdict, WireVerdicts,
 };
 pub use verbs::*;
 
