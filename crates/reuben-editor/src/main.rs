@@ -21,8 +21,8 @@ struct Editor;
 
 impl eframe::App for Editor {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // The root `Ui` paints no background of its own; the panel frame fills the window with
-        // the theme's fill so an empty editor is not a transparent or undefined surface.
+        // The root `Ui` paints no background of its own, leaving eframe's clear color; the panel
+        // frame paints the theme's fill instead.
         egui::Frame::central_panel(ui.style()).show(ui, |ui| {
             ui.take_available_space();
         });

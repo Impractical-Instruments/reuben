@@ -126,14 +126,15 @@ jobs:
               - 'docs/agents/**'
               - 'eval/**'
               - '.github/scripts/eval-gate.sh'
+            # The desktop editor's own tree, plus *workspace: the workspace crates it will depend on
+            # can move its build, and the anchor carries the manifests, lockfile and toolchain.
+            editor:
+              - *workspace
+              - 'crates/reuben-editor/**'
             # The dashboard renders both trends and is the half a human actually reads. Its own
             # filter rather than riding `eval`'s: that job builds `reuben-mcp` twice and swaps the
             # measured surface to a baseline commit, and a one-line edit to a charting script has no
             # business paying for that. Same guarantee, a fraction of the minutes.
-            # The desktop editor: every crate beneath it can move its build, plus its own.
-            editor:
-              - *workspace
-              - 'crates/reuben-editor/**'
             dashboard:
               - '.github/scripts/bench-dashboard.py'
               - '.github/scripts/test_bench_dashboard.py'
@@ -226,10 +227,11 @@ jobs:
 
   # `reuben-editor`, which no other job builds: it sits outside `default-members`, so the bare
   # `cargo` commands in `check`/`windows`/`bench` skip it and the egui tree stays out of their
-  # compile. fmt is not repeated — `check`'s `cargo fmt --all` already covers every member. Linux
-  # only until the editor's macOS and Windows builds are in scope.
+  # compile. Its own fmt step because `check`'s path filter does not include the editor's tree, so
+  # an editor-only change never runs `check`'s `cargo fmt --all`. Linux only until the editor's
+  # macOS and Windows builds are in scope.
   editor:
-    name: build + clippy (reuben-editor)
+    name: fmt + clippy + build + test (reuben-editor)
     runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.editor == 'true' && (github.event_name == 'push' || github.event.pull_request.draft == false)
@@ -248,11 +250,17 @@ jobs:
       - name: Cache cargo registry + build
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
+      - name: Format
+        run: cargo fmt -p reuben-editor --check
+
       - name: Clippy
         run: cargo clippy -p reuben-editor --all-targets -- -D warnings
 
       - name: Build
         run: cargo build -p reuben-editor
+
+      - name: Test
+        run: cargo test -p reuben-editor
 
   windows:
     name: build + test (windows)

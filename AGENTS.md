@@ -69,7 +69,7 @@ Nine crates. The engine is two of them — `reuben-core` (render) and `reuben-do
 | `reuben-mcp` | The per-conversation MCP stdio sidecar: the roster, the stdio transport, the loopback socket. Reaches `reuben-core` through nothing but the window. The only member allowed an async runtime (rmcp + tokio). |
 | `reuben-contract` | The single source of an Operator's port/constant contract, shared by the macro and scaffold. |
 | `reuben-macros` | `operator_contract!` — emits the index consts *and* the `Descriptor` from one declaration. |
-| `reuben-editor` | The desktop instrument editor (eframe/egui): a node-graph canvas over an instrument document. Outside `default-members`; its own CI job builds and lints it. |
+| `reuben-editor` | The desktop instrument editor (eframe/egui). Outside `default-members`; its own CI job builds and lints it. |
 | `reuben-guide` | Docs tooling, not engine code: slices `docs/agents/authoring.md` into its per-delivery-lane cuts. Depends on nothing in the workspace. |
 
 Inside `reuben-core` (the full version is the `crates/reuben-core/src/lib.rs` doc comment):

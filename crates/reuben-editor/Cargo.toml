@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Desktop instrument editor for reuben: a node-graph canvas over the instrument document."
+description = "Desktop instrument editor for reuben."
 publish = false
 
 [dependencies]
