@@ -566,6 +566,7 @@ pub fn add_instrument_node(
             sample: sample.map(str::to_string),
             voice: voice.map(str::to_string),
             patch: patch.map(str::to_string),
+            layout: None,
             control: None,
         });
         Ok(Applied::clean(Echo::Nodes(Selection::names([address]))))
@@ -922,6 +923,7 @@ pub fn add_instrument_interface_input(
                 max,
                 curve,
                 unit: unit.map(str::to_string),
+                layout: None,
                 label: None,
                 widget: None,
             }),
@@ -960,6 +962,7 @@ pub fn add_instrument_interface_output(
                 widget: None,
                 min,
                 max,
+                layout: None,
             }),
         );
         Ok(Applied::clean(Echo::Pipes(Selection::names([name]))))

@@ -231,6 +231,8 @@ pub struct InputPipeDoc {
     /// pipe and every surface inherits it (the engine enforces only the range).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<Layout>,
     /// **Retired**: pipe display names live in a surface doc now. Deserialize-only
     /// sink; the [`NormalizedDoc`] mint drains it into a
     /// [`LoadWarning::DeprecatedPipePresentation`] and save never writes it.
@@ -272,6 +274,8 @@ pub struct OutputPipeDoc {
     /// Presentational range-maximum override (see `min`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<Layout>,
 }
 
 /// The v1 object entry form: the internal target plus
@@ -372,6 +376,17 @@ impl<'de> Deserialize<'de> for InterfaceEntry {
     }
 }
 
+/// Where an editor last drew a node or an interface pipe on its canvas, in canvas units. Owned by
+/// the editor: the loader never reads it and no projection shows it. It is carried through
+/// load → save untouched, and two documents differing only in `layout` build the same [`Graph`].
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct Layout {
+    pub x: f32,
+    pub y: f32,
+}
+
 /// One operator instance.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -418,6 +433,8 @@ pub struct NodeDoc {
     /// built graph is the explicit flatten/export path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub patch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<Layout>,
     /// **Retired**: the v2 per-node `control` block.
     /// Deserialize-only sink so a v2 document (or a v3 one still carrying leftovers) parses
     /// under `deny_unknown_fields`; the [`NormalizedDoc`] mint drains it into a
@@ -2028,6 +2045,8 @@ impl InstrumentDoc {
                     // A subpatch dissolves at build, so from_graph only emits the inlined
                     // children, never the reference
                     patch: None,
+                    // A graph carries no canvas position; flattening starts the editor fresh.
+                    layout: None,
                     // Presentation lives in a surface doc now, not the graph.
                     control: None,
                 }

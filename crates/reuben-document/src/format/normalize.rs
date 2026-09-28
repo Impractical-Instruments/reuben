@@ -319,6 +319,7 @@ fn migrate_v1(
                     widget: m.and_then(|m| m.widget.clone()),
                     min: m.and_then(|m| m.min),
                     max: m.and_then(|m| m.max),
+                    layout: None,
                 }),
             );
         }
@@ -753,6 +754,8 @@ fn child_input_pipe(
         // The child's own channel binding is child-local (inert when nested);
         // a re-export does not inherit it.
         channel: None,
+        // So is its canvas position: the re-export is drawn on the parent's canvas.
+        layout: None,
         ..pipe
     })
 }
