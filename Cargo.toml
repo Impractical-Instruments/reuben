@@ -9,6 +9,20 @@ members = [
     "crates/reuben-native",
     "crates/reuben-mcp",
     "crates/reuben-guide",
+    "crates/reuben-editor",
+]
+# Every member but `reuben-editor`: a bare `cargo build`/`test`/`clippy` never compiles the egui
+# tree. The editor is built and linted by its own CI job (`editor`) and by `-p reuben-editor`.
+# `--workspace` overrides this list, so the gates and hooks name no `--workspace`.
+default-members = [
+    "crates/reuben-contract",
+    "crates/reuben-macros",
+    "crates/reuben-core",
+    "crates/reuben-document",
+    "crates/reuben-api",
+    "crates/reuben-native",
+    "crates/reuben-mcp",
+    "crates/reuben-guide",
 ]
 
 [workspace.package]
@@ -75,6 +89,11 @@ rtrb = "0.3"
 rmcp = { version = "2", default-features = false }
 # current_thread runtime, sync/rt/time/io-std only — no `net`, so no mio/OS reactor.
 tokio = { version = "1", default-features = false }
+# Desktop editor (reuben-editor) ONLY. The glow (OpenGL) renderer rather than eframe's default
+# wgpu: the canvas draws boxes, wires and text, which glow covers at a fraction of wgpu's
+# dependency tree and build time. `wayland` + `x11` are both on so one Linux binary runs under
+# either session; winit dlopens their client libraries, so building needs no -dev packages.
+eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
 # Unix SIGINT/SIGTERM handler for `reuben play`'s clean shutdown:
 # std has no signal API. Already in the tree transitively (via cpal); not an async dependency,
 # so it does not touch the tokio fence. reuben-native takes it only on `cfg(unix)`.

@@ -43,10 +43,10 @@ done
 
 [ "$rust_touched" -eq 0 ] && exit 0
 
-if ! cargo clippy --workspace --all-targets -- -D warnings; then
+if ! cargo clippy --all-targets -- -D warnings; then
     echo
     echo "✗ pre-push: clippy found issues — CI's clippy gate will fail."
-    echo "  Inspect: cargo clippy --workspace --all-targets -- -D warnings"
+    echo "  Inspect: cargo clippy --all-targets -- -D warnings"
     echo "  Bypass:  git push --no-verify"
     exit 1
 fi
