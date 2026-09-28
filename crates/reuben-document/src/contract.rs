@@ -328,4 +328,20 @@ mod tests {
             "a changed node must change the content identity"
         );
     }
+
+    /// A layout-only edit is a real edit: an `expect` taken before it must conflict. (The Swap
+    /// survivor fingerprint is the one identity that ignores `layout`.)
+    #[test]
+    fn content_hash_differs_on_a_layout_only_change() {
+        let before = mint(&doc_json(440.0));
+        let after = mint(&doc_json(440.0).replace(
+            r#""address": "/osc","#,
+            r#""address": "/osc", "layout": { "x": 10.0, "y": 20.0 },"#,
+        ));
+        assert!(
+            after.nodes[0].layout.is_some(),
+            "the fixture carries a layout"
+        );
+        assert_ne!(content_hash(&before), content_hash(&after));
+    }
 }

@@ -55,14 +55,18 @@ jobs:
             # on reuben-contract, so a `--workspace` gate has no sound per-crate split. instruments/ is
             # test + bench DATA (include_str!/include_bytes! + fs-resolved fixtures), so it lives here;
             # .cargo/config.toml sets the build's target-cpu (and perf-gate snapshots it); the workflow
-            # + the shared toolchain composite are the infra that runs every job.
+            # + the shared toolchain composite are the infra that runs every job. Every workspace
+            # `members` entry must appear here: a member missing from the list runs no Rust gate at
+            # all while `ci-passed` stays green.
             _workspace: &workspace
               - 'crates/reuben-contract/**'
               - 'crates/reuben-macros/**'
               - 'crates/reuben-core/**'
+              - 'crates/reuben-document/**'
               - 'crates/reuben-api/**'
               - 'crates/reuben-native/**'
               - 'crates/reuben-mcp/**'
+              - 'crates/reuben-guide/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'

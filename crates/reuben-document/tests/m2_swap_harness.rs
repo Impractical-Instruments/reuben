@@ -11,9 +11,10 @@ use swap_rt_safe::{assert_counter_is_live, assert_install_step_heap_neutral};
 
 use reuben_core::coordinator::RenderSlot;
 use reuben_core::message::Arg;
+use reuben_core::resources::SampleBuffer;
 use reuben_core::{AudioConfig, Registry};
 use reuben_document::coordinator::Coordinator;
-use reuben_document::resources::MemoryResolver;
+use reuben_document::resources::{MemoryResolver, ResolveError, ResourceResolver};
 
 /// Each `tests/*.rs` file is its own binary, so it must declare its own global allocator for the
 /// thread-local counting harness to observe anything. Unarmed (the behavioral tests below), it is a
@@ -345,6 +346,177 @@ fn swap_keeps_a_harmony_driven_voice_in_tune_no_silent_retranspose() {
     assert!(
         (0.80..1.20).contains(&ratio),
         "the swap retransposed the voice: before {before} samp, after {after} samp (ratio {ratio:.3})"
+    );
+}
+
+/// A resolver whose texts the test can rewrite after the Coordinator owns it — the on-disk file an
+/// editor saves between two Swaps. Nested references rebase onto their referrer's directory, as
+/// the filesystem resolver does (kick-voice.json's `shaped-vca.json` sits next to it).
+#[derive(Clone, Default)]
+struct Editable(std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, String>>>);
+
+impl Editable {
+    fn set(&self, key: &str, text: &str) {
+        self.0
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), text.to_string());
+    }
+
+    fn get(&self, key: &str) -> String {
+        self.0.lock().unwrap()[key].clone()
+    }
+}
+
+impl ResourceResolver for Editable {
+    fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+        Err(ResolveError::NotFound(source.to_string()))
+    }
+
+    fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
+        self.0
+            .lock()
+            .unwrap()
+            .get(source)
+            .cloned()
+            .ok_or_else(|| ResolveError::NotFound(source.to_string()))
+    }
+
+    fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
+        match referrer.and_then(|r| r.rsplit_once('/')) {
+            Some((dir, _)) => format!("{dir}/{source}"),
+            None => source.to_string(),
+        }
+    }
+}
+
+fn setup_editable(doc: &str, resolver: &Editable) -> (Coordinator, RenderSlot) {
+    let (coord, side, _w) =
+        Coordinator::install_initial(doc, Registry::builtin(), Box::new(resolver.clone()), cfg())
+            .expect("initial install");
+    (coord, RenderSlot::new(side))
+}
+
+/// `text` with a distinct `layout` on every node and v2 interface entry — nothing else changed.
+fn with_layout(text: &str) -> String {
+    let mut doc: serde_json::Value = serde_json::from_str(text).expect("fixture is JSON");
+    let mut i = 0.0f32;
+    let mut next = || {
+        i += 1.0;
+        serde_json::json!({ "x": i * 30.0, "y": -i * 7.5 })
+    };
+    for node in doc["nodes"].as_array_mut().expect("nodes") {
+        node["layout"] = next();
+    }
+    if let Some(iface) = doc.get_mut("interface") {
+        for side in ["inputs", "outputs"] {
+            if let Some(entries) = iface.get_mut(side).and_then(|m| m.as_object_mut()) {
+                for entry in entries.values_mut() {
+                    entry["layout"] = next();
+                }
+            }
+        }
+    }
+    serde_json::to_string_pretty(&doc).expect("serialize")
+}
+
+#[test]
+fn a_layout_only_edit_inside_a_hosted_voice_keeps_the_held_note_ringing() {
+    // An editor dragging nodes around a voice document saves a file whose only change is `layout`.
+    // The Voicer's survivor fingerprint folds in its hosted voice document, so if `layout` reached
+    // that fingerprint the Voicer would rebuild cold and the held note would fall silent.
+    let files = Editable::default();
+    files.set("voices/default-voice.json", DEFAULT_VOICE_JSON);
+    let (mut coord, mut slot) = setup_editable(&voicer_doc(4), &files);
+
+    slot.queue_osc("/voicer/notes", &[Arg::F32(69.0), Arg::F32(1.0)]);
+    render(&mut slot, 24_000);
+    let before = peak(&render(&mut slot, 2_048));
+    assert!(
+        before > 0.02,
+        "the held note must ring first: peak {before}"
+    );
+
+    files.set(
+        "voices/default-voice.json",
+        &with_layout(DEFAULT_VOICE_JSON),
+    );
+    let report = coord.swap_document(&voicer_doc(4));
+    assert!(report.report.ok, "swap should install: {:?}", report.report);
+    let diff = report.diff.as_ref().unwrap();
+    assert!(
+        diff.state_reset.is_empty(),
+        "a layout-only edit reset: {diff:?}"
+    );
+    assert_eq!(diff.survived, 2, "voicer + out survive: {diff:?}");
+
+    let span = 6 * slot.ramp_edge_frames();
+    render(&mut slot, span);
+    let after = peak(&render(&mut slot, 2_048));
+    assert!(
+        after > before * 0.5,
+        "the held note must keep ringing across the swap: before {before} after {after}"
+    );
+}
+
+/// A Voicer hosting the kick voice, which itself inlines the `shaped-vca` subpatch.
+const KICK_VOICE_JSON: &str = include_str!("../../../instruments/voices/kick-voice.json");
+const SHAPED_VCA_JSON: &str = include_str!("../../../instruments/voices/shaped-vca.json");
+
+fn kick_voicer_doc() -> String {
+    r#"{ "format_version": 3, "instrument": "top",
+         "resources": { "kv": "voices/kick-voice.json" },
+         "interface": { "outputs": { "out": { "from": "/out.audio" } } },
+         "nodes": [
+           { "type": "voicer", "address": "/voicer", "config": { "voices": 2 }, "voice": "kv" },
+           { "type": "output", "address": "/out",
+             "inputs": { "audio": { "from": "/voicer.audio" } } } ] }"#
+        .to_string()
+}
+
+#[test]
+fn a_layout_only_edit_in_a_subpatch_inside_a_voice_keeps_the_voicer() {
+    let files = Editable::default();
+    files.set("voices/kick-voice.json", KICK_VOICE_JSON);
+    files.set("voices/shaped-vca.json", SHAPED_VCA_JSON);
+    let (mut coord, mut slot) = setup_editable(&kick_voicer_doc(), &files);
+    render(&mut slot, 4_096);
+
+    files.set("voices/shaped-vca.json", &with_layout(SHAPED_VCA_JSON));
+    let report = coord.swap_document(&kick_voicer_doc());
+    assert!(report.report.ok, "swap should install: {:?}", report.report);
+    let diff = report.diff.as_ref().unwrap();
+    assert!(
+        diff.state_reset.is_empty(),
+        "a layout-only edit two levels down reset: {diff:?}"
+    );
+    assert_eq!(diff.survived, 2, "voicer + out survive: {diff:?}");
+
+    // Install the first swap and take its retiree back so the Coordinator accepts the next one.
+    let span = 6 * slot.ramp_edge_frames();
+    render(&mut slot, span);
+    assert!(
+        coord.try_reclaim().is_some(),
+        "the first swap's retiree returned"
+    );
+
+    // Teeth: a real edit at the same depth must still reach the fingerprint, or the assertion
+    // above would pass on a walk that never looked inside the subpatch.
+    let mut vca: serde_json::Value = serde_json::from_str(&files.get("voices/shaped-vca.json"))
+        .expect("the laid-out subpatch is JSON");
+    vca["doc"] = serde_json::Value::String("edited".to_string());
+    files.set("voices/shaped-vca.json", &vca.to_string());
+    let report = coord.swap_document(&kick_voicer_doc());
+    assert!(report.report.ok, "swap should install: {:?}", report.report);
+    assert!(
+        report
+            .diff
+            .as_ref()
+            .unwrap()
+            .state_reset
+            .contains(&"/voicer".to_string()),
+        "a content edit inside the subpatch must reset the voicer: {:?}",
+        report.diff
     );
 }
 

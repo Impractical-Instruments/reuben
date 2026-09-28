@@ -1444,6 +1444,14 @@ pub const FIELD_COVERAGE: &[(&str, &str)] = &[
     ("nodes[].voice", "node-zoom, resources-view"),
     ("nodes[].patch", "node-zoom, resources-view"),
     (
+        "nodes[].layout.x",
+        "omit:editor-owned canvas position, no meaning to the engine or the agent",
+    ),
+    (
+        "nodes[].layout.y",
+        "omit:editor-owned canvas position, no meaning to the engine or the agent",
+    ),
+    (
         "nodes[].control",
         "omit:retired deserialize-only sink (the mint drains it to a deprecation warning)",
     ),
@@ -1477,6 +1485,14 @@ pub const FIELD_COVERAGE: &[(&str, &str)] = &[
     ("interface.inputs{}.unit", "pipe-view"),
     ("interface.inputs{}.from", "pipe-view"),
     (
+        "interface.inputs{}.layout.x",
+        "omit:editor-owned canvas position, no meaning to the engine or the agent",
+    ),
+    (
+        "interface.inputs{}.layout.y",
+        "omit:editor-owned canvas position, no meaning to the engine or the agent",
+    ),
+    (
         "interface.inputs{}.target",
         "omit:v1-only migration form (surfaced as v1_target if one ever survives)",
     ),
@@ -1501,6 +1517,14 @@ pub const FIELD_COVERAGE: &[(&str, &str)] = &[
     ("interface.outputs{}.curve", "pipe-view"),
     ("interface.outputs{}.unit", "pipe-view"),
     ("interface.outputs{}.from", "pipe-view"),
+    (
+        "interface.outputs{}.layout.x",
+        "omit:editor-owned canvas position, no meaning to the engine or the agent",
+    ),
+    (
+        "interface.outputs{}.layout.y",
+        "omit:editor-owned canvas position, no meaning to the engine or the agent",
+    ),
     (
         "interface.outputs{}.target",
         "omit:v1-only migration form (surfaced as v1_target if one ever survives)",

@@ -293,8 +293,8 @@ fn hosted_doc_identity(
     doc_content_identity(&text, &canon, registry, resolver, depth + 1)
 }
 
-/// The content identity of a document given its source text: the canonical (re-serialized) JSON,
-/// plus each node's resolved sample/voice/patch content, recursively. Re-serializing through
+/// The content identity of a document given its source text: the canonical (re-serialized) JSON
+/// less its editor-only `layout`, plus each node's resolved sample/voice/patch content, recursively. Re-serializing through
 /// [`NormalizedDoc`] makes the identity insensitive to source-text formatting (matching
 /// [`crate::content_hash`]); a text that fails to parse falls back to its raw bytes so content
 /// still gates.
@@ -308,7 +308,7 @@ fn doc_content_identity(
     let mut h = Fnv::new();
     match NormalizedDoc::from_json(text, registry, Some(resolver)) {
         Ok(child) => {
-            h.tagged(b"doc", child.to_json_pretty().as_bytes());
+            h.tagged(b"doc", child.engine_json().as_bytes());
             for node in &child.nodes {
                 let Some(descriptor) = registry.get(&node.type_name).map(|e| &e.descriptor) else {
                     continue;

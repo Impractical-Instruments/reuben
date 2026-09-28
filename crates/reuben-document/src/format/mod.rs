@@ -231,6 +231,9 @@ pub struct InputPipeDoc {
     /// pipe and every surface inherits it (the engine enforces only the range).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit: Option<String>,
+    /// This pipe's editor canvas position; editor-owned, see [`Layout`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<Layout>,
     /// **Retired**: pipe display names live in a surface doc now. Deserialize-only
     /// sink; the [`NormalizedDoc`] mint drains it into a
     /// [`LoadWarning::DeprecatedPipePresentation`] and save never writes it.
@@ -272,6 +275,9 @@ pub struct OutputPipeDoc {
     /// Presentational range-maximum override (see `min`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max: Option<f64>,
+    /// This pipe's editor canvas position; editor-owned, see [`Layout`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<Layout>,
 }
 
 /// The v1 object entry form: the internal target plus
@@ -372,6 +378,51 @@ impl<'de> Deserialize<'de> for InterfaceEntry {
     }
 }
 
+/// Where an editor last drew a node or an interface pipe on its canvas, in canvas units. Owned by
+/// the editor: the loader never reads it, no projection shows it, and it is no part of a Swap
+/// survivor's fingerprint, so moving a node never rebuilds a warm Operator. Load → save carries
+/// it through as the same `f32`s (not necessarily the same JSON spelling), and two documents
+/// differing only in `layout` build the same [`Graph`]. It does change the document content hash:
+/// a layout-only edit is still an edit.
+///
+/// Parsed as an object only, and both coordinates must be finite: an `f32` overflow (`1e39`)
+/// would save as `null` and leave a document no verb can reload.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct Layout {
+    pub x: f32,
+    pub y: f32,
+}
+
+/// [`Layout`]'s field-level shape, so its errors stay serde's pointed ones (`missing field \`y\``).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LayoutFields {
+    x: f32,
+    y: f32,
+}
+
+impl<'de> Deserialize<'de> for Layout {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        // Buffering through a map refuses serde's `[x, y]` sequence form of a struct.
+        let map = serde_json::Map::<String, serde_json::Value>::deserialize(deserializer)?;
+        let LayoutFields { x, y } =
+            serde_json::from_value(serde_json::Value::Object(map)).map_err(D::Error::custom)?;
+        for (axis, v) in [("x", x), ("y", y)] {
+            if !v.is_finite() {
+                return Err(D::Error::custom(format!(
+                    "`layout.{axis}` is out of range: a canvas coordinate is a finite f32 \
+                     (magnitude at most {:e})",
+                    f32::MAX
+                )));
+            }
+        }
+        Ok(Layout { x, y })
+    }
+}
+
 /// One operator instance.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -418,6 +469,9 @@ pub struct NodeDoc {
     /// built graph is the explicit flatten/export path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub patch: Option<String>,
+    /// This node's editor canvas position; editor-owned, see [`Layout`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<Layout>,
     /// **Retired**: the v2 per-node `control` block.
     /// Deserialize-only sink so a v2 document (or a v3 one still carrying leftovers) parses
     /// under `deny_unknown_fields`; the [`NormalizedDoc`] mint drains it into a
@@ -1428,6 +1482,26 @@ impl InstrumentDoc {
         serde_json::to_string_pretty(self).expect("InstrumentDoc serializes")
     }
 
+    /// [`to_json_pretty`](Self::to_json_pretty) with every `layout` dropped: the bytes a Swap
+    /// survivor fingerprint hashes, so moving a node on the canvas never rebuilds a warm Operator.
+    /// The document content hash keeps `layout` — a layout-only edit is still an edit.
+    pub(crate) fn engine_json(&self) -> String {
+        let mut doc = self.clone();
+        for node in &mut doc.nodes {
+            node.layout = None;
+        }
+        if let Some(iface) = &mut doc.interface {
+            for entry in iface.inputs.values_mut().chain(iface.outputs.values_mut()) {
+                match entry {
+                    InterfaceEntry::Pipe(p) => p.layout = None,
+                    InterfaceEntry::Feed(f) => f.layout = None,
+                    InterfaceEntry::Target(_) | InterfaceEntry::Detailed(_) => {}
+                }
+            }
+        }
+        doc.to_json_pretty()
+    }
+
     /// [`NormalizedDoc::build`] with the nesting machinery threaded through (the
     /// resolution-ordering note): `resolver` loads `subpatch` children so their boundary faces
     /// exist during pass 2 (`None` — the plain [`load`]/[`build`] path — dissolves every nested
@@ -2028,6 +2102,8 @@ impl InstrumentDoc {
                     // A subpatch dissolves at build, so from_graph only emits the inlined
                     // children, never the reference
                     patch: None,
+                    // A graph carries no canvas position; flattening starts the editor fresh.
+                    layout: None,
                     // Presentation lives in a surface doc now, not the graph.
                     control: None,
                 }
