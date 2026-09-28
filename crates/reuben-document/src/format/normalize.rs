@@ -774,8 +774,8 @@ mod tests {
 
     /// Serves one fixed child document for any source (the `PatchResolver` idiom of the
     /// format tests, local to the mint's own seams).
-    struct ChildResolver(&'static str);
-    impl ResourceResolver for ChildResolver {
+    struct ChildResolver<'a>(&'a str);
+    impl ResourceResolver for ChildResolver<'_> {
         fn resolve(&self, source: &str) -> Result<SampleBuffer, crate::resources::ResolveError> {
             Err(crate::resources::ResolveError::NotFound(source.to_string()))
         }
@@ -856,6 +856,32 @@ mod tests {
         let doc = NormalizedDoc::from_json(V1_REEXPORT_HOST, &reg(), Some(&ChildResolver(CHILD)))
             .expect("mint");
         assert_eq!(pipe_type(&doc, "freq"), "f32_buffer");
+    }
+
+    #[test]
+    fn a_reexported_child_pipe_does_not_inherit_the_childs_layout() {
+        // The child's canvas position means nothing on the parent's canvas.
+        let laid_child = CHILD.replace(
+            r#""default": 440 }"#,
+            r#""default": 440, "layout": { "x": 12.0, "y": 34.0 } }"#,
+        );
+        let child_doc = NormalizedDoc::from_json(&laid_child, &reg(), None).expect("child mints");
+        assert!(
+            child_doc.interface.as_ref().unwrap().inputs["freq"]
+                .pipe()
+                .unwrap()
+                .layout
+                .is_some(),
+            "the fixture child carries a layout"
+        );
+        let doc =
+            NormalizedDoc::from_json(V1_REEXPORT_HOST, &reg(), Some(&ChildResolver(&laid_child)))
+                .expect("mint");
+        let pipe = doc.interface.as_ref().unwrap().inputs["freq"]
+            .pipe()
+            .unwrap();
+        assert_eq!(pipe.ty, "f32_buffer", "the child's declaration was copied");
+        assert_eq!(pipe.layout, None);
     }
 
     #[test]

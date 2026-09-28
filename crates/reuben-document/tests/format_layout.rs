@@ -1,8 +1,8 @@
 //! `layout`: the editor's canvas position on a node and on an interface pipe.
 //!
 //! The engine never reads it. Two documents differing only in `layout` build the same `Plan` and
-//! play bit-identically, and every save carries it back out unchanged — at the top level and in
-//! every nested voice and subpatch document.
+//! play bit-identically, and every save carries it back out as the same `f32`s — at the top level
+//! and in every nested voice and subpatch document.
 
 mod common;
 
@@ -226,13 +226,24 @@ fn an_edit_verb_carries_layout_it_does_not_touch() {
     );
 }
 
+/// Each malformed `layout`, and the phrase its error must carry.
+const MALFORMED: &[(&str, &str)] = &[
+    (r#"{ "x": 1.0 }"#, "missing field `y`"),
+    (r#"{ "x": 1.0, "y": 2.0, "z": 3.0 }"#, "unknown field `z`"),
+    // Past f32::MAX: would parse as infinity and save as `null`.
+    (r#"{ "x": 1e39, "y": 0.0 }"#, "`layout.x` is out of range"),
+    (
+        r#"{ "x": 0.0, "y": -3.5e38 }"#,
+        "`layout.y` is out of range",
+    ),
+    // serde's sequence form of a struct.
+    ("[1.0, 2.0]", "expected a map"),
+];
+
 #[test]
-fn a_malformed_layout_is_a_pointed_parse_error() {
+fn a_malformed_node_layout_is_a_pointed_parse_error() {
     let registry = Registry::builtin();
-    for (layout, why) in [
-        (r#"{ "x": 1.0 }"#, "missing field `y`"),
-        (r#"{ "x": 1.0, "y": 2.0, "z": 3.0 }"#, "unknown field `z`"),
-    ] {
+    for (layout, why) in MALFORMED {
         let json = format!(
             r#"{{"format_version":3,"instrument":"t","nodes":[
                 {{"type":"oscillator","address":"/osc","layout":{layout}}}]}}"#
@@ -240,8 +251,46 @@ fn a_malformed_layout_is_a_pointed_parse_error() {
         let err = NormalizedDoc::from_json(&json, &registry, None)
             .expect_err("a malformed layout must not load")
             .to_string();
-        assert!(err.contains(why), "expected `{why}`, got: {err}");
+        assert!(err.contains(why), "{layout}: expected `{why}`, got: {err}");
     }
+}
+
+#[test]
+fn a_malformed_pipe_layout_is_a_pointed_parse_error() {
+    let registry = Registry::builtin();
+    for (layout, why) in MALFORMED {
+        for entry in [
+            format!(r#""inputs":{{"f":{{"type":"f32","layout":{layout}}}}}"#),
+            format!(r#""outputs":{{"o":{{"from":"/osc.audio","layout":{layout}}}}}"#),
+        ] {
+            let json = format!(
+                r#"{{"format_version":3,"instrument":"t","interface":{{{entry}}},
+                    "nodes":[{{"type":"oscillator","address":"/osc"}}]}}"#
+            );
+            let err = NormalizedDoc::from_json(&json, &registry, None)
+                .expect_err("a malformed layout must not load")
+                .to_string();
+            assert!(err.contains(why), "{entry}: expected `{why}`, got: {err}");
+        }
+    }
+}
+
+#[test]
+fn the_largest_finite_layout_round_trips() {
+    let registry = Registry::builtin();
+    let json = format!(
+        r#"{{"format_version":3,"instrument":"t","nodes":[
+            {{"type":"oscillator","address":"/osc","layout":{{"x":{},"y":{}}}}}]}}"#,
+        f32::MAX,
+        f32::MIN
+    );
+    let doc = NormalizedDoc::from_json(&json, &registry, None).expect("finite extremes load");
+    let saved = doc.to_json_pretty();
+    assert_eq!(
+        layouts(&saved),
+        vec![("/osc".to_string(), (f32::MAX, f32::MIN))]
+    );
+    NormalizedDoc::from_json(&saved, &registry, None).expect("and reload");
 }
 
 /// Every `describe_instrument` view, on the projection golden's corpus (voices nested two levels
