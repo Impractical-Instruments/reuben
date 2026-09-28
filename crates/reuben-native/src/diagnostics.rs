@@ -163,6 +163,7 @@ pub fn spawn_periodic_logger(diag: Arc<Diagnostics>, interval: Duration) -> Peri
 }
 
 /// The running [`spawn_periodic_logger`] thread. Dropping it stops and joins the thread.
+#[must_use = "dropping the logger stops it"]
 pub struct PeriodicLogger {
     stop: Arc<AtomicBool>,
     handle: Option<std::thread::JoinHandle<()>>,

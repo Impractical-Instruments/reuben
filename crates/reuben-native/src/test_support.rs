@@ -6,12 +6,12 @@
 //! one place instead of drifting between two mirrors.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use reuben_api::render::{AudioConfig, RenderSide, RenderSlot};
+use reuben_api::render::{AudioConfig, Message, RenderSide, RenderSlot};
 use reuben_api::resources::{ResolveError, Resources, SampleBuffer};
 
 use crate::engine::{start_with, EngineConfig, Render, RunningEngine, StartError};
@@ -59,6 +59,25 @@ pub struct FakeCallback {
 impl FakeCallback {
     /// Start driving `side`, draining `control_rx` into the slot's `queue_osc`.
     pub fn spawn(side: RenderSide, control_rx: Receiver<ControlBatch>) -> Self {
+        Self::start(side, control_rx, None, true)
+    }
+
+    /// The headless engine's driver: forwards outbound Messages to `outbound` the way the device
+    /// callback does, and keeps no log of what it fed, since it may run for as long as a session.
+    pub(crate) fn drive(
+        side: RenderSide,
+        control_rx: Receiver<ControlBatch>,
+        outbound: Option<Sender<Message>>,
+    ) -> Self {
+        Self::start(side, control_rx, outbound, false)
+    }
+
+    fn start(
+        side: RenderSide,
+        control_rx: Receiver<ControlBatch>,
+        outbound: Option<Sender<Message>>,
+        record: bool,
+    ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = Arc::clone(&stop);
         let queued = Arc::new(Mutex::new(Vec::new()));
@@ -73,17 +92,24 @@ impl FakeCallback {
                 // applied without splitting, so a gesture reaches one block. Flat args in, typed at
                 // the slot's Engine where the destination port's type is known.
                 while let Ok(batch) = control_rx.try_recv() {
-                    batches_thread.lock().expect("batch log").push(batch.len());
                     for m in &batch {
                         slot.queue_osc(&m.address, &m.args);
                     }
-                    queued_thread.lock().expect("queued log").extend(batch);
+                    if record {
+                        batches_thread.lock().expect("batch log").push(batch.len());
+                        queued_thread.lock().expect("queued log").extend(batch);
+                    }
                 }
                 let ch = slot.channels().max(1);
                 if buf.len() != BLOCK * ch {
                     buf.resize(BLOCK * ch, 0.0);
                 }
                 slot.fill(&mut buf);
+                for m in slot.drain_outbound() {
+                    if let Some(tx) = &outbound {
+                        let _ = tx.send(m);
+                    }
+                }
                 // Pace the loop like a device would: fast enough that a swap's ramp completes in a
                 // few ms, slow enough not to spin a core.
                 std::thread::sleep(Duration::from_millis(1));
@@ -131,8 +157,8 @@ impl Drop for FakeCallback {
 
 /// [`engine::start`](crate::engine::start) with a [`FakeCallback`] in place of the audio device, at
 /// 48 kHz and the fake's block size: everything else — the instrument load, the OSC sockets, the
-/// structure server, the teardown — is the real entry point's. The profile is ignored and the render
-/// side is output-only.
+/// structure server, the teardown — is the real entry point's. The profile and `block_size` are
+/// ignored and the render side is output-only.
 pub fn start_headless(config: EngineConfig) -> Result<RunningEngine, StartError> {
     start_with(config, Render::Headless(AudioConfig::new(48_000.0, BLOCK)))
 }

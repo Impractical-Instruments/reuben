@@ -113,3 +113,39 @@ fn no_sockets_at_all_is_a_valid_embedding() {
     drop(engine);
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn a_non_loopback_structure_address_is_refused_before_anything_binds() {
+    let path = seed("non_loopback", OSC_DOC);
+    let cfg = EngineConfig {
+        structure: Some("0.0.0.0:0".to_string()),
+        ..config(Instrument::Path(path.clone()))
+    };
+    assert!(matches!(
+        start_headless(cfg),
+        Err(StartError::StructureNotLoopback(_))
+    ));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn shutdown_with_an_osc_out_target_joins_the_sender() {
+    let path = seed("osc_out", OSC_DOC);
+    let sink = UdpSocket::bind("127.0.0.1:0").expect("an OSC-out sink");
+    let target = sink.local_addr().unwrap().to_string();
+    let (tx, rx) = std::sync::mpsc::channel();
+    // The engine is not `Send`, so it starts and stops on the watched thread.
+    std::thread::spawn(move || {
+        let cfg = EngineConfig {
+            osc_out: Some(target.clone()),
+            ..config(Instrument::Path(path.clone()))
+        };
+        let engine = start_headless(cfg).expect("starts with an OSC-out target");
+        assert_eq!(engine.osc_out_target(), Some(target.as_str()));
+        engine.shutdown();
+        let _ = std::fs::remove_file(&path);
+        let _ = tx.send(());
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(10))
+        .expect("shutdown with an OSC-out target did not complete within 10s");
+}

@@ -232,6 +232,20 @@ pub struct Streams {
     pub input: Option<Stream>,
 }
 
+impl Streams {
+    /// Stop both callbacks, best-effort: a device that cannot pause is left to the drop.
+    ///
+    /// Call it before dropping them, because dropping is not guaranteed to stop them: on macOS cpal
+    /// keeps a non-default device's stream alive through its own disconnect listener, so the drop
+    /// alone would leave the callback rendering.
+    pub fn pause(&self) {
+        let _ = self.output.pause();
+        if let Some(input) = &self.input {
+            let _ = input.pause();
+        }
+    }
+}
+
 /// The live audio session [`start`] returns. Keep [`streams`](LiveAudio::streams) alive for audio
 /// to keep flowing; hand [`coordinator`](LiveAudio::coordinator) to the structure channel (the
 /// single writer of graph structure) and [`render_config`](LiveAudio::render_config) to it
@@ -258,9 +272,10 @@ pub struct LiveAudio {
 /// `block_size` is the core render block size; `build` constructs the [`Coordinator`] + its RT
 /// [`RenderSide`] once the device sample rate is known (so the Plan's tuning matches the hardware)
 /// — typically a call to [`Coordinator::install_initial`]; the Coordinator is returned for the
-/// structure channel, and a build error is [`AudioError::Instrument`]. `osc_out` is the optional OSC-out sink: when `Some`, the callback forwards
-/// each outbound Message to it (a sender thread encodes + UDP-sends, off the audio thread); when
-/// `None`, outbound is drained and dropped, with one warning the first time a rig sends. `profile`
+/// structure channel, and a build error is [`AudioError::Instrument`]. `osc_out` is the optional
+/// OSC-out sink: when `Some`, the callback forwards each outbound Message to it (a sender thread
+/// encodes + UDP-sends, off the audio thread); when `None`, outbound is drained and dropped, with
+/// one warning the first time a rig sends. `profile`
 /// selects the devices, negotiates sample-rate/buffer-size preferences, and overrides the channel
 /// maps — pass [`DeviceProfile::default`] for today's behavior (default devices, identity maps).
 /// The device output map is returned as [`LiveAudio::render_config`] ([`NativeRenderConfig`]). When

@@ -16,7 +16,7 @@
 
 use std::fmt;
 use std::io;
-use std::net::{SocketAddr, UdpSocket};
+use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
@@ -45,9 +45,10 @@ pub const DEFAULT_BLOCK_SIZE: usize = 256;
 /// something changed, so a healthy run stays quiet at this cadence regardless.
 const DIAGNOSTICS_LOG_INTERVAL: Duration = Duration::from_secs(5);
 
-/// How long the OSC-in listener's `recv` blocks before waking to re-check its stop flag. A
-/// datagram returns the `recv` at once, so this is shutdown latency only, never added input latency.
-const OSC_IN_POLL: Duration = Duration::from_millis(100);
+/// How long the OSC threads' blocking receive waits before waking to re-check its stop flag. A
+/// datagram or a Message returns the receive at once, so this is shutdown latency only, never
+/// added latency on the I/O path.
+const STOP_POLL: Duration = Duration::from_millis(100);
 
 /// Which instrument the engine starts on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,7 +99,8 @@ impl EngineConfig {
     }
 }
 
-/// Why [`start`] failed. Whatever it had already opened is closed again before it returns.
+/// Why [`start`] failed. Every thread it had already started is stopped and joined, and every
+/// socket it had bound is closed, before it returns.
 #[derive(Debug)]
 pub enum StartError {
     /// The instrument file could not be read.
@@ -111,6 +113,9 @@ pub enum StartError {
     OscOut { target: String, error: io::Error },
     /// The audio device (or the input device the instrument asked for) would not open.
     Audio(AudioError),
+    /// The structure address names a non-loopback interface. Structure edits are more powerful
+    /// than control, so the channel is never network-exposed.
+    StructureNotLoopback(String),
 }
 
 impl fmt::Display for StartError {
@@ -123,19 +128,34 @@ impl fmt::Display for StartError {
             StartError::OscIn { addr, error } => write!(f, "bind OSC-in {addr}: {error}"),
             StartError::OscOut { target, error } => write!(f, "OSC-out {target}: {error}"),
             StartError::Audio(e) => write!(f, "start audio: {e}"),
+            StartError::StructureNotLoopback(addr) => {
+                write!(f, "structure channel {addr} is not a loopback address")
+            }
         }
     }
 }
 
-impl std::error::Error for StartError {}
+impl std::error::Error for StartError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            StartError::ReadInstrument { error, .. }
+            | StartError::OscIn { error, .. }
+            | StartError::OscOut { error, .. } => Some(error),
+            StartError::Instrument(e) => Some(e),
+            StartError::Audio(e) => Some(e),
+            StartError::StructureNotLoopback(_) => None,
+        }
+    }
+}
 
 /// A running engine: the audio streams, the OSC threads, the structure server and the
 /// Coordinator behind it.
 ///
 /// Dropping it — or [`shutdown`](Self::shutdown), which also returns the final counters — tears
 /// the session down in order and returns only once every thread it started has exited: the
-/// structure server (its connections woken and joined), the OSC-in listener, the audio streams,
-/// the OSC-out sender, then the diagnostics logger. Every port it bound is free again afterwards.
+/// structure server (its connections woken and joined), the OSC-in listener, the audio streams
+/// (paused, then dropped — see [`Streams::pause`](audio::Streams::pause) for why both), the OSC-out
+/// sender, then the diagnostics logger. Every port it bound is free again afterwards.
 ///
 /// Not `Send`: cpal's streams are not, on every host. Keep it on the thread that started it and
 /// hand [`channel`](Self::channel)s to any other.
@@ -145,7 +165,7 @@ pub struct RunningEngine {
     structure_error: Option<io::Error>,
     osc_in: Option<OscListener>,
     output: Option<Output>,
-    osc_out: Option<(String, JoinHandle<()>)>,
+    osc_out: Option<OscSender>,
     logger: Option<PeriodicLogger>,
     diagnostics: Arc<Diagnostics>,
     sample_rate: f32,
@@ -154,11 +174,10 @@ pub struct RunningEngine {
 }
 
 /// What keeps the render side running: the device streams, or the headless stand-in.
-///
-/// Held only to be dropped, which is what stops the callback — hence never read.
-#[allow(dead_code)]
 enum Output {
     Device(audio::Streams),
+    // Held only to be dropped, which stops and joins it.
+    #[allow(dead_code)]
     Headless(FakeCallback),
 }
 
@@ -166,9 +185,11 @@ impl RunningEngine {
     /// A structure channel to this engine with no socket in between — the same verbs, the same
     /// Coordinator and the same answers as a client dialing [`structure_addr`](Self::structure_addr).
     ///
-    /// Owned and `Send`, so it can move to a worker thread. One kept past shutdown keeps the
-    /// Coordinator alive until it drops; its `send` is then refused (the control ingress is gone)
-    /// and a swap installs into a mailbox nothing drains.
+    /// Each call runs on the caller's thread: a swap validates and builds the new Engine there,
+    /// behind any swap already holding the Coordinator lock, so a UI thread should not make it.
+    /// The channel is owned and `Send` for exactly that — move it to a worker. One kept past
+    /// shutdown keeps the Coordinator alive until it drops; its `send` is then refused (the control
+    /// ingress is gone) and a swap installs into a mailbox nothing drains.
     pub fn channel(&self) -> Channel {
         let state = self
             .state
@@ -199,7 +220,7 @@ impl RunningEngine {
 
     /// The `host:port` outbound OSC is sent to, or `None` when none was asked for.
     pub fn osc_out_target(&self) -> Option<&str> {
-        self.osc_out.as_ref().map(|(target, _)| target.as_str())
+        self.osc_out.as_ref().map(|o| o.target.as_str())
     }
 
     /// Where the structure server is bound, or `None` when none was asked for or it failed to bind
@@ -233,12 +254,13 @@ impl RunningEngine {
         // retired Engine it still holds) here, off the audio thread, unless a caller kept a channel.
         self.state = None;
         self.osc_in = None;
-        self.output = None;
-        // Its only sender lived in the render callback dropped above, so the thread has exited or
-        // is about to.
-        if let Some((_, handle)) = self.osc_out.take() {
-            let _ = handle.join();
+        if let Some(Output::Device(streams)) = &self.output {
+            streams.pause();
         }
+        self.output = None;
+        // Stopped by its own flag rather than by its sender dropping with the render callback,
+        // which the pause above does not guarantee either.
+        self.osc_out = None;
         self.logger = None;
     }
 }
@@ -280,6 +302,9 @@ pub(crate) fn start_with(
         log_osc,
     } = config;
 
+    if let Some(addr) = &structure {
+        require_loopback(addr)?;
+    }
     let (instrument_json, resolver, initial_source) = read_instrument(instrument, instrument_root)?;
 
     // The one control ingress into the render callback. Two producers — the UDP listener (the
@@ -289,8 +314,8 @@ pub(crate) fn start_with(
 
     let (osc_out_tx, osc_out) = match osc_out {
         Some(target) => {
-            let (tx, target, handle) = start_osc_out(target, log_osc)?;
-            (Some(tx), Some((target, handle)))
+            let (tx, sender) = OscSender::start(target, log_osc)?;
+            (Some(tx), Some(sender))
         }
         None => (None, None),
     };
@@ -331,11 +356,9 @@ pub(crate) fn start_with(
             )
         }
         Render::Headless(cfg) => {
-            // No device, so no outbound drain: `osc_out_tx` drops here and the sender thread exits.
-            drop(osc_out_tx);
             let (coordinator, side, warnings) = build(cfg).map_err(StartError::Instrument)?;
             (
-                Output::Headless(FakeCallback::spawn(side, osc_rx)),
+                Output::Headless(FakeCallback::drive(side, osc_rx, osc_out_tx)),
                 Diagnostics::new(),
                 coordinator,
                 Arc::new(HeadlessRenderConfig {
@@ -377,6 +400,20 @@ pub(crate) fn start_with(
     })
 }
 
+/// Refuse a structure address that resolves to anything but loopback. One that does not resolve
+/// is left to the bind, whose failure is non-fatal.
+fn require_loopback(addr: &str) -> Result<(), StartError> {
+    let Ok(resolved) = addr.to_socket_addrs() else {
+        return Ok(());
+    };
+    for candidate in resolved {
+        if !candidate.ip().is_loopback() {
+            return Err(StartError::StructureNotLoopback(addr.to_string()));
+        }
+    }
+    Ok(())
+}
+
 /// The instrument's JSON, the resolver its references resolve through, and the source name
 /// `get_document` reports for it (`None` for the built-in rig, which has no source to name).
 ///
@@ -406,43 +443,72 @@ fn read_instrument(
     Ok((json, resolver, source))
 }
 
-/// Bind the OSC-out socket to `target` and start the thread that encodes and sends each outbound
-/// Message off the audio thread. The thread exits when the returned sender (moved into the render
-/// callback) drops.
-fn start_osc_out(
+/// The OSC-out sender: encodes and sends each outbound Message off the audio thread. Dropping it
+/// stops and joins the thread, which closes the socket.
+struct OscSender {
     target: String,
-    log_osc: bool,
-) -> Result<(Sender<Message>, String, JoinHandle<()>), StartError> {
-    let fail = |error| StartError::OscOut {
-        target: target.clone(),
-        error,
-    };
-    let socket = UdpSocket::bind("0.0.0.0:0").map_err(fail)?;
-    socket.connect(&target).map_err(fail)?;
-    let (tx, rx) = mpsc::channel::<Message>();
-    let handle = std::thread::Builder::new()
-        .name("osc-out".to_string())
-        .spawn(move || {
-            let mut flat = Vec::new();
-            for m in rx {
-                flat.clear();
-                // `false`: the Arg has no OSC form and expanded to nothing, so there is no datagram.
-                if !render::osc_out_args(&m.arg, &mut flat) {
-                    continue;
-                }
-                match osc::encode(&m.address, &flat) {
-                    Ok(bytes) => {
-                        if log_osc {
-                            println!("send {} {:?}", m.address, flat);
-                        }
-                        let _ = socket.send(&bytes);
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl OscSender {
+    /// Bind the socket to `target` and start the thread; the returned sender is the render
+    /// callback's end.
+    fn start(target: String, log_osc: bool) -> Result<(Sender<Message>, Self), StartError> {
+        let fail = |error| StartError::OscOut {
+            target: target.clone(),
+            error,
+        };
+        let socket = UdpSocket::bind("0.0.0.0:0").map_err(fail)?;
+        socket.connect(&target).map_err(fail)?;
+        let (tx, rx) = mpsc::channel::<Message>();
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = Arc::clone(&stop);
+        let handle = std::thread::Builder::new()
+            .name("osc-out".to_string())
+            .spawn(move || {
+                let mut flat = Vec::new();
+                while !thread_stop.load(Ordering::SeqCst) {
+                    let m = match rx.recv_timeout(STOP_POLL) {
+                        Ok(m) => m,
+                        Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
+                    flat.clear();
+                    // `false`: the Arg has no OSC form and expanded to nothing, so no datagram.
+                    if !render::osc_out_args(&m.arg, &mut flat) {
+                        continue;
                     }
-                    Err(e) => eprintln!("OSC encode error: {e}"),
+                    match osc::encode(&m.address, &flat) {
+                        Ok(bytes) => {
+                            if log_osc {
+                                println!("send {} {:?}", m.address, flat);
+                            }
+                            let _ = socket.send(&bytes);
+                        }
+                        Err(e) => eprintln!("OSC encode error: {e}"),
+                    }
                 }
-            }
-        })
-        .expect("spawn osc-out thread");
-    Ok((tx, target, handle))
+            })
+            .expect("spawn osc-out thread");
+        Ok((
+            tx,
+            Self {
+                target,
+                stop,
+                handle: Some(handle),
+            },
+        ))
+    }
+}
+
+impl Drop for OscSender {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
 }
 
 /// The OSC-in UDP listener: decodes each datagram into one [`ControlBatch`] and forwards it to the
@@ -460,7 +526,7 @@ impl OscListener {
             error,
         };
         let socket = UdpSocket::bind(addr.as_str()).map_err(fail)?;
-        socket.set_read_timeout(Some(OSC_IN_POLL)).map_err(fail)?;
+        socket.set_read_timeout(Some(STOP_POLL)).map_err(fail)?;
         let local = socket.local_addr().map_err(fail)?;
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
@@ -482,12 +548,21 @@ impl OscListener {
                             }
                             Err(e) => eprintln!("OSC decode error: {e}"),
                         },
+                        // The poll timeout, or a signal landing on this thread: a read timeout
+                        // makes Linux return EINTR even under SA_RESTART.
                         Err(ref e)
-                            if e.kind() == io::ErrorKind::WouldBlock
-                                || e.kind() == io::ErrorKind::TimedOut => {}
+                            if matches!(
+                                e.kind(),
+                                io::ErrorKind::WouldBlock
+                                    | io::ErrorKind::TimedOut
+                                    | io::ErrorKind::Interrupted
+                            ) => {}
+                        // Not fatal to the listener: Windows fails the receive of an oversized
+                        // datagram (and reports an earlier send's ICMP unreachable here) where
+                        // Linux truncates. The sleep keeps a persistent error from spinning.
                         Err(e) => {
                             eprintln!("OSC recv error: {e}");
-                            break;
+                            std::thread::sleep(STOP_POLL);
                         }
                     }
                 }
