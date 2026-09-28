@@ -12,6 +12,7 @@
 //! Every struct here is `deny_unknown_fields`, which schemars carries onto the wire as
 //! `additionalProperties: false`.
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -455,6 +456,63 @@ pub struct RemoveInstrumentResource {
     pub expect: Option<String>,
 }
 
+/// Arguments for `set_instrument_layout`: canvas positions for many nodes and interface pipes,
+/// written together. An unknown target, or one named twice, refuses the whole call.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetInstrumentLayout {
+    /// The document to edit.
+    pub source: String,
+    /// One position per target.
+    pub positions: Vec<LayoutPosition>,
+    #[serde(default)]
+    pub expect: Option<String>,
+}
+
+/// One target's canvas position, in canvas units.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LayoutPosition {
+    pub target: LayoutTarget,
+    pub x: f32,
+    pub y: f32,
+}
+
+/// What a position is set on: a node address string (`/osc`, or `/<name>` for an interface input
+/// pipe), or an interface output pipe as `{ "output": name }`. Output pipes are their own
+/// namespace, so the tag is what tells `main` the output from `/main` the input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum LayoutTarget {
+    Node(String),
+    Output(OutputTarget),
+}
+
+impl<'de> Deserialize<'de> for LayoutTarget {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        use serde_json::Value;
+        // By shape, by hand: derived `untagged` would also take serde's `["main"]` sequence form of
+        // `OutputTarget`, and would bury a misspelled key under "did not match any variant".
+        match Value::deserialize(deserializer)? {
+            Value::String(address) => Ok(LayoutTarget::Node(address)),
+            Value::Object(map) => serde_json::from_value(Value::Object(map))
+                .map(LayoutTarget::Output)
+                .map_err(D::Error::custom),
+            other => Err(D::Error::custom(format!(
+                "a layout target is a node address string or `{{\"output\": name}}`, not `{other}`"
+            ))),
+        }
+    }
+}
+
+/// An interface output pipe, named.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OutputTarget {
+    pub output: String,
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::string::ToString;
@@ -489,6 +547,41 @@ mod tests {
         let args: AddInstrumentInterfaceInput =
             serde_json::from_value(spelled).expect("the declared spelling parses");
         assert_eq!(args.value, Some(json!(880.0)));
+    }
+
+    /// A target is a node address string or an output tagged as one; nothing else parses, so a
+    /// guessed `{ "input": … }` fails loudly instead of landing somewhere unintended.
+    #[test]
+    fn a_layout_target_is_an_address_or_a_tagged_output() {
+        let parse = |target: serde_json::Value| {
+            serde_json::from_value::<LayoutPosition>(
+                json!({ "target": target, "x": 0.0, "y": 0.0 }),
+            )
+        };
+        assert_eq!(
+            parse(json!("/osc")).expect("an address").target,
+            LayoutTarget::Node("/osc".to_string())
+        );
+        assert_eq!(
+            parse(json!({ "output": "main" }))
+                .expect("a tagged output")
+                .target,
+            LayoutTarget::Output(OutputTarget {
+                output: "main".to_string()
+            })
+        );
+        for bad in [
+            json!({ "input": "main" }),
+            json!({ "output": "main", "node": "/osc" }),
+            json!(["main"]),
+        ] {
+            assert!(parse(bad.clone()).is_err(), "{bad} is not a target");
+        }
+        assert!(
+            serde_json::from_value::<LayoutPosition>(json!({ "target": "/osc", "x": 0.0 }))
+                .is_err(),
+            "both coordinates are required"
+        );
     }
 
     /// The closure is not confined to the verb that lost a parameter: every argument surface the
