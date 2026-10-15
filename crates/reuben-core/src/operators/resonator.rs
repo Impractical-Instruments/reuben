@@ -1,6 +1,7 @@
 //! Resonator — a modal resonator (Mutable Instruments *Rings*-inspired).
 //!
-//! A bank of `NUM_MODES` tuned two-pole resonators ("modes") excited in parallel by two paths: an
+//! A bank of up to `NUM_MODES` tuned two-pole resonators ("modes") — fewer under
+//! [`Resonator::with_modes`] — excited in parallel by two paths: an
 //! **external input** (`in`, the audio-effect / "excite it with anything" path) and an **internal
 //! mallet** — a short brightness-filtered noise burst fired by a rising edge on `gate` (the ping /
 //! strum trigger). Output is **pure wet**: the ringing bank only, so dry/wet blending (if wanted) is
@@ -18,7 +19,7 @@
 //!
 //! Macro controls map the *Rings* panel (all held `f32` Values — read once per
 //! block-slice; the bank's coefficients are recomputed only when one changes, à la `filter`, so a
-//! 32-mode bank stays cheap on the hot path):
+//! full bank stays cheap on the hot path):
 //! - `freq` — the resonant fundamental (Hz). Mode `i` sits at partial `i+1`.
 //! - `structure` — harmonic → inharmonic: stretches the partials off the integer series
 //!   (`f_i = freq·n·√(1 + B·n²)`, normalized so the fundamental stays exact). 0 = a harmonic
@@ -61,8 +62,9 @@ crate::operator_contract!(Resonator {
     outputs: { out: f32_buffer },
 });
 
-/// Number of modes (resonant partials) in the bank. Fixed so `process` allocates nothing; high
-/// modes above Nyquist are simply muted (gain 0).
+/// Most modes (resonant partials) a bank can hold. Fixed so `process` allocates nothing. Modes past
+/// Nyquist or past the instance's cap are muted, and the bank stops advancing at the last one that
+/// sounds.
 const NUM_MODES: usize = 32;
 /// `structure` → inharmonicity coefficient `B`. Tuned so the default (0.25) is mildly stretched and
 /// the maximum is clearly bell-like without being unstable.

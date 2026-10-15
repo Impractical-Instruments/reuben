@@ -39,11 +39,10 @@ pub trait Operator: Send {
 }
 ```
 
-Two optional lifecycle hooks support the Voicer,
-both default no-ops: `bind_voices(Vec<Graph>)` receives the N built voice sub-patches at load, and
-`on_instantiate(&AudioConfig) -> Result<(), PlanError>` runs per node from `Plan::instantiate` (the
-one place with the audio config) so the Voicer can build each voice's sub-`Plan` + arena off the hot
-path.
+Two optional lifecycle hooks, both default no-ops: `bind_voices(Vec<Graph>)` receives the Voicer's
+N built voice sub-patches at load, and `on_instantiate(&AudioConfig) -> Result<(), PlanError>` runs
+per node from `Plan::instantiate` (the one place with the audio config) so config-dependent state is
+built off the hot path — the Voicer's per-voice sub-`Plan` + arena, the Delay's line.
 
 A third default-no-op hook, `on_transplant(&mut self)`, runs on a **survivor** box just after it is
 transplanted across a hot-swap ([execution-runtime](../rules/execution-runtime.md)). A Swap

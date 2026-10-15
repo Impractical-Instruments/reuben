@@ -15,7 +15,10 @@
 //! DSP: a ring buffer sized to the maximum delay is allocated in `on_instantiate`, once the
 //! sample rate is fixed. The maximum is 2 s from [`Delay::new`]; [`Delay::with_max_time`] lowers
 //! it for a host whose heap cannot hold 2 s of line (at 48 kHz that is 384 KB). `time` clamps to
-//! the maximum, so a lowered one caps the echo rather than reading outside the line. Per
+//! the maximum, so a lowered one caps the echo rather than reading outside the line. Because the
+//! line exists from instantiate, a Plan built for a Swap holds a full line for every Delay in it —
+//! including the fresh twins of surviving boxes, discarded when the survivors move in — so a Swap's
+//! peak heap is the old Plan's lines plus the new Plan's. Per
 //! sample we read the delayed sample `time*sample_rate` behind the write head with linear
 //! interpolation, write `input + feedback*delayed` at the head, and output the dry/wet
 //! mix. The ring buffer and head index are continuous across calls / block slices, and
@@ -64,18 +67,26 @@ impl Delay {
         Self::with_max_time(MAX_DELAY_SECS)
     }
 
-    /// A Delay whose line holds at most `max_time` seconds, clamped to the `time` port's range.
-    /// The line costs `4 * ceil(max_time * sample_rate)` bytes of heap.
+    /// A Delay whose line holds at most `max_time` seconds, clamped to the `time` port's range; a
+    /// NaN takes the floor. The line costs `4 * ceil(max_time * sample_rate)` bytes of heap.
     pub fn with_max_time(max_time: f32) -> Self {
+        // Not `f32::clamp`: it passes NaN through, and `process` clamps `time` against this, where
+        // a NaN bound panics on the render thread.
+        let max_time = if max_time >= 0.001 {
+            max_time.min(MAX_DELAY_SECS)
+        } else {
+            0.001
+        };
         Self {
             buf: Vec::new(),
             head: 0,
-            max_time: max_time.clamp(0.001, MAX_DELAY_SECS),
+            max_time,
         }
     }
 
+    /// At least 2: the read head clamps to `1..=len - 1`, which is an empty range below that.
     fn line_len(&self, sample_rate: f32) -> usize {
-        (Float::ceil(self.max_time * sample_rate) as usize).max(1)
+        (Float::ceil(self.max_time * sample_rate) as usize).max(2)
     }
 }
 
@@ -308,11 +319,27 @@ mod tests {
     }
 
     #[test]
-    fn instantiate_sizes_the_line_so_process_never_allocates_it() {
+    fn instantiate_sizes_the_line_to_max_time() {
         let mut d = Delay::with_max_time(0.5);
         d.on_instantiate(&AudioConfig::new(48_000.0, 32))
             .expect("a delay always instantiates");
         assert_eq!(d.buf.len(), 24_000);
+    }
+
+    #[test]
+    fn a_degenerate_max_time_renders_rather_than_panicking() {
+        // A NaN ceiling, and a 1 ms ceiling at a sample rate where it is a single sample: both
+        // reached `f32::clamp` with an invalid range inside `process`.
+        let input = vec![1.0f32; 256];
+        for (max_time, sr) in [(f32::NAN, 48_000.0), (0.001, 1_000.0)] {
+            let out = OpDriver::for_type(Delay::with_max_time(max_time), sr)
+                .set(IN_TIME, 0.3)
+                .drive(IN_AUDIO, &input)
+                .render(input.len())
+                .output(OUT_AUDIO)
+                .to_vec();
+            assert!(out.iter().all(|x| x.is_finite()), "{max_time} s at {sr} Hz");
+        }
     }
 
     #[test]
