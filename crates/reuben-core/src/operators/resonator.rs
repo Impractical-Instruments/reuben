@@ -1,6 +1,7 @@
 //! Resonator — a modal resonator (Mutable Instruments *Rings*-inspired).
 //!
-//! A bank of `NUM_MODES` tuned two-pole resonators ("modes") excited in parallel by two paths: an
+//! A bank of up to `NUM_MODES` tuned two-pole resonators ("modes") — fewer under
+//! [`Resonator::with_modes`] — excited in parallel by two paths: an
 //! **external input** (`in`, the audio-effect / "excite it with anything" path) and an **internal
 //! mallet** — a short brightness-filtered noise burst fired by a rising edge on `gate` (the ping /
 //! strum trigger). Output is **pure wet**: the ringing bank only, so dry/wet blending (if wanted) is
@@ -18,7 +19,7 @@
 //!
 //! Macro controls map the *Rings* panel (all held `f32` Values — read once per
 //! block-slice; the bank's coefficients are recomputed only when one changes, à la `filter`, so a
-//! 32-mode bank stays cheap on the hot path):
+//! full bank stays cheap on the hot path):
 //! - `freq` — the resonant fundamental (Hz). Mode `i` sits at partial `i+1`.
 //! - `structure` — harmonic → inharmonic: stretches the partials off the integer series
 //!   (`f_i = freq·n·√(1 + B·n²)`, normalized so the fundamental stays exact). 0 = a harmonic
@@ -61,8 +62,9 @@ crate::operator_contract!(Resonator {
     outputs: { out: f32_buffer },
 });
 
-/// Number of modes (resonant partials) in the bank. Fixed so `process` allocates nothing; high
-/// modes above Nyquist are simply muted (gain 0).
+/// Most modes (resonant partials) a bank can hold. Fixed so `process` allocates nothing. Modes past
+/// Nyquist or past the instance's cap are muted, and the bank stops advancing at the last one that
+/// sounds.
 const NUM_MODES: usize = 32;
 /// `structure` → inharmonicity coefficient `B`. Tuned so the default (0.25) is mildly stretched and
 /// the maximum is clearly bell-like without being unstable.
@@ -109,6 +111,11 @@ pub struct Resonator {
     /// Per-mode delay state (the ring), continuous across blocks; reset on `spawn`.
     y1: [f32; NUM_MODES],
     y2: [f32; NUM_MODES],
+    /// Modes this instance may use, chosen at construction: the bank's cost is linear in it.
+    max_modes: usize,
+    /// Modes the bank actually advances: up to the last one `recompute` left sounding. Everything
+    /// above is muted (past Nyquist or past `max_modes`) and would only add zeros.
+    active: usize,
 
     /// Last control values the coefficients were computed for; NaN forces a first compute.
     last_freq: f32,
@@ -141,6 +148,8 @@ impl Default for Resonator {
             g_exc: [0.0; NUM_MODES],
             y1: [0.0; NUM_MODES],
             y2: [0.0; NUM_MODES],
+            max_modes: NUM_MODES,
+            active: NUM_MODES,
             last_freq: f32::NAN,
             last_structure: f32::NAN,
             last_brightness: f32::NAN,
@@ -160,6 +169,18 @@ impl Default for Resonator {
 impl Resonator {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A Resonator with at most `modes` partials (clamped to `1..=32`), for a host whose render
+    /// budget cannot carry the full bank. The upper partials go first, so fewer modes is a darker
+    /// ceiling on `brightness`, not a different instrument.
+    pub fn with_modes(modes: usize) -> Self {
+        let modes = modes.clamp(1, NUM_MODES);
+        Self {
+            max_modes: modes,
+            active: modes,
+            ..Self::default()
+        }
     }
 
     /// One xorshift32 step → a fresh u32 (Marsaglia 13/17/5; never collapses to 0).
@@ -214,16 +235,18 @@ impl Resonator {
         let pos = 0.05 + 0.45 * position.clamp(0.0, 1.0);
         let brightness = brightness.clamp(0.0, 1.0);
 
+        let mut active = 0;
         for i in 0..NUM_MODES {
             let n = (i + 1) as f32;
             let f = freq * n * Float::sqrt(1.0 + b * n * n) / ratio1;
-            if f <= 0.0 || f >= nyq {
+            if i >= self.max_modes || f <= 0.0 || f >= nyq {
                 self.c[i] = 0.0;
                 self.d[i] = 0.0;
                 self.g[i] = 0.0;
                 self.g_exc[i] = 0.0;
                 continue;
             }
+            active = i + 1;
             let w = core::f32::consts::TAU * f / sample_rate;
             let t = t0 / (1.0 + HF_DAMP * i as f32);
             let r = Float::exp(-1.0 / (t * sample_rate)).min(R_MAX);
@@ -237,6 +260,13 @@ impl Resonator {
             // `amp` regardless of how long the mode rings or how high it is tuned.
             self.g_exc[i] = Float::sin(w) * amp;
         }
+        // A mode leaving the advanced range keeps its last ring in `y1`/`y2`; clear it, or it
+        // resumes mid-ring the next time a lower pitch brings the mode back.
+        for i in active..self.active {
+            self.y1[i] = 0.0;
+            self.y2[i] = 0.0;
+        }
+        self.active = active;
     }
 
     /// One sample of the modal bank: advance every mode and sum. `EXCITED` is a const so the mallet
@@ -245,16 +275,27 @@ impl Resonator {
     /// the same arithmetic it has always done (the micro bench gates this at 10%).
     #[inline(always)]
     fn bank_step<const EXCITED: bool>(&mut self, x_in: f32, exc: f32) -> f32 {
+        // Slices cut to `active` rather than indices below it: the compiler cannot see that
+        // `active <= NUM_MODES`, and indexing would keep a bounds check on every array in the
+        // hottest loop in the operator.
+        let n = self.active;
+        let modes = self.y1[..n]
+            .iter_mut()
+            .zip(&mut self.y2[..n])
+            .zip(&self.g[..n])
+            .zip(&self.g_exc[..n])
+            .zip(&self.c[..n])
+            .zip(&self.d[..n]);
         let mut acc = 0.0f32;
-        for m in 0..NUM_MODES {
+        for (((((y1, y2), &g), &g_exc), &c), &d) in modes {
             let drive = if EXCITED {
-                self.g[m] * x_in + self.g_exc[m] * exc
+                g * x_in + g_exc * exc
             } else {
-                self.g[m] * x_in
+                g * x_in
             };
-            let y = drive + self.c[m] * self.y1[m] - self.d[m] * self.y2[m];
-            self.y2[m] = self.y1[m];
-            self.y1[m] = y;
+            let y = drive + c * *y1 - d * *y2;
+            *y2 = *y1;
+            *y1 = y;
             acc += y;
         }
         acc
@@ -344,7 +385,7 @@ impl Operator for Resonator {
     }
 
     fn spawn(&self) -> Box<dyn Operator> {
-        Box::new(Self::new())
+        Box::new(Self::with_modes(self.max_modes))
     }
 }
 
@@ -760,6 +801,61 @@ mod tests {
                 b[i]
             );
         }
+    }
+
+    /// Magnitude of the DFT of `buf` at `f`, normalized by length.
+    fn tone(buf: &[f32], f: f32) -> f32 {
+        let w = core::f32::consts::TAU * f / SR;
+        let (re, im) = buf.iter().enumerate().fold((0.0f32, 0.0f32), |(re, im), (i, &x)| {
+            (re + x * (w * i as f32).cos(), im - x * (w * i as f32).sin())
+        });
+        (re * re + im * im).sqrt() / buf.len() as f32
+    }
+
+    fn ping_with(op: Resonator, n: usize, m: Macros) -> Vec<f32> {
+        let mut d = OpDriver::for_type(op, SR);
+        set_macros(&mut d, m);
+        d.push(IN_GATE, 0, 1.0);
+        d.render(n).output(OUT_OUT).to_vec()
+    }
+
+    #[test]
+    fn fewer_modes_drop_only_the_upper_partials() {
+        let m = Macros::default();
+        let full = ping_with(Resonator::new(), 24_000, m);
+        let four = ping_with(Resonator::with_modes(4), 24_000, m);
+        let p2 = (tone(&full, 2.0 * m.freq), tone(&four, 2.0 * m.freq));
+        assert!((p2.0 - p2.1).abs() < p2.0 * 0.05, "the 2nd partial moved: {p2:?}");
+        let p6 = (tone(&full, 6.0 * m.freq), tone(&four, 6.0 * m.freq));
+        assert!(p6.1 < p6.0 * 0.01, "the 6th partial survived a 4-mode bank: {p6:?}");
+    }
+
+    #[test]
+    fn a_spawned_copy_keeps_its_mode_count() {
+        let m = Macros::default();
+        let mut d = OpDriver::for_type(Resonator::with_modes(4), SR);
+        set_macros(&mut d, m);
+        let mut copy = d.spawn();
+        set_macros(&mut copy, m);
+        copy.push(IN_GATE, 0, 1.0);
+        let out = copy.render(24_000).output(OUT_OUT).to_vec();
+        assert!(tone(&out, 6.0 * m.freq) < tone(&out, 2.0 * m.freq) * 0.01);
+    }
+
+    #[test]
+    fn a_mode_pushed_past_nyquist_does_not_resume_its_old_ring() {
+        // At 2 kHz every mode from the 11th up is past 0.45 × 48 kHz. Their rings must be cleared
+        // as they leave, or retuning down later brings them back mid-ring.
+        let m = Macros::default();
+        let mut r = Resonator::new();
+        r.recompute(220.0, 0.0, m.brightness, m.damping, m.position, SR);
+        assert_eq!(r.active, NUM_MODES);
+        r.y1 = [1.0; NUM_MODES];
+        r.y2 = [1.0; NUM_MODES];
+        r.recompute(2_000.0, 0.0, m.brightness, m.damping, m.position, SR);
+        assert_eq!(r.active, 10);
+        assert!(r.y1[..10].iter().chain(&r.y2[..10]).all(|&y| y == 1.0));
+        assert!(r.y1[10..].iter().chain(&r.y2[10..]).all(|&y| y == 0.0));
     }
 
     #[test]

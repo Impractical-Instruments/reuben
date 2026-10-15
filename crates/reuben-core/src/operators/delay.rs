@@ -12,8 +12,13 @@
 //! - input 3: `mix` (`Float`) — dry/wet blend 0..1 (materialized default 0.5).
 //! - output 0: `audio` (`Float`) — the dry+wet mix.
 //!
-//! DSP: a ring buffer sized to the maximum delay (2 s) is allocated lazily on the first
-//! `process` call (mirrors the Voicer idiom — sample_rate isn't known in `new()`). Per
+//! DSP: a ring buffer sized to the maximum delay is allocated in `on_instantiate`, once the
+//! sample rate is fixed. The maximum is 2 s from [`Delay::new`]; [`Delay::with_max_time`] lowers
+//! it for a host whose heap cannot hold 2 s of line (at 48 kHz that is 384 KB). `time` clamps to
+//! the maximum, so a lowered one caps the echo rather than reading outside the line. Because the
+//! line exists from instantiate, a Plan built for a Swap holds a full line for every Delay in it —
+//! including the fresh twins of surviving boxes, discarded when the survivors move in — so a Swap's
+//! peak heap is the old Plan's lines plus the new Plan's. Per
 //! sample we read the delayed sample `time*sample_rate` behind the write head with linear
 //! interpolation, write `input + feedback*delayed` at the head, and output the dry/wet
 //! mix. The ring buffer and head index are continuous across calls / block slices, and
@@ -24,8 +29,10 @@ use alloc::vec;
 use alloc::vec::Vec;
 use num_traits::Float;
 
+use crate::config::AudioConfig;
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
+use crate::plan::PlanError;
 
 // Single-source contract: one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Delay {
@@ -36,21 +43,50 @@ crate::operator_contract!(Delay {
     outputs: { audio: f32_buffer },
 });
 
-/// Maximum delay time in seconds; sizes the ring buffer.
+/// Maximum delay time in seconds for [`Delay::new`]; the top of the `time` range.
 const MAX_DELAY_SECS: f32 = 2.0;
 
-#[derive(Default)]
 pub struct Delay {
-    /// Ring buffer of past (input + feedback) samples. Allocated lazily on first
-    /// `process`, sized to `ceil(MAX_DELAY_SECS * sample_rate)`. Continuous across calls.
+    /// Ring buffer of past (input + feedback) samples, sized to `ceil(max_time * sample_rate)`.
+    /// Continuous across calls.
     buf: Vec<f32>,
     /// Write head index into `buf` (continuous across calls / block slices).
     head: usize,
+    /// Longest delay the line holds, in seconds. Construction-time: it sizes `buf`.
+    max_time: f32,
+}
+
+impl Default for Delay {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Delay {
     pub fn new() -> Self {
-        Self::default()
+        Self::with_max_time(MAX_DELAY_SECS)
+    }
+
+    /// A Delay whose line holds at most `max_time` seconds, clamped to the `time` port's range; a
+    /// NaN takes the floor. The line costs `4 * ceil(max_time * sample_rate)` bytes of heap.
+    pub fn with_max_time(max_time: f32) -> Self {
+        // Not `f32::clamp`: it passes NaN through, and `process` clamps `time` against this, where
+        // a NaN bound panics on the render thread.
+        let max_time = if max_time >= 0.001 {
+            max_time.min(MAX_DELAY_SECS)
+        } else {
+            0.001
+        };
+        Self {
+            buf: Vec::new(),
+            head: 0,
+            max_time,
+        }
+    }
+
+    /// At least 2: the read head clamps to `1..=len - 1`, which is an empty range below that.
+    fn line_len(&self, sample_rate: f32) -> usize {
+        (Float::ceil(self.max_time * sample_rate) as usize).max(2)
     }
 }
 
@@ -59,13 +95,19 @@ impl Operator for Delay {
         Self::contract()
     }
 
+    fn on_instantiate(&mut self, config: &AudioConfig) -> Result<(), PlanError> {
+        self.buf = vec![0.0f32; self.line_len(config.sample_rate)];
+        self.head = 0;
+        Ok(())
+    }
+
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
         let sample_rate = io.sample_rate();
 
-        // Lazily size the ring buffer to the max delay (sample_rate isn't known in `new`).
-        let cap = Float::ceil(MAX_DELAY_SECS * sample_rate) as usize;
-        let cap = cap.max(1);
+        // Sized by `on_instantiate`, so under a Plan this never fires; it guards a box that is
+        // processed without being instantiated.
+        let cap = self.line_len(sample_rate);
         if self.buf.len() != cap {
             self.buf = vec![0.0f32; cap];
             self.head = 0;
@@ -74,7 +116,7 @@ impl Operator for Delay {
         let feedback = io.read(IN_FEEDBACK).clamp(0.0, 0.95);
         let mix = io.read(IN_MIX).clamp(0.0, 1.0);
         // Read offset in samples; clamp so the interpolated tap stays inside the buffer.
-        let time = io.read(IN_TIME).clamp(0.001, MAX_DELAY_SECS);
+        let time = io.read(IN_TIME).clamp(0.001, self.max_time);
         let delay_samples = (time * sample_rate).clamp(1.0, (cap - 1) as f32);
 
         let len = self.buf.len();
@@ -103,7 +145,7 @@ impl Operator for Delay {
     }
 
     fn spawn(&self) -> Box<dyn Operator> {
-        Box::new(Self::new())
+        Box::new(Self::with_max_time(self.max_time))
     }
 }
 
@@ -249,6 +291,76 @@ mod tests {
             "echo expected at the 2 s cap (~{expected}), peaked at {peak}"
         );
         assert!(out[peak] > 0.9, "echo too quiet: {}", out[peak]);
+    }
+
+    #[test]
+    fn a_lowered_max_time_caps_the_echo_there() {
+        let sr = 48_000.0;
+        let n = 48_000;
+        let mut input = vec![0.0f32; n];
+        input[0] = 1.0;
+
+        let out = OpDriver::for_type(Delay::with_max_time(0.5), sr)
+            .set(IN_TIME, 1.5)
+            .set(IN_FEEDBACK, 0.0)
+            .set(IN_MIX, 1.0)
+            .drive(IN_AUDIO, &input)
+            .render(n)
+            .output(OUT_AUDIO)
+            .to_vec();
+
+        // cap = 24000; delay_samples clamps to cap-1.
+        let expected = 23_999i64;
+        let peak = argmax_abs(&out[1..]) + 1;
+        assert!(
+            (expected - peak as i64).abs() <= 2,
+            "echo expected at the 0.5 s cap (~{expected}), peaked at {peak}"
+        );
+    }
+
+    #[test]
+    fn instantiate_sizes_the_line_to_max_time() {
+        let mut d = Delay::with_max_time(0.5);
+        d.on_instantiate(&AudioConfig::new(48_000.0, 32))
+            .expect("a delay always instantiates");
+        assert_eq!(d.buf.len(), 24_000);
+    }
+
+    #[test]
+    fn a_degenerate_max_time_renders_rather_than_panicking() {
+        // A NaN ceiling, and a 1 ms ceiling at a sample rate where it is a single sample: both
+        // reached `f32::clamp` with an invalid range inside `process`.
+        let input = vec![1.0f32; 256];
+        for (max_time, sr) in [(f32::NAN, 48_000.0), (0.001, 1_000.0)] {
+            let out = OpDriver::for_type(Delay::with_max_time(max_time), sr)
+                .set(IN_TIME, 0.3)
+                .drive(IN_AUDIO, &input)
+                .render(input.len())
+                .output(OUT_AUDIO)
+                .to_vec();
+            assert!(out.iter().all(|x| x.is_finite()), "{max_time} s at {sr} Hz");
+        }
+    }
+
+    #[test]
+    fn a_spawned_copy_keeps_its_max_time() {
+        let n = 24_000;
+        let mut input = vec![0.0f32; n];
+        input[0] = 1.0;
+        let out = OpDriver::for_type(Delay::with_max_time(0.25), 48_000.0)
+            .spawn()
+            .set(IN_TIME, 1.0)
+            .set(IN_FEEDBACK, 0.0)
+            .set(IN_MIX, 1.0)
+            .drive(IN_AUDIO, &input)
+            .render(n)
+            .output(OUT_AUDIO)
+            .to_vec();
+        let peak = argmax_abs(&out[1..]) + 1;
+        assert!(
+            (11_999i64 - peak as i64).abs() <= 2,
+            "a spawned copy echoed at {peak}, not at its 0.25 s cap"
+        );
     }
 
     #[test]
