@@ -64,12 +64,14 @@ const FIT_PARTIAL: f32 = 8.0;
 const LOSS_POLE_MAX: f32 = 0.9;
 /// Loop gain ceiling: a hair under 1, so no setting rings forever.
 const LOOP_GAIN_MAX: f32 = 0.999_99;
-/// The pluck's noise is low-passed at `freq` times 2 (dark) to 64 (bright).
+/// The pluck's noise is low-passed, two poles, at `freq` times 2 (dark) to 64 (bright). Two poles
+/// because a plucked string's shape falls as 1/k² across its partials; one pole leaves the burst
+/// a sawtooth's 1/k, which buzzes at any cutoff.
 const PLUCK_COLOUR_MIN: f32 = 2.0;
 const PLUCK_COLOUR_MAX: f32 = 64.0;
-/// Pluck level: a unit-velocity pluck peaks between about 0.4 (high and dark) and 0.85 (bright,
-/// where the unfiltered noise has the higher crest factor), a full-level voice.
-const PLUCK_GAIN: f32 = 0.38;
+/// Pluck level: a unit-velocity pluck peaks between about 0.3 (dark) and 0.85 (bright, where the
+/// open noise has the higher crest factor), a full-level voice.
+const PLUCK_GAIN: f32 = 0.4;
 /// Fixed PRNG seed a fresh or spawned string starts from (xorshift cannot leave 0).
 const SEED: u32 = 0x2545_F491;
 
@@ -96,7 +98,8 @@ pub struct PluckedString {
     loop_gain: f32,
     /// `in`'s gain: one less the fundamental's per-period loop gain, which is unity at resonance.
     in_gain: f32,
-    /// The pluck noise's lowpass pole, and the gain that holds its RMS whatever the pole.
+    /// The pluck noise's lowpass pole (each of two), and the gain that holds its RMS whatever the
+    /// pole.
     pluck_pole: f32,
     pluck_norm: f32,
 
@@ -171,6 +174,13 @@ impl PluckedString {
         ((x >> 8) as f32) * (1.0 / (1u32 << 24) as f32) * 2.0 - 1.0
     }
 
+    /// One sample of the pluck's noise through both lowpass poles: `(first, second)`.
+    #[inline]
+    fn burst_step(&mut self, (e1, e2): (f32, f32), q: f32) -> (f32, f32) {
+        let e1 = (1.0 - q) * self.next_noise() + q * e1;
+        (e1, (1.0 - q) * e1 + q * e2)
+    }
+
     /// Recompute the loop from the held controls. Pure given its args.
     ///
     /// The loop's delay at the fundamental is the line's whole samples, the allpass's fractional
@@ -229,17 +239,23 @@ impl PluckedString {
         let cutoff = (freq * colour).min(0.45 * sample_rate);
         let q = Float::exp(-TAU * cutoff / sample_rate);
         self.pluck_pole = q;
-        // One-pole lowpassed white noise has `(1 - q) / (1 + q)` of the input's variance, and the
-        // position comb doubles it.
-        self.pluck_norm = Float::sqrt((1.0 + q) / (1.0 - q) / 2.0);
+        // Two one-pole stages keep `(1 - q)(1 + q²) / (1 + q)³` of white noise's variance (the sum
+        // of their squared impulse response, `(1 - q)²(n + 1)qⁿ`); the position comb doubles it.
+        let kept = (1.0 - q) * (1.0 + q * q) / ((1.0 + q) * (1.0 + q) * (1.0 + q));
+        self.pluck_norm = 1.0 / Float::sqrt(2.0 * kept);
     }
 
     /// Adds one period of shaped noise to the samples the loop reads next.
     ///
+    /// The burst is one period of the lowpass's steady state over a noise period: the filters run
+    /// through the period once before the pass that is kept, so the burst ends where it starts. A
+    /// burst filtered from rest has a seam, and the loop repeats a seam every period as a buzz on
+    /// every partial.
+    ///
     /// The position comb subtracts the burst from itself `m` samples later, circularly over the
-    /// period, so a partial with a node at the plucking point cancels whole. The burst is generated
-    /// twice from the same PRNG state rather than kept: a second buffer would be another line's
-    /// worth of heap.
+    /// period, so a partial with a node at the plucking point cancels whole. The burst is
+    /// regenerated from the same PRNG state for each pass rather than kept: a buffer would be
+    /// another line's worth of heap.
     fn pluck(&mut self, velocity: f32, position: f32) {
         let len = self.line.len();
         let n = self.delay;
@@ -254,18 +270,23 @@ impl PluckedString {
         let at = |k: usize| if start + k >= len { start + k - len } else { start + k };
 
         let seed = self.rng;
-        let mut e = 0.0f32;
-        for k in 0..n {
-            e = (1.0 - q) * self.next_noise() + q * e;
-            self.line[at(k)] += amp * e;
+        let mut settled = (0.0f32, 0.0f32);
+        for _ in 0..n {
+            settled = self.burst_step(settled, q);
         }
         let after = self.rng;
         self.rng = seed;
-        e = 0.0;
+        let mut e = settled;
         for k in 0..n {
-            e = (1.0 - q) * self.next_noise() + q * e;
+            e = self.burst_step(e, q);
+            self.line[at(k)] += amp * e.1;
+        }
+        self.rng = seed;
+        e = settled;
+        for k in 0..n {
+            e = self.burst_step(e, q);
             let j = if k + m >= n { k + m - n } else { k + m };
-            self.line[at(j)] -= amp * e;
+            self.line[at(j)] -= amp * e.1;
         }
         self.rng = after;
     }
@@ -548,6 +569,24 @@ mod tests {
         };
         let (dark, bright) = (fifth(0.1), fifth(0.9));
         assert!(dark * 10.0 < bright, "dark {dark:.5}, bright {bright:.5}");
+    }
+
+    #[test]
+    fn a_dark_pluck_has_no_buzz() {
+        // A pluck that is not one smooth period repeats its seam every period: a step, whose
+        // partials fall only as 1/k whatever the pluck's colour. The RMS frequency (the first
+        // difference's RMS against the signal's) catches it.
+        let out = pluck(
+            Pluck {
+                brightness: 0.0,
+                damping: 0.9,
+                ..Pluck::default()
+            },
+            0.1,
+        );
+        let diff: Vec<f32> = out.windows(2).map(|w| w[1] - w[0]).collect();
+        let rms_hz = rms(&diff) / rms(&out) * SR / core::f32::consts::TAU;
+        assert!(rms_hz < 220.0 * 2.5, "a dark 220 Hz pluck has an RMS frequency of {rms_hz} Hz");
     }
 
     #[test]
