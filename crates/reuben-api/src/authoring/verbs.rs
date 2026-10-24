@@ -15,6 +15,7 @@ use std::fmt;
 
 use reuben_core::Registry;
 use reuben_document::edit::{self as core_edit, EditError};
+use reuben_document::format::Layout;
 use reuben_document::introspect::{self as core_introspect, PatchBoundary};
 use reuben_document::projection::{Projector, Selection};
 use reuben_document::resources::ResourceResolver;
@@ -527,6 +528,30 @@ pub fn remove_instrument_resource(
     })
 }
 
+/// Set canvas positions on many nodes and interface pipes in one write. Not a roster verb: the
+/// position is the editor's, and no agent-facing door serves it.
+pub fn set_instrument_layout(
+    args: &SetInstrumentLayout,
+    resources: &dyn Resources,
+) -> Result<Answer<EditResult>, Refusal> {
+    let positions: Vec<(core_edit::LayoutTarget, Layout)> = args
+        .positions
+        .iter()
+        .map(|p| {
+            let target = match &p.target {
+                LayoutTarget::Node(address) => core_edit::LayoutTarget::Node(address.clone()),
+                LayoutTarget::Output(OutputTarget { output }) => {
+                    core_edit::LayoutTarget::Output(output.clone())
+                }
+            };
+            (target, Layout { x: p.x, y: p.y })
+        })
+        .collect();
+    run_edit(&args.source, &args.expect, resources, |src, reg, res| {
+        core_edit::set_instrument_layout(src, &positions, reg, res)
+    })
+}
+
 // --- the shared edit pipeline ---------------------------------------------------------------------
 
 /// Run one document verb: apply the `expect` guard, invoke the engine's verb, and map its outcome.
@@ -1011,5 +1036,103 @@ mod tests {
         let store = MemoryStore::default();
         hash_instrument(&SEED.replace("oscillator", "nosuchoperator"), &store)
             .expect("an unloadable document is still some particular document");
+    }
+
+    /// A node, an input pipe and an output pipe, where the input pipe and the output pipe are both
+    /// named `main`.
+    const TWINS: &str = r#"{
+        "format_version": 3,
+        "instrument": "twins",
+        "interface": {
+            "inputs": { "main": { "type": "f32", "default": 220.0 } },
+            "outputs": { "main": { "from": "/osc.audio" } }
+        },
+        "nodes": [ { "type": "oscillator", "address": "/osc", "inputs": { "freq": { "from": "/main" } } } ]
+    }"#;
+
+    fn layout_args(positions: serde_json::Value, expect: Option<&str>) -> SetInstrumentLayout {
+        serde_json::from_value(serde_json::json!({
+            "source": "twins.json",
+            "positions": positions,
+            "expect": expect,
+        }))
+        .expect("well-formed layout arguments")
+    }
+
+    fn layout_at(doc: &serde_json::Value, pointer: &str) -> serde_json::Value {
+        doc.pointer(pointer).cloned().unwrap_or_default()
+    }
+
+    #[test]
+    fn set_layout_places_every_kind_of_target_in_one_write() {
+        let store = MemoryStore::with("twins.json", TWINS);
+        let answer = set_instrument_layout(
+            &layout_args(
+                serde_json::json!([
+                    { "target": "/osc", "x": 10.0, "y": 20.0 },
+                    { "target": "/main", "x": -50.0, "y": 20.0 },
+                    { "target": { "output": "main" }, "x": 300.0, "y": 20.0 }
+                ]),
+                None,
+            ),
+            &store,
+        )
+        .expect("every target exists");
+        assert!(answer.output.written, "{:?}", answer.output);
+
+        let doc: serde_json::Value = serde_json::from_str(&store.read("twins.json")).unwrap();
+        let xy = |x: f64, y: f64| serde_json::json!({ "x": x, "y": y });
+        assert_eq!(layout_at(&doc, "/nodes/0/layout"), xy(10.0, 20.0));
+        assert_eq!(
+            layout_at(&doc, "/interface/inputs/main/layout"),
+            xy(-50.0, 20.0)
+        );
+        assert_eq!(
+            layout_at(&doc, "/interface/outputs/main/layout"),
+            xy(300.0, 20.0)
+        );
+    }
+
+    #[test]
+    fn set_layout_refuses_an_unknown_target_of_either_kind_and_writes_nothing() {
+        for ghost in [
+            serde_json::json!("/ghost"),
+            serde_json::json!({ "output": "ghost" }),
+        ] {
+            let store = MemoryStore::with("twins.json", TWINS);
+            let refusal = set_instrument_layout(
+                &layout_args(
+                    serde_json::json!([
+                        { "target": "/osc", "x": 1.0, "y": 1.0 },
+                        { "target": ghost, "x": 2.0, "y": 2.0 }
+                    ]),
+                    None,
+                ),
+                &store,
+            )
+            .expect_err("an unknown target is a refusal");
+            assert!(refusal.message.contains("ghost"), "{refusal}");
+            assert_eq!(store.read("twins.json"), TWINS, "nothing was written");
+        }
+    }
+
+    #[test]
+    fn set_layout_honours_the_expect_guard() {
+        let store = MemoryStore::with("twins.json", TWINS);
+        let one = serde_json::json!([{ "target": "/osc", "x": 1.0, "y": 1.0 }]);
+
+        let stale =
+            set_instrument_layout(&layout_args(one.clone(), Some("deadbeefdeadbeef")), &store)
+                .expect("a guard miss is an answer, not a refusal");
+        assert!(!stale.output.written);
+        assert_eq!(store.read("twins.json"), TWINS, "nothing was written");
+
+        let current = set_instrument_layout(&layout_args(one, Some(&stale.output.hash)), &store)
+            .expect("a matching guard is not a refusal");
+        assert!(current.output.written, "{:?}", current.output);
+        assert_ne!(
+            current.output.hash, stale.output.hash,
+            "a layout write moves the hash"
+        );
     }
 }
