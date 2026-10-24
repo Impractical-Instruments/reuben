@@ -83,8 +83,9 @@ clap = { version = "4", features = ["derive"] }
 # no locks, no allocation after creation.
 rtrb = "0.3"
 # MCP sidecar ONLY (reuben-mcp) — the ~34-package rmcp/tokio tree is fenced out of every other
-# workspace member. `default-features = false` here keeps the network stack off;
-# reuben-mcp enables exactly `server`, `macros`, `transport-io` (stdio) and no HTTP/reqwest
+# workspace member's build. A test may still dev-depend on reuben-mcp to dial an engine the way the
+# sidecar does, which reaches the test binary only. `default-features = false` here keeps the
+# network stack off; reuben-mcp enables exactly `server`, `macros`, `transport-io` (stdio) and no HTTP/reqwest
 # transport. reuben-mcp is the first workspace member allowed an async runtime.
 rmcp = { version = "2", default-features = false }
 # current_thread runtime, sync/rt/time/io-std only — no `net`, so no mio/OS reactor.

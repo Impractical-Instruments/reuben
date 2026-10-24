@@ -9,12 +9,14 @@
 //! through [`reuben_api::FsResolver`].
 //!
 //! [`engine::start`] composes all of them into a running engine with one call — `reuben play` is a
-//! thin caller of it, and any other binary embedding the engine starts it the same way.
+//! thin caller of it, and any other binary embedding the engine starts it the same way, from the
+//! same flags ([`cli`]).
 //!
 //! It reaches the engine through [`reuben_api`] and nowhere else: this crate is a door, and a door
 //! that could also reach past the window would be a second surface to keep honest.
 
 pub mod audio;
+pub mod cli;
 pub mod diagnostics;
 pub mod engine;
 pub mod input;

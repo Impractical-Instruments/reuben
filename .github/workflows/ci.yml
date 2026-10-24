@@ -242,6 +242,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The editor embeds the engine through reuben-native, whose cpal links ALSA.
+      - name: Install ALSA dev headers (cpal, for reuben-native)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
+
       # No X11/Wayland/GL -dev packages: winit and glutin dlopen those client libraries at run
       # time, so the build links none of them.
       - name: Setup pinned Rust toolchain
