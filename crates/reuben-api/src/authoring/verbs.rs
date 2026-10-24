@@ -15,6 +15,7 @@ use std::fmt;
 
 use reuben_core::Registry;
 use reuben_document::edit::{self as core_edit, EditError};
+use reuben_document::format::{self as core_format, WirePorts};
 use reuben_document::introspect::{self as core_introspect, PatchBoundary};
 use reuben_document::projection::{Projector, Selection};
 use reuben_document::resources::ResourceResolver;
@@ -22,7 +23,10 @@ use reuben_document::vocabulary::Section;
 use reuben_document::{content_hash, LoadError, NormalizedDoc};
 
 use super::args::*;
-use super::result::{Boundary, Diag, DocumentView, EditResult, OperatorInfo, Operators, Report};
+use super::result::{
+    Boundary, Diag, DocumentView, EditResult, OperatorInfo, Operators, Report, WireVerdict,
+    WireVerdicts,
+};
 use crate::resources::{Adapter, Resources};
 
 /// A verb's answer: the payload a door advertises to its caller, and the one-line gloss it shows a
@@ -527,6 +531,89 @@ pub fn remove_instrument_resource(
     })
 }
 
+// --- editor queries -------------------------------------------------------------------------------
+
+/// Judge a wire from one source to each target on port types alone: whether the loader's wire type
+/// rule accepts it, and the load error it would raise if not. The document is read and its
+/// endpoints resolved once per call, whatever the number of targets.
+///
+/// Not a roster verb: it is what an editor asks while a wire is dragged. A wire that would close a
+/// cycle still answers `ok` — that is the edit's to report. A source the document cannot resolve
+/// is a refusal, since no target could take it; a target it cannot resolve is that target's
+/// `ok: false`.
+pub fn wire_compatibility(
+    args: &WireCompatibility,
+    resources: &dyn Resources,
+) -> Result<Answer<WireVerdicts>, Refusal> {
+    let resolver = Adapter(resources);
+    let json = read_document(&args.source, resources)?;
+    let registry = Registry::builtin();
+    let doc = NormalizedDoc::from_json(&json, &registry, Some(&resolver))
+        .map_err(|e| Refusal::new(e.to_string()))?;
+    let ports = WirePorts::resolve(&doc, &registry, &resolver).map_err(|e| {
+        Refusal::new(format!(
+            "{e}\n\nThe document does not load far enough to resolve its wire endpoints."
+        ))
+    })?;
+    let from = match &args.from {
+        WireSource::NodeOutput { node, port } => core_format::WireSource::Output {
+            node: node.clone(),
+            port: port.clone(),
+        },
+        WireSource::InterfaceInput { name } => {
+            core_format::WireSource::InterfaceInput(name.clone())
+        }
+    };
+    ports
+        .check_source(&from)
+        .map_err(|e| Refusal::new(e.to_string()))?;
+    let targets = match &args.to {
+        Some(to) => to.clone(),
+        None => ports
+            .targets()
+            .into_iter()
+            .map(|t| match t {
+                core_format::WireTarget::Input { node, port } => {
+                    WireTarget::NodeInput { node, port }
+                }
+                core_format::WireTarget::InterfaceOutput(name) => {
+                    WireTarget::InterfaceOutput { name }
+                }
+            })
+            .collect(),
+    };
+    let verdicts: Vec<WireVerdict> = targets
+        .into_iter()
+        .map(|target| {
+            let to = match &target {
+                WireTarget::NodeInput { node, port } => core_format::WireTarget::Input {
+                    node: node.clone(),
+                    port: port.clone(),
+                },
+                WireTarget::InterfaceOutput { name } => {
+                    core_format::WireTarget::InterfaceOutput(name.clone())
+                }
+            };
+            let reason = ports.check(&from, &to).err().map(|e| e.to_string());
+            WireVerdict {
+                target,
+                ok: reason.is_none(),
+                reason,
+            }
+        })
+        .collect();
+    let accepted = verdicts.iter().filter(|v| v.ok).count();
+    let summary = format!(
+        "{accepted} of {} target(s) accept a wire from {}",
+        verdicts.len(),
+        from.wire_ref()
+    );
+    Ok(Answer {
+        output: WireVerdicts { verdicts },
+        summary,
+    })
+}
+
 // --- the shared edit pipeline ---------------------------------------------------------------------
 
 /// Run one document verb: apply the `expect` guard, invoke the engine's verb, and map its outcome.
@@ -1011,5 +1098,274 @@ mod tests {
         let store = MemoryStore::default();
         hash_instrument(&SEED.replace("oscillator", "nosuchoperator"), &store)
             .expect("an unloadable document is still some particular document");
+    }
+
+    // --- wire_compatibility ------------------------------------------------------------------
+
+    /// The nested child: one signal face input, one signal face output.
+    const WIRE_CHILD: &str = r#"{
+        "format_version": 3,
+        "instrument": "fx",
+        "interface": {
+            "inputs": { "in": { "type": "f32_buffer" } },
+            "outputs": { "out": { "from": "/sat.audio" } }
+        },
+        "nodes": [ { "type": "saturator", "address": "/sat", "inputs": { "audio": { "from": "/in" } } } ]
+    }"#;
+
+    /// Every wiring class, no wires between nodes (so no single added wire between two distinct
+    /// nodes can close a cycle), a subpatch face, and two interface outputs — one channel-bound.
+    const WIRE_BASE: &str = r#"{
+        "format_version": 3,
+        "instrument": "wires",
+        "resources": { "fx": "fx.json" },
+        "interface": {
+            "inputs": {
+                "mode": { "type": "FilterMode" },
+                "level": { "type": "f32", "default": 0.5, "min": 0, "max": 1 }
+            },
+            "outputs": {
+                "main": { "from": "/flt.audio", "channel": 0 },
+                "busy": { "from": "/env.active" }
+            }
+        },
+        "nodes": [
+            { "type": "lfo", "address": "/lfo" },
+            { "type": "oscillator", "address": "/osc" },
+            { "type": "filter", "address": "/flt" },
+            { "type": "envelope", "address": "/env" },
+            { "type": "round_f32_i32_value", "address": "/q" },
+            { "type": "sub_i32_value", "address": "/si" },
+            { "type": "transpose", "address": "/tr" },
+            { "type": "harmony", "address": "/h" },
+            { "type": "osc_out", "address": "/fb" },
+            { "type": "subpatch", "address": "/sub", "patch": "fx" }
+        ]
+    }"#;
+
+    fn out(node: &str, port: &str) -> WireSource {
+        WireSource::NodeOutput {
+            node: node.to_string(),
+            port: port.to_string(),
+        }
+    }
+
+    fn pipe(name: &str) -> WireSource {
+        WireSource::InterfaceInput {
+            name: name.to_string(),
+        }
+    }
+
+    fn inp(node: &str, port: &str) -> WireTarget {
+        WireTarget::NodeInput {
+            node: node.to_string(),
+            port: port.to_string(),
+        }
+    }
+
+    fn tap(name: &str) -> WireTarget {
+        WireTarget::InterfaceOutput {
+            name: name.to_string(),
+        }
+    }
+
+    /// The document with the wire written in, spelled as the document spells it — independently
+    /// of the query's own spelling, so a disagreement between the two fails the test.
+    fn with_wire(from: &WireSource, to: &WireTarget) -> String {
+        let reference = match from {
+            WireSource::NodeOutput { node, port } => format!("{node}.{port}"),
+            WireSource::InterfaceInput { name } => format!("/{name}"),
+        };
+        let mut doc: serde_json::Value = serde_json::from_str(WIRE_BASE).unwrap();
+        let slot = match to {
+            WireTarget::NodeInput { node, port } => {
+                let n = doc["nodes"]
+                    .as_array_mut()
+                    .unwrap()
+                    .iter_mut()
+                    .find(|n| n["address"] == node.as_str())
+                    .unwrap();
+                if n.get("inputs").is_none() {
+                    n["inputs"] = serde_json::json!({});
+                }
+                &mut n["inputs"][port.as_str()]
+            }
+            WireTarget::InterfaceOutput { name } => {
+                &mut doc["interface"]["outputs"][name.as_str()]["from"]
+            }
+        };
+        *slot = match to {
+            WireTarget::NodeInput { .. } => serde_json::json!({ "from": reference }),
+            WireTarget::InterfaceOutput { .. } => serde_json::json!(reference),
+        };
+        doc.to_string()
+    }
+
+    fn wire_store(doc: &str) -> MemoryStore {
+        let store = MemoryStore::with("inst.json", doc);
+        store
+            .texts
+            .borrow_mut()
+            .insert("fx.json".to_string(), WIRE_CHILD.to_string());
+        store
+    }
+
+    fn validates(doc: &str) -> Report {
+        let store = wire_store(doc);
+        let args = ValidateInstrument {
+            source: "inst.json".to_string(),
+        };
+        validate_instrument(&args, &store).unwrap().output
+    }
+
+    fn verdicts(from: &WireSource, to: Option<Vec<WireTarget>>) -> Vec<WireVerdict> {
+        let store = wire_store(WIRE_BASE);
+        let args = WireCompatibility {
+            source: "inst.json".to_string(),
+            from: from.clone(),
+            to,
+        };
+        wire_compatibility(&args, &store)
+            .expect("a resolvable source is not a refusal")
+            .output
+            .verdicts
+    }
+
+    /// The acceptance table: each pair is written into the document and validated, and the
+    /// query — asked of the document *before* the wire — must give the same answer as `validate`,
+    /// and the answer the row expects.
+    #[test]
+    fn the_query_and_validate_agree_on_every_pair_in_the_table() {
+        assert!(validates(WIRE_BASE).ok, "the base document validates");
+        let table: &[(WireSource, WireTarget, bool)] = &[
+            (out("/lfo", "out"), inp("/osc", "freq"), true),
+            (out("/env", "active"), inp("/osc", "freq"), true),
+            (out("/osc", "audio"), inp("/env", "gate"), false),
+            (out("/q", "out"), inp("/env", "gate"), true),
+            (out("/env", "active"), inp("/si", "a"), false),
+            (out("/tr", "notes"), inp("/osc", "freq"), false),
+            (out("/tr", "notes"), inp("/fb", "in"), true),
+            (out("/osc", "audio"), inp("/fb", "in"), false),
+            (out("/h", "harmony"), inp("/fb", "in"), false),
+            (pipe("mode"), inp("/flt", "mode"), true),
+            (pipe("mode"), inp("/osc", "waveform"), false),
+            (pipe("level"), inp("/flt", "cutoff"), true),
+            // The subpatch face, both directions.
+            (out("/osc", "audio"), inp("/sub", "in"), true),
+            (out("/tr", "notes"), inp("/sub", "in"), false),
+            (out("/sub", "out"), inp("/flt", "audio"), true),
+            (out("/sub", "out"), inp("/env", "gate"), false),
+            // Interface outputs: typeless, but a channel binding takes only a signal.
+            (out("/osc", "audio"), tap("main"), true),
+            (out("/env", "active"), tap("main"), false),
+            (out("/tr", "notes"), tap("busy"), true),
+            (out("/sub", "out"), tap("busy"), true),
+        ];
+        let mut failures = Vec::new();
+        for (from, to, expected) in table {
+            let report = validates(&with_wire(from, to));
+            let verdict = &verdicts(from, Some(vec![to.clone()]))[0];
+            if verdict.ok != report.ok || verdict.ok != *expected {
+                failures.push(format!(
+                    "{from:?} -> {to:?}: query {} ({:?}), validate {} ({:?}), expected {expected}",
+                    verdict.ok, verdict.reason, report.ok, report.errors
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// The batch form over the whole document: every source against every target the query
+    /// enumerates, each checked against `validate`. Pairs on one node are left out — the only
+    /// cycles a single wire can close here — since cycles are not the query's to answer.
+    #[test]
+    fn every_enumerated_target_agrees_with_validate_for_every_source() {
+        let sources = [
+            out("/lfo", "out"),
+            out("/osc", "audio"),
+            out("/flt", "audio"),
+            out("/env", "cv"),
+            out("/env", "active"),
+            out("/q", "out"),
+            out("/si", "out"),
+            out("/tr", "notes"),
+            out("/h", "harmony"),
+            out("/sub", "out"),
+            pipe("mode"),
+            pipe("level"),
+        ];
+        let mut failures = Vec::new();
+        let mut seen_face = false;
+        let mut seen_tap = false;
+        for from in &sources {
+            for verdict in verdicts(from, None) {
+                let same_node = matches!(
+                    (from, &verdict.target),
+                    (WireSource::NodeOutput { node: a, .. }, WireTarget::NodeInput { node: b, .. })
+                        if a == b
+                );
+                if same_node {
+                    continue;
+                }
+                seen_face |= verdict.target == inp("/sub", "in");
+                seen_tap |= matches!(verdict.target, WireTarget::InterfaceOutput { .. });
+                let report = validates(&with_wire(from, &verdict.target));
+                if verdict.ok != report.ok {
+                    failures.push(format!(
+                        "{from:?} -> {:?}: query {} ({:?}), validate {} ({:?})",
+                        verdict.target, verdict.ok, verdict.reason, report.ok, report.errors
+                    ));
+                }
+            }
+        }
+        assert!(
+            seen_face && seen_tap,
+            "the enumeration reaches faces and interface outputs"
+        );
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// A constant is not a wire target: the enumeration leaves it out, and asking for one names it.
+    #[test]
+    fn a_constant_is_never_a_compatible_target() {
+        let store = wire_store(
+            r#"{
+            "format_version": 3, "instrument": "c",
+            "nodes": [ { "type": "lfo", "address": "/lfo" }, { "type": "voicer", "address": "/v" } ]
+        }"#,
+        );
+        let args = WireCompatibility {
+            source: "inst.json".to_string(),
+            from: out("/lfo", "out"),
+            to: None,
+        };
+        let all = wire_compatibility(&args, &store).unwrap().output.verdicts;
+        assert!(
+            !all.iter().any(|v| v.target == inp("/v", "voices")),
+            "{all:?}"
+        );
+
+        let args = WireCompatibility {
+            to: Some(vec![inp("/v", "voices")]),
+            ..args
+        };
+        let one = &wire_compatibility(&args, &store).unwrap().output.verdicts[0];
+        assert!(
+            !one.ok && one.reason.as_deref().unwrap().contains("voices"),
+            "{one:?}"
+        );
+    }
+
+    /// No target could take a source that is not there, so the question is refused, not answered
+    /// once per target.
+    #[test]
+    fn an_unknown_source_is_a_refusal() {
+        let store = wire_store(WIRE_BASE);
+        let args = WireCompatibility {
+            source: "inst.json".to_string(),
+            from: out("/nobody", "out"),
+            to: None,
+        };
+        assert!(wire_compatibility(&args, &store).is_err());
     }
 }

@@ -455,6 +455,43 @@ pub struct RemoveInstrumentResource {
     pub expect: Option<String>,
 }
 
+// --- editor queries -------------------------------------------------------------------------------
+
+/// The end a wire leaves from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WireSource {
+    /// A node's output port. On a `subpatch` node, `port` is one of its child's interface output
+    /// names.
+    NodeOutput { node: String, port: String },
+    /// One of the document's own interface input pipes, by name.
+    InterfaceInput { name: String },
+}
+
+/// The end a wire lands on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WireTarget {
+    /// A node's input port. On a `subpatch` node, `port` is one of its child's interface input
+    /// names.
+    NodeInput { node: String, port: String },
+    /// One of the document's own interface output pipes, by name: the wire becomes its `from`.
+    InterfaceOutput { name: String },
+}
+
+/// Arguments for `wire_compatibility`: one source, and the targets to judge it against.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WireCompatibility {
+    /// The instrument document (a path for this door).
+    pub source: String,
+    /// Where the wire leaves from.
+    pub from: WireSource,
+    /// The targets to judge, in the order to answer them; omit for every target the document has.
+    #[serde(default)]
+    pub to: Option<Vec<WireTarget>>,
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::string::ToString;
