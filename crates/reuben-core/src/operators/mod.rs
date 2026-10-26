@@ -57,6 +57,7 @@ crate::operator_census! {
     output::{Output},
     pan::{Pan},
     pitch2freq::{Pitch2Freq},
+    plucked_string::{PluckedString},
     power::*,
     reciprocal::*,
     resonator::{Resonator},

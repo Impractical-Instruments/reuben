@@ -147,6 +147,7 @@ pub const WORKLOADS: &[Workload] = &[
     w(overhead::KIND, Recipe::Default),
     w("pan", Recipe::Default),
     w("pitch2freq", Recipe::Default),
+    w("plucked_string", Recipe::Gate),
     w("power_f32_signal", Recipe::Default),
     w("power_f32_value", Recipe::Default),
     w("reciprocal_f32_signal", Recipe::Default),
