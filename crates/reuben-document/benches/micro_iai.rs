@@ -132,6 +132,7 @@ micro_bench_ops! {
     round            => "round_f32_signal",
     round_value      => "round_f32_value",
     sample           => "sample",
+    sample_loop      => "sample_loop",
     saturator        => "saturator",
     sequencer        => "sequencer",
     snap             => "snap",
