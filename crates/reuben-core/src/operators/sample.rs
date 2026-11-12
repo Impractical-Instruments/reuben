@@ -130,6 +130,14 @@ impl SamplePlayer {
     }
 }
 
+/// The crossfade length for a wrap from the region `lo..hi` into `next_lo..next_hi`: `max`, capped
+/// at half of either region. `None` when either region is too short to loop.
+fn xfade_len(lo: f64, hi: f64, next_lo: f64, next_hi: f64, max: f64) -> Option<f64> {
+    let (this_len, next_len) = (hi - lo, next_hi - next_lo);
+    (this_len >= MIN_LOOP_FRAMES && next_len >= MIN_LOOP_FRAMES)
+        .then(|| max.min(this_len * 0.5).min(next_len * 0.5))
+}
+
 /// The loop region in source frames from the normalized inputs, ordered low to high.
 fn region(a: f32, b: f32, frames: usize) -> (f64, f64) {
     let a = a.clamp(0.0, 1.0) as f64 * frames as f64;
@@ -211,17 +219,63 @@ impl Operator for SamplePlayer {
         let wrapping = loop_on && g > 0.0;
         let release_len = self.release_len.max(1) as f32;
 
-        // Flat local for the block loop.
+        // The frame loop alternates two paths. A *plain run* is the one-shot body and nothing
+        // else, run for as many frames as no seam can touch: the whole slice with `loop` off, or up
+        // to where the next crossfade would begin. Everything else — entering a crossfade, the
+        // fade itself, the wrap, the gate-fall release — takes the *seam path* one frame at a time.
+        // Keeping the loop machinery out of the plain run keeps one-shot playback as cheap as it
+        // was before loop mode existed.
         let out = io.write(OUT_AUDIO);
-        for out_sample in out.iter_mut().take(n) {
+        let mut i = 0;
+        while i < n {
+            if xfade.is_none() && release_left == 0 {
+                let mut end = n;
+                if wrapping && playing {
+                    if let Some(len) = xfade_len(lo, hi, next_lo, next_hi, xfade_max) {
+                        let ahead = hi - len - playhead;
+                        end = if ahead <= 0.0 {
+                            i
+                        } else if rate > 0.0 {
+                            // Frames whose playhead is still short of the fade window. A rounding
+                            // miss only hands a plain frame to the seam path, which plays it the same.
+                            let k = Float::ceil(ahead / rate);
+                            if k < (n - i) as f64 { i + k as usize } else { n }
+                        } else {
+                            n
+                        };
+                    }
+                }
+                if end > i {
+                    for out_sample in out[i..end].iter_mut() {
+                        *out_sample = if playing {
+                            let base = Float::floor(playhead);
+                            let idx = base as usize;
+                            if base < 0.0 || idx >= frames {
+                                playing = false;
+                                0.0
+                            } else {
+                                let frac = (playhead - base) as f32;
+                                let v = interp(&store, id, channel, chans, frames, idx, frac);
+                                playhead += rate;
+                                v * gain
+                            }
+                        } else {
+                            0.0
+                        };
+                    }
+                    i = end;
+                    continue;
+                }
+            }
+
+            // Seam path: one frame.
             if !playing {
-                *out_sample = 0.0;
+                out[i] = 0.0;
+                i += 1;
                 continue;
             }
             if wrapping && xfade.is_none() {
-                let (this_len, next_len) = (hi - lo, next_hi - next_lo);
-                if this_len >= MIN_LOOP_FRAMES && next_len >= MIN_LOOP_FRAMES {
-                    let len = xfade_max.min(this_len * 0.5).min(next_len * 0.5);
+                if let Some(len) = xfade_len(lo, hi, next_lo, next_hi, xfade_max) {
                     if playhead >= hi - len {
                         xfade = Some(Crossfade {
                             start: hi - len,
@@ -286,7 +340,8 @@ impl Operator for SamplePlayer {
                     xfade = None;
                 }
             }
-            *out_sample = s;
+            out[i] = s;
+            i += 1;
         }
 
         self.playhead = playhead;
@@ -324,6 +379,11 @@ fn silence(io: &mut Io, n: usize) {
 /// Linearly-interpolated sample at fractional position `idx + frac`, with channel select:
 /// `channel < 0` averages all channels (downmix), `≥0` picks one (clamped). Pure — reads go
 /// through the store's bounds-checked accessor, so out-of-range frames read as silence.
+///
+/// Forced inline: with three call sites (the plain run, and the seam path's tail and head reads)
+/// the inliner leaves it out of line, and the per-frame call alone costs one-shot playback about a
+/// fifth more instructions on the `sample` micro bench.
+#[inline(always)]
 fn interp(
     store: &ResourceStore,
     id: SampleId,

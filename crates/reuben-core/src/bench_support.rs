@@ -52,6 +52,10 @@ pub enum Recipe {
     /// `Default`, plus a synthetic decoded sample bound to the resource slot, the `gate` held high
     /// (rising edge ⇒ trigger), and `freq` set positive — so the sample player's read loop runs.
     Sample,
+    /// `Sample`, plus `loop` on over a short region — so the sample player's seam path (crossfade
+    /// entry, the equal-power fade, the wrap) runs about twenty times in the second, alongside the
+    /// plain runs between seams.
+    SampleLoop,
     /// `Default`, plus a synthetic decoded sample bound to the resource slot — for the free-running
     /// granulator, which needs no gate/note: at default density it spawns grains automatically, so
     /// the bound sample alone exercises its real grain-summing path.
@@ -158,6 +162,7 @@ pub const WORKLOADS: &[Workload] = &[
     w("round_f32_signal", Recipe::Default),
     w("round_f32_value", Recipe::Default),
     w("sample", Recipe::Sample),
+    w(SAMPLE_LOOP, Recipe::SampleLoop),
     w("saturator", Recipe::Audio),
     w("sequencer", Recipe::Clocked),
     w("snap", Recipe::Notes),
@@ -235,6 +240,16 @@ pub mod overhead {
     }
 }
 
+/// A second workload for the sample player: loop mode, which the one-shot `Recipe::Sample` never
+/// reaches. Bench-only like [`overhead`], but it benches a registered operator rather than a probe,
+/// so [`OpHarness::for_kind`] resolves it through [`VARIANTS`] to the operator it drives.
+pub const SAMPLE_LOOP: &str = "sample_loop";
+
+/// Workload kinds that bench a mode of a registered operator, as `(workload kind, operator kind)`.
+/// Each gets its own gated case, so a mode the default recipe never reaches has a baseline of its
+/// own. The census forcing function carves these out alongside [`overhead`].
+pub const VARIANTS: &[(&str, &str)] = &[(SAMPLE_LOOP, "sample")];
+
 /// Look up the workload for an operator kind. Panics if absent — a bench referenced a kind with no
 /// workload, which the forcing-function test would also have caught.
 pub fn workload(kind: &str) -> Workload {
@@ -268,9 +283,13 @@ impl OpHarness {
             || Box::new(overhead::Overhead::new()),
             overhead::Overhead::descriptor(),
         );
+        let op = VARIANTS
+            .iter()
+            .find(|(variant, _)| *variant == kind)
+            .map_or(kind, |(_, op)| *op);
         let entry = reg
-            .get(kind)
-            .unwrap_or_else(|| panic!("unknown operator kind {kind:?}"));
+            .get(op)
+            .unwrap_or_else(|| panic!("unknown operator kind {op:?}"));
         let desc = entry.descriptor.clone();
         let mut driver = OpDriver::from_boxed((entry.make)(), desc.clone(), SAMPLE_RATE);
         apply_recipe(&mut driver, &desc, workload(kind).recipe);
@@ -307,6 +326,12 @@ fn apply_recipe(driver: &mut OpDriver, desc: &Descriptor, recipe: Recipe) {
             set_const(driver, desc, "gate", 1.0);
             set_const(driver, desc, "freq", 440.0);
             bind_synthetic_sample(driver, desc);
+        }
+        Recipe::SampleLoop => {
+            apply_recipe(driver, desc, Recipe::Sample);
+            set_const(driver, desc, "loop", 1.0);
+            set_const(driver, desc, "loop_start", 0.1);
+            set_const(driver, desc, "loop_end", 0.2);
         }
         Recipe::Grains => bind_synthetic_sample(driver, desc),
         Recipe::Notes => push_note(driver, desc, "notes", Note::new(Pitch::Absolute(60.0), 1.0)),
@@ -412,6 +437,19 @@ mod tests {
             "`overhead` is bench-only and must never be a registered operator — registering it \
              would leak it into the schema and patchable graphs"
         );
+        // Mode variants bench a registered operator under a second name: drop the name, and hold
+        // the operator it drives to the registry.
+        for (variant, op) in VARIANTS {
+            assert!(
+                benched.remove(variant),
+                "the {variant:?} variant workload disappeared from WORKLOADS"
+            );
+            assert!(
+                registered.contains(op) && !registered.contains(variant),
+                "variant {variant:?} must drive a registered operator ({op:?}) under a name the \
+                 registry does not claim"
+            );
+        }
         assert_eq!(
             registered, benched,
             "WORKLOADS is out of sync with the operator registry — add a `w(\"<kind>\", …)` entry \
