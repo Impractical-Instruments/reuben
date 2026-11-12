@@ -162,7 +162,9 @@ pub const WORKLOADS: &[Workload] = &[
     w("round_f32_signal", Recipe::Default),
     w("round_f32_value", Recipe::Default),
     w("sample", Recipe::Sample),
-    w(SAMPLE_LOOP, Recipe::SampleLoop),
+    // A literal, not `SAMPLE_LOOP`: the perf gate reads this table's quoted kinds with a text scan
+    // to skip baseline-absent workloads, and a const name is invisible to it.
+    w("sample_loop", Recipe::SampleLoop),
     w("saturator", Recipe::Audio),
     w("sequencer", Recipe::Clocked),
     w("snap", Recipe::Notes),
