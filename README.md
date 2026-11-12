@@ -32,6 +32,10 @@ Deterministic CI performance trend: callgrind **instruction counts (Ir)** for re
 
 `overhead` is a bench-only no-op operator behind a typical port shape, so its entire cost is the engine's per-node stepping overhead (edge clear, routing, materialize, `Io` build — see `bench_support.rs`). The `proxy (abs_f32_value)` line is the cheapest value-rate case — ~99% the same overhead — covering history from before the dedicated case landed; its level differs (a smaller port surface), so the two are separate lines, never stitched. Latest: **564k Ir** ≈ **1,504 instructions per node per block**. This overhead is a constant offset on every micro case and scales with node count in an instrument.
 
+## Graph construction (construct)
+
+_No construct data recorded yet._
+
 ## Heaviest operators (micro)
 
 <picture>
@@ -154,20 +158,20 @@ The deterministic tier of the eval harness: each task's **reference solution** (
 
 | Task | Metric | Latest | vs prev | vs first | since |
 |---|---|---:|---:|---:|---|
-| `from_scratch` | grounding tokens | 19,080 | — | ±0.0% | 2026-07-28 |
-| `from_scratch` | fixed grounding | 18,776 | — | ±0.0% | 2026-07-28 |
+| `from_scratch` | grounding tokens | 19,167 | +0.5% | +0.5% | 2026-07-28 |
+| `from_scratch` | fixed grounding | 18,863 | +0.5% | +0.5% | 2026-07-28 |
 | `from_scratch` | document chars | 0 | — | — | 2026-07-28 |
-| `intent_fan_out` | grounding tokens | 19,030 | — | ±0.0% | 2026-07-28 |
-| `intent_fan_out` | fixed grounding | 18,776 | — | ±0.0% | 2026-07-28 |
+| `intent_fan_out` | grounding tokens | 19,117 | +0.5% | +0.5% | 2026-07-28 |
+| `intent_fan_out` | fixed grounding | 18,863 | +0.5% | +0.5% | 2026-07-28 |
 | `intent_fan_out` | document chars | 0 | — | — | 2026-07-28 |
-| `intent_word` | grounding tokens | 18,892 | — | ±0.0% | 2026-07-28 |
-| `intent_word` | fixed grounding | 18,776 | — | ±0.0% | 2026-07-28 |
+| `intent_word` | grounding tokens | 18,979 | +0.5% | +0.5% | 2026-07-28 |
+| `intent_word` | fixed grounding | 18,863 | +0.5% | +0.5% | 2026-07-28 |
 | `intent_word` | document chars | 0 | — | — | 2026-07-28 |
-| `repair` | grounding tokens | 18,991 | — | ±0.0% | 2026-07-28 |
-| `repair` | fixed grounding | 18,776 | — | ±0.0% | 2026-07-28 |
+| `repair` | grounding tokens | 19,078 | +0.5% | +0.5% | 2026-07-28 |
+| `repair` | fixed grounding | 18,863 | +0.5% | +0.5% | 2026-07-28 |
 | `repair` | document chars | 0 | — | — | 2026-07-28 |
-| `tweak` | grounding tokens | 18,836 | — | ±0.0% | 2026-07-28 |
-| `tweak` | fixed grounding | 18,776 | — | ±0.0% | 2026-07-28 |
+| `tweak` | grounding tokens | 18,923 | +0.5% | +0.5% | 2026-07-28 |
+| `tweak` | fixed grounding | 18,863 | +0.5% | +0.5% | 2026-07-28 |
 | `tweak` | document chars | 0 | — | — | 2026-07-28 |
 
 - **Fixed grounding** is what every turn of every task pays before the model does anything: the server `instructions` plus every tool schema. It creeps when a tool description or the authoring guide grows, and nothing else watches it.
@@ -178,6 +182,7 @@ The deterministic tier of the eval harness: each task's **reference solution** (
 
 - **Bold** deltas exceed the perf gate's 3% warn line.
 - Micro cases measure `step_node` — operator DSP **plus** the constant per-node engine overhead above. Cheap (value-rate) cases are therefore dominated by that overhead: a uniform absolute shift across all of them is an engine-overhead change, not operator regressions.
+- Construct cases are the one place an absolute level is the *less* interesting number: a change that moves all three sizes of a shape by the same factor is a constant-factor change, while one that moves only the largest is a scaling change, and only the second kind gets worse as songs get bigger.
 - A series that starts mid-chart is an operator that landed after recording began; its *vs first* compares against its own first real measurement (registration stubs < 1000 Ir are dropped).
 - Gaps are honest: a commit whose bench harness didn't compile against its baseline records nothing.
 - Ir is not wall-clock. Counts shift when the pinned toolchain or target baseline changes (e.g. the x86-64-v3 bump on 2026-06-29) — those steps are real cost changes on the same workload, but not source-code regressions/wins.
