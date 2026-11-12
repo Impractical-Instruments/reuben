@@ -156,6 +156,41 @@ fn render_block_is_allocation_free_after_warmup() {
         "retriggering sample render allocated {sample_retrig} time(s)"
     );
 
+    // Loop mode: a short region wraps (and crossfades) many times per second, the region moves
+    // mid-play, and a gate fall runs the release fade. None of it may grow the heap.
+    let loop_on = [
+        Message::float("/sample/gate", 0.0, 0),
+        Message::float("/sample/loop", 1.0, 0),
+        Message::float("/sample/loop_start", 0.1, 0),
+        Message::float("/sample/loop_end", 0.15, 0),
+        Message::float("/sample/gate", 1.0, 64),
+    ];
+    let loop_move = [
+        Message::float("/sample/loop_start", 0.5, 0),
+        Message::float("/sample/loop_end", 0.52, 0),
+    ];
+    let gate_off = [Message::float("/sample/gate", 0.0, 0)];
+    r.render_block(&mut plan, &loop_on, &mut out);
+    r.render_block(&mut plan, &[], &mut out);
+    let sample_loop = measure(|| {
+        for _ in 0..500 {
+            r.render_block(&mut plan, &[], &mut out);
+        }
+        r.render_block(&mut plan, &loop_move, &mut out);
+        for _ in 0..500 {
+            r.render_block(&mut plan, &[], &mut out);
+        }
+        r.render_block(&mut plan, &gate_off, &mut out);
+        for _ in 0..16 {
+            r.render_block(&mut plan, &[], &mut out);
+        }
+    })
+    .allocs;
+    assert_eq!(
+        sample_loop, 0,
+        "looping sample render allocated {sample_loop} time(s)"
+    );
+
     // (3) A nested instrument (nesting P4): the subpatch dissolves at build into
     // ordinary flat nodes, so its steady-state render must be exactly as allocation-free as any
     // flat graph — inlining is a load-time transform, and the renderer never sees a boundary.
