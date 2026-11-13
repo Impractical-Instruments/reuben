@@ -762,7 +762,6 @@ fn child_input_pipe(
 
 #[cfg(test)]
 mod tests {
-    use super::super::*;
     use super::*;
     use crate::resources::ResourceResolver;
     use reuben_core::registry::Registry;

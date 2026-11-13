@@ -208,8 +208,8 @@ impl Engine {
             // Stage this frame's input for the *next* rendered block (see the alignment note
             // above). Missing samples stage zeros, so partial input degrades dark, not stale.
             if stage {
-                for c in 0..in_ch {
-                    self.in_scratch[c][self.pos] = input.get(f * in_ch + c).copied().unwrap_or(0.0);
+                for (c, staged) in self.in_scratch.iter_mut().enumerate() {
+                    staged[self.pos] = input.get(f * in_ch + c).copied().unwrap_or(0.0);
                 }
             }
             for c in 0..ch {
