@@ -816,7 +816,7 @@ mod tests {
         let mut out = vec![0.0f32; 20 * 2];
         let missed = r.process(1.25, &mut out, source_from(table, 2));
         assert_eq!(missed, 0);
-        for frame in out.chunks_exact(2) {
+        for frame in out.as_chunks::<2>().0 {
             assert_eq!(
                 frame[0].to_bits(),
                 (-frame[1]).to_bits(),
