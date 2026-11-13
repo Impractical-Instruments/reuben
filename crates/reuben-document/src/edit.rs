@@ -29,7 +29,7 @@ use serde_json::Value;
 use crate::contract::{content_hash, Report};
 use crate::format::{
     ConfigValue, CurveDoc, InputPipeDoc, InputValue, InstrumentDoc, InterfaceDoc, InterfaceEntry,
-    NodeDoc, NormalizedDoc, OutputPipeDoc, PipeDefault, FORMAT_VERSION, PIPE_INPUT_PORT,
+    Layout, NodeDoc, NormalizedDoc, OutputPipeDoc, PipeDefault, FORMAT_VERSION, PIPE_INPUT_PORT,
 };
 use crate::introspect::validate;
 use crate::projection::{Projector, Scalar, Selection};
@@ -109,6 +109,9 @@ enum Echo {
     Change(ValueChange),
     /// A whole batch of changes, plus the moves that had nowhere to land.
     Intent(intent::IntentReport),
+    /// Every position written, one line each. No projection shows `layout`, so this is the only
+    /// read of it the caller gets back.
+    Layout(Vec<(LayoutTarget, Layout)>),
 }
 
 /// A value edit's whole effect: the slot the caller addressed, what was in it, and what is in it
@@ -223,6 +226,7 @@ fn render_echo(
     match echo {
         Echo::Change(change) => return change.render(),
         Echo::Intent(report) => return report.render(),
+        Echo::Layout(positions) => return render_layout(positions),
         _ => {}
     }
     match Projector::new(json, registry, resolver) {
@@ -231,7 +235,9 @@ fn render_echo(
             Echo::Pipes(sel) => p.pipes(sel).render(),
             Echo::Resources => p.resources().render(),
             Echo::Index => p.index().render(),
-            Echo::Change(_) | Echo::Intent(_) => unreachable!("handled above"),
+            Echo::Change(_) | Echo::Intent(_) | Echo::Layout(_) => {
+                unreachable!("handled above")
+            }
         },
         Err(e) => format!("(projection unavailable: {e})"),
     }
@@ -1093,6 +1099,89 @@ pub fn set_instrument_interface_output_meta(
             None => Err(EditError::Target(format!("no interface output `{name}`"))),
         }
     })
+}
+
+// --- layout verb ---------------------------------------------------------------------------------
+
+/// What a `layout` is set on. Two namespaces, so two kinds: an output pipe never mints a node
+/// address, and its name may equal a node's or an input pipe's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LayoutTarget {
+    /// A node address — a document node, or the `/<name>` an interface input pipe mints.
+    Node(String),
+    /// An interface output pipe, by name.
+    Output(String),
+}
+
+impl fmt::Display for LayoutTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LayoutTarget::Node(address) => write!(f, "`{address}`"),
+            LayoutTarget::Output(name) => write!(f, "output `{name}`"),
+        }
+    }
+}
+
+/// Set the editor's canvas position on many nodes and interface pipes at once, so one gesture over
+/// a multi-selection is one write.
+///
+/// All-or-nothing: an unknown target, a target named twice, or a non-finite coordinate refuses the
+/// whole call before anything is written. Set only — there is no clearing a `layout` here.
+///
+/// `layout` never reaches the `Graph` or a Swap survivor's fingerprint, so the write this makes
+/// leaves the `Plan` as it was; it does move the content hash.
+pub fn set_instrument_layout(
+    source: &str,
+    positions: &[(LayoutTarget, Layout)],
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+) -> Result<EditResult, EditError> {
+    for (i, (target, layout)) in positions.iter().enumerate() {
+        if positions[..i].iter().any(|(earlier, _)| earlier == target) {
+            return Err(EditError::Target(format!(
+                "{target} is named twice; give each target one position"
+            )));
+        }
+        // A non-finite `f32` saves as `null`, which no verb can reload.
+        if !(layout.x.is_finite() && layout.y.is_finite()) {
+            return Err(EditError::Target(format!(
+                "the position for {target} is not a finite canvas coordinate"
+            )));
+        }
+    }
+    edit_existing(source, registry, resolver, |doc| {
+        for (target, layout) in positions {
+            let slot = match target {
+                LayoutTarget::Node(address) => match address_target(doc, address)? {
+                    AddressTarget::Node(idx) => &mut doc.nodes[idx].layout,
+                    AddressTarget::Pipe(name) => &mut input_pipe_mut(doc, &name).layout,
+                },
+                LayoutTarget::Output(name) => {
+                    match doc.interface.as_mut().and_then(|i| i.outputs.get_mut(name)) {
+                        Some(InterfaceEntry::Feed(pipe)) => &mut pipe.layout,
+                        _ => {
+                            return Err(EditError::Target(format!(
+                                "no interface output pipe `{name}`"
+                            )))
+                        }
+                    }
+                }
+            };
+            *slot = Some(*layout);
+        }
+        Ok(Applied::clean(Echo::Layout(positions.to_vec())))
+    })
+}
+
+fn render_layout(positions: &[(LayoutTarget, Layout)]) -> String {
+    if positions.is_empty() {
+        return "no positions given; nothing placed".to_string();
+    }
+    positions
+        .iter()
+        .map(|(target, l)| format!("{target} at ({}, {})", l.x, l.y))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // --- resource verbs ------------------------------------------------------------------------------
