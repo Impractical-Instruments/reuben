@@ -8,8 +8,7 @@ a gate job.
 **The number this produces is a size proxy, not a billing figure.** It is pinned to cl100k_base
 precisely because no rung on the live-tier ladder uses it: the deterministic tier must stay
 comparable across years and must not re-baseline when a rung is re-pinned. Both the vocabulary and
-the `\\p{L}`/`\\p{N}` tables are hash-checked before a single token is counted — see `pins.json`
-and `docs/research/harness-rungs.md` §6.
+the `\\p{L}`/`\\p{N}` tables are hash-checked before a single token is counted — see `pins.json`.
 
 Correctness is held by `tests/test_tokenizer.py`, which differentially tests this against real
 `tiktoken` over the repo's own corpus. That test needs the `dev` extra and never runs in the gate.

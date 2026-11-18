@@ -4,8 +4,7 @@
 //! OS-assigned, so parallel CI jobs never collide), then drives a plain `TcpStream` client
 //! speaking NDJSON. The device half is stood in for by [`FakeCallback`] (`crate::test_support`,
 //! shared with the unit tests so there is one mirror of the real callback, not two that can
-//! diverge); the audible/device-gap half stays a scripted human ritual
-//! (`docs/rituals/m2-swap-ramp-duck.md`).
+//! diverge); the audible half — what a swap sounds like on a real device — is not covered here.
 //!
 //! Exercises: the three non-mutating verbs over the wire in order; `swap` installing via the
 //! mailbox with real survivor stats and `expect` arbitration; an input-binding swap onto an

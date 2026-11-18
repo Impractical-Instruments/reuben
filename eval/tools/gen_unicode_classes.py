@@ -22,8 +22,6 @@ the vendored vocab match their pins.
 `--check` is not run in CI on purpose: a Python upgrade legitimately changes the answer, and the
 committed table is authoritative regardless. It exists so a human regenerating on purpose can see
 what moved.
-
-Full findings behind the pin: `docs/research/harness-rungs.md` §6.
 """
 
 from __future__ import annotations

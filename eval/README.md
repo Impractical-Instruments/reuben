@@ -216,6 +216,3 @@ CI wiring: `.github/scripts/eval-gate.sh` (the gate, mirroring `perf-gate.sh`) a
 branch to its own trend. The numbers land as `eval-history.jsonl` beside `bench-history.jsonl`
 there, and the dashboard grows an
 eval section — one place to look, with `ir` never holding a token count.
-
-Model and tokenizer pins, with the evidence behind them:
-[`docs/research/harness-rungs.md`](../docs/research/harness-rungs.md).

@@ -32,8 +32,7 @@ This repo is the **engine and its SDK**:
   Code](https://claude.com/claude-code), each grounded on the *live* engine so it can't drift from
   the code. Authoring: **`patcher`** (build/edit an instrument) and **`control-surface`** (author a
   surface doc and project it to TouchOSC). Development: **`create-operator`** (a new DSP operator in
-  Rust), **`sync-docs`** (bring the living docs back in sync after a change), and
-  **`rust-hot-path-review`** (RT-safety/perf review of an audio-thread diff). The
+  Rust) and **`rust-hot-path-review`** (RT-safety/perf review of an audio-thread diff). The
   [Make your own](#make-your-own) section below walks through them.
 
 ## Prerequisites
@@ -122,8 +121,6 @@ To play an instrument from a phone/tablet, project its **surface doc** (`surface
 — the presentation layer over its interface pipes) to a
 TouchOSC layout with the `control-surface` skill. A surface doc is a portable presentation
 contract, not a TouchOSC file: any host can render one.
-(The v1.4-era walkthrough, [docs/v1.4-control-surface-testing.md](docs/v1.4-control-surface-testing.md),
-predates surface docs and is kept as history.)
 
 ### Offline (no audio device)
 
@@ -148,7 +145,6 @@ from the code.
 | **Build / edit an instrument**        | "build a plucky bass" → **`patcher`**         | Edit JSON in `instruments/`, then `validate` it   |
 | **Make / edit a control surface**     | "make a control surface for this" → **`control-surface`** | Author `surfaces/<name>.json`, then `gen_surface.py emit` |
 | **Add a new DSP operator (Rust)**     | "add a wavefolder operator" → **`create-operator`** | `scaffold-operator`, then implement `process`     |
-| **Sync the docs after a change**      | "sync the docs" → **`sync-docs`**             | Edit ARCHITECTURE/README by hand                  |
 
 A typical first session, by hand or by skill:
 

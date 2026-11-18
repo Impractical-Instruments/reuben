@@ -1,6 +1,6 @@
 # Tonal-context: worked examples
 
-Concrete scenarios that exercise the tonal-context mechanics ([tonal context](rules/signal-time-dsp.md)), built to grow intuition. Notation: scale degrees are 0-based (`0` = root). MIDI is float (60.0 = middle C). "step" = a step in the active tuning's period (12 in 12-TET).
+Concrete scenarios that exercise the tonal-context mechanics, built to grow intuition. Notation: scale degrees are 0-based (`0` = root). MIDI is float (60.0 = middle C). "step" = a step in the active tuning's period (12 in 12-TET).
 
 ---
 
