@@ -1250,3 +1250,64 @@ fn set_layout_refuses_a_coordinate_that_would_not_reload() {
         assert!(matches!(err, EditError::Target(_)), "got {err:?}");
     }
 }
+
+// --- whole-document restore ---------------------------------------------------------------------
+
+#[test]
+fn restore_writes_the_prior_text_canonically_and_reports_its_hash() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed());
+    let prior = seed();
+    let prior_hash = content_hash(
+        &NormalizedDoc::from_json(&prior, &registry, Some(&resolver)).expect("the seed loads"),
+    );
+    let edited = set_instrument_input(SRC, "/osc", "freq", json!(880.0), &registry, &resolver)
+        .expect("edit");
+    assert_ne!(edited.hash, prior_hash);
+
+    let restored = restore_instrument(SRC, &prior, &registry, &resolver).expect("restore");
+    assert!(restored.written, "{restored:?}");
+    assert_eq!(restored.hash, prior_hash);
+    let on_disk = resolver.resolve_text(SRC).expect("written");
+    assert_eq!(
+        on_disk,
+        NormalizedDoc::from_json(&prior, &registry, Some(&resolver))
+            .expect("the seed loads")
+            .to_json_pretty(),
+        "the canonical form is written, not the text handed in"
+    );
+}
+
+#[test]
+fn restore_to_a_prior_that_no_longer_normalizes_is_a_rejected_edit() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed());
+    let before = resolver.resolve_text(SRC).expect("seeded");
+    let current_hash = content_hash(
+        &NormalizedDoc::from_json(&before, &registry, Some(&resolver)).expect("the seed loads"),
+    );
+    let from_the_future = json!({ "format_version": FORMAT_VERSION + 1, "instrument": "x",
+                                  "nodes": [] })
+    .to_string();
+
+    let result = restore_instrument(SRC, &from_the_future, &registry, &resolver)
+        .expect("the verb ran; the prior is what failed");
+    assert!(!result.written);
+    assert!(!result.report.ok);
+    assert_eq!(result.report.errors.len(), 1, "{:?}", result.report);
+    assert_eq!(result.hash, current_hash);
+    assert_eq!(resolver.resolve_text(SRC).expect("still there"), before);
+}
+
+#[test]
+fn restore_over_a_source_that_does_not_parse_is_refused() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with("{ not a document");
+    let err = restore_instrument(SRC, &seed(), &registry, &resolver)
+        .expect_err("nothing persisted has a hash to report");
+    assert!(matches!(err, EditError::Parse(_)), "got {err:?}");
+    assert_eq!(
+        resolver.resolve_text(SRC).expect("still there"),
+        "{ not a document"
+    );
+}

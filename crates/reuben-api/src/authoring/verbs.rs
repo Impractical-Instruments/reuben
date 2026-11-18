@@ -643,7 +643,7 @@ pub fn wire_compatibility(
 /// Run one document verb: apply the `expect` guard, invoke the engine's verb, and map its outcome.
 /// Every mutating verb above is one call to this, so the guard and the
 /// rejected-edit-versus-refusal split cannot drift verb to verb.
-fn run_edit(
+pub(super) fn run_edit(
     source: &str,
     expect: &Option<String>,
     resources: &dyn Resources,
@@ -723,7 +723,7 @@ fn expect_conflict(
 /// Normalize a document and hash its canonical bytes — the one path both the standing
 /// [`hash_instrument`] verb and the `expect` guard mint through, so the token a door quotes back
 /// and the token the guard compares it against cannot be arrived at differently.
-fn hash_document(
+pub(super) fn hash_document(
     json: &str,
     registry: &Registry,
     resolver: &dyn ResourceResolver,

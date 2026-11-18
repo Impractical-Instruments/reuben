@@ -1,0 +1,458 @@
+use alloc::collections::BTreeMap;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+
+use std::cell::RefCell;
+
+use serde::de::DeserializeOwned;
+use serde_json::{json, Value};
+
+use super::*;
+use crate::authoring::*;
+
+/// Sources are exact keys, except that a leading `./` is spelling: enough of a `canonical` to show
+/// which identity the history keys on.
+#[derive(Default)]
+struct MemoryStore {
+    texts: RefCell<BTreeMap<String, String>>,
+}
+
+impl MemoryStore {
+    fn with(source: &str, text: &str) -> Self {
+        let store = Self::default();
+        store.put(source, text);
+        store
+    }
+
+    fn put(&self, source: &str, text: &str) {
+        self.texts
+            .borrow_mut()
+            .insert(key(source), text.to_string());
+    }
+
+    fn read(&self, source: &str) -> String {
+        self.texts.borrow()[&key(source)].clone()
+    }
+}
+
+fn key(source: &str) -> String {
+    source.strip_prefix("./").unwrap_or(source).to_string()
+}
+
+impl Resources for MemoryStore {
+    fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+        Err(ResolveError::NotFound(source.to_string()))
+    }
+
+    fn read_text(&self, source: &str) -> Result<String, ResolveError> {
+        self.texts
+            .borrow()
+            .get(&key(source))
+            .cloned()
+            .ok_or_else(|| ResolveError::NotFound(source.to_string()))
+    }
+
+    fn write_text(&self, source: &str, text: &str) -> Result<(), ResolveError> {
+        self.put(source, text);
+        Ok(())
+    }
+
+    fn canonical(&self, source: &str, _referrer: Option<&str>) -> String {
+        key(source)
+    }
+}
+
+const SRC: &str = "inst.json";
+
+fn seed() -> String {
+    json!({
+        "format_version": 3,
+        "instrument": "test",
+        "nodes": [
+            { "type": "oscillator", "address": "/osc", "inputs": { "freq": 220.0 } },
+            { "type": "mul_f32_signal", "address": "/amp",
+              "inputs": { "a": { "from": "/osc" }, "b": 0.5 } }
+        ],
+        "interface": { "outputs": { "main": { "from": "/amp" } } }
+    })
+    .to_string()
+}
+
+fn history() -> DocumentHistory<MemoryStore> {
+    DocumentHistory::new(MemoryStore::with(SRC, &seed()))
+}
+
+/// Write `freq` to `/osc` at `source` and return the hash the edit reports.
+fn set_freq(source: &str, freq: f64, resources: &dyn Resources) -> String {
+    let answer = set_instrument_input(
+        &SetInstrumentInput {
+            source: source.to_string(),
+            address: "/osc".to_string(),
+            input: "freq".to_string(),
+            value: json!(freq),
+            expect: None,
+        },
+        resources,
+    )
+    .expect("an edit to a real node");
+    assert!(answer.output.written, "{:?}", answer.output);
+    answer.output.hash
+}
+
+fn restore(source: &str, to: &str, expect: &str) -> RestoreInstrument {
+    RestoreInstrument {
+        source: source.to_string(),
+        to: to.to_string(),
+        expect: expect.to_string(),
+    }
+}
+
+fn freq_at(store: &MemoryStore, source: &str) -> Value {
+    let doc: Value = serde_json::from_str(&store.read(source)).expect("a document");
+    doc["nodes"][0]["inputs"]["freq"].clone()
+}
+
+#[test]
+fn undo_then_redo_each_land_on_the_hash_asked_for() {
+    let history = history();
+    let first = set_freq(SRC, 330.0, &history);
+    let second = set_freq(SRC, 440.0, &history);
+
+    let undone = restore_instrument(&restore(SRC, &first, &second), &history)
+        .expect("the first edit's document is held")
+        .output;
+    assert!(undone.written, "{undone:?}");
+    assert_eq!(undone.hash, first);
+    assert_eq!(freq_at(history.inner(), SRC), json!(330.0));
+
+    // The redo's target is the state the undo overwrote.
+    let redone = restore_instrument(&restore(SRC, &second, &first), &history)
+        .expect("the second edit's document is held")
+        .output;
+    assert!(redone.written, "{redone:?}");
+    assert_eq!(redone.hash, second);
+    assert_eq!(freq_at(history.inner(), SRC), json!(440.0));
+}
+
+#[test]
+fn the_state_before_the_first_write_through_the_store_is_held() {
+    let history = history();
+    let original = hash_instrument(&seed(), &history).expect("the seed hashes");
+    let edited = set_freq(SRC, 330.0, &history);
+
+    let back = restore_instrument(&restore(SRC, &original, &edited), &history)
+        .expect("the pre-write text was recorded")
+        .output;
+    assert!(back.written, "{back:?}");
+    assert_eq!(back.hash, original);
+    assert_eq!(freq_at(history.inner(), SRC), json!(220.0));
+}
+
+#[test]
+fn an_expect_mismatch_writes_nothing_and_reports_what_is_on_disk() {
+    let history = history();
+    let first = set_freq(SRC, 330.0, &history);
+    let second = set_freq(SRC, 440.0, &history);
+    let on_disk = history.inner().read(SRC);
+
+    let missed = restore_instrument(&restore(SRC, &first, "deadbeefdeadbeef"), &history)
+        .expect("a guard miss is an answer, not a refusal")
+        .output;
+    assert!(!missed.written);
+    assert!(!missed.report.ok);
+    assert_eq!(missed.hash, second);
+    assert_eq!(history.inner().read(SRC), on_disk);
+}
+
+#[test]
+fn a_hash_never_seen_is_refused() {
+    let history = history();
+    let current = set_freq(SRC, 330.0, &history);
+    let on_disk = history.inner().read(SRC);
+
+    let refusal = restore_instrument(&restore(SRC, "deadbeefdeadbeef", &current), &history)
+        .expect_err("nothing is held under that hash");
+    assert!(refusal.message.contains("deadbeefdeadbeef"), "{refusal}");
+    assert!(refusal.message.contains("held"), "{refusal}");
+    assert_eq!(history.inner().read(SRC), on_disk);
+}
+
+#[test]
+fn an_evicted_hash_is_refused_and_the_newest_survive() {
+    let history = DocumentHistory::with_capacity(MemoryStore::with(SRC, &seed()), 2);
+    let original = hash_instrument(&seed(), &history).expect("the seed hashes");
+    let first = set_freq(SRC, 330.0, &history);
+    let second = set_freq(SRC, 440.0, &history);
+
+    let refusal = restore_instrument(&restore(SRC, &original, &second), &history)
+        .expect_err("two newer documents pushed the original out");
+    assert!(refusal.message.contains("evicted"), "{refusal}");
+
+    let undone = restore_instrument(&restore(SRC, &first, &second), &history)
+        .expect("the two most recent are held")
+        .output;
+    assert_eq!(undone.hash, first);
+}
+
+#[test]
+fn the_bound_is_shared_across_sources_oldest_first() {
+    let store = MemoryStore::with("a.json", &seed());
+    store.put("b.json", &seed());
+    let history = DocumentHistory::with_capacity(store, 3);
+    let a_original = hash_instrument(&seed(), &history).expect("the seed hashes");
+    let a_edited = set_freq("a.json", 330.0, &history);
+    // Two more documents, at another source, into a store already holding two.
+    let b_edited = set_freq("b.json", 550.0, &history);
+
+    restore_instrument(&restore("a.json", &a_original, &a_edited), &history)
+        .expect_err("a.json's oldest document went first");
+    let b_back = restore_instrument(&restore("b.json", &a_original, &b_edited), &history)
+        .expect("b.json's own pre-write text is held")
+        .output;
+    assert!(b_back.written, "{b_back:?}");
+}
+
+#[test]
+fn a_hash_seen_only_at_another_source_is_refused() {
+    let store = MemoryStore::with("a.json", &seed());
+    store.put("b.json", &seed());
+    let history = DocumentHistory::new(store);
+    let a_edited = set_freq("a.json", 330.0, &history);
+    let b_edited = set_freq("b.json", 550.0, &history);
+
+    let refusal = restore_instrument(&restore("b.json", &a_edited, &b_edited), &history)
+        .expect_err("b.json was never in a.json's state");
+    assert!(refusal.message.contains("b.json"), "{refusal}");
+    assert_eq!(freq_at(history.inner(), "b.json"), json!(550.0));
+}
+
+#[test]
+fn two_spellings_of_one_source_share_its_documents() {
+    let history = history();
+    let first = set_freq(SRC, 330.0, &history);
+    let second = set_freq("./inst.json", 440.0, &history);
+
+    let undone = restore_instrument(&restore("./inst.json", &first, &second), &history)
+        .expect("held under the canonical source, whichever spelling wrote it")
+        .output;
+    assert_eq!(undone.hash, first);
+}
+
+/// A child whose only interface output is `name`.
+fn child(output: &str) -> String {
+    json!({
+        "format_version": 3,
+        "instrument": "child",
+        "nodes": [ { "type": "oscillator", "address": "/osc" } ],
+        "interface": { "outputs": { output: { "from": "/osc" } } }
+    })
+    .to_string()
+}
+
+#[test]
+fn a_prior_document_a_referenced_file_has_since_broken_writes_nothing_and_reports() {
+    let parent = json!({
+        "format_version": 3,
+        "instrument": "parent",
+        "resources": { "voice": "child.json" },
+        "nodes": [
+            { "type": "subpatch", "address": "/sub", "patch": "voice" },
+            { "type": "mul_f32_signal", "address": "/amp",
+              "inputs": { "a": { "from": "/sub.out" }, "b": 0.5 } }
+        ],
+        "interface": { "outputs": { "main": { "from": "/amp" } } }
+    })
+    .to_string();
+    let store = MemoryStore::with(SRC, &parent);
+    store.put("child.json", &child("out"));
+    let history = DocumentHistory::new(store);
+    let wired = hash_instrument(&parent, &history).expect("the parent hashes");
+
+    let unwired = unwire_instrument_input(
+        &UnwireInstrumentInput {
+            source: SRC.to_string(),
+            address: "/amp".to_string(),
+            input: "a".to_string(),
+            expect: None,
+        },
+        &history,
+    )
+    .expect("the wire exists")
+    .output;
+    assert!(unwired.written, "{unwired:?}");
+    // The child stops offering the port the wired parent read.
+    history.inner().put("child.json", &child("renamed"));
+    let on_disk = history.inner().read(SRC);
+
+    let result = restore_instrument(&restore(SRC, &wired, &unwired.hash), &history)
+        .expect("the verb ran: an invalid result is an answer")
+        .output;
+    assert!(!result.written);
+    assert!(!result.report.ok);
+    assert!(!result.report.errors.is_empty());
+    assert_eq!(result.hash, unwired.hash);
+    assert_eq!(history.inner().read(SRC), on_disk);
+}
+
+#[test]
+fn a_source_that_does_not_parse_cannot_be_restored_over() {
+    let history = history();
+    let original = hash_instrument(&seed(), &history).expect("the seed hashes");
+    let edited = set_freq(SRC, 330.0, &history);
+    history.inner().put(SRC, "{ not a document");
+
+    let refusal = restore_instrument(&restore(SRC, &original, &edited), &history)
+        .expect_err("an unparseable file has no hash for `expect` to match");
+    assert!(
+        refusal.message.contains("not a loadable document"),
+        "{refusal}"
+    );
+    assert_eq!(history.inner().read(SRC), "{ not a document");
+}
+
+/// One step of the script below: a verb, and whatever it answered rendered for comparison.
+fn call<A: DeserializeOwned, T: core::fmt::Debug>(
+    args: Value,
+    verb: impl FnOnce(&A) -> Result<Answer<T>, Refusal>,
+) -> String {
+    let args = serde_json::from_value(args).expect("the script's arguments parse");
+    format!("{:?}", verb(&args))
+}
+
+/// Every verb that takes a `Resources`, run in an order where most of them land. Returns each
+/// answer in order.
+fn run_every_verb(r: &dyn Resources) -> Vec<String> {
+    let s = SRC;
+    let mut out = Vec::new();
+    out.push(call(
+        json!({ "source": "new.json", "name": "fresh" }),
+        |a| new_instrument(a, r),
+    ));
+    out.push(call(json!({ "source": s, "name": "renamed" }), |a| {
+        set_instrument_name(a, r)
+    }));
+    out.push(call(json!({ "source": s, "description": "a test" }), |a| {
+        set_instrument_description(a, r)
+    }));
+    out.push(call(
+        json!({ "source": s, "address": "/lfo", "type": "oscillator" }),
+        |a| add_instrument_node(a, r),
+    ));
+    out.push(call(
+        json!({ "source": s, "from": "/lfo", "to": "/mod" }),
+        |a| rename_instrument_node(a, r),
+    ));
+    out.push(call(
+        json!({ "source": s, "address": "/mod", "description": "wobble" }),
+        |a| set_instrument_node_description(a, r),
+    ));
+    out.push(call(
+        json!({ "source": s, "address": "/osc", "input": "freq", "value": 330.0 }),
+        |a| set_instrument_input(a, r),
+    ));
+    out.push(call(json!({ "source": s, "word": "brighter" }), |a| {
+        set_instrument_inputs_by_intent(a, r)
+    }));
+    out.push(call(
+        json!({ "source": s, "name": "cutoff", "type": "f32", "value": 440.0 }),
+        |a| add_instrument_interface_input(a, r),
+    ));
+    out.push(call(
+        json!({ "source": s, "address": "/osc", "input": "freq", "from": "/cutoff" }),
+        |a| wire_instrument_input(a, r),
+    ));
+    out.push(call(
+        json!({ "source": s, "name": "cutoff", "unit": "Hz" }),
+        |a| set_instrument_interface_input_meta(a, r),
+    ));
+    out.push(call(
+        json!({ "source": s, "address": "/osc", "input": "freq" }),
+        |a| unwire_instrument_input(a, r),
+    ));
+    out.push(call(json!({ "source": s, "name": "cutoff" }), |a| {
+        remove_instrument_interface_input(a, r)
+    }));
+    out.push(call(
+        json!({ "source": s, "name": "tap", "from": "/osc" }),
+        |a| add_instrument_interface_output(a, r),
+    ));
+    out.push(call(
+        json!({ "source": s, "name": "tap", "unit": "V" }),
+        |a| set_instrument_interface_output_meta(a, r),
+    ));
+    out.push(call(json!({ "source": s, "name": "tap" }), |a| {
+        remove_instrument_interface_output(a, r)
+    }));
+    out.push(call(
+        json!({ "source": s, "address": "/voicer", "type": "voicer" }),
+        |a| add_instrument_node(a, r),
+    ));
+    out.push(call(
+        json!({ "source": s, "address": "/voicer", "name": "voices", "value": 4 }),
+        |a| set_instrument_constant(a, r),
+    ));
+    out.push(call(
+        json!({ "source": s, "id": "kick", "resource_source": "kick.wav" }),
+        |a| add_instrument_resource(a, r),
+    ));
+    out.push(call(json!({ "source": s, "id": "kick" }), |a| {
+        remove_instrument_resource(a, r)
+    }));
+    out.push(call(
+        json!({ "source": s, "positions": [ { "target": "/osc", "x": 1.0, "y": 2.0 } ] }),
+        |a| set_instrument_layout(a, r),
+    ));
+    out.push(call(json!({ "source": s, "address": "/mod" }), |a| {
+        remove_instrument_node(a, r)
+    }));
+    // The three ways a verb does not write: a guard miss, an invalid result, a refusal.
+    out.push(call(
+        json!({ "source": s, "name": "late", "expect": "deadbeefdeadbeef" }),
+        |a| set_instrument_name(a, r),
+    ));
+    out.push(call(
+        json!({ "source": s, "address": "/amp", "input": "a", "from": "/ghost" }),
+        |a| wire_instrument_input(a, r),
+    ));
+    out.push(call(json!({ "source": s, "address": "/ghost" }), |a| {
+        remove_instrument_node(a, r)
+    }));
+    out.push(call(json!({ "source": s }), |a| describe_instrument(a, r)));
+    out.push(call(json!({ "source": s }), |a| describe_boundary(a, r)));
+    out.push(call(json!({ "source": s }), |a| validate_instrument(a, r)));
+    out.push(call(
+        json!({ "source": s, "from": { "kind": "node_output", "node": "/osc", "port": "audio" } }),
+        |a| wire_compatibility(a, r),
+    ));
+    out.push(format!("{:?}", library_index_line(s, r)));
+    out.push(format!("{:?}", hash_instrument(&seed(), r)));
+    out
+}
+
+#[test]
+fn every_verb_answers_the_same_through_the_history_as_through_the_bare_store() {
+    let bare = MemoryStore::with(SRC, &seed());
+    let history = history();
+
+    let through_bare = run_every_verb(&bare);
+    let through_history = run_every_verb(&history);
+
+    for (i, (bare, wrapped)) in through_bare.iter().zip(&through_history).enumerate() {
+        assert_eq!(bare, wrapped, "step {i}");
+    }
+    assert_eq!(*bare.texts.borrow(), *history.inner().texts.borrow());
+    // The comparison means nothing if the script mostly bounced off.
+    let written = through_bare
+        .iter()
+        .filter(|a| a.contains("written: true"))
+        .count();
+    assert!(
+        written >= 20,
+        "only {written} steps wrote:\n{through_bare:#?}"
+    );
+}
+
+#[test]
+fn no_roster_serves_restore() {
+    assert!(!crate::tools::names().contains(&"restore_instrument"));
+}
