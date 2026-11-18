@@ -45,8 +45,8 @@ impl Camera {
         self.zoom = zoom;
     }
 
-    /// The view that shows all of `bounds` centred in an area of `viewport` points. It zooms out
-    /// as far as that takes and never in past 1:1.
+    /// The view centred on `bounds` in an area of `viewport` points, zoomed out until all of it
+    /// shows and never in past 1:1. Bounds too large to show at [`MIN_ZOOM`] run off every side.
     pub fn fit(bounds: Rect, viewport: Vec2) -> Self {
         let room = (viewport - Vec2::splat(2.0 * FIT_MARGIN)).max(Vec2::splat(1.0));
         let size = bounds.size().max(Vec2::splat(1.0));

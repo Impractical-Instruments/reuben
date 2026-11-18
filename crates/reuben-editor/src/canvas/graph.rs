@@ -29,6 +29,7 @@ pub enum PortKind {
     Harmony,
     Vocab,
     Text,
+    Arg,
     /// A kind this canvas has no colour for, or a port the document names and the node's resolved
     /// ports do not have.
     Unknown,
@@ -45,6 +46,7 @@ impl PortKind {
             "harmony" => Self::Harmony,
             "vocab" => Self::Vocab,
             "string" => Self::Text,
+            "arg" => Self::Arg,
             _ => Self::Unknown,
         }
     }
@@ -188,18 +190,24 @@ impl Graph {
                 error,
                 message: diag.message.clone(),
             };
-            // A diagnostic with a port and no node names an interface pipe; the load report puts
-            // a refused output feed there.
-            let at = match (&diag.node, &diag.port) {
-                (Some(address), _) => graph.index_of(&Item::Node(address.clone())),
-                (None, Some(name)) => graph
-                    .index_of(&Item::Output(name.clone()))
-                    .or_else(|| graph.index_of(&Item::Input(name.clone()))),
-                (None, None) => None,
+            // A diagnostic with a port and no node names an interface pipe, and does not say
+            // whether an input or an output: where one name is both, it goes on both.
+            let at: Vec<usize> = match (&diag.node, &diag.port) {
+                (Some(address), _) => (graph.index_of(&Item::Node(address.clone())))
+                    .into_iter()
+                    .collect(),
+                (None, Some(name)) => [Item::Input(name.clone()), Item::Output(name.clone())]
+                    .iter()
+                    .filter_map(|item| graph.index_of(item))
+                    .collect(),
+                (None, None) => Vec::new(),
             };
-            match at {
-                Some(i) => graph.boxes[i].problems.push(problem),
-                None => graph.problems.push(problem),
+            if at.is_empty() {
+                graph.problems.push(problem);
+            } else {
+                for i in at {
+                    graph.boxes[i].problems.push(problem.clone());
+                }
             }
         }
         graph
@@ -472,5 +480,47 @@ pub mod tests {
             [problem(false, "careful")]
         );
         assert_eq!(graph.problems, [problem(true, "nowhere")]);
+    }
+
+    #[test]
+    fn a_report_about_a_name_that_is_an_input_and_an_output_lands_on_both() {
+        let mut doc = small();
+        doc.outputs[0].name = "cutoff".into();
+        doc.report = serde_json::from_value(json!({
+            "ok": true,
+            "errors": [],
+            "warnings": [{ "port": "cutoff", "message": "unbound" }],
+        }))
+        .unwrap();
+        let graph = Graph::from_structure(&doc);
+        let unbound = [Problem {
+            error: false,
+            message: "unbound".into(),
+        }];
+        assert_eq!(
+            find(&graph, &Item::Input("cutoff".into())).problems,
+            unbound
+        );
+        assert_eq!(
+            find(&graph, &Item::Output("cutoff".into())).problems,
+            unbound
+        );
+        assert!(graph.problems.is_empty());
+    }
+
+    #[test]
+    fn a_report_about_an_interface_input_lands_on_it() {
+        let mut doc = small();
+        doc.report = serde_json::from_value(json!({
+            "ok": true,
+            "errors": [],
+            "warnings": [{ "port": "cutoff", "message": "unbound" }],
+        }))
+        .unwrap();
+        let graph = Graph::from_structure(&doc);
+        assert_eq!(
+            find(&graph, &Item::Input("cutoff".into())).problems.len(),
+            1
+        );
     }
 }

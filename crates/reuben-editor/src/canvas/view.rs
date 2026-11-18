@@ -30,6 +30,7 @@ fn kind_color(kind: PortKind) -> Color32 {
         PortKind::Harmony => Color32::from_rgb(0xE8, 0x7C, 0xB4),
         PortKind::Vocab => Color32::from_rgb(0xD8, 0xC8, 0x50),
         PortKind::Text => Color32::from_rgb(0xC8, 0xC8, 0xB0),
+        PortKind::Arg => Color32::from_rgb(0xD0, 0x78, 0x60),
         PortKind::Unknown => Color32::from_rgb(0x99, 0x99, 0x99),
     }
 }

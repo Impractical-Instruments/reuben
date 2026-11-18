@@ -177,11 +177,31 @@ mod tests {
     }
 
     #[test]
+    fn a_box_with_more_outputs_than_inputs_holds_every_output() {
+        let mut b = graph().boxes[1].clone();
+        let one = size(&b);
+        let extra = Port {
+            name: "a_second_output_with_a_long_name".into(),
+            kind: PortKind::Signal,
+        };
+        b.outputs.extend([extra.clone(), extra]);
+        assert!(b.outputs.len() > b.inputs.len());
+        let grown = size(&b);
+        assert_eq!(grown.y - one.y, 2.0 * LINE);
+        assert!(grown.x >= LABEL_GAP + text_width(&b.outputs[1].name) + 2.0 * PAD);
+        let rect = rect_of(&b, Pos2::ZERO);
+        for i in 0..b.outputs.len() {
+            let y = output_pos(&b, rect, i).y;
+            assert!(rect.top() < y && y < rect.bottom(), "output {i}");
+        }
+    }
+
+    #[test]
     fn port_rows_are_one_line_apart_below_the_header() {
         let g = graph();
         let filter = &g.boxes[2];
         let rect = rect_of(filter, Pos2::ZERO);
-        let ys: Vec<f32> = (0..3).map(|i| input_pos(filter, rect, i).y).collect();
+        let ys = [0, 1, 2].map(|i| input_pos(filter, rect, i).y);
         assert!(ys[0] >= header_text(rect)[1].y + LINE);
         assert_eq!(ys[1] - ys[0], LINE);
         assert_eq!(ys[2] - ys[1], LINE);

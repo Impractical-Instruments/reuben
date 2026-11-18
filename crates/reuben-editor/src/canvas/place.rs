@@ -510,6 +510,26 @@ mod tests {
     }
 
     #[test]
+    fn an_interface_input_wired_to_a_stored_box_is_placed_with_the_rest() {
+        let mut doc = small();
+        doc.nodes[1].layout = Some(Position { x: 0.0, y: 0.0 });
+        let graph = Graph::from_structure(&doc);
+        let cutoff = graph.index_of(&Item::Input("cutoff".into())).unwrap();
+        assert_eq!(beside(&graph)[cutoff], None);
+        assert!(overlaps(&place(&graph)).is_empty());
+    }
+
+    #[test]
+    fn boxes_in_a_column_are_a_row_gap_apart() {
+        let doc = chain(&["/a", "/b", "/c"], &[("/a", "/c"), ("/b", "/c")]);
+        let graph = Graph::from_structure(&doc);
+        let rects = place(&graph);
+        let at = |address: &str| rect_of(&graph, &rects, Item::Node(address.into()));
+        assert_eq!(at("/a").left(), at("/b").left());
+        assert_eq!(at("/b").top() - at("/a").bottom(), ROW_GAP);
+    }
+
+    #[test]
     fn an_empty_graph_places_nothing() {
         assert!(place(&Graph::default()).is_empty());
     }
