@@ -643,7 +643,7 @@ pub fn wire_compatibility(
 /// Run one document verb: apply the `expect` guard, invoke the engine's verb, and map its outcome.
 /// Every mutating verb above is one call to this, so the guard and the
 /// rejected-edit-versus-refusal split cannot drift verb to verb.
-pub(super) fn run_edit(
+fn run_edit(
     source: &str,
     expect: &Option<String>,
     resources: &dyn Resources,
@@ -680,7 +680,7 @@ pub(super) fn run_edit(
 /// the current node index handed back, so reconciling costs no extra round trip. `None` means
 /// proceed, and is also what a read or mint failure returns: that is the verb's to surface, not the
 /// guard's.
-fn expect_conflict(
+pub(super) fn expect_conflict(
     expect: &Option<String>,
     source: &str,
     registry: &Registry,
@@ -723,7 +723,7 @@ fn expect_conflict(
 /// Normalize a document and hash its canonical bytes — the one path both the standing
 /// [`hash_instrument`] verb and the `expect` guard mint through, so the token a door quotes back
 /// and the token the guard compares it against cannot be arrived at differently.
-pub(super) fn hash_document(
+fn hash_document(
     json: &str,
     registry: &Registry,
     resolver: &dyn ResourceResolver,
@@ -810,7 +810,7 @@ fn validate_summary(report: &Report) -> String {
 }
 
 /// One-line gloss of a document-verb result.
-fn edit_summary(result: &EditResult) -> String {
+pub(super) fn edit_summary(result: &EditResult) -> String {
     if result.written {
         let base = format!("written (content_hash {})", result.hash);
         match result.notes.len() {

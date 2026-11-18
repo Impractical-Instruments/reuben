@@ -456,3 +456,148 @@ fn every_verb_answers_the_same_through_the_history_as_through_the_bare_store() {
 fn no_roster_serves_restore() {
     assert!(!crate::tools::names().contains(&"restore_instrument"));
 }
+
+/// A v1 host whose input pipe takes its type from the nested child, so what its text normalizes to
+/// follows the child.
+const V1_HOST: &str = r#"{
+    "instrument": "host",
+    "resources": { "c": "child.json" },
+    "interface": { "inputs": { "freq": "/nest.freq" } },
+    "nodes": [ { "type": "subpatch", "address": "/nest", "patch": "c" } ]
+}"#;
+
+fn typed_child(pipe_type: &str) -> String {
+    json!({
+        "format_version": 3,
+        "instrument": "child",
+        "interface": {
+            "inputs": { "freq": { "type": pipe_type, "min": 20, "max": 20000, "default": 440 } },
+            "outputs": { "audio": { "from": "/osc.audio" } }
+        },
+        "nodes": [ { "type": "oscillator", "address": "/osc",
+                     "inputs": { "freq": { "from": "/freq" } } } ]
+    })
+    .to_string()
+}
+
+#[test]
+fn a_restore_lands_on_the_hash_asked_for_after_a_file_the_prior_text_was_migrated_against_changes()
+{
+    let store = MemoryStore::with("host.json", V1_HOST);
+    store.put("child.json", &typed_child("f32"));
+    let history = DocumentHistory::new(store);
+    let before = hash_instrument(V1_HOST, &history).expect("a v1 document");
+    let after = set_instrument_name(
+        &SetInstrumentName {
+            source: "host.json".to_string(),
+            name: "renamed".to_string(),
+            expect: None,
+        },
+        &history,
+    )
+    .expect("an edit")
+    .output
+    .hash;
+    history
+        .inner()
+        .put("child.json", &typed_child("f32_buffer"));
+
+    let restored = restore_instrument(&restore("host.json", &before, &after), &history)
+        .expect("held")
+        .output;
+
+    assert!(restored.written, "{restored:?}");
+    assert_eq!(restored.hash, before);
+}
+
+/// A store whose document is replaced from outside just before its `at`-th read.
+struct Raced {
+    store: MemoryStore,
+    reads: core::cell::Cell<usize>,
+    at: usize,
+    external: String,
+}
+
+impl Resources for Raced {
+    fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+        self.store.read_samples(source)
+    }
+
+    fn read_text(&self, source: &str) -> Result<String, ResolveError> {
+        self.reads.set(self.reads.get() + 1);
+        if self.reads.get() == self.at {
+            self.store.put(SRC, &self.external);
+        }
+        self.store.read_text(source)
+    }
+
+    fn write_text(&self, source: &str, text: &str) -> Result<(), ResolveError> {
+        self.store.write_text(source, text)
+    }
+
+    fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
+        self.store.canonical(source, referrer)
+    }
+}
+
+#[test]
+fn an_external_write_between_the_guard_and_the_restores_own_read_is_not_overwritten() {
+    let external = seed().replace("220.0", "999.0");
+    assert_ne!(external, seed());
+    let history = DocumentHistory::new(Raced {
+        store: MemoryStore::with(SRC, &seed()),
+        reads: core::cell::Cell::new(0),
+        at: usize::MAX,
+        external,
+    });
+    let before = hash_instrument(&seed(), &history).expect("a document");
+    let after = set_freq(SRC, 330.0, &history);
+    // The guard takes the next read; the restore's own read is the one after it.
+    let raced = Raced {
+        at: history.inner().reads.get() + 2,
+        ..history.into_inner()
+    };
+    let history = {
+        let fresh = DocumentHistory::new(raced);
+        // Hold `before` again: the new wrapper starts empty.
+        fresh.record(SRC, before.clone(), seed());
+        fresh
+    };
+
+    let answer = restore_instrument(&restore(SRC, &before, &after), &history)
+        .expect("the guard's answer")
+        .output;
+
+    assert!(!answer.written, "{answer:?}");
+    assert_ne!(answer.hash, after);
+    assert_eq!(freq_at(&history.inner().store, SRC), json!(999.0));
+}
+
+#[test]
+fn a_state_returned_to_is_not_the_next_evicted() {
+    let history = DocumentHistory::with_capacity(MemoryStore::with(SRC, &seed()), 3);
+    let first = hash_instrument(&seed(), &history).expect("a document");
+    set_freq(SRC, 330.0, &history);
+    let third = set_freq(SRC, 440.0, &history);
+    let back = restore_instrument(&restore(SRC, &first, &third), &history)
+        .expect("held")
+        .output;
+    assert!(back.written, "{back:?}");
+    // The oldest recording at the bound is now the second state, not the first.
+    let fourth = set_freq(SRC, 550.0, &history);
+
+    let again = restore_instrument(&restore(SRC, &first, &fourth), &history)
+        .expect("the first state was recorded again by the restore")
+        .output;
+
+    assert!(again.written, "{again:?}");
+}
+
+#[test]
+fn a_hash_not_held_is_refused_whatever_the_expect() {
+    let history = history();
+    set_freq(SRC, 330.0, &history);
+
+    restore_instrument(&restore(SRC, "0000000000000000", "stale"), &history)
+        .expect_err("nothing is held under that hash");
+}

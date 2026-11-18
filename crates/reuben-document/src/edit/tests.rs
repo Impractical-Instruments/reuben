@@ -1265,7 +1265,9 @@ fn restore_writes_the_prior_text_canonically_and_reports_its_hash() {
         .expect("edit");
     assert_ne!(edited.hash, prior_hash);
 
-    let restored = restore_instrument(SRC, &prior, &registry, &resolver).expect("restore");
+    let restored = restore_instrument(SRC, &prior, &prior_hash, &edited.hash, &registry, &resolver)
+        .expect("restore")
+        .expect("the source is as expected");
     assert!(restored.written, "{restored:?}");
     assert_eq!(restored.hash, prior_hash);
     let on_disk = resolver.resolve_text(SRC).expect("written");
@@ -1290,8 +1292,16 @@ fn restore_to_a_prior_that_no_longer_normalizes_is_a_rejected_edit() {
                                   "nodes": [] })
     .to_string();
 
-    let result = restore_instrument(SRC, &from_the_future, &registry, &resolver)
-        .expect("the verb ran; the prior is what failed");
+    let result = restore_instrument(
+        SRC,
+        &from_the_future,
+        "0000000000000000",
+        &current_hash,
+        &registry,
+        &resolver,
+    )
+    .expect("the verb ran; the prior is what failed")
+    .expect("the source is as expected");
     assert!(!result.written);
     assert!(!result.report.ok);
     assert_eq!(result.report.errors.len(), 1, "{:?}", result.report);
@@ -1303,11 +1313,59 @@ fn restore_to_a_prior_that_no_longer_normalizes_is_a_rejected_edit() {
 fn restore_over_a_source_that_does_not_parse_is_refused() {
     let registry = Registry::builtin();
     let resolver = resolver_with("{ not a document");
-    let err = restore_instrument(SRC, &seed(), &registry, &resolver)
+    let err = restore_instrument(SRC, &seed(), "0", "0", &registry, &resolver)
         .expect_err("nothing persisted has a hash to report");
     assert!(matches!(err, EditError::Parse(_)), "got {err:?}");
     assert_eq!(
         resolver.resolve_text(SRC).expect("still there"),
         "{ not a document"
     );
+}
+
+#[test]
+fn restore_over_a_source_that_is_not_the_one_expected_does_nothing() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed());
+    let seeded = resolver.resolve_text(SRC).expect("seeded");
+    let prior_hash = content_hash(
+        &NormalizedDoc::from_json(&seeded, &registry, Some(&resolver)).expect("the seed loads"),
+    );
+
+    let stale = restore_instrument(
+        SRC,
+        &seeded,
+        &prior_hash,
+        "not-what-is-there",
+        &registry,
+        &resolver,
+    )
+    .expect("the verb ran");
+
+    assert!(stale.is_none());
+    assert_eq!(resolver.resolve_text(SRC).expect("still there"), seeded);
+}
+
+#[test]
+fn restore_of_a_prior_that_is_not_the_document_asked_for_is_a_rejected_edit() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed());
+    let seeded = resolver.resolve_text(SRC).expect("seeded");
+    let edited = set_instrument_input(SRC, "/osc", "freq", json!(880.0), &registry, &resolver)
+        .expect("edit");
+    let after = resolver.resolve_text(SRC).expect("edited");
+
+    let result = restore_instrument(
+        SRC,
+        &seeded,
+        "0000000000000000",
+        &edited.hash,
+        &registry,
+        &resolver,
+    )
+    .expect("the verb ran")
+    .expect("the source is as expected");
+
+    assert!(!result.written && !result.report.ok, "{result:?}");
+    assert_eq!(result.hash, edited.hash);
+    assert_eq!(resolver.resolve_text(SRC).expect("still there"), after);
 }

@@ -13,10 +13,11 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use reuben_core::Registry;
 use reuben_document::edit as core_edit;
+use reuben_document::{content_hash, NormalizedDoc};
 
 use super::args::RestoreInstrument;
 use super::result::EditResult;
-use super::verbs::{hash_document, run_edit, Answer, Refusal};
+use super::verbs::{edit_summary, expect_conflict, Answer, Refusal};
 use crate::resources::{Adapter, ResolveError, Resources, SampleBuffer};
 
 /// A [`Resources`] that remembers the documents written through it, so
@@ -81,10 +82,16 @@ impl<R: Resources> DocumentHistory<R> {
         self.held.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The content hash of `text`, or `None` for text that is not a document — which no hash names
-    /// and no restore can ask for.
-    fn hash(&self, text: &str) -> Option<String> {
-        hash_document(text, &Registry::builtin(), &Adapter(&self.inner)).ok()
+    /// The content hash of `text` and the canonical text that hash is of, or `None` for text that
+    /// is not a document — which no hash names and no restore can ask for.
+    ///
+    /// The canonical text is what gets held, not `text`: an older-format document takes part of
+    /// its meaning from the files it references when it is normalized, so the same raw text read
+    /// again later can normalize to a different document than the one this hash names.
+    fn mint(&self, text: &str) -> Option<(String, String)> {
+        let doc = NormalizedDoc::from_json(text, &Registry::builtin(), Some(&Adapter(&self.inner)))
+            .ok()?;
+        Some((content_hash(&doc), doc.to_json_pretty()))
     }
 
     fn record(&self, source: &str, hash: String, text: String) {
@@ -103,7 +110,7 @@ impl<R: Resources> DocumentHistory<R> {
         });
     }
 
-    /// Crate-private on purpose: handing this text to a consumer is the thing the store exists to
+    /// Private on purpose: handing this text to a consumer is the thing the store exists to
     /// make unnecessary.
     fn text_at(&self, source: &str, hash: &str) -> Option<String> {
         let source = self.inner.canonical(source, None);
@@ -130,14 +137,14 @@ impl<R: Resources> Resources for DocumentHistory<R> {
             .inner
             .read_text(source)
             .ok()
-            .and_then(|text| Some((self.hash(&text)?, text)));
+            .and_then(|text| self.mint(&text));
         self.inner.write_text(source, text)?;
         let source = self.inner.canonical(source, None);
         if let Some((hash, before)) = before {
             self.record(&source, hash, before);
         }
-        if let Some(hash) = self.hash(text) {
-            self.record(&source, hash, text.to_string());
+        if let Some((hash, written)) = self.mint(text) {
+            self.record(&source, hash, written);
         }
         Ok(())
     }
@@ -171,12 +178,35 @@ pub fn restore_instrument<R: Resources>(
             args.to, args.source
         ))
     })?;
-    run_edit(
+    let registry = Registry::builtin();
+    let resolver = Adapter(resources);
+    let expect = Some(args.expect.clone());
+    if let Some(conflict) = expect_conflict(&expect, &args.source, &registry, &resolver) {
+        return Ok(conflict);
+    }
+    let restored = core_edit::restore_instrument(
         &args.source,
-        &Some(args.expect.clone()),
-        resources,
-        |src, reg, res| core_edit::restore_instrument(src, &prior, reg, res),
+        &prior,
+        &args.to,
+        &args.expect,
+        &registry,
+        &resolver,
     )
+    .map_err(|why| Refusal::new(why.to_string()))?;
+    match restored {
+        Some(result) => {
+            let output = EditResult::from_core(result);
+            let summary = edit_summary(&output);
+            Ok(Answer { output, summary })
+        }
+        // The source changed after the guard's own read: answer as the guard would have.
+        None => expect_conflict(&expect, &args.source, &registry, &resolver).ok_or_else(|| {
+            Refusal::new(format!(
+                "`{}` changed while it was being restored; read it again and retry",
+                args.source
+            ))
+        }),
+    }
 }
 
 #[cfg(test)]
