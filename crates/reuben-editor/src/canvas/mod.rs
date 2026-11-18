@@ -85,6 +85,18 @@ impl Canvas {
         }
     }
 
+    /// Read `instrument` again, keeping the view. The selection is kept while the document still
+    /// has the box it names.
+    pub fn reload(&mut self, instrument: &Path, root: Option<&Path>) {
+        let loaded = load(instrument, root);
+        if let (Some(item), Ok(doc)) = (&self.selection, &loaded) {
+            if doc.graph.index_of(item).is_none() {
+                self.selection = None;
+            }
+        }
+        self.loaded = Some(loaded);
+    }
+
     /// Select the box at `point`, in canvas units, or nothing when no box is there.
     fn click(&mut self, point: Pos2) {
         self.selection = match &self.loaded {
@@ -308,6 +320,58 @@ mod tests {
         let moved = after.graph.index_of(&Item::Node(address)).unwrap();
         assert_eq!(after.rects[moved].min, Pos2::new(640.0, -120.0));
         assert_eq!(overlaps(&after.rects), []);
+    }
+
+    #[test]
+    fn a_reload_draws_the_file_again_and_keeps_the_view_and_a_selection_that_still_exists() {
+        let temp = TempConfig::new();
+        std::fs::create_dir_all(&temp.path).unwrap();
+        let path = temp.path.join("seed.json");
+        let source = path.display().to_string();
+        let store = FsResolver::for_document(&source);
+        new_instrument(
+            &NewInstrument {
+                source: source.clone(),
+                name: "seed".into(),
+            },
+            &store,
+        )
+        .unwrap();
+        let add = |address: &str| {
+            add_instrument_node(
+                &AddInstrumentNode {
+                    source: source.clone(),
+                    address: address.into(),
+                    type_name: "oscillator".into(),
+                    ..Default::default()
+                },
+                &store,
+            )
+            .unwrap();
+        };
+        add("/kept");
+        let mut canvas = Canvas::open(Some(&path), None);
+        let camera = Camera {
+            offset: egui::Vec2::new(7.0, -3.0),
+            zoom: 0.5,
+        };
+        canvas.camera = Some(camera);
+        canvas.selection = Some(Item::Node("/kept".into()));
+        let boxes = |canvas: &Canvas| match &canvas.loaded {
+            Some(Ok(doc)) => doc.graph.boxes.len(),
+            other => panic!("not loaded: {other:?}"),
+        };
+        let before = boxes(&canvas);
+
+        add("/added");
+        canvas.reload(&path, None);
+        assert_eq!(boxes(&canvas), before + 1);
+        assert_eq!(canvas.camera, Some(camera));
+        assert_eq!(canvas.selection, Some(Item::Node("/kept".into())));
+
+        canvas.selection = Some(Item::Node("/gone".into()));
+        canvas.reload(&path, None);
+        assert_eq!(canvas.selection, None);
     }
 
     #[test]

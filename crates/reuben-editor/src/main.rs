@@ -122,6 +122,9 @@ impl Editor {
             return;
         };
         let poll = session.poll(Instant::now(), &|| self.engine.channel());
+        if poll.reloaded {
+            self.canvas.reload(session.top(), session.root());
+        }
         // A tree that does not load keeps the panel of the instrument still playing.
         if poll.reloaded && !matches!(session.status(), Status::Held(_)) {
             self.controls = Controls::open(Some(session.top()), session.root());
