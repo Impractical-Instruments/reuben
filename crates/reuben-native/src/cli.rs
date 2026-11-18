@@ -46,7 +46,7 @@ pub struct EngineFlags {
     #[arg(long, value_name = "HOST:PORT")]
     pub osc_out: Option<String>,
     /// Device profile JSON: logical↔device channel maps, device selection by
-    /// name substring, and sample-rate/buffer-size preferences — outside the patch, so the
+    /// name (whole, or any part of it), and sample-rate/buffer-size preferences — outside the patch, so the
     /// same instrument plays on any rig. Omit for the default device and identity map,
     /// bit-identical to today's behavior. See docs/device-profile.md.
     #[arg(long, value_name = "FILE")]

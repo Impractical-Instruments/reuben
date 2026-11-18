@@ -1,5 +1,5 @@
 //! Device profile: the `--io-map <file>` document — binds an instrument's *logical* master
-//! channels to a real device's channels, selects a non-default device by name substring, and
+//! channels to a real device's channels, selects a non-default device by its name or part of it, and
 //! states sample-rate/buffer-size preferences the engine requests against the device's supported
 //! configs.
 //!
@@ -21,8 +21,8 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct SideProfile {
-    /// Select a device by case-insensitive name substring. Omitted = the host's default
-    /// device (today's only behavior).
+    /// Select a device by case-insensitive name: the device named exactly this, else the first
+    /// whose name contains it. Omitted = the host's default device (today's only behavior).
     #[serde(default)]
     pub device: Option<String>,
     /// Output: logical channel → device channel. Input: device channel → logical channel.

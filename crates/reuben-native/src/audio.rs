@@ -1,7 +1,7 @@
 //! Live audio out via cpal.
 //!
-//! Opens an output device (the host default, or a [`DeviceProfile`]'s `output.device` substring
-//! selection), builds a [`Coordinator`] + its RT-side [`RenderSlot`] matched to the device sample
+//! Opens an output device (the host default, or the one a [`DeviceProfile`]'s `output.device`
+//! names), builds a [`Coordinator`] + its RT-side [`RenderSlot`] matched to the device sample
 //! rate, and renders inside the audio callback by driving the [`RenderSlot`] rather than an
 //! `Engine` directly. Incoming control ([`ControlBatch`]) is pulled from an
 //! [`std::sync::mpsc::Receiver`] (fed by the OSC/UDP thread and by the structure channel's `send`)
@@ -130,7 +130,7 @@ fn clamp_nanos(d: Duration) -> u64 {
 pub enum AudioError {
     /// No default output device.
     NoDevice,
-    /// No output device's name contains the profile's `output.device` substring.
+    /// No output device's name equals or contains the profile's `output.device`.
     NoMatchingDevice(String),
     /// Enumerating output devices failed.
     DevicesQuery(cpal::DevicesError),
@@ -151,7 +151,7 @@ pub enum AudioError {
     /// would violate the "know and say" policy (the dark-degrade path covers *channel* mismatches
     /// on a device that did open, not the absence of any device).
     NoInputDevice,
-    /// No input device's name contains the profile's `input.device` substring.
+    /// No input device's name equals or contains the profile's `input.device`.
     NoMatchingInputDevice(String),
     /// Enumerating input devices failed.
     InputDevicesQuery(cpal::DevicesError),
@@ -683,8 +683,8 @@ fn callback_budget(frames: usize, sample_rate: f32) -> Duration {
 }
 
 /// Select an output device: `None` is the host default (today's only behavior);
-/// `Some(substr)` is the first device whose name contains `substr`, case-insensitively (the
-/// [`find_named_device`] kernel shared with the input side).
+/// `Some(name)` is matched against the device names by [`find_named_device`], the kernel shared
+/// with the input side.
 fn select_output_device(
     host: &cpal::Host,
     name_substr: Option<&str>,
@@ -699,25 +699,39 @@ fn select_output_device(
     }
 }
 
-/// The name-substring device search behind `output.device` and (via [`crate::input`])
-/// `input.device` selection — one kernel, so the two sides' matching rules can't drift.
+/// The device-name search behind `output.device` and (via [`crate::input`]) `input.device`
+/// selection — one kernel ([`named_index`]), so the two sides' matching rules can't drift.
 pub(crate) fn find_named_device(
-    mut devices: impl Iterator<Item = cpal::Device>,
+    devices: impl Iterator<Item = cpal::Device>,
     substr: &str,
 ) -> Option<cpal::Device> {
-    let needle = substr.to_lowercase();
-    devices.find(|d| {
-        d.name()
-            .map(|n| device_name_matches(&n, &needle))
-            .unwrap_or(false)
-    })
+    let mut devices: Vec<cpal::Device> = devices.collect();
+    let index = named_index(devices.iter().map(|d| d.name().ok()), substr)?;
+    Some(devices.swap_remove(index))
 }
 
-/// The case-insensitive substring match behind [`find_named_device`], pulled out so it has a
-/// unit test that doesn't need a real [`cpal::Host`] — `needle` is
-/// already lowercased by the caller (once per call, not per device).
-pub(crate) fn device_name_matches(name: &str, needle_lower: &str) -> bool {
-    name.to_lowercase().contains(needle_lower)
+/// Which of `names` a profile's `device` string selects, case-insensitively: the first name equal
+/// to it, else the first name containing it. Equality outranks containment so that a whole device
+/// name always selects that device, even when an earlier device's name contains it ("USB Audio"
+/// listed after "USB Audio Pro"). `None` entries are devices whose name could not be read; they
+/// are never selected but keep their position.
+pub(crate) fn named_index(
+    names: impl Iterator<Item = Option<String>>,
+    wanted: &str,
+) -> Option<usize> {
+    let wanted = wanted.to_lowercase();
+    let mut containing = None;
+    for (index, name) in names.enumerate() {
+        let Some(name) = name else { continue };
+        let name = name.to_lowercase();
+        if name == wanted {
+            return Some(index);
+        }
+        if containing.is_none() && name.contains(&wanted) {
+            containing = Some(index);
+        }
+    }
+    containing
 }
 
 /// The outcome of matching a requested output sample rate against a device's supported configs:
@@ -1249,9 +1263,25 @@ mod tests {
     }
 
     #[test]
-    fn device_name_match_is_case_insensitive_substring() {
-        assert!(device_name_matches("Scarlett 2i2 USB", "scarlett"));
-        assert!(!device_name_matches("Built-in Output", "scarlett"));
+    fn device_name_match_is_case_insensitive_containment() {
+        let names = || ["Built-in Output", "Scarlett 2i2 USB"].map(|n| Some(n.to_string()));
+        assert_eq!(named_index(names().into_iter(), "scarlett"), Some(1));
+        assert_eq!(named_index(names().into_iter(), "focusrite"), None);
+    }
+
+    #[test]
+    fn a_whole_device_name_selects_that_device_over_an_earlier_one_containing_it() {
+        let names = || ["USB Audio Pro", "USB Audio", "usb audio"].map(|n| Some(n.to_string()));
+        assert_eq!(named_index(names().into_iter(), "USB Audio"), Some(1));
+        assert_eq!(named_index(names().into_iter(), "usb audio pro"), Some(0));
+        assert_eq!(named_index(names().into_iter(), "audio"), Some(0));
+    }
+
+    #[test]
+    fn a_device_with_no_readable_name_is_never_selected() {
+        let names = [None, Some("Scarlett".to_string())];
+        assert_eq!(named_index(names.into_iter(), "scarlett"), Some(1));
+        assert_eq!(named_index([None].into_iter(), ""), None);
     }
 
     #[test]

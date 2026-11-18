@@ -181,8 +181,8 @@ fn find_f32_input_config(
 }
 
 /// Select an input device (the dual of `select_output_device`): `None` is the
-/// host default; `Some(substr)` is the first input device whose name contains `substr`,
-/// case-insensitively (the shared [`find_named_device`] kernel).
+/// host default; `Some(substr)` is matched against the input device names by the shared
+/// [`find_named_device`] kernel.
 fn select_input_device(
     host: &cpal::Host,
     name_substr: Option<&str>,
