@@ -363,6 +363,18 @@ fn resolve(
             };
             let min = narrow("min", control.min, port.min);
             let max = narrow("max", control.max, port.max);
+            // A range with nothing in it clamps every send to one value while the widget still
+            // shows travel; the input's own range is the honest fallback.
+            let (min, max) = match (min, max) {
+                (Some(low), Some(high)) if low > high => {
+                    adjusted.push(format!(
+                        "surface control `{label}`: min {low} is above max {high} — using the \
+                         input's own range"
+                    ));
+                    (port.min, port.max)
+                }
+                range => range,
+            };
             let shape = if widget == RADIAL {
                 Shape::Radial
             } else {
@@ -676,6 +688,24 @@ mod tests {
         assert_eq!((*min, *max, *rest), (Some(0.0), Some(0.25), 0.25));
         assert_eq!(panel.warnings.len(), 1, "{:?}", panel.warnings);
         assert!(panel.warnings[0].contains("min -2"), "{:?}", panel.warnings);
+    }
+
+    #[test]
+    fn a_narrowed_range_with_min_above_max_is_ignored_with_a_warning() {
+        let panel = Panel::from_surface(
+            &doc(r#"[{"bind":"level","min":0.8,"max":0.2}]"#),
+            &boundary(vec![ranged("level", "value", 0.5, 0.0, 1.0)]),
+        );
+        let Kind::Value { min, max, .. } = &panel.controls[0].kind else {
+            panic!("a value control");
+        };
+        assert_eq!((*min, *max), (Some(0.0), Some(1.0)));
+        assert_eq!(panel.warnings.len(), 1, "{:?}", panel.warnings);
+        assert!(
+            panel.warnings[0].contains("above max"),
+            "{:?}",
+            panel.warnings
+        );
     }
 
     #[test]

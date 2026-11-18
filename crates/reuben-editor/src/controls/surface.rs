@@ -97,11 +97,22 @@ impl SurfaceDoc {
 /// under the instrument's own directory or the nearest of its next two ancestors. So
 /// `instruments/acid-techno.json` finds `surfaces/acid-techno.json` beside `instruments/`.
 pub fn locate(instrument: &Path) -> Option<PathBuf> {
-    let name = Path::new(instrument.file_stem()?).with_extension("json");
+    // Appended, not `with_extension`: a stem with a dot in it (`my.synth`) would lose its last
+    // segment and name another instrument's doc.
+    let name = format!("{}.json", instrument.file_stem()?.to_str()?);
     // `Path::new("x.json").parent()` is the empty path, which names the working directory only by
-    // accident of how `join` treats it; make the instrument absolute so ancestors are real.
-    let instrument = std::path::absolute(instrument).ok()?;
-    instrument
+    // accident of how `join` treats it; make the instrument absolute so ancestors are real. `..`
+    // is folded away too, or each one would count as a directory searched.
+    let mut folded = PathBuf::new();
+    for component in std::path::absolute(instrument).ok()?.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                folded.pop();
+            }
+            other => folded.push(other),
+        }
+    }
+    folded
         .ancestors()
         .skip(1)
         .take(SEARCH_DEPTH)
@@ -208,6 +219,12 @@ mod tests {
             Some(surface)
         );
         assert_eq!(locate(&root.join("instruments/other.json")), None);
+        // A dotted stem is the whole stem, and `..` is not a directory to search from.
+        assert_eq!(locate(&root.join("instruments/toy.synth.json")), None);
+        assert_eq!(
+            locate(&root.join("instruments/patches/../toy.json")),
+            Some(root.join("surfaces/toy.json"))
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

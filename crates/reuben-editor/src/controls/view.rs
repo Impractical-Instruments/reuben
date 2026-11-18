@@ -58,7 +58,7 @@ pub fn panel(
     low_key: &mut u8,
 ) -> Vec<ControlSendMessage> {
     if panel.controls.is_empty() {
-        ui.weak("This instrument has no interface inputs to play.");
+        ui.weak("This panel has no controls.");
     }
     let mut messages = Vec::new();
     for row in panel.rows() {
@@ -252,15 +252,26 @@ fn knob(ui: &mut egui::Ui, label: &str, kind: &Kind, value: &mut f64) {
     ui.vertical(|ui| {
         ui.set_width(CELL_WIDTH);
         ui.label(label);
-        let (rect, response) = ui.allocate_exact_size(Vec2::splat(KNOB_DIAMETER), Sense::drag());
+        let (rect, response) =
+            ui.allocate_exact_size(Vec2::splat(KNOB_DIAMETER), Sense::click_and_drag());
         let mut unit_value = model::to_unit(*value, *min, *max, *exponential);
-        if response.dragged() {
-            // Up or right turns it up.
+        if response.dragged() && response.drag_delta() != Vec2::ZERO {
+            // The turn is kept as a continuous position for the length of the drag. Read back
+            // from `value` each frame it would lose whatever a whole-numbered knob rounded away,
+            // and a drag slower than one step a frame would never leave the step it began on.
+            let start = unit_value;
             let delta = response.drag_delta();
-            unit_value = (unit_value + f64::from(delta.x - delta.y) / f64::from(KNOB_TRAVEL))
-                .clamp(0.0, 1.0);
+            // Up or right turns it up.
+            let turn = f64::from(delta.x - delta.y) / f64::from(KNOB_TRAVEL);
+            unit_value = ui.data_mut(|data| {
+                let position = data.get_temp_mut_or(response.id, start);
+                *position = (*position + turn).clamp(0.0, 1.0);
+                *position
+            });
             let moved = model::from_unit(unit_value, *min, *max, *exponential);
             *value = if *integer { moved.round() } else { moved };
+        } else if !response.dragged() {
+            ui.data_mut(|data| data.remove_temp::<f64>(response.id));
         }
         if response.double_clicked() {
             if let Kind::Value { rest, .. } = kind {
@@ -464,5 +475,76 @@ mod tests {
         );
         assert_eq!(stage.button(white(2.0), false), vec![key(52, false)]);
         assert_eq!(stage.setting, Setting::Key(None));
+    }
+
+    fn value_kind(shape: Shape, min: f64, max: f64, rest: f64, integer: bool) -> Kind {
+        Kind::Value {
+            shape,
+            min: Some(min),
+            max: Some(max),
+            rest,
+            integer,
+            exponential: false,
+            unit: String::new(),
+        }
+    }
+
+    /// Press at `from` and move right `step` pixels a frame for `frames` frames, then release.
+    fn drag_right(stage: &mut Stage, from: Pos2, step: f32, frames: usize) -> Vec<Gesture> {
+        let mut gestures = stage.button(from, true);
+        let mut at = from;
+        for _ in 0..frames {
+            at.x += step;
+            gestures.extend(stage.frames(vec![Event::PointerMoved(at)]));
+        }
+        gestures.extend(stage.button(at, false));
+        gestures
+    }
+
+    /// A step of an integer knob is many pixels of travel, so a drag slower than a step a frame
+    /// has to add up across frames.
+    #[test]
+    fn a_whole_numbered_knob_turns_under_a_slow_drag() {
+        let mut stage = Stage::new(value_kind(Shape::Radial, 1.0, 16.0, 4.0, true));
+        let on_knob = Pos2::new(KNOB_DIAMETER / 2.0, 18.0 + KNOB_DIAMETER / 2.0);
+
+        let gestures = drag_right(&mut stage, on_knob, 1.0, KNOB_TRAVEL as usize + 20);
+
+        assert_eq!(stage.setting, Setting::Value(16.0), "{gestures:?}");
+        assert!(gestures.len() >= 12, "{gestures:?}");
+        assert!(
+            gestures
+                .iter()
+                .all(|g| matches!(g, Gesture::Set(v) if v.fract() == 0.0)),
+            "{gestures:?}"
+        );
+    }
+
+    #[test]
+    fn a_knob_returns_to_its_rest_value_on_a_double_click() {
+        let mut stage = Stage::new(value_kind(Shape::Radial, 0.0, 1.0, 0.25, false));
+        let on_knob = Pos2::new(KNOB_DIAMETER / 2.0, 18.0 + KNOB_DIAMETER / 2.0);
+        drag_right(&mut stage, on_knob, 4.0, 10);
+        assert_ne!(stage.setting, Setting::Value(0.25));
+
+        stage.button(on_knob, true);
+        stage.button(on_knob, false);
+        stage.button(on_knob, true);
+        let gestures = stage.button(on_knob, false);
+
+        assert_eq!(stage.setting, Setting::Value(0.25));
+        assert_eq!(gestures, vec![Gesture::Set(0.25)]);
+    }
+
+    #[test]
+    fn dragging_a_fader_sets_its_value() {
+        let mut stage = Stage::new(value_kind(Shape::Fader, 0.0, 1.0, 0.0, false));
+
+        let gestures = drag_right(&mut stage, Pos2::new(12.0, 34.0), 4.0, 20);
+
+        assert!(
+            matches!(gestures.last(), Some(Gesture::Set(v)) if *v > 0.2),
+            "{gestures:?}"
+        );
     }
 }
