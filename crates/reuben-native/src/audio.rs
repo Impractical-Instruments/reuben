@@ -1,7 +1,7 @@
 //! Live audio out via cpal.
 //!
-//! Opens an output device (the host default, or a [`DeviceProfile`]'s `output.device` substring
-//! selection), builds a [`Coordinator`] + its RT-side [`RenderSlot`] matched to the device sample
+//! Opens an output device (the host default, or the one a [`DeviceProfile`]'s `output.device`
+//! names), builds a [`Coordinator`] + its RT-side [`RenderSlot`] matched to the device sample
 //! rate, and renders inside the audio callback by driving the [`RenderSlot`] rather than an
 //! `Engine` directly. Incoming control ([`ControlBatch`]) is pulled from an
 //! [`std::sync::mpsc::Receiver`] (fed by the OSC/UDP thread and by the structure channel's `send`)
@@ -1263,7 +1263,7 @@ mod tests {
     }
 
     #[test]
-    fn device_name_match_is_case_insensitive_substring() {
+    fn device_name_match_is_case_insensitive_containment() {
         let names = || ["Built-in Output", "Scarlett 2i2 USB"].map(|n| Some(n.to_string()));
         assert_eq!(named_index(names().into_iter(), "scarlett"), Some(1));
         assert_eq!(named_index(names().into_iter(), "focusrite"), None);

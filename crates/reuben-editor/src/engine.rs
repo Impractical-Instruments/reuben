@@ -151,28 +151,61 @@ impl Engine {
     /// reported, a port that would not rebind included. Does nothing when no start was ever
     /// attempted.
     ///
+    /// The running engine is left alone, with an error added to the report, when the instrument's
+    /// file can no longer be read: stopping would trade an engine that plays for one that cannot
+    /// start.
+    ///
     /// `start` is [`engine::start`], or the headless engine in a test.
     pub fn restart_with(
         &mut self,
         profile: DeviceProfile,
         start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
     ) {
-        let Some(mut config) = self.config.take() else {
+        let Some(mut config) = self.config.clone() else {
             return;
         };
-        // A swap installed by value has no source to start again from; the engine then goes
-        // back to the instrument it started on.
-        let playing = self
-            .running
-            .as_ref()
-            .and_then(|running| running.channel().get_document().ok())
-            .and_then(|document| document.source);
-        if let Some(source) = playing {
-            config.instrument = Instrument::Path(source.into());
+        let mut unsourced = None;
+        if let Some(running) = &self.running {
+            match running.channel().get_document() {
+                Ok(document) => match document.source {
+                    Some(source) => config.instrument = Instrument::Path(source.into()),
+                    None => unsourced = Some("it was installed without a file".to_string()),
+                },
+                Err(e) => unsourced = Some(format!("the engine did not say what it is: {e}")),
+            }
+        }
+        if let Instrument::Path(path) = &config.instrument {
+            if let Err(e) = std::fs::File::open(path) {
+                self.push(Line::new(
+                    Level::Error,
+                    format!(
+                        "audio output not changed: {} cannot be read to start again from: {e}",
+                        path.display()
+                    ),
+                ));
+                return;
+            }
         }
         config.profile = profile;
         self.shutdown();
         *self = Self::start_with(config, start);
+        if let Some(why) = unsourced {
+            self.push(Line::new(
+                Level::Warning,
+                format!(
+                    "what was playing could not be started again ({why}); playing the instrument \
+                     the engine started on"
+                ),
+            ));
+        }
+    }
+
+    fn push(&mut self, line: Line) {
+        match line.level {
+            Level::Info => println!("{line}"),
+            Level::Warning | Level::Error => eprintln!("{line}"),
+        }
+        self.report.push(line);
     }
 
     /// The profile the last start was asked for; `None` when no start was ever attempted.

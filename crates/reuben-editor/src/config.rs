@@ -32,14 +32,16 @@ impl ConfigDir {
     }
 
     /// The XDG base directory rule: `xdg_config_home` when it is an absolute path (the
-    /// specification says to ignore a relative one), else `home/.config`.
+    /// specification says to ignore a relative one), else `home/.config`. A relative `home` names no
+    /// directory either: it would follow the working directory.
     fn from_env(xdg_config_home: Option<OsString>, home: Option<OsString>) -> Self {
         let base = xdg_config_home
             .map(PathBuf::from)
             .filter(|p| p.is_absolute())
             .or_else(|| {
-                home.filter(|h| !h.is_empty())
-                    .map(|h| PathBuf::from(h).join(".config"))
+                home.map(PathBuf::from)
+                    .filter(|h| h.is_absolute())
+                    .map(|h| h.join(".config"))
             });
         Self {
             dir: base.map(|b| b.join(APP_DIR)),
@@ -89,9 +91,14 @@ impl ConfigDir {
         std::fs::create_dir_all(dir)?;
         let mut text = serde_json::to_string_pretty(value).map_err(io::Error::other)?;
         text.push('\n');
-        let scratch = dir.join(format!("{file}.tmp"));
-        std::fs::write(&scratch, text)?;
-        std::fs::rename(&scratch, dir.join(file))
+        // The pid keeps two editors saving at once off each other's scratch file.
+        let scratch = dir.join(format!(".{file}.{}.tmp", std::process::id()));
+        let saved =
+            std::fs::write(&scratch, text).and_then(|()| std::fs::rename(&scratch, dir.join(file)));
+        if saved.is_err() {
+            let _ = std::fs::remove_file(&scratch);
+        }
+        saved
     }
 }
 
@@ -218,6 +225,7 @@ mod tests {
             Some(PathBuf::from("/home/u/.config/reuben-editor/audio.json"))
         );
         assert_eq!(dir(None, None), None);
+        assert_eq!(dir(None, Some("relative/home")), None);
     }
 
     #[test]

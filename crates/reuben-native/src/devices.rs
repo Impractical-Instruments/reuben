@@ -11,8 +11,9 @@ use crate::audio::AudioError;
 /// One output device of the default host, as it was when [`output_devices`] ran.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputDevice {
-    /// The name `output.device` selects it by. Given whole, it selects this device and no other,
-    /// unless two devices report the same name: then the first listed wins.
+    /// The name `output.device` selects it by. Given whole, it selects this device ahead of any
+    /// whose name merely contains it. Names are compared without regard to case, so of two
+    /// devices whose names differ only in case, or not at all, the first listed wins.
     pub name: String,
     /// Whether this is the device an omitted `output.device` opens.
     pub is_default: bool,
@@ -41,6 +42,13 @@ impl OutputDevice {
             .as_ref()
             .is_none_or(|r| r.contains(&frames))
     }
+}
+
+/// The one of `devices` a profile's `output.device` of `name` selects, by the rule the engine
+/// opens a device with. `devices` must be in the order [`output_devices`] listed them.
+pub fn selected<'a>(devices: &'a [OutputDevice], name: &str) -> Option<&'a OutputDevice> {
+    let index = crate::audio::named_index(devices.iter().map(|d| Some(d.name.clone())), name)?;
+    devices.get(index)
 }
 
 /// List the default host's output devices, in the order `output.device` is matched against them.

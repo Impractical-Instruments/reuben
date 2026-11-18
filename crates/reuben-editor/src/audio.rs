@@ -54,6 +54,9 @@ pub struct AudioSettings {
     devices: Vec<OutputDevice>,
     /// The `--io-map` file deciding this run's profile, until the user picks in the window.
     io_map: Option<PathBuf>,
+    /// The stored device was not connected when the choice was last applied, so the engine is on
+    /// the default device instead.
+    fell_back: bool,
     warnings: Vec<String>,
 }
 
@@ -80,6 +83,7 @@ impl AudioSettings {
             },
             devices: Vec::new(),
             io_map: None,
+            fell_back: false,
             warnings: Vec::new(),
         };
         if let Some(warning) = warning {
@@ -143,6 +147,7 @@ impl AudioSettings {
             Some(name) => self.devices.iter().any(|d| &d.name == name),
             None => true,
         };
+        self.fell_back = !connected;
         if connected {
             profile.output.device = self.choice.output_device.clone();
             profile.sample_rate = self.choice.sample_rate;
@@ -169,6 +174,26 @@ impl AudioSettings {
         }
     }
 
+    /// List the devices again, and move `engine` onto the stored device if it was missing when
+    /// the choice was last applied and is listed now.
+    fn refresh_with(
+        &mut self,
+        engine: &mut Engine,
+        start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
+    ) {
+        self.refresh();
+        let back = self.fell_back
+            && self.io_map.is_none()
+            && self
+                .choice
+                .output_device
+                .as_ref()
+                .is_some_and(|name| self.devices.iter().any(|d| &d.name == name));
+        if back {
+            self.select_with(self.choice.clone(), engine, start);
+        }
+    }
+
     fn warn(&mut self, text: String) {
         eprintln!("warning: {text}");
         self.warnings.push(text);
@@ -179,7 +204,12 @@ impl AudioSettings {
     fn shown(&self, engine: &Engine) -> AudioChoice {
         match (&self.io_map, engine.profile()) {
             (Some(_), Some(profile)) => AudioChoice {
-                output_device: profile.output.device.clone(),
+                // The whole name of the device the profile's string selects, which is what a
+                // choice stores: the string itself may be any part of that name, in any case.
+                output_device: profile.output.device.as_ref().map(|name| {
+                    devices::selected(&self.devices, name)
+                        .map_or_else(|| name.clone(), |device| device.name.clone())
+                }),
                 sample_rate: profile.sample_rate,
                 buffer_size: profile.buffer_size,
             },
@@ -271,7 +301,7 @@ impl AudioSettings {
             ui.colored_label(ui.visuals().warn_fg_color, format!("warning: {warning}"));
         }
         if refresh {
-            self.refresh();
+            self.refresh_with(engine, engine::start);
         }
         if choice != shown {
             self.select(choice, engine);
@@ -331,7 +361,7 @@ fn preference_menu(
 pub(crate) mod tests {
     use std::net::UdpSocket;
 
-    use reuben_api::engine::get_current_instrument;
+    use reuben_api::engine::{get_current_instrument, DocSource};
     use reuben_api::FsResolver;
     use reuben_native::test_support::{start_headless, within};
 
@@ -625,6 +655,151 @@ pub(crate) mod tests {
             settings.select_with(AudioChoice::default(), &mut engine, start_headless);
             assert_eq!(engine.profile(), Some(&DeviceProfile::default()));
             assert_eq!(playing(&engine), before);
+            engine.shutdown();
+        });
+    }
+
+    #[test]
+    fn a_pick_under_an_io_map_naming_part_of_a_device_keeps_that_device() {
+        within(HANG_SECS, || {
+            let temp = TempConfig::new();
+            let io_map = temp.path.join("rig.io-map.json");
+            std::fs::create_dir_all(&temp.path).expect("mkdir");
+            std::fs::write(&io_map, r#"{"output":{"device":"pro"}}"#).expect("seed");
+            let mut settings = AudioSettings::load_with(temp.dir(), two_devices);
+            let flags = EngineFlags {
+                io_map: Some(io_map),
+                ..EngineFlags::default()
+            };
+            let from_flags = settings
+                .engine_config(&flags, Instrument::Path(library("acid-techno.json")), None)
+                .expect("a config");
+            let mut engine = Engine::start_with(
+                EngineConfig {
+                    profile: from_flags.profile,
+                    ..config(library("acid-techno.json"))
+                },
+                start_headless,
+            );
+            let shown = settings.shown(&engine);
+            assert_eq!(shown.output_device.as_deref(), Some("USB Audio Pro"));
+
+            // What the bar does when only the sample rate menu changes.
+            let picked = AudioChoice {
+                sample_rate: Some(48_000),
+                ..shown
+            };
+            settings.select_with(picked.clone(), &mut engine, start_headless);
+
+            let profile = engine.profile().expect("a profile");
+            assert_eq!(profile.output.device.as_deref(), Some("USB Audio Pro"));
+            assert_eq!(profile.sample_rate, Some(48_000));
+            assert!(settings.warnings.is_empty(), "{:?}", settings.warnings);
+            assert_eq!(
+                AudioSettings::load_with(temp.dir(), two_devices).choice,
+                picked
+            );
+            engine.shutdown();
+        });
+    }
+
+    #[test]
+    fn a_switch_leaves_the_engine_running_when_its_instrument_file_is_gone() {
+        within(HANG_SECS, || {
+            let temp = TempConfig::new();
+            std::fs::create_dir_all(&temp.path).expect("mkdir");
+            let instrument = temp.path.join("breath-harp.json");
+            std::fs::copy(library("breath-harp.json"), &instrument).expect("copy");
+            let mut settings = AudioSettings::load_with(temp.dir(), two_devices);
+            let mut engine = Engine::start_with(config(instrument.clone()), start_headless);
+            let before = playing(&engine);
+            std::fs::remove_file(&instrument).expect("delete");
+
+            settings.select_with(usb_audio(), &mut engine, start_headless);
+
+            assert_eq!(playing(&engine), before);
+            assert_eq!(engine.profile(), Some(&DeviceProfile::default()));
+            let last = engine.report().last().expect("a line");
+            assert_eq!(last.level, Level::Error);
+            assert!(last.text.contains("not changed"), "{}", last.text);
+            engine.shutdown();
+        });
+    }
+
+    #[test]
+    fn a_switch_while_playing_a_document_with_no_file_says_what_it_went_back_to() {
+        within(HANG_SECS, || {
+            let temp = TempConfig::new();
+            let mut settings = AudioSettings::load_with(temp.dir(), two_devices);
+            let mut engine =
+                Engine::start_with(config(library("acid-techno.json")), start_headless);
+            let launched = playing(&engine);
+            let by_value = serde_json::from_str(
+                &std::fs::read_to_string(library("breath-harp.json")).expect("read"),
+            )
+            .expect("a document");
+            engine
+                .running()
+                .expect("running")
+                .channel()
+                .swap(DocSource::Document(by_value), None)
+                .expect("the engine answers");
+            assert_ne!(playing(&engine), launched);
+
+            settings.select_with(usb_audio(), &mut engine, start_headless);
+
+            assert_eq!(playing(&engine), launched);
+            let warnings: Vec<_> = engine
+                .report()
+                .iter()
+                .filter(|l| l.level == Level::Warning)
+                .collect();
+            assert!(
+                warnings.iter().any(|l| l.text.contains("without a file")),
+                "{:?}",
+                engine.report()
+            );
+            engine.shutdown();
+        });
+    }
+
+    #[test]
+    fn refreshing_after_a_missing_device_comes_back_moves_the_engine_onto_it() {
+        within(HANG_SECS, || {
+            let temp = TempConfig::new();
+            AudioSettings::load_with(temp.dir(), two_devices)
+                .select(usb_audio(), &mut Engine::idle());
+            let mut settings = AudioSettings::load_with(temp.dir(), usb_audio_unplugged);
+            let launch = settings
+                .engine_config(
+                    &EngineFlags::default(),
+                    Instrument::Path(library("acid-techno.json")),
+                    None,
+                )
+                .expect("a config");
+            let mut engine = Engine::start_with(
+                EngineConfig {
+                    profile: launch.profile,
+                    ..config(library("acid-techno.json"))
+                },
+                start_headless,
+            );
+            assert_eq!(engine.profile(), Some(&DeviceProfile::default()));
+            assert!(!settings.warnings.is_empty());
+
+            settings.list = two_devices;
+            settings.refresh_with(&mut engine, start_headless);
+
+            assert_eq!(
+                engine
+                    .profile()
+                    .expect("a profile")
+                    .output
+                    .device
+                    .as_deref(),
+                Some("USB Audio")
+            );
+            assert!(settings.warnings.is_empty(), "{:?}", settings.warnings);
             engine.shutdown();
         });
     }
