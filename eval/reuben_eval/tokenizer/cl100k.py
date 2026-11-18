@@ -8,8 +8,7 @@ a gate job.
 **The number this produces is a size proxy, not a billing figure.** It is pinned to cl100k_base
 precisely because no rung on the live-tier ladder uses it: the deterministic tier must stay
 comparable across years and must not re-baseline when a rung is re-pinned. Both the vocabulary and
-the `\\p{L}`/`\\p{N}` tables are hash-checked before a single token is counted — see `pins.json`
-and `docs/research/harness-rungs.md` §6.
+the `\\p{L}`/`\\p{N}` tables are hash-checked before a single token is counted — see `pins.json`.
 
 Correctness is held by `tests/test_tokenizer.py`, which differentially tests this against real
 `tiktoken` over the repo's own corpus. That test needs the `dev` extra and never runs in the gate.
@@ -108,7 +107,7 @@ def _merge(piece: bytes) -> tuple[int, ...]:
 
     Repeatedly merges the lowest-ranked adjacent pair, which is the BPE definition. Quadratic in the
     piece length, but pre-tokens are words — and the gate tokenizes a handful of documents per run,
-    where the research measured roughly a second per million tokens. Cached because instrument JSON
+    at a measured cost of roughly a second per million tokens. Cached because instrument JSON
     is overwhelmingly the same few pieces (`"node"`, `"kind"`, indentation) over and over.
     """
     ranks = _ranks()

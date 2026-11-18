@@ -4,11 +4,7 @@ The instrument-authoring guide — the contract an **authoring agent** builds ag
 it drives the repo skills (`patcher`) or the reuben MCP server (this file is served in-band
 as `reuben://guide/authoring`).
 It owns the type system and wiring rules, the instrument JSON format, addressing, and the
-authoring loop's semantics. The conceptual narrative and the glossary now live in the
-[rules corpus](../rules/README.md) — the six topic docs plus the derived glossary that absorbed
-the old end-to-end narrative and term list; capitalized terms (Operator, Voice, Plan…) are defined
-there. The rules corpus is the source of truth; this doc tells you where the contract lives and how
-to author against it.
+authoring loop's semantics.
 
 Developing a new **Operator in Rust** — the `Operator` trait, the `operator_contract!` macro,
 registration, `OpDriver` testing — is the builder's job, not the authoring agent's: that
@@ -16,7 +12,7 @@ contract lives in [operator-dev.md](operator-dev.md).
 
 ## The recursive model <!-- lanes: skills,mcp,web -->
 
-One concept at every scale ([composition-operators](../rules/composition-operators.md)): a graph of
+One concept at every scale: a graph of
 nodes with typed ports.
 
 - **Operator** — the smallest unit of behavior; does one simple thing.
@@ -54,7 +50,7 @@ door's business, advertised where you call it and never restated here.
 
 Steps 6 and 7 need a running engine; the rest do not.
 
-Why the steps are what they are ([agent-mcp](../rules/agent-mcp.md)):
+Why the steps are what they are:
 
 - **The document is durable truth.** What the document says is what plays after the next Swap —
   and what saves, shares, and reloads.
@@ -77,8 +73,7 @@ Why the steps are what they are ([agent-mcp](../rules/agent-mcp.md)):
   everything else — rewired inputs, changed params, new neighbors — leaves a survivor a
   survivor.
 
-Two pieces of loop conduct, in every lane
-([agent-mcp](../rules/agent-mcp.md)):
+Two pieces of loop conduct, in every lane:
 
 - **Sanity-check that it's audible.** Validating (`reuben validate` on the CLI,
   `validate_instrument` on the MCP/web surfaces — every document verb runs it for you before
@@ -91,8 +86,7 @@ Two pieces of loop conduct, in every lane
   from the live operator set, not from memory or a sketch; a guessed name costs a repair
   round.
 
-One more piece of authoring conduct — and the one the incremental surface made *deliberate*
-([authoring-library](../rules/authoring-library.md)):
+One more piece of authoring conduct — and the one the incremental surface made *deliberate*:
 
 - **Keep the description true when you reshape.** An instrument's reuse story — its
   **recipe-role** — is the first sentence of its own top-level description (`doc` on disk,
@@ -103,7 +97,7 @@ One more piece of authoring conduct — and the one the incremental surface made
   trusted for **selection only**; the `interface` block stays the mechanically-enforced
   face, so a stale role line can cost a bad-sounding pick, never a mis-wired document.
 
-Two swap rules of thumb ([execution-runtime](../rules/execution-runtime.md)):
+Two swap rules of thumb:
 
 - **A swap ducks the output for ~20ms.** The engine ramps the master to silence, installs
   the new Plan at zero, and ramps back up — a brief duck, never a click. Don't chase it as a
@@ -147,7 +141,7 @@ Two steps have no verb at all, and are checkout-only for that reason:
 - **Hear it**: `reuben play <path>` — the engine the swap and audition steps talk to.
 
 <a id="type-system"></a>
-## One `Input`, one `Arg` type ([composition-operators](../rules/composition-operators.md)) <!-- lanes: skills,mcp,web -->
+## One `Input`, one `Arg` type <!-- lanes: skills,mcp,web -->
 
 Every functional input an operator consumes is **one `Input`**, declared once, carrying one
 piece of typed data — its **`Arg`** type, drawn from one closed, central enum. How the value is
@@ -156,7 +150,7 @@ read follows from the `Arg` type plus the read verb; whether a numeric port is a
 Outputs carry an `Arg` the same way. (The old **`shape`** axis is **retired** — the axes now
 are the port's `Arg` type and its declared form.)
 
-The read/write surface is **two verbs over typed handles** ([composition-operators](../rules/composition-operators.md)): `io.read(IN_X)` and `io.write(OUT_X)`. The contract macro emits each port's
+The read/write surface is **two verbs over typed handles**: `io.read(IN_X)` and `io.write(OUT_X)`. The contract macro emits each port's
 const as a typed handle — `In<form>` / `Out<form>` — whose *type* fixes the read/write shape and
 whose value carries the declared default, so a wrong-form read **does not compile** and a held
 read's fallback **is** the contract default (no second literal to drift).
@@ -178,8 +172,7 @@ an OSC primitive `Arg`, but no operator declares an `Int` port.
 
 ### Form is declared, not inferred: `f32` is a held Value, `f32_buffer` is a Signal <!-- lanes: skills,mcp,web -->
 
-The author picks a numeric port's form by which keyword it declares
-([composition-operators](../rules/composition-operators.md)):
+The author picks a numeric port's form by which keyword it declares:
 
 - **`f32` → a held Value.** A latched scalar read once per block-slice with `io.read(IN)`. The
   engine block-slices at each change frame, so the read is sample-accurate without a buffer. It
@@ -214,8 +207,7 @@ Each wire is checked **locally** at Instantiate against the two ports' forms (`c
   yet**: reshape the graph so the consumer reads a Signal, or shape on the Value side (the
   `m2s` gap-filling modes, below). Into an enum Value it's equally illegal (an enum takes a
   discrete choice, not a per-sample signal).
-- **`i32 → f32` / `i32 → f32_buffer`** is an **implicit numeric widening**
-  ([composition-operators](../rules/composition-operators.md)): an integer source wires
+- **`i32 → f32` / `i32 → f32_buffer`** is an **implicit numeric widening**: an integer source wires
   straight into a float sink (an `i32` count into an `f32` control), lossless and read
   via `Arg::as_f32`. Its reverse **`f32 → i32` is a hard error** — lossy, needing an explicit
   quantizer (a `round`/`floor`/`ceil`/`trunc` converter) — the same directional favour as
@@ -243,7 +235,7 @@ enum inputs**, switchable live over OSC. Only genuinely topology-fixing values a
 
 ## The Instrument format (`crates/reuben-document/src/format/`) <!-- lanes: skills,mcp,web -->
 
-An Instrument is plain JSON data (**format v3**; see [authoring-library](../rules/authoring-library.md)). At the top
+An Instrument is plain JSON data (**format v3**). At the top
 level it **requires an `instrument` name field** (a string — the human-facing name/id) alongside
 `nodes`; a document that omits `instrument` is rejected (the loader denies unknown fields, so the
 name cannot be misspelled or dropped). It also carries `nodes` (operator `type` + `address`, plus
@@ -302,7 +294,7 @@ Other errors are specific, and each says what to do next:
 
 See `instruments/*.json` for worked examples.
 
-### The `interface` block: named pipes at the boundary ([composition-operators](../rules/composition-operators.md)) <!-- lanes: skills,mcp,web -->
+### The `interface` block: named pipes at the boundary <!-- lanes: skills,mcp,web -->
 
 `interface.inputs` / `interface.outputs` entries are **named pipes** — the single boundary
 mechanism at every graph level, with the wiring direction **flipped** relative to the v1
@@ -314,7 +306,7 @@ target-pointing form (no entry points inward anymore):
   fan-out free. Because nothing is pointed at, **the entry declares its own `Arg` type** —
   `"type"`: `"f32_buffer"`, `"f32"`, `"i32"`, `"note"`, `"harmony"`, or a vocab enum name —
   enforced against every consumer wire by the ordinary pass-2 wire check. An `i32` pipe is an
-  **integer control** ([composition-operators](../rules/composition-operators.md)): a count
+  **integer control**: a count
   like euclid's `steps`/`pulses`/`rotation`, whole-numbered `default`/`min`/`max` (no `curve`), that
   wires straight into a consumer's integer (`i32`) port — or widens losslessly into an `f32` one —
   and quantizes live input. A numeric pipe owns an engine-enforced `default` — its **value**, the
@@ -368,8 +360,7 @@ output channels + the device profile that maps them) and `stereo-autopan.json` (
 channel-pinned outputs).
 
 A document may also carry a top-level `resources` table (logical id → source path) that
-resource-bearing nodes reference by a `sample` field
-([authoring-library](../rules/authoring-library.md)). Resolving + decoding those needs a
+resource-bearing nodes reference by a `sample` field. Resolving + decoding those needs a
 `ResourceResolver`, so use `format::load_instrument(json, registry, resolver)` — it returns the
 `Graph` plus any non-fatal `LoadWarning`s (a missing/undecodable sample degrades to silence).
 `crates/reuben-native/tests/fixtures/sampler.json` is the worked example (frozen as a test
@@ -379,7 +370,7 @@ live next to *it*, not next to the top-level instrument), falling back to a conf
 root (`reuben --instrument-root <DIR>` or `REUBEN_INSTRUMENT_ROOT`); the resolver canonicalizes
 identity, so `a.json` and `./a.json` are one cycle-guard/dedup key. For embedded hosts and tests,
 core's in-memory `MemoryResolver` serves patches and samples by exact key with no filesystem.
-A document may declare a `format_version` ([authoring-library](../rules/authoring-library.md));
+A document may declare a `format_version`;
 absent means 1, and a version newer than the engine understands refuses to load. The current
 version is **3** — the presentation strip, the second breaking bump after the v2 interface-pipe
 direction flip. Old documents keep loading forever, migrated at parse: v1's target-form `interface`
@@ -401,7 +392,7 @@ the `InstrumentDoc` (nested references survive; a `NormalizedDoc` derefs to one,
 flatten/export path — a built graph's spliced subpatches appear as their inlined nodes.
 
 A Voicer node references a **voice sub-patch** the same way, by a **`voice`** field naming a standalone
-instrument JSON ([composition-operators](../rules/composition-operators.md)); the loader resolves it
+instrument JSON; the loader resolves it
 (nested `sample` resources resolve recursively), builds it `voices` times, and binds the graphs. A
 voice patch declares its **`interface`** like any graph (pipes): input pipes
 (`freq`/`gate`) its internal nodes consume, output pipes (`audio`/`active`) fed from internal
@@ -410,7 +401,7 @@ ports — so the host Voicer can drive and tap it through the boundary. Hosted t
 (`interface` is real wiring the engine type-checks — the contract a surface doc binds to,
 never surface metadata itself.) See `instruments/default.json` + `instruments/voices/default-voice.json`.
 
-### Nesting: a `subpatch` node inlined at build ([composition-operators](../rules/composition-operators.md)) <!-- lanes: skills,mcp,web -->
+### Nesting: a `subpatch` node inlined at build <!-- lanes: skills,mcp,web -->
 
 A **`subpatch`** node references a nested instrument the same way, by a **`patch`** field naming an
 instrument JSON in `resources`. At build the child is resolved recursively and **inlined**: its
@@ -462,7 +453,7 @@ a host sees, with nested children loaded.)
 behind a live-input pipe) are the worked pair.
 
 The per-node **`control`** block is
-**retired** ([authoring-library](../rules/authoring-library.md)):
+**retired**:
 a v2 document (or a v3 one still carrying leftovers) parses, but the block is dropped with a
 `LoadWarning::DeprecatedControlBlock` — the engine never read it, so sound is unchanged, and
 re-saving strips it. Player-facing controls are **interface input pipes** now; their
@@ -470,7 +461,7 @@ presentation lives in a surface doc read by the
 [`control-surface` skill](../../.claude/skills/control-surface/SKILL.md) and by any host-side
 renderer (`instruments/groovebox.json` + `surfaces/groovebox.json` are the worked pair).
 
-## Instrument reuse: the recipe-role and the library index ([authoring-library](../rules/authoring-library.md)) <!-- lanes: skills,mcp,web -->
+## Instrument reuse: the recipe-role and the library index <!-- lanes: skills,mcp,web -->
 
 There is one noun — **instrument**. A "recipe" is not a second kind of file: it is a role an
 instrument plays *while referenced* by another via `subpatch` (above) — same format, same
@@ -497,8 +488,7 @@ stays checkout-side.
   bullet above). It is trusted for selection only: the `interface` block is always the
   mechanically-enforced face (pipe names, `Arg` types, defaults, outputs) — no consumer may
   take wiring facts from prose.
-- **Canonical pipe naming** is a recipe-authoring guideline
-  ([agent-mcp](../rules/agent-mcp.md)): give a reusable
+- **Canonical pipe naming** is a recipe-authoring guideline: give a reusable
   instrument's face pipes the same names the intent vocabulary's moves target (`cutoff`,
   `tone`, `decay`, `drive`, …) wherever the pipe proxies that move, so the vocabulary's
   type-keyed rows transfer to the face by name instead of needing a second,
@@ -516,14 +506,12 @@ stays checkout-side.
 
 ## The sample workflow: "use this sample" is a filesystem gesture <!-- lanes: skills,mcp -->
 
-No resource bytes cross the tool surface — there is no upload tool, by decision
-([agent-mcp](../rules/agent-mcp.md)). **Sample bytes are the one thing you still handle yourself**:
+No resource bytes cross the tool surface — there is no upload tool, by decision. **Sample bytes are the one thing you still handle yourself**:
 the no-bytes rule now also covers instrument documents, but its original sample clause is unchanged,
 so this is a filesystem gesture followed by two ordinary verbs.
 
 1. **Write the bytes yourself, next to the instrument.** Copy, move, or synthesize the WAV
-   **sibling to the instrument document** with your own file tools. Sibling-first resolution
-   ([authoring-library](../rules/authoring-library.md)) makes
+   **sibling to the instrument document** with your own file tools. Sibling-first resolution makes
    next-to-the-document the blessed location.
 2. **Reference it by logical id + relative path — with the verbs, not by hand.**
    `add_instrument_resource` maps a logical id to the file's path relative to the document
@@ -554,12 +542,11 @@ input takes a scalar (`/filt/cutoff 1500`). An enum input takes a **symbol** —
 index accepted as a fallback, quoted (`"1"`) or bare (`1`); an unknown symbol or out-of-range
 index is an **error**, never a silent snap to the default. A `Note` input takes its args (`/voicer/notes [69.0, 1.0]`).
 Full wildcard dispatch (`/drums/*/decay`) is designed but not built — today a Message targets at
-most one node ([signal-time-dsp](../rules/signal-time-dsp.md)).
+most one node.
 
 ## Invariants you must not break <!-- lanes: skills,mcp,web -->
 
-- **Determinism** — output is bit-identical regardless of executor or thread interleaving
-  ([execution-runtime](../rules/execution-runtime.md)). No wall-clock, no RNG without
+- **Determinism** — output is bit-identical regardless of executor or thread interleaving. No wall-clock, no RNG without
   a seeded, plan-owned source. **Live audio input is the one sanctioned nondeterministic
   boundary** (the same
   category as OSC-in): a patch with no input pipes gains no new nondeterminism, and offline
@@ -571,15 +558,6 @@ most one node ([signal-time-dsp](../rules/signal-time-dsp.md)).
   binds an *operator author* — the hot/cold boundary, hot-path totality, the preallocation
   idioms — lives in [operator-dev.md](operator-dev.md#rt-safe-render).
 - **OSC-only core** — the core speaks only OSC-shaped Messages. MIDI, Ableton Link, tempo
-  sync, etc. are removable boundary adapters that convert to/from OSC in the native layer
-  ([signal-time-dsp](../rules/signal-time-dsp.md)).
+  sync, etc. are removable boundary adapters that convert to/from OSC in the native layer.
 - **Single-writer boundary** — the Coordinator is the only writer of graph structure;
-  Render only ever reads an immutable Plan
-  ([execution-runtime](../rules/execution-runtime.md)).
-
-## Where the rules live <!-- lanes: skills,mcp -->
-
-The decisions and reasoning behind all of the above live in the [rules corpus](../rules/README.md) —
-start there when a contract's *why* is unclear.
-[composition-operators](../rules/composition-operators.md) is the now-source for the
-one-`Message`/`Arg` data model this doc is built on.
+  Render only ever reads an immutable Plan.

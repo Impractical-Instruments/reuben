@@ -20,24 +20,23 @@ fn every_section_is_tagged_for_every_lane() {
     }
 }
 
-/// The web cut drops the checkout-only sections — the filesystem sample workflow (no disk
-/// on the web lane) and the rules-corpus pointer — while the checkout lanes keep them.
+/// The web cut drops the checkout-only sections while the checkout lanes keep them. The
+/// filesystem sample workflow (no disk on the web lane) is the one checked.
 #[test]
-fn web_cut_drops_the_checkout_only_sections() {
+fn web_cut_drops_a_checkout_only_section() {
+    let checkout_only = "## The sample workflow";
     let web = lane_cut(GUIDE, Lane::Web).expect("tagged guide cuts clean");
-    for checkout_only in ["## The sample workflow", "## Where the rules live"] {
+    assert!(
+        !web.contains(checkout_only),
+        "checkout-only section {checkout_only:?} must not ship in the web cut"
+    );
+    for lane in [Lane::Skills, Lane::Mcp] {
+        let cut = lane_cut(GUIDE, lane).expect("tagged guide cuts clean");
         assert!(
-            !web.contains(checkout_only),
-            "checkout-only section {checkout_only:?} must not ship in the web cut"
+            cut.contains(checkout_only),
+            "{checkout_only:?} must still ship on the {} lane",
+            lane.name()
         );
-        for lane in [Lane::Skills, Lane::Mcp] {
-            let cut = lane_cut(GUIDE, lane).expect("tagged guide cuts clean");
-            assert!(
-                cut.contains(checkout_only),
-                "{checkout_only:?} must still ship on the {} lane",
-                lane.name()
-            );
-        }
     }
     assert!(
         web.len() < GUIDE.len(),

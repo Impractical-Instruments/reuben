@@ -19,9 +19,7 @@ reviewer handed all 300-odd claims reads none of them. Extracting cheaply and ro
 what makes the expensive layer affordable — it reads a worklist, not a corpus.
 
 **One scoping rule, load-bearing.** Only the governed surface is read: `docs/agents/`, the root
-Markdown, and the skills. `docs/research/` and `docs/rituals/` are records of a moment — a research
-note naming a file that has since moved is not wrong, it is history, and git is where history is
-checked.
+Markdown, and the skills. No other doc is read.
 
 In the **entry docs** (AGENTS.md and friends) a path claim must resolve in full, because that
 surface is read as navigation and an agent opens what it names.

@@ -1,7 +1,6 @@
 # The device profile (`--io-map`)
 
-[The device layer](rules/composition-operators.md) is the design record; this
-is the quick-reference for the JSON shape. Schema:
+This is the quick-reference for the JSON shape. Schema:
 [`crates/reuben-native/schema/device-profile.schema.json`](../crates/reuben-native/schema/device-profile.schema.json).
 
 ## Why it exists

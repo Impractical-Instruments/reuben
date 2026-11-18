@@ -5,8 +5,7 @@ The builder doc — how to author a new **Operator** in Rust: the `Operator` tra
 testing. Its counterpart is the [instrument-authoring guide](authoring.md), which owns the
 material this doc builds on and does not restate: the `Arg`/form **type system and wiring
 rules** ([authoring.md#type-system](authoring.md#type-system)), the instrument JSON format,
-and the engine-wide invariants. Capitalized terms (Operator, Voice, Plan…) are defined in the
-[rules corpus glossary](../rules/README.md#glossary), the source of truth.
+and the engine-wide invariants.
 
 The [`create-operator` skill](../../.claude/skills/create-operator/SKILL.md) drives this
 doc's workflow end to end; the
@@ -15,7 +14,7 @@ review mirror over a finished diff.
 
 ## The Operator contract (`crates/reuben-core/src/operator.rs`)
 
-Operators are authored **single-Voice** ([composition-operators](../rules/composition-operators.md)):
+Operators are authored **single-Voice**:
 you write one mono, single-Voice stream a (sub)block at a time. Polyphony is not a per-operator
 fan-out — the **Voicer** hosts N voice sub-patches and sums them,
 so an operator never carries per-Voice copies. The trait is three core methods (plus optional
@@ -45,7 +44,7 @@ per node from `Plan::instantiate` (the one place with the audio config) so confi
 built off the hot path — the Voicer's per-voice sub-`Plan` + arena, the Delay's line.
 
 A third default-no-op hook, `on_transplant(&mut self)`, runs on a **survivor** box just after it is
-transplanted across a hot-swap ([execution-runtime](../rules/execution-runtime.md)). A Swap
+transplanted across a hot-swap. A Swap
 rebuilds every input latch from the new document, so a downstream consumer's held-input latch resets
 to its default. An operator that publishes a **held output on change** (emit-on-change) against a baseline it keeps in its box would then see
 no change and stay silent, stranding that consumer on the default — a Swap would silently retranspose
@@ -92,11 +91,9 @@ accumulating phase in `f64` so it doesn't drift over a long session (see `lfo.rs
 ## The Descriptor (`crates/reuben-core/src/descriptor.rs`)
 
 An operator's self-description, separate from `process` — the seat of "good button",
-serialization, connection checking, and AI grounding
-([agent-mcp](../rules/agent-mcp.md)).
+serialization, connection checking, and AI grounding.
 
-You declare it **once**, in an `operator_contract!` call
-([composition-operators](../rules/composition-operators.md)). The macro plants, at module scope,
+You declare it **once**, in an `operator_contract!` call. The macro plants, at module scope,
 the **typed `IN_`/`OUT_` handles** (`In<form>`/`Out<form>` consts whose type is the port's form and
 whose value carries the declared default), the `C_*` constant ordinals, **and** an
 inherent `fn contract() -> Descriptor` from the same tokens, so handles and descriptor can't drift. An `enum` port **references a shared *vocab* enum** by
@@ -277,7 +274,7 @@ never hand-writes symbol/index handling.
    (`bind`).
 
 Embedders can add their own types without touching the core via `Registry::register` — the
-seam for the "agents author new Operators in Rust" goal ([agent-mcp](../rules/agent-mcp.md)).
+seam for the "agents author new Operators in Rust" goal.
 
 ## Invariants as they bind an operator author
 
@@ -305,4 +302,4 @@ directly on the code you write here:
     `unwrap_or`, `.clamp()`); a panic in the audio callback unwinds across the cpal FFI
     boundary. `debug_assert!` is fine (it vanishes in release); plain in-bounds indexing
     (`buf[i]` for `i < n`) is fine. `unsafe` on the hot path is a last resort that requires
-    a committed benchmark ([web-product-process](../rules/web-product-process.md)) proving it.
+    a committed benchmark proving it.

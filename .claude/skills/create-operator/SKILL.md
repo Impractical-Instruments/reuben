@@ -17,8 +17,8 @@ that drives it, not a second copy of it.
 
 First check it doesn't already exist: `reuben describe --json` lists every operator — a request is
 often a *patch* of existing ones (the `patcher` skill), not new Rust. This skill is only for
-behavior no operator provides. It does **not** build graphs (`patcher`), author surface docs
-(`control-surface`), or edit the living docs (`sync-docs`). Its review mirror is
+behavior no operator provides. It does **not** build graphs (`patcher`) or author surface docs
+(`control-surface`). Its review mirror is
 [`rust-hot-path-review`](../rust-hot-path-review/SKILL.md) — run that over the diff to check the
 `process` you wrote stays RT-safe.
 
@@ -87,9 +87,6 @@ Run all `reuben`/`cargo` commands from the repo root.
       written oracle — **not that it sounds right.** When behavior is subjective, recommend an
       ear-check: `patcher` a tiny instrument around it, then `reuben play`.
 
-5. **Hand off the prose.** New authoring.md/operator-dev.md/ARCHITECTURE/README lines and
-   domain terms are the `sync-docs` skill's job — don't inline them here.
-
 ## The contract spec
 
 ```json
@@ -137,11 +134,10 @@ Run all `reuben`/`cargo` commands from the repo root.
 | Micro-bench workload (`bench_support.rs` + `micro_iai.rs`) | **register** the new op's `WORKLOADS` entry + its `micro_bench_ops!` census line (part of the gate; CI's `check` job reds without it) |
 | Instrument/Rig graphs | **never** — that is the `patcher` skill |
 | Surface docs (`surfaces/*.json`) | **never** — that is the `control-surface` skill |
-| authoring.md / operator-dev.md / ARCHITECTURE / README / domain terms | **never inline** — hand to `sync-docs` |
 
 ## Report
 
 End with: the operator's type name + one-line behavior, its final descriptor (ports/params), the
 gate results (`cargo test` green, `describe`/`validate` confirmations), and the
-honest audible status — whether it was ear-checked or still needs one. Note that `sync-docs` should
-sweep the prose, and `patcher` can now use the operator in instruments.
+honest audible status — whether it was ear-checked or still needs one. Note that `patcher` can now
+use the operator in instruments.

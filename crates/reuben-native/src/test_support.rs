@@ -43,7 +43,7 @@ const BLOCK: usize = 128;
 /// device would exercise runs with no device: the install mailbox drains, the master-gain ramp runs,
 /// survivors are box-transplanted, and retirees are posted back for the Coordinator's off-thread
 /// `reclaim`. That is what makes a swap real end-to-end in a test. Rendering the *logical* master
-/// directly (no device output map — that half stays a scripted human ritual) is enough.
+/// directly (no device output map — that half needs real hardware) is enough.
 ///
 /// It also drains the control ingress exactly as `audio.rs` does — **batch by batch, each batch
 /// whole** — and records what it fed, so a `send` test can assert the door delivered

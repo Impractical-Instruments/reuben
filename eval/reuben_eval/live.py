@@ -42,7 +42,7 @@ TEMPERATURE = 0.0
 # at the default the low rungs truncate the grounding budget and fail for a reason that has nothing
 # to do with the model's ability. It must be set on the SERVER (`OLLAMA_CONTEXT_LENGTH`); the
 # OpenAI-compatible endpoint has nowhere to carry it per-request. The harness records what it was
-# told and refuses to guess. see docs/research/harness-rungs.md §7
+# told and refuses to guess.
 DEFAULT_CONTEXT_LENGTH = 32768
 
 
@@ -89,9 +89,9 @@ RUNGS: dict[str, Rung] = {
     ),
 }
 
-# The 8GB rung is the weakest pin on the ladder: nothing in the research shows a 3B sustaining a
+# The 8GB rung is the weakest pin on the ladder: there is no evidence of a 3B sustaining a
 # 12-round MCP loop against real schemas. If it fails universally on day one, suspect the pin before
-# concluding the surface is too expensive. see docs/research/harness-rungs.md §4.2
+# concluding the surface is too expensive.
 WEAKEST_RUNG = "8gb"
 
 
@@ -145,7 +145,7 @@ def run_once(task: task_module.Task, rung: Rung, base_url: str) -> dict[str, Any
                 message = choice.get("message") or {}
                 # Record what the server said it did, rather than what we asked for: the Ollama Go
                 # runner silently discards penalty parameters, so "temperature 0" is not the whole
-                # sampling story. see docs/research/harness-rungs.md §7
+                # sampling story.
                 sampling = {
                     "requested": {"temperature": TEMPERATURE},
                     "reported_model": answer.get("model"),
@@ -283,10 +283,10 @@ def render(report: dict[str, Any]) -> str:
         lines.append("")
     if rung["band"] == WEAKEST_RUNG and all(r["pass_rate"] == 0 for r in report["tasks"].values()):
         lines.append(
-            f"> ⚠️ The `{WEAKEST_RUNG}` rung is the weakest pin on the ladder — nothing in the "
-            "research shows a 3B sustaining a 12-round MCP loop against real schemas. A universal "
+            f"> ⚠️ The `{WEAKEST_RUNG}` rung is the weakest pin on the ladder — there is no "
+            "evidence of a 3B sustaining a 12-round MCP loop against real schemas. A universal "
             "failure here should be read as *suspect the pin* before *the surface is too "
-            "expensive*. See `docs/research/harness-rungs.md` §4.2."
+            "expensive*."
         )
         lines.append("")
     return "\n".join(lines)
