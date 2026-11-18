@@ -511,22 +511,27 @@ const DIRECTORY_PROBE: &str = ".";
 /// verb: the copy is validated whole **at `to`** — its references resolved from there, not from
 /// wherever the resolver's top level is — and written only if valid.
 ///
-/// Refuses to overwrite a document at `to`, and refuses a `to` whose relative references would
-/// not resolve where `from`'s do. On a copy that fails validation nothing is at `to`, so the
-/// result's hash is empty.
+/// Refuses to overwrite a document at `to`, refuses a `to` whose relative references would not
+/// resolve where `from`'s do, and refuses a document that references `to` itself. On a copy that
+/// fails validation nothing is at `to`, so the result's hash is empty.
 pub fn copy_instrument(
     from: &str,
     to: &str,
     registry: &Registry,
     resolver: &dyn ResourceResolver,
 ) -> Result<EditResult, EditError> {
-    if resolver.resolve_text(to).is_ok() {
+    let from_id = resolver.canonical(from, None);
+    // Everything below addresses the destination by its canonical id, never by `to` as spelled.
+    // The id is what the directory rule judges, so the existence check and the write have to mean
+    // the same place: a spelling that reads as absent (a missing directory before a `..`) or that
+    // the store reaches by another route (a symlink before a `..`) would otherwise be checked as
+    // one location and written as another.
+    let to_id = resolver.canonical(to, None);
+    if resolver.resolve_text(&to_id).is_ok() {
         return Err(EditError::Target(format!(
-            "a document already exists at `{to}`; choose a new source for the copy"
+            "a document already exists at `{to_id}`; choose a new source for the copy"
         )));
     }
-    let from_id = resolver.canonical(from, None);
-    let to_id = resolver.canonical(to, None);
     if resolver.canonical(DIRECTORY_PROBE, Some(&from_id))
         != resolver.canonical(DIRECTORY_PROBE, Some(&to_id))
     {
@@ -538,13 +543,25 @@ pub fn copy_instrument(
     let json = resolver.resolve_text(from).map_err(EditError::Read)?;
     let at_to = Rebased {
         inner: resolver,
-        referrer: to_id,
+        referrer: to_id.clone(),
     };
     let doc = NormalizedDoc::from_json(&json, registry, Some(&at_to))
         .map_err(|e| EditError::Parse(e.to_string()))?
         .into_inner();
+    // Validation runs before the write, when a reference to the destination is only a missing
+    // file; once written it is a document nesting itself, which cannot load.
+    if let Some((id, _)) = doc
+        .resources
+        .iter()
+        .find(|(_, source)| resolver.canonical(source, Some(&to_id)) == to_id)
+    {
+        return Err(EditError::Target(format!(
+            "the document's resource `{id}` references `{to_id}`, so the copy would nest itself; \
+             choose another source for the copy"
+        )));
+    }
     finish(
-        to,
+        &to_id,
         registry,
         &at_to,
         doc,

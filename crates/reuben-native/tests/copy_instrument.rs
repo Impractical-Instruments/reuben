@@ -8,21 +8,42 @@ use std::path::{Path, PathBuf};
 use reuben_api::authoring::{self, CopyInstrument, ValidateInstrument};
 use reuben_api::FsResolver;
 
-/// A fresh `<temp>/<name>/voices/` holding `kick-voice.json` and the `shaped-vca.json` it nests.
-fn voices(name: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("reuben_copy_{name}_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    let dir = root.join("voices");
-    std::fs::create_dir_all(&dir).unwrap();
-    let shipped = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instruments/voices");
-    for file in ["kick-voice.json", "shaped-vca.json"] {
-        std::fs::copy(shipped.join(file), dir.join(file)).unwrap();
-    }
-    dir
+/// A private `<temp>/<name>/voices/` holding `kick-voice.json` and the `shaped-vca.json` it nests,
+/// removed on drop so a failing assertion leaves nothing behind.
+struct Voices {
+    root: PathBuf,
+    dir: PathBuf,
 }
 
-fn cleanup(dir: &Path) {
-    let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+impl Voices {
+    fn new(name: &str) -> Self {
+        let root = std::env::temp_dir().join(format!("reuben_copy_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("voices");
+        std::fs::create_dir_all(&dir).unwrap();
+        let shipped = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instruments/voices");
+        for file in ["kick-voice.json", "shaped-vca.json"] {
+            std::fs::copy(shipped.join(file), dir.join(file)).unwrap();
+        }
+        Self { root, dir }
+    }
+}
+
+impl Drop for Voices {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+impl std::ops::Deref for Voices {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.dir
+    }
+}
+
+fn voices(name: &str) -> Voices {
+    Voices::new(name)
 }
 
 /// Copy as a host does: one resolver scoped to the document being copied.
@@ -30,13 +51,21 @@ fn copy(
     from: &Path,
     to: &Path,
 ) -> Result<authoring::Answer<authoring::EditResult>, authoring::Refusal> {
-    let from = from.display().to_string();
+    let resolver = FsResolver::for_document(&from.display().to_string());
+    copy_through(from, to, &resolver)
+}
+
+fn copy_through(
+    from: &Path,
+    to: &Path,
+    resolver: &FsResolver,
+) -> Result<authoring::Answer<authoring::EditResult>, authoring::Refusal> {
     authoring::copy_instrument(
         &CopyInstrument {
-            from: from.clone(),
+            from: from.display().to_string(),
             to: to.display().to_string(),
         },
-        &FsResolver::for_document(&from),
+        resolver,
     )
 }
 
@@ -71,8 +100,6 @@ fn a_copy_beside_the_original_is_written_valid_and_hashes_equal() {
     .unwrap()
     .output;
     assert!(report.ok && report.warnings.is_empty(), "{report:?}");
-
-    cleanup(&dir);
 }
 
 /// A bare name is a sibling of `from` for a resolver scoped to `from`, so it lands beside it.
@@ -87,8 +114,6 @@ fn a_bare_destination_name_lands_beside_the_original() {
 
     assert!(result.written, "{result:?}");
     assert_eq!(result.hash, hash(&dir.join("kick-copy.json")));
-
-    cleanup(&dir);
 }
 
 #[test]
@@ -103,8 +128,6 @@ fn an_existing_destination_refuses_and_is_untouched() {
     assert_eq!(std::fs::read_to_string(&to).unwrap(), taken);
     // Copying a document onto itself is the same refusal.
     copy(&from, &from).expect_err("no overwrite of the original either");
-
-    cleanup(&dir);
 }
 
 #[test]
@@ -128,8 +151,10 @@ fn a_destination_in_another_directory_refuses() {
     let respelled = dir.join("deeper/../kick-copy.json");
     assert!(copy(&from, &respelled).expect("beside it").output.written);
     assert!(dir.join("kick-copy.json").is_file());
-
-    cleanup(&dir);
+    assert!(
+        !dir.join("deeper").exists(),
+        "the copy made a directory it did not land in"
+    );
 }
 
 #[test]
@@ -153,7 +178,7 @@ fn a_source_that_fails_validation_writes_nothing() {
     copy(&from, &to).expect_err("an unparseable source is not copied");
     assert!(!to.exists());
 
-    let names: Vec<_> = std::fs::read_dir(&dir)
+    let names: Vec<_> = std::fs::read_dir(&*dir)
         .unwrap()
         .map(|e| e.unwrap().file_name())
         .collect();
@@ -162,6 +187,108 @@ fn a_source_that_fails_validation_writes_nothing() {
         3,
         "only the fixtures and broken.json: {names:?}"
     );
+}
 
-    cleanup(&dir);
+/// An existing destination spelled through a directory that is not there: reading that spelling
+/// fails, so only a check on the destination's identity sees the file.
+#[test]
+fn an_existing_destination_under_another_spelling_refuses_and_is_untouched() {
+    let dir = voices("respelled");
+    let from = dir.join("kick-voice.json");
+
+    for taken in ["shaped-vca.json", "kick-voice.json"] {
+        let before = std::fs::read_to_string(dir.join(taken)).unwrap();
+        let refusal = copy(&from, &dir.join("ghost/..").join(taken)).expect_err("no overwrite");
+        assert!(refusal.message.contains("already exists"), "{refusal}");
+        assert_eq!(std::fs::read_to_string(dir.join(taken)).unwrap(), before);
+    }
+    assert!(
+        !dir.join("ghost").exists(),
+        "a refused copy made a directory"
+    );
+}
+
+/// `link/..` names the original's directory lexically and the link target's parent on disk. The
+/// copy lands where its identity says, which is where it was validated.
+#[cfg(unix)]
+#[test]
+fn a_destination_through_a_symlinked_directory_lands_where_it_was_validated() {
+    let dir = voices("symlink");
+    let from = dir.join("kick-voice.json");
+    let inner = dir.parent().unwrap().join("other/inner");
+    std::fs::create_dir_all(&inner).unwrap();
+    std::os::unix::fs::symlink(&inner, dir.join("link")).unwrap();
+
+    let result = copy(&from, &dir.join("link/../kick-copy.json"))
+        .expect("beside the original")
+        .output;
+
+    assert!(result.written, "{result:?}");
+    assert!(dir.join("kick-copy.json").is_file());
+    assert!(!inner.parent().unwrap().join("kick-copy.json").exists());
+}
+
+/// A library root holding a document of the destination's name must not stand in for the
+/// destination: the copy would be checked against one directory and written into another.
+#[test]
+fn a_library_document_of_the_same_name_does_not_stand_in_for_the_destination() {
+    let lib = voices("library");
+    let project = lib.parent().unwrap().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let from = lib.join("kick-voice.json");
+    std::fs::copy(&from, lib.join("kick-copy.json")).unwrap();
+    let resolver = FsResolver::new(&project).with_root(lib.parent().unwrap());
+
+    copy_through(&from, Path::new("voices/kick-copy.json"), &resolver)
+        .expect_err("the project directory is not the original's");
+
+    assert!(!project.join("voices").exists(), "written into the project");
+}
+
+/// The conservative side of the same lookup: a free name beside the original is refused while the
+/// library root holds a document of that name.
+#[test]
+fn a_bare_name_the_library_root_already_holds_is_refused() {
+    let dir = voices("shadowed");
+    let from = dir.join("kick-voice.json");
+    let lib = dir.parent().unwrap().join("lib");
+    std::fs::create_dir_all(&lib).unwrap();
+    std::fs::copy(&from, lib.join("kick-copy.json")).unwrap();
+    let resolver = FsResolver::for_document(&from.display().to_string()).with_root(&lib);
+
+    let refusal = copy_through(&from, Path::new("kick-copy.json"), &resolver).expect_err("taken");
+
+    assert!(refusal.message.contains("already exists"), "{refusal}");
+    assert!(!dir.join("kick-copy.json").exists());
+}
+
+/// The copy's references resolve from the copy, whatever directory the resolver is based in.
+#[test]
+fn a_copy_is_validated_from_where_it_lands_not_from_the_resolvers_base() {
+    let dir = voices("rebased");
+    let elsewhere = dir.parent().unwrap().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let (from, to) = (dir.join("kick-voice.json"), dir.join("kick-copy.json"));
+
+    let result = copy_through(&from, &to, &FsResolver::new(&elsewhere))
+        .expect("beside the original")
+        .output;
+
+    assert!(result.written && result.report.ok, "{result:?}");
+    assert!(result.report.warnings.is_empty(), "{result:?}");
+}
+
+/// A reference to the destination is a missing file before the write and a cycle after it.
+#[test]
+fn a_document_that_references_its_own_destination_is_not_copied() {
+    let dir = voices("selfref");
+    let (from, to) = (dir.join("kick-voice.json"), dir.join("kick-copy.json"));
+    let kick = std::fs::read_to_string(&from).unwrap();
+    assert!(kick.contains("shaped-vca.json"));
+    std::fs::write(&from, kick.replace("shaped-vca.json", "kick-copy.json")).unwrap();
+
+    let refusal = copy(&from, &to).expect_err("it would nest itself");
+
+    assert!(refusal.message.contains("references"), "{refusal}");
+    assert!(!to.exists());
 }

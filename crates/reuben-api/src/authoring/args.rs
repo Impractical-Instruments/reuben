@@ -127,7 +127,9 @@ pub struct CopyInstrument {
     /// The document to copy. It is not changed.
     pub from: String,
     /// Where to write the copy: a new source in the same directory as `from`. Refuses to overwrite
-    /// an existing document.
+    /// an existing document. It is resolved as the store resolves any top-level source, so with a
+    /// store scoped to `from` a bare name lands beside it and a path relative to the working
+    /// directory does not.
     pub to: String,
 }
 
