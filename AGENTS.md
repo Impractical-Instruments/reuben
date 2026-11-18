@@ -18,7 +18,7 @@ cargo fmt --all --check                                # CI format gate
 cargo clippy --all-targets -- -D warnings              # CI lint gate
 cargo clippy -p reuben-editor --all-targets -- -D warnings  # the editor's own gate
 cargo run -p reuben-native --example gen_library_index # after ANY instrument change
-cargo run -p reuben-core --example gen_vocabulary      # after editing docs/agents/vocabulary.json
+cargo run -p reuben-document --example gen_vocabulary      # after editing docs/agents/vocabulary.json
 cargo run -p reuben-native --bin reuben -- describe    # list operators/ports/params
 ```
 

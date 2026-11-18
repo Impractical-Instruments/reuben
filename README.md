@@ -1,181 +1,71 @@
 # reuben
 
-A configurable musical instrument built from composable **Operators** that each do
-something simple and combine into complex musical behavior. Easy to start with via
-ready-made example rigs; deeply customizable once you get the hang of it. Rube Goldberg
-machines, for music — hence "reuben."
+A configurable musical instrument built from composable **Operators**: small DSP units that
+each do one simple thing and are patched together into playable Instruments. Rube Goldberg
+machines, for music — hence "reuben." OSC is the lingua franca, in and out.
 
-Music is the primary payload, but the same data (notes, chords, timing, gestures) can
-drive anything controllable over time — lights, video, game engines. **OSC is the lingua
-franca**, in and out.
+## Install
 
-This repo is the **engine and its SDK**:
-
-- **`reuben-core`** — the portable engine and its **embed surface**: construct from a document, push
-  OSC in, pull audio out. No OS dependency; compiles to `wasm32-unknown-unknown` untouched. You
-  reach it through `reuben-api`, which is the only crate that depends on it.
-- **`reuben-api`** — the one window between the engine and every consumer, in two feature halves:
-  `authoring` (document work and reaching a running engine, off-thread) and `render` (the
-  `RenderSide`/`RenderSlot` pair a host drives per block), so a host compiles only the one it
-  drives. The render half is `no_std`, cross-built for bare metal, and carries `install_graph` for
-  a host that builds its graph in Rust. It owns the tool roster, the sentence each verb is
-  advertised by, both ends of the structure channel, and the resource seam a host fills. This is
-  what you link against to put reuben inside something else. Ships a default-off filesystem
-  resolver to share rather than reimplement.
-- **`reuben-native`** — the `reuben` CLI and its audio/OSC/filesystem host, built on the window
-  like any other consumer.
-- **`reuben-mcp`** — a stdio MCP sidecar, so an agent can author instruments against a live
-  engine.
-- **`instruments/`** + **`surfaces/`** — the instrument library and the presentation docs over
-  their interface pipes.
-- **`.claude/skills/`** — the **authoring and developer agent skills** that run inside [Claude
-  Code](https://claude.com/claude-code), each grounded on the *live* engine so it can't drift from
-  the code. Authoring: **`patcher`** (build/edit an instrument) and **`control-surface`** (author a
-  surface doc and project it to TouchOSC). Development: **`create-operator`** (a new DSP operator in
-  Rust) and **`rust-hot-path-review`** (RT-safety/perf review of an audio-thread diff). The
-  [Make your own](#make-your-own) section below walks through them.
-
-## Prerequisites
-
-- **Rust** (stable) — install via [rustup](https://rustup.rs).
-- **Linux:** ALSA development headers for audio output:
+- **Rust** — install via [rustup](https://rustup.rs). The toolchain version is pinned by
+  `rust-toolchain.toml` and picked up automatically.
+- **Linux:** ALSA development headers.
   ```sh
   sudo apt-get install libasound2-dev      # Debian/Ubuntu
   ```
-  (Windows needs nothing extra — audio goes through WASAPI.)
-- **Optional:** an OSC sender to play notes — [TouchOSC](https://hexler.net/touchosc),
-  Max/Pd, or any script that can send a UDP OSC message. Some example rigs play on their
-  own and need no sender.
+- **Windows:** nothing extra.
 
-## Prebuilt binaries
+Then clone this repo. There is no install step beyond that: the commands below build and run.
 
-Building from source (below) is the primary path. Each tagged release also ships a prebuilt
-`reuben` binary for Linux and Windows on the
-[Releases page](https://github.com/Impractical-Instruments/reuben/releases):
+Each tagged release also ships a prebuilt `reuben` binary for Linux and Windows on the
+[Releases page](https://github.com/Impractical-Instruments/reuben/releases). Run it from a
+terminal as `./reuben play` (`reuben.exe play` on Windows).
 
-- Download the archive for your platform (`…-x86_64-unknown-linux-gnu.tar.gz` /
-  `…-x86_64-pc-windows-msvc.zip`) and extract it. Each archive bundles the `reuben` binary
-  plus `LICENSE` and `README.md`; a matching `.sha256` sidecar lets you verify the download
-  (`sha256sum -c <file>.sha256` on Linux, `Get-FileHash <file>` on Windows).
-- It's a headless CLI — run it from a terminal (no installer): `./reuben play` (Linux) or
-  `reuben.exe play` (Windows). All the subcommands below apply.
+## Launch
 
-## Quickstart
-
-Run the default synth — opens your default audio device and listens for OSC on UDP
-`0.0.0.0:9000`:
+Play the default synth:
 
 ```sh
 cargo reuben-play
 ```
 
-`cargo reuben-play` is a workspace alias (defined in [`.cargo/config.toml`](.cargo/config.toml))
-for `cargo run -p reuben-native --bin reuben -- play`; anything you add after it is passed to
-`play`. The `reuben` binary is subcommand-driven: `play` (live audio), `describe` (list
-operators, or an instrument's structure with `--view`), `validate` (load-check an instrument),
-`scaffold-operator` (new-operator skeleton), `new-instrument` (write a minimal valid instrument to
-build on).
-Add `--help` to any of them. The other subcommands have no alias — run them via
-`cargo run -p reuben-native --bin reuben -- <subcommand>` (everything after `--` is passed to
-the binary).
-
-`play` opens the default device by default; `play --io-map <file>` loads a **device profile**
-([docs/device-profile.md](docs/device-profile.md)) to bind logical channels to a specific
-device's channels, pick a non-default device by name, and request sample-rate/buffer-size
-preferences.
-
-Play a note by sending OSC `/voicer/notes [midi, gate]` from any OSC source:
-
-- `[69.0, 1.0]` — note-on, A4
-- `[69.0, 0.0]` — note-off
-
-Send several `/voicer/notes` messages to play a chord.
-
-## Run the examples
-
-Instruments are **data** — JSON files in [`instruments/`](instruments/). Load one by
-passing its path to `play`:
+Play an instrument from the library. This one makes sound on its own:
 
 ```sh
-cargo reuben-play instruments/<name>.json
+cargo reuben-play instruments/groovebox.json
 ```
 
-| Rig          | Plays on its own? | What it is                                                         |
-|--------------|-------------------|-------------------------------------------------------------------|
-| `default`    | needs OSC notes   | Polyphonic synth (8 voices): voicer → osc → filter → ADSR → out. What `play` loads when you give it no file. |
-| `groovebox`   | **yes**           | The Groovebox Toy: a free-running 16-step drum machine — kick/snare/hat synthesized from operators (no samples), each a sequencer driving its own voicer voice on a shared clock. Toggle steps via `/kick_step1/in`..`/kick_step16/in` (also `snare_*`, `hat_*`), ride `/tempo/in`; per-drum volumes (`/kick_vol/in`…), a master DJ-filter sweep (`/tone/in`), and a main volume knob (`/volume/in`, default −6 dB) are Good Buttons, with a warm `saturator` gluing the mix ahead of the filter and a `/drive/in` knob to ride the squash. |
-| `chord-player` | needs OSC       | The Chord player Toy: tap-and-hold diatonic triad buttons (I–vii°) at `/chord/in [degree, gate]`. The `chord` op stacks scale thirds and the voicer resolves them through the tonal context, so held chords re-spell live when you change key (`/key/in`). A 12-voice pad; `/brightness/in` tones the mix. |
-| `strum-harp`  | needs OSC         | The Strum harp Toy: drag-to-strum. Stream `/strum/in [0..1]` and the `strum` op plucks a note each time the bar crosses a string boundary. Strings are scale degrees through the tonal context, so it stays in key. `/octaves/in` sets the span; `/key/in` the key. |
-| `euclidean-drums` | **yes**         | A self-playing 4-channel Euclidean rhythm machine — kick/snare/tom/hat synthesized from operators, each driven by a `euclid` generator on a shared 16th-note clock. Reshape patterns via `/<chan>_pulses/in`, `/<chan>_steps/in`, `/<chan>_rotation/in`; per-channel DJ-filter, level, and decay knobs; `/tempo/in`. |
-| `mic-space` | needs a **mic**  | Live-input demo: a top-level input pipe bound to logical input channel 0 feeds the nested `space` patch (`instruments/patches/space.json`) — speak/play into your default input device and hear it through the tone+reverb, broadcast to stereo out. Fails fast if no input device exists; pick a device / remap channels with `play --io-map`. Tweak `/space/tone/in` (Hz), `/space/space/in` (mix). |
+Either one opens your default audio device and listens for OSC on UDP port 9000. Play a note
+on the default synth by sending `/notes/in [midi, gate]` from any OSC sender: `[69.0, 1.0]` is
+note-on A4, `[69.0, 0.0]` is note-off.
 
-The rows marked **yes** make sound immediately — good for a first run with no OSC sender. Every
-node's inputs are live over OSC at its address.
+`cargo reuben-play` is an alias for `cargo run -p reuben-native --bin reuben -- play`. The
+`reuben` binary has other subcommands (`describe`, `validate`, `new-instrument`,
+`scaffold-operator`); add `--help` to any of them.
 
-(The one-feature example rigs that used to fill this table — echo, reverb, vibrato, metronome,
-sampler, and friends — were culled from the library; the ones tests and benches still exercise
-live on as frozen fixtures under `crates/*/tests/fixtures/` and
-`crates/reuben-document/benches/fixtures/`.)
+### The editor
 
-To play an instrument from a phone/tablet, project its **surface doc** (`surfaces/<name>.json`
-— the presentation layer over its interface pipes) to a
-TouchOSC layout with the `control-surface` skill. A surface doc is a portable presentation
-contract, not a TouchOSC file: any host can render one.
-
-### Offline (no audio device)
-
-Render a tone straight to a WAV file:
+A desktop app that opens an instrument, plays it, and gives you on-screen controls and a
+keyboard for it. Linux only for now, and it needs a desktop session (X11 or Wayland).
 
 ```sh
-cargo run -p reuben-core --example first_sound    # writes first_sound.wav
+cargo run -p reuben-editor -- instruments/groovebox.json
 ```
 
-## Make your own
+The editor is in progress: editing the instrument's graph on a canvas is not there yet.
 
-Once an example sounds good, the next step is your own. Instruments are just JSON graphs of
-operators, so you can author them by hand — but reuben ships **agent skills** that do the
-introspect-draft-validate loop for you. They run inside [Claude
-Code](https://claude.com/claude-code): open this repo in Claude Code and ask in plain
-language; the matching skill triggers on its own. Each skill is grounded on the *live* engine
-(it reads the real operator set and validates against the real load path), so it can't drift
-from the code.
+## More
 
-| Want to…                              | Ask Claude Code (skill)                       | Or do it by hand                                  |
-|---------------------------------------|-----------------------------------------------|---------------------------------------------------|
-| **Build / edit an instrument**        | "build a plucky bass" → **`patcher`**         | Edit JSON in `instruments/`, then `validate` it   |
-| **Make / edit a control surface**     | "make a control surface for this" → **`control-surface`** | Author `surfaces/<name>.json`, then `gen_surface.py emit` |
-| **Add a new DSP operator (Rust)**     | "add a wavefolder operator" → **`create-operator`** | `scaffold-operator`, then implement `process`     |
-
-A typical first session, by hand or by skill:
-
-1. **See what's available.** Every operator self-describes its ports and params:
-   ```sh
-   cargo run -p reuben-native --bin reuben -- describe          # list all operators
-   cargo run -p reuben-native --bin reuben -- describe filter   # one operator's ports/params
-   ```
-   This is the same introspection the `patcher` skill reads.
-2. **Patch.** Copy an instrument in `instruments/`, rewire node `inputs` (a literal or a wire-ref `{"from":"/node.port"}`), or ask the
-   `patcher` skill for a sound.
-3. **Validate before you play** — load + plan with no audio, surfacing errors/warnings:
-   ```sh
-   cargo run -p reuben-native --bin reuben -- validate instruments/my-rig.json
-   ```
-4. **Play it** with `cargo reuben-play instruments/my-rig.json` (above).
-5. **Play it on a tablet.** Player-facing controls are the instrument's `interface` input
-   pipes; presentation lives in a **surface doc** (`surfaces/<name>.json`) — or is
-   auto-derived from the pipes when no doc exists. The `control-surface` skill authors the doc
-   and projects it to a [TouchOSC](https://hexler.net/touchosc) layout (`.tosc` files land in
-   `control-surfaces/`); other hosts render the same doc directly, with no emit step.
-   `surfaces/groovebox.json` and `surfaces/euclidean-drums.json` are worked examples.
-
-Need behavior no operator provides? That's a new **Operator** in Rust — `scaffold-operator`
-(or the `create-operator` skill) generates the skeleton and wires its registration; see
-[docs/agents/operator-dev.md](docs/agents/operator-dev.md) for the operator contract.
-
-## Going deeper
-
-- **[docs/agents/authoring.md](docs/agents/authoring.md)** — authoring Instruments and Rigs (the guide for agents and contributors).
-- **[docs/agents/operator-dev.md](docs/agents/operator-dev.md)** — building new Operators in Rust.
+- **[instruments/index.md](instruments/index.md)** — the instrument library, one line each.
+- **[docs/agents/authoring.md](docs/agents/authoring.md)** — the instrument format and how to
+  build or change an instrument.
+- **[docs/agents/operator-dev.md](docs/agents/operator-dev.md)** — writing a new Operator in Rust.
+- **[docs/device-profile.md](docs/device-profile.md)** — choosing an audio device and mapping
+  its channels with `play --io-map`.
+- **[.claude/skills/](.claude/skills/)** — agent skills for [Claude Code](https://claude.com/claude-code)
+  that build instruments (`patcher`), make control surfaces for a phone or tablet
+  (`control-surface`), and scaffold Operators (`create-operator`).
+- **[CLAUDE.md](CLAUDE.md)** — the crate map and the commands used when working on the code.
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — setup, toolchain, and the branch model.
 
 ## License
 

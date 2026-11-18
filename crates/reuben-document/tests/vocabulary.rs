@@ -19,7 +19,7 @@ fn committed_vocabulary_references_the_live_registry() {
     assert!(
         stale.is_empty(),
         "docs/agents/vocabulary.json references departed registry entries:\n  {}\n\
-         fix the row (or the operator), then run `cargo run -p reuben-core --example gen_vocabulary`",
+         fix the row (or the operator), then run `cargo run -p reuben-document --example gen_vocabulary`",
         stale.join("\n  ")
     );
 }
@@ -37,6 +37,6 @@ fn committed_rendered_view_is_in_sync() {
     assert_eq!(
         RENDERED,
         committed().render(),
-        "docs/agents/vocabulary.md is stale — run `cargo run -p reuben-core --example gen_vocabulary`"
+        "docs/agents/vocabulary.md is stale — run `cargo run -p reuben-document --example gen_vocabulary`"
     );
 }
