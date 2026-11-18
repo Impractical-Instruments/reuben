@@ -62,12 +62,13 @@ pub fn panel(
     }
     let mut messages = Vec::new();
     for row in panel.rows() {
-        let group = panel.controls[row[0]].group.as_deref();
+        // Only a grouped run is ever longer than `cols`: a lane, which fits as upright faders.
+        let upright = row.len() > panel.cols;
         ui.horizontal(|ui| {
             for index in row {
                 let control = &panel.controls[index];
                 ui.push_id(index, |ui| {
-                    let gestures = draw(ui, control, &mut settings[index], group, low_key);
+                    let gestures = draw(ui, control, &mut settings[index], upright, low_key);
                     messages.extend(gestures.into_iter().filter_map(|g| control.message(g)));
                 });
             }
@@ -80,15 +81,14 @@ fn draw(
     ui: &mut egui::Ui,
     control: &Control,
     setting: &mut Setting,
-    group: Option<&str>,
+    upright: bool,
     low_key: &mut u8,
 ) -> Vec<Gesture> {
     match (&control.kind, setting) {
         (kind @ Kind::Value { shape, .. }, Setting::Value(value)) => {
             let before = *value;
             match shape {
-                // A grouped row is a lane of up to sixteen, which only fits as vertical faders.
-                Shape::Fader => fader(ui, &control.label, kind, value, group.is_some()),
+                Shape::Fader => fader(ui, &control.label, kind, value, upright),
                 Shape::Radial => knob(ui, &control.label, kind, value),
             }
             if *value == before {
@@ -407,7 +407,7 @@ mod tests {
                         ui,
                         &self.control,
                         &mut self.setting,
-                        None,
+                        false,
                         &mut self.low_key,
                     ));
                 });
