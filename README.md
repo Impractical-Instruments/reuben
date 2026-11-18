@@ -2,7 +2,7 @@
 
 Deterministic CI performance trend: callgrind **instruction counts (Ir)** for rendering **1 s of audio** (375 × 128-frame blocks @ 48 kHz), recorded on every direct push to `dev`. Instruction counts don't jitter — every visible move is a real code change (or a toolchain bump).
 
-**147 commits** · 2026-07-12 → 2026-11-18 · 11348 data points · last: `fada9f3` (2026-11-18T16:17:37-05:00)
+**148 commits** · 2026-07-12 → 2026-11-18 · 11444 data points · last: `d7fa352` (2026-11-18T17:51:58-05:00)
 
 *Companion trend: the **main** series lives on the [`bench-history`](https://github.com/Impractical-Instruments/reuben/tree/bench-history) branch.*
 
@@ -46,7 +46,7 @@ Cost paid **once per Swap**, on the caller's thread — which in the browser is 
 | `deep_n2048` | 55.8M | ±0.0% | **-15.4%** | 2026-07-30 |
 | `deep_n4096` | 113.1M | ±0.0% | **-14.8%** | 2026-07-30 |
 | `deep_n8192` | 227.0M | ±0.0% | **-17.8%** | 2026-07-30 |
-| `nest_n2048` | 41.2M | ±0.0% | **-26.9%** | 2026-07-30 |
+| `nest_n2048` | 41.3M | ±0.0% | **-26.9%** | 2026-07-30 |
 | `nest_n4096` | 83.9M | ±0.0% | **-27.0%** | 2026-07-30 |
 | `nest_n8192` | 169.5M | ±0.0% | **-26.4%** | 2026-07-30 |
 | `wide_n2048` | 45.8M | ±0.0% | **-16.8%** | 2026-07-30 |
@@ -83,7 +83,7 @@ Cost paid **once per Swap**, on the caller's thread — which in the browser is 
 | `construct/deep_n2048` | 55.8M | ±0.0% | **-15.4%** | 2026-07-30 |
 | `construct/deep_n4096` | 113.1M | ±0.0% | **-14.8%** | 2026-07-30 |
 | `construct/deep_n8192` | 227.0M | ±0.0% | **-17.8%** | 2026-07-30 |
-| `construct/nest_n2048` | 41.2M | ±0.0% | **-26.9%** | 2026-07-30 |
+| `construct/nest_n2048` | 41.3M | ±0.0% | **-26.9%** | 2026-07-30 |
 | `construct/nest_n4096` | 83.9M | ±0.0% | **-27.0%** | 2026-07-30 |
 | `construct/nest_n8192` | 169.5M | ±0.0% | **-26.4%** | 2026-07-30 |
 | `construct/wide_n2048` | 45.8M | ±0.0% | **-16.8%** | 2026-07-30 |
