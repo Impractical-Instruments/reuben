@@ -408,6 +408,10 @@ class ChordButtonTest(unittest.TestCase):
         args = btn.findall("./messages/osc/arguments/partial")
         self.assertEqual(args[0].find("type").text, "CONSTANT")
         self.assertEqual(args[0].find("value").text, "3")    # the fixed chord-root degree
+        # An OSC int is a scale degree to the engine and a float is an absolute MIDI note,
+        # which the `chord` operator ignores: sent as a float the button plays nothing.
+        self.assertEqual(args[0].find("conversion").text, "INTEGER")
+        self.assertEqual(args[1].find("conversion").text, "FLOAT")
         self.assertEqual(args[1].find("type").text, "VALUE")
         self.assertEqual(args[1].find("value").text, "x")    # the gate
         self.assertEqual(btn.find("./messages/osc/path/partial/value").text, "/chord/in")
