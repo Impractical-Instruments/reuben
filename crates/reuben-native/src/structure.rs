@@ -304,7 +304,8 @@ impl EngineHost for NativeHost {
     fn document_origin(&self, path: &str) -> String {
         match std::path::absolute(path) {
             Ok(absolute) => absolute.display().to_string(),
-            // Only an empty path fails, and the read has already rejected that swap.
+            // Fails for an empty path, or a relative one with no working directory. The read
+            // fails on both, so the swap is rejected before this value is used.
             Err(_) => path.to_string(),
         }
     }

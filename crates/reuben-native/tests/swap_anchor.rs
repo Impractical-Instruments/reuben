@@ -210,6 +210,25 @@ fn a_voice_only_the_swapped_documents_directory_holds_is_found() {
     });
 }
 
+/// A relative swap path is read against the working directory, so its resources resolve from
+/// there too and not from the launch instrument's directory. Cargo runs this binary in the crate's
+/// own directory, which is what makes the spelling below name the library.
+#[test]
+fn a_relative_swap_path_is_anchored_at_the_working_directory() {
+    within(HANG_SECS, || {
+        let scratch = Scratch::new("relative");
+        let song = scratch.drone_song("song", "default-voice.json");
+
+        let engine = start_headless(headless(&song, None)).expect("start on the scratch song");
+        let report = swap_path(
+            &engine.channel(),
+            Path::new("../../instruments/default.json"),
+        );
+        assert_clean(&report, "the library's default, spelled relatively");
+        engine.shutdown();
+    });
+}
+
 #[test]
 fn a_swap_report_agrees_with_validate_instrument() {
     within(HANG_SECS, || {
@@ -280,7 +299,7 @@ fn swapping_the_launch_file_keeps_every_survivor() {
             "an edit to a pipe default moves no node: {diff:?}"
         );
         assert!(
-            !diff.state_reset.iter().any(|a| a.contains("kick")),
+            diff.state_reset.is_empty(),
             "the voices beside the launch file are the same files as before: {diff:?}"
         );
         engine.shutdown();

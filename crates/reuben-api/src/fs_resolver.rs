@@ -338,9 +338,16 @@ mod tests {
     /// survivors.
     #[test]
     fn a_launch_files_references_are_one_identity_from_the_base_or_from_the_file() {
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
         let dir =
             std::env::temp_dir().join(format!("reuben_launch_identity_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        let _scratch = Scratch(dir.clone());
         std::fs::create_dir_all(dir.join("lib/voices")).unwrap();
         std::fs::create_dir_all(dir.join("root/voices")).unwrap();
         std::fs::write(dir.join("lib/voices/here.json"), "{}").unwrap();
@@ -382,12 +389,10 @@ mod tests {
         }
         let rooted = FsResolver::for_instrument(&absolute_launch).with_root(dir.join("root"));
         assert_eq!(
-            rooted.canonical("voices/shared.json", None),
-            dir.join("root/voices/shared.json").display().to_string(),
+            Path::new(&rooted.canonical("voices/shared.json", None)),
+            dir.join("root/voices/shared.json"),
             "the root case above compared two root hits, not two misses"
         );
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The write half round-trips through `read_text`, creating a missing parent directory
