@@ -3,9 +3,12 @@
 mod audio;
 mod config;
 mod controls;
+mod edit;
 mod engine;
+mod session;
 
 use std::path::PathBuf;
+use std::time::Instant;
 
 use clap::{CommandFactory, Parser};
 use eframe::egui;
@@ -16,6 +19,7 @@ use crate::audio::AudioSettings;
 use crate::config::ConfigDir;
 use crate::controls::Controls;
 use crate::engine::{Engine, Level};
+use crate::session::{Session, Status};
 
 #[derive(Parser)]
 #[command(name = "reuben-editor", about = "Edit and play reuben instruments.")]
@@ -51,12 +55,16 @@ fn main() -> eframe::Result {
         options,
         // The engine starts here rather than before `run_native` so a session whose window never
         // opens never takes the audio device or the ports.
-        Box::new(|_cc| {
+        Box::new(|cc| {
             let root = args.instrument_root.clone().resolve();
             let controls = Controls::open(args.path.as_deref(), root.as_deref());
+            let session = args.path.as_deref().map(|path| {
+                let ctx = cc.egui_ctx.clone();
+                Session::open(path, root.as_deref(), move || ctx.request_repaint())
+            });
             let mut audio = AudioSettings::load(ConfigDir::user());
             let engine = start(args, &mut audio, Engine::start);
-            Ok(Box::new(Editor::new(engine, audio, controls)))
+            Ok(Box::new(Editor::new(engine, audio, controls, session)))
         }),
     )
 }
@@ -82,21 +90,47 @@ struct Editor {
     engine: Engine,
     audio: AudioSettings,
     controls: Controls,
+    session: Option<Session>,
 }
 
 impl Editor {
-    fn new(engine: Engine, audio: AudioSettings, controls: Controls) -> Self {
+    fn new(
+        engine: Engine,
+        audio: AudioSettings,
+        controls: Controls,
+        session: Option<Session>,
+    ) -> Self {
         Self {
             engine,
             audio,
             controls,
+            session,
+        }
+    }
+
+    /// Take in what the session saw change on disk, and rebuild what is drawn from the files.
+    fn follow_files(&mut self, ui: &egui::Ui) {
+        let Some(session) = &mut self.session else {
+            return;
+        };
+        let poll = session.poll(Instant::now(), &|| self.engine.channel());
+        // A tree that does not load keeps the panel of the instrument still playing.
+        if poll.reloaded && !matches!(session.status(), Status::Held(_)) {
+            self.controls = Controls::open(Some(session.top()), session.root());
+        }
+        if let Some(wait) = poll.wait {
+            ui.ctx().request_repaint_after(wait);
         }
     }
 }
 
 impl eframe::App for Editor {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.follow_files(ui);
         egui::Panel::top("audio").show(ui, |ui| self.audio.ui(ui, &mut self.engine));
+        if let Some(session) = &self.session {
+            session::show(ui, session);
+        }
         // Before the central panel, which takes whatever space is left.
         self.controls.show(ui, &self.engine);
         // The root `Ui` paints no background of its own, leaving eframe's clear color; the panel
