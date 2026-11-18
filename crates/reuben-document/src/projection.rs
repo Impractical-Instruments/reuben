@@ -41,7 +41,7 @@ use crate::format::{
     NormalizedDoc, PipeDefault,
 };
 use crate::introspect::{describe_patch, first_sentence, PatchBoundary};
-use crate::resources::{ResolveError, ResourceResolver};
+use crate::resources::{Created, ResolveError, ResourceResolver};
 use reuben_core::registry::Registry;
 
 /// The projection's own shape version, **distinct from the document's `format_version`**: a
@@ -1173,9 +1173,9 @@ impl<'a> Projector<'a> {
 /// its own references would otherwise canonicalize against the *root*; wrapping the door's resolver
 /// this way makes them canonicalize against the child, which is exactly what a real load does.
 /// Everything else forwards untouched — the door still owns what a source means.
-struct Rebased<'r> {
-    inner: &'r dyn ResourceResolver,
-    referrer: String,
+pub(crate) struct Rebased<'r> {
+    pub(crate) inner: &'r dyn ResourceResolver,
+    pub(crate) referrer: String,
 }
 
 impl ResourceResolver for Rebased<'_> {
@@ -1189,6 +1189,10 @@ impl ResourceResolver for Rebased<'_> {
 
     fn write_text(&self, source: &str, text: &str) -> Result<(), ResolveError> {
         self.inner.write_text(source, text)
+    }
+
+    fn create_text(&self, source: &str, text: &str) -> Result<Created, ResolveError> {
+        self.inner.create_text(source, text)
     }
 
     fn canonical(&self, source: &str, referrer: Option<&str>) -> String {

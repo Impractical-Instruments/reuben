@@ -22,6 +22,9 @@ pub use reuben_core::resources::SampleBuffer;
 /// a load — a document whose sample is missing loads and reports the failure as a warning.
 pub use reuben_document::resources::ResolveError;
 
+/// What [`Resources::create_text`] did: wrote the text, or found the source taken.
+pub use reuben_document::resources::Created;
+
 /// The host's answer to "what does this `source` name?".
 ///
 /// `source` is opaque to the window: a filesystem path for the native and sidecar doors, a store
@@ -47,6 +50,19 @@ pub trait Resources {
     fn write_text(&self, source: &str, text: &str) -> Result<(), ResolveError> {
         let _ = text;
         Err(ResolveError::Write(format!("read-only store: {source}")))
+    }
+
+    /// Write `text` to `source` only if nothing is there, and say which happened — what a verb
+    /// that makes a new document writes through, so it can never replace something.
+    ///
+    /// The default asks [`read_text`](Self::read_text) and then writes: it sees only what reads
+    /// as text, and leaves a gap between the two steps. A store that can test for anything at
+    /// all at the source, in one step with the write, should override it.
+    fn create_text(&self, source: &str, text: &str) -> Result<Created, ResolveError> {
+        if self.read_text(source).is_ok() {
+            return Ok(Created::Taken);
+        }
+        self.write_text(source, text).map(|()| Created::Written)
     }
 
     /// The canonical identity of `source` — the key that decides whether two spellings are one
@@ -98,6 +114,10 @@ impl<R: Resources> ResourceResolver for OwnedAdapter<R> {
         self.0.write_text(source, text)
     }
 
+    fn create_text(&self, source: &str, text: &str) -> Result<Created, ResolveError> {
+        self.0.create_text(source, text)
+    }
+
     fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
         self.0.canonical(source, referrer)
     }
@@ -115,6 +135,10 @@ impl ResourceResolver for Adapter<'_> {
 
     fn write_text(&self, source: &str, text: &str) -> Result<(), ResolveError> {
         self.0.write_text(source, text)
+    }
+
+    fn create_text(&self, source: &str, text: &str) -> Result<Created, ResolveError> {
+        self.0.create_text(source, text)
     }
 
     fn canonical(&self, source: &str, referrer: Option<&str>) -> String {

@@ -15,7 +15,7 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::resources::Resources;
 use reuben_core::resources::SampleBuffer;
-use reuben_document::resources::ResolveError;
+use reuben_document::resources::{Created, ResolveError};
 
 /// Resolves resource sources as filesystem paths relative to a base directory, decoding WAV.
 pub struct FsResolver {
@@ -181,6 +181,35 @@ impl Resources for FsResolver {
             let _ = std::fs::remove_file(&temp);
             ResolveError::Write(format!("{}: {e}", path.display()))
         })
+    }
+
+    /// Exclusive create: the text is written whole to a sibling temp file, which is then *linked*
+    /// to the destination. A link, unlike a rename, fails when anything is already there — a
+    /// document, a sample, a file this process cannot read, a dangling symlink — and it does so
+    /// in the one step that also puts the text in place, so nothing can appear between a check
+    /// and the write. A reader never sees part of the file.
+    fn create_text(&self, source: &str, text: &str) -> Result<Created, ResolveError> {
+        let path = self.locate(source);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| ResolveError::Write(format!("{}: {e}", parent.display())))?;
+        }
+        let file_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .ok_or_else(|| {
+                ResolveError::Write(format!("{}: not a writable file path", path.display()))
+            })?;
+        let temp = path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()));
+        std::fs::write(&temp, text)
+            .map_err(|e| ResolveError::Write(format!("{}: {e}", temp.display())))?;
+        let linked = std::fs::hard_link(&temp, &path);
+        let _ = std::fs::remove_file(&temp);
+        match linked {
+            Ok(()) => Ok(Created::Written),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(Created::Taken),
+            Err(e) => Err(ResolveError::Write(format!("{}: {e}", path.display()))),
+        }
     }
 
     /// Canonical identity = the winning absolute path, lexically normalized. Sibling-first:

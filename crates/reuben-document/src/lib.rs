@@ -31,4 +31,4 @@ pub use format::{
     load, load_instrument, load_instrument_doc, resolve_instrument, DocValue, InstrumentDoc,
     InterfaceDoc, LoadError, LoadWarning, Loaded, NormalizedDoc, SCAFFOLD_DEFAULT_NAME,
 };
-pub use resources::{MemoryResolver, ResolveError, ResourceResolver};
+pub use resources::{Created, MemoryResolver, ResolveError, ResourceResolver};

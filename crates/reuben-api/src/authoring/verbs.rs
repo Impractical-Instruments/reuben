@@ -257,6 +257,27 @@ pub fn new_instrument(
     })
 }
 
+/// Write the document at `from` to the new source `to`, for a host that needs a second document
+/// without ever holding the first one's text. The answer's `hash` is the copy's, and equals
+/// `from`'s. Not a roster verb: no agent-facing door serves it.
+///
+/// `resources` reads `from` as spelled and reads and writes the copy by `to`'s
+/// [`canonical`](Resources::canonical) id, so the place checked for an existing document is the
+/// place written. The same call decides whether `to` is beside `from`: the two must resolve `.` to
+/// the same identity. A store whose sources are exact keys therefore accepts any `to`, since none
+/// of its references are relative to the document making them. A store that searches a second
+/// location for a missing source (a library root) answers with a document found there, and the
+/// copy is refused as already existing.
+pub fn copy_instrument(
+    args: &CopyInstrument,
+    resources: &dyn Resources,
+) -> Result<Answer<EditResult>, Refusal> {
+    // No `expect`, as for `new_instrument`: a create has no prior document to have raced with.
+    run_edit(&args.to, &None, resources, |to, reg, res| {
+        core_edit::copy_instrument(&args.from, to, reg, res)
+    })
+}
+
 /// Rename the instrument (its top-level `instrument` name).
 pub fn set_instrument_name(
     args: &SetInstrumentName,
@@ -965,6 +986,39 @@ mod tests {
 
         let refusal = set_instrument_input(&args, &store).expect_err("no such node");
         assert!(refusal.message.contains("/ghost"), "{refusal}");
+    }
+
+    /// The window's half of a copy: the answer is an ordinary written edit at `to`, carrying the
+    /// one hash both documents now share, and an occupied `to` is a refusal.
+    #[test]
+    fn a_copy_lands_at_the_new_source_under_the_originals_hash() {
+        let store = MemoryStore::with("inst.json", SEED);
+        let args = CopyInstrument {
+            from: "inst.json".to_string(),
+            to: "copy.json".to_string(),
+        };
+
+        let answer = copy_instrument(&args, &store).expect("a copy to a free source");
+        assert!(answer.output.written, "{:?}", answer.output);
+        assert_eq!(
+            answer.output.hash,
+            hash_instrument(&store.read("inst.json"), &store).unwrap()
+        );
+        assert_eq!(
+            answer.output.hash,
+            hash_instrument(&store.read("copy.json"), &store).unwrap()
+        );
+
+        let copied = store.read("copy.json");
+        let refusal = copy_instrument(&args, &store).expect_err("`to` is taken now");
+        assert!(refusal.message.contains("copy.json"), "{refusal}");
+        assert_eq!(store.read("copy.json"), copied);
+    }
+
+    /// Reachable by code, advertised to no agent: no roster names the verb.
+    #[test]
+    fn no_roster_names_copy_instrument() {
+        assert!(!crate::tools::names().contains(&"copy_instrument"));
     }
 
     /// A document with a face to read: one input pipe carrying declared metadata, one output tap.

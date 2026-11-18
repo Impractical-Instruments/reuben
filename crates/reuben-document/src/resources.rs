@@ -34,6 +34,15 @@ impl fmt::Display for ResolveError {
 
 impl std::error::Error for ResolveError {}
 
+/// What a [`ResourceResolver::create_text`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Created {
+    /// Nothing was at the source; the text is there now.
+    Written,
+    /// Something was already at the source, and it was left as it was.
+    Taken,
+}
+
 /// Resolves a logical source (a file path today) to a decoded [`SampleBuffer`]. An eager,
 /// non-RT authoring step; `reuben-native` provides the WAV/filesystem implementation.
 pub trait ResourceResolver {
@@ -75,6 +84,21 @@ pub trait ResourceResolver {
     fn write_text(&self, source: &str, text: &str) -> Result<(), ResolveError> {
         let _ = text;
         Err(ResolveError::Write(format!("read-only resolver: {source}")))
+    }
+
+    /// Write `text` to `source` only if nothing is there, and say which happened. What a verb
+    /// that makes a new document writes through, so it can never replace something.
+    ///
+    /// "Nothing is there" is the store's to judge, and it is a stronger question than "does it
+    /// read as text": a sample, or a file the process may not read, is something. The default
+    /// can only ask [`resolve_text`](Self::resolve_text), in a separate step from the write, so a
+    /// store that can do better — test for anything at all, in one step with the write — should
+    /// override it.
+    fn create_text(&self, source: &str, text: &str) -> Result<Created, ResolveError> {
+        if self.resolve_text(source).is_ok() {
+            return Ok(Created::Taken);
+        }
+        self.write_text(source, text).map(|()| Created::Written)
     }
 }
 
@@ -137,6 +161,13 @@ impl ResourceResolver for MemoryResolver {
             .borrow_mut()
             .insert(source.to_string(), text.to_string());
         Ok(())
+    }
+
+    fn create_text(&self, source: &str, text: &str) -> Result<Created, ResolveError> {
+        if self.texts.borrow().contains_key(source) || self.samples.contains_key(source) {
+            return Ok(Created::Taken);
+        }
+        self.write_text(source, text).map(|()| Created::Written)
     }
 }
 

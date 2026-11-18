@@ -32,8 +32,8 @@ use crate::format::{
     Layout, NodeDoc, NormalizedDoc, OutputPipeDoc, PipeDefault, FORMAT_VERSION, PIPE_INPUT_PORT,
 };
 use crate::introspect::validate;
-use crate::projection::{Projector, Scalar, Selection};
-use crate::resources::{ResolveError, ResourceResolver};
+use crate::projection::{Projector, Rebased, Scalar, Selection};
+use crate::resources::{Created, ResolveError, ResourceResolver};
 use crate::vocabulary::Section;
 use reuben_core::Registry;
 
@@ -190,6 +190,43 @@ fn finish(
     applied: Applied,
     current_hash: String,
 ) -> Result<EditResult, EditError> {
+    finish_at(
+        source,
+        registry,
+        resolver,
+        doc,
+        applied,
+        current_hash,
+        Place::Replace,
+    )
+}
+
+fn taken(source: &str) -> EditError {
+    EditError::Target(format!(
+        "something that is not a readable document already exists at `{source}`; choose a new \
+         source"
+    ))
+}
+
+/// Whether a valid document replaces what is at its source or must be the first thing there.
+#[derive(Clone, Copy)]
+enum Place {
+    Replace,
+    /// For a verb that makes a document: the write itself refuses a source that holds anything,
+    /// so a file the verb could not read as text, or one that appeared after it looked, is not
+    /// replaced.
+    Create,
+}
+
+fn finish_at(
+    source: &str,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+    doc: InstrumentDoc,
+    applied: Applied,
+    current_hash: String,
+    place: Place,
+) -> Result<EditResult, EditError> {
     // Re-enter the mint gate the same way a host holding a raw doc would; idempotent on an
     // already-normalized document, but it is what keeps the written bytes canonical.
     let normalized = NormalizedDoc::from_doc(doc, registry, Some(resolver))
@@ -197,9 +234,18 @@ fn finish(
     let new_json = normalized.to_json_pretty();
     let report = validate(&new_json, registry, resolver);
     let (written, hash) = if report.ok {
-        resolver
-            .write_text(source, &new_json)
-            .map_err(EditError::Write)?;
+        match place {
+            Place::Replace => resolver
+                .write_text(source, &new_json)
+                .map_err(EditError::Write)?,
+            Place::Create => match resolver
+                .create_text(source, &new_json)
+                .map_err(EditError::Write)?
+            {
+                Created::Written => {}
+                Created::Taken => return Err(taken(source)),
+            },
+        }
         (true, content_hash(&normalized))
     } else {
         (false, current_hash)
@@ -491,13 +537,84 @@ pub fn new_instrument(
         outputs: Vec::new(),
         migration: Default::default(),
     };
-    finish(
+    finish_at(
         source,
         registry,
         resolver,
         doc,
         Applied::clean(Echo::Nodes(Selection::names(["/"]))),
         String::new(),
+        Place::Create,
+    )
+}
+
+/// What [`copy_instrument`] canonicalizes against each document to learn whether a reference means
+/// the same thing from both. `.` rather than a file name: a path-shaped store answers with the
+/// referrer's own directory, and no store's fallback search (a library root) can find a *file*
+/// there to answer with instead, which a plausible sibling name would allow.
+const DIRECTORY_PROBE: &str = ".";
+
+/// Write the document at `from` to the new source `to`, through the same pipeline as every other
+/// verb: the copy is validated whole **at `to`** — its references resolved from there, not from
+/// wherever the resolver's top level is — and written only if valid.
+///
+/// Refuses to overwrite a document at `to`, refuses a `to` whose relative references would not
+/// resolve where `from`'s do, and refuses a document that references `to` itself. On a copy that
+/// fails validation nothing is at `to`, so the result's hash is empty.
+pub fn copy_instrument(
+    from: &str,
+    to: &str,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+) -> Result<EditResult, EditError> {
+    let from_id = resolver.canonical(from, None);
+    // Everything below addresses the destination by its canonical id, never by `to` as spelled.
+    // The id is what the directory rule judges, so the existence check and the write have to mean
+    // the same place: a spelling that reads as absent (a missing directory before a `..`) or that
+    // the store reaches by another route (a symlink before a `..`) would otherwise be checked as
+    // one location and written as another.
+    let to_id = resolver.canonical(to, None);
+    if resolver.resolve_text(&to_id).is_ok() {
+        return Err(EditError::Target(format!(
+            "a document already exists at `{to_id}`; choose a new source for the copy"
+        )));
+    }
+    if resolver.canonical(DIRECTORY_PROBE, Some(&from_id))
+        != resolver.canonical(DIRECTORY_PROBE, Some(&to_id))
+    {
+        return Err(EditError::Target(format!(
+            "`{to}` is not in the same directory as `{from}`: the document's relative resource \
+             paths would stop resolving there; choose a source beside the original"
+        )));
+    }
+    let json = resolver.resolve_text(from).map_err(EditError::Read)?;
+    let at_to = Rebased {
+        inner: resolver,
+        referrer: to_id.clone(),
+    };
+    let doc = NormalizedDoc::from_json(&json, registry, Some(&at_to))
+        .map_err(|e| EditError::Parse(e.to_string()))?
+        .into_inner();
+    // Validation runs before the write, when a reference to the destination is only a missing
+    // file; once written it is a document nesting itself, which cannot load.
+    if let Some((id, _)) = doc
+        .resources
+        .iter()
+        .find(|(_, source)| resolver.canonical(source, Some(&to_id)) == to_id)
+    {
+        return Err(EditError::Target(format!(
+            "the document's resource `{id}` references `{to_id}`, so the copy would nest itself; \
+             choose another source for the copy"
+        )));
+    }
+    finish_at(
+        &to_id,
+        registry,
+        &at_to,
+        doc,
+        Applied::clean(Echo::Nodes(Selection::names(["/"]))),
+        String::new(),
+        Place::Create,
     )
 }
 
