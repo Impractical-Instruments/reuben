@@ -22,8 +22,9 @@ pub use crate::resources::{Created, ResolveError, Resources, SampleBuffer};
 pub use args::*;
 pub use history::{restore_instrument, DocumentHistory};
 pub use result::{
-    Boundary, Diag, DocumentView, EditResult, OperatorInfo, Operators, PortInfo, Report,
-    WireVerdict, WireVerdicts,
+    Boundary, Diag, DocumentView, EditResult, InputValue, InstrumentStructure, InterfaceInput,
+    InterfaceOutput, NodeConstant, NodeInput, NodePorts, NodeResource, OperatorInfo, Operators,
+    PortInfo, Position, Report, ResourceEntry, StructureNode, WireVerdict, WireVerdicts,
 };
 pub use verbs::*;
 

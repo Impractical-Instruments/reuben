@@ -80,6 +80,12 @@ impl<'d> WirePorts<'d> {
     /// would, else the error the load would fail with. A wire touching a dark `subpatch` (a child
     /// this load could not resolve) is `Ok`, because the loader drops it rather than checks it.
     pub fn check(&self, from: &WireSource, to: &WireTarget) -> Result<(), LoadError> {
+        self.check_ref(&from.wire_ref(), to)
+    }
+
+    /// [`check`](Self::check) for a source spelled as the document spells it — a wire-ref, which
+    /// may be the sole-output sugar a [`WireSource`] cannot say.
+    pub fn check_ref(&self, from: &str, to: &WireTarget) -> Result<(), LoadError> {
         match to {
             WireTarget::Input { node, port } => self.check_input(from, node, port),
             WireTarget::InterfaceOutput(name) => self.check_interface_output(from, name),
@@ -89,7 +95,7 @@ impl<'d> WirePorts<'d> {
     /// Whether `from` names a source this document has — the half of [`check`](Self::check) that
     /// does not depend on the target, for a caller judging one source against many.
     pub fn check_source(&self, from: &WireSource) -> Result<(), LoadError> {
-        self.resolve_source(from).map(|_| ())
+        self.resolve_source(&from.wire_ref()).map(|_| ())
     }
 
     /// Every place a wire could land in this document: each input of each document node that
@@ -128,7 +134,7 @@ impl<'d> WirePorts<'d> {
         out
     }
 
-    fn check_input(&self, from: &WireSource, node: &str, port: &str) -> Result<(), LoadError> {
+    fn check_input(&self, from: &str, node: &str, port: &str) -> Result<(), LoadError> {
         let r = &self.resolved;
         // A wire-ref is written into a document node's `inputs`; an input pipe's address is in
         // `by_addr` too, but it has no `inputs` entry to write into.
@@ -166,7 +172,7 @@ impl<'d> WirePorts<'d> {
         })
     }
 
-    fn check_interface_output(&self, from: &WireSource, name: &str) -> Result<(), LoadError> {
+    fn check_interface_output(&self, from: &str, name: &str) -> Result<(), LoadError> {
         let r = &self.resolved;
         let entry = self
             .doc
@@ -189,7 +195,7 @@ impl<'d> WirePorts<'d> {
         check_output_feed(
             name,
             feed,
-            &from.wire_ref(),
+            from,
             &r.graph.nodes[key].descriptor.outputs[idx],
         )
     }
@@ -198,14 +204,13 @@ impl<'d> WirePorts<'d> {
     /// drops unchecked (a dark nest, or a dark port of a live one).
     fn resolve_source(
         &self,
-        from: &WireSource,
+        reference: &str,
     ) -> Result<Option<(NodeKey, usize, PortType, String)>, LoadError> {
         let r = &self.resolved;
-        let reference = from.wire_ref();
-        let (addr, port) = parse_wire(&reference);
+        let (addr, port) = parse_wire(reference);
         if r.dark.contains(addr) {
             return Ok(None);
         }
-        resolve_output(&r.faces, &r.by_addr, addr, &reference, port)
+        resolve_output(&r.faces, &r.by_addr, addr, reference, port)
     }
 }
