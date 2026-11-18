@@ -437,9 +437,10 @@ fn resolve_structure(addr: &str) -> Result<io::Result<Vec<SocketAddr>>, StartErr
 /// The instrument's JSON, the resolver its references resolve through, and the source name
 /// `get_document` reports for it (`None` for the built-in rig, which has no source to name).
 ///
-/// The Coordinator owns the resolver for the session and a by-path swap resolves through it too:
-/// the session does not re-anchor per swap, so a swapped document's relative resources resolve
-/// against this initial anchor plus the library root.
+/// The Coordinator owns the resolver for the session, and every swap resolves through it. Its base
+/// directory is the anchor for this document and for a swap by value; a by-path swap hands the
+/// swapped file's own path in as the referrer, so that document resolves from its own directory.
+/// The library root is the fallback for all three.
 fn read_instrument(
     instrument: Instrument,
     root: Option<PathBuf>,
