@@ -2,6 +2,7 @@
 
 mod audio;
 mod config;
+mod controls;
 mod engine;
 
 use std::path::PathBuf;
@@ -13,6 +14,7 @@ use reuben_native::engine::{EngineConfig, Instrument};
 
 use crate::audio::AudioSettings;
 use crate::config::ConfigDir;
+use crate::controls::Controls;
 use crate::engine::{Engine, Level};
 
 #[derive(Parser)]
@@ -50,9 +52,11 @@ fn main() -> eframe::Result {
         // The engine starts here rather than before `run_native` so a session whose window never
         // opens never takes the audio device or the ports.
         Box::new(|_cc| {
+            let root = args.instrument_root.clone().resolve();
+            let controls = Controls::open(args.path.as_deref(), root.as_deref());
             let mut audio = AudioSettings::load(ConfigDir::user());
             let engine = start(args, &mut audio, Engine::start);
-            Ok(Box::new(Editor::new(engine, audio)))
+            Ok(Box::new(Editor::new(engine, audio, controls)))
         }),
     )
 }
@@ -77,17 +81,24 @@ fn start(
 struct Editor {
     engine: Engine,
     audio: AudioSettings,
+    controls: Controls,
 }
 
 impl Editor {
-    fn new(engine: Engine, audio: AudioSettings) -> Self {
-        Self { engine, audio }
+    fn new(engine: Engine, audio: AudioSettings, controls: Controls) -> Self {
+        Self {
+            engine,
+            audio,
+            controls,
+        }
     }
 }
 
 impl eframe::App for Editor {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::Panel::top("audio").show(ui, |ui| self.audio.ui(ui, &mut self.engine));
+        // Before the central panel, which takes whatever space is left.
+        self.controls.show(ui, &self.engine);
         // The root `Ui` paints no background of its own, leaving eframe's clear color; the panel
         // frame paints the theme's fill instead.
         egui::Frame::central_panel(ui.style()).show(ui, |ui| {
