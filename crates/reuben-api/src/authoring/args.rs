@@ -539,6 +539,22 @@ pub struct OutputTarget {
     pub output: String,
 }
 
+// --- restore --------------------------------------------------------------------------------------
+
+/// Arguments for `restore_instrument`: put a document back to an earlier state of itself, named by
+/// the content hash an edit reported for it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RestoreInstrument {
+    /// The document to restore.
+    pub source: String,
+    /// The content hash of the state to return to.
+    pub to: String,
+    /// The content hash the document must have now. Required: a whole-document overwrite is never
+    /// unguarded.
+    pub expect: String,
+}
+
 // --- editor queries -------------------------------------------------------------------------------
 
 /// The end a wire leaves from.

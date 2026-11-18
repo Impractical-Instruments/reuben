@@ -26,7 +26,7 @@ use std::fmt;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::contract::{content_hash, Report};
+use crate::contract::{content_hash, Diag, Report};
 use crate::format::{
     ConfigValue, CurveDoc, InputPipeDoc, InputValue, InstrumentDoc, InterfaceDoc, InterfaceEntry,
     Layout, NodeDoc, NormalizedDoc, OutputPipeDoc, PipeDefault, FORMAT_VERSION, PIPE_INPUT_PORT,
@@ -287,6 +287,79 @@ fn render_echo(
         },
         Err(e) => format!("(projection unavailable: {e})"),
     }
+}
+
+// --- whole-document restore ---------------------------------------------------------------------
+
+/// Put `source` back to `prior`, an earlier text of the same document whose content hash was `to`,
+/// through the gate every other verb passes: re-normalize, validate whole, write iff valid.
+///
+/// `None` when what is at `source` no longer hashes to `expect`. The caller has already compared
+/// `expect` against its own read; this compares it against the read the restore replaces, so a
+/// write landing between the two is not overwritten whole.
+///
+/// `prior` validated when it was written, but against the files it referenced *then*. One that no
+/// longer loads, or that no longer normalizes to `to`, is a rejected edit carrying the reason, never
+/// an [`EditError`] — the verb ran. What is at `source` now must still parse: a rejected restore
+/// reports the hash of what stays persisted, and an unparseable file has none.
+pub fn restore_instrument(
+    source: &str,
+    prior: &str,
+    to: &str,
+    expect: &str,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+) -> Result<Option<EditResult>, EditError> {
+    let json = resolver.resolve_text(source).map_err(EditError::Read)?;
+    let current = NormalizedDoc::from_json(&json, registry, Some(resolver))
+        .map_err(|e| EditError::Parse(e.to_string()))?;
+    let current_hash = content_hash(&current);
+    if current_hash != expect {
+        return Ok(None);
+    }
+    let rejected = |error: Diag, zoom: String| EditResult {
+        report: Report {
+            ok: false,
+            errors: vec![error],
+            warnings: Vec::new(),
+        },
+        written: false,
+        hash: current_hash.clone(),
+        notes: Vec::new(),
+        zoom,
+    };
+    let doc = match NormalizedDoc::from_json(prior, registry, Some(resolver)) {
+        Ok(doc) => doc,
+        Err(e) => {
+            return Ok(Some(rejected(
+                Diag::from_load(&e),
+                format!("(projection unavailable: {e})"),
+            )))
+        }
+    };
+    let landed = content_hash(&doc);
+    if landed != to {
+        return Ok(Some(rejected(
+            Diag {
+                node: None,
+                port: None,
+                message: format!(
+                    "the document held as {to} now normalizes to {landed}: a file it references \
+                     has changed since, so that state cannot be returned to"
+                ),
+            },
+            render_echo(&doc.to_json_pretty(), registry, resolver, &Echo::Index),
+        )));
+    }
+    finish(
+        source,
+        registry,
+        resolver,
+        doc.into_inner(),
+        Applied::clean(Echo::Index),
+        current_hash.clone(),
+    )
+    .map(Some)
 }
 
 // --- value coercion ------------------------------------------------------------------------------

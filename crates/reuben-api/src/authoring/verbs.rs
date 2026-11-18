@@ -701,7 +701,7 @@ fn run_edit(
 /// the current node index handed back, so reconciling costs no extra round trip. `None` means
 /// proceed, and is also what a read or mint failure returns: that is the verb's to surface, not the
 /// guard's.
-fn expect_conflict(
+pub(super) fn expect_conflict(
     expect: &Option<String>,
     source: &str,
     registry: &Registry,
@@ -831,7 +831,7 @@ fn validate_summary(report: &Report) -> String {
 }
 
 /// One-line gloss of a document-verb result.
-fn edit_summary(result: &EditResult) -> String {
+pub(super) fn edit_summary(result: &EditResult) -> String {
     if result.written {
         let base = format!("written (content_hash {})", result.hash);
         match result.notes.len() {

@@ -11,6 +11,7 @@
 //! resource seam are the engine's, re-exported. [`crate::resources`] states that split and why.
 
 mod args;
+mod history;
 pub mod prose;
 mod result;
 mod verbs;
@@ -19,6 +20,7 @@ mod verbs;
 /// here. [`crate::resources`] holds it, because the render half calls the same trait.
 pub use crate::resources::{Created, ResolveError, Resources, SampleBuffer};
 pub use args::*;
+pub use history::{restore_instrument, DocumentHistory};
 pub use result::{
     Boundary, Diag, DocumentView, EditResult, OperatorInfo, Operators, PortInfo, Report,
     WireVerdict, WireVerdicts,
