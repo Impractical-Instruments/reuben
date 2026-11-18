@@ -1097,3 +1097,156 @@ fn skips_that_name_the_same_slot_and_reason_collapse() {
         result.zoom
     );
 }
+
+// --- layout ---------------------------------------------------------------------------------------
+
+/// [`seed`] with an input pipe and an output pipe that share the name `main` — legal, because output
+/// pipes never enter the node namespace.
+fn seed_with_twin_pipes() -> String {
+    json!({
+        "format_version": 3,
+        "instrument": "test",
+        "nodes": [
+            { "type": "oscillator", "address": "/osc", "inputs": { "freq": { "from": "/main" } } },
+            { "type": "mul_f32_signal", "address": "/amp", "inputs": { "a": { "from": "/osc" }, "b": 0.5 } }
+        ],
+        "interface": {
+            "inputs": { "main": { "type": "f32", "default": 220.0 } },
+            "outputs": { "main": { "from": "/amp" } }
+        }
+    })
+    .to_string()
+}
+
+fn at(x: f32, y: f32) -> Layout {
+    Layout { x, y }
+}
+
+fn node(address: &str) -> LayoutTarget {
+    LayoutTarget::Node(address.to_string())
+}
+
+fn output(name: &str) -> LayoutTarget {
+    LayoutTarget::Output(name.to_string())
+}
+
+#[test]
+fn set_layout_places_nodes_input_pipes_and_output_pipes_in_one_write() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_with_twin_pipes());
+
+    let result = set_instrument_layout(
+        SRC,
+        &[
+            (node("/osc"), at(10.0, 20.0)),
+            (node("/amp"), at(200.5, -4.25)),
+            (node("/main"), at(-80.0, 20.0)),
+            (output("main"), at(400.0, 0.0)),
+        ],
+        &registry,
+        &resolver,
+    )
+    .expect("every target exists");
+
+    assert!(result.written, "{:?}", result.report);
+    let after = readback(&resolver);
+    assert_eq!(after["nodes"][0]["layout"], json!({ "x": 10.0, "y": 20.0 }));
+    assert_eq!(
+        after["nodes"][1]["layout"],
+        json!({ "x": 200.5, "y": -4.25 })
+    );
+    // The twin names land on their own sides: `/main` is the input pipe, `{output: main}` the tap.
+    assert_eq!(
+        after["interface"]["inputs"]["main"]["layout"],
+        json!({ "x": -80.0, "y": 20.0 })
+    );
+    assert_eq!(
+        after["interface"]["outputs"]["main"]["layout"],
+        json!({ "x": 400.0, "y": 0.0 })
+    );
+}
+
+#[test]
+fn set_layout_leaves_unnamed_targets_where_they_were() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_with_twin_pipes());
+    set_instrument_layout(SRC, &[(node("/osc"), at(1.0, 2.0))], &registry, &resolver)
+        .expect("first placement");
+    set_instrument_layout(SRC, &[(node("/amp"), at(3.0, 4.0))], &registry, &resolver)
+        .expect("second placement");
+
+    let after = readback(&resolver);
+    assert_eq!(after["nodes"][0]["layout"], json!({ "x": 1.0, "y": 2.0 }));
+    assert_eq!(after["nodes"][1]["layout"], json!({ "x": 3.0, "y": 4.0 }));
+    assert!(after["interface"]["outputs"]["main"]
+        .get("layout")
+        .is_none());
+}
+
+#[test]
+fn set_layout_moves_the_content_hash() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed());
+    let before = set_instrument_description(SRC, None, &registry, &resolver)
+        .expect("a no-op write to read the hash")
+        .hash;
+    let after = set_instrument_layout(SRC, &[(node("/osc"), at(5.0, 5.0))], &registry, &resolver)
+        .expect("placement")
+        .hash;
+    assert_ne!(before, after, "a layout-only edit is still an edit");
+}
+
+#[test]
+fn set_layout_rejects_the_whole_call_on_an_unknown_target_of_either_kind() {
+    let registry = Registry::builtin();
+    for (ghost, named) in [
+        (node("/ghost"), "/ghost"),
+        (output("ghost"), "ghost"),
+        // Each side's names are its own: the output pipe `main` is not the node `/main`, and the
+        // input pipe `cutoff` is not an output pipe.
+        (node("/main"), "/main"),
+        (output("cutoff"), "cutoff"),
+    ] {
+        let resolver = resolver_with(&seed_with_pipe());
+        let before = resolver.resolve_text(SRC).expect("seed");
+        let err = set_instrument_layout(
+            SRC,
+            &[(node("/osc"), at(1.0, 1.0)), (ghost, at(2.0, 2.0))],
+            &registry,
+            &resolver,
+        )
+        .expect_err("an unknown target refuses");
+        assert!(matches!(err, EditError::Target(_)), "got {err:?}");
+        assert!(err.to_string().contains(named), "{err}");
+        assert_eq!(
+            resolver.resolve_text(SRC).expect("still there"),
+            before,
+            "nothing written — not even the target that did exist"
+        );
+    }
+}
+
+#[test]
+fn set_layout_refuses_a_target_named_twice() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed());
+    let err = set_instrument_layout(
+        SRC,
+        &[(node("/osc"), at(1.0, 1.0)), (node("/osc"), at(2.0, 2.0))],
+        &registry,
+        &resolver,
+    )
+    .expect_err("which position is meant?");
+    assert!(err.to_string().contains("/osc"), "{err}");
+}
+
+#[test]
+fn set_layout_refuses_a_coordinate_that_would_not_reload() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed());
+    for bad in [f32::INFINITY, f32::NEG_INFINITY, f32::NAN] {
+        let err = set_instrument_layout(SRC, &[(node("/osc"), at(bad, 0.0))], &registry, &resolver)
+            .expect_err("a non-finite coordinate saves as `null`");
+        assert!(matches!(err, EditError::Target(_)), "got {err:?}");
+    }
+}

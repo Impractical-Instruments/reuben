@@ -455,6 +455,77 @@ pub struct RemoveInstrumentResource {
     pub expect: Option<String>,
 }
 
+/// Arguments for `set_instrument_layout`: canvas positions for many nodes and interface pipes,
+/// written together. An unknown target, or one named twice, refuses the whole call.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetInstrumentLayout {
+    /// The document to edit.
+    pub source: String,
+    /// One position per target.
+    pub positions: Vec<LayoutPosition>,
+    #[serde(default)]
+    pub expect: Option<String>,
+}
+
+/// One target's canvas position, in canvas units.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LayoutPosition {
+    pub target: LayoutTarget,
+    pub x: f32,
+    pub y: f32,
+}
+
+/// What a position is set on: a node address string (`/osc`, or `/<name>` for an interface input
+/// pipe), or an interface output pipe as `{ "output": name }`. Output pipes are their own
+/// namespace, so the tag is what tells `main` the output from `/main` the input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum LayoutTarget {
+    Node(String),
+    Output(OutputTarget),
+}
+
+impl<'de> Deserialize<'de> for LayoutTarget {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // By shape, by hand: derived `untagged` would also take serde's `["main"]` sequence form of
+        // `OutputTarget`, and would bury a misspelled key under "did not match any variant". The
+        // map goes straight to the derived impl rather than through a buffered `Value`, which
+        // would keep only the last of two duplicate keys and hide the duplicate.
+        struct Shape;
+
+        impl<'de> serde::de::Visitor<'de> for Shape {
+            type Value = LayoutTarget;
+
+            fn expecting(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                f.write_str("a node address string or `{\"output\": name}`")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, address: &str) -> Result<LayoutTarget, E> {
+                Ok(LayoutTarget::Node(address.into()))
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<LayoutTarget, A::Error> {
+                OutputTarget::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+                    .map(LayoutTarget::Output)
+            }
+        }
+
+        deserializer.deserialize_any(Shape)
+    }
+}
+
+/// An interface output pipe, named.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OutputTarget {
+    pub output: String,
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::string::ToString;
@@ -489,6 +560,48 @@ mod tests {
         let args: AddInstrumentInterfaceInput =
             serde_json::from_value(spelled).expect("the declared spelling parses");
         assert_eq!(args.value, Some(json!(880.0)));
+    }
+
+    /// A target is a node address string or an output tagged as one; nothing else parses, so a
+    /// guessed `{ "input": … }` fails loudly instead of landing somewhere unintended.
+    #[test]
+    fn a_layout_target_is_an_address_or_a_tagged_output() {
+        let parse = |target: serde_json::Value| {
+            serde_json::from_value::<LayoutPosition>(
+                json!({ "target": target, "x": 0.0, "y": 0.0 }),
+            )
+        };
+        assert_eq!(
+            parse(json!("/osc")).expect("an address").target,
+            LayoutTarget::Node("/osc".to_string())
+        );
+        assert_eq!(
+            parse(json!({ "output": "main" }))
+                .expect("a tagged output")
+                .target,
+            LayoutTarget::Output(OutputTarget {
+                output: "main".to_string()
+            })
+        );
+        for bad in [
+            json!({ "input": "main" }),
+            json!({ "output": "main", "node": "/osc" }),
+            json!(["main"]),
+        ] {
+            assert!(parse(bad.clone()).is_err(), "{bad} is not a target");
+        }
+        assert!(
+            serde_json::from_value::<LayoutPosition>(json!({ "target": "/osc", "x": 0.0 }))
+                .is_err(),
+            "both coordinates are required"
+        );
+        // Text, not `json!`: a `Value` has already kept only the last of two duplicate keys.
+        let twice = r#"{ "target": { "output": "a", "output": "b" }, "x": 0.0, "y": 0.0 }"#;
+        let err = serde_json::from_str::<LayoutPosition>(twice).expect_err("a repeated key");
+        assert!(
+            err.to_string().contains("duplicate field `output`"),
+            "{err}"
+        );
     }
 
     /// The closure is not confined to the verb that lost a parameter: every argument surface the
