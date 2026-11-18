@@ -51,6 +51,10 @@ keyboard for it. Linux only for now, and it needs a desktop session (X11 or Wayl
 cargo run -p reuben-editor -- instruments/groovebox.json
 ```
 
+The editor follows the files: a change to the instrument, or to any voice or subpatch file it
+references — from `reuben-mcp`, a text editor, anything — is swapped in as it is saved. A change
+that does not load is shown, and the last instrument that loaded keeps playing.
+
 The editor is in progress: editing the instrument's graph on a canvas is not there yet.
 
 ## More

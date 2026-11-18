@@ -95,6 +95,10 @@ tokio = { version = "1", default-features = false }
 # dependency tree and build time. `wayland` + `x11` are both on so one Linux binary runs under
 # either session; winit dlopens their client libraries, so building needs no -dev packages.
 eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
+# The editor's watch over the open instrument's files, so a write by anything — the editor itself,
+# `reuben-mcp`, a text editor — is seen without polling. A filesystem-event thread, not an async
+# runtime: the tokio fence is untouched.
+notify = "8"
 # Unix SIGINT/SIGTERM handler for `reuben play`'s clean shutdown:
 # std has no signal API. Already in the tree transitively (via cpal); not an async dependency,
 # so it does not touch the tokio fence. reuben-native takes it only on `cfg(unix)`.
