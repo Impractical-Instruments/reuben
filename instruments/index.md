@@ -12,7 +12,7 @@ acid-techno — Acid techno rig: a four-on-the-floor 16-step drum machine (kick,
 breath-harp — Breath-excited four-string harp: blow into the microphone and the filtered breath noise excites four modal-resonator strings tuned in fifths and octaves off one fundamental, which ring out through a saturator, an echo and a self-keyed compressor. (breath:f32 x=6, brightness:f32=0, damping:f32=0, level:f32 dB=0, mic:f32_buffer, pitch:f32 Hz=110, pluck:f32=0) → out
 chord-player — V1.3 Toy 2 — the Chord player. (brightness:f32 %=0.5, chord:note, key:i32=60) → out
 chord-player-voice — Voice patch for chord-player.json. (freq:f32_buffer Hz=440, gate:f32=0) → active, audio
-default — Default polyphonic playable rig (8 voices). () → out
+default — Default polyphonic playable rig (8 voices). (notes:note) → out
 default-voice — Default subtractive voice patch. (freq:f32_buffer Hz=440, gate:f32=0) → active, audio
 dj-strip — DJ-filter + level channel strip: the per-channel output stage -- a bipolar DJ-filter knob (`filter`, -1 lowpass down .. (audio:f32_buffer, filter:f32=0, level:f32=1) → audio
 euclidean-drums — A self-playing 4-channel Euclidean rhythm machine (kick, snare, tom, hat). (hat_decay:f32 s=0.001, hat_filter:f32=0, hat_level:f32=0.5, hat_pulses:i32 pulses=8, hat_rotation:i32 steps=0, hat_steps:i32 steps=16, kick_decay:f32 s=0.001, kick_filter:f32=0, kick_level:f32=0.85, kick_pulses:i32 pulses=4, kick_rotation:i32 steps=0, kick_steps:i32 steps=16, snare_decay:f32 s=0.001, snare_filter:f32=0, snare_level:f32=0.6, snare_pulses:i32 pulses=2, snare_rotation:i32 steps=4, snare_steps:i32 steps=16, tempo:f32 BPM=120, tom_decay:f32 s=0.001, tom_filter:f32=0, tom_level:f32=0.6, tom_pulses:i32 pulses=3, tom_rotation:i32 steps=2, tom_steps:i32 steps=16) → out

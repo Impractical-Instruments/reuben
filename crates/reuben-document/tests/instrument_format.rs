@@ -94,6 +94,31 @@ fn rms(buf: &[f32]) -> f32 {
     (buf.iter().map(|x| x * x).sum::<f32>() / buf.len() as f32).sqrt()
 }
 
+/// The default rig is playable through its interface, not only at its voicer's own port: a host
+/// that knows nothing but the interface (a controls panel, a parent instrument) can play it.
+#[test]
+fn default_instrument_plays_from_its_notes_interface_input() {
+    let cfg = AudioConfig::new(48_000.0, 256);
+    let mut plan = Plan::instantiate(load_default(), cfg).expect("instantiate");
+    let mut r = Renderer::new(&plan);
+    let mut buf = vec![0.0f32; cfg.block_size];
+    let mut all = Vec::new();
+    for b in 0..40 {
+        let msgs = if b == 0 {
+            vec![Message::new(
+                "/notes/in",
+                Note::new(Pitch::Absolute(69.0), 1.0),
+                0,
+            )]
+        } else {
+            Vec::new()
+        };
+        r.render_block(&mut plan, &msgs, &mut buf);
+        all.extend_from_slice(&buf);
+    }
+    assert!(rms(&all) > 0.01, "silent: rms {}", rms(&all));
+}
+
 #[test]
 fn default_instrument_loads_and_makes_a_440hz_tone() {
     let cfg = AudioConfig::new(48_000.0, 256);
