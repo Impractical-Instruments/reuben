@@ -52,6 +52,17 @@ pub trait EngineHost: Send + Sync {
     /// rejected report.
     fn read_document(&self, path: &str) -> Result<String, String>;
 
+    /// The source the session's resource store knows the document at `path` by. A by-path swap
+    /// resolves the document's relative references from there, so the store's
+    /// [`canonical`](crate::resources::Resources::canonical) must take this, with no referrer, to
+    /// the document [`read_document`](Self::read_document) read.
+    ///
+    /// Defaults to `path` unchanged, which is right wherever the host and the store read one key
+    /// space. A host whose `path` and whose store are relative to different places overrides it.
+    fn document_origin(&self, path: &str) -> String {
+        path.to_string()
+    }
+
     /// Hand a control batch to the engine's ingress **as one unit**, so a gesture cannot straddle
     /// a rendered block. `Err` means the ingress is gone (audio torn down) and nothing was queued.
     fn deliver_control(&self, messages: Vec<ControlMessage>) -> Result<(), IngressClosed>;
@@ -298,7 +309,8 @@ fn handle_send(state: &StructureState, messages: Vec<ControlMessage>) -> Respons
 /// half-installed document. In order:
 ///
 /// 1. **Resolve** the source to its JSON text — inline JSON re-serialized, or a read through the
-///    host. A read failure is a rejected report (no install, prior retained), not a channel error.
+///    host, which also names where a path's document resolves its own references from. A read
+///    failure is a rejected report (no install, prior retained), not a channel error.
 /// 2. **Arbitrate**: a stale `expect` rejects with the real installed hash as [`Response::Conflict`]
 ///    and does **not** swap. Absent `expect` is last-write-wins. Done here rather than inside the
 ///    Coordinator's swap, which owns no guard at all, by design.
@@ -317,6 +329,9 @@ fn handle_swap(state: &StructureState, source: DocSource, expect: Option<String>
         DocSource::Path(path) => Some(path.clone()),
         DocSource::Document(_) => None,
     };
+    let origin = installed_from
+        .as_deref()
+        .map(|path| state.host.document_origin(path));
 
     let json = match resolve_source(source, state.host.as_ref()) {
         Ok(json) => json,
@@ -339,7 +354,11 @@ fn handle_swap(state: &StructureState, source: DocSource, expect: Option<String>
     }
 
     // Unguarded by construction: arbitration was settled above.
-    let mut report = SwapReport::from_core(coordinator.swap_document(&json));
+    let mut report = SwapReport::from_core(match &origin {
+        Some(origin) => coordinator.swap_document_from(&json, origin),
+        // By value there is nowhere the document came from: the session's anchor stands.
+        None => coordinator.swap_document(&json),
+    });
     if report.report.ok {
         // The installed document advanced, so the source that named it does too — under the
         // Coordinator lock, so the two never disagree about which install a reader is looking at.

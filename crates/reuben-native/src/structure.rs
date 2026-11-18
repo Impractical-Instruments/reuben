@@ -290,13 +290,24 @@ impl NativeHost {
 }
 
 impl EngineHost for NativeHost {
-    /// A by-path swap reads the file as spelled. Resource paths *inside* the document resolve
-    /// through the Coordinator's own resolver, anchored once at `play` start against the initial
-    /// instrument's directory + the library root — so a by-path swap does not re-anchor at the
-    /// swapped file's own directory, and an unresolvable relative resource dark-degrades to a load
-    /// warning rather than a crash.
+    /// A by-path swap reads the file as spelled, against the working directory. Resource paths
+    /// *inside* the document resolve from the file's own directory, then the library root
+    /// ([`document_origin`](Self::document_origin)); one that resolves in neither dark-degrades to
+    /// a load warning rather than a crash.
     fn read_document(&self, path: &str) -> Result<String, String> {
         std::fs::read_to_string(path).map_err(|e| format!("read {path}: {e}"))
+    }
+
+    /// Absolute, because the session's `FsResolver` joins a relative source onto the launch
+    /// instrument's directory while [`read_document`](Self::read_document) read `path` against the
+    /// working directory: only an absolute spelling names the same file to both.
+    fn document_origin(&self, path: &str) -> String {
+        match std::path::absolute(path) {
+            Ok(absolute) => absolute.display().to_string(),
+            // Fails for an empty path, or a relative one with no working directory. The read
+            // fails on both, so the swap is rejected before this value is used.
+            Err(_) => path.to_string(),
+        }
     }
 
     /// **One `send` on the channel, not one per message.** That single push is what makes the

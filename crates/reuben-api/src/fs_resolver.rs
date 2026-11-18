@@ -331,6 +331,70 @@ mod tests {
         ));
     }
 
+    /// A reference in the launch document has one identity whether it is resolved from the
+    /// session's base directory or with the launch file's own canonical id as the referrer —
+    /// however the launch path and the later spelling of it were written, and with or without a
+    /// library root. That equality is what lets a by-path swap of the launch file keep its
+    /// survivors.
+    #[test]
+    fn a_launch_files_references_are_one_identity_from_the_base_or_from_the_file() {
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let dir =
+            std::env::temp_dir().join(format!("reuben_launch_identity_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _scratch = Scratch(dir.clone());
+        std::fs::create_dir_all(dir.join("lib/voices")).unwrap();
+        std::fs::create_dir_all(dir.join("root/voices")).unwrap();
+        std::fs::write(dir.join("lib/voices/here.json"), "{}").unwrap();
+        std::fs::write(dir.join("root/voices/shared.json"), "{}").unwrap();
+
+        let absolute_launch = dir.join("lib/top.json");
+        // The same file, spelled relative to the working directory.
+        let relative_launch = Path::new("reuben_launch_identity_relative/lib/top.json");
+        let references = [
+            "voices/here.json",
+            "./voices/here.json",
+            "voices/../voices/here.json",
+            "voices/shared.json",
+            "voices/missing.json",
+            "../elsewhere.wav",
+        ];
+
+        for launch in [absolute_launch.as_path(), relative_launch] {
+            // What a host hands in as the swapped file's origin: absolute, not yet normalized.
+            let origin = std::path::absolute(launch).unwrap();
+            let respelled = origin.parent().unwrap().join("voices/../top.json");
+            for resolver in [
+                FsResolver::for_instrument(launch),
+                FsResolver::for_instrument(launch).with_root(dir.join("root")),
+            ] {
+                for origin in [&origin, &respelled] {
+                    let anchor = resolver.canonical(&origin.display().to_string(), None);
+                    assert_eq!(anchor, absolute(launch.to_path_buf()).display().to_string());
+                    for reference in references {
+                        assert_eq!(
+                            resolver.canonical(reference, None),
+                            resolver.canonical(reference, Some(&anchor)),
+                            "{reference} from {}",
+                            launch.display()
+                        );
+                    }
+                }
+            }
+        }
+        let rooted = FsResolver::for_instrument(&absolute_launch).with_root(dir.join("root"));
+        assert_eq!(
+            Path::new(&rooted.canonical("voices/shared.json", None)),
+            dir.join("root/voices/shared.json"),
+            "the root case above compared two root hits, not two misses"
+        );
+    }
+
     /// The write half round-trips through `read_text`, creating a missing parent directory
     /// so a brand-new document lands where the author addressed it.
     #[test]

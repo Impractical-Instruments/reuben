@@ -14,6 +14,7 @@
 use crate::contract::{content_hash, Diag, Report, SwapReport};
 use crate::engine::FromDocumentError;
 use crate::format::{load_instrument_doc, LoadWarning, NormalizedDoc};
+use crate::projection::Rebased;
 use crate::resources::ResourceResolver;
 use reuben_core::config::AudioConfig;
 use reuben_core::coordinator::{InstallBundle, RenderSide};
@@ -208,6 +209,22 @@ impl Coordinator {
     /// Coordinator at all). Do not re-add the parameter: it would be a second implementation of
     /// one decision, reachable only from its own test.
     pub fn swap_document(&mut self, source: &str) -> SwapReport {
+        self.swap(source, None)
+    }
+
+    /// [`swap_document`](Self::swap_document) for a document that was read from somewhere:
+    /// `origin` names where, and the document's own references resolve relative to it rather than
+    /// to the session's anchor — as a nested document's already do, one level down.
+    ///
+    /// `origin` is a source the session's resolver identifies at the top level (its
+    /// [`canonical`](ResourceResolver::canonical) with no referrer), so for a path-shaped resolver
+    /// it must not depend on that resolver's own base. A resolver whose sources are exact keys
+    /// ignores the referrer, and this is then [`swap_document`](Self::swap_document) exactly.
+    pub fn swap_document_from(&mut self, source: &str, origin: &str) -> SwapReport {
+        self.swap(source, Some(origin))
+    }
+
+    fn swap(&mut self, source: &str, origin: Option<&str>) -> SwapReport {
         // Reclaim BEFORE the build, not only inside the commit. `commit_swap` reclaims too, but by
         // the time it runs the freshly built Engine is already alive — so reclaiming only there
         // would raise this call's peak to live + retiree + new, where it has always been live +
@@ -215,7 +232,11 @@ impl Coordinator {
         // keeps the one-call form byte-for-byte the swap it was; the second call is then a
         // no-op load on an empty slot.
         self.mailbox.try_reclaim();
-        match self.prepare_document(source) {
+        let prepared = match origin {
+            Some(origin) => self.prepare_document_from(source, origin),
+            None => self.prepare_document(source),
+        };
+        match prepared {
             Ok(prepared) => self.commit_swap(prepared),
             Err(rejected) => rejected,
         }
@@ -240,15 +261,41 @@ impl Coordinator {
     // everywhere else (`swap_document` returns this same type unboxed).
     #[allow(clippy::result_large_err)]
     pub fn prepare_document(&self, source: &str) -> Result<PreparedSwap, SwapReport> {
+        self.prepare(source, &*self.resolver)
+    }
+
+    /// [`prepare_document`](Self::prepare_document) for a document read from `origin`: the first
+    /// half of [`swap_document_from`](Self::swap_document_from).
+    #[allow(clippy::result_large_err)]
+    pub fn prepare_document_from(
+        &self,
+        source: &str,
+        origin: &str,
+    ) -> Result<PreparedSwap, SwapReport> {
+        // One resolver for the load and for the manifest walk: a resource identified from two
+        // anchors would be two resources, and its node would never match itself across a Swap.
+        let anchored = Rebased {
+            inner: &*self.resolver,
+            referrer: self.resolver.canonical(origin, None),
+        };
+        self.prepare(source, &anchored)
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn prepare(
+        &self,
+        source: &str,
+        resolver: &dyn ResourceResolver,
+    ) -> Result<PreparedSwap, SwapReport> {
         // Parse + normalize (the loader is the single validation authority).
-        let doc = match NormalizedDoc::from_json(source, &self.registry, Some(&*self.resolver)) {
+        let doc = match NormalizedDoc::from_json(source, &self.registry, Some(resolver)) {
             Ok(d) => d,
             Err(e) => return Err(self.reject(vec![Diag::from_load(&e)])),
         };
 
         // Build the whole new Engine + its manifest off-thread.
         let (engine, manifest, warnings) =
-            match build_engine(&doc, &self.registry, &*self.resolver, self.config) {
+            match build_engine(&doc, &self.registry, resolver, self.config) {
                 Ok(built) => built,
                 Err(FromDocumentError::Load(e)) => {
                     return Err(self.reject(vec![Diag::from_load(&e)]))
@@ -645,6 +692,26 @@ mod tests {
         rig.poll_install();
         coord.try_reclaim();
         rig.render_peak(2_048)
+    }
+
+    #[test]
+    fn an_origin_changes_nothing_for_a_resolver_of_exact_keys() {
+        // `MemoryResolver` keeps the default `canonical`, which ignores the referrer: the voice is
+        // found under its literal key whatever the document's origin, and resolves to the one
+        // identity the initial install gave it, so both nodes survive.
+        let (mut coord, _side, _w) = Coordinator::install_initial(
+            &voicer_doc(4),
+            Registry::builtin(),
+            Box::new(voice_resolver()),
+            cfg(),
+        )
+        .expect("initial install");
+        let report = coord.swap_document_from(&voicer_doc(4), "songs/elsewhere/top.json");
+        assert!(report.report.ok, "{:?}", report.report);
+        assert!(report.report.warnings.is_empty(), "{:?}", report.report);
+        let diff = report.diff.expect("an installed swap carries a diff");
+        assert_eq!(diff.survived, 2, "{diff:?}");
+        assert!(diff.state_reset.is_empty(), "{diff:?}");
     }
 
     #[test]
