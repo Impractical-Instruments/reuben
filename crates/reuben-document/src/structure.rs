@@ -107,7 +107,9 @@ pub struct Resource {
     pub id: String,
     pub source: String,
     /// [`ResourceResolver::canonical`] of `source` with no referrer — the call a load of this
-    /// document makes, so this is the source the loader reads.
+    /// document makes, so this is the source the loader reads. It is the right file only when the
+    /// resolver's top level is this document, which is true of a resolver scoped to it and not of
+    /// one shared with the document that nests it.
     pub canonical: String,
 }
 
@@ -132,7 +134,13 @@ pub fn read(
         .collect();
     localize_wires(doc, registry, resolver, &mut report);
 
-    let source = |reference: &str| wire_source(doc, &faces, reference);
+    let index: BTreeMap<&str, usize> = doc
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.address.as_str(), i))
+        .collect();
+    let source = |reference: &str| wire_source(doc, &faces, &index, reference);
     let nodes = doc
         .nodes
         .iter()
@@ -282,6 +290,13 @@ impl Children<'_> {
                 let said =
                     report.ok && unavailable && report.warnings.iter().any(|w| w.node == diag.node);
                 if !report.ok && !unavailable {
+                    // The loader's own error for this failure is localized on a node of the
+                    // *child*, an address that names nothing in this document or, worse, one of
+                    // its unrelated nodes. `diag` carries the same text on the node that holds
+                    // the child, so the loader's copy goes.
+                    report.errors.retain(|d| {
+                        d.message == diag.message || !diag.message.contains(&d.message)
+                    });
                     report.errors.push(diag);
                 } else if !said {
                     report.warnings.push(diag);
@@ -403,7 +418,12 @@ fn localize_wires(
 
 /// Read a wire-ref the way pass 2 does: a reference that names a whole address is that address,
 /// before the last `.` is taken for a port separator.
-fn wire_source(doc: &NormalizedDoc, faces: &[Face], reference: &str) -> Source {
+fn wire_source(
+    doc: &NormalizedDoc,
+    faces: &[Face],
+    index: &BTreeMap<&str, usize>,
+    reference: &str,
+) -> Source {
     let pipe = |address: &str| {
         let name = address.strip_prefix('/')?;
         doc.interface
@@ -411,7 +431,7 @@ fn wire_source(doc: &NormalizedDoc, faces: &[Face], reference: &str) -> Source {
             .is_some_and(|i| i.inputs.contains_key(name))
             .then(|| name.to_string())
     };
-    let node = |address: &str| doc.nodes.iter().position(|n| n.address == address);
+    let node = |address: &str| index.get(address).copied();
     let (address, port) = if node(reference).is_some() || pipe(reference).is_some() {
         (reference, None)
     } else {

@@ -646,6 +646,11 @@ pub fn wire_compatibility(
 /// Not a roster verb: it is what an editor draws from, and the only read that reports `layout`. A
 /// document that does not **load** is still read in full, with the load report saying where it is
 /// broken; only one that cannot be read or parsed is a refusal.
+///
+/// `resources` must be scoped to `source`, as for every document verb: the document's references
+/// resolve from the store's top level. To follow a resource into the document it names, read that
+/// document through a store scoped to *its* canonical source. One store reused down the tree
+/// resolves a nested document's references from the wrong place and reports them missing.
 pub fn read_instrument(
     args: &ReadInstrument,
     resources: &dyn Resources,
@@ -1643,6 +1648,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_read_carries_the_documents_description_and_an_output_pipes_declared_unit() {
+        let store = MemoryStore::with(
+            "inst.json",
+            r#"{ "format_version": 3, "instrument": "v", "doc": "what it is for",
+                 "interface": { "outputs": {
+                   "level": { "from": "/osc.audio", "unit": "dB" } } },
+                 "nodes": [ { "type": "oscillator", "address": "/osc" } ] }"#,
+        );
+        let doc = read("inst.json", &store);
+        assert!(doc.report.ok, "{:?}", doc.report);
+        assert_eq!(doc.description.as_deref(), Some("what it is for"));
+        let level = &doc.outputs[0];
+        assert_eq!(level.name, "level");
+        assert_eq!(level.unit.as_deref(), Some("dB"));
+    }
+
     /// An interface input is described from its declaration, and that is the port the boundary
     /// read reports once the document loads.
     #[test]
@@ -1690,7 +1712,7 @@ mod tests {
     /// A voicer's wires land on its own ports; the voice patch's interface is reported beside
     /// them, not in their place.
     #[test]
-    fn a_voicer_node_reports_its_childs_interface_as_ports() {
+    fn a_voicer_node_reports_its_own_ports_and_its_voice_beside_them() {
         let store = MemoryStore::with(
             "inst.json",
             r#"{ "format_version": 3, "instrument": "poly",
@@ -1845,6 +1867,9 @@ mod tests {
             doc.report
         );
         assert!(!node(&doc, "/flt").ports.inputs.is_empty());
+        // The child's own error names a node of the child. Left in the report it would point at
+        // nothing here, or at whichever of this document's nodes shares that address.
+        assert_eq!(doc.report.errors.len(), 1, "{:?}", doc.report);
     }
 
     /// An unreadable child degrades a load rather than failing it, and the loader's own warning
@@ -1971,6 +1996,47 @@ mod tests {
             let sub = node(&doc, "/vca");
             assert_eq!(sub.ports.inputs, vca.inputs);
             assert_eq!(sub.ports.outputs, vca.outputs);
+        }
+
+        /// The walk a host makes to find every file an instrument is built from: each document
+        /// read through a store scoped to it, each document resource followed by its canonical
+        /// source.
+        #[test]
+        fn every_file_under_a_library_instrument_is_found_by_following_canonical_sources() {
+            fn walk(source: &str, found: &mut Vec<String>) {
+                let doc = read(source, &FsResolver::for_document(source));
+                assert!(doc.report.ok, "{source}: {:?}", doc.report);
+                assert!(
+                    doc.report
+                        .warnings
+                        .iter()
+                        .all(|w| !w.message.contains("not found")),
+                    "{source}: {:?}",
+                    doc.report
+                );
+                for resource in &doc.resources {
+                    assert!(
+                        Path::new(&resource.canonical).is_file(),
+                        "{source}: {} is not a file",
+                        resource.canonical
+                    );
+                    if resource.canonical.ends_with(".json") && !found.contains(&resource.canonical)
+                    {
+                        found.push(resource.canonical.clone());
+                        walk(&resource.canonical, found);
+                    }
+                }
+            }
+            let mut found = Vec::new();
+            walk(&library("acid-techno.json"), &mut found);
+
+            let names: Vec<&str> = found
+                .iter()
+                .filter_map(|p| Path::new(p).file_name()?.to_str())
+                .collect();
+            for nested in ["kick-voice.json", "shaped-vca.json", "hat-voice.json"] {
+                assert!(names.contains(&nested), "{nested} not reached: {names:?}");
+            }
         }
 
         /// From the top-level document and from a nested voice file alike, a resource resolves
