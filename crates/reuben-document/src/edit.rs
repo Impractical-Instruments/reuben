@@ -32,7 +32,7 @@ use crate::format::{
     Layout, NodeDoc, NormalizedDoc, OutputPipeDoc, PipeDefault, FORMAT_VERSION, PIPE_INPUT_PORT,
 };
 use crate::introspect::validate;
-use crate::projection::{Projector, Scalar, Selection};
+use crate::projection::{Projector, Rebased, Scalar, Selection};
 use crate::resources::{ResolveError, ResourceResolver};
 use crate::vocabulary::Section;
 use reuben_core::Registry;
@@ -495,6 +495,58 @@ pub fn new_instrument(
         source,
         registry,
         resolver,
+        doc,
+        Applied::clean(Echo::Nodes(Selection::names(["/"]))),
+        String::new(),
+    )
+}
+
+/// What [`copy_instrument`] canonicalizes against each document to learn whether a reference means
+/// the same thing from both. `.` rather than a file name: a path-shaped store answers with the
+/// referrer's own directory, and no store's fallback search (a library root) can find a *file*
+/// there to answer with instead, which a plausible sibling name would allow.
+const DIRECTORY_PROBE: &str = ".";
+
+/// Write the document at `from` to the new source `to`, through the same pipeline as every other
+/// verb: the copy is validated whole **at `to`** — its references resolved from there, not from
+/// wherever the resolver's top level is — and written only if valid.
+///
+/// Refuses to overwrite a document at `to`, and refuses a `to` whose relative references would
+/// not resolve where `from`'s do. On a copy that fails validation nothing is at `to`, so the
+/// result's hash is empty.
+pub fn copy_instrument(
+    from: &str,
+    to: &str,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+) -> Result<EditResult, EditError> {
+    if resolver.resolve_text(to).is_ok() {
+        return Err(EditError::Target(format!(
+            "a document already exists at `{to}`; choose a new source for the copy"
+        )));
+    }
+    let from_id = resolver.canonical(from, None);
+    let to_id = resolver.canonical(to, None);
+    if resolver.canonical(DIRECTORY_PROBE, Some(&from_id))
+        != resolver.canonical(DIRECTORY_PROBE, Some(&to_id))
+    {
+        return Err(EditError::Target(format!(
+            "`{to}` is not in the same directory as `{from}`: the document's relative resource \
+             paths would stop resolving there; choose a source beside the original"
+        )));
+    }
+    let json = resolver.resolve_text(from).map_err(EditError::Read)?;
+    let at_to = Rebased {
+        inner: resolver,
+        referrer: to_id,
+    };
+    let doc = NormalizedDoc::from_json(&json, registry, Some(&at_to))
+        .map_err(|e| EditError::Parse(e.to_string()))?
+        .into_inner();
+    finish(
+        to,
+        registry,
+        &at_to,
         doc,
         Applied::clean(Echo::Nodes(Selection::names(["/"]))),
         String::new(),

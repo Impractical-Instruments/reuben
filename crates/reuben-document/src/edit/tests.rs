@@ -510,6 +510,159 @@ fn new_instrument_creates_a_valid_document_and_refuses_to_overwrite() {
     assert!(matches!(err, EditError::Target(_)), "got {err:?}");
 }
 
+// --- copy_instrument -----------------------------------------------------------------------------
+
+/// A path-shaped store over memory: a key is `dir/name`, and a reference resolves beside the
+/// document that makes it. The identity-keyed [`MemoryResolver`] has no directories at all, so it
+/// cannot show the one refusal that depends on them.
+struct Foldered(MemoryResolver);
+
+impl Foldered {
+    /// The shipped kick voice and the one document it nests, as `voices/` siblings.
+    fn voices() -> Self {
+        let mut texts = MemoryResolver::new();
+        texts.insert_text(
+            "voices/kick-voice.json",
+            include_str!("../../../../instruments/voices/kick-voice.json"),
+        );
+        texts.insert_text(
+            "voices/shaped-vca.json",
+            include_str!("../../../../instruments/voices/shaped-vca.json"),
+        );
+        Foldered(texts)
+    }
+}
+
+impl ResourceResolver for Foldered {
+    fn resolve(&self, source: &str) -> Result<reuben_core::resources::SampleBuffer, ResolveError> {
+        self.0.resolve(source)
+    }
+
+    fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
+        self.0.resolve_text(source)
+    }
+
+    fn write_text(&self, source: &str, text: &str) -> Result<(), ResolveError> {
+        self.0.write_text(source, text)
+    }
+
+    fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
+        match referrer.and_then(|r| r.rsplit_once('/')) {
+            Some((dir, _)) => format!("{dir}/{source}"),
+            None => source.to_string(),
+        }
+    }
+}
+
+const KICK: &str = "voices/kick-voice.json";
+
+fn hash_at(resolver: &dyn ResourceResolver, source: &str) -> String {
+    let json = resolver.resolve_text(source).expect("read");
+    content_hash(
+        &NormalizedDoc::from_json(&json, &Registry::builtin(), Some(resolver)).expect("mint"),
+    )
+}
+
+#[test]
+fn copy_writes_a_valid_document_beside_the_original_with_its_hash() {
+    let registry = Registry::builtin();
+    let resolver = Foldered::voices();
+    let original = resolver.resolve_text(KICK).unwrap();
+
+    let result =
+        copy_instrument(KICK, "voices/kick-copy.json", &registry, &resolver).expect("copy");
+
+    assert!(result.written, "{:?}", result.report);
+    // Warning-clean is what shows the copy was validated where it landed: read from the store's
+    // top level instead, its `shaped-vca.json` reference names a key nothing is stored under.
+    assert!(
+        result.report.ok && result.report.warnings.is_empty(),
+        "{:?}",
+        result.report
+    );
+    assert_eq!(result.hash, hash_at(&resolver, KICK));
+    assert_eq!(result.hash, hash_at(&resolver, "voices/kick-copy.json"));
+    assert_eq!(resolver.resolve_text(KICK).unwrap(), original);
+}
+
+#[test]
+fn copy_refuses_an_existing_destination_and_leaves_it_alone() {
+    let registry = Registry::builtin();
+    let resolver = Foldered::voices();
+    let taken = resolver.resolve_text("voices/shaped-vca.json").unwrap();
+
+    let err = copy_instrument(KICK, "voices/shaped-vca.json", &registry, &resolver)
+        .expect_err("no overwrite");
+
+    assert!(matches!(err, EditError::Target(_)), "got {err:?}");
+    assert_eq!(
+        resolver.resolve_text("voices/shaped-vca.json").unwrap(),
+        taken
+    );
+}
+
+#[test]
+fn copy_refuses_a_destination_in_another_directory() {
+    let registry = Registry::builtin();
+    let resolver = Foldered::voices();
+
+    for elsewhere in [
+        "kits/kick-copy.json",
+        "voices/deep/kick-copy.json",
+        "kick-copy.json",
+    ] {
+        let err = copy_instrument(KICK, elsewhere, &registry, &resolver)
+            .expect_err("its references would resolve somewhere else");
+        assert!(matches!(err, EditError::Target(_)), "got {err:?}");
+        assert!(
+            resolver.resolve_text(elsewhere).is_err(),
+            "{elsewhere} was written"
+        );
+    }
+}
+
+/// A store whose sources are exact keys has no directories: a reference means the same thing
+/// from every document, so there is no destination a copy's references could break at.
+#[test]
+fn copy_between_any_two_keys_of_a_store_without_directories() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed());
+
+    let result = copy_instrument(SRC, "elsewhere/copy.json", &registry, &resolver).expect("copy");
+
+    assert!(result.written, "{:?}", result.report);
+    assert_eq!(result.hash, hash_at(&resolver, SRC));
+}
+
+#[test]
+fn copy_of_a_document_that_fails_validation_writes_nothing() {
+    let registry = Registry::builtin();
+    // Parses and normalizes, but names an operator the registry does not hold.
+    let resolver = resolver_with(&seed().replace("oscillator", "nosuchoperator"));
+
+    let result = copy_instrument(SRC, "copy.json", &registry, &resolver)
+        .expect("the copy ran; its report is what says no");
+
+    assert!(!result.report.ok && !result.written, "{:?}", result.report);
+    assert!(
+        resolver.resolve_text("copy.json").is_err(),
+        "an invalid copy was written"
+    );
+}
+
+#[test]
+fn copy_of_a_source_that_is_not_a_document_writes_nothing() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with("{ not json");
+
+    let err = copy_instrument(SRC, "copy.json", &registry, &resolver).expect_err("unparseable");
+    assert!(matches!(err, EditError::Parse(_)), "got {err:?}");
+    let err = copy_instrument("absent.json", "copy.json", &registry, &resolver)
+        .expect_err("nothing to copy");
+    assert!(matches!(err, EditError::Read(_)), "got {err:?}");
+    assert!(resolver.resolve_text("copy.json").is_err());
+}
+
 // --- interface + resources -----------------------------------------------------------------------
 
 #[test]

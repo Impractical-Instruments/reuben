@@ -1173,9 +1173,9 @@ impl<'a> Projector<'a> {
 /// its own references would otherwise canonicalize against the *root*; wrapping the door's resolver
 /// this way makes them canonicalize against the child, which is exactly what a real load does.
 /// Everything else forwards untouched — the door still owns what a source means.
-struct Rebased<'r> {
-    inner: &'r dyn ResourceResolver,
-    referrer: String,
+pub(crate) struct Rebased<'r> {
+    pub(crate) inner: &'r dyn ResourceResolver,
+    pub(crate) referrer: String,
 }
 
 impl ResourceResolver for Rebased<'_> {

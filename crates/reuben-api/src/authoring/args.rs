@@ -120,6 +120,17 @@ pub struct NewInstrument {
     pub name: String,
 }
 
+/// Arguments for `copy_instrument`: the document to copy, and where the copy goes.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CopyInstrument {
+    /// The document to copy. It is not changed.
+    pub from: String,
+    /// Where to write the copy: a new source in the same directory as `from`. Refuses to overwrite
+    /// an existing document.
+    pub to: String,
+}
+
 /// Arguments for `set_instrument_name`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
