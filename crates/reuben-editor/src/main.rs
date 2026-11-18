@@ -1,5 +1,7 @@
 //! `reuben-editor` — the desktop instrument editor.
 
+mod audio;
+mod config;
 mod engine;
 
 use std::path::PathBuf;
@@ -7,8 +9,10 @@ use std::path::PathBuf;
 use clap::{CommandFactory, Parser};
 use eframe::egui;
 use reuben_native::cli::{EngineFlags, InstrumentRoot};
-use reuben_native::engine::Instrument;
+use reuben_native::engine::{EngineConfig, Instrument};
 
+use crate::audio::AudioSettings;
+use crate::config::ConfigDir;
 use crate::engine::{Engine, Level};
 
 #[derive(Parser)]
@@ -45,33 +49,45 @@ fn main() -> eframe::Result {
         options,
         // The engine starts here rather than before `run_native` so a session whose window never
         // opens never takes the audio device or the ports.
-        Box::new(|_cc| Ok(Box::new(Editor::new(start(args))))),
+        Box::new(|_cc| {
+            let mut audio = AudioSettings::load(ConfigDir::user());
+            let engine = start(args, &mut audio, Engine::start);
+            Ok(Box::new(Editor::new(engine, audio)))
+        }),
     )
 }
 
-fn start(args: Args) -> Engine {
+/// The engine `args` ask for, on the stored audio choice unless `args` name an `--io-map`.
+/// `start_engine` is [`Engine::start`], or a test's stand-in that opens no device.
+fn start(
+    args: Args,
+    audio: &mut AudioSettings,
+    start_engine: impl FnOnce(EngineConfig) -> Engine,
+) -> Engine {
     let Some(path) = args.path else {
         return Engine::idle();
     };
     let root = args.instrument_root.resolve();
-    match args.engine.config(Instrument::Path(path), root) {
-        Ok(config) => Engine::start(config),
+    match audio.engine_config(&args.engine, Instrument::Path(path), root) {
+        Ok(config) => start_engine(config),
         Err(e) => Engine::not_started(e),
     }
 }
 
 struct Editor {
     engine: Engine,
+    audio: AudioSettings,
 }
 
 impl Editor {
-    fn new(engine: Engine) -> Self {
-        Self { engine }
+    fn new(engine: Engine, audio: AudioSettings) -> Self {
+        Self { engine, audio }
     }
 }
 
 impl eframe::App for Editor {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        egui::Panel::top("audio").show(ui, |ui| self.audio.ui(ui, &mut self.engine));
         // The root `Ui` paints no background of its own, leaving eframe's clear color; the panel
         // frame paints the theme's fill instead.
         egui::Frame::central_panel(ui.style()).show(ui, |ui| {
@@ -98,16 +114,26 @@ impl eframe::App for Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::tests::two_devices;
+    use crate::config::test_support::TempConfig;
+
+    fn start_nothing(args: Args) -> Engine {
+        let temp = TempConfig::new();
+        let mut audio = AudioSettings::load_with(temp.dir(), two_devices);
+        start(args, &mut audio, |_| {
+            panic!("these arguments describe no engine to start")
+        })
+    }
 
     #[test]
     fn no_instrument_starts_no_engine() {
-        let engine = start(Args::parse_from(["reuben-editor"]));
+        let engine = start_nothing(Args::parse_from(["reuben-editor"]));
         assert!(engine.report().is_empty());
     }
 
     #[test]
     fn a_bad_io_map_is_reported_not_started() {
-        let engine = start(Args::parse_from([
+        let engine = start_nothing(Args::parse_from([
             "reuben-editor",
             "--io-map",
             "does-not-exist.json",

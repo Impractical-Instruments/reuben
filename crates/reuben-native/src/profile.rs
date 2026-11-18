@@ -21,8 +21,8 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct SideProfile {
-    /// Select a device by case-insensitive name substring. Omitted = the host's default
-    /// device (today's only behavior).
+    /// Select a device by case-insensitive name: the device named exactly this, else the first
+    /// whose name contains it. Omitted = the host's default device (today's only behavior).
     #[serde(default)]
     pub device: Option<String>,
     /// Output: logical channel → device channel. Input: device channel → logical channel.

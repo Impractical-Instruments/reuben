@@ -13,6 +13,9 @@ eframe.workspace = true
 clap.workspace = true
 # As a library: the engine entry point `reuben play` is a caller of, and the flags it starts from.
 reuben-native = { path = "../reuben-native" }
+# The per-user state under the config directory (the stored audio device choice) is JSON.
+serde = { workspace = true, features = ["std"] }
+serde_json.workspace = true
 
 [dev-dependencies]
 # The tests reach the embedded engine the way the sidecar does: reuben-mcp's own link over the

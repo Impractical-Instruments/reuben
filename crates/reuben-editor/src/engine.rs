@@ -3,11 +3,16 @@
 //!
 //! Starting never panics. Whatever [`reuben_native::engine::start`] reports becomes a [`Line`] the
 //! window shows, printed to the terminal as well.
+//!
+//! The audio streams are fixed when the engine starts, so a change of device profile is a
+//! [`restart`](Engine::restart_with): the engine stops, frees its ports, and starts again on the
+//! instrument it was playing. Voice state and uncommitted live values do not survive it.
 
 use std::fmt;
 use std::io;
 
 use reuben_native::engine::{self, EngineConfig, Instrument, RunningEngine, StartError};
+use reuben_native::profile::DeviceProfile;
 
 /// How serious a [`Line`] is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +53,9 @@ impl fmt::Display for Line {
 /// Not `Send`, because [`RunningEngine`] is not: it lives on the UI thread that started it.
 pub struct Engine {
     running: Option<RunningEngine>,
+    /// What the last start was asked for, kept whether or not it succeeded, so a restart can try
+    /// again with another profile. `None` when no start was ever attempted.
+    config: Option<EngineConfig>,
     report: Vec<Line>,
 }
 
@@ -56,13 +64,14 @@ impl Engine {
     pub fn idle() -> Self {
         Self {
             running: None,
+            config: None,
             report: Vec::new(),
         }
     }
 
     /// Nothing runs because the engine could not even be configured.
     pub fn not_started(error: impl fmt::Display) -> Self {
-        Self::reported(None, vec![Line::new(Level::Error, error.to_string())])
+        Self::reported(None, None, vec![Line::new(Level::Error, error.to_string())])
     }
 
     /// Start the engine on the audio device `config.profile` selects.
@@ -71,10 +80,11 @@ impl Engine {
     }
 
     /// [`start`](Self::start) through `start`, the seam a test puts the headless engine in.
-    fn start_with(
+    pub(crate) fn start_with(
         config: EngineConfig,
         start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
     ) -> Self {
+        let kept = Some(config.clone());
         let structure = config.structure.clone();
         let mut report = vec![Line::new(
             Level::Info,
@@ -87,7 +97,7 @@ impl Engine {
             Ok(running) => running,
             Err(e) => {
                 report.push(Line::new(Level::Error, start_error(&e)));
-                return Self::reported(None, report);
+                return Self::reported(None, kept, report);
             }
         };
 
@@ -132,21 +142,64 @@ impl Engine {
             )),
             (None, None) => {}
         }
-        Self::reported(Some(running), report)
+        Self::reported(Some(running), kept, report)
     }
 
-    fn reported(running: Option<RunningEngine>, report: Vec<Line>) -> Self {
+    /// Stop the engine and start it again through `start` with `profile`, on the instrument it is
+    /// playing now — which is the last one swapped in, not necessarily the one it started on.
+    /// Every port is freed and bound again, and [`report`](Self::report) becomes what this start
+    /// reported, a port that would not rebind included. Does nothing when no start was ever
+    /// attempted.
+    ///
+    /// `start` is [`engine::start`], or the headless engine in a test.
+    pub fn restart_with(
+        &mut self,
+        profile: DeviceProfile,
+        start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
+    ) {
+        let Some(mut config) = self.config.take() else {
+            return;
+        };
+        // A swap installed by value has no source to start again from; the engine then goes
+        // back to the instrument it started on.
+        let playing = self
+            .running
+            .as_ref()
+            .and_then(|running| running.channel().get_document().ok())
+            .and_then(|document| document.source);
+        if let Some(source) = playing {
+            config.instrument = Instrument::Path(source.into());
+        }
+        config.profile = profile;
+        self.shutdown();
+        *self = Self::start_with(config, start);
+    }
+
+    /// The profile the last start was asked for; `None` when no start was ever attempted.
+    pub fn profile(&self) -> Option<&DeviceProfile> {
+        self.config.as_ref().map(|config| &config.profile)
+    }
+
+    fn reported(
+        running: Option<RunningEngine>,
+        config: Option<EngineConfig>,
+        report: Vec<Line>,
+    ) -> Self {
         for line in &report {
             match line.level {
                 Level::Info => println!("{line}"),
                 Level::Warning | Level::Error => eprintln!("{line}"),
             }
         }
-        Self { running, report }
+        Self {
+            running,
+            config,
+            report,
+        }
     }
 
     #[cfg(test)]
-    fn running(&self) -> Option<&RunningEngine> {
+    pub(crate) fn running(&self) -> Option<&RunningEngine> {
         self.running.as_ref()
     }
 
@@ -181,6 +234,31 @@ fn already_running(error: &io::Error) -> &'static str {
 }
 
 #[cfg(test)]
+pub(crate) mod test_support {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    pub const HANG_SECS: u64 = 10;
+
+    pub fn library(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../instruments")
+            .join(name)
+    }
+
+    /// `reuben play`'s config with ephemeral loopback ports, so parallel tests and a `reuben play`
+    /// on the same machine never collide.
+    pub fn config(instrument: PathBuf) -> EngineConfig {
+        EngineConfig {
+            osc_in: Some("127.0.0.1:0".to_string()),
+            structure: Some("127.0.0.1:0".to_string()),
+            ..EngineConfig::new(Instrument::Path(instrument))
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::net::{SocketAddr, TcpListener, UdpSocket};
     use std::path::PathBuf;
@@ -195,25 +273,8 @@ mod tests {
     use reuben_native::osc;
     use reuben_native::test_support::{start_headless, within};
 
+    use super::test_support::{config, library, HANG_SECS};
     use super::*;
-
-    const HANG_SECS: u64 = 10;
-
-    fn library(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../instruments")
-            .join(name)
-    }
-
-    /// `reuben play`'s config with ephemeral loopback ports, so parallel tests and a `reuben play`
-    /// on the same machine never collide.
-    fn config(instrument: PathBuf) -> EngineConfig {
-        EngineConfig {
-            osc_in: Some("127.0.0.1:0".to_string()),
-            structure: Some("127.0.0.1:0".to_string()),
-            ..EngineConfig::new(Instrument::Path(instrument))
-        }
-    }
 
     fn errors(engine: &Engine) -> Vec<&str> {
         engine
@@ -408,5 +469,70 @@ mod tests {
         });
         UdpSocket::bind(osc_in).expect("the OSC-in port is free");
         TcpListener::bind(structure).expect("the structure port is free");
+    }
+
+    #[test]
+    fn a_restart_plays_what_was_last_swapped_in_with_the_new_profile() {
+        within(HANG_SECS, || {
+            let mut engine =
+                Engine::start_with(config(library("acid-techno.json")), start_headless);
+            let link = |engine: &Engine| {
+                let addr = engine
+                    .running()
+                    .and_then(RunningEngine::structure_addr)
+                    .expect("the structure server bound");
+                EngineLink::new(addr.to_string())
+            };
+            let store = |_: Option<&str>| FsResolver::new(library(""));
+
+            let target = library("groovebox.json").display().to_string();
+            let swapped = swap_instrument(
+                &SwapInstrument {
+                    path: target.clone(),
+                    expect: None,
+                },
+                link(&engine).structure(),
+            )
+            .expect("the swap reached the engine");
+            assert!(swapped.output.report.report.ok, "{}", swapped.summary);
+            let before = get_current_instrument(link(&engine).structure(), store)
+                .expect("read over TCP")
+                .output;
+
+            let mut profile = DeviceProfile::default();
+            profile.output.device = Some("Scarlett".to_string());
+            let mut started_with = None;
+            engine.restart_with(profile.clone(), |config| {
+                started_with = Some(config.profile.clone());
+                start_headless(config)
+            });
+
+            assert_eq!(errors(&engine), Vec::<&str>::new());
+            assert_eq!(started_with, Some(profile.clone()));
+            assert_eq!(engine.profile(), Some(&profile));
+            // The sidecar reaches the restarted engine on the port it bound again.
+            let after = get_current_instrument(link(&engine).structure(), store)
+                .expect("read over TCP")
+                .output;
+            assert_eq!(after.source.as_deref(), Some(target.as_str()));
+            assert_eq!(after.content_hash, before.content_hash);
+            engine.shutdown();
+        });
+    }
+
+    #[test]
+    fn a_restart_with_no_start_behind_it_does_nothing() {
+        let mut idle = Engine::idle();
+        idle.restart_with(DeviceProfile::default(), |_| {
+            panic!("an idle editor has nothing to restart")
+        });
+        assert!(idle.running().is_none());
+        assert!(idle.report().is_empty());
+
+        let mut misconfigured = Engine::not_started("io-map rig.json: no such file");
+        misconfigured.restart_with(DeviceProfile::default(), |_| {
+            panic!("a start that was never configured has nothing to restart")
+        });
+        assert_eq!(misconfigured.report().len(), 1);
     }
 }

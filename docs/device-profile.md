@@ -25,7 +25,7 @@ before. The profile only changes behavior where you say so.
 {
   // Output device selection + channel map.
   "output": {
-    "device": "Scarlett",       // case-insensitive name substring; omit for the default device
+    "device": "Scarlett",       // case-insensitive name or name substring; omit for the default device
     "map": { "0": 2, "1": 3 }   // logical channel -> device channel
   },
 
@@ -66,8 +66,9 @@ Once a profile parses there are two different kinds of "wrong":
 An explicit `output.map` **overrides** `audio.rs`'s implicit `map_frame` policy entirely: every
 device channel not named as a `map` target is zero-filled, and every named `(logical, device)`
 pair is checked once, at stream startup, against the real logical/device channel counts.
-`output.device` selects the device (by case-insensitive name substring) that map is checked
-against.
+`output.device` selects the device that map is checked against, case-insensitively: the device
+whose name is exactly that string, else the first whose name contains it. A whole device name
+therefore always selects that device, even when another device's name contains it.
 
 ## Input mapping, applied by the input stream
 

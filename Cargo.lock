@@ -3140,6 +3140,8 @@ dependencies = [
  "reuben-api",
  "reuben-mcp",
  "reuben-native",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

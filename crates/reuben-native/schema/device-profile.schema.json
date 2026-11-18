@@ -30,7 +30,7 @@
         "device": {
           "type": "string",
           "minLength": 1,
-          "description": "Select a device by case-insensitive name substring. Omit for the host's default device."
+          "description": "Select a device by case-insensitive name: the device named exactly this, else the first whose name contains it. Omit for the host's default device."
         },
         "map": {
           "type": "object",
