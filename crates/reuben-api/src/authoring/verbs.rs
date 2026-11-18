@@ -2054,8 +2054,10 @@ mod tests {
                 let source = library(file);
                 let doc = read(&source, &FsResolver::for_document(&source));
                 let entry = doc.resources.iter().find(|r| r.id == id).unwrap();
+                // Both sides through the filesystem: on Windows it spells a path its own way.
                 let expected = Path::new(&library(lands)).canonicalize().unwrap();
-                assert_eq!(Path::new(&entry.canonical), expected, "{file}");
+                let found = Path::new(&entry.canonical).canonicalize().unwrap();
+                assert_eq!(found, expected, "{file}");
                 assert!(Path::new(&entry.canonical).is_file());
             }
         }
