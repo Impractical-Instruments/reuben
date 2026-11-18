@@ -20,8 +20,9 @@ mod verbs;
 pub use crate::resources::{ResolveError, Resources, SampleBuffer};
 pub use args::*;
 pub use result::{
-    Boundary, Diag, DocumentView, EditResult, OperatorInfo, Operators, PortInfo, Report,
-    WireVerdict, WireVerdicts,
+    Boundary, Diag, DocumentView, EditResult, InputValue, InstrumentStructure, InterfaceInput,
+    InterfaceOutput, NodeConstant, NodeInput, NodePorts, NodeResource, OperatorInfo, Operators,
+    PortInfo, Position, Report, ResourceEntry, StructureNode, WireVerdict, WireVerdicts,
 };
 pub use verbs::*;
 

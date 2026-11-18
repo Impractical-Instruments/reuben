@@ -19,13 +19,14 @@ use reuben_document::format::{self as core_format, Layout, WirePorts};
 use reuben_document::introspect::{self as core_introspect, PatchBoundary};
 use reuben_document::projection::{Projector, Selection};
 use reuben_document::resources::ResourceResolver;
+use reuben_document::structure as core_structure;
 use reuben_document::vocabulary::Section;
 use reuben_document::{content_hash, LoadError, NormalizedDoc};
 
 use super::args::*;
 use super::result::{
-    Boundary, Diag, DocumentView, EditResult, OperatorInfo, Operators, Report, WireVerdict,
-    WireVerdicts,
+    Boundary, Diag, DocumentView, EditResult, InstrumentStructure, OperatorInfo, Operators, Report,
+    WireVerdict, WireVerdicts,
 };
 use crate::resources::{Adapter, Resources};
 
@@ -638,6 +639,32 @@ pub fn wire_compatibility(
     })
 }
 
+/// Read a document as data: its nodes with their values, wires and resolved ports, its interface
+/// pipes, its resources, the canvas positions, and its content hash. The document is read and
+/// parsed once.
+///
+/// Not a roster verb: it is what an editor draws from, and the only read that reports `layout`. A
+/// document that does not **load** is still read in full, with the load report saying where it is
+/// broken; only one that cannot be read or parsed is a refusal.
+pub fn read_instrument(
+    args: &ReadInstrument,
+    resources: &dyn Resources,
+) -> Result<Answer<InstrumentStructure>, Refusal> {
+    let resolver = Adapter(resources);
+    let json = read_document(&args.source, resources)?;
+    let registry = Registry::builtin();
+    let doc = NormalizedDoc::from_json(&json, &registry, Some(&resolver))
+        .map_err(|e| Refusal::new(e.to_string()))?;
+    let output = InstrumentStructure::from_core(core_structure::read(&doc, &registry, &resolver));
+    let summary = format!(
+        "{}: {} node(s), {}",
+        output.instrument,
+        output.nodes.len(),
+        validate_summary(&output.report)
+    );
+    Ok(Answer { output, summary })
+}
+
 // --- the shared edit pipeline ---------------------------------------------------------------------
 
 /// Run one document verb: apply the `expect` guard, invoke the engine's verb, and map its outcome.
@@ -829,6 +856,10 @@ fn edit_summary(result: &EditResult) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::authoring::result::{
+        InputValue, NodeConstant, NodeInput, NodeResource, PortInfo, Position, ResourceEntry,
+        StructureNode,
+    };
     use crate::resources::{ResolveError, SampleBuffer};
     use std::cell::RefCell;
     use std::collections::BTreeMap;
@@ -1489,5 +1520,478 @@ mod tests {
             to: None,
         };
         assert!(wire_compatibility(&args, &store).is_err());
+    }
+
+    // --- read_instrument --------------------------------------------------------------------------
+
+    fn read(source: &str, store: &dyn Resources) -> InstrumentStructure {
+        let args = ReadInstrument {
+            source: source.to_string(),
+        };
+        read_instrument(&args, store)
+            .expect("a document that parses is read")
+            .output
+    }
+
+    fn node<'a>(doc: &'a InstrumentStructure, address: &str) -> &'a StructureNode {
+        doc.nodes
+            .iter()
+            .find(|n| n.address == address)
+            .unwrap_or_else(|| panic!("no node {address}"))
+    }
+
+    fn names(ports: &[PortInfo]) -> Vec<&str> {
+        ports.iter().map(|p| p.name.as_str()).collect()
+    }
+
+    #[test]
+    fn a_read_reports_values_wires_and_ports_as_data() {
+        let doc = read(
+            "inst.json",
+            &wire_store(&with_wire(&pipe("level"), &inp("/flt", "resonance"))),
+        );
+        assert_eq!(doc.instrument, "wires");
+        assert!(doc.report.ok, "{:?}", doc.report);
+        assert_eq!(doc.nodes.len(), 10);
+
+        let flt = node(&doc, "/flt");
+        assert_eq!(flt.type_name, "filter");
+        assert_eq!(
+            flt.inputs,
+            vec![NodeInput {
+                name: "resonance".to_string(),
+                value: InputValue::Wire {
+                    from: pipe("level")
+                },
+            }]
+        );
+        let registry = describe_operators(&DescribeOperators {
+            name: Some("filter".to_string()),
+            compact: false,
+        })
+        .unwrap()
+        .output
+        .operators
+        .unwrap();
+        assert_eq!(flt.ports.inputs, registry[0].inputs);
+        assert_eq!(flt.ports.outputs, registry[0].outputs);
+        assert_eq!(flt.child, None);
+
+        assert_eq!(names_of_inputs(&doc), vec!["level", "mode"]);
+        let main = doc.outputs.iter().find(|o| o.name == "main").unwrap();
+        assert_eq!(main.from, out("/flt", "audio"));
+        assert_eq!(main.channel, Some(0));
+        assert_eq!(
+            doc.resources,
+            vec![ResourceEntry {
+                id: "fx".to_string(),
+                source: "fx.json".to_string(),
+                canonical: "fx.json".to_string(),
+            }]
+        );
+    }
+
+    fn names_of_inputs(doc: &InstrumentStructure) -> Vec<&str> {
+        doc.inputs.iter().map(|i| i.port.name.as_str()).collect()
+    }
+
+    /// A literal, a constant and the sole-output sugar: the sugar reads back with the port it
+    /// resolves to, so no caller re-derives the loader's rule.
+    #[test]
+    fn a_read_resolves_literals_constants_and_the_sole_output_sugar() {
+        let store = MemoryStore::with(
+            "inst.json",
+            r#"{ "format_version": 3, "instrument": "v",
+                 "nodes": [
+                   { "type": "oscillator", "address": "/osc", "doc": "the source",
+                     "inputs": { "freq": 220.0 } },
+                   { "type": "filter", "address": "/flt",
+                     "inputs": { "audio": { "from": "/osc" }, "mode": "Hp" } },
+                   { "type": "voicer", "address": "/v", "config": { "voices": 4 } }
+                 ] }"#,
+        );
+        let doc = read("inst.json", &store);
+        assert_eq!(
+            node(&doc, "/osc").description.as_deref(),
+            Some("the source")
+        );
+        assert_eq!(
+            node(&doc, "/osc").inputs[0].value,
+            InputValue::Literal {
+                value: serde_json::json!(220.0)
+            }
+        );
+        let flt = node(&doc, "/flt");
+        assert_eq!(
+            flt.inputs[0].value,
+            InputValue::Wire {
+                from: out("/osc", "audio")
+            }
+        );
+        assert_eq!(
+            flt.inputs[1].value,
+            InputValue::Literal {
+                value: serde_json::json!("Hp")
+            }
+        );
+        assert_eq!(
+            node(&doc, "/v").constants,
+            vec![NodeConstant {
+                name: "voices".to_string(),
+                value: serde_json::json!(4.0),
+            }]
+        );
+    }
+
+    /// An interface input is described from its declaration, and that is the port the boundary
+    /// read reports once the document loads.
+    #[test]
+    fn an_interface_input_reads_as_the_port_the_boundary_reports() {
+        let store = wire_store(WIRE_BASE);
+        let doc = read("inst.json", &store);
+        let boundary = describe_boundary(
+            &DescribeBoundary {
+                source: "inst.json".to_string(),
+            },
+            &store,
+        )
+        .unwrap()
+        .output;
+        let ports: Vec<PortInfo> = doc.inputs.iter().map(|i| i.port.clone()).collect();
+        assert_eq!(ports, boundary.inputs);
+    }
+
+    #[test]
+    fn a_subpatch_node_reports_its_childs_interface_as_ports() {
+        let store = wire_store(WIRE_BASE);
+        let doc = read("inst.json", &store);
+        let child = describe_boundary(
+            &DescribeBoundary {
+                source: "fx.json".to_string(),
+            },
+            &store,
+        )
+        .unwrap()
+        .output;
+        let sub = node(&doc, "/sub");
+        assert_eq!(names(&sub.ports.inputs), vec!["in"]);
+        assert_eq!(sub.ports.inputs, child.inputs);
+        assert_eq!(sub.ports.outputs, child.outputs);
+        assert_eq!(sub.child.as_ref(), Some(&sub.ports));
+        assert_eq!(
+            sub.resources,
+            vec![NodeResource {
+                slot: "patch".to_string(),
+                id: "fx".to_string(),
+            }]
+        );
+    }
+
+    /// A voicer's wires land on its own ports; the voice patch's interface is reported beside
+    /// them, not in their place.
+    #[test]
+    fn a_voicer_node_reports_its_childs_interface_as_ports() {
+        let store = MemoryStore::with(
+            "inst.json",
+            r#"{ "format_version": 3, "instrument": "poly",
+                 "resources": { "v": "fx.json" },
+                 "interface": { "outputs": { "main": { "from": "/v.audio" } } },
+                 "nodes": [ { "type": "voicer", "address": "/v", "voice": "v" } ] }"#,
+        );
+        store
+            .texts
+            .borrow_mut()
+            .insert("fx.json".to_string(), WIRE_CHILD.to_string());
+        let doc = read("inst.json", &store);
+        assert!(doc.report.ok, "{:?}", doc.report);
+        let child = describe_boundary(
+            &DescribeBoundary {
+                source: "fx.json".to_string(),
+            },
+            &store,
+        )
+        .unwrap()
+        .output;
+        let voicer = node(&doc, "/v");
+        assert_eq!(
+            names(&voicer.ports.inputs),
+            vec!["notes", "harmony", "voices"]
+        );
+        assert_eq!(names(&voicer.ports.outputs), vec!["audio"]);
+        let hosted = voicer.child.as_ref().expect("the voice patch loaded");
+        assert_eq!(hosted.inputs, child.inputs);
+        assert_eq!(hosted.outputs, child.outputs);
+    }
+
+    #[test]
+    fn a_position_written_with_set_layout_reads_back() {
+        let store = MemoryStore::with("twins.json", TWINS);
+        let written = set_instrument_layout(
+            &layout_args(
+                serde_json::json!([
+                    { "target": "/osc", "x": 10.0, "y": 20.5 },
+                    { "target": "/main", "x": -50.0, "y": 20.0 },
+                    { "target": { "output": "main" }, "x": 300.0, "y": 20.0 }
+                ]),
+                None,
+            ),
+            &store,
+        )
+        .unwrap()
+        .output;
+        assert!(written.written, "{written:?}");
+
+        let doc = read("twins.json", &store);
+        assert_eq!(
+            node(&doc, "/osc").layout,
+            Some(Position { x: 10.0, y: 20.5 })
+        );
+        assert_eq!(doc.inputs[0].port.name, "main");
+        assert_eq!(doc.inputs[0].layout, Some(Position { x: -50.0, y: 20.0 }));
+        assert_eq!(doc.outputs[0].name, "main");
+        assert_eq!(doc.outputs[0].layout, Some(Position { x: 300.0, y: 20.0 }));
+    }
+
+    #[test]
+    fn a_position_never_set_is_absent() {
+        let doc = read("twins.json", &MemoryStore::with("twins.json", TWINS));
+        assert_eq!(node(&doc, "/osc").layout, None);
+        assert_eq!(doc.inputs[0].layout, None);
+        assert_eq!(doc.outputs[0].layout, None);
+    }
+
+    #[test]
+    fn the_read_hash_is_an_edits_hash_and_passes_as_expect() {
+        let store = MemoryStore::with("inst.json", SEED);
+        let edited = set_instrument_input(&set_freq("inst.json", 440.0, None), &store)
+            .unwrap()
+            .output;
+        let doc = read("inst.json", &store);
+        assert_eq!(doc.hash, edited.hash);
+
+        let guarded = set_instrument_input(&set_freq("inst.json", 880.0, Some(&doc.hash)), &store)
+            .unwrap()
+            .output;
+        assert!(guarded.written, "{guarded:?}");
+        assert_eq!(read("inst.json", &store).hash, guarded.hash);
+    }
+
+    /// The loader names the missing *source* of a dangling wire, which is no node of this
+    /// document; the read puts the error on the node and input that hold the wire.
+    #[test]
+    fn a_dangling_wire_still_reads_with_the_error_on_its_node() {
+        let dangling = with_wire(&out("/ghost", "audio"), &inp("/flt", "audio"));
+        let doc = read("inst.json", &wire_store(&dangling));
+        assert!(!doc.report.ok);
+        assert_eq!(
+            validates(&dangling).errors[0].node.as_deref(),
+            Some("/ghost")
+        );
+        assert_eq!(doc.report.errors.len(), 1, "{:?}", doc.report);
+        let error = &doc.report.errors[0];
+        assert_eq!(error.node.as_deref(), Some("/flt"));
+        assert_eq!(error.port.as_deref(), Some("audio"));
+        assert_eq!(error.message, validates(&dangling).errors[0].message);
+
+        assert_eq!(doc.nodes.len(), 10);
+        let flt = node(&doc, "/flt");
+        assert_eq!(
+            flt.inputs[0].value,
+            InputValue::Wire {
+                from: out("/ghost", "audio")
+            }
+        );
+        assert!(!flt.ports.inputs.is_empty());
+        assert_eq!(names(&node(&doc, "/sub").ports.outputs), vec!["out"]);
+    }
+
+    /// The loader stops at the first refused wire; the read reports each one, and an interface
+    /// output's on the pipe.
+    #[test]
+    fn every_refused_wire_is_reported_where_it_is_held() {
+        let mut broken: serde_json::Value =
+            serde_json::from_str(&with_wire(&out("/osc", "audio"), &inp("/h", "root"))).unwrap();
+        broken["interface"]["outputs"]["busy"]["from"] = serde_json::json!("/nobody.out");
+        let doc = read("inst.json", &wire_store(&broken.to_string()));
+        let held: Vec<(Option<&str>, Option<&str>)> = doc
+            .report
+            .errors
+            .iter()
+            .map(|d| (d.node.as_deref(), d.port.as_deref()))
+            .collect();
+        assert_eq!(held, vec![(Some("/h"), Some("root")), (None, Some("busy"))]);
+    }
+
+    #[test]
+    fn a_child_that_does_not_load_is_its_nodes_diagnostic_not_a_refusal() {
+        let store = MemoryStore::with("inst.json", WIRE_BASE);
+        store.texts.borrow_mut().insert(
+            "fx.json".to_string(),
+            r#"{ "format_version": 3, "instrument": "fx",
+                 "nodes": [ { "type": "no_such_operator", "address": "/x" } ] }"#
+                .to_string(),
+        );
+        let doc = read("inst.json", &store);
+        assert!(!doc.report.ok);
+        assert_eq!(doc.nodes.len(), 10);
+        let sub = node(&doc, "/sub");
+        assert!(sub.ports.inputs.is_empty() && sub.ports.outputs.is_empty());
+        assert_eq!(sub.child, None);
+        assert!(
+            doc.report.errors.iter().any(
+                |d| d.node.as_deref() == Some("/sub") && d.message.contains("no_such_operator")
+            ),
+            "{:?}",
+            doc.report
+        );
+        assert!(!node(&doc, "/flt").ports.inputs.is_empty());
+    }
+
+    /// An unreadable child degrades a load rather than failing it, and the loader's own warning
+    /// already names the node — the read adds no second one.
+    #[test]
+    fn a_child_that_is_not_there_is_a_warning_on_its_node() {
+        let doc = read("inst.json", &MemoryStore::with("inst.json", WIRE_BASE));
+        assert!(doc.report.ok, "{:?}", doc.report);
+        let on_sub: Vec<&Diag> = doc
+            .report
+            .warnings
+            .iter()
+            .filter(|d| d.node.as_deref() == Some("/sub"))
+            .collect();
+        assert_eq!(on_sub.len(), 1, "{:?}", doc.report);
+        assert!(node(&doc, "/sub").ports.inputs.is_empty());
+    }
+
+    #[test]
+    fn only_an_unreadable_or_unparseable_document_is_a_refusal() {
+        let args = ReadInstrument {
+            source: "inst.json".to_string(),
+        };
+        assert!(read_instrument(&args, &MemoryStore::default()).is_err());
+        assert!(read_instrument(&args, &MemoryStore::with("inst.json", "{ not json")).is_err());
+
+        let unknown_type = r#"{ "format_version": 3, "instrument": "x",
+            "nodes": [ { "type": "no_such_operator", "address": "/x" } ] }"#;
+        let doc = read("inst.json", &MemoryStore::with("inst.json", unknown_type));
+        assert!(!doc.report.ok);
+        assert_eq!(doc.report.errors[0].node.as_deref(), Some("/x"));
+        assert!(node(&doc, "/x").ports.inputs.is_empty());
+    }
+
+    #[test]
+    fn no_roster_names_the_read() {
+        assert!(!crate::tools::names().contains(&"read_instrument"));
+    }
+
+    #[cfg(feature = "fs-resolver")]
+    mod library {
+        use super::*;
+        use crate::FsResolver;
+        use std::path::Path;
+
+        fn library(file: &str) -> String {
+            format!("{}/../../instruments/{file}", env!("CARGO_MANIFEST_DIR"))
+        }
+
+        /// Every wire the read reports, as the pair `wire_compatibility` is asked about.
+        fn wires(doc: &InstrumentStructure) -> Vec<(WireSource, WireTarget)> {
+            let mut out = Vec::new();
+            for n in &doc.nodes {
+                for input in &n.inputs {
+                    if let InputValue::Wire { from } = &input.value {
+                        out.push((from.clone(), inp(&n.address, &input.name)));
+                    }
+                }
+            }
+            for o in &doc.outputs {
+                out.push((o.from.clone(), tap(&o.name)));
+            }
+            out
+        }
+
+        #[test]
+        fn acid_techno_reads_whole_and_every_wire_is_one_validate_accepts() {
+            let source = library("acid-techno.json");
+            let store = FsResolver::for_document(&source).stat_only();
+            let doc = read(&source, &store);
+            assert_eq!(doc.nodes.len(), 53);
+
+            let validated = validate_instrument(
+                &ValidateInstrument {
+                    source: source.clone(),
+                },
+                &store,
+            )
+            .unwrap()
+            .output;
+            assert!(validated.ok, "{validated:?}");
+            assert_eq!(doc.report, validated);
+
+            let wires = wires(&doc);
+            assert!(wires.len() > doc.nodes.len(), "{} wires", wires.len());
+            for (from, to) in wires {
+                let args = WireCompatibility {
+                    source: source.clone(),
+                    from: from.clone(),
+                    to: Some(vec![to.clone()]),
+                };
+                let verdict = &wire_compatibility(&args, &store)
+                    .unwrap_or_else(|e| panic!("{from:?} is no source of the document: {e}"))
+                    .output
+                    .verdicts[0];
+                assert!(verdict.ok, "{from:?} -> {to:?}: {:?}", verdict.reason);
+            }
+        }
+
+        #[test]
+        fn a_library_voicer_and_subpatch_report_their_childs_interface() {
+            let boundary = |file: &str| {
+                let source = library(file);
+                describe_boundary(
+                    &DescribeBoundary {
+                        source: source.clone(),
+                    },
+                    &FsResolver::for_document(&source).stat_only(),
+                )
+                .unwrap()
+                .output
+            };
+
+            let source = library("acid-techno.json");
+            let doc = read(&source, &FsResolver::for_document(&source).stat_only());
+            let kick = boundary("voices/kick-voice.json");
+            let hosted = node(&doc, "/kick_v").child.as_ref().expect("the voice");
+            assert_eq!(hosted.inputs, kick.inputs);
+            assert_eq!(hosted.outputs, kick.outputs);
+
+            let source = library("voices/kick-voice.json");
+            let doc = read(&source, &FsResolver::for_document(&source).stat_only());
+            let vca = boundary("voices/shaped-vca.json");
+            let sub = node(&doc, "/vca");
+            assert_eq!(sub.ports.inputs, vca.inputs);
+            assert_eq!(sub.ports.outputs, vca.outputs);
+        }
+
+        /// From the top-level document and from a nested voice file alike, a resource resolves
+        /// next to the document that references it.
+        #[test]
+        fn a_resource_resolves_relative_to_the_document_that_references_it() {
+            for (file, id, lands) in [
+                ("acid-techno.json", "kick-voice", "voices/kick-voice.json"),
+                (
+                    "voices/kick-voice.json",
+                    "shaped-vca",
+                    "voices/shaped-vca.json",
+                ),
+            ] {
+                let source = library(file);
+                let doc = read(&source, &FsResolver::for_document(&source));
+                let entry = doc.resources.iter().find(|r| r.id == id).unwrap();
+                let expected = Path::new(&library(lands)).canonicalize().unwrap();
+                assert_eq!(Path::new(&entry.canonical), expected, "{file}");
+                assert!(Path::new(&entry.canonical).is_file());
+            }
+        }
     }
 }

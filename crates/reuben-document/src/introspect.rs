@@ -6,7 +6,10 @@
 
 use crate::contract::{Diag, Report};
 use crate::describe::{describe_boundary, BoundaryPortDesc};
-use crate::format::{load_instrument, load_instrument_doc, DocValue, NormalizedDoc, PipeDefault};
+use crate::format::{
+    doc_value, load_instrument, load_instrument_doc, pipe_descriptor, DocValue, InputPipeDoc,
+    LoadError, Loaded, NormalizedDoc, PipeDefault,
+};
 use crate::resources::ResourceResolver;
 use reuben_core::descriptor::{Curve, Descriptor, Port, PortType};
 use reuben_core::plan::{Plan, PlanError};
@@ -336,10 +339,7 @@ impl PortInfo {
             name: b.name,
             kind: port_kind(&b.ty).to_string(),
             constant: false,
-            default: b.default.map(|v| match v {
-                DocValue::Number(n) => serde_json::json!(n),
-                DocValue::Symbol(s) => serde_json::json!(s),
-            }),
+            default: b.default.map(doc_value_json),
             min: b.min,
             max: b.max,
             unit: b.unit,
@@ -347,6 +347,53 @@ impl PortInfo {
             variants: b.variants,
             channel: b.channel,
         }
+    }
+}
+
+impl PortInfo {
+    /// An input pipe described from its own declaration: what [`describe_patch`] reports for it
+    /// once the document loads, answerable when it does not.
+    pub(crate) fn from_pipe(name: &str, pipe: &InputPipeDoc) -> Self {
+        let mut info = match pipe_descriptor(name, pipe) {
+            Ok(minted) => {
+                let port = &minted.descriptor.inputs[0];
+                let mut info = PortInfo::from_port(port, false);
+                if let Some(arg) = &minted.enum_default {
+                    info.default = Some(doc_value_json(doc_value(port, arg)));
+                }
+                info
+            }
+            // A declaration the loader refuses has no port to read, so this is the entry as
+            // written — `kind` included, which is then the declared type and not a glossary word.
+            Err(_) => PortInfo {
+                name: String::new(),
+                kind: pipe.ty.clone(),
+                constant: false,
+                default: pipe.default.clone().map(|d| match d {
+                    PipeDefault::Number(n) => serde_json::json!(n),
+                    PipeDefault::Symbol(s) => serde_json::json!(s),
+                }),
+                min: pipe.min,
+                max: pipe.max,
+                unit: String::new(),
+                curve: pipe.curve.map(|c| curve(c.into()).to_string()),
+                variants: Vec::new(),
+                channel: None,
+            },
+        };
+        info.name = name.to_string();
+        if let Some(unit) = &pipe.unit {
+            info.unit = unit.clone();
+        }
+        info.channel = pipe.channel;
+        info
+    }
+}
+
+fn doc_value_json(v: DocValue) -> serde_json::Value {
+    match v {
+        DocValue::Number(n) => serde_json::json!(n),
+        DocValue::Symbol(s) => serde_json::json!(s),
     }
 }
 
@@ -486,7 +533,20 @@ fn localize_wire_ref(reference: &str) -> (Option<String>, Option<String>) {
 /// [`AudioConfig`], so no audio device is opened and nothing renders. The result is the
 /// contract [`Report`] every conversational door serializes.
 pub fn validate(json: &str, registry: &Registry, resolver: &dyn ResourceResolver) -> Report {
-    let loaded = match load_instrument(json, registry, resolver) {
+    report_of(load_instrument(json, registry, resolver))
+}
+
+/// [`validate`] for a document already minted, so a caller holding one pays no second parse.
+pub fn validate_doc(
+    doc: &NormalizedDoc,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+) -> Report {
+    report_of(load_instrument_doc(doc, registry, resolver))
+}
+
+fn report_of(loaded: Result<Loaded, LoadError>) -> Report {
+    let loaded = match loaded {
         Ok(l) => l,
         Err(e) => {
             return Report {

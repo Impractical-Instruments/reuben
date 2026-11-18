@@ -563,6 +563,14 @@ pub struct WireCompatibility {
     pub to: Option<Vec<WireTarget>>,
 }
 
+/// Arguments for `read_instrument`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReadInstrument {
+    /// The instrument document (a path for this door).
+    pub source: String,
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::string::ToString;

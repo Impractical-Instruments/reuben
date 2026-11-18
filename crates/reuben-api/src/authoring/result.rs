@@ -13,13 +13,14 @@
 //! `//` comments, which schemars does not pick up. Guarded end-to-end over the real advertised
 //! surface by `advertised_prose_is_model_facing`.
 
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use serde::{Deserialize, Serialize};
 
+use reuben_document::format::{DocValue, Layout};
 use reuben_document::introspect as core_introspect;
-use reuben_document::{contract as core_contract, edit as core_edit};
+use reuben_document::{contract as core_contract, edit as core_edit, structure as core_structure};
 
 /// One diagnostic — an error or a warning — with the offending node/port when the loader localized
 /// it, so an agent can jump straight to the offending node.
@@ -205,6 +206,147 @@ pub struct WireVerdicts {
     pub verdicts: Vec<WireVerdict>,
 }
 
+/// What `read_instrument` answers: one document as data — every node with its values, wires and
+/// resolved ports, the interface pipes, the resources, and where each is drawn.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct InstrumentStructure {
+    /// The document's `instrument` name.
+    pub instrument: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The content hash of the document read: the `hash` a document verb reports for it, and the
+    /// value to pass as `expect` on the next write.
+    pub hash: String,
+    /// Every node, in document order.
+    pub nodes: Vec<StructureNode>,
+    pub inputs: Vec<InterfaceInput>,
+    pub outputs: Vec<InterfaceOutput>,
+    pub resources: Vec<ResourceEntry>,
+    /// The load report. A document that does not load is still read in full, and `errors` says
+    /// where it is broken: a refused wire is an error on the node and input holding it, and a
+    /// nested child that did not load is a diagnostic on the node referencing it.
+    pub report: Report,
+}
+
+/// One node of a document.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct StructureNode {
+    pub address: String,
+    pub type_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Where the node is drawn; absent until a position is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<Position>,
+    /// The constants the node sets. One it leaves out takes the default its port reports.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constants: Vec<NodeConstant>,
+    /// The inputs the node sets or wires. One it leaves out takes the default its port reports.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<NodeInput>,
+    /// The resources the node references, by slot.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resources: Vec<NodeResource>,
+    /// The ports a wire can name on this node: the operator's own, or for a `subpatch` node its
+    /// child's interface. Empty when the type is unknown or a `subpatch` child did not load.
+    pub ports: NodePorts,
+    /// The interface of the document this node references through `voice` or `patch`, when it
+    /// loaded. For a `subpatch` node it equals `ports`. For a `voicer` node it is the voice
+    /// patch's interface, which the voicer drives itself: no wire in this document can name it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child: Option<NodePorts>,
+}
+
+/// A set of ports, by direction.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct NodePorts {
+    /// Runtime inputs first, then constants marked `constant: true`.
+    pub inputs: Vec<PortInfo>,
+    pub outputs: Vec<PortInfo>,
+}
+
+/// A canvas position, in canvas units.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct Position {
+    pub x: f32,
+    pub y: f32,
+}
+
+/// One constant a node sets.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct NodeConstant {
+    pub name: String,
+    /// A number, or an enum symbol.
+    #[schemars(with = "crate::schema::Literal")]
+    pub value: serde_json::Value,
+}
+
+/// One input a node sets or wires.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct NodeInput {
+    pub name: String,
+    pub value: InputValue,
+}
+
+/// What a node input holds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum InputValue {
+    /// A number, or an enum symbol.
+    Literal {
+        #[schemars(with = "crate::schema::Literal")]
+        value: serde_json::Value,
+    },
+    /// The wire feeding the input.
+    Wire { from: super::WireSource },
+}
+
+/// One resource reference on a node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct NodeResource {
+    /// `sample`, `voice` or `patch`.
+    pub slot: String,
+    /// The id of a `resources` entry.
+    pub id: String,
+}
+
+/// One interface input pipe.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct InterfaceInput {
+    /// The pipe as a port: its name, declared type and declared metadata.
+    pub port: PortInfo,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<Position>,
+}
+
+/// One interface output pipe, as declared. Its type is that of the port feeding it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct InterfaceOutput {
+    pub name: String,
+    /// The port the pipe is fed from.
+    pub from: super::WireSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<Position>,
+}
+
+/// One entry of a document's resources table.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ResourceEntry {
+    pub id: String,
+    /// The source as the document writes it.
+    pub source: String,
+    /// The source the document's reference resolves to: what a load of this document reads.
+    pub canonical: String,
+}
+
 // --- filling the window's shapes from the engine's ------------------------------------------------
 //
 // `pub(crate)` associated functions rather than `From` impls: a public `impl From<reuben_core::…>`
@@ -280,6 +422,127 @@ impl OperatorInfo {
             inputs: o.inputs.iter().map(PortInfo::from_core).collect(),
             outputs: o.outputs.iter().map(PortInfo::from_core).collect(),
             resources: o.resources.clone(),
+        }
+    }
+}
+
+impl NodePorts {
+    fn from_core(p: &core_structure::Ports) -> Self {
+        NodePorts {
+            inputs: p.inputs.iter().map(PortInfo::from_core).collect(),
+            outputs: p.outputs.iter().map(PortInfo::from_core).collect(),
+        }
+    }
+}
+
+impl Position {
+    fn from_core(l: Layout) -> Self {
+        Position { x: l.x, y: l.y }
+    }
+}
+
+fn literal(v: &DocValue) -> serde_json::Value {
+    match v {
+        DocValue::Number(n) => serde_json::json!(n),
+        DocValue::Symbol(s) => serde_json::json!(s),
+    }
+}
+
+fn wire_source(s: &core_structure::Source) -> super::WireSource {
+    match s {
+        // The sugar on a source with no single output names no port; the report refuses that wire.
+        core_structure::Source::Output { node, port } => super::WireSource::NodeOutput {
+            node: node.clone(),
+            port: port.clone().unwrap_or_default(),
+        },
+        core_structure::Source::InterfaceInput(name) => {
+            super::WireSource::InterfaceInput { name: name.clone() }
+        }
+    }
+}
+
+impl InstrumentStructure {
+    pub(crate) fn from_core(s: core_structure::Structure) -> Self {
+        InstrumentStructure {
+            instrument: s.instrument,
+            description: s.description,
+            hash: s.hash,
+            nodes: s.nodes.iter().map(StructureNode::from_core).collect(),
+            inputs: s
+                .inputs
+                .iter()
+                .map(|p| InterfaceInput {
+                    port: PortInfo::from_core(&p.port),
+                    layout: p.layout.map(Position::from_core),
+                })
+                .collect(),
+            outputs: s
+                .outputs
+                .iter()
+                .map(|p| InterfaceOutput {
+                    name: p.name.clone(),
+                    from: wire_source(&p.from),
+                    channel: p.channel,
+                    unit: p.unit.clone(),
+                    min: p.min,
+                    max: p.max,
+                    layout: p.layout.map(Position::from_core),
+                })
+                .collect(),
+            resources: s
+                .resources
+                .into_iter()
+                .map(|r| ResourceEntry {
+                    id: r.id,
+                    source: r.source,
+                    canonical: r.canonical,
+                })
+                .collect(),
+            report: Report::from_core(s.report),
+        }
+    }
+}
+
+impl StructureNode {
+    fn from_core(n: &core_structure::Node) -> Self {
+        StructureNode {
+            address: n.address.clone(),
+            type_name: n.type_name.clone(),
+            description: n.description.clone(),
+            layout: n.layout.map(Position::from_core),
+            constants: n
+                .constants
+                .iter()
+                .map(|(name, value)| NodeConstant {
+                    name: name.clone(),
+                    value: literal(value),
+                })
+                .collect(),
+            inputs: n
+                .inputs
+                .iter()
+                .map(|(name, input)| NodeInput {
+                    name: name.clone(),
+                    value: match input {
+                        core_structure::Input::Literal(value) => InputValue::Literal {
+                            value: literal(value),
+                        },
+                        core_structure::Input::Wire(from) => InputValue::Wire {
+                            from: wire_source(from),
+                        },
+                    },
+                })
+                .collect(),
+            resources: n
+                .resources
+                .iter()
+                .map(|(slot, id)| NodeResource {
+                    slot: slot.to_string(),
+                    id: id.clone(),
+                })
+                .collect(),
+            ports: NodePorts::from_core(&n.ports),
+            child: n.child.as_ref().map(NodePorts::from_core),
         }
     }
 }
