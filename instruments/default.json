@@ -1,11 +1,16 @@
 {
-  "format_version": 2,
+  "format_version": 3,
   "instrument": "default",
-  "doc": "Default polyphonic playable rig (8 voices). Send /voicer/notes [midi, gate] to play (e.g. [69.0, 1.0] note-on A4, [69.0, 0.0] note-off); send several to play a chord. Each voice is a hosted `default-voice` sub-patch.",
+  "doc": "Default polyphonic playable rig (8 voices). Play it through the `notes` interface input: send /notes/in [midi, gate] (e.g. [69.0, 1.0] note-on A4, [69.0, 0.0] note-off); send several to play a chord. /voicer/notes takes the same messages. Each voice is a hosted `default-voice` sub-patch.",
   "resources": {
     "default-voice": "voices/default-voice.json"
   },
   "interface": {
+    "inputs": {
+      "notes": {
+        "type": "note"
+      }
+    },
     "outputs": {
       "out": {
         "from": "/out.audio"
@@ -17,6 +22,11 @@
       "type": "voicer",
       "address": "/voicer",
       "doc": "Hosts 8 default-voice sub-patches; allocates notes across them and sums their audio.",
+      "inputs": {
+        "notes": {
+          "from": "/notes"
+        }
+      },
       "voice": "default-voice"
     },
     {

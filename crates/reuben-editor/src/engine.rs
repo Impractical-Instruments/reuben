@@ -11,6 +11,7 @@
 use std::fmt;
 use std::io;
 
+use reuben_api::engine::Channel;
 use reuben_native::engine::{self, EngineConfig, Instrument, RunningEngine, StartError};
 use reuben_native::profile::DeviceProfile;
 
@@ -234,6 +235,14 @@ impl Engine {
     #[cfg(test)]
     pub(crate) fn running(&self) -> Option<&RunningEngine> {
         self.running.as_ref()
+    }
+
+    /// A channel to the running engine, or `None` when none is running.
+    ///
+    /// For control traffic only on the UI thread: a send is handed to the render side without
+    /// waiting, where a swap made through the same channel builds the new Engine before returning.
+    pub fn channel(&self) -> Option<Channel> {
+        self.running.as_ref().map(RunningEngine::channel)
     }
 
     /// Everything starting the engine reported, in order.
