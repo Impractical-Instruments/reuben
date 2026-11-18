@@ -428,12 +428,16 @@ def _osc_param_toggle(addr: str) -> str:
     pipe's `in` port. No scaling — a gate step's domain is already [0,1]."""
     return _osc_msg(addr, [_partial("VALUE", "FLOAT", "x")])
 
-def _osc_chord(addr: str, degree: float) -> str:
+def _osc_chord(addr: str, degree: int) -> str:
     """Chord button send: `<addr> [degree, gate]` — a constant scale **degree** (the chord
     root) plus the button's `x` (0/1) as gate. Constant degree => release stops the same
     held chord. Same 2-arg shape as `_osc_note`, but the constant is a degree, not a MIDI
-    note (the `chord` op stacks thirds; the voicer resolves degrees through the context)."""
-    return _osc_msg(addr, [_partial("CONSTANT", "FLOAT", _num(degree)),
+    note (the `chord` op stacks thirds; the voicer resolves degrees through the context).
+
+    The degree goes out as an OSC **int**: the engine reads a note's pitch by its OSC type, an
+    int as a scale degree and a float as an absolute MIDI note, and the `chord` op acts only on
+    degrees."""
+    return _osc_msg(addr, [_partial("CONSTANT", "INTEGER", str(int(degree))),
                            _partial("VALUE", "FLOAT", "x")])
 
 
