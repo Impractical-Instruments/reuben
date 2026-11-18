@@ -20,10 +20,10 @@ fn every_section_is_tagged_for_every_lane() {
     }
 }
 
-/// The web cut drops the checkout-only section — the filesystem sample workflow (no disk
-/// on the web lane) — while the checkout lanes keep it.
+/// The web cut drops the checkout-only sections while the checkout lanes keep them. The
+/// filesystem sample workflow (no disk on the web lane) is the one checked.
 #[test]
-fn web_cut_drops_the_checkout_only_section() {
+fn web_cut_drops_a_checkout_only_section() {
     let checkout_only = "## The sample workflow";
     let web = lane_cut(GUIDE, Lane::Web).expect("tagged guide cuts clean");
     assert!(

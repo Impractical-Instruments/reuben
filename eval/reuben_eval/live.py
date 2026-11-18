@@ -89,7 +89,7 @@ RUNGS: dict[str, Rung] = {
     ),
 }
 
-# The 8GB rung is the weakest pin on the ladder: nothing in the research shows a 3B sustaining a
+# The 8GB rung is the weakest pin on the ladder: there is no evidence of a 3B sustaining a
 # 12-round MCP loop against real schemas. If it fails universally on day one, suspect the pin before
 # concluding the surface is too expensive.
 WEAKEST_RUNG = "8gb"
@@ -283,8 +283,8 @@ def render(report: dict[str, Any]) -> str:
         lines.append("")
     if rung["band"] == WEAKEST_RUNG and all(r["pass_rate"] == 0 for r in report["tasks"].values()):
         lines.append(
-            f"> ⚠️ The `{WEAKEST_RUNG}` rung is the weakest pin on the ladder — nothing in the "
-            "research shows a 3B sustaining a 12-round MCP loop against real schemas. A universal "
+            f"> ⚠️ The `{WEAKEST_RUNG}` rung is the weakest pin on the ladder — there is no "
+            "evidence of a 3B sustaining a 12-round MCP loop against real schemas. A universal "
             "failure here should be read as *suspect the pin* before *the surface is too "
             "expensive*."
         )

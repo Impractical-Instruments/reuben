@@ -107,7 +107,7 @@ def _merge(piece: bytes) -> tuple[int, ...]:
 
     Repeatedly merges the lowest-ranked adjacent pair, which is the BPE definition. Quadratic in the
     piece length, but pre-tokens are words — and the gate tokenizes a handful of documents per run,
-    where the research measured roughly a second per million tokens. Cached because instrument JSON
+    at a measured cost of roughly a second per million tokens. Cached because instrument JSON
     is overwhelmingly the same few pieces (`"node"`, `"kind"`, indentation) over and over.
     """
     ranks = _ranks()

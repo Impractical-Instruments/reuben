@@ -40,7 +40,7 @@ class ClaimLedgerTest(unittest.TestCase):
     # --- scope ---
 
     def test_ungoverned_docs_are_not_scanned(self):
-        # A note outside the governed surface naming a moved file is history, not a false claim.
+        # A doc outside the governed surface is not read, so a dead path in it is not a claim.
         claims = self._claims({"docs/notes.md": "See `nowhere/gone.rs`.\n"})
         self.assertEqual(claims, [])
 

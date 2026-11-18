@@ -195,7 +195,7 @@ python3 eval/tools/gen_unicode_classes.py    # then refresh pins.json, and say s
   told and refuses to guess.
 - **"Temperature 0" is not the whole sampling story.** The Ollama Go runner silently discards penalty
   parameters, so the live tier records what the server reported rather than what it asked for.
-- **The 8GB rung is the weakest pin on the ladder.** Nothing in the research shows a 3B sustaining a
+- **The 8GB rung is the weakest pin on the ladder.** There is no evidence of a 3B sustaining a
   12-round MCP loop against real schemas. A universal failure there means *suspect the pin* before
   *the surface is too expensive*.
 
