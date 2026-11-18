@@ -17,7 +17,7 @@ mod verbs;
 
 /// The resource seam, which is neither half's: a door that only drives this one still names it
 /// here. [`crate::resources`] holds it, because the render half calls the same trait.
-pub use crate::resources::{ResolveError, Resources, SampleBuffer};
+pub use crate::resources::{Created, ResolveError, Resources, SampleBuffer};
 pub use args::*;
 pub use result::{
     Boundary, Diag, DocumentView, EditResult, OperatorInfo, Operators, PortInfo, Report,

@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use reuben_api::authoring::{self, CopyInstrument, ValidateInstrument};
+use reuben_api::authoring::{self, CopyInstrument, NewInstrument, ValidateInstrument};
 use reuben_api::FsResolver;
 
 /// A private `<temp>/<name>/voices/` holding `kick-voice.json` and the `shaped-vca.json` it nests,
@@ -291,4 +291,54 @@ fn a_document_that_references_its_own_destination_is_not_copied() {
 
     assert!(refusal.message.contains("references"), "{refusal}");
     assert!(!to.exists());
+}
+
+/// A destination that holds something which is not a readable document — a sample, or a file this
+/// process may not read — is still a destination that holds something.
+#[test]
+fn a_destination_holding_anything_at_all_is_not_overwritten() {
+    let dir = voices("anything");
+    let from = dir.join("kick-voice.json");
+    let sample = dir.join("sample.wav");
+    let bytes = [0xff_u8, 0xfe, 0x00, 0x80, 0xc3, 0x28];
+    std::fs::write(&sample, bytes).unwrap();
+
+    let refusal = copy(&from, &sample).expect_err("a sample is there");
+    assert!(refusal.message.contains("already exists"), "{refusal}");
+    assert_eq!(std::fs::read(&sample).unwrap(), bytes);
+
+    let source = sample.display().to_string();
+    let refusal = authoring::new_instrument(
+        &NewInstrument {
+            source: source.clone(),
+            name: "fresh".to_string(),
+        },
+        &FsResolver::for_document(&source),
+    )
+    .expect_err("a sample is there");
+    assert!(refusal.message.contains("already exists"), "{refusal}");
+    assert_eq!(std::fs::read(&sample).unwrap(), bytes);
+
+    let names: Vec<_> = std::fs::read_dir(&*dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(names.len(), 3, "no temp file is left behind: {names:?}");
+}
+
+/// A dangling symlink reads as absent and, written through, would create its target somewhere
+/// else entirely.
+#[cfg(unix)]
+#[test]
+fn a_destination_that_is_a_dangling_symlink_is_not_written_through() {
+    let dir = voices("dangling");
+    let from = dir.join("kick-voice.json");
+    let target = dir.parent().unwrap().join("elsewhere.json");
+    let link = dir.join("kick-copy.json");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+
+    copy(&from, &link).expect_err("a link is there");
+
+    assert!(!target.exists());
+    assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
 }

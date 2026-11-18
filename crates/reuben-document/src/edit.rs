@@ -33,7 +33,7 @@ use crate::format::{
 };
 use crate::introspect::validate;
 use crate::projection::{Projector, Rebased, Scalar, Selection};
-use crate::resources::{ResolveError, ResourceResolver};
+use crate::resources::{Created, ResolveError, ResourceResolver};
 use crate::vocabulary::Section;
 use reuben_core::Registry;
 
@@ -190,6 +190,43 @@ fn finish(
     applied: Applied,
     current_hash: String,
 ) -> Result<EditResult, EditError> {
+    finish_at(
+        source,
+        registry,
+        resolver,
+        doc,
+        applied,
+        current_hash,
+        Place::Replace,
+    )
+}
+
+fn taken(source: &str) -> EditError {
+    EditError::Target(format!(
+        "something that is not a readable document already exists at `{source}`; choose a new \
+         source"
+    ))
+}
+
+/// Whether a valid document replaces what is at its source or must be the first thing there.
+#[derive(Clone, Copy)]
+enum Place {
+    Replace,
+    /// For a verb that makes a document: the write itself refuses a source that holds anything,
+    /// so a file the verb could not read as text, or one that appeared after it looked, is not
+    /// replaced.
+    Create,
+}
+
+fn finish_at(
+    source: &str,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+    doc: InstrumentDoc,
+    applied: Applied,
+    current_hash: String,
+    place: Place,
+) -> Result<EditResult, EditError> {
     // Re-enter the mint gate the same way a host holding a raw doc would; idempotent on an
     // already-normalized document, but it is what keeps the written bytes canonical.
     let normalized = NormalizedDoc::from_doc(doc, registry, Some(resolver))
@@ -197,9 +234,18 @@ fn finish(
     let new_json = normalized.to_json_pretty();
     let report = validate(&new_json, registry, resolver);
     let (written, hash) = if report.ok {
-        resolver
-            .write_text(source, &new_json)
-            .map_err(EditError::Write)?;
+        match place {
+            Place::Replace => resolver
+                .write_text(source, &new_json)
+                .map_err(EditError::Write)?,
+            Place::Create => match resolver
+                .create_text(source, &new_json)
+                .map_err(EditError::Write)?
+            {
+                Created::Written => {}
+                Created::Taken => return Err(taken(source)),
+            },
+        }
         (true, content_hash(&normalized))
     } else {
         (false, current_hash)
@@ -491,13 +537,14 @@ pub fn new_instrument(
         outputs: Vec::new(),
         migration: Default::default(),
     };
-    finish(
+    finish_at(
         source,
         registry,
         resolver,
         doc,
         Applied::clean(Echo::Nodes(Selection::names(["/"]))),
         String::new(),
+        Place::Create,
     )
 }
 
@@ -560,13 +607,14 @@ pub fn copy_instrument(
              choose another source for the copy"
         )));
     }
-    finish(
+    finish_at(
         &to_id,
         registry,
         &at_to,
         doc,
         Applied::clean(Echo::Nodes(Selection::names(["/"]))),
         String::new(),
+        Place::Create,
     )
 }
 
