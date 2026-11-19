@@ -2,7 +2,7 @@
 
 Deterministic CI performance trend: callgrind **instruction counts (Ir)** for rendering **1 s of audio** (375 × 128-frame blocks @ 48 kHz), recorded on every direct push to `dev`. Instruction counts don't jitter — every visible move is a real code change (or a toolchain bump).
 
-**192 commits** · 2026-07-12 → 2026-11-19 · 15669 data points · last: `2a581a1` (2026-11-19T11:34:29-05:00)
+**193 commits** · 2026-07-12 → 2026-11-19 · 15766 data points · last: `4689042` (2026-11-19T14:57:16-05:00)
 
 *Companion trend: the **main** series lives on the [`bench-history`](https://github.com/Impractical-Instruments/reuben/tree/bench-history) branch.*
 
@@ -21,7 +21,7 @@ Deterministic CI performance trend: callgrind **instruction counts (Ir)** for re
 | `autotune` | 33.7M | ±0.0% | **-17.6%** | 2026-07-12 |
 | `echo` | 36.2M | ±0.0% | **-16.3%** | 2026-07-12 |
 | `reverb` | 43.5M | ±0.0% | **-14.0%** | 2026-07-12 |
-| `sampler-arp` | 14.3M | +0.3% | **-9.5%** | 2026-07-12 |
+| `sampler-arp` | 14.3M | ±0.0% | **-9.5%** | 2026-07-12 |
 
 ## Per-node engine overhead
 
@@ -43,15 +43,15 @@ Cost paid **once per Swap**, on the caller's thread — which in the browser is 
 
 | Case | Latest Ir | vs prev | vs first | since |
 |---|---:|---:|---:|---|
-| `deep_n2048` | 59.3M | +0.3% | **-10.1%** | 2026-07-30 |
-| `deep_n4096` | 120.3M | +0.3% | **-9.4%** | 2026-07-30 |
-| `deep_n8192` | 241.3M | +0.3% | **-12.6%** | 2026-07-30 |
+| `deep_n2048` | 59.3M | ±0.0% | **-10.1%** | 2026-07-30 |
+| `deep_n4096` | 120.3M | ±0.0% | **-9.4%** | 2026-07-30 |
+| `deep_n8192` | 241.3M | ±0.0% | **-12.6%** | 2026-07-30 |
 | `nest_n2048` | 43.5M | ±0.0% | **-22.8%** | 2026-07-30 |
-| `nest_n4096` | 88.1M | +0.2% | **-23.3%** | 2026-07-30 |
-| `nest_n8192` | 178.5M | +0.3% | **-22.5%** | 2026-07-30 |
-| `wide_n2048` | 49.7M | +0.4% | **-9.7%** | 2026-07-30 |
-| `wide_n4096` | 100.8M | +0.2% | **-13.2%** | 2026-07-30 |
-| `wide_n8192` | 202.8M | +0.2% | **-13.4%** | 2026-07-30 |
+| `nest_n4096` | 88.1M | ±0.0% | **-23.3%** | 2026-07-30 |
+| `nest_n8192` | 178.5M | ±0.0% | **-22.5%** | 2026-07-30 |
+| `wide_n2048` | 49.7M | ±0.0% | **-9.7%** | 2026-07-30 |
+| `wide_n4096` | 100.8M | ±0.0% | **-13.2%** | 2026-07-30 |
+| `wide_n8192` | 202.8M | ±0.0% | **-13.4%** | 2026-07-30 |
 
 | Shape | Nodes | Latest growth |
 |---|---:|---:|
@@ -79,20 +79,21 @@ Cost paid **once per Swap**, on the caller's thread — which in the browser is 
 | `macro/autotune` | 33.7M | ±0.0% | **-17.6%** | 2026-07-12 |
 | `macro/echo` | 36.2M | ±0.0% | **-16.3%** | 2026-07-12 |
 | `macro/reverb` | 43.5M | ±0.0% | **-14.0%** | 2026-07-12 |
-| `macro/sampler-arp` | 14.3M | +0.3% | **-9.5%** | 2026-07-12 |
-| `construct/deep_n2048` | 59.3M | +0.3% | **-10.1%** | 2026-07-30 |
-| `construct/deep_n4096` | 120.3M | +0.3% | **-9.4%** | 2026-07-30 |
-| `construct/deep_n8192` | 241.3M | +0.3% | **-12.6%** | 2026-07-30 |
+| `macro/sampler-arp` | 14.3M | ±0.0% | **-9.5%** | 2026-07-12 |
+| `construct/deep_n2048` | 59.3M | ±0.0% | **-10.1%** | 2026-07-30 |
+| `construct/deep_n4096` | 120.3M | ±0.0% | **-9.4%** | 2026-07-30 |
+| `construct/deep_n8192` | 241.3M | ±0.0% | **-12.6%** | 2026-07-30 |
 | `construct/nest_n2048` | 43.5M | ±0.0% | **-22.8%** | 2026-07-30 |
-| `construct/nest_n4096` | 88.1M | +0.2% | **-23.3%** | 2026-07-30 |
-| `construct/nest_n8192` | 178.5M | +0.3% | **-22.5%** | 2026-07-30 |
-| `construct/wide_n2048` | 49.7M | +0.4% | **-9.7%** | 2026-07-30 |
-| `construct/wide_n4096` | 100.8M | +0.2% | **-13.2%** | 2026-07-30 |
-| `construct/wide_n8192` | 202.8M | +0.2% | **-13.4%** | 2026-07-30 |
+| `construct/nest_n4096` | 88.1M | ±0.0% | **-23.3%** | 2026-07-30 |
+| `construct/nest_n8192` | 178.5M | ±0.0% | **-22.5%** | 2026-07-30 |
+| `construct/wide_n2048` | 49.7M | ±0.0% | **-9.7%** | 2026-07-30 |
+| `construct/wide_n4096` | 100.8M | ±0.0% | **-13.2%** | 2026-07-30 |
+| `construct/wide_n8192` | 202.8M | ±0.0% | **-13.4%** | 2026-07-30 |
 | `granulator` | 27.6M | ±0.0% | +0.3% | 2026-07-12 |
 | `resonator` | 15.2M | ±0.0% | **-18.1%** | 2026-07-12 |
 | `reverb` | 10.9M | ±0.0% | -1.1% | 2026-07-12 |
-| `compressor` | 8.17M | +1.6% | **-15.7%** | 2026-07-20 |
+| `mix` | 8.70M | — | ±0.0% | 2026-11-19 |
+| `compressor` | 8.17M | ±0.0% | **-15.7%** | 2026-07-20 |
 | `sample_loop` | 6.68M | ±0.0% | -1.4% | 2026-11-13 |
 | `pan` | 6.00M | ±0.0% | -1.4% | 2026-07-12 |
 | `saturator` | 4.56M | ±0.0% | **-47.3%** | 2026-07-12 |
@@ -140,9 +141,9 @@ Cost paid **once per Swap**, on the caller's thread — which in the browser is 
 | `modulo_f32_value` | 454k | ±0.0% | **-17.5%** | 2026-07-12 |
 | `clamp_i32_value` | 454k | ±0.0% | **-17.8%** | 2026-07-21 |
 | `power_f32_value` | 449k | ±0.0% | **-17.7%** | 2026-07-12 |
-| `modulo_i32_value` | 442k | +0.1% | **-17.5%** | 2026-07-21 |
+| `modulo_i32_value` | 442k | ±0.0% | **-17.5%** | 2026-07-21 |
 | `div_f32_value` | 440k | ±0.0% | **-18.0%** | 2026-07-12 |
-| `mul_f32_value` | 440k | +0.1% | **-18.0%** | 2026-07-12 |
+| `mul_f32_value` | 440k | ±0.0% | **-18.0%** | 2026-07-12 |
 | `sub_f32_value` | 440k | ±0.0% | **-18.0%** | 2026-07-12 |
 | `max_f32_value` | 440k | ±0.0% | **-18.0%** | 2026-07-12 |
 | `min_f32_value` | 440k | ±0.0% | **-18.0%** | 2026-07-12 |
@@ -153,14 +154,14 @@ Cost paid **once per Swap**, on the caller's thread — which in the browser is 
 | `mul_i32_value` | 438k | ±0.0% | **-17.6%** | 2026-07-21 |
 | `max_i32_value` | 438k | ±0.0% | **-17.6%** | 2026-07-21 |
 | `min_i32_value` | 438k | ±0.0% | **-17.6%** | 2026-07-21 |
-| `round_f32_i32_value` | 429k | +0.1% | **-18.1%** | 2026-07-22 |
-| `trunc_f32_i32_value` | 427k | +0.1% | **-18.2%** | 2026-07-22 |
+| `round_f32_i32_value` | 429k | ±0.0% | **-18.1%** | 2026-07-22 |
+| `trunc_f32_i32_value` | 427k | ±0.0% | **-18.2%** | 2026-07-22 |
 | `ceil_f32_i32_value` | 427k | ±0.0% | **-18.2%** | 2026-07-22 |
 | `floor_f32_i32_value` | 427k | ±0.0% | **-18.2%** | 2026-07-22 |
-| `round_f32_value` | 425k | +0.1% | **-18.4%** | 2026-07-22 |
+| `round_f32_value` | 425k | ±0.0% | **-18.4%** | 2026-07-22 |
 | `negate_i32_value` | 425k | ±0.0% | **-17.3%** | 2026-07-21 |
 | `reciprocal_f32_value` | 424k | ±0.0% | **-17.7%** | 2026-07-12 |
-| `negate_f32_value` | 424k | +0.1% | **-17.7%** | 2026-07-12 |
+| `negate_f32_value` | 424k | ±0.0% | **-17.7%** | 2026-07-12 |
 | `abs_f32_value` | 424k | ±0.0% | **-17.7%** | 2026-07-12 |
 | `ceil_f32_value` | 423k | ±0.0% | **-18.5%** | 2026-07-22 |
 | `floor_f32_value` | 423k | ±0.0% | **-18.5%** | 2026-07-22 |
