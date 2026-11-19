@@ -1051,45 +1051,94 @@ mod tests {
             .is_none());
     }
 
+    /// Test-only Operators for the delivery-order tests below.
+    mod probe {
+        use crate::descriptor::Descriptor;
+        use crate::operator::{Io, Operator};
+        use crate::vocab::pitch::{Note, Pitch};
+        use alloc::boxed::Box;
+
+        pub mod echo {
+            use super::*;
+            crate::operator_contract!(EventEcho {
+                inputs:  { a: note,
+                           b: note,
+                           split: f32 { 0.0..=1.0, default 0.0, "", lin } },
+                outputs: { out: note },
+            });
+            /// Re-emits every event it reads, port `a` before port `b`, at its frame, with the
+            /// pitch tagged `+100` for port `b`.
+            pub struct EventEcho;
+            impl Operator for EventEcho {
+                fn descriptor() -> Descriptor {
+                    Self::contract()
+                }
+                fn process(&mut self, io: &mut Io) {
+                    for (port, tag) in [(IN_A, 0.0), (IN_B, 100.0)] {
+                        for ev in io.read(port) {
+                            let Pitch::Absolute(p) = ev.payload.pitch else {
+                                continue;
+                            };
+                            io.write(OUT_OUT)
+                                .emit(ev.frame, Note::new(Pitch::Absolute(p + tag), 1.0));
+                        }
+                    }
+                }
+                fn spawn(&self) -> Box<dyn Operator> {
+                    Box::new(EventEcho)
+                }
+            }
+        }
+
+        pub mod hold {
+            use super::*;
+            crate::operator_contract!(NoteToValue {
+                inputs:  { trig: note },
+                outputs: { out: f32 { -1000.0..=1000.0, default 0.0, "", lin } },
+            });
+            /// Sets its Value output to each event's absolute pitch, at the event's frame.
+            pub struct NoteToValue;
+            impl Operator for NoteToValue {
+                fn descriptor() -> Descriptor {
+                    Self::contract()
+                }
+                fn process(&mut self, io: &mut Io) {
+                    for ev in io.read(IN_TRIG) {
+                        if let Pitch::Absolute(p) = ev.payload.pitch {
+                            io.write(OUT_OUT).set(ev.frame, p);
+                        }
+                    }
+                }
+                fn spawn(&self) -> Box<dyn Operator> {
+                    Box::new(NoteToValue)
+                }
+            }
+        }
+    }
+
+    /// `(frame, pitch)` of each emitted absolute-pitch note.
+    fn note_frames<'e>(args: impl Iterator<Item = (usize, &'e Arg)>) -> Vec<(usize, f32)> {
+        use crate::vocab::pitch::Pitch;
+        args.map(|(frame, arg)| {
+            let Arg::Note(n) = arg else {
+                panic!("expected a note")
+            };
+            let Pitch::Absolute(p) = n.pitch else {
+                panic!("expected an absolute pitch")
+            };
+            (frame, p)
+        })
+        .collect()
+    }
+
     /// Each segment hands a port exactly its own events in the frame window, in delivery order,
     /// with segment-relative frames — interleaved ports, out-of-order frames, same-frame ties and a
     /// held change splitting the block included.
     #[test]
     fn stream_events_reach_their_port_in_delivery_order_per_segment() {
-        use crate::descriptor::Descriptor;
         use crate::op_driver::OpDriver;
-        use crate::operator::Operator;
         use crate::vocab::pitch::{Note, Pitch};
-        use alloc::boxed::Box;
-
-        crate::operator_contract!(EventEcho {
-            inputs:  { a: note,
-                       b: note,
-                       split: f32 { 0.0..=1.0, default 0.0, "", lin } },
-            outputs: { out: note },
-        });
-        /// Re-emits every event it reads, port `a` before port `b`, at its block-absolute frame
-        /// with the pitch tagged `+100` for port `b`.
-        struct EventEcho;
-        impl Operator for EventEcho {
-            fn descriptor() -> Descriptor {
-                Self::contract()
-            }
-            fn process(&mut self, io: &mut Io) {
-                for (port, tag) in [(IN_A, 0.0), (IN_B, 100.0)] {
-                    for ev in io.read(port) {
-                        let Pitch::Absolute(p) = ev.payload.pitch else {
-                            continue;
-                        };
-                        io.write(OUT_OUT)
-                            .emit(ev.frame, Note::new(Pitch::Absolute(p + tag), 1.0));
-                    }
-                }
-            }
-            fn spawn(&self) -> Box<dyn Operator> {
-                Box::new(EventEcho)
-            }
-        }
+        use probe::echo::*;
 
         let note = |p: f32| Note::new(Pitch::Absolute(p), 1.0);
         let mut d = OpDriver::for_type(EventEcho, 48_000.0);
@@ -1102,19 +1151,7 @@ mod tests {
             .push(IN_SPLIT, 20, 1.0f32)
             .render(64);
 
-        let got: Vec<(usize, f32)> = d
-            .emits()
-            .iter()
-            .map(|e| {
-                let Arg::Note(n) = &e.arg else {
-                    panic!("echo emits notes")
-                };
-                let Pitch::Absolute(p) = n.pitch else {
-                    panic!("echo emits absolute pitches")
-                };
-                (e.frame, p)
-            })
-            .collect();
+        let got = note_frames(d.emits().iter().map(|e| (e.frame, &e.arg)));
         assert_eq!(
             got,
             [
@@ -1125,6 +1162,87 @@ mod tests {
                 (25, 4.0),
                 (40, 102.0)
             ]
+        );
+    }
+
+    /// A port fed both by external Messages and by an upstream node's emissions receives the
+    /// external events first, in Message order, then the emitted ones, in emission order — each
+    /// at its own frame, whatever the frames are.
+    #[test]
+    fn external_then_emitted_events_share_a_port_in_routing_order() {
+        use crate::graph::Graph;
+        use crate::operators::{transpose, OscOut, Transpose};
+        use crate::vocab::pitch::{Note, Pitch};
+        use probe::echo::*;
+
+        let mut g = Graph::new();
+        let src = g.add("/src", Transpose::new());
+        let echo = g.add("/echo", EventEcho);
+        let sink = g.add("/sink", OscOut::new());
+        g.connect(src, transpose::OUT_NOTES, echo, IN_A);
+        g.connect(echo, OUT_OUT, sink, 0);
+        let cfg = AudioConfig::new(48_000.0, 64);
+        let mut plan = Plan::instantiate(g, cfg).expect("instantiate");
+        let mut r = Renderer::new(&plan);
+
+        let note = |p: f32| Note::new(Pitch::Absolute(p), 1.0);
+        let messages = [
+            Message::new("/src/notes", note(10.0), 1),
+            Message::new("/echo/a", note(1.0), 5),
+            Message::new("/src/notes", note(11.0), 0),
+            Message::new("/echo/a", note(2.0), 2),
+            Message::new("/src/notes", note(12.0), 5),
+        ];
+        let mut master = vec![vec![0.0; cfg.block_size]; plan.config.channels];
+        let mut outbound = Vec::new();
+        r.render_block_multi(&mut plan, &messages, &[], &mut master, &mut outbound);
+
+        let got = note_frames(outbound.iter().map(|m| (m.frame, &m.arg)));
+        assert_eq!(got, [(5, 1.0), (2, 2.0), (1, 10.0), (0, 11.0), (5, 12.0)]);
+    }
+
+    /// Writes to one Signal input at one frame apply in arrival order, so the last wins — external
+    /// Messages first, then an upstream node's emission. Enough same-frame writes that the frame
+    /// sort is not an insertion sort, so dropping the arrival tie-break would reorder them.
+    #[test]
+    fn same_frame_materialize_writes_keep_last_write_wins() {
+        use crate::graph::Graph;
+        use crate::operators::Output;
+        use crate::vocab::pitch::{Note, Pitch};
+        use probe::hold::*;
+
+        let mut g = Graph::new();
+        let src = g.add("/src", NoteToValue);
+        let out = g.add("/out", Output::new());
+        g.connect(src, OUT_OUT, out, 0);
+        g.tap_output(out, 0);
+        let cfg = AudioConfig::new(48_000.0, 64);
+        let mut plan = Plan::instantiate(g, cfg).expect("instantiate");
+        let mut r = Renderer::new(&plan);
+
+        // External writes alternate between frames 10 and 20 with distinct values; the upstream
+        // node then writes 999 at frame 10, arriving after every external write.
+        let mut messages: Vec<Message> = (0..64)
+            .map(|i| Message::float("/out/audio", i as f32, if i % 2 == 0 { 10 } else { 20 }))
+            .collect();
+        messages.push(Message::new(
+            "/src/trig",
+            Note::new(Pitch::Absolute(999.0), 1.0),
+            10,
+        ));
+        let mut block = vec![0.0; cfg.block_size];
+        r.render_block(&mut plan, &messages, &mut block);
+
+        assert!(block[..10].iter().all(|&s| s == 0.0), "{:?}", &block[..10]);
+        assert!(
+            block[10..20].iter().all(|&s| s == 999.0),
+            "frame 10's last write is the emitted 999: {:?}",
+            &block[10..20]
+        );
+        assert!(
+            block[20..].iter().all(|&s| s == 63.0),
+            "frame 20's last write is external 63: {:?}",
+            &block[20..]
         );
     }
 }

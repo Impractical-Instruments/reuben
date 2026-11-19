@@ -13,7 +13,6 @@
 
 use alloc::boxed::Box;
 use num_traits::Float;
-use smallvec::SmallVec;
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
@@ -52,15 +51,10 @@ impl Operator for Transpose {
     fn process(&mut self, io: &mut Io) {
         let amount = io.read(IN_AMOUNT);
 
-        // Snapshot the stream (its borrow of `io` ends here) so the emit loop can borrow `io`
-        // mutably. `Note` is `Copy`, so this is alloc-free for the common low-event-count case.
-        let mut evs: SmallVec<[(usize, Note); 16]> = SmallVec::new();
+        // The stream borrows the block's events, not `io`, so it can be read while emitting.
         for s in io.read(IN_NOTES) {
-            evs.push((s.frame, s.payload));
-        }
-        for (frame, note) in evs {
             io.write(OUT_NOTES)
-                .emit(frame, transpose_note(note, amount));
+                .emit(s.frame, transpose_note(s.payload, amount));
         }
     }
 

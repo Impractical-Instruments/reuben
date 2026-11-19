@@ -21,7 +21,6 @@
 //! Emits one note stream, upstream of the Voicer that fans it out to voices.
 
 use alloc::boxed::Box;
-use smallvec::SmallVec;
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
@@ -59,14 +58,9 @@ impl Operator for Snap {
         };
         let harmony = io.read(IN_HARMONY);
 
-        // Snapshot incoming notes (its borrow of `io` ends here) so the emit loop can borrow `io`
-        // mutably. `Note` is `Copy`, so this is alloc-free for the common low-event-count case.
-        let mut notes: SmallVec<[(usize, Note); 8]> = SmallVec::new();
+        // The stream borrows the block's events, not `io`, so it can be read while emitting.
         for s in io.read(IN_NOTES) {
-            notes.push((s.frame, s.payload));
-        }
-
-        for (frame, note) in notes {
+            let (frame, note) = (s.frame, s.payload);
             // Snap only operates on an absolute pitch; a degree is already in-scale, pass it through.
             let pitch = match note.pitch {
                 Pitch::Absolute(midi) => harmony.snap(midi, policy),

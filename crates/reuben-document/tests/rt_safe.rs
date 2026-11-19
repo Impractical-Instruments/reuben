@@ -428,6 +428,45 @@ fn an_event_burst_on_one_port_is_allocation_free_after_warmup() {
         );
     }
 
+    // Note processors between a source and the Voicer: every note passes through `transpose`
+    // and then `snap`, so each one carries the whole burst on its `notes` port.
+    const CHAIN: &str = r#"{
+        "format_version": 3,
+        "instrument": "note-chain",
+        "resources": { "default-voice": "voices/default-voice.json" },
+        "interface": { "outputs": { "out": { "from": "/out.audio" } } },
+        "nodes": [
+            { "type": "transpose", "address": "/t", "inputs": { "amount": 7.0 } },
+            { "type": "snap", "address": "/s", "inputs": { "notes": { "from": "/t.notes" } } },
+            { "type": "voicer", "address": "/voicer", "voice": "default-voice",
+              "inputs": { "notes": { "from": "/s.notes" } } },
+            { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/voicer.audio" } } }
+        ]
+    }"#;
+    let graph = load_instrument(CHAIN, &Registry::builtin(), &RepoInstruments)
+        .expect("load the transpose -> snap -> voicer chain")
+        .graph;
+    let mut plan = Plan::instantiate(graph, cfg).expect("instantiate the note chain");
+    let mut r = Renderer::new(&plan);
+    for n in [9usize, 17, 64, 256] {
+        let bursts: Vec<Vec<Message>> = [1.0, 0.0]
+            .iter()
+            .map(|&vel| {
+                (0..n)
+                    .map(|i| {
+                        let pitch = Pitch::Absolute(36.0 + (i % 48) as f32);
+                        Message::new("/t/notes", Note::new(pitch, vel), i % cfg.block_size)
+                    })
+                    .collect()
+            })
+            .collect();
+        let allocs = burst_allocs(&mut plan, &mut r, &mut out, &bursts);
+        assert_eq!(
+            allocs, 0,
+            "a {n}-note burst through transpose and snap allocated {allocs} time(s)"
+        );
+    }
+
     // A burst on a `clock`'s `sync` port: every event is a phase reset at its frame.
     let mut g = Graph::new();
     let clock = g.add("/clock", Clock::new());
