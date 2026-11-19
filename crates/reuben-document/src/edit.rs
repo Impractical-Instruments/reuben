@@ -1243,6 +1243,7 @@ pub fn remove_instrument_constant(
             notes: vec![format!(
                 "`{name}` was not set on `{address}`; nothing to remove"
             )],
+            renamed: None,
         })
     })
 }
@@ -1571,6 +1572,7 @@ pub fn clear_instrument_interface_meta(
         Ok(Applied {
             echo: Echo::Pipes(Selection::names([name])),
             notes,
+            renamed: None,
         })
     })
 }
