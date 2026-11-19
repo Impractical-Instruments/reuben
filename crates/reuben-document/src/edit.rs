@@ -1420,6 +1420,24 @@ pub fn add_instrument_resource(
     })
 }
 
+/// Point the existing resource `id` at `resource_source`, leaving every node that references it as
+/// it is.
+pub fn set_instrument_resource(
+    source: &str,
+    id: &str,
+    resource_source: &str,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+) -> Result<EditResult, EditError> {
+    edit_existing(source, registry, resolver, |doc| {
+        let Some(entry) = doc.resources.get_mut(id) else {
+            return Err(EditError::Target(format!("no resource `{id}` to repoint")));
+        };
+        *entry = resource_source.to_string();
+        Ok(Applied::clean(Echo::Resources))
+    })
+}
+
 /// Remove a resource from the document's id→source table.
 pub fn remove_instrument_resource(
     source: &str,

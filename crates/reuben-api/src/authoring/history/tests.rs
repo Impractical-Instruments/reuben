@@ -399,6 +399,10 @@ fn run_every_verb(r: &dyn Resources) -> Vec<String> {
         json!({ "source": s, "id": "kick", "resource_source": "kick.wav" }),
         |a| add_instrument_resource(a, r),
     ));
+    out.push(call(
+        json!({ "source": s, "id": "kick", "resource_source": "kick-2.wav" }),
+        |a| set_instrument_resource(a, r),
+    ));
     out.push(call(json!({ "source": s, "id": "kick" }), |a| {
         remove_instrument_resource(a, r)
     }));

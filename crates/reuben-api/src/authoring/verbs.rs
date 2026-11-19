@@ -565,6 +565,17 @@ pub fn remove_instrument_resource(
     })
 }
 
+/// Point an existing resource at a new source: the one write that changes what every node
+/// referencing it loads. Not a roster verb: no agent-facing door serves it.
+pub fn set_instrument_resource(
+    args: &SetInstrumentResource,
+    resources: &dyn Resources,
+) -> Result<Answer<EditResult>, Refusal> {
+    run_edit(&args.source, &args.expect, resources, |src, reg, res| {
+        core_edit::set_instrument_resource(src, &args.id, &args.resource_source, reg, res)
+    })
+}
+
 /// Set canvas positions on many nodes and interface pipes in one write. Not a roster verb: the
 /// position is the editor's, and no agent-facing door serves it.
 pub fn set_instrument_layout(
@@ -1067,6 +1078,11 @@ mod tests {
     #[test]
     fn no_roster_names_copy_instrument() {
         assert!(!crate::tools::names().contains(&"copy_instrument"));
+    }
+
+    #[test]
+    fn no_roster_names_set_instrument_resource() {
+        assert!(!crate::tools::names().contains(&"set_instrument_resource"));
     }
 
     /// A document with a face to read: one input pipe carrying declared metadata, one output tap.

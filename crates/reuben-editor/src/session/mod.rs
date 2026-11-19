@@ -26,7 +26,7 @@ use reuben_api::FsResolver;
 pub use self::tree::{nested, Document, Tree};
 pub use self::undo::{Direction, Step, Undo};
 use self::users::users;
-pub use self::view::{shortcut, show, trail};
+pub use self::view::{shortcut, show, trail, TrailAsk};
 use self::watch::Watch;
 use crate::feedback::Feedback;
 
