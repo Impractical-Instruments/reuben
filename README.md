@@ -2,7 +2,7 @@
 
 Deterministic CI performance trend: callgrind **instruction counts (Ir)** for rendering **1 s of audio** (375 × 128-frame blocks @ 48 kHz), recorded on every direct push to `dev`. Instruction counts don't jitter — every visible move is a real code change (or a toolchain bump).
 
-**188 commits** · 2026-07-12 → 2026-11-19 · 15284 data points · last: `3a041f7` (2026-11-19T09:10:38-05:00)
+**189 commits** · 2026-07-12 → 2026-11-19 · 15380 data points · last: `3064e5b` (2026-11-19T09:48:31-05:00)
 
 *Companion trend: the **main** series lives on the [`bench-history`](https://github.com/Impractical-Instruments/reuben/tree/bench-history) branch.*
 
@@ -18,10 +18,10 @@ Deterministic CI performance trend: callgrind **instruction counts (Ir)** for re
 | Instrument | Latest Ir | vs prev | vs first | since |
 |---|---:|---:|---:|---|
 | `auto-filter` | 35.9M | ±0.0% | **-18.3%** | 2026-07-12 |
-| `autotune` | 33.5M | ±0.0% | **-18.0%** | 2026-07-12 |
+| `autotune` | 33.5M | ±0.0% | **-18.1%** | 2026-07-12 |
 | `echo` | 36.0M | ±0.0% | **-16.7%** | 2026-07-12 |
 | `reverb` | 43.3M | ±0.0% | **-14.3%** | 2026-07-12 |
-| `sampler-arp` | 14.1M | -0.1% | **-11.0%** | 2026-07-12 |
+| `sampler-arp` | 14.1M | ±0.0% | **-11.0%** | 2026-07-12 |
 
 ## Per-node engine overhead
 
@@ -43,15 +43,15 @@ Cost paid **once per Swap**, on the caller's thread — which in the browser is 
 
 | Case | Latest Ir | vs prev | vs first | since |
 |---|---:|---:|---:|---|
-| `deep_n2048` | 59.0M | -0.2% | **-10.5%** | 2026-07-30 |
-| `deep_n4096` | 119.7M | -0.2% | **-9.8%** | 2026-07-30 |
-| `deep_n8192` | 240.2M | -0.2% | **-13.0%** | 2026-07-30 |
-| `nest_n2048` | 43.4M | +0.5% | **-23.1%** | 2026-07-30 |
-| `nest_n4096` | 87.7M | ±0.0% | **-23.7%** | 2026-07-30 |
-| `nest_n8192` | 177.4M | -0.1% | **-22.9%** | 2026-07-30 |
-| `wide_n2048` | 49.4M | -0.3% | **-10.3%** | 2026-07-30 |
-| `wide_n4096` | 100.4M | -0.3% | **-13.6%** | 2026-07-30 |
-| `wide_n8192` | 202.0M | -0.3% | **-13.8%** | 2026-07-30 |
+| `deep_n2048` | 59.1M | +0.2% | **-10.3%** | 2026-07-30 |
+| `deep_n4096` | 120.0M | +0.2% | **-9.7%** | 2026-07-30 |
+| `deep_n8192` | 240.7M | +0.2% | **-12.8%** | 2026-07-30 |
+| `nest_n2048` | 43.5M | +0.3% | **-22.9%** | 2026-07-30 |
+| `nest_n4096` | 87.9M | +0.3% | **-23.4%** | 2026-07-30 |
+| `nest_n8192` | 178.0M | +0.3% | **-22.7%** | 2026-07-30 |
+| `wide_n2048` | 49.5M | +0.3% | **-10.1%** | 2026-07-30 |
+| `wide_n4096` | 100.6M | +0.2% | **-13.4%** | 2026-07-30 |
+| `wide_n8192` | 202.5M | +0.3% | **-13.6%** | 2026-07-30 |
 
 | Shape | Nodes | Latest growth |
 |---|---:|---:|
@@ -76,19 +76,19 @@ Cost paid **once per Swap**, on the caller's thread — which in the browser is 
 | Case | Latest Ir | vs prev | vs first | since |
 |---|---:|---:|---:|---|
 | `macro/auto-filter` | 35.9M | ±0.0% | **-18.3%** | 2026-07-12 |
-| `macro/autotune` | 33.5M | ±0.0% | **-18.0%** | 2026-07-12 |
+| `macro/autotune` | 33.5M | ±0.0% | **-18.1%** | 2026-07-12 |
 | `macro/echo` | 36.0M | ±0.0% | **-16.7%** | 2026-07-12 |
 | `macro/reverb` | 43.3M | ±0.0% | **-14.3%** | 2026-07-12 |
-| `macro/sampler-arp` | 14.1M | -0.1% | **-11.0%** | 2026-07-12 |
-| `construct/deep_n2048` | 59.0M | -0.2% | **-10.5%** | 2026-07-30 |
-| `construct/deep_n4096` | 119.7M | -0.2% | **-9.8%** | 2026-07-30 |
-| `construct/deep_n8192` | 240.2M | -0.2% | **-13.0%** | 2026-07-30 |
-| `construct/nest_n2048` | 43.4M | +0.5% | **-23.1%** | 2026-07-30 |
-| `construct/nest_n4096` | 87.7M | ±0.0% | **-23.7%** | 2026-07-30 |
-| `construct/nest_n8192` | 177.4M | -0.1% | **-22.9%** | 2026-07-30 |
-| `construct/wide_n2048` | 49.4M | -0.3% | **-10.3%** | 2026-07-30 |
-| `construct/wide_n4096` | 100.4M | -0.3% | **-13.6%** | 2026-07-30 |
-| `construct/wide_n8192` | 202.0M | -0.3% | **-13.8%** | 2026-07-30 |
+| `macro/sampler-arp` | 14.1M | ±0.0% | **-11.0%** | 2026-07-12 |
+| `construct/deep_n2048` | 59.1M | +0.2% | **-10.3%** | 2026-07-30 |
+| `construct/deep_n4096` | 120.0M | +0.2% | **-9.7%** | 2026-07-30 |
+| `construct/deep_n8192` | 240.7M | +0.2% | **-12.8%** | 2026-07-30 |
+| `construct/nest_n2048` | 43.5M | +0.3% | **-22.9%** | 2026-07-30 |
+| `construct/nest_n4096` | 87.9M | +0.3% | **-23.4%** | 2026-07-30 |
+| `construct/nest_n8192` | 178.0M | +0.3% | **-22.7%** | 2026-07-30 |
+| `construct/wide_n2048` | 49.5M | +0.3% | **-10.1%** | 2026-07-30 |
+| `construct/wide_n4096` | 100.6M | +0.2% | **-13.4%** | 2026-07-30 |
+| `construct/wide_n8192` | 202.5M | +0.3% | **-13.6%** | 2026-07-30 |
 | `granulator` | 27.6M | ±0.0% | +0.3% | 2026-07-12 |
 | `resonator` | 15.2M | ±0.0% | **-18.1%** | 2026-07-12 |
 | `reverb` | 10.9M | ±0.0% | -1.2% | 2026-07-12 |
