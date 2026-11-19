@@ -11,6 +11,13 @@
 # toolchain fetch on the runs where the pin has drifted behind the runner image's
 # pre-installed stable and a real download happens.
 #
+# `rust-analyzer` and `rust-src` are not gated on; they are here because
+# `~/.cargo/bin/rust-analyzer` is a rustup proxy that resolves to *this* channel, and a channel
+# without the component makes the proxy exit 1 — an editor or agent LSP reports that as a crash,
+# not as a missing install. Pinning them re-provisions the language server on every bump.
+# `rust-src` is what rust-analyzer reads to resolve `std`. CI's toolchain cache is keyed on this
+# file's hash, so the extra download (~50 MB) lands once per pin, not per run.
+#
 # `targets` is the same single-source idea one level down: the bare-metal triple the portable core
 # must keep building for is provisioned by the pin, not by a `rustup target add` line inside one CI
 # job — so the cross build reproduces locally with no setup step a contributor has to be told about.
@@ -20,5 +27,5 @@
 [toolchain]
 channel = "1.100.0"
 profile = "minimal"
-components = ["rustfmt", "clippy"]
+components = ["rustfmt", "clippy", "rust-analyzer", "rust-src"]
 targets = ["thumbv7em-none-eabihf"]
