@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Block pushes that would fail CI's clippy gate (.github/workflows/ci.yml).
-# Whole-workspace, all-targets, warnings-as-errors — the same shape as CI, but NOT the same command:
-# CI adds `--features reuben-core/bench`, and without it `--all-targets` silently skips the
-# `[[bench]]` targets, which declare `required-features = ["bench"]`. So a clean run here can still
-# meet a red clippy gate on a bench-only lint. That gap predates this file; it is written down here
-# rather than papered over, because the cost of closing it is compiling the bench targets on every
-# push and that is a call for whoever owns the local/CI cost trade.
+# The same command as CI's main clippy step, `--features reuben-document/bench` included: the
+# `[[bench]]` targets declare `required-features = ["bench"]`, so without the flag `--all-targets`
+# silently skips them and a bench-only lint passes here but reds CI. The flag adds those few
+# targets on a cold build and nothing measurable after.
+# CI's other clippy runs stay CI-only for their cost: `-p reuben-editor` builds the egui tree,
+# which no default-members build needs, and the bare-metal pair needs the thumbv7em target and a
+# release build. AGENTS.md and CONTRIBUTING.md give the commands to run them by hand.
 # Runs at the push boundary (not per-commit) so the compile cost is amortized.
 # Skips when the pushed commits touch no Rust (docs/config-only pushes).
 # One check in the pre-push set, run by `dispatch` — see CONTRIBUTING.md.
@@ -43,10 +44,10 @@ done
 
 [ "$rust_touched" -eq 0 ] && exit 0
 
-if ! cargo clippy --all-targets -- -D warnings; then
+if ! cargo clippy --all-targets --features reuben-document/bench -- -D warnings; then
     echo
     echo "✗ pre-push: clippy found issues — CI's clippy gate will fail."
-    echo "  Inspect: cargo clippy --all-targets -- -D warnings"
+    echo "  Inspect: cargo clippy --all-targets --features reuben-document/bench -- -D warnings"
     echo "  Bypass:  git push --no-verify"
     exit 1
 fi

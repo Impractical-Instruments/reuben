@@ -27,9 +27,12 @@ type is one file. [`scripts/hooks/pre-commit`](./scripts/hooks/pre-commit) and
   - `scripts/hooks/pre-commit.d/20-rust-fmt` — `cargo fmt --all --check` (fast; skips docs-only
     commits). Blocks commits that CI's format gate would reject.
 - **pre-push**
-  - `scripts/hooks/pre-push.d/10-rust-clippy` — `cargo clippy --all-targets -- -D warnings`
-    over every `default-members` crate (`reuben-editor` has its own CI job). Runs at the push
-    boundary (not every commit) so the compile cost is paid once; skips pushes that touch no Rust.
+  - `scripts/hooks/pre-push.d/10-rust-clippy` — `cargo clippy --all-targets --features
+    reuben-document/bench -- -D warnings`, CI's main clippy step byte for byte, over every
+    `default-members` crate. Runs at the push boundary (not every commit) so the compile cost is
+    paid once; skips pushes that touch no Rust. CI's other clippy runs — `reuben-editor`'s own job
+    and the bare-metal pair below — are not in the hook: one builds the egui tree, the other a
+    cross target in release, and neither is worth paying on every push.
 
 `--no-verify` bypasses the whole set for deliberate exceptions. They are a local pre-flight —
 **CI is the real gate**; skipping setup just means you find out at CI instead of at commit.
@@ -41,10 +44,6 @@ untracked scratch file — and where they differ, any of these checks can green 
 reds. The sharp case is `20-rust-fmt`: `cargo fmt --all --check` is byte-for-byte CI's command and
 it *still* reads from disk, so staging a badly formatted hunk while the file on disk is clean
 passes here and fails the format gate.
-
-One check also differs from CI in the command itself: `10-rust-clippy` omits CI's `--features
-reuben-core/bench`, so a lint that only fires in a `[[bench]]` target passes here and reds there;
-the file says so in its header.
 
 ### Adding a check
 

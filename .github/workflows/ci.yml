@@ -740,7 +740,7 @@ jobs:
   # The hook set's chainer (test_hook_dispatch.py), which is what makes every pre-commit and
   # pre-push check run locally at all. It builds throwaway git repos with synthetic registries, so
   # it needs no toolchain and takes seconds. The same job lints the hook set with a pinned
-  # shellcheck release.
+  # shellcheck release, and holds the pre-push clippy check to the `check` job's Clippy command.
   #
   # ALWAYS runs, and not path-filtered: no remaining filter covers `scripts/hooks/**`, and a job
   # this cheap does not earn one of its own. Gates merges via `ci-passed`'s `needs`.
@@ -751,6 +751,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Hook dispatcher tests
         run: cd scripts && python3 -m unittest test_hook_dispatch -v
+      # The pre-push clippy check must run the `check` job's Clippy command, flags and all.
+      - name: Pre-push clippy matches CI's
+        run: cd scripts && python3 -m unittest test_hook_clippy_matches_ci -v
       # Pinned rather than taken from the runner image, so a new image cannot turn this job red on
       # a change that touched no shell. The digest is the one GitHub records for the release asset.
       - name: Install shellcheck
