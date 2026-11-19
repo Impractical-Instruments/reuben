@@ -1,15 +1,20 @@
 name: Release
 
-# Fires on a `v*` tag. Both GitHub's Releases GUI and
-# `gh release create vX.Y.Z` create the tag and trigger this. Builds `--release`
-# binaries and attaches each as a versioned archive (tar.gz / zip) + a SHA256
-# sidecar to the GitHub Release:
+# Fires on a `v*` tag push. Builds `--release` binaries and attaches each as a versioned archive
+# (tar.gz / zip) + a SHA256 sidecar to the GitHub Release for that tag:
 #   - `reuben`, the headless CLI, on Linux + Windows. No installer: the bare
 #     binary is the convenience artifact, build-from-source stays the primary path.
 #   - `reuben-editor`, the desktop editor, on Linux + Windows + macOS (Apple
 #     Silicon, unsigned), with its font licences, the instrument library and the
 #     control surfaces.
 # Every archive carries a THIRD-PARTY-NOTICES.txt for the crates linked into its binary.
+#
+# The repository has immutable releases on: once a Release is published, nothing can be uploaded
+# to it and its tag can never be used again. So the order is fixed: `draft` creates the Release
+# as a draft, every leg uploads into it, and `publish` publishes it only after all of them
+# succeeded. A failed leg leaves the draft: re-run the failed jobs and it is reused. Start a release by pushing the tag alone (`git tag vX.Y.Z && git push origin vX.Y.Z`);
+# publishing a Release for the tag first, from the web UI or `gh release create` without
+# `--draft`, locks it empty, and `draft` refuses it.
 #
 # `workflow_dispatch` is the dry run: run it on a branch and every leg builds and
 # packages, and the archives are uploaded as workflow artifacts only. A dispatch
@@ -30,8 +35,41 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Creates the draft every leg uploads into, or reuses one a failed run left. A published Release
+  # for the tag is refused here, before any build: it cannot take assets.
+  draft:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Create or reuse the draft Release
+        shell: bash
+        run: |
+          # Only "release not found" means there is none; any other failure of `view` is the error.
+          if state=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>view.err); then
+            if [ "$state" != true ]; then
+              echo "::error::Release $TAG is already published, so it cannot take assets and" \
+                "its tag cannot be reused. Push a new tag instead." >&2
+              exit 1
+            fi
+            echo "Reusing the draft Release for $TAG."
+          elif grep -q "release not found" view.err; then
+            # A `-` in the tag (v1.1.0-rc1) marks a pre-release.
+            prerelease=$([[ "$TAG" == *-* ]] && echo --prerelease || true)
+            gh release create "$TAG" --draft --verify-tag --generate-notes --title "$TAG" $prerelease
+          else
+            cat view.err >&2
+            exit 1
+          fi
+
   build:
     name: build ${{ matrix.target }}
+    needs: draft
+    # A dry run skips `draft`; the build still runs.
+    if: ${{ !failure() && !cancelled() }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -58,7 +96,11 @@ jobs:
       # target today, pinned so a toolchain bump cannot raise it unseen.
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
+      # The job's token can write releases; uploads read it from `GH_TOKEN`, so it stays out of
+      # `.git/config` while dependency build scripts run.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # ALSA dev headers for cpal (Linux only); Windows links WASAPI, macOS CoreAudio. The
       # editor needs nothing more to build: winit, glutin and rfd dlopen their client libraries.
@@ -160,10 +202,25 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-      # Each matrix job uploads its own assets; the action gets-or-creates the
-      # Release for this tag, so every leg lands on the same Release.
-      - name: Attach to GitHub Release
+      - name: Upload to the draft Release
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
-        with:
-          files: dist/*
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        # `--clobber` so a re-run of one failed leg replaces what it uploaded before.
+        run: gh release upload "$TAG" dist/* --clobber
+
+  # Publishing is what makes the Release immutable, so it waits for every leg.
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Publish the Release
+        run: gh release edit "$TAG" --draft=false
