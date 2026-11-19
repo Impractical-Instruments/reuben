@@ -528,11 +528,13 @@ fn parse_signed_int(input: ParseStream) -> syn::Result<i32> {
         input.parse::<Token![-]>()?;
     }
     let lit: Lit = input.parse()?;
-    let val = match lit {
-        Lit::Int(i) => i.base10_parse::<i32>()?,
-        other => return Err(Error::new(other.span(), "expected an integer literal")),
+    let Lit::Int(i) = lit else {
+        return Err(Error::new(lit.span(), "expected an integer literal"));
     };
-    Ok(if neg { -val } else { val })
+    // The magnitude is parsed wider than `i32` because `i32::MIN`'s magnitude is not an `i32`.
+    let magnitude = i.base10_parse::<i64>()?;
+    let val = if neg { -magnitude } else { magnitude };
+    i32::try_from(val).map_err(|_| Error::new(i.span(), "integer literal out of range for `i32`"))
 }
 
 /// `{ name, name }` — a brace-wrapped, comma-separated resource-slot list.
@@ -631,6 +633,22 @@ mod tests {
         assert!(out.contains("Port :: harmony (\"ctx\")"), "{out}");
         assert!(out.contains("Port :: i32"), "{out}");
         assert!(out.contains("I32Meta"), "{out}");
+    }
+
+    #[test]
+    fn i32_bounds_reach_the_full_i32_range() {
+        let out = render(
+            r#"Wide {
+                constants: { n: i32 { -2147483648..=2147483647, default -2147483648 } },
+            }"#,
+        );
+        assert!(!out.contains("compile_error"), "{out}");
+        let out = render(
+            r#"Wider {
+                constants: { n: i32 { -2147483649..=0, default 0 } },
+            }"#,
+        );
+        assert!(out.contains("out of range for `i32`"), "{out}");
     }
 
     // A malformed contract is rejected *with a span*, in-band as a compile_error.

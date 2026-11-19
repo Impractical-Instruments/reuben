@@ -187,10 +187,14 @@ fn render_operator(spec: &OperatorSpec) -> String {
 
     // Imports — pull in the bind_resources types only when there are resources. The contract
     // macro emits fully-qualified `Descriptor`/`Port`/etc paths, so the file needs only
-    // `Descriptor` (for the `descriptor()` delegate's return type).
+    // `Descriptor` (for the `descriptor()` delegate's return type). `reuben-core` is `no_std`
+    // outside its lib test target, so `Box`/`Arc` come from `alloc`: a `std` path, or leaning on
+    // the `std` prelude, compiles under `cargo test` and fails under `cargo build`.
+    out.push_str("use alloc::boxed::Box;\n");
     if has_resources {
-        out.push_str("use std::sync::Arc;\n\n");
+        out.push_str("use alloc::sync::Arc;\n");
     }
+    out.push('\n');
     out.push_str("use crate::descriptor::Descriptor;\n");
     out.push_str("use crate::operator::{Io, Operator};\n");
     if has_resources {
@@ -322,16 +326,19 @@ fn render_process(spec: &OperatorSpec) -> String {
     out.push_str(
         "        // TODO Stage B: implement the DSP. This stub writes silence — the operator is\n        // structurally valid but makes no sound until you fill it in.\n",
     );
-    let sig_outs = signal_output_consts(spec);
-    if sig_outs.is_empty() {
-        out.push_str("        let _ = io;\n");
-    } else {
-        out.push_str("        let n = io.frames();\n");
-        out.push_str(&format!(
-            "        for port in [{}] {{\n",
-            sig_outs.join(", ")
-        ));
-        out.push_str("            io.write(port)[..n].fill(0.0);\n        }\n");
+    // One output is a plain statement, not a one-element loop: clippy's `single_element_loop`
+    // rejects the loop under `-D warnings`, and one output is the common shape.
+    match signal_output_consts(spec).as_slice() {
+        [] => out.push_str("        let _ = io;\n"),
+        [port] => {
+            out.push_str("        let n = io.frames();\n");
+            out.push_str(&format!("        io.write({port})[..n].fill(0.0);\n"));
+        }
+        ports => {
+            out.push_str("        let n = io.frames();\n");
+            out.push_str(&format!("        for port in [{}] {{\n", ports.join(", ")));
+            out.push_str("            io.write(port)[..n].fill(0.0);\n        }\n");
+        }
     }
     out.push_str("    }\n");
     out
@@ -423,10 +430,16 @@ mod tests {
 
     #[test]
     fn process_stub_writes_silence_to_signal_outputs_only() {
-        let src =
-            render(r#"{ "type_name": "o", "outputs": [ {"name":"audio","ty":"f32_buffer"} ] }"#);
+        let src = render(
+            r#"{ "type_name": "o", "outputs": [ {"name":"audio","ty":"f32_buffer"}, {"name":"p","ty":"pitch"} ] }"#,
+        );
+        assert!(src.contains("io.write(OUT_AUDIO)[..n].fill(0.0);"), "{src}");
+        assert!(!src.contains("for port in"), "{src}");
+        let src = render(
+            r#"{ "type_name": "o", "outputs": [ {"name":"l","ty":"f32_buffer"}, {"name":"r","ty":"f32_buffer"} ] }"#,
+        );
+        assert!(src.contains("for port in [OUT_L, OUT_R]"), "{src}");
         assert!(src.contains("io.write(port)[..n].fill(0.0)"), "{src}");
-        assert!(src.contains("for port in [OUT_AUDIO]"), "{src}");
     }
 
     #[test]
@@ -450,7 +463,7 @@ mod tests {
         );
         assert!(src.contains("outputs: { audio: f32_buffer }"), "{src}");
         // A `f32_buffer` output gets a silence-stub write.
-        assert!(src.contains("for port in [OUT_AUDIO]"), "{src}");
+        assert!(src.contains("io.write(OUT_AUDIO)[..n].fill(0.0);"), "{src}");
     }
 
     #[test]
@@ -470,7 +483,29 @@ mod tests {
         let src = render(r#"{ "type_name": "smp", "resources": ["wave"] }"#);
         assert!(src.contains("resources: { wave },"), "{src}");
         assert!(src.contains("fn bind_resources("), "{src}");
-        assert!(src.contains("use std::sync::Arc;"), "{src}");
+        assert!(src.contains("use alloc::sync::Arc;"), "{src}");
+    }
+
+    #[test]
+    fn imports_resolve_without_std() {
+        // The textual half of `tests/scaffold_compiles.rs`: no `std` path, and every `alloc`
+        // type the file names is imported, since no prelude supplies one in `no_std`.
+        for json in [
+            r#"{ "type_name": "plain" }"#,
+            r#"{ "type_name": "smp", "resources": ["wave"] }"#,
+        ] {
+            let src = render(json);
+            assert!(
+                !src.contains("std::"),
+                "no `std` path in a no_std crate:\n{src}"
+            );
+            assert!(src.contains("use alloc::boxed::Box;"), "{src}");
+            assert_eq!(
+                src.contains("Arc<"),
+                src.contains("use alloc::sync::Arc;"),
+                "{src}"
+            );
+        }
     }
 
     #[test]
