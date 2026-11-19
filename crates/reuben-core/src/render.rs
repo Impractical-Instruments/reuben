@@ -1,4 +1,4 @@
-//! Render — executing a [`Plan`] (scratch: [`NoSuchItem`]) per block.
+//! Render — executing a [`Plan`] per block.
 //!
 //! The serial executor walks the topologically-ordered nodes. For each node, incoming
 //! Messages are routed to its input ports by the port's [`PortKind`]:
