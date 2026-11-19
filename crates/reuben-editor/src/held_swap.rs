@@ -418,6 +418,29 @@ mod tests {
     }
 
     #[test]
+    fn viewing_a_voice_leaves_the_top_level_file_the_open_one() {
+        within(HANG_SECS, || {
+            let mut editor = Editor::open("held_viewing", "acid-techno.json");
+            let kick = editor.spelled("voices/kick-voice.json");
+            editor.session.enter("/kick_v").expect("a voicer");
+            assert_eq!(
+                canonical(Path::new(&editor.session.viewed().source)),
+                canonical(Path::new(&kick))
+            );
+
+            let acid = editor.spelled("acid-techno.json");
+            let swapped = editor.mcp_swaps(&acid);
+            assert_eq!(swapped.held, None);
+            assert!(swapped.report.report.ok, "{:?}", swapped.report.report);
+            assert_eq!(editor.held.pending(), None);
+
+            assert!(editor.mcp_swaps(&kick).held.is_some(), "the viewed voice");
+            assert_eq!(editor.playing(), acid);
+            editor.engine.shutdown();
+        });
+    }
+
+    #[test]
     fn another_file_spelled_through_dot_dot_is_still_held() {
         within(HANG_SECS, || {
             let mut editor = Editor::open("held_other_spelling", "acid-techno.json");
