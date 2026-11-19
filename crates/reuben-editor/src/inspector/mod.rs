@@ -16,7 +16,7 @@ use reuben_api::authoring::{
 use reuben_api::engine::{send_live_controls, Channel, ControlSendMessage, SendLiveControls};
 use serde_json::Value;
 
-use self::model::{Drafts, Holds, Step, Target};
+use self::model::{fields, Control, Drafts, Holds, Step, Target};
 use crate::edit;
 use crate::session::Session;
 
@@ -124,10 +124,50 @@ impl Inspector {
                 value,
                 expect,
             } => {
-                let value = target.literal(value);
-                self.commit(Edit::Value { target, value }, expect, session, channel);
+                let held = expect.is_some();
+                let literal = target.literal(value);
+                let edit = Edit::Value {
+                    target: target.clone(),
+                    value: literal,
+                };
+                self.commit(edit, expect, session, channel);
+                if held && self.error.is_some() {
+                    self.restore(&target, session, channel);
+                }
             }
         }
+    }
+
+    /// Set `target` live back to what the file holds for it, after a held value that was sent live
+    /// failed to be written: the engine would otherwise go on playing a value the file does not
+    /// hold. Sends nothing when the file no longer has the input or feeds it from a wire.
+    fn restore(
+        &mut self,
+        target: &Target,
+        session: &Session,
+        channel: &dyn Fn() -> Option<Channel>,
+    ) {
+        let Ok(top) = &session.tree().top().read else {
+            return;
+        };
+        let held = (top.nodes.iter())
+            .find(|node| node.address == target.address)
+            .and_then(|node| {
+                fields(node)
+                    .into_iter()
+                    .find(|field| field.target == *target)
+            })
+            .and_then(|field| match field.control {
+                Control::Number { value, .. } => target.live(value),
+                _ => None,
+            });
+        let Some(message) = held else { return };
+        let refused = self.error.take();
+        self.live(message, channel);
+        self.error = match (refused, self.error.take()) {
+            (Some(refused), Some(unsent)) => Some(format!("{refused}\n{unsent}")),
+            (refused, unsent) => refused.or(unsent),
+        };
     }
 
     /// Send `message` to the running engine, when one is running.
@@ -203,7 +243,6 @@ mod tests {
     use reuben_native::test_support::{start_headless, within};
     use serde_json::json;
 
-    use super::model::{fields, Control};
     use super::*;
     use crate::engine::Engine;
     use crate::session::test_support::{Rig, Scratch};
@@ -394,6 +433,12 @@ mod tests {
             assert_eq!(inspector.writes, 1);
             assert!(inspector.error.is_some(), "the conflict is reported");
             assert_eq!(literal(&rig, "/map_cutoff", "out_max"), json!(5000.0));
+            // The held moves, then the value the file holds, so the sound is the file again.
+            let received = rig.live_received(4);
+            let last = received.last().expect("live values were sent");
+            assert_eq!(received.len(), 4, "{received:?}");
+            assert_eq!(last.address, "/map_cutoff/out_max");
+            assert_eq!(last.args, [Arg::F32(5000.0)]);
         });
     }
 
