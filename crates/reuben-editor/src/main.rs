@@ -191,7 +191,7 @@ impl eframe::App for Editor {
         egui::Panel::top("audio").show(ui, |ui| {
             ui.horizontal(|ui| {
                 theme::logo(ui, 22.0);
-                // Vertical, so the device row keeps the rest of the width to wrap in.
+                // Vertical, so the device warnings stack under the device row rather than beside it.
                 ui.vertical(|ui| self.audio.ui(ui, &mut self.engine));
             });
         });

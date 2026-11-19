@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use eframe::egui::{
     self, Color32, ColorImage, CornerRadius, FontData, FontDefinitions, FontFamily, FontId,
-    IconData, RichText, Stroke, Style, TextStyle, TextureFilter, TextureHandle, TextureOptions,
-    Theme, Vec2, Visuals,
+    IconData, RichText, Stroke, Style, TextStyle, TextureFilter, TextureId, TextureOptions, Theme,
+    Vec2, Visuals,
 };
 
 use crate::canvas::PortKind;
@@ -67,7 +67,12 @@ pub fn install(ctx: &egui::Context) {
             ..TextureOptions::LINEAR
         };
         let texture = ctx.load_texture("logo", image, options);
-        ctx.data_mut(|d| d.insert_temp(logo_id(), texture));
+        // The handle keeps the texture alive; frames read only its id, since cloning a handle
+        // takes the texture manager's lock.
+        ctx.data_mut(|d| {
+            d.insert_temp(logo_id(), texture.id());
+            d.insert_temp(egui::Id::new("theme-logo-handle"), texture);
+        });
     }
 }
 
@@ -86,9 +91,9 @@ fn logo_id() -> egui::Id {
 
 /// The logo, `size` points square. Draws nothing on a context [`install`] has not set up.
 pub fn logo(ui: &mut egui::Ui, size: f32) {
-    let texture = ui.ctx().data(|d| d.get_temp::<TextureHandle>(logo_id()));
+    let texture = ui.ctx().data(|d| d.get_temp::<TextureId>(logo_id()));
     if let Some(texture) = texture {
-        ui.add(egui::Image::new((texture.id(), Vec2::splat(size))));
+        ui.add(egui::Image::new((texture, Vec2::splat(size))));
     }
 }
 
