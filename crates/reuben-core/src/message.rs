@@ -106,7 +106,7 @@ pub enum Arg {
     /// The residual — one `free()` per *replaced or unconsumed* string, only ever on sparse
     /// boundary-driven message traffic, never in the steady-state signal loop — is accepted
     /// rather than fenced with a retain/reclaim buffer: no live operator declares a `Str` input
-    /// (see the latch bullet), so the only string control that reaches the render thread today
+    /// (see the latch bullet; `registry.rs`'s `no_builtin_declares_a_str_input` pins it), so the only string control that reaches the render thread today
     /// is the `osc_out` echo, whose last drop is designed to land off it.
     Str(Arc<str>),
 
