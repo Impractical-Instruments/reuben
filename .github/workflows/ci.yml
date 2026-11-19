@@ -44,6 +44,7 @@ jobs:
       bench: ${{ steps.filter.outputs.bench }}
       eval: ${{ steps.filter.outputs.eval }}
       dashboard: ${{ steps.filter.outputs.dashboard }}
+      perf_gate_script: ${{ steps.filter.outputs.perf_gate_script }}
       editor: ${{ steps.filter.outputs.editor }}
       licenses: ${{ steps.filter.outputs.licenses }}
     steps:
@@ -147,6 +148,12 @@ jobs:
             dashboard:
               - '.github/scripts/bench-dashboard.py'
               - '.github/scripts/test_bench_dashboard.py'
+              - '.github/workflows/ci.yml'
+            # The perf gate's own script suite, apart from `bench`: it needs bash and git, not a
+            # toolchain or valgrind, so an edit to the script is checked in seconds.
+            perf_gate_script:
+              - '.github/scripts/perf-gate.sh'
+              - '.github/scripts/test_perf_gate.py'
               - '.github/workflows/ci.yml'
 
   lockstep:
@@ -685,6 +692,22 @@ jobs:
       - name: Dashboard eval-trend tests
         run: cd .github/scripts && python3 -m unittest test_bench_dashboard -v
 
+  # perf-gate.sh rewrites its swap set from git, which overwrites anything there that is not at HEAD.
+  # This suite runs the real script in throwaway repos (a `cargo` stub, nothing built) and holds it
+  # to two things: it refuses while the swap set holds work it would overwrite, and it leaves exactly
+  # HEAD's files behind — after a normal exit and after an interrupt alike.
+  perf-gate-script:
+    name: perf gate script tests
+    runs-on: ubuntu-latest
+    needs: changes
+    if: >-
+      needs.changes.outputs.perf_gate_script == 'true'
+      && (github.event_name == 'push' || github.event.pull_request.draft == false)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: perf-gate.sh dirty-tree tests
+        run: cd .github/scripts && python3 -m unittest test_perf_gate -v
+
   # The hook set's chainer (test_hook_dispatch.py), which is what makes every pre-commit and
   # pre-push check run locally at all. It builds throwaway git repos with synthetic registries, so
   # it needs no toolchain and takes under a second.
@@ -755,7 +778,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       [changes, lockstep, check, editor, licenses, windows, bench, eval-gate, dashboard,
-       hook-dispatch, sample-guard, doc-claims]
+       perf-gate-script, hook-dispatch, sample-guard, doc-claims]
     if: always()
     steps:
       - name: Fail if any required job failed or was cancelled (skipped is OK)

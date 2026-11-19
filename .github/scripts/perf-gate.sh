@@ -61,6 +61,10 @@
 # percent. Only the ratio BETWEEN two sizes tells linear from superlinear, so the construct layer
 # is additionally gated on its own absolute growth factor, with no reference to the baseline.
 #
+# Run by hand, it wants a clean swap set: the swaps rewrite those paths from git, so it refuses to
+# start (exit 2) while any of them carries staged, unstaged or untracked changes, a file flagged
+# assume-unchanged or skip-worktree, or an ignored file at a path the baseline tracks.
+#
 # Arg 1: baseline commit SHA (empty => no comparison, just run once).
 set -uo pipefail
 
@@ -106,6 +110,9 @@ BENCH_FIXTURES="crates/${PKG}/benches/fixtures"
 # Build config swapped with `src/` so a codegen-config perf change is A/B'd, not applied to both
 # sides (see header). Codegen only — never the toolchain or lockfile. Space-separated pathspecs.
 BUILD_CONFIG=".cargo/config.toml"
+# Everything swap_tree moves, and so everything the preflight guards: one list, so a path cannot be
+# swapped without being guarded. `$BENCH_FIXTURES` is the one member a ref may lack (see swap_tree).
+SWAP_SET=("${SRC[@]}" $FIXTURES $BUILD_CONFIG "$BENCH_FIXTURES")
 SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 FAIL_PCT=10
 WARN_PCT=3
@@ -139,34 +146,63 @@ both() { note "$1"; [ -n "${GITHUB_STEP_SUMMARY:-}" ] && printf '%s\n' "$1"; }
 run_bench() { local bench="$1"; shift; cargo bench -p "$PKG" --features "$FEATURES" --bench "$bench" -- "$@"; }
 # Swap the baseline snapshot — source closure + fixtures + build config, together — to ref $1
 # ("$BASE_SHA" for the baseline run, "HEAD" to restore the PR tree). One definition of the swap set so
-# the four call sites can't drift; the bench harness (`benches/`) is deliberately NOT in it (header).
+# the call sites can't drift; the bench harness (`benches/`) is deliberately NOT in it (header).
 # benches/fixtures/ (the frozen macro workload) IS swapped, but only when the target ref carries the
-# dir — a baseline predating the library cull has no such path, and an unguarded pathspec would
-# abort under `set -e`. When the ref lacks it, HEAD's copy stays in place: those fixture bytes are
-# the pre-cull instruments/ documents verbatim, valid for the older engine.
+# dir — a baseline predating the library cull has no such path. When the ref lacks it, HEAD's copy
+# stays in place: those fixture bytes are the pre-cull instruments/ documents verbatim, valid for the
+# older engine.
+#
+# The restore to HEAD is `--no-overlay`: it makes the swapped paths match HEAD exactly, deleting any
+# file HEAD lacks from the working tree and the index. The default overlay mode only adds and
+# overwrites, so a file the baseline has and HEAD deleted would stay behind, staged, after every run.
+# The swap TO the baseline stays an overlay on purpose: files only HEAD has remain in place for the
+# baseline build. In `src/` they are inert (no `mod` at the baseline names them), and in the fixture
+# dirs they are what lets HEAD's harness `include_str!` a workload the PR adds — dropping them would
+# turn that layer into a compile-failure skip. The overlay also keeps git's fail-before-write on a
+# pathspec the ref lacks, which swap_tree's hard-fail relies on; no-overlay would delete that path
+# instead.
+checkout_swap_set() {
+  local ref="$1" p paths=()
+  for p in "${SWAP_SET[@]}"; do
+    if [ "$p" = "$BENCH_FIXTURES" ] && ! git cat-file -e "${ref}:${p}" 2>/dev/null; then
+      continue
+    fi
+    paths+=("$p")
+  done
+  local mode=--overlay
+  [ "$ref" = HEAD ] && mode=--no-overlay
+  git checkout "$mode" "$ref" -- "${paths[@]}"
+}
 swap_tree() {
   # Hard-fail on a checkout that did not happen. `missing_at` below screens the one predictable
-  # cause (a crate the baseline predates), but ANY failure here — a dirty path, a permission, a
-  # pathspec typo — leaves the tree at HEAD, and the caller would then bench HEAD against itself and
-  # report 0% for every case. There is no `set -e` in this script, so silence is the default; a
-  # snapshot that did not apply must stop the gate rather than green it.
-  if ! git checkout "$1" -- "${SRC[@]}" $FIXTURES $BUILD_CONFIG; then
+  # cause (a crate the baseline predates), but ANY failure here — a permission, a pathspec typo —
+  # leaves the tree at HEAD, and the caller would then bench HEAD against itself and report 0% for
+  # every case. There is no `set -e` in this script, so silence is the default; a snapshot that did
+  # not apply must stop the gate rather than green it. A dirty path is NOT such a failure: this
+  # checkout overwrites it without complaint, which is why the script refuses a dirty swap set up
+  # front.
+  if ! checkout_swap_set "$1"; then
     printf '::error title=Baseline snapshot failed::could not check out the source closure at %s — the gate would otherwise compare HEAD against itself and report no regression\n' "$1"
     exit 1
   fi
-  if git cat-file -e "$1:$BENCH_FIXTURES" 2>/dev/null; then
-    git checkout "$1" -- "$BENCH_FIXTURES"
+}
+# Put the swap set back at HEAD however the script ends. Without it, a Ctrl-C or kill between a swap
+# and its restore leaves the baseline in the working tree and the index, and the next run's preflight
+# would refuse over what looks like the user's own changes. Restoring is a no-op on a tree already at
+# HEAD, so the normal exits pay nothing for it.
+restore_head_on_exit() {
+  if ! checkout_swap_set HEAD; then
+    printf '::error title=Swap set not restored::the swap set may still hold the baseline — run: git checkout --no-overlay HEAD -- %s\n' "${SWAP_SET[*]}" >&2
   fi
 }
 
 # The first SRC path absent at ref $1, or empty when the ref carries all of them.
 #
-# `git checkout <ref> -- <many pathspecs>` fails ATOMICALLY on the first unknown one: it writes
-# nothing, leaves the working tree at HEAD, and — there is no `set -e` here — the run carries on to
-# "compare" HEAD against itself and report 0% for every case. That is a green gate measuring
-# nothing, the same masking shape the compile/runtime split above exists to prevent. A PR that adds
-# a crate to the closure hits this by construction, because the baseline has no such directory, so
-# it is checked rather than assumed.
+# The baseline checkout writes nothing when the ref lacks a swapped path, and swap_tree then stops
+# the whole gate — the alternative is a run that "compares" HEAD against itself and reports 0% for every
+# case, a green gate measuring nothing. A PR that adds a crate to the closure hits that by
+# construction, because the baseline has no such directory, so it is screened here first and only
+# the affected layer is skipped, with a note, instead of the whole gate failing.
 missing_at() {
   local ref="$1" p
   for p in "${SRC[@]}"; do
@@ -226,6 +262,34 @@ if [ -z "$BASE_SHA" ] || ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; t
   note "_No usable baseline ref — ran benches once, no comparison._"
   for b in "${BENCHES[@]}"; do run_bench "$b" || true; done
   exit 0
+fi
+
+# Refuse to run while the swaps would overwrite anything that is not at HEAD. The checkout rewrites
+# the working tree AND the index at every swapped path with no prompt; unstaged and untracked edits
+# were never objects, so neither the reflog nor fsck can bring them back. Refusing loses nothing,
+# because the PR side is restored from HEAD too — the gate never measured those edits.
+#   - status: staged, unstaged and untracked changes.
+#   - index flags: status cannot see an edit to a file marked assume-unchanged or skip-worktree
+#     (`git ls-files -v` tags those with a lowercase letter or `S`), and the checkout overwrites it.
+#   - ignored files: status hides them too, and one sitting at a path the baseline tracks is
+#     overwritten by the baseline swap and then deleted by the no-overlay restore.
+# CI checks out a fresh tree, so none of these can trip there; they only ever stop a hand run.
+dirty="$(git status --porcelain --untracked-files=all -- "${SWAP_SET[@]}")"
+flagged="$(git ls-files -v -- "${SWAP_SET[@]}" | grep -E '^([a-z]|S) ')"
+ignored="$(LC_ALL=C comm -12 \
+  <(git ls-tree -r --name-only "$BASE_SHA" -- "${SWAP_SET[@]}" | LC_ALL=C sort) \
+  <(git ls-files --others --ignored --exclude-standard -- "${SWAP_SET[@]}" | LC_ALL=C sort))"
+if [ -n "$dirty" ]; then
+  printf '::error title=Uncommitted changes in the swap set::perf-gate.sh checks these paths out from git and would overwrite the changes below. Commit or stash first — the gate benches HEAD, not the working tree.\n%s\n' "$dirty" >&2
+fi
+if [ -n "$flagged" ]; then
+  printf '::error title=Hidden changes in the swap set::these paths are marked assume-unchanged (lowercase tag) or skip-worktree (S), so git status cannot vouch for them and the swap would overwrite them. Clear the flag with git update-index --no-assume-unchanged / --no-skip-worktree, then commit or stash.\n%s\n' "$flagged" >&2
+fi
+if [ -n "$ignored" ]; then
+  printf '::error title=Ignored files in the swap set::these ignored files sit at paths the baseline tracks, so the swap would overwrite them and the restore would delete them. Move them out of the tree first.\n%s\n' "$ignored" >&2
+fi
+if [ -n "$dirty$flagged$ignored" ]; then
+  exit 2
 fi
 
 note "Baseline: \`$(git rev-parse --short "$BASE_SHA")\` · fail > ${FAIL_PCT}% · warn > ${WARN_PCT}%"
@@ -416,6 +480,11 @@ gate_one() {
   fi
 }
 
+# Installed only past the preflight, so a refused run never touches the tree. INT and TERM exit
+# through the EXIT trap rather than straight out, which is what runs the restore on an interrupt.
+trap restore_head_on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 for b in "${BENCHES[@]}"; do gate_one "$b"; done
 
 # Growth-factor gate for the construct layer — the check the baseline comparison structurally
