@@ -76,6 +76,16 @@ impl<R: Resources> DocumentHistory<R> {
         self.inner
     }
 
+    /// Whether [`restore_instrument`] can find the state `hash` for `source` — the one refusal a
+    /// caller holding a stack of hashes must tell apart from a failed read or write, since only
+    /// this one means the hash is gone for good.
+    pub fn holds(&self, source: &str, hash: &str) -> bool {
+        let source = self.inner.canonical(source, None);
+        self.held()
+            .iter()
+            .any(|h| h.source == source && h.hash == hash)
+    }
+
     fn held(&self) -> MutexGuard<'_, VecDeque<Held>> {
         // Every critical section leaves the queue whole, so a panic elsewhere while it was held
         // poisons nothing worth refusing over.

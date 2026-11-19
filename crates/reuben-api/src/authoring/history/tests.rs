@@ -601,3 +601,23 @@ fn a_hash_not_held_is_refused_whatever_the_expect() {
     restore_instrument(&restore(SRC, "0000000000000000", "stale"), &history)
         .expect_err("nothing is held under that hash");
 }
+
+#[test]
+fn holds_answers_for_a_source_and_hash_and_forgets_what_was_evicted() {
+    let history = DocumentHistory::with_capacity(MemoryStore::with(SRC, &seed()), 2);
+    let original = hash_instrument(&seed(), &history).expect("the seed hashes");
+    let first = set_freq(SRC, 330.0, &history);
+    assert!(history.holds(SRC, &original));
+    assert!(
+        history.holds(&format!("./{SRC}"), &first),
+        "by canonical source"
+    );
+    assert!(
+        !history.holds("other.json", &first),
+        "held for this source only"
+    );
+
+    set_freq(SRC, 440.0, &history);
+    assert!(!history.holds(SRC, &original), "evicted");
+    assert!(history.holds(SRC, &first));
+}

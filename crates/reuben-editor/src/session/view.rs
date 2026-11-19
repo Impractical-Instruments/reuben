@@ -18,7 +18,7 @@ const REDO_ALT: egui::KeyboardShortcut =
 /// The undo or redo the keyboard asked for this frame, unless a text field has the keyboard and
 /// its own undo is the one meant.
 pub fn shortcut(ctx: &egui::Context) -> Option<Direction> {
-    if ctx.egui_wants_keyboard_input() {
+    if ctx.text_edit_focused() {
         return None;
     }
     ctx.input_mut(|input| {
@@ -133,6 +133,46 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    /// Press Ctrl+Z with the keyboard focus on the widget `widget` draws, and return what
+    /// [`shortcut`] made of it. Asked before the widget is drawn, as the window asks.
+    fn ctrl_z_with_focus_on(
+        mut widget: impl FnMut(&mut egui::Ui) -> egui::Response,
+    ) -> Option<Direction> {
+        let ctx = egui::Context::default();
+        // Nothing here paints, and the font atlas it would upload refuses a silent drop.
+        ctx.run_ui(egui::RawInput::default(), |ui| widget(ui).request_focus())
+            .drop_without_applying_deltas();
+        let press = egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Z,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            }],
+            ..Default::default()
+        };
+        let mut asked = None;
+        ctx.run_ui(press, |ui| {
+            asked = shortcut(ui.ctx());
+            widget(ui);
+        })
+        .drop_without_applying_deltas();
+        asked
+    }
+
+    #[test]
+    fn the_undo_shortcut_works_with_a_button_focused_and_not_in_a_text_field() {
+        assert_eq!(
+            ctrl_z_with_focus_on(|ui| ui.button("a button")),
+            Some(Direction::Undo)
+        );
+        assert_eq!(
+            ctrl_z_with_focus_on(|ui| ui.text_edit_singleline(&mut String::new())),
+            None
+        );
+    }
 
     #[test]
     fn a_file_is_named_from_the_top_level_files_directory() {

@@ -88,16 +88,6 @@ impl Undo {
         dropped
     }
 
-    /// Drop every step of `source` from both stacks: the file holds a state none of them was
-    /// recorded against, so none of their guards can match it again. Returns how many were
-    /// dropped.
-    pub fn forget_file(&mut self, source: &str) -> usize {
-        let before = self.undo.len() + self.redo.len();
-        self.undo.retain(|step| step.source != source);
-        self.redo.retain(|step| step.source != source);
-        before - self.undo.len() - self.redo.len()
-    }
-
     /// What the last undo or redo said, until the next one or a new write.
     pub fn note(&self) -> Option<&str> {
         self.note.as_deref()
@@ -214,22 +204,5 @@ mod tests {
         assert_eq!(undo.forget(Direction::Undo), 2);
         assert_eq!(undo.next(Direction::Undo), None);
         assert!(undo.next(Direction::Redo).is_some());
-    }
-
-    #[test]
-    fn forgetting_a_file_drops_its_steps_from_both_stacks_and_keeps_the_rest_in_order() {
-        let mut undo = Undo::default();
-        undo.record(step("a.json", "a0", "a1"));
-        undo.record(step("b.json", "b0", "b1"));
-        undo.record(step("a.json", "a1", "a2"));
-        undo.record(step("c.json", "c0", "c1"));
-        undo.record(step("a.json", "a2", "a3"));
-        undo.crossed(Direction::Undo);
-        assert_eq!(undo.forget_file("a.json"), 3);
-        assert_eq!(
-            entries(&undo, Direction::Undo),
-            [("b.json", "b1"), ("c.json", "c1")]
-        );
-        assert!(entries(&undo, Direction::Redo).is_empty());
     }
 }

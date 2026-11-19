@@ -88,6 +88,8 @@ pub struct Session {
     /// The store each document is written through, kept for the session's life so the states a
     /// step names stay held for a restore.
     histories: BTreeMap<String, DocumentHistory<FsResolver>>,
+    /// How many states each of `histories` keeps.
+    states: usize,
     #[cfg(test)]
     touches: usize,
 }
@@ -134,6 +136,7 @@ impl Session {
             wake,
             undo: Undo::default(),
             histories: BTreeMap::new(),
+            states: DocumentHistory::<FsResolver>::DEFAULT_CAPACITY,
             #[cfg(test)]
             touches: 0,
         }
@@ -170,9 +173,17 @@ impl Session {
     /// left stay held.
     pub fn history(&mut self, source: &str) -> &DocumentHistory<FsResolver> {
         let root = self.root.as_deref();
+        let states = self.states;
         self.histories
             .entry(source.to_string())
-            .or_insert_with(|| DocumentHistory::new(tree::store(source, root)))
+            .or_insert_with(|| DocumentHistory::with_capacity(tree::store(source, root), states))
+    }
+
+    /// Keep `states` states per document from here on, so a test can push one out of the store.
+    #[cfg(test)]
+    pub fn keep_states(&mut self, states: usize) {
+        self.states = states;
+        self.histories.clear();
     }
 
     pub fn undo(&self) -> &Undo {

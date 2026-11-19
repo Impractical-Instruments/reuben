@@ -3,9 +3,7 @@
 
 use std::path::Path;
 
-use reuben_api::authoring::{
-    read_instrument, restore_instrument, Answer, EditResult, ReadInstrument, Refusal, Resources,
-};
+use reuben_api::authoring::{restore_instrument, Answer, EditResult, Refusal, Resources};
 use reuben_api::engine::Channel;
 
 use crate::session::{Direction, Session, Step};
@@ -64,18 +62,18 @@ pub enum Restored {
     /// The file is in the state the step names, and the step has crossed to the other stack.
     Landed,
     /// The file was written by someone else since the step was recorded and is left as they
-    /// left it. None of that file's steps can land on what it holds now, so `dropped` of them,
-    /// this one included, are gone from both stacks.
-    Conflict { step: Step, dropped: usize },
+    /// left it. Nothing was written, and the step stays: it lands again if the file returns to
+    /// the state the step expects.
+    Conflict { step: Step },
     /// The state the step names no longer validates, a file it references having changed since.
     /// Nothing was written, and the step stays: it lands again once that file is put back.
     Rejected { step: Step, result: EditResult },
     /// The state the step names is no longer held. It, and every step behind it in the same
     /// direction — `dropped` in all — are gone.
     Forgotten { step: Step, dropped: usize },
-    /// The file does not read as a document, so it has no hash a restore could be guarded by.
-    /// The step stays, to land once the file is repaired.
-    Unreadable { step: Step, why: String },
+    /// The restore could not run: the file does not read as a document, or it could not be read
+    /// or written. The step stays, to land once that is put right.
+    Refused { step: Step, why: String },
 }
 
 impl Restored {
@@ -87,9 +85,8 @@ impl Restored {
         };
         match self {
             Restored::Nothing | Restored::Landed => None,
-            Restored::Conflict { step, dropped, .. } => Some(format!(
-                "Cannot {verb}: {} was changed outside the editor since. It is left as it is, and \
-                 its {dropped} undo/redo step(s) are dropped.",
+            Restored::Conflict { step } => Some(format!(
+                "Cannot {verb}: {} was changed outside the editor since, and is left as it is.",
                 file_name(&step.source)
             )),
             Restored::Rejected { step, result } => {
@@ -111,10 +108,9 @@ impl Restored {
                 "Cannot {verb}: that state of {} is no longer kept. {dropped} step(s) dropped.",
                 file_name(&step.source)
             )),
-            Restored::Unreadable { step, why } => Some(format!(
-                "Cannot {verb}: {} does not read as an instrument ({why}). Repair it and try again.",
-                file_name(&step.source)
-            )),
+            Restored::Refused { step, why } => {
+                Some(format!("Cannot {verb} {}: {why}", file_name(&step.source)))
+            }
         }
     }
 }
@@ -146,30 +142,23 @@ pub fn restore(
             session.undo_mut().crossed(direction);
             Restored::Landed
         }
-        Ok(answer) if answer.output.hash != expect => conflict(session, step),
+        Ok(answer) if answer.output.hash != expect => Restored::Conflict { step },
         Ok(answer) => Restored::Rejected {
             step,
             result: answer.output,
         },
-        // A refusal is a state no longer held or a file that is not a document; which, and
-        // whether someone else's write is the real news, takes a read of the file.
+        // Only a state the store no longer holds is gone for good; a file that would not read
+        // or write refuses the same way and is worth trying again.
         Err(refusal) => {
-            let read = read_instrument(
-                &ReadInstrument {
-                    source: step.source.clone(),
-                },
-                session.history(&step.source),
-            );
-            match read {
-                Err(_) => Restored::Unreadable {
+            let to = step.restore(direction).to;
+            if session.history(&step.source).holds(&step.source, &to) {
+                Restored::Refused {
                     step,
                     why: refusal.message,
-                },
-                Ok(read) if read.output.hash != expect => conflict(session, step),
-                Ok(_) => {
-                    let dropped = session.undo_mut().forget(direction);
-                    Restored::Forgotten { step, dropped }
                 }
+            } else {
+                let dropped = session.undo_mut().forget(direction);
+                Restored::Forgotten { step, dropped }
             }
         }
     };
@@ -179,16 +168,12 @@ pub fn restore(
     restored
 }
 
-fn conflict(session: &mut Session, step: Step) -> Restored {
-    let dropped = session.undo_mut().forget_file(&step.source);
-    Restored::Conflict { step, dropped }
-}
-
 #[cfg(test)]
 mod tests {
     use reuben_api::authoring::{
-        remove_instrument_interface_input, set_instrument_description, set_instrument_input,
-        set_instrument_name, RemoveInstrumentInterfacePipe, SetInstrumentDescription,
+        add_instrument_interface_input, remove_instrument_interface_input,
+        set_instrument_description, set_instrument_input, set_instrument_name,
+        AddInstrumentInterfaceInput, RemoveInstrumentInterfacePipe, SetInstrumentDescription,
         SetInstrumentInput, SetInstrumentName,
     };
     use reuben_api::FsResolver;
@@ -488,67 +473,203 @@ mod tests {
         });
     }
 
+    fn sidecar_describes(source: &str, description: &str) -> EditResult {
+        let theirs = set_instrument_description(
+            &SetInstrumentDescription {
+                source: source.to_string(),
+                description: Some(description.to_string()),
+                expect: None,
+            },
+            &FsResolver::for_document(source).stat_only(),
+        )
+        .expect("the verb ran")
+        .output;
+        assert!(theirs.written, "{:?}", theirs.report);
+        theirs
+    }
+
     #[test]
-    fn a_sidecar_write_in_between_makes_the_undo_refuse_and_is_left_as_it_is() {
+    fn a_write_the_expect_guard_turns_away_is_no_step() {
         within(HANG_SECS, || {
-            let (mut rig, top, strip) = drums("undo_conflict");
-            let original_top = hash(&rig, &top);
-            set_trim(&mut rig, &top, 0.5);
-            rename(&mut rig, &strip, "renamed-strip");
-            rename(&mut rig, &strip, "renamed-again");
-
-            let theirs = set_instrument_description(
-                &SetInstrumentDescription {
-                    source: strip.clone(),
-                    description: Some("the sidecar's".to_string()),
-                    expect: None,
-                },
-                &FsResolver::for_document(&strip).stat_only(),
-            )
-            .expect("the verb ran")
-            .output;
-            assert!(theirs.written);
-
-            let refused = undo(&mut rig);
-            assert!(
-                matches!(&refused, Restored::Conflict { step, dropped: 2 } if step.source == strip),
-                "{refused:?}"
-            );
-            assert_eq!(
-                hash(&rig, &strip),
-                theirs.hash,
-                "the sidecar's write stands"
-            );
-            assert!(rig.session.undo().note().is_some());
-
-            // The steps of the file nobody else wrote are still there.
-            assert!(matches!(undo(&mut rig), Restored::Landed));
-            assert_eq!(hash(&rig, &top), original_top);
-            assert_eq!(hash(&rig, &strip), theirs.hash);
+            let (mut rig, top, _) = drums("undo_guarded_write");
+            let theirs = sidecar_describes(&top, "the sidecar's");
+            let channel = rig.channel_source();
+            let ours = write(&mut rig.session, &channel, &top, |store, expect| {
+                set_instrument_name(
+                    &SetInstrumentName {
+                        source: top.clone(),
+                        name: "ours".to_string(),
+                        expect,
+                    },
+                    store,
+                )
+            })
+            .expect("the verb ran");
+            assert!(!ours.written);
+            assert_eq!(ours.hash, theirs.hash);
             assert!(matches!(undo(&mut rig), Restored::Nothing));
         });
     }
 
     #[test]
-    fn a_state_no_longer_held_drops_its_step_and_every_step_behind_it() {
+    fn a_sidecar_write_in_between_refuses_the_undo_and_keeps_every_step() {
         within(HANG_SECS, || {
-            let (mut rig, top, _) = drums("undo_forgotten");
+            let (mut rig, top, strip) = drums("undo_conflict");
             set_trim(&mut rig, &top, 0.5);
-            let now = hash(&rig, &top);
-            rig.session.undo_mut().record(Step {
-                source: top.clone(),
-                before: "0000000000000000".to_string(),
-                after: now.clone(),
-            });
+            rename(&mut rig, &strip, "renamed-strip");
+            let theirs = sidecar_describes(&strip, "the sidecar's");
 
+            for _ in 0..2 {
+                let refused = undo(&mut rig);
+                assert!(
+                    matches!(&refused, Restored::Conflict { step } if step.source == strip),
+                    "{refused:?}"
+                );
+                assert_eq!(
+                    hash(&rig, &strip),
+                    theirs.hash,
+                    "the sidecar's write stands"
+                );
+                assert!(rig.session.undo().note().is_some());
+            }
+        });
+    }
+
+    /// The editor writes, the sidecar writes over it, the editor writes again: the newest step
+    /// still undoes onto the sidecar's state, and the conflict below it costs no redo.
+    #[test]
+    fn a_conflict_keeps_a_redo_that_still_lands() {
+        within(HANG_SECS, || {
+            let (mut rig, top, _) = drums("undo_conflict_redo");
+            set_trim(&mut rig, &top, 0.5);
+            let theirs = sidecar_describes(&top, "the sidecar's");
+            rig.poll_until("the session reading the sidecar's write", |rig| {
+                hash(rig, &top) == theirs.hash
+            });
+            set_trim(&mut rig, &top, 0.6);
+            let ours = hash(&rig, &top);
+
+            assert!(matches!(undo(&mut rig), Restored::Landed));
+            assert_eq!(hash(&rig, &top), theirs.hash);
+            assert!(matches!(undo(&mut rig), Restored::Conflict { .. }));
+            assert_eq!(hash(&rig, &top), theirs.hash);
+
+            assert!(matches!(redo(&mut rig), Restored::Landed));
+            assert_eq!(hash(&rig, &top), ours);
+        });
+    }
+
+    /// A subpatch gains an input, its parent wires a value into it, and the sidecar then writes
+    /// the parent: undoing past that conflict must not take the input away from under the parent.
+    #[test]
+    fn undoing_past_a_conflict_never_strands_the_parent_on_a_subpatch_it_does_not_fit() {
+        within(HANG_SECS, || {
+            let (mut rig, top, strip) = drums("undo_conflict_parent");
+            edit(&mut rig, &strip, |store, expect| {
+                add_instrument_interface_input(
+                    &AddInstrumentInterfaceInput {
+                        source: strip.clone(),
+                        name: "drive".to_string(),
+                        type_name: "f32".to_string(),
+                        value: Some(json!(0.0)),
+                        expect,
+                        ..Default::default()
+                    },
+                    store,
+                )
+            });
+            let strip_with_drive = hash(&rig, &strip);
+            edit(&mut rig, &top, |store, expect| {
+                set_instrument_input(
+                    &SetInstrumentInput {
+                        source: top.clone(),
+                        address: "/kick_strip".to_string(),
+                        input: "drive".to_string(),
+                        value: json!(0.5),
+                        expect,
+                    },
+                    store,
+                )
+            });
+            sidecar_describes(&top, "the sidecar's");
+
+            assert!(matches!(undo(&mut rig), Restored::Conflict { .. }));
+            assert!(matches!(undo(&mut rig), Restored::Conflict { .. }));
+            assert_eq!(hash(&rig, &strip), strip_with_drive);
+            let parent = rig.session.tree().top().read.as_ref().expect("reads");
+            assert!(parent.report.ok, "{:?}", parent.report.errors);
+            assert_eq!(rig.session.tree().blocked(), Vec::<String>::new());
+        });
+    }
+
+    /// Four writes to a store that keeps four states: by the last undo, the state before the
+    /// first write has been pushed out.
+    #[test]
+    fn a_state_evicted_from_the_store_drops_its_step_and_every_step_behind_it() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("undo_evicted", "default.json");
+            rig.session.keep_states(4);
+            let voice = voice_source(&rig);
+            let mut states = vec![hash(&rig, &voice)];
+            for cutoff in [900.0, 1000.0, 1100.0, 1200.0] {
+                assert!(set_cutoff(&mut rig, &voice, cutoff).written);
+                states.push(hash(&rig, &voice));
+            }
+
+            for state in states[1..4].iter().rev() {
+                assert!(matches!(undo(&mut rig), Restored::Landed));
+                assert_eq!(&hash(&rig, &voice), state);
+            }
             let refused = undo(&mut rig);
             assert!(
-                matches!(&refused, Restored::Forgotten { dropped: 2, .. }),
+                matches!(&refused, Restored::Forgotten { dropped: 1, .. }),
                 "{refused:?}"
             );
-            assert_eq!(hash(&rig, &top), now, "nothing written");
+            assert_eq!(hash(&rig, &voice), states[1], "nothing written");
             assert!(matches!(undo(&mut rig), Restored::Nothing));
             assert!(rig.session.undo().note().is_some());
+            assert!(
+                matches!(redo(&mut rig), Restored::Landed),
+                "the redo stack is kept"
+            );
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_restore_that_cannot_be_written_keeps_every_step() {
+        use std::os::unix::fs::PermissionsExt;
+
+        within(HANG_SECS, || {
+            let (mut rig, top, strip) = drums("undo_unwritable");
+            set_trim(&mut rig, &top, 0.5);
+            let original = hash(&rig, &strip);
+            rename(&mut rig, &strip, "renamed-strip");
+            let renamed = hash(&rig, &strip);
+            let dir = rig
+                .session
+                .tree()
+                .document(&strip)
+                .unwrap()
+                .path
+                .parent()
+                .unwrap()
+                .to_path_buf();
+            let mode = |bits| std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(bits));
+
+            mode(0o555).unwrap();
+            let refused = undo(&mut rig);
+            mode(0o755).unwrap();
+            assert!(matches!(&refused, Restored::Refused { .. }), "{refused:?}");
+            assert_eq!(hash(&rig, &strip), renamed);
+            assert!(rig.session.undo().note().is_some());
+
+            assert!(matches!(undo(&mut rig), Restored::Landed));
+            assert_eq!(hash(&rig, &strip), original);
+            assert!(
+                matches!(undo(&mut rig), Restored::Landed),
+                "the step behind it is kept"
+            );
         });
     }
 
@@ -596,10 +717,7 @@ mod tests {
 
             std::fs::write(&path, "{ not an instrument").unwrap();
             let refused = undo(&mut rig);
-            assert!(
-                matches!(&refused, Restored::Unreadable { .. }),
-                "{refused:?}"
-            );
+            assert!(matches!(&refused, Restored::Refused { .. }), "{refused:?}");
             assert!(rig.session.undo().next(Direction::Undo).is_some());
 
             std::fs::write(&path, good).unwrap();
