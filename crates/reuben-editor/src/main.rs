@@ -67,8 +67,9 @@ fn main() -> eframe::Result {
                 Session::open(path, root.as_deref(), move || ctx.request_repaint())
             });
             let mut canvas = Canvas::open(None, None);
+            let mut inspector = Inspector::default();
             if let Some(session) = &session {
-                canvas.reload(session.top(), session.root(), &session.tree().top().read);
+                view(&mut canvas, &mut inspector, session);
             }
             let mut start_screen = Start::new(ConfigDir::user(), root.as_deref());
             if let Some(path) = args.path.as_deref().filter(|p| p.is_file()) {
@@ -85,7 +86,7 @@ fn main() -> eframe::Result {
                 audio,
                 controls,
                 canvas,
-                inspector: Inspector::default(),
+                inspector,
                 session,
                 start: start_screen,
                 launch,
@@ -109,6 +110,18 @@ fn start(
         Ok(config) => start_engine(config),
         Err(e) => Engine::not_started(e),
     }
+}
+
+/// Draw the document `session` views. A canvas drawing another document, and the inspector with
+/// it, start over on this one: their view, selection and held values belong to the one they drew.
+fn view(canvas: &mut Canvas, inspector: &mut Inspector, session: &Session) {
+    let viewed = session.viewed();
+    let source = std::path::Path::new(&viewed.source);
+    if canvas.instrument().is_some_and(|drawn| drawn != source) {
+        *canvas = Canvas::open(None, None);
+        *inspector = Inspector::default();
+    }
+    canvas.reload(source, session.root(), &viewed.read);
 }
 
 struct Editor {
@@ -137,9 +150,8 @@ impl Editor {
             reuben_native::engine::start,
         );
         self.canvas = Canvas::open(None, None);
-        self.canvas
-            .reload(session.top(), session.root(), &session.tree().top().read);
         self.inspector = Inspector::default();
+        view(&mut self.canvas, &mut self.inspector, &session);
         if start::panel_follows(&session, &self.engine) {
             self.controls = Controls::open(Some(path), root);
         }
@@ -166,8 +178,7 @@ impl Editor {
                 .request_repaint_after(std::time::Duration::from_millis(50));
         }
         if poll.reloaded {
-            self.canvas
-                .reload(session.top(), session.root(), &session.tree().top().read);
+            view(&mut self.canvas, &mut self.inspector, session);
         }
         // The files load and nothing plays them: the engine stopped, or never started, on a
         // tree that did not load.
@@ -228,6 +239,12 @@ impl eframe::App for Editor {
             if ui.button("Start screen").clicked() {
                 self.start.show_again();
             }
+            if let Some(session) = &mut self.session {
+                if let Some(depth) = session::trail(ui, session) {
+                    session.leave(depth);
+                    view(&mut self.canvas, &mut self.inspector, session);
+                }
+            }
             for line in self.engine.report() {
                 let color = match line.level {
                     Level::Info => ui.visuals().text_color(),
@@ -245,6 +262,14 @@ impl eframe::App for Editor {
             let result = gesture.apply(session, &|| self.engine.channel());
             self.canvas.applied(&gesture, &result);
             // The write is read back already; the next frame redraws from it.
+            ui.ctx().request_repaint();
+        }
+        // After the gestures, which were made on the document drawn this frame.
+        if let (Some(address), Some(session)) = (self.canvas.take_entered(), &mut self.session) {
+            match session.enter(&address) {
+                Ok(()) => view(&mut self.canvas, &mut self.inspector, session),
+                Err(why) => self.canvas.refuse(why),
+            }
             ui.ctx().request_repaint();
         }
     }

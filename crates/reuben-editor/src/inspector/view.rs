@@ -19,7 +19,7 @@ enum Ask {
     Edit(Edit, Option<String>),
 }
 
-/// Draw the inspector down the right of `ui` for `selection` in the session's top-level document,
+/// Draw the inspector down the right of `ui` for `selection` in the document the session views,
 /// and carry out what was done to it.
 pub fn show(
     ui: &mut egui::Ui,
@@ -36,7 +36,7 @@ pub fn show(
             egui::ScrollArea::vertical()
                 .auto_shrink(false)
                 .show(ui, |ui| {
-                    let top = match &session.tree().top().read {
+                    let top = match &session.viewed().read {
                         Ok(top) => top,
                         Err(e) => {
                             inspector.unreadable();

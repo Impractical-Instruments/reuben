@@ -4,7 +4,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use reuben_api::authoring::{read_instrument, InstrumentStructure, ReadInstrument};
+use reuben_api::authoring::{read_instrument, InstrumentStructure, ReadInstrument, StructureNode};
 use reuben_api::FsResolver;
 
 /// The node slots whose resource is a document rather than a sample.
@@ -19,6 +19,16 @@ pub fn store(source: &str, root: Option<&Path>) -> FsResolver {
         Some(root) => store.with_root(root),
         None => store,
     }
+}
+
+/// The resolved source of the document `node` of `structure` references as its voice or its
+/// patch: the source a load of `structure` reads it from.
+pub fn nested<'a>(structure: &'a InstrumentStructure, node: &StructureNode) -> Option<&'a str> {
+    let reference = (node.resources.iter())
+        .find(|reference| DOCUMENT_SLOTS.contains(&reference.slot.as_str()))?;
+    (structure.resources.iter())
+        .find(|entry| entry.id == reference.id)
+        .map(|entry| entry.canonical.as_str())
 }
 
 /// One file of the tree.
@@ -51,19 +61,26 @@ impl Document {
         let Ok(structure) = &self.read else {
             return Vec::new();
         };
-        structure
-            .nodes
-            .iter()
-            .flat_map(|node| &node.resources)
-            .filter(|reference| DOCUMENT_SLOTS.contains(&reference.slot.as_str()))
-            .filter_map(|reference| {
-                structure
-                    .resources
-                    .iter()
-                    .find(|entry| entry.id == reference.id)
-            })
-            .map(|entry| entry.canonical.as_str())
+        (structure.nodes.iter())
+            .filter_map(|node| nested(structure, node))
             .collect()
+    }
+
+    /// The resolved source of the document the node at `address` references, when this document
+    /// reads and has such a node.
+    pub fn nested(&self, address: &str) -> Option<&str> {
+        let structure = self.read.as_ref().ok()?;
+        let node = structure.nodes.iter().find(|n| n.address == address)?;
+        nested(structure, node)
+    }
+
+    /// The document's `instrument` name, or its file name when it does not read.
+    pub fn name(&self) -> String {
+        match &self.read {
+            Ok(structure) => structure.instrument.clone(),
+            Err(_) => (self.path.file_stem())
+                .map_or_else(|| self.source.clone(), |s| s.to_string_lossy().into_owned()),
+        }
     }
 
     /// The content hash of what was read, when it read.
