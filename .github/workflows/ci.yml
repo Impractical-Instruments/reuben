@@ -228,8 +228,8 @@ jobs:
   # `reuben-editor`, which no other job builds: it sits outside `default-members`, so the bare
   # `cargo` commands in `check`/`windows`/`bench` skip it and the egui tree stays out of their
   # compile. Its own fmt step because `check`'s path filter does not include the editor's tree, so
-  # an editor-only change never runs `check`'s `cargo fmt --all`. Linux only until the editor's
-  # macOS and Windows builds are in scope.
+  # an editor-only change never runs `check`'s `cargo fmt --all`. Linux only: the editor's Windows
+  # and macOS builds run in the release workflow, whose `workflow_dispatch` is the way to try them.
   editor:
     name: fmt + clippy + build + test (reuben-editor)
     runs-on: ubuntu-latest

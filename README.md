@@ -35,11 +35,14 @@ carries prebuilt archives, each with a `.sha256` file beside it:
 Check a download with `sha256sum -c <archive>.sha256` (`shasum -a 256 -c` on macOS). Run the
 CLI from a terminal as `./reuben play` (`reuben.exe play` on Windows).
 
-The editor archive holds the binary, the instrument library (`instruments/`), and the licences
-of the two fonts built into it. Extract it anywhere and start `reuben-editor` from the extracted
-folder: its start screen offers the library beside it.
+The editor archive holds the binary, the instrument library (`instruments/`), the control
+surfaces for it (`surfaces/`), and the licences of the fonts built into it (`font-licences/`).
+Extract it anywhere and start `reuben-editor` from the extracted folder: its start screen offers
+the library beside it.
 
-The x86-64 builds need a CPU with AVX2 (Intel Haswell or AMD Excavator, 2013, or newer).
+The x86-64 builds need a CPU with AVX2 and FMA (the x86-64-v3 level): an Intel Core from
+Haswell (2013) on, or an AMD from Excavator (2015) on. Some later Intel Pentium, Celeron and Atom
+parts lack AVX2 and cannot run them.
 
 **Linux.** Ubuntu 24.04 LTS or newer, or another distribution with glibc 2.39 or newer, and an
 X11 or Wayland desktop session. A default Ubuntu Desktop install has everything the editor
@@ -49,15 +52,20 @@ ALSA:
 ```sh
 sudo apt-get install libasound2t64 libegl1 libgl1 libegl-mesa0 libgl1-mesa-dri libglx-mesa0 \
   libwayland-client0 libwayland-egl1 libx11-6 libx11-xcb1 libxcb1 libxcursor1 libxi6 \
-  libxrender1 libxkbcommon0 libxkbcommon-x11-0 libdbus-1-3 xdg-desktop-portal
+  libxrender1 libxkbcommon0 libxkbcommon-x11-0 libdbus-1-3 xdg-desktop-portal \
+  xdg-desktop-portal-gtk
 ```
+
+`libdbus-1-3` and the two portal packages serve the editor's file dialogs, over the desktop
+session's D-Bus.
 
 The CLI needs only `libasound2t64`.
 
 **Windows.** Windows 10 or 11, 64-bit, with a graphics driver that provides OpenGL 2.1 or newer
-(a GPU vendor's driver does; a virtual machine's basic display adapter may not). The editor
-opens no console window, so its log goes nowhere by default. To keep it, start it from Command
-Prompt with its output redirected:
+(a GPU vendor's driver does; a virtual machine's basic display adapter may not). The editor is
+not signed, so SmartScreen may stop the first launch with "Windows protected your PC": choose
+**More info**, then **Run anyway**. The editor opens no console window, so its log goes nowhere
+by default. To keep it, start it from Command Prompt with its output redirected:
 
 ```bat
 reuben-editor.exe > reuben-editor.log 2>&1

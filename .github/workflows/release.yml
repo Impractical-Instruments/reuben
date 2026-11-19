@@ -7,11 +7,12 @@ name: Release
 #   - `reuben`, the headless CLI, on Linux + Windows. No installer: the bare
 #     binary is the convenience artifact, build-from-source stays the primary path.
 #   - `reuben-editor`, the desktop editor, on Linux + Windows + macOS (Apple
-#     Silicon, unsigned), with the font licences and the instrument library.
+#     Silicon, unsigned), with its font licences, the instrument library and the
+#     control surfaces.
 #
 # `workflow_dispatch` is the dry run: run it on a branch and every leg builds and
 # packages, and the archives are uploaded as workflow artifacts only. A dispatch
-# on a tag ref is a release like the tag push.
+# on a `v*` tag ref is a release like the tag push.
 on:
   push:
     tags:
@@ -102,16 +103,31 @@ jobs:
           "reuben-$VERSION-${{ matrix.target }}" "${{ matrix.ext }}"
           "target/release/reuben$EXE" LICENSE README.md
 
-      # Courier Prime's OFL must travel with every copy of the font the binary embeds.
+      # Every font the editor embeds ships with its licence, as the OFL and the Ubuntu Font
+      # Licence require: the two in the editor's assets, and the ones egui's `default_fonts`
+      # feature compiles in, read from the exact epaint_default_fonts version the lockfile builds.
+      - name: Gather font licences
+        shell: bash
+        run: |
+          manifest=$(cargo metadata --format-version 1 --locked \
+            | jq -r '.packages[] | select(.name == "epaint_default_fonts") | .manifest_path')
+          if [ "$(printf '%s\n' "$manifest" | grep -c .)" -ne 1 ]; then
+            echo "expected one epaint_default_fonts package, found: $manifest" >&2
+            exit 1
+          fi
+          if command -v cygpath >/dev/null; then manifest=$(cygpath -u "$manifest"); fi
+          mkdir font-licences
+          cp crates/reuben-editor/assets/fonts/*.txt "${manifest%/Cargo.toml}"/fonts/*.txt font-licences/
+
+      # `surfaces/` beside `instruments/` is where the editor looks for an instrument's
+      # authored control panel.
       - name: Package reuben-editor
         shell: bash
         run: >-
           .github/scripts/package-release.sh
           "reuben-editor-$VERSION-${{ matrix.target }}" "${{ matrix.ext }}"
           "target/release/reuben-editor$EXE" LICENSE README.md
-          crates/reuben-editor/assets/fonts/CourierPrime-OFL.txt
-          crates/reuben-editor/assets/fonts/Cuomotype-CC0.txt
-          instruments
+          font-licences instruments surfaces
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -123,7 +139,7 @@ jobs:
       # Each matrix job uploads its own assets; the action gets-or-creates the
       # Release for this tag, so every leg lands on the same Release.
       - name: Attach to GitHub Release
-        if: github.ref_type == 'tag'
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           files: dist/*
