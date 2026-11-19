@@ -19,10 +19,6 @@ use crate::session::Session;
 /// disk, written or not, and a written change is already on its way to the engine. The next
 /// [`Session::poll`] reports the reload. An `Ok` whose `written` is false is a rejected edit or a
 /// conflict; its report says which, on the node and port at fault.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no gesture edits a document yet")
-)]
 pub fn write(
     session: &mut Session,
     channel: &dyn Fn() -> Option<Channel>,

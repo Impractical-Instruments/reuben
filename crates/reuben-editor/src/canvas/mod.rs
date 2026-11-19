@@ -21,7 +21,8 @@ use reuben_api::authoring::{read_instrument, ReadInstrument};
 use reuben_api::FsResolver;
 
 use self::camera::Camera;
-use self::graph::{Graph, Item};
+use self::graph::Graph;
+pub use self::graph::Item;
 
 /// A document's graph and where each of its boxes is, in canvas units.
 #[derive(Debug)]
@@ -95,6 +96,10 @@ impl Canvas {
             }
         }
         self.loaded = Some(loaded);
+    }
+
+    pub fn selection(&self) -> Option<&Item> {
+        self.selection.as_ref()
     }
 
     /// Select the box at `point`, in canvas units, or nothing when no box is there.
