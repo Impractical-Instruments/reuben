@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -215,12 +216,60 @@ class TestStdinIsReplayedToEveryCheck(DispatchHarness):
 
     def test_a_stale_capture_from_a_killed_run_is_reaped(self):
         # A SIGKILL cannot run a trap, so these would otherwise accumulate forever: `git gc` and
-        # `git worktree prune` do not know about them.
-        stale = self.tmp / ".git" / "githook-stdin.999999"
+        # `git worktree prune` do not know about them. The pid is one that has just exited rather
+        # than a made-up number, which could be a live process on a system with a large pid_max.
+        dead = subprocess.Popen(["true"])
+        dead.wait()
+        stale = self.tmp / ".git" / ("githook-stdin.%d" % dead.pid)
         stale.write_text("orphan\n")
         self.check("10-a", "cat > /dev/null")
         self.run_hook(stdin="payload\n")
         self.assertFalse(stale.exists())
+
+    def test_a_capture_whose_owner_is_alive_is_not_reaped(self):
+        live = subprocess.Popen(["sleep", "30"])
+        self.addCleanup(live.wait)
+        self.addCleanup(live.kill)
+        capture = self.tmp / ".git" / ("githook-stdin.%d" % live.pid)
+        capture.write_text("in flight\n")
+        self.check("10-a", "cat > /dev/null")
+        self.run_hook(stdin="payload\n")
+        self.assertTrue(capture.exists(), "a running hook's capture was reaped")
+
+    def test_a_concurrent_hook_does_not_reap_a_running_hooks_capture(self):
+        # A commit while a push is still running its checks is an ordinary thing for an agent
+        # session to do. The push's later check reads its stdin from the capture, so reaping it
+        # mid-run fails that check, and the push is refused naming a check that did nothing wrong.
+        started, go = self.tmp / "started", self.tmp / "go"
+        received = self.tmp / "received"
+        self.stub("pre-push")
+        self.check("10-wait",
+                   "touch '%s'; n=0; while [ ! -e '%s' ] && [ $n -lt 300 ]; do sleep 0.1; "
+                   "n=$((n+1)); done; cat > /dev/null" % (started, go),
+                   hook="pre-push")
+        self.check("20-reads-stdin", "cat > '%s'" % received, hook="pre-push")
+        self.check("10-commit", "cat > /dev/null")
+
+        payload = "refs/heads/x 1111111 refs/heads/x 0000000\n"
+        push = subprocess.Popen([os.path.join("scripts/hooks", "pre-push")],
+                                cwd=self.tmp, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, env=self.env())
+        self.addCleanup(lambda: push.poll() is None and push.kill())
+        push.stdin.write(payload)
+        push.stdin.close()
+        for _ in range(300):
+            if started.exists():
+                break
+            time.sleep(0.1)
+        self.assertTrue(started.exists(), "the slow pre-push check never started")
+
+        commit = self.run_hook(stdin="")
+        self.assertEqual(commit.returncode, 0, commit.stderr)
+        go.touch()
+        _, err = push.communicate(timeout=30)
+
+        self.assertEqual(push.returncode, 0, err)
+        self.assertEqual(received.read_text(), payload)
 
 
 class TestDispatchIsRepositoryAgnostic(DispatchHarness):

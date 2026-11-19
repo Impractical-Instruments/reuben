@@ -722,7 +722,8 @@ jobs:
 
   # The hook set's chainer (test_hook_dispatch.py), which is what makes every pre-commit and
   # pre-push check run locally at all. It builds throwaway git repos with synthetic registries, so
-  # it needs no toolchain and takes under a second.
+  # it needs no toolchain and takes seconds. The same job lints the hook set with shellcheck, which
+  # the runner image already carries.
   #
   # ALWAYS runs, and not path-filtered: no remaining filter covers `scripts/hooks/**`, and a job
   # this cheap does not earn one of its own. Gates merges via `ci-passed`'s `needs`.
@@ -733,6 +734,24 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Hook dispatcher tests
         run: cd scripts && python3 -m unittest test_hook_dispatch -v
+      # A hook and its checks are extensionless, so a `*.sh` glob cannot see them: shell is selected
+      # by shebang instead, which also picks up a check added later without editing this step. A
+      # selection that finds nothing fails rather than linting nothing and reading as clean.
+      - name: shellcheck the hook set
+        run: |
+          shellcheck --version
+          files=()
+          while IFS= read -r -d '' f; do
+            if head -n 1 "$f" | grep -qE '^#!.*[/ ](sh|bash)$'; then
+              files+=("$f")
+            fi
+          done < <(find scripts/hooks scripts/install-hooks.sh -type f -print0 | sort -z)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "no shell scripts selected; the shebang filter is broken" >&2
+            exit 1
+          fi
+          printf '%s\n' "${files[@]}"
+          shellcheck "${files[@]}"
 
   # The doc-claim ledger (extract_doc_claims.py): every file path and code identifier the
   # governed docs name resolves against the real tree, and a `Guarded by:` line names a test that
