@@ -692,10 +692,10 @@ jobs:
       - name: Dashboard eval-trend tests
         run: cd .github/scripts && python3 -m unittest test_bench_dashboard -v
 
-  # perf-gate.sh rewrites its swap set from git with `git checkout <ref> -- <paths>`, which destroys
-  # uncommitted work at those paths. This suite runs the real script in throwaway repos (a `cargo`
-  # stub, nothing built) and holds it to refusing a dirty swap set while a clean or
-  # dirty-elsewhere tree still runs and is restored to HEAD.
+  # perf-gate.sh rewrites its swap set from git, which overwrites anything there that is not at HEAD.
+  # This suite runs the real script in throwaway repos (a `cargo` stub, nothing built) and holds it
+  # to two things: it refuses while the swap set holds work it would overwrite, and it leaves exactly
+  # HEAD's files behind — after a normal exit and after an interrupt alike.
   perf-gate-script:
     name: perf gate script tests
     runs-on: ubuntu-latest

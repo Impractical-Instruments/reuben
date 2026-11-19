@@ -43,9 +43,10 @@ ref via [`perf-gate.sh`](../../../.github/scripts/perf-gate.sh): **warn > 3%, fa
 `Ir` (instructions).
 
 Running `perf-gate.sh` by hand rewrites its swap set (the engine `src/` closure, the fixtures and
-`.cargo/config.toml`) from git, so it wants a clean tree there: it refuses to start while any of
-those paths has uncommitted, staged or untracked changes. Commit or stash first — it benches HEAD,
-not your working tree.
+`.cargo/config.toml`) from git, so it wants a clean tree there. It refuses to start while those
+paths hold staged, unstaged or untracked changes, a file flagged assume-unchanged or skip-worktree,
+or an ignored file where the baseline tracks one. Commit or stash first — it benches HEAD, not your
+working tree. However it exits, it puts those paths back exactly at HEAD.
 
 ## The construct workload
 
