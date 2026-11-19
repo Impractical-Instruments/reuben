@@ -26,6 +26,7 @@
 //! diminished triad depending on where the root sits in the scale — the diatonic I–vii° set.
 
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 use smallvec::SmallVec;
 
 use crate::descriptor::Descriptor;
@@ -62,6 +63,9 @@ pub struct Chord {
     /// Roots currently pressed (note-on, not yet released), with their emitted tone sets.
     /// A SmallVec so the steady-state hold path touches no allocator.
     held: SmallVec<[Held; MAX_HELD]>,
+    /// This (sub)block's `set` events `(frame, delivery index, root, on?)`, cleared per call and
+    /// kept so a burst's capacity survives into the next block.
+    events: Vec<(usize, usize, i32, bool)>,
 }
 
 impl Chord {
@@ -93,18 +97,22 @@ impl Operator for Chord {
         let size = io.read(IN_SIZE) as usize;
 
         // Snapshot the set events for this (sub)block, sorted by frame — can't read the stream
-        // while emitting. Each: (frame, root degree, on?). A non-degree note has no root → skip.
-        let mut events: SmallVec<[(usize, i32, bool); 8]> = SmallVec::new();
-        for s in io.read(IN_SET) {
+        // while emitting. A non-degree note has no root → skip.
+        self.events.clear();
+        for (k, s) in io.read(IN_SET).enumerate() {
             let root = match s.payload.pitch.degree() {
                 Some(d) => d,
                 None => continue,
             };
-            events.push((s.frame.min(n), root, s.payload.velocity > 0.0));
+            self.events
+                .push((s.frame.min(n), k, root, s.payload.velocity > 0.0));
         }
-        events.sort_by_key(|e| e.0);
+        // Not `sort_by_key`: a stable sort allocates its merge buffer once a burst outgrows the
+        // stack scratch. Keying on the delivery index keeps same-frame events in delivery order.
+        self.events.sort_unstable_by_key(|e| (e.0, e.1));
 
-        for (frame, root, on) in events {
+        for k in 0..self.events.len() {
+            let (frame, _, root, on) = self.events[k];
             if on {
                 // Press: emit a note-on per chord tone, and remember the tone set for release.
                 let (tones, count) = chord_tones(root, size);

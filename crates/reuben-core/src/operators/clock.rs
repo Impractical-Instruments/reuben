@@ -25,8 +25,8 @@
 //! source).
 
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 use num_traits::Float;
-use smallvec::SmallVec;
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
@@ -49,6 +49,9 @@ pub struct Clock {
     /// emits one change per rising/falling edge instead of filling a dense buffer. Persists across
     /// blocks so the first frame of a block only re-emits if the level actually changed.
     gate_high: bool,
+    /// This (sub)block's `sync` frames, cleared per call and kept so a burst's capacity survives
+    /// into the next block.
+    resets: Vec<usize>,
 }
 
 impl Clock {
@@ -81,7 +84,8 @@ impl Operator for Clock {
         // Reset frames within this (sub)block, sorted. Any `sync` event re-zeroes the phase at its
         // exact sample (the port identifies it, payload ignored) — a sample-accurate
         // position locate.
-        let mut resets: SmallVec<[usize; 4]> = SmallVec::new();
+        let mut resets = core::mem::take(&mut self.resets);
+        resets.clear();
         for ev in io.read(IN_SYNC) {
             if ev.frame < n {
                 resets.push(ev.frame);
@@ -148,6 +152,7 @@ impl Operator for Clock {
             self.gate_high = high;
         }
         self.phase = end;
+        self.resets = resets;
     }
 
     fn spawn(&self) -> Box<dyn Operator> {

@@ -184,8 +184,8 @@ pub struct Voicer {
     msg_buf: Vec<Message>,
     /// Reusable allocation change-list `(voice, frame, freq, gate)`. Cleared per block.
     changes: Vec<(usize, usize, f32, bool)>,
-    /// Reusable note-event snapshot `(frame, on, pitch)`. Cleared per block.
-    events: Vec<(usize, bool, Pitch)>,
+    /// Reusable note-event snapshot `(frame, delivery index, on, pitch)`. Cleared per block.
+    events: Vec<(usize, usize, bool, Pitch)>,
     /// Per-voice "got an event this block" flag (parallel to `pool.voices`), so a voice toggled
     /// on→off within one block still renders its blip even though it ends idle. Cleared per block.
     touched: Vec<bool>,
@@ -313,11 +313,13 @@ impl Operator for Voicer {
         // Snapshot note events for this (sub)block, sorted by frame. (Can't read the stream while an
         // output borrow is live, so snapshot first.)
         self.events.clear();
-        for s in io.read(IN_NOTES) {
+        for (k, s) in io.read(IN_NOTES).enumerate() {
             self.events
-                .push((s.frame.min(n), s.payload.velocity > 0.0, s.payload.pitch));
+                .push((s.frame.min(n), k, s.payload.velocity > 0.0, s.payload.pitch));
         }
-        self.events.sort_by_key(|e| e.0);
+        // Not `sort_by_key`: a stable sort allocates its merge buffer once a burst outgrows the
+        // stack scratch. Keying on the delivery index keeps same-frame events in delivery order.
+        self.events.sort_unstable_by_key(|e| (e.0, e.1));
 
         // Per-voice change-list: a frame-0 baseline (current held freq/gate, so a re-spell or a
         // cross-block hold lands) plus each allocation change at its event frame.
@@ -327,7 +329,7 @@ impl Operator for Voicer {
             self.changes.push((i, 0, harmony.hz(v.pitch), v.on));
         }
         for k in 0..self.events.len() {
-            let (frame, on, pitch) = self.events[k];
+            let (frame, _, on, pitch) = self.events[k];
             let idx = if on {
                 self.pool.assign(pitch)
             } else {
