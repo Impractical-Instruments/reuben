@@ -184,6 +184,7 @@ impl Start {
                         self.shown = false;
                     }
                 });
+                ui.label("Choose an instrument to play, or make a new one.");
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.button("New instrument…").clicked() {
@@ -235,16 +236,19 @@ impl Start {
         };
         for entry in entries.iter() {
             ui.add_space(4.0);
-            let button = ui.add_enabled(entry.error.is_none(), egui::Button::new(&entry.name));
-            let button = match &entry.error {
-                Some(e) => button.on_disabled_hover_text(e),
-                None => button.on_hover_text(entry.path.display().to_string()),
+            let button = crate::theme::choice(ui, entry.error.is_none(), &entry.name);
+            let about = |ui: &mut egui::Ui| {
+                if let Some(e) = &entry.error {
+                    ui.colored_label(ui.visuals().error_fg_color, e);
+                }
+                if let Some(description) = &entry.description {
+                    ui.label(description);
+                }
+                ui.weak(entry.path.display().to_string());
             };
+            let button = button.on_hover_ui(about).on_disabled_hover_ui(about);
             if button.clicked() {
                 *chosen = Some(entry.path.clone());
-            }
-            if let Some(description) = &entry.description {
-                ui.weak(description);
             }
         }
     }
@@ -262,19 +266,13 @@ impl Start {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| path.display().to_string());
-            let exists = path.is_file();
-            ui.horizontal(|ui| {
-                let button = ui
-                    .add_enabled(exists, egui::Button::new(name))
-                    .on_hover_text(path.display().to_string())
-                    .on_disabled_hover_text(format!("{} is not there", path.display()));
-                if button.clicked() {
-                    *chosen = Some(path.clone());
-                }
-                if let Some(dir) = path.parent() {
-                    ui.weak(dir.display().to_string());
-                }
-            });
+            ui.add_space(4.0);
+            let button = crate::theme::choice(ui, path.is_file(), &name)
+                .on_hover_text(path.display().to_string())
+                .on_disabled_hover_text(format!("{} is not there", path.display()));
+            if button.clicked() {
+                *chosen = Some(path.clone());
+            }
         }
     }
 }

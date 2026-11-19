@@ -235,6 +235,16 @@ pub fn section(ui: &mut egui::Ui, title: &str) -> egui::Response {
     })
 }
 
+/// One of a list of things to open, such as an instrument on the start screen: a button the full
+/// width of `ui`, its label a size up from body text so a column of them reads as choices rather
+/// than as text. A label too long for the width is cut short.
+pub fn choice(ui: &mut egui::Ui, enabled: bool, label: &str) -> egui::Response {
+    let button = egui::Button::new(RichText::new(label).size(16.0))
+        .truncate()
+        .min_size(Vec2::new(ui.available_width(), 36.0));
+    ui.add_enabled(enabled, button)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -462,6 +472,21 @@ mod tests {
         })
         .drop_without_applying_deltas();
         assert!(drawn.unwrap() >= 32.0);
+    }
+
+    #[test]
+    fn a_choice_fills_the_width_and_stands_taller_than_a_plain_button() {
+        egui::Context::default()
+            .run_ui(egui::RawInput::default(), |ui| {
+                let width = ui.available_width();
+                let plain = ui.button("plain").rect;
+                let short = choice(ui, true, "a choice").rect;
+                assert_eq!(short.width(), width);
+                assert!(short.height() > plain.height(), "{short:?} {plain:?}");
+                let long = choice(ui, true, &"a name far too long for the width ".repeat(20)).rect;
+                assert_eq!(long.width(), width, "a long label is cut short");
+            })
+            .drop_without_applying_deltas();
     }
 
     #[test]
