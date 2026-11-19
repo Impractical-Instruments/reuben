@@ -44,12 +44,14 @@ mod intent;
 #[derive(Debug, Clone, Serialize)]
 pub struct EditResult {
     /// The whole-document validation report. `ok` is the write decision: `true` means the edit
-    /// passed and was persisted; `false` means nothing was written. On a rejection `errors` holds
-    /// what the document did not already carry before the edit; what it did is in `pre_existing`.
+    /// passed and was persisted; `false` means nothing was written. On a rejection, the errors
+    /// proven to predate the edit are moved to `pre_existing`; `errors` keeps the rest, which is not
+    /// proof the edit made them, since the load reports only its first error.
     pub report: Report,
-    /// The errors of a rejected edit that the document already carried before it. Every edit to a
-    /// document that does not validate is rejected, however unrelated, so these are what to fix
-    /// first. Empty when the edit was written, or when nothing was at the source before it.
+    /// The errors of a rejected edit proven to be ones the document already had before it: the same
+    /// kind of error at the same slot. Every edit to a document that does not validate is rejected,
+    /// however unrelated, so these are what to fix first. Empty when the edit was written, or when
+    /// nothing was at the source before it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pre_existing: Vec<Diag>,
     /// Whether the edit was actually written to the source. Equals `report.ok` — surfaced
@@ -151,12 +153,16 @@ impl ValueChange {
 struct Applied {
     echo: Echo,
     notes: Vec<String>,
+    /// A node address the mutation moved, `(from, to)`: the document before it names the node by
+    /// `from`, so its faults are read at `to` before they are matched.
+    renamed: Option<(String, String)>,
 }
 
 impl Applied {
     /// A clean edit with no cascade to report.
     fn clean(echo: Echo) -> Self {
         Applied {
+            renamed: None,
             echo,
             notes: Vec::new(),
         }
@@ -257,16 +263,22 @@ fn finish_at(
     // Only a rejection pays for the second validation; a written edit has nothing to attribute.
     let pre_existing = match before {
         Some(before) if !report.ok => {
-            let (prior, found) = validate_faulted(before, registry, resolver);
+            let (prior, mut found) = validate_faulted(before, registry, resolver);
+            if let Some((from, to)) = &applied.renamed {
+                found = (found.into_iter())
+                    .map(|f| f.map(|f| f.renamed(from, to)))
+                    .collect();
+            }
             let split = split_pre_existing(&mut report.errors, faults, prior.errors, found);
-            // The load stops at its first error, so a prior error the result does not report
-            // was either cleared by the edit or is hidden behind one the edit put ahead of it.
+            // The load stops at its first error, so when the prior error is not the one the result
+            // reports, the result's may have been behind it all along, or the edit cleared the
+            // prior one, or put its own ahead of it — and nothing here can say which.
             if !report.errors.is_empty() {
                 notes.extend(split.displaced.iter().map(|d| {
                     format!(
-                        "before this edit the document's first error was {}; the load reports only \
-                         its first error, so this edit either cleared that one or added the one \
-                         reported ahead of it",
+                        "before this edit the load stopped first at {}; it reports only its first \
+                         error, so the one reported now may have been there all along behind that \
+                         one, or this edit cleared that one, or added an error ahead of it",
                         located(d)
                     )
                 }));
@@ -318,22 +330,25 @@ struct Split {
 }
 
 /// Move out of `errors` each one whose fault `found` also holds. `faults[i]` is `errors[i]`'s, and
-/// `found[i]` is `prior[i]`'s. A multiset match: each fault in `found` accounts for one error at
-/// most, so an edit that duplicates a fault the document already had is charged with the copy.
+/// `found[i]` is `prior[i]`'s; a `None` fault matches nothing, so its error stays the edit's. A
+/// multiset match: each fault in `found` accounts for one error at most, so an edit that
+/// duplicates a fault the document already had is charged with the copy.
 ///
 /// Both sides are validated from text through the same parse, so each has had the same migration
 /// applied and an address the migration renames is spelled the same way in both.
 fn split_pre_existing(
     errors: &mut Vec<Diag>,
-    faults: Vec<Fault>,
+    faults: Vec<Option<Fault>>,
     prior: Vec<Diag>,
-    found: Vec<Fault>,
+    found: Vec<Option<Fault>>,
 ) -> Split {
     let mut unmatched: Vec<_> = prior.into_iter().zip(found).collect();
     let mut pre_existing = Vec::new();
     let mut introduced = Vec::new();
     for (error, fault) in errors.drain(..).zip(faults) {
-        match unmatched.iter().position(|(_, f)| *f == fault) {
+        let matched = fault
+            .and_then(|fault| (unmatched.iter()).position(|(_, f)| f.as_ref() == Some(&fault)));
+        match matched {
             Some(i) => {
                 unmatched.swap_remove(i);
                 pre_existing.push(error);
@@ -884,6 +899,7 @@ pub fn remove_instrument_node(
         doc.nodes.remove(idx);
         let notes = cascade_unwire(doc, address);
         Ok(Applied {
+            renamed: None,
             echo: Echo::Index,
             notes,
         })
@@ -907,6 +923,7 @@ pub fn rename_instrument_node(
         let idx = node_index(doc, from)?;
         if from == to {
             return Ok(Applied {
+                renamed: None,
                 echo: Echo::Nodes(Selection::names([to])),
                 notes: vec![format!(
                     "`{from}` is already its address; nothing to rename"
@@ -961,6 +978,7 @@ pub fn rename_instrument_node(
             }
         }
         Ok(Applied {
+            renamed: Some((from.to_string(), to.to_string())),
             echo: Echo::Nodes(Selection::names([to])),
             notes,
         })
@@ -1072,6 +1090,7 @@ pub fn set_instrument_inputs_by_intent(
         let mut report = intent::apply(doc, registry, word, section, target)?;
         let notes = std::mem::take(&mut report.notes);
         Ok(Applied {
+            renamed: None,
             echo: Echo::Intent(report),
             notes,
         })
@@ -1137,6 +1156,7 @@ pub fn unwire_instrument_input(
             )]
         };
         Ok(Applied {
+            renamed: None,
             echo: Echo::Nodes(Selection::names([address])),
             notes,
         })
@@ -1285,6 +1305,7 @@ pub fn remove_instrument_interface_input(
         }
         let notes = cascade_unwire(doc, &format!("/{name}"));
         Ok(Applied {
+            renamed: None,
             echo: Echo::Pipes(Selection::All),
             notes,
         })

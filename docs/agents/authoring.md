@@ -62,10 +62,11 @@ Why the steps are what they are:
   file exactly as it was. Then swap it in.
 - **A broken document refuses every edit until it is fixed.** Write-iff-valid holds for every
   verb, so an edit to a document that was already invalid is refused however unrelated it is. A
-  rejection separates the errors: `report.errors` holds what the document did not already have,
-  `pre_existing` what it did. Fix the `pre_existing` errors first. Validation reports one error at
-  a time, so an error can be hidden behind the one reported; when a fix is refused for an error
-  that was not reported before, a note names the one the load used to stop at.
+  rejection moves to `pre_existing` each error it can show the document already had — the same
+  kind of error at the same node, port or field — and leaves the rest in `report.errors`. Fix the
+  `pre_existing` errors first. An error left in `report.errors` is not proof your edit made it:
+  validation reports one error at a time, so an error can sit unseen behind the one reported. When
+  the error the load used to stop at is not the one reported now, a note names it.
 - **Sending is ephemeral audition.** A live control message (`/filt/cutoff 1500`) changes
   render state only — sweep a cutoff, try a tempo. The next Swap re-reads inputs from the
   installed document, so an un-folded tweak is **clobbered by design**. (The MCP tool is

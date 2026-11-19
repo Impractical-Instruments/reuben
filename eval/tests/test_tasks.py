@@ -451,7 +451,9 @@ class TestRepairAndNote(unittest.TestCase):
         self.assertIs(structured.get("written"), False, structured)
         self.assertEqual(structured["report"]["errors"], [], structured)
         self.assertEqual(
-            [d.get("node") for d in structured.get("pre_existing", [])], ["/env_curv"], structured
+            [(d.get("node"), d.get("port")) for d in structured.get("pre_existing", [])],
+            [("/env_vca", "b")],
+            structured,
         )
 
 

@@ -569,12 +569,20 @@ pub enum ValueSurface {
 impl ValueSurface {
     /// The noun an author knows this surface by — matching `UnknownConfig`'s "config constant",
     /// so one document's two error messages name one thing one way.
-    fn noun(self) -> &'static str {
+    pub(crate) fn noun(self) -> &'static str {
         match self {
             ValueSurface::Input => "input",
             ValueSurface::Constant => "config constant",
         }
     }
+}
+
+/// The wire-ref a source-side [`LoadError`] was raised for, named by where it is written: the node
+/// input it feeds, or the interface output pipe it feeds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WireEnd {
+    Input { node: String, input: String },
+    Output(String),
 }
 
 /// Why loading an instrument document failed. Messages are written for an author
@@ -592,14 +600,23 @@ pub enum LoadError {
     /// A node's authored address breaks the address rule: `/` then one non-empty segment of
     /// printable ASCII holding no whitespace, no `/`, no `.` and none of `#*,?[]{}`.
     InvalidAddress { address: String, rule: &'static str },
-    /// A wire-ref or output references a node that doesn't exist.
-    UnknownNode(String),
+    /// A wire-ref or output references a node that doesn't exist. `at` is the wire-ref, when the
+    /// error was raised resolving one; two wires naming the same missing node are two errors.
+    UnknownNode {
+        address: String,
+        at: Option<WireEnd>,
+    },
     /// A reference names no **output** on the node it points at — a wire-ref's source, a master
     /// tap, or the sole-output sugar landing on a face with none. Also the v1-migration spelling
     /// for an interface target carrying no port segment at all, where there is no input name to
     /// report. Every *input* name that resolves to nothing is
     /// [`UnknownInput`](Self::UnknownInput), on every path and whatever form the value took.
-    UnknownPort { node: String, port: String },
+    UnknownPort {
+        node: String,
+        port: String,
+        /// The wire-ref, when the error was raised resolving one's source.
+        at: Option<WireEnd>,
+    },
     /// A node has no input (port, settable param, or enum) with that name. Reserved for a name that
     /// resolves to nothing: a value the port cannot read is
     /// [`BadInputLiteral`](Self::BadInputLiteral) or [`BadInputValue`](Self::BadInputValue).
@@ -634,7 +651,12 @@ pub enum LoadError {
     ConstantInInputs { node: String, name: String },
     /// A wire-ref uses the sole-output sugar (`"/node"`) but the source has more than one output,
     /// so the intended port is ambiguous.
-    AmbiguousWire { node: String, reference: String },
+    AmbiguousWire {
+        node: String,
+        reference: String,
+        /// The wire-ref, when the error was raised resolving one's source.
+        at: Option<WireEnd>,
+    },
     /// A wire joins two ports of incompatible [`PortType`]s. On a nested boundary wire, `from`/`to`
     /// name the **boundary** port (`/sub.audio`), never the prefixed internals.
     TypeMismatch {
@@ -669,6 +691,20 @@ pub enum LoadError {
     AnonymousOutputs,
 }
 
+impl LoadError {
+    /// Name the wire-ref a source-side error was raised resolving, so it is told apart from the
+    /// same missing source named by another wire. Any other error passes through unchanged.
+    fn at_wire(mut self, end: WireEnd) -> Self {
+        if let LoadError::UnknownNode { at, .. }
+        | LoadError::UnknownPort { at, .. }
+        | LoadError::AmbiguousWire { at, .. } = &mut self
+        {
+            at.get_or_insert(end);
+        }
+        self
+    }
+}
+
 impl fmt::Display for LoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -685,8 +721,10 @@ impl fmt::Display for LoadError {
             LoadError::InvalidAddress { address, rule } => {
                 write!(f, "node address {address:?} {rule}")
             }
-            LoadError::UnknownNode(n) => write!(f, "reference to unknown node {n:?}"),
-            LoadError::UnknownPort { node, port } => {
+            LoadError::UnknownNode { address, .. } => {
+                write!(f, "reference to unknown node {address:?}")
+            }
+            LoadError::UnknownPort { node, port, .. } => {
                 write!(f, "node {node:?} has no port {port:?}")
             }
             LoadError::UnknownInput { node, input } => {
@@ -719,7 +757,9 @@ impl fmt::Display for LoadError {
                 f,
                 "node {node:?}: {name:?} is a constant — set it in `config`, not `inputs`"
             ),
-            LoadError::AmbiguousWire { node, reference } => write!(
+            LoadError::AmbiguousWire {
+                node, reference, ..
+            } => write!(
                 f,
                 "node {node:?}: wire-ref {reference:?} is ambiguous (source has multiple outputs; \
                  name one as \"/node.port\")"
@@ -1932,7 +1972,14 @@ impl InstrumentDoc {
                     continue; // wire from an unavailable nest: dropped (the input keeps its default)
                 }
                 let Some((src_key, src_port, from_ty, from_label)) =
-                    resolve_output(&faces, &by_addr, src_addr, from, src_port_name)?
+                    resolve_output(&faces, &by_addr, src_addr, from, src_port_name).map_err(
+                        |e| {
+                            e.at_wire(WireEnd::Input {
+                                node: n.address.clone(),
+                                input: name.clone(),
+                            })
+                        },
+                    )?
                 else {
                     continue;
                 };
@@ -1972,7 +2019,8 @@ impl InstrumentDoc {
                 let resolved = if dark.contains(src_addr) {
                     None
                 } else {
-                    resolve_output(&faces, &by_addr, src_addr, &feed.from, port)?
+                    resolve_output(&faces, &by_addr, src_addr, &feed.from, port)
+                        .map_err(|e| e.at_wire(WireEnd::Output(name.clone())))?
                 };
                 let Some((key, idx, ty, _)) = resolved else {
                     interface.dark_outputs.insert(name.clone());
@@ -2329,7 +2377,10 @@ fn lookup<'a>(
     by_addr
         .get(node)
         .map(|(k, d)| (*k, &**d))
-        .ok_or_else(|| LoadError::UnknownNode(node.to_string()))
+        .ok_or_else(|| LoadError::UnknownNode {
+            address: node.to_string(),
+            at: None,
+        })
 }
 
 /// Everything a wire endpoint resolves against, held between [`InstrumentDoc::resolve_ports`] and
@@ -3303,15 +3354,18 @@ fn pick_output(
         Some(p) => find(p).ok_or_else(|| LoadError::UnknownPort {
             node: node.to_string(),
             port: p.to_string(),
+            at: None,
         }),
         None if count == 1 => Ok(0),
         None if count == 0 => Err(LoadError::UnknownPort {
             node: node.to_string(),
             port: reference.to_string(),
+            at: None,
         }),
         None => Err(LoadError::AmbiguousWire {
             node: node.to_string(),
             reference: reference.to_string(),
+            at: None,
         }),
     }
 }
@@ -4260,7 +4314,10 @@ mod tests {
     fn interface_unknown_node_errors() {
         let json = r#"{"instrument":"t","interface":{"inputs":{"freq":"/nope.freq"}},
             "nodes":[{"type":"oscillator","address":"/osc"}]}"#;
-        assert!(matches!(load(json, &reg()), Err(LoadError::UnknownNode(_))));
+        assert!(matches!(
+            load(json, &reg()),
+            Err(LoadError::UnknownNode { .. })
+        ));
     }
 
     /// `/osc` has no input named `gate` — a direction-correct but absent port. A v1 entry's
@@ -5783,7 +5840,7 @@ mod tests {
             Ok(match e {
                 LoadError::BadInputLiteral { .. } => Owed::WrongForm,
                 LoadError::BadInputValue { .. } => Owed::BadValue,
-                LoadError::UnknownNode(_) => Owed::Deferred,
+                LoadError::UnknownNode { .. } => Owed::Deferred,
                 LoadError::InterfacePipe { .. } => Owed::PipeRefused,
                 other => return Err(format!("no cell owes {other:?} — {other}")),
             })

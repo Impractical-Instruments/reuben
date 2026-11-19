@@ -1011,12 +1011,12 @@ mod tests {
                 matches!(feedback, Feedback::Rejected { .. }),
                 "{feedback:?}"
             );
-            // The fault is the feed's: it is pinned on what the feed names, here a node the
-            // document does not have, so the banner alone says it.
+            // The fault is the feed's: it is pinned on the output pipe the feed is written at,
+            // since the node it names is one the document does not have.
             let at: Vec<_> = (feedback.rejected(&source).iter())
                 .map(|diag| (diag.node.as_deref(), diag.port.as_deref()))
                 .collect();
-            assert_eq!(at, [(Some("/ghost"), None)], "{feedback:?}");
+            assert_eq!(at, [(None, Some("out"))], "{feedback:?}");
         });
     }
 

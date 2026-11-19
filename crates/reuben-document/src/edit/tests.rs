@@ -135,7 +135,12 @@ fn an_unrelated_edit_to_an_invalid_document_is_rejected_for_what_was_already_the
         "the edit introduced nothing: {result:?}"
     );
     assert_eq!(result.pre_existing.len(), 1, "{result:?}");
-    assert_eq!(result.pre_existing[0].node.as_deref(), Some("/gone"));
+    let at = &result.pre_existing[0];
+    assert_eq!(
+        (at.node.as_deref(), at.port.as_deref()),
+        (Some("/amp"), Some("a"))
+    );
+    assert!(at.message.contains("/gone"), "{at:?}");
     assert_eq!(before, readback(&resolver));
 }
 
@@ -292,12 +297,12 @@ fn two_independent_faults_refuse_each_single_fix() {
         .expect("the verb ran");
 
     assert!(!first.written && !second.written, "{first:?} {second:?}");
-    assert_eq!(first.report.errors[0].node.as_deref(), Some("/lost"));
+    assert_eq!(first.report.errors[0].node.as_deref(), Some("/amp2"));
     assert!(first.pre_existing.is_empty(), "{first:?}");
     assert_eq!(first.notes.len(), 1, "{first:?}");
     assert!(first.notes[0].contains("/gone"), "{first:?}");
     assert!(second.report.errors.is_empty(), "{second:?}");
-    assert_eq!(second.pre_existing[0].node.as_deref(), Some("/gone"));
+    assert_eq!(second.pre_existing[0].node.as_deref(), Some("/amp"));
     assert!(second.notes.is_empty(), "{second:?}");
 }
 
@@ -313,7 +318,7 @@ fn faults_match_as_a_multiset() {
     let (a, fa) = fault_of(&seed_dangling());
     let (b, fb) = fault_of(&seed().replace("mul_f32_signal", "nosuchoperator"));
 
-    let split = |errors: Vec<(Diag, Fault)>, found: Vec<(Diag, Fault)>| {
+    let split = |errors: Vec<(Diag, Option<Fault>)>, found: Vec<(Diag, Option<Fault>)>| {
         let (mut errs, faults): (Vec<_>, Vec<_>) = errors.into_iter().unzip();
         let (prior, found): (Vec<_>, Vec<_>) = found.into_iter().unzip();
         let split = split_pre_existing(&mut errs, faults, prior, found);
@@ -336,7 +341,84 @@ fn faults_match_as_a_multiset() {
     );
     assert_eq!(
         split(vec![b.clone()], vec![a.clone()]),
-        (vec![], vec![b.0.clone()], vec![a.0])
+        (vec![], vec![b.0.clone()], vec![a.0.clone()])
+    );
+    // An error with no fault matches nothing, not even an identical one.
+    let blind = (a.0.clone(), None);
+    assert_eq!(
+        split(vec![blind.clone()], vec![blind]),
+        (vec![], vec![a.0.clone()], vec![a.0])
+    );
+}
+
+/// A cycle names no node, so a new one cannot be proven to be the one already there: it stays the
+/// edit's.
+#[test]
+fn a_new_cycle_is_never_passed_off_as_an_old_one() {
+    let registry = Registry::builtin();
+    let mul = |address: &str, from: &str| json!({ "type": "mul_f32_signal", "address": address, "inputs": { "a": { "from": from } } });
+    let resolver = resolver_with(
+        &json!({
+            "format_version": 3,
+            "instrument": "test",
+            "nodes": [mul("/a", "/b"), mul("/b", "/a"), mul("/c", "/a")]
+        })
+        .to_string(),
+    );
+
+    let result =
+        wire_instrument_input(SRC, "/a", "a", "/c", &registry, &resolver).expect("the verb ran");
+
+    assert!(!result.written);
+    assert_eq!(result.report.errors.len(), 1, "{result:?}");
+    assert!(
+        result.report.errors[0].message.contains("cycle"),
+        "{result:?}"
+    );
+    assert!(result.pre_existing.is_empty(), "{result:?}");
+}
+
+/// Two wires naming the same missing node are two faults, each at the input it is written at: the
+/// edit that adds the second is charged with it.
+#[test]
+fn a_second_wire_to_the_same_missing_node_is_the_edits_own() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_dangling());
+
+    let result = wire_instrument_input(SRC, "/osc", "freq", "/gone", &registry, &resolver)
+        .expect("the verb ran");
+
+    assert!(!result.written);
+    assert!(result.pre_existing.is_empty(), "{result:?}");
+    let at = &result.report.errors[0];
+    assert_eq!(
+        (at.node.as_deref(), at.port.as_deref()),
+        (Some("/osc"), Some("freq")),
+        "{result:?}"
+    );
+}
+
+/// A rename moves a node's faults with it: the error at the new address is the one the old address
+/// had.
+#[test]
+fn a_rename_carries_the_nodes_faults_to_its_new_address() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed().replace(r#""b":0.5"#, r#""b":0.5,"bogus":1.0"#));
+
+    let result =
+        rename_instrument_node(SRC, "/amp", "/gain", &registry, &resolver).expect("the verb ran");
+
+    assert!(!result.written);
+    assert!(result.report.errors.is_empty(), "{result:?}");
+    let at = &result.pre_existing[0];
+    assert_eq!(
+        (at.node.as_deref(), at.port.as_deref()),
+        (Some("/gain"), Some("bogus")),
+        "{result:?}"
+    );
+    assert!(
+        !result.notes.iter().any(|n| n.contains("first error")),
+        "{result:?}"
     );
 }
 

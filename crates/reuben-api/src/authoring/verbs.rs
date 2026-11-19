@@ -917,19 +917,24 @@ pub(super) fn edit_summary(result: &EditResult) -> String {
             0 => base,
             n => format!("{base}; {n} note(s)"),
         }
-    } else if result.pre_existing.is_empty() {
-        format!(
-            "not written — {} error(s); the document is unchanged (content_hash {})",
-            result.report.errors.len(),
-            result.hash
-        )
     } else {
+        let errors = match (result.pre_existing.len(), result.report.errors.len()) {
+            (0, n) => format!("{n} error(s)"),
+            (p, 0) => format!(
+                "the document already had {p} error(s) before this edit (pre_existing); no edit is \
+                 written until it validates, so fix those first"
+            ),
+            (p, n) => format!(
+                "{n} error(s), and the document already had {p} more before this edit \
+                 (pre_existing); no edit is written until it validates, so fix those first"
+            ),
+        };
+        let notes = match result.notes.len() {
+            0 => String::new(),
+            n => format!("; {n} note(s)"),
+        };
         format!(
-            "not written — the document already had {} error(s) before this edit (pre_existing) \
-             and {} more from it; no edit is written until it validates, so fix those first; the \
-             document is unchanged (content_hash {})",
-            result.pre_existing.len(),
-            result.report.errors.len(),
+            "not written — {errors}{notes}; the document is unchanged (content_hash {})",
             result.hash
         )
     }
@@ -1099,7 +1104,7 @@ mod tests {
             answer.output
         );
         assert_eq!(answer.output.pre_existing.len(), 1, "{:?}", answer.output);
-        assert_eq!(answer.output.pre_existing[0].node.as_deref(), Some("/gone"));
+        assert_eq!(answer.output.pre_existing[0].node.as_deref(), Some("/amp"));
         assert!(
             answer
                 .summary
@@ -1109,7 +1114,7 @@ mod tests {
             answer.summary
         );
         let wire = serde_json::to_value(&answer.output).expect("serializes");
-        assert_eq!(wire["pre_existing"][0]["node"], "/gone", "{wire}");
+        assert_eq!(wire["pre_existing"][0]["port"], "a", "{wire}");
 
         // Ahead of `/gone` in the load, so this one is the edit's own.
         let wire_in = WireInstrumentInput {
@@ -1123,7 +1128,9 @@ mod tests {
         assert!(!added.output.written);
         assert_eq!(added.output.report.errors.len(), 1, "{:?}", added.output);
         assert!(
-            added.summary.starts_with("not written — 1 error(s)"),
+            added
+                .summary
+                .starts_with("not written — 1 error(s); 1 note(s);"),
             "{}",
             added.summary
         );
@@ -2141,16 +2148,17 @@ mod tests {
         assert_eq!(read("inst.json", &store).hash, guarded.hash);
     }
 
-    /// The loader names the missing *source* of a dangling wire, which is no node of this
-    /// document; the read puts the error on the node and input that hold the wire.
+    /// The missing *source* of a dangling wire is no node of this document; validation and the
+    /// read both put the error on the node and input that hold the wire.
     #[test]
     fn a_dangling_wire_still_reads_with_the_error_on_its_node() {
         let dangling = with_wire(&out("/ghost", "audio"), &inp("/flt", "audio"));
         let doc = read("inst.json", &wire_store(&dangling));
         assert!(!doc.report.ok);
+        let validated = &validates(&dangling).errors[0];
         assert_eq!(
-            validates(&dangling).errors[0].node.as_deref(),
-            Some("/ghost")
+            (validated.node.as_deref(), validated.port.as_deref()),
+            (Some("/flt"), Some("audio"))
         );
         assert_eq!(doc.report.errors.len(), 1, "{:?}", doc.report);
         let error = &doc.report.errors[0];

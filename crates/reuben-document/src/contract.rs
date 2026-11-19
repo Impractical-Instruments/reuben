@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::format::{LoadError, LoadWarning, NormalizedDoc};
+use crate::format::{LoadError, LoadWarning, NormalizedDoc, WireEnd};
 
 /// The content identity of a normalized document: a hash over the canonical
 /// [`to_json_pretty`](crate::format::InstrumentDoc::to_json_pretty) bytes — the bytes a save
@@ -45,14 +45,37 @@ pub struct Diag {
 
 impl Diag {
     /// Carry the loader's human message verbatim, but pull the node/port the loader already
-    /// localized into structured fields so an agent can jump straight to the offending node.
+    /// localized into structured fields so an agent can jump straight to the offending node. A
+    /// source-side error raised resolving a wire-ref localizes on the wire's end — the input or the
+    /// output pipe it is written at — since the source it names may not exist.
     pub fn from_load(e: &LoadError) -> Self {
-        let (node, port) = match e {
+        let wire_end = match e {
+            LoadError::UnknownNode { at, .. }
+            | LoadError::UnknownPort { at, .. }
+            | LoadError::AmbiguousWire { at, .. } => at.as_ref(),
+            _ => None,
+        };
+        let (node, port) = match (wire_end, e) {
+            (Some(WireEnd::Input { node, input }), _) => (Some(node.clone()), Some(input.clone())),
+            (Some(WireEnd::Output(name)), _) => (None, Some(name.clone())),
+            (None, e) => Self::site(e),
+        };
+        Diag {
+            node,
+            port,
+            message: e.to_string(),
+        }
+    }
+
+    fn site(e: &LoadError) -> (Option<String>, Option<String>) {
+        match e {
             LoadError::UnknownType { address, .. } | LoadError::InvalidAddress { address, .. } => {
                 (Some(address.clone()), None)
             }
-            LoadError::DuplicateAddress(a) | LoadError::UnknownNode(a) => (Some(a.clone()), None),
-            LoadError::UnknownPort { node, port } => (Some(node.clone()), Some(port.clone())),
+            LoadError::DuplicateAddress(a) | LoadError::UnknownNode { address: a, .. } => {
+                (Some(a.clone()), None)
+            }
+            LoadError::UnknownPort { node, port, .. } => (Some(node.clone()), Some(port.clone())),
             LoadError::UnknownInput { node, input } => (Some(node.clone()), Some(input.clone())),
             LoadError::BadInputValue { node, name, .. }
             | LoadError::BadInputLiteral { node, name, .. } => {
@@ -76,11 +99,6 @@ impl Diag {
             | LoadError::CyclicResource { .. }
             | LoadError::UnsupportedVersion { .. }
             | LoadError::AnonymousOutputs => (None, None),
-        };
-        Diag {
-            node,
-            port,
-            message: e.to_string(),
         }
     }
 

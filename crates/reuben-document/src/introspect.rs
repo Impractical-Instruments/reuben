@@ -564,12 +564,13 @@ fn report_of(
     faulted(loaded, warning).0
 }
 
-/// [`validate`], with each error's [`Fault`] alongside it: `faults[i]` is what `errors[i]` is.
+/// [`validate`], with each error's [`Fault`] alongside it: `faults[i]` is what `errors[i]` is, and
+/// `None` for an error whose locus is too coarse to tell it from another of its kind.
 pub(crate) fn validate_faulted(
     json: &str,
     registry: &Registry,
     resolver: &dyn ResourceResolver,
-) -> (Report, Vec<Fault>) {
+) -> (Report, Vec<Option<Fault>>) {
     faulted(load_instrument(json, registry, resolver), |w| {
         vec![Diag::from_warning(w)]
     })
@@ -578,56 +579,72 @@ pub(crate) fn validate_faulted(
 /// What an error is and where it is, without its message. Two validations of one document, either
 /// side of an edit, agree on this for the same fault even when the message interpolates a value the
 /// edit changed — the wrong literal, the mistyped source — which a message comparison would not.
+///
+/// Only an error whose locus names one slot of the document gets one: equal faults must mean the
+/// same fault, or an error the edit made could be passed off as one the document already had.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Fault {
-    kind: FaultKind,
+    kind: std::mem::Discriminant<LoadError>,
     node: Option<String>,
     port: Option<String>,
-    /// The part of the locus a [`Diag`] does not carry: the config constant, resource slot or
-    /// source, or address rule the error is about.
+    /// The part of the locus a [`Diag`] does not carry.
     field: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum FaultKind {
-    Load(std::mem::Discriminant<LoadError>),
-    Cycle,
-    FormMismatch,
-}
-
 impl Fault {
-    fn of_load(e: &LoadError, diag: &Diag) -> Self {
+    /// `None` for every error that can occur twice at the locus it reports:
+    /// - a source-side wire error not raised at a wire-ref names only the source, which any number
+    ///   of wires can name;
+    /// - an interface pipe error names the pipe, and an input and an output pipe can share a name;
+    /// - a document-level error (unparseable text, a version, a resource cycle, anonymous outputs)
+    ///   has no slot at all.
+    fn of_load(e: &LoadError, diag: &Diag) -> Option<Self> {
         let field = match e {
+            LoadError::UnknownNode { at: None, .. }
+            | LoadError::UnknownPort { at: None, .. }
+            | LoadError::AmbiguousWire { at: None, .. }
+            | LoadError::InterfaceOverride { .. }
+            | LoadError::InterfacePipe { .. }
+            | LoadError::Json(_)
+            | LoadError::UnsupportedVersion { .. }
+            | LoadError::CyclicResource { .. }
+            | LoadError::AnonymousOutputs => return None,
             LoadError::UnknownConfig { name, .. } | LoadError::ConstantInInputs { name, .. } => {
                 Some(name.clone())
             }
+            LoadError::BadInputValue { surface, .. }
+            | LoadError::BadInputLiteral { surface, .. } => Some(surface.noun().to_string()),
             LoadError::UnknownResource { slot, .. } => Some(slot.clone()),
-            LoadError::CyclicResource { source } => Some(source.clone()),
             LoadError::InvalidAddress { rule, .. } => Some((*rule).to_string()),
-            _ => None,
+            LoadError::UnknownNode { .. }
+            | LoadError::UnknownPort { .. }
+            | LoadError::AmbiguousWire { .. }
+            | LoadError::UnknownType { .. }
+            | LoadError::DuplicateAddress(_)
+            | LoadError::UnknownInput { .. }
+            | LoadError::TypeMismatch { .. } => None,
         };
-        Fault {
-            kind: FaultKind::Load(std::mem::discriminant(e)),
+        Some(Fault {
+            kind: std::mem::discriminant(e),
             node: diag.node.clone(),
             port: diag.port.clone(),
             field,
-        }
+        })
     }
 
-    fn of_plan(kind: FaultKind, diag: &Diag) -> Self {
-        Fault {
-            kind,
-            node: diag.node.clone(),
-            port: diag.port.clone(),
-            field: None,
+    /// This fault as it reads after its node is renamed from `from` to `to`.
+    pub(crate) fn renamed(mut self, from: &str, to: &str) -> Self {
+        if self.node.as_deref() == Some(from) {
+            self.node = Some(to.to_string());
         }
+        self
     }
 }
 
 fn faulted(
     loaded: Result<Loaded, LoadError>,
     warning: impl Fn(&LoadWarning) -> Vec<Diag>,
-) -> (Report, Vec<Fault>) {
+) -> (Report, Vec<Option<Fault>>) {
     let loaded = match loaded {
         Ok(l) => l,
         Err(e) => {
@@ -661,7 +678,8 @@ fn faulted(
                 port: None,
                 message: "graph has a cycle (no valid execution order)".to_string(),
             };
-            let fault = Fault::of_plan(FaultKind::Cycle, &diag);
+            // A cycle names no node, so a new one cannot be told from one already there.
+            let fault = None;
             (
                 Report {
                     ok: false,
@@ -689,7 +707,9 @@ fn faulted(
                 port,
                 message: format!("wire {src} → {dst}: {reason}"),
             };
-            let fault = Fault::of_plan(FaultKind::FormMismatch, &diag);
+            // The planner does not name its own failure apart from the message, so it is never
+            // attributed; the load rejects every reachable mismatch first anyway.
+            let fault = None;
             (
                 Report {
                     ok: false,

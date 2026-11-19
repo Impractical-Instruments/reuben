@@ -139,7 +139,10 @@ impl<'d> WirePorts<'d> {
         // A wire-ref is written into a document node's `inputs`; an input pipe's address is in
         // `by_addr` too, but it has no `inputs` entry to write into.
         let Some(n) = self.doc.nodes.iter().find(|n| n.address == node) else {
-            return Err(LoadError::UnknownNode(node.to_string()));
+            return Err(LoadError::UnknownNode {
+                address: node.to_string(),
+                at: None,
+            });
         };
         if r.dark.contains(node) {
             return Ok(());
