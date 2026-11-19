@@ -887,10 +887,13 @@ fn child_input_pipe(
         })?;
         ctx.docs.insert(canon.clone(), child);
     }
-    let pipe = ctx.docs[&canon]
+    let child = &ctx.docs[&canon];
+    let renamed = renamed_pipes(&child.migration.warnings);
+    let declared = renamed.get(port_name).map_or(port_name, String::as_str);
+    let pipe = child
         .interface
         .as_ref()
-        .and_then(|i| i.inputs.get(port_name))
+        .and_then(|i| i.inputs.get(declared))
         .and_then(|e| e.pipe())
         .cloned()
         .ok_or_else(|| LoadError::UnknownInput {

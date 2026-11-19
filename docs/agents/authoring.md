@@ -385,7 +385,8 @@ never read them; re-saving strips them); and a pre-v4 node `address` the address
 an `_N` suffix, and every wire-ref and output feed naming it is rewritten. An interface input pipe
 whose name mints a refused address is renamed the same way with a `RenamedPipe` warning (an empty
 name becomes `pipe`); pipes claim their names before nodes do. A host that names such a child's
-pipe by its old spelling keeps reaching it until the child is saved, then must use the new name.
+pipe by its old spelling keeps reaching it until the child is saved, then must use the new name;
+setting it under both names is refused.
 The OSC control address moves with the rename, so a controller still sending to the old one goes
 quiet until it follows.
 Every edit verb writes the current version, so the first edit to an older file is the one that

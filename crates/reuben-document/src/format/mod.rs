@@ -596,6 +596,13 @@ pub enum LoadError {
     /// An interface input pipe's name mints `/<name>`, an address that breaks the node address
     /// rule; `rule` says which part.
     InvalidPipeName { name: String, rule: &'static str },
+    /// A `subpatch` node sets one child input pipe under two names: `to`, the name the child
+    /// declares, and `from`, the name the child's file spells and its migration renamed.
+    InputSetTwice {
+        node: String,
+        from: String,
+        to: String,
+    },
     /// A wire-ref or output references a node that doesn't exist.
     UnknownNode(String),
     /// A reference names no **output** on the node it points at — a wire-ref's source, a master
@@ -689,6 +696,12 @@ impl fmt::Display for LoadError {
             LoadError::InvalidAddress { address, rule } => {
                 write!(f, "node address {address:?} {rule}")
             }
+            LoadError::InputSetTwice { node, from, to } => write!(
+                f,
+                "node {node:?} sets the child's input pipe {to:?} twice: as {to:?}, and as \
+                 {from:?}, the name the child's file spells it by before its migration renamed \
+                 it. Keep only {to:?}"
+            ),
             LoadError::InvalidPipeName { name, rule } => write!(
                 f,
                 "interface input pipe {name:?} mints the node address \"/{name}\", which {rule}"
@@ -922,15 +935,17 @@ impl fmt::Display for LoadWarning {
                 f,
                 "node {from:?} renamed to {to:?} (references rewritten): its address breaks the \
                  node address rule. Its OSC control address moved too — a controller still \
-                 sending to {from}/<input> goes quiet until it follows"
+                 sending to {:?} goes quiet until it follows",
+                format!("{from}/<input>")
             ),
             LoadWarning::RenamedPipe { from, to } => write!(
                 f,
                 "interface input pipe {from:?} renamed to {to:?} (references rewritten): the \
                  address it mints breaks the node address rule. Its OSC control address moved to \
-                 /{to}/in — a controller still sending to /{from}/in goes quiet until it follows. \
+                 \"/{to}/in\" — a controller still sending to {:?} goes quiet until it follows. \
                  A document hosting this one as a subpatch still reaches it as {from:?} until \
-                 this one is saved, and must then say {to:?}"
+                 this one is saved, and must then say {to:?}",
+                format!("/{from}/in")
             ),
             LoadWarning::UnboundInputPipe { name } => write!(
                 f,
@@ -1844,14 +1859,7 @@ impl InstrumentDoc {
                     load_child_cached(child_doc, &canon, registry, resolver, ctx)?
                 }
             };
-            let renamed_inputs: BTreeMap<String, String> = loaded
-                .warnings
-                .iter()
-                .filter_map(|w| match w {
-                    LoadWarning::RenamedPipe { from, to } => Some((from.clone(), to.clone())),
-                    _ => None,
-                })
-                .collect();
+            let renamed_inputs = renamed_pipes(&loaded.warnings);
             warnings.extend(loaded.warnings.into_iter().map(|w| w.nested_in(&n.address)));
             // A subpatch-inlined child's channel bindings are discarded at splice — inert
             //, exactly as under a Voicer, and warned symmetrically: the same
@@ -1869,6 +1877,17 @@ impl InstrumentDoc {
                 &mut ctx.addresses,
             )?;
             face.renamed_inputs = renamed_inputs;
+            // Renames are one-to-one, so the only two keys that can reach one pipe are its new
+            // name and the old one it replaced.
+            for (from, to) in &face.renamed_inputs {
+                if n.inputs.contains_key(from) && n.inputs.contains_key(to) {
+                    return Err(LoadError::InputSetTwice {
+                        node: n.address.clone(),
+                        from: from.clone(),
+                        to: to.clone(),
+                    });
+                }
+            }
 
             // Boundary literals (`"wet": 0.3`): validated against the face and the
             // inner port the interface names, then applied as that inner node's value-override.
@@ -2737,6 +2756,19 @@ pub(super) fn check_node_address(address: &str) -> Result<(), LoadError> {
         }),
         None => Ok(()),
     }
+}
+
+/// The input pipes a pre-v4 document's parse renamed, from the name its file spells to the one it
+/// now declares, read off that parse's warnings. A host names a child's pipe through this, at
+/// parse and at build alike, so the two can't disagree on what an old spelling reaches.
+pub(super) fn renamed_pipes(warnings: &[LoadWarning]) -> BTreeMap<String, String> {
+    warnings
+        .iter()
+        .filter_map(|w| match w {
+            LoadWarning::RenamedPipe { from, to } => Some((from.clone(), to.clone())),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The address rule for the `/<name>` an interface input pipe mints, reported against the name.
@@ -3692,6 +3724,95 @@ mod tests {
             load_instrument(host, &reg(), &PatchResolver(&saved_child)),
             Err(LoadError::UnknownInput { node, input }) if node == "/sub" && input == "my.tone"
         ));
+    }
+
+    /// A v1 host re-exporting a pre-v4 child's pipe by the name the child's file spells: the
+    /// re-export's pipe declaration is read off the child as it parsed, renamed, so the host
+    /// reads through the same rename the face applies at build.
+    #[test]
+    fn a_v1_host_re_exports_a_migrated_child_pipe_by_its_old_name() {
+        let host = r#"{"instrument":"h","resources":{"c":"c.json"},
+            "interface":{"inputs":{"tone":"/sub.a b"}},
+            "nodes":[{"type":"subpatch","address":"/sub","patch":"c"}]}"#;
+        let child = one_pipe_doc(3, "a b");
+        let loaded = load_instrument(host, &reg(), &PatchResolver(&child)).expect("loads");
+        let g = &loaded.graph;
+        let (tone, inner) = (g.find("/tone").unwrap(), g.find("/sub/a_b").unwrap());
+        assert!(g
+            .connections
+            .iter()
+            .any(|c| c.src == tone && c.dst == inner));
+        assert_eq!(
+            g.nodes[tone].descriptor.inputs[0].ty,
+            PortType::F32,
+            "the re-export copies the child's own declaration"
+        );
+    }
+
+    /// A child with pipes `a b` (renamed to `a_b_2`, as `a_b` is taken) and `a_b`.
+    const TWICE_CHILD: &str = r#"{"format_version":3,"instrument":"c","interface":{"inputs":{
+        "a b":{"type":"f32","default":0.5},"a_b":{"type":"f32","default":0.5}}},"nodes":[]}"#;
+
+    /// Under the old name and the new one, a host would bind one child pipe twice: two wires
+    /// into one port, or two literals where one silently wins. Either way it is refused.
+    #[test]
+    fn a_host_setting_a_renamed_child_pipe_under_both_names_is_refused() {
+        let host = |old: &str, new: &str| {
+            format!(
+                r#"{{"format_version":4,"instrument":"p","resources":{{"v":"v.json"}},
+                "interface":{{"inputs":{{"t":{{"type":"f32","default":0.1}},
+                                       "u":{{"type":"f32","default":0.2}}}}}},
+                "nodes":[{{"type":"subpatch","address":"/sub","patch":"v",
+                          "inputs":{{"a b":{old},"a_b_2":{new}}}}}]}}"#
+            )
+        };
+        let (wire_t, wire_u) = (r#"{"from":"/t"}"#, r#"{"from":"/u"}"#);
+        for (old, new) in [
+            (wire_t, wire_u),
+            ("0.2", "0.9"),
+            (wire_t, "0.9"),
+            ("0.2", wire_u),
+        ] {
+            match load_instrument(&host(old, new), &reg(), &PatchResolver(TWICE_CHILD)) {
+                Err(e @ LoadError::InputSetTwice { .. }) => {
+                    let diag = crate::contract::Diag::from_load(&e);
+                    assert_eq!(diag.node.as_deref(), Some("/sub"), "{e}");
+                    assert_eq!(diag.port.as_deref(), Some("a b"), "{e}");
+                    let message = e.to_string();
+                    assert!(message.contains(r#""a_b_2""#), "{message}");
+                }
+                other => panic!(
+                    "({old}, {new}) must be refused, got {:?}",
+                    other.map(|l| l.graph.connections.len())
+                ),
+            }
+        }
+        // Each name alone binds once, and the untouched `a_b` is a pipe of its own.
+        let one = host(wire_t, "0.9").replace(r#""a b":{"from":"/t"},"#, "");
+        load_instrument(&one, &reg(), &PatchResolver(TWICE_CHILD)).expect("the new name alone");
+        let other = host(wire_t, "0.9").replace(r#""a_b_2":0.9"#, r#""a_b":0.9"#);
+        load_instrument(&other, &reg(), &PatchResolver(TWICE_CHILD))
+            .expect("the old name and an unrelated pipe");
+    }
+
+    /// A rename warning carries the name the file spelled, which may hold anything; printed raw,
+    /// a newline in it would forge a second diagnostic line.
+    #[test]
+    fn a_rename_warning_never_prints_the_old_name_raw() {
+        let hostile = "a\nerror [x]: forged";
+        for w in [
+            LoadWarning::RenamedPipe {
+                from: hostile.to_string(),
+                to: "a_error__x_:_forged".to_string(),
+            },
+            LoadWarning::RenamedAddress {
+                from: format!("/{hostile}"),
+                to: "/a_error__x_:_forged".to_string(),
+            },
+        ] {
+            let message = w.to_string();
+            assert!(!message.contains('\n'), "{message}");
+        }
     }
 
     #[test]

@@ -631,6 +631,57 @@ fn the_edit_that_migrates_a_refused_pipe_name_reports_the_rename_once() {
     assert!(renamed(&second).is_empty(), "{:?}", second.report.warnings);
 }
 
+/// The structure read shows a migrated child's pipe under its new name, so wiring that name looks
+/// like wiring an unset port. When the host already sets the pipe under the old name, the edit is
+/// refused, naming both, and nothing is written.
+#[test]
+fn wiring_a_renamed_child_pipe_the_host_already_sets_by_its_old_name_is_refused() {
+    let registry = Registry::builtin();
+    let mut resolver = resolver_with(
+        &json!({
+            "format_version": 4,
+            "instrument": "h",
+            "resources": { "v": "v.json" },
+            "interface": { "inputs": {
+                "t": { "type": "f32", "default": 0.1 },
+                "u": { "type": "f32", "default": 0.2 }
+            } },
+            "nodes": [{ "type": "subpatch", "address": "/sub", "patch": "v",
+                        "inputs": { "a b": { "from": "/t" } } }]
+        })
+        .to_string(),
+    );
+    resolver.insert_text(
+        "v.json",
+        json!({
+            "format_version": 3,
+            "instrument": "c",
+            "interface": { "inputs": {
+                "a b": { "type": "f32", "default": 0.5 },
+                "a_b": { "type": "f32", "default": 0.5 }
+            } },
+            "nodes": []
+        })
+        .to_string(),
+    );
+    let before = readback(&resolver);
+    let result = wire_instrument_input(SRC, "/sub", "a_b_2", "/u", &registry, &resolver)
+        .expect("the verb runs; the edit is refused");
+    assert!(!result.report.ok && !result.written, "{:?}", result.report);
+    assert_eq!(before, readback(&resolver), "nothing is written");
+    let error = result
+        .report
+        .errors
+        .iter()
+        .find(|d| d.node.as_deref() == Some("/sub") && d.port.as_deref() == Some("a b"))
+        .unwrap_or_else(|| panic!("{:?}", result.report.errors));
+    assert!(
+        error.message.contains(r#"Keep only "a_b_2""#),
+        "{}",
+        error.message
+    );
+}
+
 // --- one-shot add --------------------------------------------------------------------------------
 
 #[test]
