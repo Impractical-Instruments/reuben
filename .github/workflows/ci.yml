@@ -45,6 +45,7 @@ jobs:
       eval: ${{ steps.filter.outputs.eval }}
       dashboard: ${{ steps.filter.outputs.dashboard }}
       editor: ${{ steps.filter.outputs.editor }}
+      licenses: ${{ steps.filter.outputs.licenses }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -131,6 +132,14 @@ jobs:
             editor:
               - *workspace
               - 'crates/reuben-editor/**'
+            # The dependency tree's licences: any manifest or the lockfile can add a crate, and
+            # deny.toml is the allow-list itself.
+            licenses:
+              - '**/Cargo.toml'
+              - 'Cargo.lock'
+              - 'deny.toml'
+              - '.github/about/**'
+              - '.github/workflows/ci.yml'
             # The dashboard renders both trends and is the half a human actually reads. Its own
             # filter rather than riding `eval`'s: that job builds `reuben-mcp` twice and swaps the
             # measured surface to a baseline commit, and a one-line edit to a charting script has no
@@ -228,8 +237,8 @@ jobs:
   # `reuben-editor`, which no other job builds: it sits outside `default-members`, so the bare
   # `cargo` commands in `check`/`windows`/`bench` skip it and the egui tree stays out of their
   # compile. Its own fmt step because `check`'s path filter does not include the editor's tree, so
-  # an editor-only change never runs `check`'s `cargo fmt --all`. Linux only until the editor's
-  # macOS and Windows builds are in scope.
+  # an editor-only change never runs `check`'s `cargo fmt --all`. Linux only: the editor's Windows
+  # and macOS builds run in the release workflow, whose `workflow_dispatch` is the way to try them.
   editor:
     name: fmt + clippy + build + test (reuben-editor)
     runs-on: ubuntu-latest
@@ -265,6 +274,43 @@ jobs:
 
       - name: Test
         run: cargo test -p reuben-editor
+
+  # Every crate in the tree, the editor's included and on every target, must carry a licence
+  # `deny.toml` allows. The release archives ship third-party notices that cargo-about generates
+  # from the same tree under `.github/about/`, so the job also generates each one the release
+  # does: a crate cargo-about cannot identify, or a drift between its accepted set and deny's,
+  # fails here rather than at a tag.
+  licenses:
+    name: dependency licences (cargo-deny, cargo-about)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.licenses == 'true' && (github.event_name == 'push' || github.event.pull_request.draft == false)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Both tools read the graph through `cargo metadata`, which resolves the pinned toolchain.
+      - name: Setup pinned Rust toolchain
+        uses: ./.github/actions/setup-rust
+
+      # The same versions release.yml installs.
+      - name: Install cargo-deny and cargo-about
+        uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+        with:
+          tool: cargo-deny@0.20.2,cargo-about@0.9.3
+
+      - name: Check licences
+        run: cargo deny --workspace --locked check licenses
+
+      # Every package and target pair release.yml generates notices for.
+      - name: Generate release notices
+        run: |
+          for target in x86_64-unknown-linux-gnu x86_64-pc-windows-msvc aarch64-apple-darwin; do
+            for package in reuben-native reuben-editor; do
+              cargo about generate --locked --fail --target "$target" \
+                -c .github/about/about.toml -m "crates/$package/Cargo.toml" \
+                -o /dev/null .github/about/notices.hbs
+            done
+          done
 
   windows:
     name: build + test (windows)
@@ -708,8 +754,8 @@ jobs:
     name: ci-passed
     runs-on: ubuntu-latest
     needs:
-      [changes, lockstep, check, editor, windows, bench, eval-gate, dashboard, hook-dispatch,
-       sample-guard, doc-claims]
+      [changes, lockstep, check, editor, licenses, windows, bench, eval-gate, dashboard,
+       hook-dispatch, sample-guard, doc-claims]
     if: always()
     steps:
       - name: Fail if any required job failed or was cancelled (skipped is OK)

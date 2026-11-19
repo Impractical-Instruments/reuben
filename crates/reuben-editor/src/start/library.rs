@@ -17,22 +17,36 @@ pub struct Entry {
     pub error: Option<String>,
 }
 
-/// The library directory: `root` when one is given, else `instruments/` in the working directory
-/// when there is one. Absolute, so what is opened from it is named the same from anywhere. `Err`
-/// says, for the start screen, why there is none.
+/// The library directory: `root` when one is given, else the first `instruments/` there is in the
+/// working directory or beside the executable. Absolute, so what is opened from it is named the
+/// same from anywhere. `Err` says, for the start screen, why there is none.
 pub fn locate(root: Option<&Path>) -> Result<PathBuf, String> {
+    // A release archive carries the library next to the binary, and a launch from a file manager
+    // (a double-click in Finder starts it in the home directory) has no say over the working one.
+    let beside_exe = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join("instruments")));
+    let fallbacks: Vec<PathBuf> = std::iter::once(PathBuf::from("instruments"))
+        .chain(beside_exe)
+        .collect();
+    locate_among(root, &fallbacks)
+}
+
+fn locate_among(root: Option<&Path>, fallbacks: &[PathBuf]) -> Result<PathBuf, String> {
     match root {
         Some(root) if root.is_dir() => Ok(super::recent::absolute(root)),
         Some(root) => Err(format!(
             "No library: the instrument root {} is not a directory.",
             root.display()
         )),
-        None if Path::new("instruments").is_dir() => {
-            Ok(super::recent::absolute(Path::new("instruments")))
-        }
-        None => Err("No library: there is no instruments/ here. Name one with \
-                     --instrument-root or REUBEN_INSTRUMENT_ROOT."
-            .to_string()),
+        None => match fallbacks.iter().find(|dir| dir.is_dir()) {
+            Some(dir) => Ok(super::recent::absolute(dir)),
+            None => Err(
+                "No library: there is no instruments/ here or beside reuben-editor. \
+                 Name one with --instrument-root or REUBEN_INSTRUMENT_ROOT."
+                    .to_string(),
+            ),
+        },
     }
 }
 
@@ -133,6 +147,30 @@ mod tests {
         assert_eq!(
             std::fs::canonicalize(located).ok(),
             std::fs::canonicalize(&dir).ok()
+        );
+    }
+
+    #[test]
+    fn without_a_root_the_first_instruments_directory_that_exists_is_the_library() {
+        let scratch = Scratch::new("library_fallbacks");
+        let missing = scratch.path("cwd/instruments");
+        let beside = scratch.path("bin/instruments");
+        let fallbacks = [missing.clone(), beside.clone()];
+        let none = locate_among(None, &fallbacks).expect_err("neither exists");
+        assert!(none.contains("--instrument-root"), "{none}");
+
+        std::fs::create_dir_all(&beside).expect("mkdir");
+        let located = locate_among(None, &fallbacks).expect("the one beside the binary");
+        assert_eq!(
+            std::fs::canonicalize(located).ok(),
+            std::fs::canonicalize(&beside).ok()
+        );
+
+        std::fs::create_dir_all(&missing).expect("mkdir");
+        let located = locate_among(None, &fallbacks).expect("the working directory's first");
+        assert_eq!(
+            std::fs::canonicalize(located).ok(),
+            std::fs::canonicalize(&missing).ok()
         );
     }
 }

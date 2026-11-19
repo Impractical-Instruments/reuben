@@ -1,0 +1,19 @@
+# cargo-about's view of the release binaries' dependency trees, for the third-party notices each
+# archive carries. The set matches `deny.toml` at the root, which CI enforces; order is preference,
+# so a crate offering a choice is listed under the first licence here it offers.
+accepted = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-3-Clause",
+    "ISC",
+    "BSL-1.0",
+    "CC0-1.0",
+    "Zlib",
+    "Unicode-3.0",
+]
+# Build scripts, proc macros' own build deps and test-only crates are not linked into the binary.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+[epaint_default_fonts]
+accepted = ["OFL-1.1", "Ubuntu-font-1.0"]

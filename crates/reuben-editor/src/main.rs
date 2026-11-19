@@ -1,5 +1,10 @@
 //! `reuben-editor` — the desktop instrument editor.
 
+// A release build on Windows is a GUI-subsystem program, so launching it opens no console window.
+// Its stdout and stderr then go nowhere unless the launcher redirects them, which a GUI-subsystem
+// program still honours (the README gives the command); a debug build keeps the console.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod audio;
 mod canvas;
 mod config;
