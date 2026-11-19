@@ -2,7 +2,7 @@
 
 Deterministic CI performance trend: callgrind **instruction counts (Ir)** for rendering **1 s of audio** (375 × 128-frame blocks @ 48 kHz), recorded on every direct push to `dev`. Instruction counts don't jitter — every visible move is a real code change (or a toolchain bump).
 
-**180 commits** · 2026-07-12 → 2026-11-19 · 14516 data points · last: `a038da0` (2026-11-19T07:49:44-05:00)
+**181 commits** · 2026-07-12 → 2026-11-19 · 14612 data points · last: `3aa7dc5` (2026-11-19T08:15:33-05:00)
 
 *Companion trend: the **main** series lives on the [`bench-history`](https://github.com/Impractical-Instruments/reuben/tree/bench-history) branch.*
 
@@ -43,10 +43,10 @@ Cost paid **once per Swap**, on the caller's thread — which in the browser is 
 
 | Case | Latest Ir | vs prev | vs first | since |
 |---|---:|---:|---:|---|
-| `deep_n2048` | 55.8M | ±0.0% | **-15.4%** | 2026-07-30 |
+| `deep_n2048` | 55.7M | ±0.0% | **-15.4%** | 2026-07-30 |
 | `deep_n4096` | 113.1M | ±0.0% | **-14.8%** | 2026-07-30 |
 | `deep_n8192` | 227.0M | ±0.0% | **-17.8%** | 2026-07-30 |
-| `nest_n2048` | 41.3M | ±0.0% | **-26.9%** | 2026-07-30 |
+| `nest_n2048` | 41.3M | ±0.0% | **-26.8%** | 2026-07-30 |
 | `nest_n4096` | 83.9M | ±0.0% | **-27.0%** | 2026-07-30 |
 | `nest_n8192` | 169.5M | ±0.0% | **-26.4%** | 2026-07-30 |
 | `wide_n2048` | 45.8M | ±0.0% | **-16.8%** | 2026-07-30 |
@@ -80,10 +80,10 @@ Cost paid **once per Swap**, on the caller's thread — which in the browser is 
 | `macro/echo` | 37.6M | ±0.0% | **-13.1%** | 2026-07-12 |
 | `macro/reverb` | 44.9M | ±0.0% | **-11.2%** | 2026-07-12 |
 | `macro/sampler-arp` | 15.5M | ±0.0% | -2.4% | 2026-07-12 |
-| `construct/deep_n2048` | 55.8M | ±0.0% | **-15.4%** | 2026-07-30 |
+| `construct/deep_n2048` | 55.7M | ±0.0% | **-15.4%** | 2026-07-30 |
 | `construct/deep_n4096` | 113.1M | ±0.0% | **-14.8%** | 2026-07-30 |
 | `construct/deep_n8192` | 227.0M | ±0.0% | **-17.8%** | 2026-07-30 |
-| `construct/nest_n2048` | 41.3M | ±0.0% | **-26.9%** | 2026-07-30 |
+| `construct/nest_n2048` | 41.3M | ±0.0% | **-26.8%** | 2026-07-30 |
 | `construct/nest_n4096` | 83.9M | ±0.0% | **-27.0%** | 2026-07-30 |
 | `construct/nest_n8192` | 169.5M | ±0.0% | **-26.4%** | 2026-07-30 |
 | `construct/wide_n2048` | 45.8M | ±0.0% | **-16.8%** | 2026-07-30 |
