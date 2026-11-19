@@ -236,8 +236,10 @@ pub fn pipe_field(pipe: &PortInfo) -> Field {
                 text: "nothing until it is fed".to_string(),
             },
         },
-        None => Control::Shown {
-            text: "unset".to_string(),
+        // Nothing picked yet; picking writes the value as for a pipe that declares one.
+        None => Control::Choice {
+            variants: pipe.variants.clone(),
+            value: String::new(),
         },
     };
     Field {

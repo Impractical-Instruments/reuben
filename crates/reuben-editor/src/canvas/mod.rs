@@ -14,8 +14,8 @@
 //! draws a wire, and only the inputs whose type takes it are marked; dropping on one wires it.
 //! An output pipe's input is one of them: dropping on it feeds the pipe from the wire's output in
 //! place of what fed it. Delete removes the selected node or interface pipe or unwires the
-//! selected wire, F2 renames the selected node,
-//! and right-click offers the same, or the operator palette on empty canvas.
+//! selected wire, F2 renames the selected node, and right-click offers the same, or the operator
+//! palette on empty canvas.
 
 mod camera;
 mod geometry;

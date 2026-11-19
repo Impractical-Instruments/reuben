@@ -160,6 +160,8 @@ pub struct Adding {
     output_name: String,
     /// The wire-ref picked to feed the new output; `None` takes [`default_feed`].
     output_from: Option<String>,
+    /// Why the last press of an add button asked for no edit, until the next press.
+    refused: Option<String>,
 }
 
 impl Default for Adding {
@@ -170,6 +172,7 @@ impl Default for Adding {
             input_value: String::new(),
             output_name: String::new(),
             output_from: None,
+            refused: None,
         }
     }
 }
@@ -207,6 +210,17 @@ impl Adding {
         Ok(PipeEdit::AddOutput { name, from })
     }
 
+    /// Ask for `edit`, or say why there is none to ask for.
+    fn press(&mut self, edit: Result<PipeEdit, String>, asks: &mut Vec<Ask>) {
+        match edit {
+            Ok(edit) => {
+                self.refused = None;
+                asks.push(Ask::Edit(Edit::Pipe(edit), None));
+            }
+            Err(why) => self.refused = Some(why),
+        }
+    }
+
     pub fn added(&mut self, edit: &PipeEdit) {
         match edit {
             PipeEdit::AddInput { .. } => {
@@ -222,13 +236,14 @@ impl Adding {
     }
 }
 
-/// Every node output a pipe can be fed from, as wire-refs, in document order.
+/// Every output an output pipe can be fed from, as wire-refs: the interface inputs, passed
+/// straight through, then each node's outputs, in document order.
 fn feeds(top: &InstrumentStructure) -> Vec<String> {
-    (top.nodes.iter())
-        .flat_map(|node| {
-            (node.ports.outputs.iter()).map(|port| format!("{}.{}", node.address, port.name))
-        })
-        .collect()
+    let pipes = (top.inputs.iter()).map(|pipe| format!("/{}", pipe.port.name));
+    let nodes = (top.nodes.iter()).flat_map(|node| {
+        (node.ports.outputs.iter()).map(|port| format!("{}.{}", node.address, port.name))
+    });
+    pipes.chain(nodes).collect()
 }
 
 /// The output a new interface output is fed from unless another is picked: the last node's first
@@ -239,7 +254,10 @@ fn default_feed(top: &InstrumentStructure) -> Option<String> {
             .find(|port| port.kind == "signal")
             .map(|port| format!("{}.{}", node.address, port.name))
     });
-    signal.or_else(|| feeds(top).into_iter().next())
+    let first = (top.nodes.iter()).find_map(|node| {
+        (node.ports.outputs.first()).map(|p| format!("{}.{}", node.address, p.name))
+    });
+    signal.or(first)
 }
 
 /// `out`, else the first free `out_2`, `out_3`, …: the names a document's outputs are given when
@@ -295,10 +313,7 @@ pub fn list(
         ui.end_row();
     });
     if ui.button("Add input").clicked() || add {
-        match adding.input() {
-            Ok(edit) => asks.push(Ask::Edit(Edit::Pipe(edit), None)),
-            Err(why) => inspector.error = Some(why),
-        }
+        adding.press(adding.input(), asks);
     }
 
     ui.separator();
@@ -311,6 +326,10 @@ pub fn list(
     }
     let adding = &mut inspector.adding;
     let feeds = feeds(top);
+    // A pick the document no longer has, its node removed or renamed, is let go of.
+    if (adding.output_from.as_ref()).is_some_and(|from| !feeds.contains(from)) {
+        adding.output_from = None;
+    }
     let mut add = false;
     egui::Grid::new("add output").num_columns(2).show(ui, |ui| {
         ui.label("Name");
@@ -331,10 +350,10 @@ pub fn list(
         ui.end_row();
     });
     if ui.button("Add output").clicked() || add {
-        match adding.output(top) {
-            Ok(edit) => asks.push(Ask::Edit(Edit::Pipe(edit), None)),
-            Err(why) => inspector.error = Some(why),
-        }
+        adding.press(adding.output(top), asks);
+    }
+    if let Some(why) = &adding.refused {
+        ui.colored_label(ui.visuals().error_fg_color, why);
     }
 }
 
@@ -371,44 +390,51 @@ pub fn input(
                 text,
                 hash: &top.hash,
             };
+            // The loader takes a range on a number pipe only, and a curve on a continuous one.
+            let numeric = matches!(port.kind.as_str(), "value" | "signal" | "int");
+            let curved = matches!(port.kind.as_str(), "value" | "signal");
             let min = number_text(port.min);
             let max = number_text(port.max);
-            meta = meta.or(field(
-                ui,
-                inspector,
-                (&owner, "min"),
-                current(&min),
-                parse_number,
-            ));
-            meta = meta.or(field(
-                ui,
-                inspector,
-                (&owner, "max"),
-                current(&max),
-                parse_number,
-            ));
-            ui.label("curve");
-            let mut curve = match port.curve.as_deref() {
-                Some("exponential") => "exp",
-                Some("linear") => "lin",
-                _ => "",
+            if numeric {
+                meta = meta.or(field(
+                    ui,
+                    inspector,
+                    (&owner, "min"),
+                    current(&min),
+                    parse_number,
+                ));
+                meta = meta.or(field(
+                    ui,
+                    inspector,
+                    (&owner, "max"),
+                    current(&max),
+                    parse_number,
+                ));
             }
-            .to_string();
-            let was = curve.clone();
-            egui::ComboBox::from_id_salt(("pipe curve", name))
-                .selected_text(&curve)
-                .show_ui(ui, |ui| {
-                    for token in ["lin", "exp"] {
-                        ui.selectable_value(&mut curve, token.to_string(), token);
-                    }
-                });
-            ui.end_row();
-            if curve != was {
-                let curve = Meta {
-                    curve: Some(curve),
-                    ..Meta::default()
-                };
-                meta = meta.or(Some((curve, top.hash.clone())));
+            if curved {
+                ui.label("curve");
+                let mut curve = match port.curve.as_deref() {
+                    Some("exponential") => "exp",
+                    Some("linear") => "lin",
+                    _ => "",
+                }
+                .to_string();
+                let was = curve.clone();
+                egui::ComboBox::from_id_salt(("pipe curve", name))
+                    .selected_text(&curve)
+                    .show_ui(ui, |ui| {
+                        for token in ["lin", "exp"] {
+                            ui.selectable_value(&mut curve, token.to_string(), token);
+                        }
+                    });
+                ui.end_row();
+                if curve != was {
+                    let curve = Meta {
+                        curve: Some(curve),
+                        ..Meta::default()
+                    };
+                    meta = meta.or(Some((curve, top.hash.clone())));
+                }
             }
             meta = meta.or(field(
                 ui,
@@ -664,6 +690,36 @@ pub(super) mod tests {
             })
         );
         assert_eq!(feeds(&top), ["/osc.audio", "/env.level", "/amp.out"]);
+    }
+
+    #[test]
+    fn an_input_pipe_can_feed_an_output_but_is_never_its_default_feed() {
+        let mut top = chain();
+        top.inputs = serde_json::from_value(json!([
+            { "port": { "name": "pitch", "kind": "value" } }
+        ]))
+        .unwrap();
+        assert_eq!(feeds(&top)[0], "/pitch");
+        assert_eq!(default_feed(&top).as_deref(), Some("/amp.out"));
+        top.nodes.clear();
+        assert_eq!(default_feed(&top), None);
+    }
+
+    #[test]
+    fn an_enum_pipe_with_no_value_offers_its_variants_with_none_picked() {
+        let port = serde_json::from_value(json!({
+            "name": "shape", "kind": "enum", "variants": ["Sine", "Saw"]
+        }))
+        .unwrap();
+        let field = pipe_field(&port);
+        assert_eq!(field.target.address, "/shape");
+        assert_eq!(
+            field.control,
+            super::super::model::Control::Choice {
+                variants: vec!["Sine".into(), "Saw".into()],
+                value: String::new()
+            }
+        );
     }
 
     #[test]
