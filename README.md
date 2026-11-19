@@ -195,23 +195,26 @@ The deterministic tier of the eval harness: each task's **reference solution** (
 
 | Task | Metric | Latest | vs prev | vs first | since |
 |---|---|---:|---:|---:|---|
-| `from_scratch` | grounding tokens | 20,966 | **+7.9%** | **+335.2%** | 2026-07-22 |
-| `from_scratch` | fixed grounding | 20,671 | **+8.0%** | **+333.6%** | 2026-07-22 |
+| `from_scratch` | grounding tokens | 21,435 | +2.2% | **+344.9%** | 2026-07-22 |
+| `from_scratch` | fixed grounding | 21,140 | +2.3% | **+343.5%** | 2026-07-22 |
 | `from_scratch` | document chars | 0 | — | **-100.0%** | 2026-07-22 |
-| `intent_fan_out` | grounding tokens | 20,925 | **+7.9%** | **+10.0%** | 2026-07-28 |
-| `intent_fan_out` | fixed grounding | 20,671 | **+8.0%** | **+10.1%** | 2026-07-28 |
+| `intent_fan_out` | grounding tokens | 21,394 | +2.2% | **+12.4%** | 2026-07-28 |
+| `intent_fan_out` | fixed grounding | 21,140 | +2.3% | **+12.6%** | 2026-07-28 |
 | `intent_fan_out` | document chars | 0 | — | — | 2026-07-28 |
-| `intent_word` | grounding tokens | 20,784 | **+7.9%** | **+10.0%** | 2026-07-28 |
-| `intent_word` | fixed grounding | 20,671 | **+8.0%** | **+10.1%** | 2026-07-28 |
+| `intent_word` | grounding tokens | 21,253 | +2.3% | **+12.5%** | 2026-07-28 |
+| `intent_word` | fixed grounding | 21,140 | +2.3% | **+12.6%** | 2026-07-28 |
 | `intent_word` | document chars | 0 | — | — | 2026-07-28 |
 | `nudge` | grounding tokens | 19,324 | ±0.0% | **+207.6%** | 2026-07-22 |
 | `nudge` | fixed grounding | 17,808 | ±0.0% | **+273.6%** | 2026-07-22 |
 | `nudge` | document chars | 2,098 | ±0.0% | ±0.0% | 2026-07-22 |
-| `repair` | grounding tokens | 20,889 | **+7.9%** | **+333.2%** | 2026-07-22 |
-| `repair` | fixed grounding | 20,671 | **+8.0%** | **+333.6%** | 2026-07-22 |
+| `repair` | grounding tokens | 21,362 | +2.3% | **+343.0%** | 2026-07-22 |
+| `repair` | fixed grounding | 21,140 | +2.3% | **+343.5%** | 2026-07-22 |
 | `repair` | document chars | 0 | — | **-100.0%** | 2026-07-22 |
-| `tweak` | grounding tokens | 20,733 | **+8.0%** | **+333.7%** | 2026-07-22 |
-| `tweak` | fixed grounding | 20,671 | **+8.0%** | **+333.6%** | 2026-07-22 |
+| `repair_and_note` | grounding tokens | 21,431 | — | ±0.0% | 2026-11-19 |
+| `repair_and_note` | fixed grounding | 21,140 | — | ±0.0% | 2026-11-19 |
+| `repair_and_note` | document chars | 0 | — | — | 2026-11-19 |
+| `tweak` | grounding tokens | 21,202 | +2.3% | **+343.6%** | 2026-07-22 |
+| `tweak` | fixed grounding | 21,140 | +2.3% | **+343.5%** | 2026-07-22 |
 | `tweak` | document chars | 0 | — | **-100.0%** | 2026-07-22 |
 
 - **Fixed grounding** is what every turn of every task pays before the model does anything: the server `instructions` plus every tool schema. It creeps when a tool description or the authoring guide grows, and nothing else watches it.
