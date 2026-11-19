@@ -85,6 +85,13 @@ pub struct RenderScratch {
     bounds: Vec<usize>,
     /// Execution order for the block, refilled by the executor into reused capacity.
     order: Vec<usize>,
+    /// One node segment's Stream events, grouped by input port: port `p`'s events are
+    /// `seg_events[seg_starts[p]..seg_starts[p + 1]]`. Held between blocks only while empty (see
+    /// [`recycle_events`]), so the capacity a burst grows it to is kept rather than rebuilt per
+    /// segment.
+    seg_events: Vec<Event<'static>>,
+    /// Port boundaries into `seg_events`, `n_inputs + 1` long for the node being stepped.
+    seg_starts: Vec<usize>,
 }
 
 impl RenderScratch {
@@ -99,6 +106,12 @@ impl RenderScratch {
             .map(|n| n.outputs.len())
             .max()
             .unwrap_or(0);
+        let max_inputs = plan
+            .nodes()
+            .iter()
+            .map(|n| n.descriptor.inputs.len())
+            .max()
+            .unwrap_or(0);
         Self {
             out_scratch: Vec::with_capacity(max_out_bufs),
             routes,
@@ -106,6 +119,8 @@ impl RenderScratch {
             emit_scratch: Vec::with_capacity(EMIT_POOL_CAP),
             bounds: Vec::with_capacity(8),
             order: Vec::with_capacity(plan.nodes.len()),
+            seg_events: Vec::with_capacity(EMIT_POOL_CAP),
+            seg_starts: Vec::with_capacity(max_inputs + 1),
         }
     }
 }
@@ -320,6 +335,8 @@ pub fn render_plan<E: Executor>(
         emit_scratch,
         bounds,
         order,
+        seg_events,
+        seg_starts,
     } = scratch;
 
     for &i in order.iter() {
@@ -328,6 +345,8 @@ pub fn render_plan<E: Executor>(
             arena,
             out_scratch,
             bounds,
+            seg_events,
+            seg_starts,
             &mut routes[i],
             &mut plan.nodes[i],
             messages,
@@ -373,7 +392,7 @@ pub fn render_plan<E: Executor>(
                 match plan.nodes[dst].input_kinds[dst_port] {
                     PortKind::Signal => {
                         if let Some(v) = e.arg.as_f32() {
-                            routes[dst].materialize_writes.push((e.frame, dst_port, v));
+                            routes[dst].push_materialize(e.frame, dst_port, v);
                         }
                     }
                     PortKind::Value => {
@@ -460,6 +479,8 @@ impl<E: Executor> Renderer<E> {
             emitted,
             emit_scratch,
             bounds,
+            seg_events,
+            seg_starts,
             ..
         } = &mut self.scratch;
         emit_scratch.clear();
@@ -467,6 +488,8 @@ impl<E: Executor> Renderer<E> {
             arena,
             out_scratch,
             bounds,
+            seg_events,
+            seg_starts,
             &mut routes[node_idx],
             &mut plan.nodes[node_idx],
             messages,
@@ -539,16 +562,24 @@ struct RoutedEvent {
 /// Per-node routed messages for one block, one bucket per [`PortKind`].
 #[derive(Default)]
 struct NodeRoute {
-    /// (frame, input port, value) — a scalar feeding a materialized [`Buffer`](PortType::F32Buffer)
-    /// input. The engine writes it into the input's scratch buffer at its frame (ZOH); does **not**
-    /// split the block. Sorted by frame before materialize.
-    materialize_writes: Vec<(usize, usize, f32)>,
+    /// (frame, push index, input port, value) — a scalar feeding a materialized
+    /// [`Buffer`](PortType::F32Buffer) input. The engine writes it into the input's scratch buffer
+    /// at its frame (ZOH); does **not** split the block. Sorted by (frame, push index) before
+    /// materialize, so writes to one port at one frame apply in arrival order and the last wins.
+    materialize_writes: Vec<(usize, usize, usize, f32)>,
     /// (frame, input port, value) — a change to a **Held** input: scalar / enum /
     /// `Harmony`. Splits the block (a held value is constant per `process` call); each interior
     /// frame becomes a segment boundary and updates the port's latch.
     held: Vec<(usize, usize, Arg)>,
     /// Routed **Stream** events (by reference), one per delivered Message — for event operators.
     events: Vec<RoutedEvent>,
+}
+
+impl NodeRoute {
+    fn push_materialize(&mut self, frame: usize, port: usize, value: f32) {
+        let seq = self.materialize_writes.len();
+        self.materialize_writes.push((frame, seq, port, value));
+    }
 }
 
 /// Match each message to a node by address prefix, then to an input port by name, then classify
@@ -575,7 +606,7 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
                 // A signal pipe's message feed was a raw ZOH materialize write (unclamped).
                 PortKind::Signal => {
                     if let Some(v) = msg.as_f32() {
-                        routes[n].materialize_writes.push((msg.frame, port, v));
+                        routes[n].push_materialize(msg.frame, port, v);
                     }
                 }
                 // A value pipe latched (pipe-meta clamp), then forwarded; the emission landed
@@ -587,7 +618,7 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
                     match plan.nodes[n].input_kinds[port] {
                         PortKind::Signal => {
                             if let Some(v) = a.as_f32() {
-                                routes[n].materialize_writes.push((msg.frame, port, v));
+                                routes[n].push_materialize(msg.frame, port, v);
                             }
                         }
                         PortKind::Value => {
@@ -619,7 +650,7 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
         match plan.nodes[i].input_kinds[port] {
             PortKind::Signal => {
                 if let Some(v) = msg.as_f32() {
-                    routes[i].materialize_writes.push((msg.frame, port, v));
+                    routes[i].push_materialize(msg.frame, port, v);
                 }
             }
             PortKind::Value => {
@@ -634,10 +665,6 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
                 });
             }
         }
-    }
-
-    for r in routes.iter_mut() {
-        r.materialize_writes.sort_by_key(|(f, _, _)| *f);
     }
 }
 
@@ -686,12 +713,14 @@ pub(crate) fn local_address<'a>(addr: &'a str, node_addr: &str) -> Option<&'a st
 /// Process one node for the block: materialize scalar-fed Buffer inputs, block-slice at Held
 /// change frames, and run the operator on each segment. Allocation-free in steady state:
 /// per-port buffer wiring uses stack SmallVecs, output buffers are swapped through the reusable
-/// `out_scratch`, and events are zero-copy.
+/// `out_scratch`, and events are zero-copy views grouped in the reusable `seg_events`.
 #[allow(clippy::too_many_arguments)]
 fn process_node(
     arena: &mut [Vec<AudioSample>],
     out_scratch: &mut Vec<Vec<AudioSample>>,
     bounds: &mut Vec<usize>,
+    seg_events_slot: &mut Vec<Event<'static>>,
+    seg_starts: &mut Vec<usize>,
     route: &mut NodeRoute,
     node: &mut PlanNode,
     messages: &[Message],
@@ -700,9 +729,12 @@ fn process_node(
     sample_rate: f32,
     block_size: usize,
 ) {
-    // Emitted materialize writes are appended unsorted during execution; the ZOH fill needs them
-    // in frame order.
-    route.materialize_writes.sort_by_key(|(f, _, _)| *f);
+    // The ZOH fill needs the writes in frame order. Not `sort_by_key`: a stable sort allocates its
+    // merge buffer once a burst outgrows the stack scratch; the push index is the tie-break that
+    // keeps arrival order instead.
+    route
+        .materialize_writes
+        .sort_unstable_by_key(|&(f, seq, _, _)| (f, seq));
 
     // Materialize each Buffer-from-scalar input into its scratch buffer: fill from the
     // latched scalar, overwrite with each mid-block change from its frame onward, persist the final
@@ -729,7 +761,10 @@ fn process_node(
             continue;
         }
         let target = &mut arena[buf];
-        let changed = route.materialize_writes.iter().any(|&(_, p, _)| p == port);
+        let changed = route
+            .materialize_writes
+            .iter()
+            .any(|&(_, _, p, _)| p == port);
         // The latch is the sole ZOH store: a materialized port is always seeded/set
         // `Arg::F32`, so this decode succeeds — assert it loudly in dev, hold the additive identity
         // in release if a wrong-typed port ever reaches here.
@@ -747,7 +782,7 @@ fn process_node(
         }
         let mut v = node.latch[port].as_f32().unwrap_or(0.0);
         let mut cursor = 0usize;
-        for &(f, p, val) in &route.materialize_writes {
+        for &(f, _, p, val) in &route.materialize_writes {
             if p != port {
                 continue;
             }
@@ -794,6 +829,12 @@ fn process_node(
     }
     let n_inputs = node.descriptor.inputs.len();
 
+    // A segment's events are a subset of this node's routed events, so after this reserve the
+    // segment loop never grows `seg_events`. It allocates only when a block routes more events to
+    // one node than any block before it did, and the grown capacity is kept.
+    let mut seg_events = recycle_events(core::mem::take(seg_events_slot));
+    seg_events.reserve(route.events.len());
+
     for w in bounds.windows(2) {
         let (seg_start, seg_end) = (w[0], w[1]);
         if seg_start >= seg_end {
@@ -810,10 +851,12 @@ fn process_node(
         }
 
         // Per-input-port Stream events whose frame falls in this segment, as zero-copy views with
-        // segment-relative frames. Inline storage sized to the widest operator.
-        let mut per_port: SmallVec<[SmallVec<[Event; 4]>; 24]> =
-            (0..n_inputs).map(|_| SmallVec::new()).collect();
-        for re in route.events.iter() {
+        // segment-relative frames, grouped by port with a counting sort. Filling in `route.events`
+        // order keeps each port's events in delivery order.
+        seg_events.clear();
+        seg_starts.clear();
+        seg_starts.resize(n_inputs + 1, 0);
+        let in_segment = |re: &RoutedEvent| -> Option<Event<'_>> {
             let (arg, frame): (&Arg, usize) = match re.src {
                 EventSrc::External { msg } => {
                     let m = &messages[msg];
@@ -824,14 +867,42 @@ fn process_node(
                     (&e.arg, e.frame)
                 }
             };
-            if frame >= seg_start && frame < seg_end {
-                per_port[re.dst_port].push(Event {
-                    arg,
-                    frame: frame - seg_start,
-                });
+            (frame >= seg_start && frame < seg_end).then(|| Event {
+                arg,
+                frame: frame - seg_start,
+            })
+        };
+        // Count into `seg_starts[p + 1]`, then turn the counts into each port's start, held one
+        // slot to the right so the fill below can use it as port `p`'s write cursor. After the
+        // fill, `seg_starts[p + 1]` has advanced to port `p`'s end, which is port `p + 1`'s start.
+        let mut first = None;
+        for re in route.events.iter() {
+            if let Some(ev) = in_segment(re) {
+                first.get_or_insert(ev);
+                seg_starts[re.dst_port + 1] += 1;
             }
         }
-        let stream_refs: SmallVec<[&[Event]; 24]> = per_port.iter().map(|v| v.as_slice()).collect();
+        if let Some(first) = first {
+            let mut start = 0;
+            for slot in &mut seg_starts[1..] {
+                let count = *slot;
+                *slot = start;
+                start += count;
+            }
+            // Every slot is overwritten by the fill; `first` is only a valid placeholder value.
+            seg_events.resize(start, first);
+            for re in route.events.iter() {
+                if let Some(ev) = in_segment(re) {
+                    let cursor = &mut seg_starts[re.dst_port + 1];
+                    seg_events[*cursor] = ev;
+                    *cursor += 1;
+                }
+            }
+        }
+        let stream_refs: SmallVec<[&[Event]; 24]> = seg_starts
+            .windows(2)
+            .map(|w| &seg_events[w[0]..w[1]])
+            .collect();
 
         let inputs = node
             .inputs
@@ -852,10 +923,26 @@ fn process_node(
         node.op.process(&mut io);
     }
 
+    *seg_events_slot = recycle_events(seg_events);
+
     // Return the signal-output buffers to the arena, same order they were taken.
     for (k, &bi) in node.outputs.iter().enumerate() {
         arena[bi] = core::mem::take(&mut out_scratch[k]);
     }
+}
+
+/// Empty `v` and hand its allocation to an `Event` Vec of another lifetime. An [`Event`] borrows
+/// this block's Messages and emit pool, so the per-segment event lists cannot outlive one node's
+/// step — but their capacity can, as an empty Vec, which carries no borrow.
+fn recycle_events<'from, 'to>(mut v: Vec<Event<'from>>) -> Vec<Event<'to>> {
+    v.clear();
+    let mut v = core::mem::ManuallyDrop::new(v);
+    let (ptr, cap) = (v.as_mut_ptr(), v.capacity());
+    // SAFETY: `ptr`/`cap` come from a live Vec whose ownership `ManuallyDrop` gives up, so the
+    // allocation is freed exactly once, by the returned Vec. `Event<'from>` and `Event<'to>` differ
+    // only in lifetime, so size and alignment match the allocation's layout. Length 0: no element
+    // is reinterpreted, so no borrow is extended.
+    unsafe { Vec::from_raw_parts(ptr.cast::<Event<'to>>(), 0, cap) }
 }
 
 #[cfg(test)]
@@ -962,5 +1049,82 @@ mod tests {
         assert!(plan
             .osc_in_message("/nowhere/time", &[Arg::F32(0.25)])
             .is_none());
+    }
+
+    /// Each segment hands a port exactly its own events in the frame window, in delivery order,
+    /// with segment-relative frames — interleaved ports, out-of-order frames, same-frame ties and a
+    /// held change splitting the block included.
+    #[test]
+    fn stream_events_reach_their_port_in_delivery_order_per_segment() {
+        use crate::descriptor::Descriptor;
+        use crate::op_driver::OpDriver;
+        use crate::operator::Operator;
+        use crate::vocab::pitch::{Note, Pitch};
+        use alloc::boxed::Box;
+
+        crate::operator_contract!(EventEcho {
+            inputs:  { a: note,
+                       b: note,
+                       split: f32 { 0.0..=1.0, default 0.0, "", lin } },
+            outputs: { out: note },
+        });
+        /// Re-emits every event it reads, port `a` before port `b`, at its block-absolute frame
+        /// with the pitch tagged `+100` for port `b`.
+        struct EventEcho;
+        impl Operator for EventEcho {
+            fn descriptor() -> Descriptor {
+                Self::contract()
+            }
+            fn process(&mut self, io: &mut Io) {
+                for (port, tag) in [(IN_A, 0.0), (IN_B, 100.0)] {
+                    for ev in io.read(port) {
+                        let Pitch::Absolute(p) = ev.payload.pitch else {
+                            continue;
+                        };
+                        io.write(OUT_OUT)
+                            .emit(ev.frame, Note::new(Pitch::Absolute(p + tag), 1.0));
+                    }
+                }
+            }
+            fn spawn(&self) -> Box<dyn Operator> {
+                Box::new(EventEcho)
+            }
+        }
+
+        let note = |p: f32| Note::new(Pitch::Absolute(p), 1.0);
+        let mut d = OpDriver::for_type(EventEcho, 48_000.0);
+        d.push(IN_A, 10, note(1.0))
+            .push(IN_B, 5, note(1.0))
+            .push(IN_A, 3, note(2.0))
+            .push(IN_B, 40, note(2.0))
+            .push(IN_A, 3, note(3.0))
+            .push(IN_A, 25, note(4.0))
+            .push(IN_SPLIT, 20, 1.0f32)
+            .render(64);
+
+        let got: Vec<(usize, f32)> = d
+            .emits()
+            .iter()
+            .map(|e| {
+                let Arg::Note(n) = &e.arg else {
+                    panic!("echo emits notes")
+                };
+                let Pitch::Absolute(p) = n.pitch else {
+                    panic!("echo emits absolute pitches")
+                };
+                (e.frame, p)
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (10, 1.0),
+                (3, 2.0),
+                (3, 3.0),
+                (5, 101.0),
+                (25, 4.0),
+                (40, 102.0)
+            ]
+        );
     }
 }

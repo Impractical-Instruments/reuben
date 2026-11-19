@@ -19,7 +19,7 @@ use rt_alloc::{assert_counter_is_live, measure, Counting};
 use std::sync::Arc;
 
 use reuben_core::message::{Arg, Message};
-use reuben_core::operators::{Output, SamplePlayer};
+use reuben_core::operators::{Clock, Output, SamplePlayer};
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
 use reuben_core::resources::{ResolvedRefs, ResourceStore, SampleBuffer};
@@ -323,6 +323,135 @@ fn render_block_is_allocation_free_after_warmup() {
         sequenced, 0,
         "sequenced-rig steady-state render allocated {sequenced} time(s)"
     );
+}
+
+/// Reads a voice patch from the repo `instruments/` tree, so `chord-player.json`'s
+/// `chord-player-voice` resource resolves.
+struct RepoInstruments;
+
+impl ResourceResolver for RepoInstruments {
+    fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+        Err(ResolveError::NotFound(source.to_string()))
+    }
+    fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
+        let path = format!("{}/../../instruments/{source}", env!("CARGO_MANIFEST_DIR"));
+        std::fs::read_to_string(&path).map_err(|e| ResolveError::NotFound(format!("{path}: {e}")))
+    }
+}
+
+/// Renders `bursts` (each one block's Messages, built before the call) one block apiece, with
+/// three quiet blocks after each, and returns the allocations counted across all of them. Each
+/// burst is rendered twice first, unmeasured, so every retained buffer reaches the high-water mark
+/// the burst sets.
+fn burst_allocs(
+    plan: &mut Plan,
+    r: &mut Renderer,
+    out: &mut [f32],
+    bursts: &[Vec<Message>],
+) -> usize {
+    let mut play = |plan: &mut Plan, r: &mut Renderer| {
+        for burst in bursts {
+            r.render_block(plan, burst, out);
+            for _ in 0..3 {
+                r.render_block(plan, &[], out);
+            }
+        }
+    };
+    play(plan, r);
+    play(plan, r);
+    measure(|| play(plan, r)).allocs
+}
+
+#[test]
+fn an_event_burst_on_one_port_is_allocation_free_after_warmup() {
+    let cfg = AudioConfig::new(48_000.0, 256);
+    assert_counter_is_live();
+
+    // External Messages: N notes on the Voicer's one `notes` port, all in one block. Past ~170
+    // notes the Voicer's own note snapshot outgrows a stable sort's stack scratch, and at 2000 each
+    // voice's `freq`/`gate` materialize writes do too, so the large sizes are not redundant.
+    let graph = load_instrument(DEFAULT_JSON, &Registry::builtin(), &InstrumentsDir)
+        .expect("load default.json")
+        .graph;
+    let mut plan = Plan::instantiate(graph, cfg).expect("instantiate");
+    let mut r = Renderer::new(&plan);
+    let mut out = vec![0.0f32; cfg.block_size];
+    for n in [5usize, 8, 64, 100, 256, 2000] {
+        // Note-ons then note-offs, so every repeat retriggers voices rather than holding them.
+        let bursts: Vec<Vec<Message>> = [1.0, 0.0]
+            .iter()
+            .map(|&vel| {
+                (0..n)
+                    .map(|i| {
+                        let pitch = Pitch::Absolute(36.0 + (i % 48) as f32);
+                        Message::new("/voicer/notes", Note::new(pitch, vel), i % cfg.block_size)
+                    })
+                    .collect()
+            })
+            .collect();
+        let allocs = burst_allocs(&mut plan, &mut r, &mut out, &bursts);
+        assert_eq!(
+            allocs, 0,
+            "a {n}-note burst on one port allocated {allocs} time(s)"
+        );
+    }
+
+    // Node-emitted events: each `/chord/in` press makes the `chord` op emit a triad into the
+    // Voicer, so k presses in one block land 3k emitted events on the Voicer's `notes` port.
+    let graph = load_instrument(
+        include_str!("../../../instruments/chord-player.json"),
+        &Registry::builtin(),
+        &RepoInstruments,
+    )
+    .expect("load chord-player.json")
+    .graph;
+    let mut plan = Plan::instantiate(graph, cfg).expect("instantiate chord-player");
+    let mut r = Renderer::new(&plan);
+    for presses in [2usize, 7, 34] {
+        let bursts: Vec<Vec<Message>> = [1.0, 0.0]
+            .iter()
+            .map(|&vel| {
+                (0..presses)
+                    .map(|i| {
+                        let root = Pitch::Degree((i % 7) as i32);
+                        Message::new("/chord/in", Note::new(root, vel), 0)
+                    })
+                    .collect()
+            })
+            .collect();
+        let allocs = burst_allocs(&mut plan, &mut r, &mut out, &bursts);
+        assert_eq!(
+            allocs,
+            0,
+            "{presses} chord presses ({} emitted notes on one port) allocated {allocs} time(s)",
+            presses * 3
+        );
+    }
+
+    // A burst on a `clock`'s `sync` port: every event is a phase reset at its frame.
+    let mut g = Graph::new();
+    let clock = g.add("/clock", Clock::new());
+    let sink = g.add("/out", Output::new());
+    g.connect(clock, 0, sink, 0);
+    g.tap_output(sink, 0);
+    let mut plan = Plan::instantiate(g, cfg).expect("instantiate clock rig");
+    let mut r = Renderer::new(&plan);
+    for n in [5usize, 64, 256] {
+        let bursts = vec![(0..n)
+            .map(|i| {
+                Message::new(
+                    "/clock/sync",
+                    Note::new(Pitch::Degree(0), 1.0),
+                    i % cfg.block_size,
+                )
+            })
+            .collect::<Vec<_>>()];
+        let allocs = burst_allocs(&mut plan, &mut r, &mut out, &bursts);
+        assert_eq!(
+            allocs, 0,
+            "a {n}-event sync burst allocated {allocs} time(s)"
+        );
+    }
 }
 
 #[test]
