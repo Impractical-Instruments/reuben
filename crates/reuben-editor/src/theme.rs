@@ -480,9 +480,11 @@ mod tests {
             .run_ui(egui::RawInput::default(), |ui| {
                 let width = ui.available_width();
                 let plain = ui.button("plain").rect;
-                let choice = choice(ui, true, "a choice").rect;
-                assert_eq!(choice.width(), width);
-                assert!(choice.height() > plain.height(), "{choice:?} {plain:?}");
+                let short = choice(ui, true, "a choice").rect;
+                assert_eq!(short.width(), width);
+                assert!(short.height() > plain.height(), "{short:?} {plain:?}");
+                let long = choice(ui, true, &"a name far too long for the width ".repeat(20)).rect;
+                assert_eq!(long.width(), width, "a long label is cut short");
             })
             .drop_without_applying_deltas();
     }
