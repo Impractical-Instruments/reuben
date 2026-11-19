@@ -18,7 +18,7 @@ use reuben_api::authoring::{
 use serde_json::Value;
 
 use super::model::{pipe_field, wire_source};
-use super::view::{labelled_row, text, Ask, Current};
+use super::view::{labelled_row, listed, text, Ask, Current, Problem};
 use super::{Edit, Inspector};
 
 /// The types an interface input pipe can be declared as, besides an enum type's name.
@@ -160,8 +160,6 @@ pub struct Adding {
     output_name: String,
     /// The wire-ref picked to feed the new output; `None` takes [`default_feed`].
     output_from: Option<String>,
-    /// Why the last press of an add button asked for no edit, until the next press.
-    refused: Option<String>,
 }
 
 impl Default for Adding {
@@ -172,7 +170,6 @@ impl Default for Adding {
             input_value: String::new(),
             output_name: String::new(),
             output_from: None,
-            refused: None,
         }
     }
 }
@@ -208,17 +205,6 @@ impl Adding {
             typed => typed.to_string(),
         };
         Ok(PipeEdit::AddOutput { name, from })
-    }
-
-    /// Ask for `edit`, or say why there is none to ask for.
-    fn press(&mut self, edit: Result<PipeEdit, String>, asks: &mut Vec<Ask>) {
-        match edit {
-            Ok(edit) => {
-                self.refused = None;
-                asks.push(Ask::Edit(Edit::Pipe(edit), None));
-            }
-            Err(why) => self.refused = Some(why),
-        }
     }
 
     pub fn added(&mut self, edit: &PipeEdit) {
@@ -313,7 +299,7 @@ pub fn list(
         ui.end_row();
     });
     if ui.button("Add input").clicked() || add {
-        adding.press(adding.input(), asks);
+        asks.push(ask(adding.input()));
     }
 
     ui.separator();
@@ -350,10 +336,15 @@ pub fn list(
         ui.end_row();
     });
     if ui.button("Add output").clicked() || add {
-        adding.press(adding.output(top), asks);
+        asks.push(ask(adding.output(top)));
     }
-    if let Some(why) = &adding.refused {
-        ui.colored_label(ui.visuals().error_fg_color, why);
+}
+
+/// The ask an add button makes: its edit, or why the row names none yet.
+fn ask(edit: Result<PipeEdit, String>) -> Ask {
+    match edit {
+        Ok(edit) => Ask::Edit(Edit::Pipe(edit), None),
+        Err(why) => Ask::Refuse(why),
     }
 }
 
@@ -368,6 +359,7 @@ pub fn input(
     inspector: &mut Inspector,
     top: &InstrumentStructure,
     name: &str,
+    problems: &[Problem<'_>],
     asks: &mut Vec<Ask>,
 ) {
     let Some(pipe) = top.inputs.iter().find(|p| p.port.name == name) else {
@@ -377,6 +369,7 @@ pub fn input(
     let InterfaceInput { port, .. } = pipe;
     ui.heading(name);
     ui.weak(format!("Interface input · {}", port.kind));
+    listed(ui, problems);
     ui.separator();
     let owner = format!("<input>{name}");
     let meta = egui::Grid::new("input pipe")
@@ -384,7 +377,15 @@ pub fn input(
         .striped(true)
         .show(ui, |ui| {
             let mut meta = None;
-            labelled_row(ui, inspector, "value", &pipe_field(port), &top.hash, asks);
+            labelled_row(
+                ui,
+                inspector,
+                "value",
+                &pipe_field(port),
+                &top.hash,
+                &[],
+                asks,
+            );
             ui.end_row();
             let current = |text| Current {
                 text,
@@ -433,7 +434,7 @@ pub fn input(
                         curve: Some(curve),
                         ..Meta::default()
                     };
-                    meta = meta.or(Some((curve, top.hash.clone())));
+                    meta = meta.or(Some(Ok((curve, top.hash.clone()))));
                 }
             }
             meta = meta.or(field(
@@ -456,13 +457,10 @@ pub fn input(
             meta
         })
         .inner;
-    if let Some((meta, hash)) = meta {
-        let edit = PipeEdit::InputMeta {
-            name: name.to_string(),
-            meta,
-        };
-        asks.push(Ask::Edit(Edit::Pipe(edit), Some(hash)));
-    }
+    asks.extend(typed(meta, |meta| PipeEdit::InputMeta {
+        name: name.to_string(),
+        meta,
+    }));
     ui.separator();
     if ui.button("Remove input").clicked() {
         let edit = PipeEdit::RemoveInput(name.to_string());
@@ -476,6 +474,7 @@ pub fn output(
     inspector: &mut Inspector,
     top: &InstrumentStructure,
     name: &str,
+    problems: &[Problem<'_>],
     asks: &mut Vec<Ask>,
 ) {
     let Some(pipe) = top.outputs.iter().find(|p| p.name == name) else {
@@ -492,6 +491,7 @@ pub fn output(
     } = pipe;
     ui.heading(name);
     ui.weak("Interface output");
+    listed(ui, problems);
     ui.separator();
     let owner = format!("<output>{name}");
     let fed = wire_source(from);
@@ -555,13 +555,10 @@ pub fn output(
             meta
         })
         .inner;
-    if let Some((meta, hash)) = meta {
-        let edit = PipeEdit::OutputMeta {
-            name: name.to_string(),
-            meta,
-        };
-        asks.push(Ask::Edit(Edit::Pipe(edit), Some(hash)));
-    }
+    asks.extend(typed(meta, |meta| PipeEdit::OutputMeta {
+        name: name.to_string(),
+        meta,
+    }));
     ui.separator();
     if ui.button("Remove output").clicked() {
         let edit = PipeEdit::RemoveOutput(name.to_string());
@@ -569,27 +566,31 @@ pub fn output(
     }
 }
 
-/// One metadata row: a label and a text box. Returns the metadata to write, and the hash to write
-/// it against, once a change is typed in and the box let go of. A change that does not parse is
-/// reported and dropped.
+/// Metadata typed into a row, and the hash to write it against; or why what was typed is none.
+type Typed = Result<(Meta, String), String>;
+
+/// One metadata row: a label and a text box. Returns what was typed once a change is typed in and
+/// the box let go of.
 fn field(
     ui: &mut egui::Ui,
     inspector: &mut Inspector,
     (owner, name): (&str, &'static str),
     current: Current<'_>,
     parse: fn(&str, &str) -> Result<Meta, String>,
-) -> Option<(Meta, String)> {
+) -> Option<Typed> {
     ui.label(name);
     let typed = text(ui, inspector, (owner, name), current, false);
     ui.end_row();
     let (typed, hash) = typed?;
-    match parse(name, typed.trim()) {
-        Ok(meta) => Some((meta, hash)),
-        Err(why) => {
-            inspector.error = Some(why);
-            None
-        }
-    }
+    Some(parse(name, typed.trim()).map(|meta| (meta, hash)))
+}
+
+/// The ask a typed metadata row makes of the pipe that `edit` builds the change for.
+fn typed(typed: Option<Typed>, edit: impl FnOnce(Meta) -> PipeEdit) -> Option<Ask> {
+    Some(match typed? {
+        Ok((meta, hash)) => Ask::Edit(Edit::Pipe(edit(meta)), Some(hash)),
+        Err(why) => Ask::Refuse(why),
+    })
 }
 
 fn number_text(value: Option<f64>) -> String {

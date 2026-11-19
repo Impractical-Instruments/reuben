@@ -1662,6 +1662,58 @@ mod tests {
         );
     }
 
+    /// The loader resolves each sample once and names no node; the read names every node reading
+    /// it, so an editor can show the missing file where it is used.
+    #[test]
+    fn a_sample_that_does_not_resolve_is_a_warning_on_each_node_reading_it() {
+        let store = MemoryStore::with(
+            "inst.json",
+            r#"{ "format_version": 3, "instrument": "s",
+                 "resources": { "take": "take.wav" },
+                 "nodes": [
+                   { "type": "granulator", "address": "/a", "sample": "take" },
+                   { "type": "granulator", "address": "/b", "sample": "take" }
+                 ] }"#,
+        );
+        let doc = read("inst.json", &store);
+        assert!(doc.report.ok, "{:?}", doc.report);
+        let mut at: Vec<_> = (doc.report.warnings.iter())
+            .map(|d| (d.node.as_deref(), d.port.as_deref()))
+            .collect();
+        at.sort();
+        assert_eq!(at, [(Some("/a"), None), (Some("/b"), None)]);
+        assert!(doc.report.warnings[0].message.contains("take.wav"));
+    }
+
+    #[test]
+    fn a_wire_whose_types_do_not_match_is_rejected_at_the_input_holding_it() {
+        let store = MemoryStore::with(
+            "inst.json",
+            r#"{ "format_version": 3, "instrument": "w",
+                 "interface": { "inputs": { "notes": { "type": "note" } } },
+                 "nodes": [ { "type": "filter", "address": "/flt" } ] }"#,
+        );
+        let edit = wire_instrument_input(
+            &WireInstrumentInput {
+                source: "inst.json".to_string(),
+                address: "/flt".to_string(),
+                input: "audio".to_string(),
+                from: "/notes".to_string(),
+                expect: None,
+            },
+            &store,
+        )
+        .expect("the verb ran")
+        .output;
+        assert!(!edit.written);
+        let error = &edit.report.errors[0];
+        assert_eq!(
+            (error.node.as_deref(), error.port.as_deref()),
+            (Some("/flt"), Some("audio")),
+            "{error:?}"
+        );
+    }
+
     fn names_of_inputs(doc: &InstrumentStructure) -> Vec<&str> {
         doc.inputs.iter().map(|i| i.port.name.as_str()).collect()
     }

@@ -104,7 +104,7 @@ pub struct Inspector {
     holds: Holds,
     drafts: Drafts,
     adding: Adding,
-    /// Why the last edit or live send did not land, until the next one does.
+    /// Why the last live send did not reach the engine, until an edit or a send does.
     error: Option<String>,
     /// How many times a verb has been run to write the document.
     #[cfg(test)]
@@ -141,8 +141,7 @@ impl Inspector {
                     target: target.clone(),
                     value: literal,
                 };
-                self.commit(edit, expect, session, channel);
-                if held && self.error.is_some() {
+                if !self.commit(edit, expect, session, channel) && held {
                     self.restore(&target, session, channel);
                 }
             }
@@ -180,13 +179,9 @@ impl Inspector {
             Control::Number { value, .. } => target.live(value),
             _ => None,
         });
-        let Some(message) = held else { return };
-        let refused = self.error.take();
-        self.live(message, channel);
-        self.error = match (refused, self.error.take()) {
-            (Some(refused), Some(unsent)) => Some(format!("{refused}\n{unsent}")),
-            (refused, unsent) => refused.or(unsent),
-        };
+        if let Some(message) = held {
+            self.live(message, channel);
+        }
     }
 
     /// Send `message` to the running engine, when one is running.
@@ -202,14 +197,15 @@ impl Inspector {
     }
 
     /// Write `edit` to the viewed document, against the content hash `expect`, or against the
-    /// document on screen now when `None`.
+    /// document on screen now when `None`. Returns whether it landed; why it did not is the
+    /// session's [`Feedback`](crate::feedback::Feedback).
     fn commit(
         &mut self,
         edit: Edit,
         expect: Option<String>,
         session: &mut Session,
         channel: &dyn Fn() -> Option<Channel>,
-    ) {
+    ) -> bool {
         #[cfg(test)]
         {
             self.writes += 1;
@@ -221,31 +217,12 @@ impl Inspector {
             Some(expect) => edit::write_against(session, channel, &source, expect, verb),
             None => edit::write(session, channel, &source, verb),
         };
-        self.error = match result {
-            Ok(result) if result.written => None,
-            Ok(result) => Some(refused(&result)),
-            Err(refusal) => Some(refusal.message),
-        };
-        if let (None, Edit::Pipe(added)) = (&self.error, added) {
+        self.error = None;
+        let landed = matches!(result, Ok(result) if result.written);
+        if let (true, Edit::Pipe(added)) = (landed, added) {
             self.adding.added(&added);
         }
-    }
-}
-
-/// Why an edit that ran wrote nothing.
-fn refused(result: &EditResult) -> String {
-    let said: Vec<String> = (result.report.errors.iter())
-        .map(|e| match (&e.node, &e.port) {
-            (Some(node), Some(port)) => format!("{node}.{port}: {}", e.message),
-            (Some(node), None) => format!("{node}: {}", e.message),
-            _ => e.message.clone(),
-        })
-        .chain(result.notes.iter().cloned())
-        .collect();
-    if said.is_empty() {
-        "the edit was not written".to_string()
-    } else {
-        said.join("\n")
+        landed
     }
 }
 
@@ -271,6 +248,7 @@ mod tests {
     use crate::canvas::Gesture;
     use crate::controls::Controls;
     use crate::engine::Engine;
+    use crate::feedback::Feedback;
     use crate::session::test_support::{Rig, Scratch};
     use crate::session::Status;
 
@@ -486,7 +464,11 @@ mod tests {
             release(&mut rig, &mut inspector, &cutoff, 1500.0);
 
             assert_eq!(inspector.writes, 1);
-            assert!(inspector.error.is_some(), "the conflict is reported");
+            assert!(
+                matches!(rig.session.feedback(), Some(Feedback::Conflict { .. })),
+                "the conflict is reported: {:?}",
+                rig.session.feedback()
+            );
             assert_eq!(literal(&rig, "/map_cutoff", "out_max"), json!(5000.0));
             // The held moves, then the value the file holds, so the sound is the file again.
             let received = rig.live_received(4);
@@ -524,7 +506,11 @@ mod tests {
             });
             release(&mut rig, &mut inspector, &cutoff, 9000.0);
 
-            assert!(inspector.error.is_some(), "the conflict is reported");
+            assert!(
+                matches!(rig.session.feedback(), Some(Feedback::Conflict { .. })),
+                "the conflict is reported: {:?}",
+                rig.session.feedback()
+            );
             assert_eq!(literal(&rig, "/map_cutoff", "out_max"), resonance_max);
             assert_eq!(literal(&rig, "/map_old", "out_max"), json!(11000.0));
         });
@@ -615,7 +601,11 @@ mod tests {
                 &mut rig.session,
                 &channel,
             );
-            assert!(inspector.error.is_some(), "a stale draft is a conflict");
+            assert!(
+                matches!(rig.session.feedback(), Some(Feedback::Conflict { .. })),
+                "a stale draft is a conflict: {:?}",
+                rig.session.feedback()
+            );
             assert_eq!(
                 (rig.session
                     .tree()
@@ -647,7 +637,13 @@ mod tests {
                 &mut rig.session,
                 &channel,
             );
-            assert!(inspector.error.is_some());
+            let rejected = rig.session.feedback().expect("the rejection is reported");
+            let top = before.top().source.clone();
+            let at_fault = rejected.rejected(&top);
+            assert!(
+                (at_fault.iter()).any(|d| d.node.as_deref() == Some("/map_cutoff")),
+                "{rejected:?}"
+            );
             assert_eq!(rig.session.tree(), &before);
             rig.settle();
             assert_eq!(rig.swaps(), 0);
@@ -742,8 +738,8 @@ mod tests {
     /// Commit `edit` and wait until the engine plays what it wrote.
     fn landed(rig: &mut Rig, inspector: &mut Inspector, edit: Edit) {
         let channel = rig.channel_source();
-        inspector.commit(edit.clone(), None, &mut rig.session, &channel);
-        assert_eq!(inspector.error, None, "{edit:?}");
+        let wrote = inspector.commit(edit.clone(), None, &mut rig.session, &channel);
+        assert!(wrote, "{edit:?}: {:?}", rig.session.feedback());
         played(rig);
     }
 
@@ -857,7 +853,7 @@ mod tests {
             assert!(received.iter().all(|m| m.address == "/pitch/in"));
             frame(&mut rig, 440.0, false);
             played(&mut rig);
-            assert_eq!(inspector.error, None);
+            assert_eq!(rig.session.feedback(), None);
             assert_eq!(pipe(&rig, "pitch").default, Some(json!(440.0)));
 
             // A parent nesting it sees the control on its subpatch node's face.
@@ -946,7 +942,7 @@ mod tests {
             let mut inspector = Inspector::default();
             let channel = rig.channel_source();
 
-            inspector.commit(
+            let wrote = inspector.commit(
                 Edit::Pipe(PipeEdit::AddInput {
                     name: "width".into(),
                     type_name: "f32".into(),
@@ -956,23 +952,90 @@ mod tests {
                 &mut rig.session,
                 &channel,
             );
-            assert_eq!(inspector.error, None);
+            assert!(wrote, "{:?}", rig.session.feedback());
             assert_eq!(rig.session.viewed().path, child);
             let viewed = (rig.session.viewed().read.clone()).expect("the child reads");
             assert!(viewed.inputs.iter().any(|p| p.port.name == "width"));
             assert!(face(&rig).iter().any(|p| p == "width"), "{:?}", face(&rig));
 
-            inspector.commit(
+            let wrote = inspector.commit(
                 Edit::Pipe(PipeEdit::RemoveInput("width".into())),
                 None,
                 &mut rig.session,
                 &channel,
             );
-            assert_eq!(inspector.error, None);
+            assert!(wrote, "{:?}", rig.session.feedback());
             assert!(!face(&rig).iter().any(|p| p == "width"));
             rig.poll_until("the Swap of the writes", |rig| rig.swaps() >= 1);
             rig.settle();
             assert_eq!(rig.status(), &Status::Current);
+        });
+    }
+
+    #[test]
+    fn a_rejected_feed_is_the_sessions_feedback_not_the_inspectors_error() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("inspector_pipe_rejected", "default.json");
+            let mut inspector = Inspector::default();
+            let channel = rig.channel_source();
+            let before = rig.session.tree().clone();
+            let wrote = inspector.commit(
+                Edit::Pipe(PipeEdit::Feed {
+                    name: "out".into(),
+                    from: "/ghost.audio".into(),
+                }),
+                None,
+                &mut rig.session,
+                &channel,
+            );
+            assert!(!wrote);
+            assert_eq!(
+                inspector.error, None,
+                "a rejection is not a live-send failure"
+            );
+            assert_eq!(rig.session.tree(), &before);
+            let feedback = rig
+                .session
+                .feedback()
+                .expect("the rejection is held")
+                .clone();
+            let source = rig.session.viewed().source.clone();
+            assert!(
+                matches!(feedback, Feedback::Rejected { .. }),
+                "{feedback:?}"
+            );
+            // The fault is the feed's: it is pinned on what the feed names, here a node the
+            // document does not have, so the banner alone says it.
+            let at: Vec<_> = (feedback.rejected(&source).iter())
+                .map(|diag| (diag.node.as_deref(), diag.port.as_deref()))
+                .collect();
+            assert_eq!(at, [(Some("/ghost"), None)], "{feedback:?}");
+        });
+    }
+
+    #[test]
+    fn an_add_row_that_names_no_pipe_is_refused_through_the_sessions_feedback() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("inspector_pipe_unnamed", "default.json");
+            let mut inspector = Inspector::default();
+            let channel = rig.channel_source();
+            let why = Adding::default().input().expect_err("no name");
+            view::refuse(&mut rig.session, why.clone());
+            assert_eq!(
+                rig.session.feedback(),
+                Some(&Feedback::Refused {
+                    source: rig.session.viewed().source.clone(),
+                    message: why
+                })
+            );
+            let landed = inspector.commit(
+                Edit::Pipe(PipeEdit::RemoveOutput("out".into())),
+                None,
+                &mut rig.session,
+                &channel,
+            );
+            assert!(landed);
+            assert_eq!(rig.session.feedback(), None, "a landed edit lets it go");
         });
     }
 }

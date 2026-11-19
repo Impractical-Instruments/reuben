@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui::{self, Pos2, Rect, Sense, Vec2};
 use reuben_api::authoring::{
-    read_instrument, wire_compatibility, EditResult, InstrumentStructure, LayoutPosition,
+    read_instrument, wire_compatibility, Diag, EditResult, InstrumentStructure, LayoutPosition,
     ReadInstrument, Refusal, WireCompatibility,
 };
 use reuben_api::FsResolver;
@@ -40,7 +40,7 @@ use self::camera::Camera;
 pub use self::gesture::Gesture;
 pub use self::graph::Item;
 pub(crate) use self::graph::PortKind;
-use self::graph::{Graph, PortRef};
+use self::graph::{Graph, PortRef, Problem};
 use self::palette::Palette;
 
 /// How near a port's dot a press or drop must be to take it, in canvas units: half a port row,
@@ -494,27 +494,13 @@ impl Canvas {
         self.menu = Some(target);
     }
 
-    /// Take in how `gesture` went: a refusal or rejection is said until the next edit lands, and
-    /// the selection follows a node added or renamed.
+    /// Take in how `gesture` went: the selection follows a node added or renamed. An edit that did
+    /// not land is the session's [`Feedback`](crate::feedback::Feedback) to say, not the canvas's.
     pub fn applied(&mut self, gesture: &Gesture, result: &Result<EditResult, Refusal>) {
-        let edit = match result {
-            Err(refusal) => {
-                self.notice = Some(refusal.message.clone());
-                return;
-            }
-            Ok(edit) => edit,
-        };
-        if !edit.written {
-            let why: Vec<String> = (edit.report.errors.iter())
-                .map(|e| match &e.node {
-                    Some(node) => format!("{node}: {}", e.message),
-                    None => e.message.clone(),
-                })
-                .collect();
-            self.notice = Some(why.join("\n"));
+        self.notice = None;
+        if !matches!(result, Ok(edit) if edit.written) {
             return;
         }
-        self.notice = None;
         match gesture {
             Gesture::Add { address, .. } => self.select(Some(Item::Node(address.clone()))),
             Gesture::Rename { from, to } => {
@@ -530,7 +516,10 @@ impl Canvas {
 
     /// Draw the canvas over the rest of `ui`, and return the edits the gestures finished this frame
     /// asks for. Draws nothing when no instrument is open.
-    pub fn show(&mut self, ui: &mut egui::Ui) -> Vec<Gesture> {
+    ///
+    /// `rejected` is what the last edit of the drawn document was turned away with, shown on the
+    /// boxes and ports it names beside what the load report says.
+    pub fn show(&mut self, ui: &mut egui::Ui, rejected: &[Diag]) -> Vec<Gesture> {
         let doc = match &self.loaded {
             None => {
                 ui.take_available_space();
@@ -651,9 +640,18 @@ impl Canvas {
             }
         }
 
+        // A rejected edit's report is the whole document's, so it repeats any load error already
+        // on the box.
+        let extra: Vec<(usize, Problem)> = (self.doc().into_iter())
+            .flat_map(|doc| {
+                (rejected.iter())
+                    .flat_map(|diag| doc.graph.pin(diag, true))
+                    .filter(|(i, problem)| !doc.graph.boxes[*i].problems.contains(problem))
+            })
+            .collect();
         // Painted before a released drag is let go, so the frame it ends on still shows where the
         // boxes were dropped rather than where they were.
-        self.paint(&painter, ui.visuals(), area);
+        self.paint(&painter, ui.visuals(), area, &extra);
         if response.drag_stopped() {
             let at = (response.interact_pointer_pos())
                 .or(pointer)
@@ -666,10 +664,13 @@ impl Canvas {
         }
         let said: Vec<String> = (pointer.zip(self.doc()))
             .and_then(|(p, doc)| geometry::hit(&doc.rects, to_canvas(p)).map(|i| (i, doc)))
-            .map(|(i, doc)| doc.graph.boxes[i].problems.iter())
+            .map(|(i, doc)| {
+                let pinned = (extra.iter()).filter(move |(j, _)| *j == i).map(|(_, p)| p);
+                doc.graph.boxes[i].problems.iter().chain(pinned)
+            })
             .into_iter()
             .flatten()
-            .map(|p| p.message.clone())
+            .map(Problem::said)
             .collect();
         if !said.is_empty() {
             response.on_hover_text_at_pointer(said.join("\n"));
@@ -800,7 +801,13 @@ impl Canvas {
         }
     }
 
-    fn paint(&self, painter: &egui::Painter, visuals: &egui::Visuals, area: Rect) {
+    fn paint(
+        &self,
+        painter: &egui::Painter,
+        visuals: &egui::Visuals,
+        area: Rect,
+        extra: &[(usize, Problem)],
+    ) {
         let (Some(doc), Some(camera)) = (self.doc(), self.camera) else {
             return;
         };
@@ -829,6 +836,7 @@ impl Canvas {
             selected,
             wire: self.wire,
             wiring,
+            extra,
         }
         .paint(painter, visuals);
     }
@@ -1082,6 +1090,21 @@ mod tests {
         canvas.selection = Some(Item::Node("/gone".into()));
         canvas.reload(&path, None, &read(&path, None));
         assert_eq!(canvas.selection, None);
+    }
+
+    #[test]
+    fn a_sample_that_does_not_resolve_is_a_warning_on_the_node_that_reads_it() {
+        let scratch = crate::session::test_support::Scratch::new("canvas_missing_sample");
+        let lib = scratch.library();
+        std::fs::remove_file(lib.join("samples/testvox.wav")).expect("the sample is there");
+        let doc = load(&read(&lib.join("granular-cloud.json"), None)).expect("it reads");
+        let cloud = doc.graph.index_of(&Item::Node("/cloud".into())).unwrap();
+        let problems = &doc.graph.boxes[cloud].problems;
+        assert!(
+            (problems.iter()).any(|p| !p.error && p.message.contains("testvox.wav")),
+            "{problems:?} {:?}",
+            doc.graph.problems
+        );
     }
 
     #[test]
@@ -1460,15 +1483,15 @@ mod tests {
         assert_eq!(canvas.selection, Some(Item::Node("/lead".into())));
 
         canvas.applied(&add, &landed(false));
-        assert!(canvas.notice.is_some());
         assert_eq!(canvas.selection, Some(Item::Node("/lead".into())));
+        canvas.notice = Some("a refused drop".into());
         canvas.applied(
             &add,
             &Err(Refusal {
                 message: "no".into(),
             }),
         );
-        assert_eq!(canvas.notice.as_deref(), Some("no"));
+        assert_eq!(canvas.notice, None, "the session's feedback says it");
     }
 
     #[test]
