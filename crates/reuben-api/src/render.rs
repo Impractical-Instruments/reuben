@@ -40,11 +40,15 @@ pub use reuben_core::graph::{Graph, NodeKey};
 /// edge (an OSC datagram, a MIDI event) and hands them to [`RenderSlot::queue_osc`]; a [`Message`]
 /// is what comes back out of [`RenderSlot::drain_outbound`].
 pub use reuben_core::message::{Arg, Message};
+/// The port bounds [`Graph::connect`] and [`Graph::tap_output`] take, for a host writing its own
+/// wiring helper over them: an `OUT_*` handle or a `usize` is an [`OutPort`], an `IN_*` handle or
+/// a `usize` an [`InPort`].
+pub use reuben_core::operator::{InPort, OutPort};
 /// The operator set: constructors and port-index consts, for a host with no document to name a
 /// type by string.
 pub use reuben_core::operators;
-/// Why [`install_graph`] refused a graph. Not the whole failure surface — see [`install_graph`].
-pub use reuben_core::plan::PlanError;
+/// Why [`install_graph`] refused a graph, and which end of a wire named an undeclared port.
+pub use reuben_core::plan::{PlanError, PortPosition};
 /// The sample rate and block size a Plan is instantiated against — a host's device geometry,
 /// which is why it is a parameter rather than a policy.
 pub use reuben_core::AudioConfig;
@@ -64,8 +68,9 @@ pub use reuben_core::boundary::osc_out_args;
 /// life of the slot, so [`RenderSlot::fill`] never ramps and never transplants, and nothing on this
 /// feature can fill it (`InstallBundle` is not re-exported). Swapping is the document door's.
 ///
-/// [`PlanError`] is not the whole failure surface: an out-of-range port index panics inside
-/// Instantiate, and the port positions disagree about it; the tests pin what each does.
+/// A bare `usize` port past what its node declares — in a wire's source or destination, or a
+/// master tap — is refused as [`PlanError::PortOutOfRange`]; a typed handle in the wrong
+/// position does not compile.
 ///
 /// Allocates; the Instantiate phase, not the audio thread.
 pub fn install_graph(graph: Graph, config: AudioConfig) -> Result<RenderSide, PlanError> {
@@ -142,63 +147,79 @@ mod tests {
         install_graph(g, AudioConfig::new(48_000.0, 64))
     }
 
-    /// A source port index past the operator's outputs panics inside Instantiate instead of
-    /// returning [`PlanError`] — `connect` takes `impl PortIndex` in both positions, so an input
-    /// handle is accepted there. Known defect; fixing it should fail this test.
+    /// A bare source index past the operator's outputs reaches an embedder as a refusal it can
+    /// act on, where it used to panic inside Instantiate.
     #[test]
-    #[should_panic(expected = "index out of bounds")]
-    fn an_out_of_range_source_port_panics_instead_of_refusing() {
-        let _ = patched(|g, osc, out| {
-            g.connect(osc, oscillator::IN_WAVEFORM, out, output::IN_AUDIO);
+    fn an_out_of_range_source_port_is_refused_as_a_plan_error() {
+        let refusal = patched(|g, osc, out| {
+            g.connect(osc, 1usize, out, output::IN_AUDIO);
             g.tap_output(out, output::OUT_AUDIO);
         });
+        match refusal {
+            Err(e) => assert_eq!(
+                e,
+                PlanError::PortOutOfRange {
+                    node: "/osc".into(),
+                    position: PortPosition::Source,
+                    port: 1,
+                    declared: 1,
+                }
+            ),
+            Ok(_) => panic!("an out-of-range source port instantiated"),
+        }
     }
 
-    /// The same panic from the tap position, which reaches it by a different path than a wire
-    /// does. Known defect; fixing it should fail this test.
+    /// The tap position, which reaches the arena by a different path than a wire does.
     #[test]
-    #[should_panic(expected = "index out of bounds")]
-    fn an_out_of_range_tap_port_panics_instead_of_refusing() {
-        let _ = patched(|g, osc, out| {
-            g.connect(osc, oscillator::OUT_AUDIO, out, output::IN_AUDIO);
-            g.tap_output(out, 99);
-        });
-    }
-
-    /// A destination port index past the operator's inputs does not panic: it plans, and the wire
-    /// it dropped renders as silence. Known defect; fixing it should fail this test.
-    #[test]
-    fn an_out_of_range_destination_port_plans_and_renders_silence() {
-        let side = patched(|g, osc, out| {
-            g.connect(osc, oscillator::OUT_AUDIO, out, 99);
-            g.tap_output(out, output::OUT_AUDIO);
-        })
-        .expect("an out-of-range destination port did not refuse the graph");
-
-        let mut slot = RenderSlot::new(side);
-        let mut buf = vec![0.0f32; slot.block_size() * slot.channels()];
-        slot.fill(&mut buf);
-
-        assert!(
-            buf.iter().all(|s| *s == 0.0),
-            "the dropped wire fed the master anyway"
-        );
-    }
-
-    /// A dropped destination wire is dropped as a *data* path only. It survives as a topological
-    /// edge, so it still closes a cycle and still constrains evaluation order. Known defect; fixing
-    /// it should fail this test.
-    #[test]
-    fn an_out_of_range_destination_port_still_closes_a_cycle() {
+    fn an_out_of_range_tap_port_is_refused_as_a_plan_error() {
         let refusal = patched(|g, osc, out| {
             g.connect(osc, oscillator::OUT_AUDIO, out, output::IN_AUDIO);
-            g.connect(out, output::OUT_AUDIO, osc, 99);
-            g.tap_output(out, output::OUT_AUDIO);
+            g.tap_output(out, 99usize);
         });
-
         match refusal {
-            Err(e) => assert_eq!(e, PlanError::Cycle),
-            Ok(_) => panic!("the out-of-range back edge left the graph acyclic"),
+            Err(e) => assert!(
+                matches!(
+                    e,
+                    PlanError::PortOutOfRange {
+                        position: PortPosition::Tap,
+                        port: 99,
+                        ..
+                    }
+                ),
+                "{e:?}"
+            ),
+            Ok(_) => panic!("an out-of-range tap port instantiated"),
+        }
+    }
+
+    /// The destination position is refused too, rather than planning a wire that renders nothing;
+    /// and as the port, not as the cycle its back edge would otherwise close.
+    #[test]
+    fn an_out_of_range_destination_port_is_refused_as_a_plan_error() {
+        for back_edge in [false, true] {
+            let refusal = patched(|g, osc, out| {
+                g.connect(osc, oscillator::OUT_AUDIO, out, output::IN_AUDIO);
+                if back_edge {
+                    g.connect(out, output::OUT_AUDIO, osc, 99usize);
+                } else {
+                    g.connect(osc, oscillator::OUT_AUDIO, out, 99usize);
+                }
+                g.tap_output(out, output::OUT_AUDIO);
+            });
+            match refusal {
+                Err(e) => assert!(
+                    matches!(
+                        e,
+                        PlanError::PortOutOfRange {
+                            position: PortPosition::Destination,
+                            port: 99,
+                            ..
+                        }
+                    ),
+                    "back edge {back_edge}: {e:?}"
+                ),
+                Ok(_) => panic!("an out-of-range destination port instantiated"),
+            }
         }
     }
 }
