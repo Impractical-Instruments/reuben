@@ -35,6 +35,18 @@ pub fn write(
         });
     };
     let expect = document.hash().map(str::to_string);
+    run(session, channel, source, expect, verb)
+}
+
+/// Run `verb` on `source` through the session's history store, guarded by `expect`, and record a
+/// written change as one undo step from `expect`.
+fn run(
+    session: &mut Session,
+    channel: &dyn Fn() -> Option<Channel>,
+    source: &str,
+    expect: Option<String>,
+    verb: impl FnOnce(&dyn Resources, Option<String>) -> Result<Answer<EditResult>, Refusal>,
+) -> Result<EditResult, Refusal> {
     let store: &dyn Resources = session.history(source);
     #[cfg(test)]
     let counted = test_support::Counted(store);
@@ -184,9 +196,7 @@ pub fn write_against(
             message: format!("{source} is not a file of the open instrument"),
         });
     }
-    let result = verb(&session.store(source), Some(expect));
-    session.refresh(channel);
-    result.map(|answer| answer.output)
+    run(session, channel, source, Some(expect), verb)
 }
 
 #[cfg(test)]
@@ -276,6 +286,47 @@ mod tests {
 
     fn voice_source(rig: &Rig) -> String {
         rig.session.tree().documents()[1].source.clone()
+    }
+
+    #[test]
+    fn a_write_against_an_earlier_read_is_one_undo_step_that_restores_that_read() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("edit_against_undo", "default.json");
+            let voice = voice_source(&rig);
+            let before = (rig.session.tree().document(&voice))
+                .and_then(|d| d.hash())
+                .expect("the voice reads")
+                .to_string();
+
+            let channel = rig.channel_source();
+            let edit = write_against(
+                &mut rig.session,
+                &channel,
+                &voice,
+                before.clone(),
+                |store, expect| {
+                    set_instrument_input(
+                        &SetInstrumentInput {
+                            source: voice.clone(),
+                            address: "/filter".to_string(),
+                            input: "cutoff".to_string(),
+                            value: json!(1500.0),
+                            expect,
+                        },
+                        store,
+                    )
+                },
+            )
+            .expect("the verb ran");
+            assert!(edit.written, "{:?}", edit.report);
+
+            let restored = restore(&mut rig.session, &channel, Direction::Undo);
+            assert!(matches!(restored, Restored::Landed), "{restored:?}");
+            assert_eq!(
+                rig.session.tree().document(&voice).and_then(|d| d.hash()),
+                Some(before.as_str())
+            );
+        });
     }
 
     #[test]
