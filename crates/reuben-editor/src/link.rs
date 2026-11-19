@@ -2,9 +2,9 @@
 //! running, reached over its loopback structure channel.
 //!
 //! The editor owns nothing behind the link — no device, no port, no process — so losing it stops
-//! nothing. A thread asks the engine what it plays every [`PROBE_EVERY`], and says when that
-//! changes: when it stops answering, when it answers again, and when another client, or a restart
-//! between two probes, has it play something else.
+//! nothing. A thread pings the engine every [`PROBE_EVERY`] and, while it answers, asks what it
+//! plays. It says when that changes: when the engine stops answering, when it answers again, and
+//! when another client, or a restart between two probes, has it play something else.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -15,7 +15,7 @@ use eframe::egui;
 use reuben_api::engine::{Channel, TcpTransport, DEFAULT_CONNECT_TIMEOUT};
 
 /// How often the link is probed: a lost engine is noticed, and a change to what it plays is seen,
-/// within this. Reading the installed document over loopback costs well under a millisecond.
+/// within this.
 const PROBE_EVERY: Duration = Duration::from_secs(1);
 
 const UNKNOWN: u8 = 0;
@@ -125,24 +125,26 @@ fn probe(
 ) {
     let mut last = None;
     loop {
-        let change = match channel.get_document() {
-            Ok(document) => {
-                state.store(UP, Ordering::Release);
-                let seen = Change::Up {
-                    source: document.source,
-                    content_hash: document.content_hash,
-                };
-                (last.as_ref() != Some(&seen)).then_some(seen)
-            }
-            Err(e) if e.is_unreachable() => {
+        let change = match channel.ping() {
+            Err(e) => {
+                last = None;
                 let was = state.swap(DOWN, Ordering::AcqRel);
                 (was != DOWN).then(|| Change::Down(e.to_string()))
             }
-            // It answered without saying what it plays, as while a Swap holds it: asked again at
-            // the next probe.
-            Err(_) => {
+            Ok(()) => {
                 state.store(UP, Ordering::Release);
-                None
+                // Waits on the Coordinator, which a Swap holds while it builds: a read that fails
+                // is asked again at the next probe, and says nothing about whether the engine runs.
+                match channel.get_document() {
+                    Ok(document) => {
+                        let seen = Change::Up {
+                            source: document.source,
+                            content_hash: document.content_hash,
+                        };
+                        (last.as_ref() != Some(&seen)).then_some(seen)
+                    }
+                    Err(_) => None,
+                }
             }
         };
         if let Some(change) = change {

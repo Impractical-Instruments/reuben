@@ -145,15 +145,16 @@ cargo run -p reuben-editor -- --attach 127.0.0.1:9124
 ```
 
 The editor opens the file the engine plays, so its controls play the engine live, and a save is
-swapped in as usual. If the file changed since the engine read it, the editor swaps it in when it
-attaches. The audio device and the engine flags (`--io-map`, `--osc-out`) stay the ones
-`reuben play` was started with.
+swapped in as usual. If the instrument's file changed since the engine read it, the editor swaps
+it in when it attaches. That check covers the instrument's own file, not the voice and subpatch
+files it references: save the instrument again to swap those in. The audio device and the engine
+flags (`--io-map`, `--osc-out`) stay the ones `reuben play` was started with.
 
 The editor checks the engine once a second. If another client has it play a different file, or it
-is restarted on one, the editor opens that file. The editor never swaps its own file over a
-different one. A file swapped in by a relative path is not opened, since
-there is no knowing which file it is from the editor's directory. If the engine stops answering, the editor says so in its top bar and keeps trying.
-Closing the editor, or losing the link, never stops the engine.
+is restarted on one, the editor opens that file rather than swapping its own over it. A file
+swapped in by a relative path is not opened, since there is no knowing which file it is from the
+editor's directory. If the engine stops answering, the editor says so in its top bar and keeps
+trying. Closing the editor, or losing the link, never stops the engine.
 
 Control values from the editor and from any other OSC sender reach the same inputs, and the
 last one written wins. The editor does not hold a swap from another client to ask first, as it

@@ -208,32 +208,37 @@ impl Editor {
     }
 
     /// Follow what the attached engine plays, as it changes: open the file it names, with no Swap,
-    /// since it plays it already. Its files are Swapped in only where they are not what the engine
+    /// since it plays it already. Its files are Swapped in where they are not what the engine
     /// installed from them — they changed while it was not answering, or before the editor
-    /// attached — and never over another file the engine was given since.
+    /// attached — or where the session is not sure the engine plays them; a file the engine plays is
+    /// opened rather than another Swapped over it.
     fn follow_attached(&mut self, ctx: &egui::Context) {
-        let Some(playing) = self.engine.follow_link() else {
+        self.engine.follow_link();
+        // Followed once the Swap lands, whatever it installed.
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.status() == &Status::Swapping)
+        {
+            return;
+        }
+        let Some(playing) = self.engine.unfollowed() else {
             return;
         };
         let path = PathBuf::from(&playing.source);
-        match &self.session {
-            // What it installs is seen at a later probe.
-            Some(session) if session.status() == &Status::Swapping => return,
-            Some(session) if session.top() == path => {}
-            _ => {
-                let wake = {
-                    let ctx = ctx.clone();
-                    move || ctx.request_repaint()
-                };
-                let session = Session::open(&path, self.launch.root.as_deref(), wake);
-                self.show(session, &path, true);
-            }
+        if self.session.as_ref().is_none_or(|s| s.top() != path) {
+            let wake = {
+                let ctx = ctx.clone();
+                move || ctx.request_repaint()
+            };
+            let session = Session::open(&path, self.launch.root.as_deref(), wake);
+            self.show(session, &path, true);
         }
         let Some(session) = &mut self.session else {
             return;
         };
         let on_disk = session.tree().documents().first().and_then(|d| d.hash());
-        if on_disk != Some(playing.content_hash.as_str()) {
+        if on_disk != Some(playing.content_hash.as_str()) || session.status() != &Status::Current {
             session.reinstall(&|| self.engine.channel());
         }
     }

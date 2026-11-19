@@ -74,6 +74,8 @@ pub struct Engine {
     /// Set only by [`attach`](Self::attach), and then `running` and `config` stay `None` for good:
     /// what restarts, refits or resumes an embedded engine finds nothing to act on.
     attached: Option<Link>,
+    /// What the attached engine was last seen to play, until the editor follows it.
+    unfollowed: Option<Playing>,
     /// What the last start was asked for, kept whether or not it succeeded, so a restart can try
     /// again with another profile. `None` when no start was ever attempted.
     config: Option<EngineConfig>,
@@ -90,6 +92,7 @@ impl Engine {
         Self {
             running: None,
             attached: None,
+            unfollowed: None,
             config: None,
             report: Vec::new(),
             refit_tried: None,
@@ -115,16 +118,17 @@ impl Engine {
         self.attached.as_ref()
     }
 
-    /// Take in what the attached engine's link found since the last call. Returns what the engine
-    /// plays when that changed — on the first probe too, and after it stopped answering — and is a
-    /// file the editor can open; the report names it, or says why it cannot be opened. Never waits;
-    /// does nothing when not attached.
-    pub fn follow_link(&mut self) -> Option<Playing> {
-        let link = self.attached.as_ref()?;
+    /// Take in what the attached engine's link found since the last call: what it plays, when that
+    /// changed — on the first probe too, and after it stopped answering — and is a file the editor
+    /// can open, is kept for [`unfollowed`](Self::unfollowed); the report names it, or says why it
+    /// cannot be opened. Never waits; does nothing when not attached.
+    pub fn follow_link(&mut self) {
+        let Some(link) = self.attached.as_ref() else {
+            return;
+        };
         let addr = link.addr().to_string();
-        let mut playing = None;
         for change in link.changes() {
-            playing = None;
+            self.unfollowed = None;
             let unopenable = match change {
                 Change::Up {
                     source: Some(source),
@@ -138,7 +142,7 @@ impl Engine {
                     content_hash,
                 } => {
                     self.name_instrument(&source);
-                    playing = Some(Playing {
+                    self.unfollowed = Some(Playing {
                         source,
                         content_hash,
                     });
@@ -155,7 +159,12 @@ impl Engine {
             };
             self.note_link(&addr, unopenable);
         }
-        playing
+    }
+
+    /// What the attached engine plays that the editor has not followed yet, taken. Left in place
+    /// by not calling this, as while a Swap of the editor's own is running.
+    pub fn unfollowed(&mut self) -> Option<Playing> {
+        self.unfollowed.take()
     }
 
     /// Say why what the attached engine on `addr` plays cannot be opened, in place of the last
@@ -485,6 +494,7 @@ impl Engine {
         Self {
             running,
             attached: None,
+            unfollowed: None,
             config,
             report,
             refit_tried: None,
@@ -925,7 +935,8 @@ mod tests {
     /// Calls [`Engine::follow_link`] until it names what the attached engine plays.
     fn await_playing(engine: &mut Engine) -> Playing {
         loop {
-            if let Some(playing) = engine.follow_link() {
+            engine.follow_link();
+            if let Some(playing) = engine.unfollowed() {
                 return playing;
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -1003,7 +1014,8 @@ mod tests {
             reuben_native::diagnostics::log_snapshot(&played.shutdown());
             await_link(&engine, false);
             assert!(engine.channel().is_none());
-            assert_eq!(engine.follow_link(), None);
+            engine.follow_link();
+            assert_eq!(engine.unfollowed(), None);
         });
         let _ = std::fs::remove_file(&path);
     }
@@ -1036,7 +1048,8 @@ mod tests {
                 reuben_api::engine::SwapOutcome::Installed(_)
             ));
             let warned = loop {
-                assert_eq!(engine.follow_link(), None);
+                engine.follow_link();
+                assert_eq!(engine.unfollowed(), None);
                 let warnings: Vec<_> = (engine.report().iter())
                     .filter(|l| l.level == Level::Warning)
                     .collect();

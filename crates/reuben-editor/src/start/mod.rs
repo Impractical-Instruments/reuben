@@ -32,8 +32,8 @@ pub struct Launch {
 
 /// Open the instrument at `path`: a session on its files, and `engine` playing it. A running
 /// engine, or an attached one, has the instrument Swapped in, which the session reports as for any
-/// other Swap, and [`follow`] then names in the engine's report; with none running, one is started through
-/// `start`, on the stored audio choice. A start that fails leaves the session saying nothing
+/// other Swap, and [`follow`] then names in the engine's report; with none running, one is started
+/// through `start`, on the stored audio choice. A start that fails leaves the session saying nothing
 /// plays, so the next load of the files starts the engine again.
 ///
 /// `start` is [`reuben_native::engine::start`], or the headless engine in a test.

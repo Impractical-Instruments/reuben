@@ -361,3 +361,75 @@ fn an_engine_playing_another_file_has_it_opened_not_the_shown_one_swapped_over_i
         reuben_native::diagnostics::log_snapshot(&played.shutdown());
     });
 }
+
+#[test]
+fn a_session_saying_nothing_plays_is_current_once_the_engine_answers_with_its_files() {
+    use reuben_native::test_support::{start_headless, within};
+
+    let scratch = Scratch::new("ui_attached_back");
+    let config = TempConfig::new();
+    let top = echoing(&scratch, 0.2);
+    within(crate::engine::test_support::HANG_SECS, move || {
+        let played = start_headless(crate::engine::test_support::config(top.clone()))
+            .expect("the engine starts");
+        let addr = played.structure_addr().expect("bound").to_string();
+        // Saved while the engine was not answering; it came back on the same files.
+        let mut session = Session::open(&top, None, || {});
+        session.reinstall(&|| None);
+        assert_eq!(session.status(), &Status::NoEngine);
+        let mut harness = harness(attached(addr, &config, Some(session)));
+        step_until(&mut harness, "said the files play", |editor| {
+            editor.session.as_ref().unwrap().status() == &Status::Current
+        });
+        harness.state_mut().engine.shutdown();
+        reuben_native::diagnostics::log_snapshot(&played.shutdown());
+    });
+}
+
+/// A transport whose one exchange waits until it is let go, then fails: a Swap held in flight.
+#[derive(Debug)]
+struct Gate(std::sync::Mutex<std::sync::mpsc::Receiver<()>>);
+
+impl reuben_api::engine::Transport for Gate {
+    fn round_trip(&self, _: &str, _: std::time::Duration) -> std::io::Result<String> {
+        let _ = self.0.lock().unwrap().recv();
+        Err(std::io::Error::other("let go"))
+    }
+    fn endpoint(&self) -> &str {
+        "gate"
+    }
+}
+
+#[test]
+fn what_the_engine_plays_while_a_swap_runs_is_followed_once_it_lands() {
+    use reuben_api::engine::Channel;
+    use reuben_native::test_support::{start_headless, within};
+
+    let scratch = Scratch::new("ui_attached_mid_swap");
+    let config = TempConfig::new();
+    let shown = instrument(&scratch);
+    let other = echoing(&scratch, 0.2);
+    within(crate::engine::test_support::HANG_SECS, move || {
+        let played = start_headless(crate::engine::test_support::config(other.clone()))
+            .expect("the engine starts");
+        let addr = played.structure_addr().expect("bound").to_string();
+        let (release, gate) = std::sync::mpsc::channel();
+        let gate = std::sync::Mutex::new(Some(Channel::new(Gate(std::sync::Mutex::new(gate)))));
+        let mut session = Session::open(&shown, None, || {});
+        session.reinstall(&|| gate.lock().unwrap().take());
+        assert_eq!(session.status(), &Status::Swapping);
+
+        let mut harness = harness(attached(addr, &config, Some(session)));
+        // The engine has answered with what it plays, and the Swap still runs.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        harness.run_steps(4);
+        assert_eq!(harness.state().session.as_ref().unwrap().top(), shown);
+
+        release.send(()).unwrap();
+        step_until(&mut harness, "opened what the engine plays", |editor| {
+            editor.session.as_ref().is_some_and(|s| s.top() == other)
+        });
+        harness.state_mut().engine.shutdown();
+        reuben_native::diagnostics::log_snapshot(&played.shutdown());
+    });
+}
