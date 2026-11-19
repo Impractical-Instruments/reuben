@@ -12,7 +12,7 @@ use crate::format::{
 };
 use crate::resources::ResourceResolver;
 use reuben_core::descriptor::{Curve, Descriptor, Port, PortType};
-use reuben_core::plan::{Plan, PlanError};
+use reuben_core::plan::{Plan, PlanError, PortPosition};
 use reuben_core::registry::Registry;
 use reuben_core::AudioConfig;
 
@@ -608,6 +608,38 @@ fn report_of(
                     node,
                     port,
                     message: format!("wire {src} → {dst}: {reason}"),
+                }],
+                warnings,
+            }
+        }
+        // Unreachable from a document: the loader resolves port *names*, so every index it hands
+        // Instantiate is a declared one. Kept as a backstop like the arm above. `port` stays
+        // `None` because the refusal carries an index the descriptor has no name for.
+        Err(PlanError::PortOutOfRange {
+            node,
+            position,
+            port,
+            declared,
+        }) => {
+            let (role, side) = match &position {
+                PortPosition::Source => ("wire source".to_string(), "outputs"),
+                PortPosition::Destination => ("wire destination".to_string(), "inputs"),
+                PortPosition::Tap => ("master tap".to_string(), "outputs"),
+                PortPosition::InterfaceInput(name) => {
+                    (format!("interface input {name:?}"), "inputs")
+                }
+                PortPosition::InterfaceOutput(name) => {
+                    (format!("interface output {name:?}"), "outputs")
+                }
+            };
+            Report {
+                ok: false,
+                errors: vec![Diag {
+                    message: format!(
+                        "{role} names port {port} on {node}, which declares {declared} {side}"
+                    ),
+                    node: Some(node),
+                    port: None,
                 }],
                 warnings,
             }
