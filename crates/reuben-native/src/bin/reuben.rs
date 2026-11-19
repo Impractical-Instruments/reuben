@@ -63,7 +63,7 @@ enum Command {
         #[arg(long, value_enum, default_value_t = InstrumentView::Index)]
         view: InstrumentView,
         /// Narrow `--view nodes`/`pipes` to these node addresses or pipe names. A name matching
-        /// nothing is reported, never silently dropped.
+        /// nothing is reported, never silently dropped; any other view refuses it.
         #[arg(long, value_name = "NAME", num_args = 1..)]
         select: Vec<String>,
         /// Narrow `--view nodes`/`pipes` by declared type instead of by name — mutually exclusive
@@ -345,6 +345,17 @@ fn cmd_describe(
                 return ExitCode::FAILURE;
             }
             if view == InstrumentView::Boundary {
+                // `describe_boundary` takes no terms, so the window's selection check is asked
+                // here; otherwise `--select` would print the whole boundary as if it had narrowed.
+                let args = authoring::DescribeInstrument {
+                    source: arg.to_string(),
+                    view: window_view(view),
+                    select,
+                    type_name: select_type,
+                };
+                if let Err(refusal) = authoring::check_describe_selection(&args) {
+                    return refused(&refusal);
+                }
                 return cmd_describe_boundary(arg, json, root);
             }
             return cmd_project(arg, view, select, select_type, json, root);

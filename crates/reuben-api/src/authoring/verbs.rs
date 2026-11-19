@@ -110,19 +110,7 @@ pub fn describe_instrument(
     let json = read_document(&args.source, resources)?;
     let registry = Registry::builtin();
 
-    // The grammar is the engine's, so no door invents its own answer for select-and-type-at-once.
-    // Checked **before** the view splits, because the boundary path below has no selection to build
-    // and would otherwise accept terms it then ignores — the same silent-precedence trap this call
-    // exists to close, one branch further in. A caller that named terms a view cannot honour has
-    // not asked a coherent question.
-    let selection =
-        Selection::from_terms(&args.select, args.type_name.as_deref()).map_err(Refusal::new)?;
-    if args.view == InstrumentView::Boundary && selection != Selection::All {
-        return Err(Refusal::new(
-            "the `boundary` view is the whole face a host wires against — it takes no `select` \
-             or `type`. Drop them, or read `view: \"pipes\"`, which is selectable.",
-        ));
-    }
+    let selection = selection_of(args)?;
 
     // The boundary is not a projection: it needs children *loaded* to inherit an output pipe's
     // type, so it keeps its own path — and its own "no boundary to describe" failure.
@@ -155,6 +143,39 @@ pub fn describe_instrument(
         },
         summary,
     })
+}
+
+/// Refuse `select`/`type` terms that `args.view` would not honour, without reading the document.
+///
+/// [`describe_instrument`] runs this same check first; it is public for a caller that answers a
+/// view through another verb — the CLI reads `boundary` through [`describe_boundary`] — so that
+/// path refuses the terms too instead of printing the whole view as if they had been read.
+pub fn check_describe_selection(args: &DescribeInstrument) -> Result<(), Refusal> {
+    selection_of(args).map(drop)
+}
+
+/// The selection `args` asks for, refused when the view would drop it.
+///
+/// The grammar is the engine's, so no caller invents its own answer for select-and-type-at-once.
+/// A view that does not narrow must refuse terms rather than ignore them: a caller that named terms
+/// gets a plausible whole answer to a question it did not ask.
+fn selection_of(args: &DescribeInstrument) -> Result<Selection, Refusal> {
+    let selection =
+        Selection::from_terms(&args.select, args.type_name.as_deref()).map_err(Refusal::new)?;
+    if selection == Selection::All {
+        return Ok(selection);
+    }
+    let whole = match args.view {
+        InstrumentView::Nodes | InstrumentView::Pipes => return Ok(selection),
+        InstrumentView::Index => "is every node, one line each",
+        InstrumentView::Resources => "is the whole resources table",
+        InstrumentView::Boundary => "is the whole face a host wires against",
+    };
+    Err(Refusal::new(format!(
+        "the `{view}` view {whole} — it takes no `select` or `type`. Drop them, or read \
+         `view: \"nodes\"` or `view: \"pipes\"`, which are selectable.",
+        view = args.view.as_str()
+    )))
 }
 
 /// Read a document's nesting face **structurally** — the same question
@@ -1176,6 +1197,78 @@ mod tests {
                 .contains(crate::tools::names::VALIDATE_INSTRUMENT),
             "the refusal says what to reach for instead: {refusal}"
         );
+    }
+
+    /// A view either honours a selection or refuses it — never drops it. Every view against both
+    /// spellings of a selection: the ones that narrow answer, the rest refuse and name the ones
+    /// that would have narrowed.
+    #[test]
+    fn a_view_honours_a_selection_or_refuses_it() {
+        let store = MemoryStore::with("nestable.json", NESTABLE);
+        let terms: [(&str, Vec<String>, Option<String>); 2] = [
+            ("select", vec!["/osc".to_string()], None),
+            ("type", Vec::new(), Some("oscillator".to_string())),
+        ];
+        let views = [
+            (InstrumentView::Index, false),
+            (InstrumentView::Nodes, true),
+            (InstrumentView::Pipes, true),
+            (InstrumentView::Resources, false),
+            (InstrumentView::Boundary, false),
+        ];
+        for (view, selectable) in views {
+            for (spelling, select, type_name) in &terms {
+                let args = DescribeInstrument {
+                    source: "nestable.json".to_string(),
+                    view,
+                    select: select.clone(),
+                    type_name: type_name.clone(),
+                };
+                let answer = describe_instrument(&args, &store);
+                let checked = check_describe_selection(&args);
+                let view = view.as_str();
+                if selectable {
+                    answer.unwrap_or_else(|r| panic!("`{view}` narrows by `{spelling}`: {r}"));
+                    checked.unwrap_or_else(|r| panic!("`{view}` takes `{spelling}`: {r}"));
+                    continue;
+                }
+                for refusal in [
+                    answer.expect_err("a dropped selection is a wrong answer"),
+                    checked.expect_err("the check is the verb's own"),
+                ] {
+                    let message = &refusal.message;
+                    for named in [&format!("`{view}`"), "\"nodes\"", "\"pipes\""] {
+                        assert!(
+                            message.contains(named),
+                            "`{view}` + `{spelling}` refusal names {named}: {message}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// No terms is no selection: every view answers it.
+    #[test]
+    fn every_view_answers_an_empty_selection() {
+        let store = MemoryStore::with("nestable.json", NESTABLE);
+        for view in [
+            InstrumentView::Index,
+            InstrumentView::Nodes,
+            InstrumentView::Pipes,
+            InstrumentView::Resources,
+            InstrumentView::Boundary,
+        ] {
+            describe_instrument(
+                &DescribeInstrument {
+                    source: "nestable.json".to_string(),
+                    view,
+                    ..Default::default()
+                },
+                &store,
+            )
+            .unwrap_or_else(|r| panic!("`{}` with no terms: {r}", view.as_str()));
+        }
     }
 
     /// A source the store does not hold is a refusal naming the source as the caller spelled it.
