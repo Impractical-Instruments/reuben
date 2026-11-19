@@ -30,12 +30,12 @@ pub struct Structure {
     pub inputs: Vec<InputPipe>,
     pub outputs: Vec<OutputPipe>,
     pub resources: Vec<Resource>,
-    /// What [`validate_doc`](crate::introspect::validate_doc) reports, with three additions that localize a failure on a node of
-    /// *this* document: every wire the loader's type rule refuses is an error on the node and
-    /// input holding it (the loader stops at the first, and names the source), a nested child
-    /// that did not load is a diagnostic on the node referencing it, and a sample that did not
-    /// resolve is a warning on every node reading it (the loader resolves each id once, for no
-    /// node in particular).
+    /// What [`validate_doc`](crate::introspect::validate_doc) reports, with three additions that
+    /// localize a failure on a node of *this* document: every wire the loader's type rule refuses
+    /// is an error on the node and input holding it (the loader stops at the first, and names the
+    /// source), a nested child that did not load is a diagnostic on the node referencing it, and a
+    /// sample that did not resolve is a warning on every node reading it (the loader resolves each
+    /// id once, for no node in particular).
     pub report: Report,
 }
 
@@ -364,9 +364,6 @@ impl Children<'_> {
     }
 }
 
-/// Replace the loader's one wire error with an error per refused wire, each on the node and input
-/// that hold it. Only a document that failed to load has any, and only one whose endpoints still
-/// resolve can be asked.
 /// `w` as a diagnostic on each node of `doc` reading the sample it failed to resolve, or as the
 /// loader's own when it is no such failure or no node reads it.
 fn sample_readers(doc: &NormalizedDoc, w: &LoadWarning) -> Vec<Diag> {
@@ -386,6 +383,9 @@ fn sample_readers(doc: &NormalizedDoc, w: &LoadWarning) -> Vec<Diag> {
     vec![Diag::from_warning(w)]
 }
 
+/// Replace the loader's one wire error with an error per refused wire, each on the node and input
+/// that hold it. Only a document that failed to load has any, and only one whose endpoints still
+/// resolve can be asked.
 fn localize_wires(
     doc: &NormalizedDoc,
     registry: &Registry,

@@ -32,12 +32,18 @@ pub fn write(
     verb: impl FnOnce(&dyn Resources, Option<String>) -> Result<Answer<EditResult>, Refusal>,
 ) -> Result<EditResult, Refusal> {
     let Some(document) = session.tree().document(source) else {
-        return Err(Refusal {
-            message: format!("{source} is not a file of the open instrument"),
-        });
+        return not_a_file(session, source);
     };
     let expect = document.hash().map(str::to_string);
     run(session, channel, source, expect, verb)
+}
+
+fn not_a_file(session: &mut Session, source: &str) -> Result<EditResult, Refusal> {
+    let refused = Err(Refusal {
+        message: format!("{source} is not a file of the open instrument"),
+    });
+    *session.feedback_mut() = Feedback::of(source, None, &refused);
+    refused
 }
 
 /// Run `verb` on `source` through the session's history store, guarded by `expect`, and record a
@@ -196,9 +202,7 @@ pub fn write_against(
     verb: impl FnOnce(&dyn Resources, Option<String>) -> Result<Answer<EditResult>, Refusal>,
 ) -> Result<EditResult, Refusal> {
     if session.tree().document(source).is_none() {
-        return Err(Refusal {
-            message: format!("{source} is not a file of the open instrument"),
-        });
+        return not_a_file(session, source);
     }
     run(session, channel, source, Some(expect), verb)
 }
@@ -258,8 +262,8 @@ mod tests {
     use reuben_api::authoring::{
         add_instrument_interface_input, remove_instrument_interface_input,
         set_instrument_description, set_instrument_input, set_instrument_name,
-        AddInstrumentInterfaceInput, RemoveInstrumentInterfacePipe, SetInstrumentDescription,
-        SetInstrumentInput, SetInstrumentName,
+        wire_instrument_input, AddInstrumentInterfaceInput, RemoveInstrumentInterfacePipe,
+        SetInstrumentDescription, SetInstrumentInput, SetInstrumentName, WireInstrumentInput,
     };
     use reuben_api::FsResolver;
     use reuben_native::test_support::within;
@@ -430,6 +434,39 @@ mod tests {
             rig.settle();
             assert_eq!(rig.swaps(), 0);
             assert_eq!(rig.session.tree(), &before);
+        });
+    }
+
+    #[test]
+    fn a_rejection_is_let_go_once_another_hand_changes_the_file_it_was_found_in() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("edit_rejection_outlived", "default.json");
+            let top = rig.session.tree().top().source.clone();
+            let channel = rig.channel_source();
+            // A note pipe into an audio input: the wire's types do not match.
+            let rejected = write(&mut rig.session, &channel, &top, |store, expect| {
+                wire_instrument_input(
+                    &WireInstrumentInput {
+                        source: top.clone(),
+                        address: "/out".to_string(),
+                        input: "audio".to_string(),
+                        from: "/notes".to_string(),
+                        expect,
+                    },
+                    store,
+                )
+            });
+            assert!(!matches!(&rejected, Ok(result) if result.written));
+            assert!(
+                matches!(rig.session.feedback(), Some(Feedback::Rejected { .. })),
+                "{:?}",
+                rig.session.feedback()
+            );
+
+            sidecar_describes(&top, "the sidecar's");
+            rig.poll_until("the session reading the sidecar's write", |rig| {
+                rig.session.feedback().is_none()
+            });
         });
     }
 

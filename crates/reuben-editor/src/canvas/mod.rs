@@ -1021,8 +1021,11 @@ mod tests {
         let doc = load(&read(&lib.join("granular-cloud.json"), None)).expect("it reads");
         let cloud = doc.graph.index_of(&Item::Node("/cloud".into())).unwrap();
         let problems = &doc.graph.boxes[cloud].problems;
-        assert!(!problems.is_empty(), "{:?}", doc.graph.problems);
-        assert!(problems.iter().all(|p| !p.error), "{problems:?}");
+        assert!(
+            (problems.iter()).any(|p| !p.error && p.message.contains("testvox.wav")),
+            "{problems:?} {:?}",
+            doc.graph.problems
+        );
     }
 
     #[test]

@@ -190,8 +190,12 @@ impl Scene<'_> {
                 Stroke::new(1.0, fill),
             );
         };
-        // A port a problem names is ringed in the colour of the worst of them.
-        let ring = |at: Pos2, name: &str| {
+        // A port a problem names is ringed in the colour of the worst of them. A name that is both
+        // an input and an output is taken for the input: a value or a wire is held there.
+        let ring = |at: Pos2, name: &str, output: bool| {
+            if output && b.inputs.iter().any(|p| p.name == name) {
+                return;
+            }
             let named: Vec<&Problem> = problems()
                 .filter(|p| p.port.as_deref() == Some(name))
                 .collect();
@@ -218,14 +222,14 @@ impl Scene<'_> {
                 }
             }
             dot(at, color);
-            ring(at, &port.name);
+            ring(at, &port.name, false);
             let label = Pos2::new(at.x + PAD, at.y);
             text(label, Align2::LEFT_CENTER, &port.name, visuals.text_color());
         }
         for (p, port) in b.outputs.iter().enumerate() {
             let at = output_pos(b, rect, p);
             dot(at, kind_color(port.kind));
-            ring(at, &port.name);
+            ring(at, &port.name, true);
             let label = Pos2::new(at.x - PAD, at.y);
             text(
                 label,

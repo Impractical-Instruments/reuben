@@ -16,8 +16,10 @@ pub enum Feedback {
     /// edit was written, and the session has read the file again.
     Conflict { source: String },
     /// The edit would have left `source` invalid; `errors` names the node and port at fault.
+    /// `hash` is the document they were found in, which they describe only while it is on disk.
     Rejected {
         source: String,
+        hash: String,
         errors: Vec<Diag>,
         notes: Vec<String>,
     },
@@ -41,6 +43,7 @@ impl Feedback {
             }
             Ok(edit) => Some(Self::Rejected {
                 source,
+                hash: edit.hash.clone(),
                 errors: edit.report.errors.clone(),
                 notes: edit.notes.clone(),
             }),
@@ -61,12 +64,21 @@ impl Feedback {
         }
     }
 
+    /// Whether this is a rejection of a document that has changed since, `hash_of` giving each
+    /// source's content hash as read now: its errors may name nodes that are gone or fixed.
+    pub fn outlived<'a>(&self, hash_of: impl Fn(&str) -> Option<&'a str>) -> bool {
+        match self {
+            Self::Rejected { source, hash, .. } => hash_of(source) != Some(hash.as_str()),
+            Self::Conflict { .. } | Self::Refused { .. } => false,
+        }
+    }
+
     /// The one line the banner leads with.
     pub fn headline(&self) -> String {
         match self {
             Self::Conflict { source } => format!(
-                "Your edit did not land: {} was changed outside the editor since it was read. \
-                 It is shown as it is now; make the edit again to apply it there.",
+                "Your edit did not land: {} changed since the edit began, by reuben-mcp, another \
+                 program or an undo. It is shown as it is now; make the edit again to apply it.",
                 file_name(source)
             ),
             Self::Rejected { source, .. } => format!(
@@ -206,6 +218,9 @@ mod tests {
         assert_eq!(held.rejected("a.json"), &[diag("/filter", "cutoff")]);
         assert!(held.rejected("b.json").is_empty());
         assert_eq!(held.details(), vec!["/filter.cutoff: no".to_string()]);
+        assert!(!held.outlived(|_| Some("h")));
+        assert!(held.outlived(|_| Some("moved on")));
+        assert!(held.outlived(|_| None));
     }
 
     #[test]

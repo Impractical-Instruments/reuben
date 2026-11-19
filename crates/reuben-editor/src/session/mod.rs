@@ -259,6 +259,11 @@ impl Session {
         }
         self.tree = tree;
         self.changed = true;
+        let tree = &self.tree;
+        let hash_of = |source: &str| tree.document(source).and_then(|d| d.hash());
+        if self.feedback.as_ref().is_some_and(|f| f.outlived(hash_of)) {
+            self.feedback = None;
+        }
         self.install(channel);
         true
     }
