@@ -10,10 +10,10 @@ use std::collections::BTreeMap;
 
 use crate::contract::{content_hash, Diag, Report};
 use crate::format::{
-    parse_wire, ConfigValue, DocValue, InputValue, Layout, NodeDoc, NormalizedDoc, WirePorts,
-    WireTarget,
+    parse_wire, ConfigValue, DocValue, InputValue, Layout, LoadWarning, NodeDoc, NormalizedDoc,
+    WirePorts, WireTarget,
 };
-use crate::introspect::{describe, describe_patch, validate_doc, PortInfo};
+use crate::introspect::{describe, describe_patch, validate_doc_with, PortInfo};
 use crate::projection::Rebased;
 use crate::resources::ResourceResolver;
 use reuben_core::registry::Registry;
@@ -30,10 +30,12 @@ pub struct Structure {
     pub inputs: Vec<InputPipe>,
     pub outputs: Vec<OutputPipe>,
     pub resources: Vec<Resource>,
-    /// What [`validate_doc`] reports, with two additions that localize a failure on a node of
-    /// *this* document: every wire the loader's type rule refuses is an error on the node and
-    /// input holding it (the loader stops at the first, and names the source), and a nested child
-    /// that did not load is a diagnostic on the node referencing it.
+    /// What [`validate_doc`](crate::introspect::validate_doc) reports, with three additions that
+    /// localize a failure on a node of *this* document: every wire the loader's type rule refuses
+    /// is an error on the node and input holding it (the loader stops at the first, and names the
+    /// source), a nested child that did not load is a diagnostic on the node referencing it, and a
+    /// sample that did not resolve is a warning on every node reading it (the loader resolves each
+    /// id once, for no node in particular).
     pub report: Report,
 }
 
@@ -120,7 +122,7 @@ pub fn read(
     registry: &Registry,
     resolver: &dyn ResourceResolver,
 ) -> Structure {
-    let mut report = validate_doc(doc, registry, resolver);
+    let mut report = validate_doc_with(doc, registry, resolver, |w| sample_readers(doc, w));
     let mut children = Children {
         doc,
         registry,
@@ -360,6 +362,25 @@ impl Children<'_> {
         self.described.insert(canonical, described.clone());
         described.map_err(ChildFailure::Broken)
     }
+}
+
+/// `w` as a diagnostic on each node of `doc` reading the sample it failed to resolve, or as the
+/// loader's own when it is no such failure or no node reads it.
+fn sample_readers(doc: &NormalizedDoc, w: &LoadWarning) -> Vec<Diag> {
+    if let LoadWarning::ResolveFailed { slot, id, .. } = w {
+        let readers: Vec<Diag> = (doc.nodes.iter())
+            .filter(|n| *slot == "sample" && n.sample.as_ref() == Some(id))
+            .map(|n| Diag {
+                node: Some(n.address.clone()),
+                port: None,
+                message: w.to_string(),
+            })
+            .collect();
+        if !readers.is_empty() {
+            return readers;
+        }
+    }
+    vec![Diag::from_warning(w)]
 }
 
 /// Replace the loader's one wire error with an error per refused wire, each on the node and input

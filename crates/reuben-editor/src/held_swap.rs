@@ -139,11 +139,11 @@ fn canonical(path: &Path) -> PathBuf {
         .unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// Draw the prompt while a Swap is held, floating over the bottom-right corner so nothing under
-/// it moves when it appears. It takes no focus, and its buttons ignore clicks for [`ARMING`]
+/// Draw the prompt while a Swap is held, floating over the bottom-right corner of `within` so
+/// nothing under it moves when it appears. It takes no focus, and its buttons ignore clicks for [`ARMING`]
 /// after what it asks about changes, so a gesture under way carries on until the user turns to
 /// it. Returns the source the user chose to open.
-pub fn show(ctx: &egui::Context, held: &HeldSwaps) -> Option<PathBuf> {
+pub fn show(ctx: &egui::Context, held: &HeldSwaps, within: egui::Rect) -> Option<PathBuf> {
     let asked = held.pending()?;
     let armed = asked.at.elapsed() >= ARMING;
     if !armed {
@@ -151,7 +151,8 @@ pub fn show(ctx: &egui::Context, held: &HeldSwaps) -> Option<PathBuf> {
     }
     let mut answer = None;
     egui::Area::new(egui::Id::new("held_swap"))
-        .anchor(egui::Align2::RIGHT_BOTTOM, [-16.0, -16.0])
+        .pivot(egui::Align2::RIGHT_BOTTOM)
+        .fixed_pos(within.right_bottom() - egui::vec2(16.0, 16.0))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {

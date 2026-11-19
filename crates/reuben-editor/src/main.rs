@@ -6,6 +6,7 @@ mod config;
 mod controls;
 mod edit;
 mod engine;
+mod feedback;
 mod held_swap;
 mod inspector;
 mod pick;
@@ -224,9 +225,6 @@ impl eframe::App for Editor {
                 ui.vertical(|ui| self.audio.ui(ui, &mut self.engine));
             });
         });
-        if let Some(path) = held_swap::show(ui.ctx(), &self.held) {
-            self.open(&path, ui.ctx());
-        }
         if let Some(session) = &mut self.session {
             let asked = session::shortcut(ui.ctx()).or(session::show(ui, session));
             if let Some(direction) = asked {
@@ -265,6 +263,7 @@ impl eframe::App for Editor {
                     session.leave(depth);
                     view(&mut self.canvas, &mut self.inspector, session);
                 }
+                feedback::show(ui, session.feedback_mut());
             }
             for line in self.engine.report() {
                 let color = match line.level {
@@ -274,7 +273,13 @@ impl eframe::App for Editor {
                 };
                 ui.colored_label(color, line.to_string());
             }
-            self.canvas.show(ui)
+            let rejected = (self.session.as_ref())
+                .and_then(|session| {
+                    let viewed = &session.viewed().source;
+                    session.feedback().map(|feedback| feedback.rejected(viewed))
+                })
+                .unwrap_or_default();
+            self.canvas.show(ui, rejected)
         });
         for gesture in gestures.inner {
             let Some(session) = &mut self.session else {
@@ -292,6 +297,11 @@ impl eframe::App for Editor {
                 Err(why) => self.canvas.refuse(why),
             }
             ui.ctx().request_repaint();
+        }
+        // Over the canvas's lower corner: the feedback banner sits at the top of the same panel,
+        // and the controls and inspector panels stay uncovered.
+        if let Some(path) = held_swap::show(ui.ctx(), &self.held, gestures.response.rect) {
+            self.open(&path, ui.ctx());
         }
     }
 
