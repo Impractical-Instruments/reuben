@@ -710,5 +710,100 @@ mod tests {
             r#"{ "type_name": "x", "constants": [ {"name":"voices","ty":"i32","i32":{"min":1,"max":32,"default":8}}, {"name":"voices","ty":"i32","i32":{"min":1,"max":4,"default":2}} ] }"#,
         );
         assert_eq!(dup_const.locus, Locus::Constant(1));
+        assert_eq!(dup_const.message, r#"duplicate constant name "voices""#);
+    }
+
+    // A duplicate constant name is the last thing `validate` checks: every per-constant rule and
+    // every input/output rule outranks it, wherever the duplicate sits in the list.
+    fn constants_spec(constants: &[&str], inputs: &[&str], outputs: &[&str]) -> String {
+        format!(
+            r#"{{ "type_name": "x", "constants": [{}], "inputs": [{}], "outputs": [{}] }}"#,
+            constants.join(","),
+            inputs.join(","),
+            outputs.join(",")
+        )
+    }
+
+    const VOICES: &str = r#"{"name":"voices","ty":"i32","i32":{"min":1,"max":32,"default":8}}"#;
+    const VOICES_OOB: &str =
+        r#"{"name":"voices","ty":"i32","i32":{"min":1,"max":32,"default":99}}"#;
+    const BAD_NAME: &str = r#"{"name":"Spread","ty":"i32","i32":{"min":1,"max":32,"default":8}}"#;
+    const RANGE_OOB: &str = r#"{"name":"spread","ty":"i32","i32":{"min":1,"max":32,"default":99}}"#;
+    const PORT: &str = r#"{"name":"a","ty":"f32_buffer"}"#;
+    const PORT_BAD_NAME: &str = r#"{"name":"A","ty":"f32_buffer"}"#;
+    const PORT_OOB: &str = r#"{"name":"b","ty":"f32","f32":{"min":0,"max":1,"default":5}}"#;
+
+    #[test]
+    fn a_later_constant_error_outranks_an_earlier_duplicate_constant() {
+        let e = err(&constants_spec(&[VOICES, VOICES, BAD_NAME], &[], &[]));
+        assert_eq!(e.locus, Locus::Constant(2));
+        assert!(e.message.contains("snake_case"), "{}", e.message);
+
+        let e = err(&constants_spec(&[VOICES, VOICES, RANGE_OOB], &[], &[]));
+        assert_eq!(e.locus, Locus::Constant(2));
+        assert!(e.message.contains("outside"), "{}", e.message);
+    }
+
+    #[test]
+    fn an_earlier_constant_error_outranks_a_later_duplicate_constant() {
+        let e = err(&constants_spec(&[BAD_NAME, VOICES, VOICES], &[], &[]));
+        assert_eq!(e.locus, Locus::Constant(0));
+        assert!(e.message.contains("snake_case"), "{}", e.message);
+
+        let e = err(&constants_spec(&[RANGE_OOB, VOICES, VOICES], &[], &[]));
+        assert_eq!(e.locus, Locus::Constant(0));
+        assert!(e.message.contains("outside"), "{}", e.message);
+    }
+
+    #[test]
+    fn a_constant_both_duplicate_and_out_of_range_reports_the_range() {
+        let e = err(&constants_spec(&[VOICES, VOICES_OOB], &[], &[]));
+        assert_eq!(e.locus, Locus::Constant(1));
+        assert_eq!(
+            e.message,
+            r#"constant "voices": default 99 outside [1, 32]"#
+        );
+    }
+
+    #[test]
+    fn an_input_or_output_error_outranks_a_duplicate_constant() {
+        let dup = [VOICES, VOICES];
+        for (inputs, outputs, locus, needle) in [
+            (&[PORT_BAD_NAME][..], &[][..], Locus::Input(0), "snake_case"),
+            (
+                &[PORT, PORT][..],
+                &[][..],
+                Locus::Input(1),
+                "duplicate input",
+            ),
+            (&[PORT_OOB][..], &[][..], Locus::Input(0), "outside"),
+            (
+                &[][..],
+                &[PORT_BAD_NAME][..],
+                Locus::Output(0),
+                "snake_case",
+            ),
+            (
+                &[][..],
+                &[PORT, PORT][..],
+                Locus::Output(1),
+                "duplicate output",
+            ),
+            (&[][..], &[PORT_OOB][..], Locus::Output(0), "outside"),
+        ] {
+            let e = err(&constants_spec(&dup, inputs, outputs));
+            assert_eq!(e.locus, locus, "{}", e.message);
+            assert!(e.message.contains(needle), "{}", e.message);
+        }
+    }
+
+    #[test]
+    fn a_constant_may_share_a_name_with_a_port() {
+        assert!(validate(&spec(&constants_spec(
+            &[r#"{"name":"a","ty":"i32","i32":{"min":1,"max":32,"default":8}}"#],
+            &[PORT],
+            &[PORT]
+        )))
+        .is_ok());
     }
 }
