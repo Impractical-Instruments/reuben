@@ -75,10 +75,10 @@ fn nested_renders_bit_identical_to_hand_flattened() {
     const FLAT: &str = r#"{
         "instrument": "flat",
         "nodes": [
-            { "type": "oscillator", "address": "/a/osc", "inputs": { "freq": 220.0 } },
-            { "type": "oscillator", "address": "/b/osc", "inputs": { "freq": 330.0 } }
+            { "type": "oscillator", "address": "/a_osc", "inputs": { "freq": 220.0 } },
+            { "type": "oscillator", "address": "/b_osc", "inputs": { "freq": 330.0 } }
         ],
-        "outputs": [ { "node": "/a/osc", "port": "audio" }, { "node": "/b/osc", "port": "audio" } ]
+        "outputs": [ { "node": "/a_osc", "port": "audio" }, { "node": "/b_osc", "port": "audio" } ]
     }"#;
 
     let cfg = AudioConfig::new(48_000.0, 256);
@@ -106,28 +106,37 @@ fn nested_renders_bit_identical_to_hand_flattened() {
 
 #[test]
 fn osc_message_reaches_a_spliced_node_shadowed_by_an_ancestor_address() {
-    // `/a` is an ordinary parent node and the subpatch at `/a/sub` splices its child in as
-    // `/a/sub/osc` — ancestor-prefixed addresses P4 manufactures systematically. An inbound
-    // `/a/sub/osc/freq` prefix-matches `/a` first in plan order with no port match; routing must
-    // keep scanning and deliver to the deeper node, not drop the message.
-    // The wire from `/a` into the boundary pins the topo order: `/a` renders (and routes)
-    // before the spliced `/a/sub/osc`, so the shadowing ancestor is genuinely scanned first.
+    // `/a` is an ordinary node and `/a/sub/osc` a spliced one under it. An inbound
+    // `/a/sub/osc/waveform` prefix-matches `/a` first in plan order with no port match; routing
+    // must keep scanning and deliver to the deeper node, not drop the message.
+    // The address rule keeps a document from authoring `/a/sub`, so the loader no longer builds
+    // this shape; a graph reaches the plan from any host, so the spliced node is renamed under
+    // `/a` after loading. The wire from `/a` into the boundary pins the topo order: `/a` renders
+    // (and routes) before the spliced node, so the shadowing ancestor is genuinely scanned first.
     const NESTED: &str = r#"{
         "instrument": "nested",
         "resources": { "tone": "tone.json" },
         "nodes": [
             { "type": "oscillator", "address": "/a" },
-            { "type": "subpatch", "address": "/a/sub", "patch": "tone",
+            { "type": "subpatch", "address": "/sub", "patch": "tone",
               "inputs": { "freq": { "from": "/a.audio" } } }
         ],
-        "outputs": [ { "node": "/a/sub", "port": "audio" } ]
+        "outputs": [ { "node": "/sub", "port": "audio" } ]
     }"#;
     let cfg = AudioConfig::new(48_000.0, 256);
     let reg = Registry::builtin();
 
     let render_with = |msgs: &[reuben_core::message::Message]| {
-        let loaded = load_instrument(NESTED, &reg, &ToneResolver).expect("load");
-        let mut plan = Plan::instantiate(loaded.graph, cfg).expect("instantiate");
+        let mut graph = load_instrument(NESTED, &reg, &ToneResolver)
+            .expect("load")
+            .graph;
+        let spliced = graph
+            .nodes
+            .values_mut()
+            .find(|n| &*n.address == "/sub/osc")
+            .expect("the splice names the child `/sub/osc`");
+        spliced.address = "/a/sub/osc".into();
+        let mut plan = Plan::instantiate(graph, cfg).expect("instantiate");
         let mut r = Renderer::new(&plan);
         let mut buf = vec![0.0f32; cfg.block_size];
         r.render_block(&mut plan, msgs, &mut buf);
@@ -162,8 +171,8 @@ fn boundary_wire_renders_bit_identical_to_direct_wire() {
     const FLAT: &str = r#"{
         "instrument": "flat",
         "nodes": [
-            { "type": "oscillator", "address": "/a/osc", "inputs": { "freq": 220.0 } },
-            { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/a/osc.audio" } } }
+            { "type": "oscillator", "address": "/a_osc", "inputs": { "freq": 220.0 } },
+            { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/a_osc.audio" } } }
         ],
         "outputs": [ { "node": "/out", "port": "audio" } ]
     }"#;
@@ -230,10 +239,10 @@ fn f32_value_zoh_materializes_into_the_nest() {
         "instrument": "flat",
         "nodes": [
             { "type": "add_f32_value", "address": "/num", "inputs": { "a": 0.25 } },
-            { "type": "output", "address": "/sub/out",
+            { "type": "output", "address": "/sub_out",
               "inputs": { "audio": { "from": "/num.out" } } }
         ],
-        "outputs": [ { "node": "/sub/out", "port": "audio" } ]
+        "outputs": [ { "node": "/sub_out", "port": "audio" } ]
     }"#;
 
     let cfg = AudioConfig::new(48_000.0, 256);
@@ -281,9 +290,9 @@ fn boundary_f32_output_zoh_materializes_into_the_parent() {
     const FLAT: &str = r#"{
         "instrument": "flat",
         "nodes": [
-            { "type": "add_f32_value", "address": "/sub/amt", "inputs": { "a": 0.25 } },
+            { "type": "add_f32_value", "address": "/sub_amt", "inputs": { "a": 0.25 } },
             { "type": "output", "address": "/out",
-              "inputs": { "audio": { "from": "/sub/amt.out" } } }
+              "inputs": { "audio": { "from": "/sub_amt.out" } } }
         ],
         "outputs": [ { "node": "/out", "port": "audio" } ]
     }"#;

@@ -158,7 +158,7 @@ fn save_then_reload_renders_identically() {
     let reg = Registry::builtin();
 
     let g1 = load(METRONOME_JSON, &reg).expect("load metronome");
-    let saved = NormalizedDoc::from_graph(&g1, "metronome", &reg);
+    let saved = NormalizedDoc::from_graph(&g1, "metronome", &reg).expect("flattens");
     let g2 = saved.build(&reg).expect("rebuild from saved doc");
 
     let a = render(g1, cfg, 0.5);
@@ -178,7 +178,7 @@ fn from_graph_round_trips_resource_ids() {
 
     // A `voice` instrument-resource ref (the voicer in default.json).
     let g = load(DEFAULT_JSON, &reg).expect("load default");
-    let doc = NormalizedDoc::from_graph(&g, "default", &reg);
+    let doc = NormalizedDoc::from_graph(&g, "default", &reg).expect("flattens");
     let voicer = doc
         .nodes
         .iter()
@@ -188,7 +188,7 @@ fn from_graph_round_trips_resource_ids() {
 
     // A `sample` resource ref (the sample player in the sampler voice patch).
     let g = load(SAMPLER_VOICE_JSON, &reg).expect("load sampler-voice");
-    let doc = NormalizedDoc::from_graph(&g, "sampler-voice", &reg);
+    let doc = NormalizedDoc::from_graph(&g, "sampler-voice", &reg).expect("flattens");
     let player = doc
         .nodes
         .iter()

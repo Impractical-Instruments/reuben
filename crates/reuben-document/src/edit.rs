@@ -232,7 +232,13 @@ fn finish_at(
     let normalized = NormalizedDoc::from_doc(doc, registry, Some(resolver))
         .map_err(|e| EditError::Parse(e.to_string()))?;
     let new_json = normalized.to_document_text();
-    let report = validate(&new_json, registry, resolver);
+    let mut report = validate(&new_json, registry, resolver);
+    if report.ok {
+        // The text validated is already current, so the renames and strips the parse made reach
+        // the caller only from here — on the edit that writes them, and never again.
+        let migrated = normalized.migration.warnings.iter().map(Diag::from_warning);
+        report.warnings.splice(0..0, migrated);
+    }
     let (written, hash) = if report.ok {
         match place {
             Place::Replace => resolver

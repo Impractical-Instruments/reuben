@@ -427,6 +427,116 @@ fn rename_node_reports_the_precondition_that_failed() {
     );
 }
 
+/// The addresses an OSC host cannot reach, or that read as a wire-ref or a spliced child.
+const BAD_ADDRESSES: &[&str] = &["/", "/a b", "//x", "/x/", "/out/sub", "/ünï", "/osc.audio"];
+
+/// The verb's report names the node and nothing is written.
+fn assert_refused_as_address(
+    result: &EditResult,
+    bad: &str,
+    before: &serde_json::Value,
+    after: &serde_json::Value,
+) {
+    assert!(
+        !result.report.ok,
+        "{bad:?} must be refused: {:?}",
+        result.report
+    );
+    assert!(!result.written, "{bad:?}: nothing is written");
+    assert_eq!(before, after, "{bad:?}: the document on disk is untouched");
+    assert!(
+        result
+            .report
+            .errors
+            .iter()
+            .any(|d| d.node.as_deref() == Some(bad) && d.message.contains("address")),
+        "{bad:?}: the diagnostic names the node and the rule: {:?}",
+        result.report.errors
+    );
+}
+
+#[test]
+fn rename_node_to_an_address_breaking_the_rule_is_refused() {
+    let registry = Registry::builtin();
+    for bad in BAD_ADDRESSES {
+        let resolver = resolver_with(&seed());
+        let before = readback(&resolver);
+        let result = rename_instrument_node(SRC, "/osc", bad, &registry, &resolver)
+            .unwrap_or_else(|e| panic!("{bad:?}: the call runs; the edit is refused: {e}"));
+        assert_refused_as_address(&result, bad, &before, &readback(&resolver));
+    }
+    let resolver = resolver_with(&seed());
+    let good =
+        rename_instrument_node(SRC, "/osc", "/Osc-2_a", &registry, &resolver).expect("rename");
+    assert!(good.report.ok && good.written, "{:?}", good.report);
+}
+
+#[test]
+fn add_node_at_an_address_breaking_the_rule_is_refused() {
+    let registry = Registry::builtin();
+    let add = |address: &str, resolver: &MemoryResolver| {
+        add_instrument_node(
+            SRC,
+            address,
+            "oscillator",
+            BTreeMap::new(),
+            BTreeMap::new(),
+            None,
+            None,
+            None,
+            None,
+            &registry,
+            resolver,
+        )
+    };
+    for bad in BAD_ADDRESSES {
+        let resolver = resolver_with(&seed());
+        let before = readback(&resolver);
+        let result = add(bad, &resolver)
+            .unwrap_or_else(|e| panic!("{bad:?}: the call runs; the edit is refused: {e}"));
+        assert_refused_as_address(&result, bad, &before, &readback(&resolver));
+    }
+    let resolver = resolver_with(&seed());
+    let good = add("/lfo_2", &resolver).expect("add");
+    assert!(good.report.ok && good.written, "{:?}", good.report);
+}
+
+/// Every edit writes the current format, so the edit that migrates a v3 document's refused address
+/// is the one that has to report it: the file it leaves behind holds nothing to report again.
+#[test]
+fn the_edit_that_migrates_a_refused_address_reports_the_rename_once() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(
+        &json!({
+            "format_version": 3,
+            "instrument": "t",
+            "nodes": [{ "type": "oscillator", "address": "/my osc" }]
+        })
+        .to_string(),
+    );
+    let renamed = |result: &EditResult| -> Vec<(Option<String>, String)> {
+        result
+            .report
+            .warnings
+            .iter()
+            .filter(|d| d.message.contains("renamed"))
+            .map(|d| (d.node.clone(), d.message.clone()))
+            .collect()
+    };
+
+    let first = set_instrument_name(SRC, "u", &registry, &resolver).expect("edit");
+    assert!(first.report.ok && first.written, "{:?}", first.report);
+    let reported = renamed(&first);
+    assert_eq!(reported.len(), 1, "{:?}", first.report.warnings);
+    assert_eq!(reported[0].0.as_deref(), Some("/my_osc"));
+    assert!(reported[0].1.contains("/my osc"), "{}", reported[0].1);
+    assert_eq!(readback(&resolver)["nodes"][0]["address"], json!("/my_osc"));
+
+    let second = set_instrument_name(SRC, "v", &registry, &resolver).expect("edit");
+    assert!(second.written);
+    assert!(renamed(&second).is_empty(), "{:?}", second.report.warnings);
+}
+
 // --- one-shot add --------------------------------------------------------------------------------
 
 #[test]
@@ -501,7 +611,7 @@ fn new_instrument_creates_a_valid_document_and_refuses_to_overwrite() {
     // The minimal required document and nothing else
     assert_eq!(
         readback(&resolver),
-        json!({ "format_version": 3, "instrument": "fresh", "nodes": [] }),
+        json!({ "format_version": FORMAT_VERSION, "instrument": "fresh", "nodes": [] }),
         "new_instrument writes exactly the minimal valid document"
     );
 

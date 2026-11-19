@@ -1,5 +1,5 @@
 === index ===
-instrument acid-techno (53 nodes, format 3, projection 2)
+instrument acid-techno (53 nodes, format 4, projection 2)
 description: Acid techno rig: a four-on-the-floor 16-step drum machine (kick, snare, closed + open hi-hat), a TB-303-style monophonic acid bass synth sequencer, and a detuned three-saw pad playing sustained whole-note chords. [+1326 chars: zoom /]
 /clock clock
 /pad_clock clock
@@ -56,7 +56,7 @@ description: Acid techno rig: a four-on-the-floor 16-step drum machine (kick, sn
 /out output
 
 === zoom / ===
-instrument acid-techno (53 nodes, format 3, projection 2)
+instrument acid-techno (53 nodes, format 4, projection 2)
 description: Acid techno rig: a four-on-the-floor 16-step drum machine (kick, snare, closed + open hi-hat), a TB-303-style monophonic acid bass synth sequencer, and a detuned three-saw pad playing sustained whole-note chords. The bass is a single inline mono synth (saw -> resonant lowpass -> env, note line unpacked to freq/gate at rig level rather than voiced) so its 303 controls are live: /glide/in slides the pitch between notes (portamento), /squelch/in is the filter resonance (the whistling acid tone), /filter_env/in is the filter-envelope amount (how far the cutoff sweep opens), and /filter_decay/in is the envelope decay (the length of the squelch tail). Drums and bass share a 16th-note clock; the pad triggers one chord per bar. The `key` pipe (/key/in) sets the absolute tonic of a shared natural-minor harmony (bass at the root, pad one octave up). The `mode` pipe (/mode/in, 0-6) is the modal chord/scale selector: it transposes both the bass line and the pad chord by that many scale degrees, so one knob re-roots them together within the key -- the modal, chord-player-style move. Each instrument has its own volume pipe (/drums_vol/in, /bass_vol/in, /pad_vol/in); ride tempo 60-180 BPM with /tempo/in. Program the lanes with /kick_step1..16 /snare_step* /chh_step* /ohh_step* (boolean) and the bass with /bass_step1..16 (scale degrees, -1 = rest). The pad is sidechain-pumped by the kick (a `compressor` at /pad_pump keyed off the raw kick voice), so the chords breathe with the four-on-the-floor -- the signature acid-techno pump.
 
 === zoom /clock /kick_v /out ===

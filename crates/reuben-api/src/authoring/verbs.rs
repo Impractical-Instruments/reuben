@@ -1767,6 +1767,33 @@ mod tests {
         );
     }
 
+    /// The window hands a door the report the edit built, so a rename the edit's migration made
+    /// on disk reaches the caller as a warning on the node's new address.
+    #[test]
+    fn an_edit_that_migrates_a_refused_address_reports_the_rename() {
+        let store = MemoryStore::with(
+            "inst.json",
+            r#"{ "format_version": 3, "instrument": "s",
+                 "nodes": [ { "type": "oscillator", "address": "/my osc" } ] }"#,
+        );
+        let args = SetInstrumentName {
+            source: "inst.json".to_string(),
+            name: "t".to_string(),
+            expect: None,
+        };
+        let answer = set_instrument_name(&args, &store).expect("edit");
+        assert!(answer.output.written, "{:?}", answer.output.report);
+        let warning = answer
+            .output
+            .report
+            .warnings
+            .iter()
+            .find(|d| d.node.as_deref() == Some("/my_osc"))
+            .unwrap_or_else(|| panic!("{:?}", answer.output.report.warnings));
+        assert!(warning.message.contains("/my osc"), "{}", warning.message);
+        assert!(store.read("inst.json").contains("/my_osc"));
+    }
+
     /// The loader resolves each sample once and names no node; the read names every node reading
     /// it, so an editor can show the missing file where it is used.
     #[test]

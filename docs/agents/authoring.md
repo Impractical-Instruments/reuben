@@ -235,7 +235,7 @@ enum inputs**, switchable live over OSC. Only genuinely topology-fixing values a
 
 ## The Instrument format (`crates/reuben-document/src/format/`) <!-- lanes: skills,mcp,web -->
 
-An Instrument is plain JSON data (**format v3**). At the top
+An Instrument is plain JSON data (**format v4**). At the top
 level it **requires an `instrument` name field** (a string — the human-facing name/id) alongside
 `nodes`; a document that omits `instrument` is rejected (the loader denies unknown fields, so the
 name cannot be misspelled or dropped). It also carries `nodes` (operator `type` + `address`, plus
@@ -245,7 +245,7 @@ top-level `connections` array** and **no per-node `params` map** (both fold into
 **no anonymous master `outputs` array** (v1-only — it dissolved into named `interface.outputs`
 entries; the loader migrates old documents).
 
-The loop's **seed** step writes exactly this shape — `{ "format_version": 3, "instrument": <name>,
+The loop's **seed** step writes exactly this shape — `{ "format_version": 4, "instrument": <name>,
 "nodes": [] }` — and the shape step grows it from there. The JSON below is what those verbs write,
 and is here so you can *read* a document, not so you can emit one.
 
@@ -372,15 +372,22 @@ identity, so `a.json` and `./a.json` are one cycle-guard/dedup key. For embedded
 core's in-memory `MemoryResolver` serves patches and samples by exact key with no filesystem.
 A document may declare a `format_version`;
 absent means 1, and a version newer than the engine understands refuses to load. The current
-version is **3** — the presentation strip, the second breaking bump after the v2 interface-pipe
-direction flip. Old documents keep loading forever, migrated at parse: v1's target-form `interface`
-entries flip to pipes + consumer wire-refs (deriving each pipe's type/range/default from the
-old target port; the anonymous `outputs` array becomes named `interface.outputs` entries), and
-a leftover per-node `control` block or pipe `label`/`widget` — v2's retired presentation — is
-**ignored with a `LoadWarning` naming it** (`DeprecatedControlBlock` /
+version is **4** — the node address rule (see Addressing), after v3's presentation strip and the
+v2 interface-pipe direction flip. Old documents keep loading forever, migrated at parse: v1's
+target-form `interface` entries flip to pipes + consumer wire-refs (deriving each pipe's
+type/range/default from the old target port; the anonymous `outputs` array becomes named
+`interface.outputs` entries); a leftover per-node `control` block or pipe `label`/`widget` — v2's
+retired presentation — is **ignored with a `LoadWarning` naming it** (`DeprecatedControlBlock` /
 `DeprecatedPipePresentation`): never fatal, never silent, and sound is unaffected (the engine
-never read them; re-saving strips them). Migrated-vs-native renders are **bit-identical**
-(asserted in `crates/reuben-document/tests/format_v2.rs` and `format_v3.rs`). Save writes v3 — a
+never read them; re-saving strips them); and a pre-v4 node `address` the address rule refuses is
+**renamed with a `RenamedAddress` warning** naming old → new — each refused character becomes `_`
+(`/a/osc` → `/a_osc`, `/my.tone` → `/my_tone`), an empty name becomes `/node`, a taken result gets
+an `_N` suffix, and every wire-ref and output feed naming it is rewritten. The node's OSC control
+address moves with it, so a controller still sending to the old one goes quiet until it follows.
+Every edit verb writes the current version, so the first edit to an older file is the one that
+lands its renames, and its report carries each `RenamedAddress` warning; later edits carry none. Migrated-vs-native renders are **bit-identical**
+(asserted in `crates/reuben-document/tests/format_v2.rs` and `format_v3.rs`, and for the v4
+address renames in `format/normalize.rs`). Save writes v4 — a
 migrated document never saves back under its old number. The whole normalize pipeline —
 version gate, migrations, stamp — lives in `format/normalize.rs` behind the **`NormalizedDoc`**
 type: `NormalizedDoc::from_json` is the
@@ -389,7 +396,8 @@ one mint (a hand-deserialized `InstrumentDoc` enters via `NormalizedDoc::from_do
 exactly once — held by the compiler, not re-checks. To **save**, serialize
 the `InstrumentDoc` (nested references survive; a `NormalizedDoc` derefs to one, or take
 `into_inner()`); `NormalizedDoc::from_graph` is the explicit
-flatten/export path — a built graph's spliced subpatches appear as their inlined nodes.
+flatten/export path for a graph with no spliced subpatches — a spliced child's `/<sub>/<node>`
+address breaks the address rule, so it returns `InvalidAddress` naming that node.
 
 A Voicer node references a **voice sub-patch** the same way, by a **`voice`** field naming a standalone
 instrument JSON; the loader resolves it
@@ -543,6 +551,16 @@ index accepted as a fallback, quoted (`"1"`) or bare (`1`); an unknown symbol or
 index is an **error**, never a silent snap to the default. A `Note` input takes its args (`/voicer/notes [69.0, 1.0]`).
 Full wildcard dispatch (`/drums/*/decay`) is designed but not built — today a Message targets at
 most one node.
+
+A node's `address` field is `/` plus **one** non-empty name: printable ASCII, with no whitespace,
+no second `/`, no `.` (it separates a node from its port in a wire-ref), and none of the OSC
+pattern characters `#*,?[]{}`. `/filter`, `/kick_2` and `/env-amp` pass; `/`, `//x`,
+`/out/sub`, `/a b`, `/osc.audio` and `/ünï` are refused at load in a v4 document, so `validate`,
+every verb and a hand-written file all fail with an error naming the node. An older document is
+migrated instead: each refused address is renamed with a warning (see the format section). The
+rule covers the `address` field only, not interface pipe names. `/<node>/…` belongs to the nodes a
+`subpatch` splices in under its own address, which is also why `NormalizedDoc::from_graph` refuses
+a graph holding a spliced child.
 
 ## Invariants you must not break <!-- lanes: skills,mcp,web -->
 

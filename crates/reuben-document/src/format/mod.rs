@@ -1,4 +1,4 @@
-//! Instrument format — the JSON canonical document (**v2**, **v3**).
+//! Instrument format — the JSON canonical document (**v4**).
 //!
 //! A node's `inputs` entry is either a **literal** or a **wire-ref** to another node's output
 //! (`{ "from": "/osc.audio" }`, or `{ "from": "/osc" }` when the source has a single output —
@@ -34,8 +34,10 @@ use reuben_core::resources::{ResolvedRefs, ResourceStore, SampleBuffer, SampleId
 /// and the top-level anonymous `outputs` block are v1-only, auto-migrated at parse. **v3**
 ///: presentation decouples from the instrument — the per-node `control` block and
 /// `label`/`widget` on interface pipes retire; the loader drops leftovers with a
-/// [`LoadWarning`] naming each (ignore-with-warning, never fatal).
-pub const FORMAT_VERSION: u32 = 3;
+/// [`LoadWarning`] naming each (ignore-with-warning, never fatal). **v4**: a node's `address`
+/// must pass the node address rule; an older document's refused address is renamed at parse
+/// with a [`LoadWarning::RenamedAddress`].
+pub const FORMAT_VERSION: u32 = 4;
 
 fn default_format_version() -> u32 {
     1
@@ -103,7 +105,7 @@ pub struct InstrumentDoc {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct MigrationNotes {
     /// Warnings to surface on the next build of this document ([`LoadWarning::Migration`]).
-    warnings: Vec<LoadWarning>,
+    pub(crate) warnings: Vec<LoadWarning>,
     /// v1 `interface.inputs` names migration dropped (unexpressible in the pipe model): recorded
     /// as **dark** boundary inputs so a host wire onto the name drops with a warning — the same
     /// transitive degradation an unavailable nested target gets — instead of a fatal
@@ -587,6 +589,9 @@ pub enum LoadError {
     UnknownType { address: String, type_name: String },
     /// Two nodes share an address.
     DuplicateAddress(String),
+    /// A node's authored address breaks the address rule: `/` then one non-empty segment of
+    /// printable ASCII holding no whitespace, no `/`, no `.` and none of `#*,?[]{}`.
+    InvalidAddress { address: String, rule: &'static str },
     /// A wire-ref or output references a node that doesn't exist.
     UnknownNode(String),
     /// A reference names no **output** on the node it points at — a wire-ref's source, a master
@@ -677,6 +682,9 @@ impl fmt::Display for LoadError {
                 write!(f, "node {address}: unknown operator type {type_name:?}")
             }
             LoadError::DuplicateAddress(a) => write!(f, "duplicate node address {a:?}"),
+            LoadError::InvalidAddress { address, rule } => {
+                write!(f, "node address {address:?} {rule}")
+            }
             LoadError::UnknownNode(n) => write!(f, "reference to unknown node {n:?}"),
             LoadError::UnknownPort { node, port } => {
                 write!(f, "node {node:?} has no port {port:?}")
@@ -864,6 +872,9 @@ pub enum LoadWarning {
     /// The interface entry carried retired pipe presentation (`label`/`widget`), dropped; `field`
     /// names which. Ignored, never fatal: the pipe keeps its quantity contract.
     DeprecatedPipePresentation { name: String, field: &'static str },
+    /// A pre-v4 node address broke the node address rule and was renamed at parse, every
+    /// reference to it rewritten. Its OSC control address moved with it.
+    RenamedAddress { from: String, to: String },
 }
 
 impl fmt::Display for LoadWarning {
@@ -896,6 +907,12 @@ impl fmt::Display for LoadWarning {
             LoadWarning::Migration { name, detail } => {
                 write!(f, "v1 migration, {name:?}: {detail}")
             }
+            LoadWarning::RenamedAddress { from, to } => write!(
+                f,
+                "node {from:?} renamed to {to:?} (references rewritten): its address breaks the \
+                 node address rule. Its OSC control address moved too — a controller still \
+                 sending to {from}/<input> goes quiet until it follows"
+            ),
             LoadWarning::UnboundInputPipe { name } => write!(
                 f,
                 "top-level input pipe {name:?} binds no logical input channel — nothing can \
@@ -1645,6 +1662,7 @@ impl InstrumentDoc {
 
         // Pass 1: nodes, config constants, literal inputs.
         for n in &self.nodes {
+            check_node_address(&n.address)?;
             let entry = registry
                 .get(&n.type_name)
                 .ok_or_else(|| LoadError::UnknownType {
@@ -2663,6 +2681,44 @@ fn resolve_output(
     }
 }
 
+/// The address rule for a node a document authors. Spliced subpatch internals are exempt: the
+/// splice owns `/<node>/…`, which is why an authored address may hold no `/` of its own.
+pub(super) fn check_node_address(address: &str) -> Result<(), LoadError> {
+    let invalid = |rule| {
+        Err(LoadError::InvalidAddress {
+            address: address.to_string(),
+            rule,
+        })
+    };
+    let Some(segment) = address.strip_prefix('/') else {
+        return invalid("must start with `/`");
+    };
+    if segment.is_empty() {
+        return invalid("needs a name after the `/`");
+    }
+    match segment.chars().find_map(refused_address_char) {
+        Some(rule) => invalid(rule),
+        None => Ok(()),
+    }
+}
+
+/// Why `c` may not appear in a node address's one segment, or `None` when it may.
+pub(super) fn refused_address_char(c: char) -> Option<&'static str> {
+    Some(match c {
+        '/' => {
+            "holds a second `/` — a node address is one segment, and `/<node>/…` is where a \
+             subpatch splices its child's nodes"
+        }
+        '.' => "holds a `.`, which separates a node from its port in a wire-ref",
+        '#' | '*' | ',' | '?' | '[' | ']' | '{' | '}' => {
+            "holds an OSC pattern character (one of `#*,?[]{}`)"
+        }
+        c if !c.is_ascii() => "holds a non-ASCII character — OSC addresses are ASCII",
+        c if !c.is_ascii_graphic() => "holds whitespace or a control character",
+        _ => return None,
+    })
+}
+
 /// Inline a resolved subpatch child into `parent`: move every child node in
 /// under `prefix` (its address becomes `<prefix><child address>`, compounding for deeper nests),
 /// remap the child's edges onto the new keys, and synthesize the boundary face from the child's
@@ -3387,6 +3443,96 @@ mod tests {
         ));
     }
 
+    /// Addresses an OSC host cannot send to, or that read as a wire-ref or a spliced child.
+    const BAD_NODE_ADDRESSES: &[&str] = &[
+        "/",
+        "/a b",
+        "//x",
+        "/x/",
+        "/out/sub",
+        "/ünï",
+        "osc",
+        "",
+        "/osc.audio",
+        "/a\tb",
+        "/x*",
+        "/x?",
+        "/x#",
+        "/x,y",
+        "/x[1]",
+        "/x{a}",
+    ];
+
+    /// Addresses the rule must keep accepting: printable ASCII minus the excluded set.
+    const GOOD_NODE_ADDRESSES: &[&str] = &[
+        "/osc",
+        "/a",
+        "/kick_2",
+        "/Filter-Env",
+        "/x:y",
+        "/a+b",
+        "/@x",
+        "/~tilde!",
+    ];
+
+    #[test]
+    fn a_node_address_breaking_the_address_rule_is_refused_naming_the_node() {
+        for bad in BAD_NODE_ADDRESSES {
+            let json = serde_json::json!({
+                "format_version": FORMAT_VERSION,
+                "instrument": "t",
+                "nodes": [{ "type": "output", "address": bad }]
+            })
+            .to_string();
+            match load(&json, &reg()) {
+                Err(e @ LoadError::InvalidAddress { .. }) => {
+                    let diag = crate::contract::Diag::from_load(&e);
+                    assert_eq!(diag.node.as_deref(), Some(*bad), "{e}");
+                    assert!(e.to_string().contains(&format!("{bad:?}")), "{e}");
+                }
+                other => panic!(
+                    "{bad:?} must be refused as an address, got {:?}",
+                    other.map(|_| ())
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn a_node_address_inside_the_address_rule_loads() {
+        for good in GOOD_NODE_ADDRESSES {
+            let json = serde_json::json!({
+                "instrument": "t",
+                "nodes": [{ "type": "output", "address": good }]
+            })
+            .to_string();
+            if let Err(e) = load(&json, &reg()) {
+                panic!("{good:?} must load: {e}");
+            }
+        }
+    }
+
+    /// The rule binds the addresses a document authors, not the `<subpatch>/<child>` addresses the
+    /// splice manufactures, and it binds a child's own authored addresses when it is loaded nested.
+    #[test]
+    fn the_address_rule_binds_authored_addresses_not_spliced_ones() {
+        let host = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
+            {"type":"subpatch","address":"/sub","patch":"v"}]}"#;
+        let loaded = load_instrument(host, &reg(), &PatchResolver(VOICE_IFACE)).expect("load");
+        assert!(loaded
+            .graph
+            .nodes
+            .values()
+            .any(|n| &*n.address == "/sub/osc"));
+
+        const BAD_CHILD: &str = r#"{"format_version":4,"instrument":"c",
+            "nodes":[{"type":"oscillator","address":"/o sc"}]}"#;
+        assert!(matches!(
+            load_instrument(host, &reg(), &PatchResolver(BAD_CHILD)),
+            Err(LoadError::InvalidAddress { address, .. }) if address == "/o sc"
+        ));
+    }
+
     #[test]
     fn unknown_port_errors() {
         let json = r#"{"instrument":"t",
@@ -3557,7 +3703,7 @@ mod tests {
         // ...and saving stamps the current version explicitly (never the old number).
         let json = doc.to_json_pretty();
         assert!(
-            json.contains("\"format_version\": 3"),
+            json.contains(&format!("\"format_version\": {FORMAT_VERSION}")),
             "save must write the current version: {json}"
         );
     }
@@ -3576,7 +3722,9 @@ mod tests {
         )
         .expect("a below-current version parses");
         assert_eq!(doc.format_version, FORMAT_VERSION);
-        assert!(doc.to_json_pretty().contains("\"format_version\": 3"));
+        assert!(doc
+            .to_json_pretty()
+            .contains(&format!("\"format_version\": {FORMAT_VERSION}")));
     }
 
     // The old `a_gate_bypassing_doc_is_still_refused_at_load` test is a compile error now —
@@ -3629,9 +3777,9 @@ mod tests {
     fn from_graph_then_build_is_stable() {
         // load -> save -> reparse -> save again: the two saved docs are identical.
         let g1 = load(TWO_NODE, &reg()).expect("load");
-        let saved1 = NormalizedDoc::from_graph(&g1, "test", &reg());
+        let saved1 = NormalizedDoc::from_graph(&g1, "test", &reg()).expect("flattens");
         let g2 = saved1.build(&reg()).expect("rebuild");
-        let saved2 = NormalizedDoc::from_graph(&g2, "test", &reg());
+        let saved2 = NormalizedDoc::from_graph(&g2, "test", &reg()).expect("flattens");
         assert_eq!(saved1, saved2);
         assert_eq!(saved1.nodes.len(), 2);
     }
@@ -3688,7 +3836,7 @@ mod tests {
         let json = r#"{"instrument":"t","nodes":[
             {"type":"add_i32_value","address":"/k","inputs":{"a":3,"b":4}}]}"#;
         let g1 = load(json, &reg()).expect("load");
-        let saved = NormalizedDoc::from_graph(&g1, "t", &reg());
+        let saved = NormalizedDoc::from_graph(&g1, "t", &reg()).expect("flattens");
         assert_eq!(saved.nodes[0].inputs["a"], InputValue::Number(3.0));
         let g2 = saved.build(&reg()).expect("the saved document reloads");
         let key = g2.find("/k").unwrap();
@@ -3771,7 +3919,7 @@ mod tests {
         let json = r#"{"instrument":"t","nodes":[
             {"type":"filter","address":"/f","inputs":{"mode":"Hp","cutoff":3000}}]}"#;
         let g = load(json, &reg()).expect("load");
-        let doc = NormalizedDoc::from_graph(&g, "t", &reg());
+        let doc = NormalizedDoc::from_graph(&g, "t", &reg()).expect("flattens");
         let inputs = &doc.nodes[0].inputs;
         assert_eq!(inputs["cutoff"], InputValue::Number(3000.0));
         assert_eq!(inputs["mode"], InputValue::Symbol("Hp".to_string()));
@@ -4338,7 +4486,7 @@ mod tests {
         // ...and from_graph reconstructs an equivalent, stable interface: inputs re-derive
         // their pipe declaration, outputs the canonical explicit `/node.port` feed.
         let g = load(VOICE_IFACE, &reg()).expect("load");
-        let saved = NormalizedDoc::from_graph(&g, "voice", &reg());
+        let saved = NormalizedDoc::from_graph(&g, "voice", &reg()).expect("flattens");
         let iface = saved.interface.as_ref().expect("interface reconstructed");
         assert_eq!(
             iface.inputs["freq"].pipe().expect("pipe form").ty,
@@ -4894,13 +5042,26 @@ mod tests {
     // `normalize::tests::from_doc_refuses_v1_forms_under_a_current_stamp`.
 
     #[test]
-    fn post_prefix_address_collision_is_fatal() {
-        // A child address that, after prefixing, collides with an existing parent
-        // address is a DuplicateAddress load error — the uniqueness check runs over the
-        // post-inline address set.
-        let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
+    fn an_authored_address_cannot_claim_a_spliced_one() {
+        // A parent node authored at the address the splice will give a child node is refused by
+        // the address rule before the splice runs, so the post-inline duplicate check never sees
+        // the collision.
+        let json = r#"{"format_version":4,"instrument":"p","resources":{"v":"v.json"},"nodes":[
             {"type":"oscillator","address":"/sub/osc"},
             {"type":"subpatch","address":"/sub","patch":"v"}]}"#;
+        assert!(matches!(
+            load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE)),
+            Err(LoadError::InvalidAddress { address, .. }) if address == "/sub/osc"
+        ));
+    }
+
+    #[test]
+    fn a_pipe_minted_address_colliding_with_a_spliced_one_is_fatal() {
+        // A pipe name is not held to the node address rule, so `sub/osc` mints `/sub/osc` in pass
+        // 0 and the splice's own uniqueness check is what refuses the child's `/sub/osc`.
+        let json = r#"{"format_version":3,"instrument":"p","resources":{"v":"v.json"},
+            "interface":{"inputs":{"sub/osc":{"type":"f32","default":0.5}}},
+            "nodes":[{"type":"subpatch","address":"/sub","patch":"v"}]}"#;
         assert!(matches!(
             load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE)),
             Err(LoadError::DuplicateAddress(a)) if a == "/sub/osc"
@@ -5503,17 +5664,15 @@ mod tests {
     }
 
     #[test]
-    fn from_graph_saves_the_flattened_equivalent() {
-        // The subpatch dissolves at build, so saving a built graph emits the inlined
-        // child nodes under their prefixed addresses — no `subpatch` node, no `patch` ref: the
-        // deliberate one-way flatten.
+    fn from_graph_refuses_a_spliced_graph() {
+        // The subpatch dissolves at build, so a built graph holds the child's nodes under
+        // `/sub/…` — addresses no document may author, so the flatten names the first and stops.
         let loaded = load_instrument(PARENT_WITH_SUBPATCH, &reg(), &PatchResolver(VOICE_IFACE))
             .expect("load");
-        let saved = NormalizedDoc::from_graph(&loaded.graph, "p", &reg());
-        let addrs: Vec<&str> = saved.nodes.iter().map(|n| n.address.as_str()).collect();
-        assert_eq!(addrs, ["/sub/env", "/sub/osc"], "flattened, prefixed nodes");
-        assert!(saved.nodes.iter().all(|n| n.patch.is_none()));
-        assert!(saved.nodes.iter().all(|n| n.type_name != "subpatch"));
+        assert!(matches!(
+            NormalizedDoc::from_graph(&loaded.graph, "p", &reg()),
+            Err(LoadError::InvalidAddress { address, .. }) if address == "/sub/env"
+        ));
     }
 
     #[test]
@@ -5521,7 +5680,7 @@ mod tests {
         let json = r#"{"instrument":"t","nodes":[
             {"type":"voicer","address":"/v","config":{"voices":5}}]}"#;
         let g = load(json, &reg()).expect("load");
-        let saved = NormalizedDoc::from_graph(&g, "t", &reg());
+        let saved = NormalizedDoc::from_graph(&g, "t", &reg()).expect("flattens");
         let v = saved.nodes.iter().find(|n| n.address == "/v").unwrap();
         assert!(matches!(
             v.config.get("voices"),

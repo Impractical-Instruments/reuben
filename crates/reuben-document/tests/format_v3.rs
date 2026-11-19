@@ -11,7 +11,7 @@ use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
 use reuben_core::resources::SampleBuffer;
 use reuben_core::{AudioConfig, Registry};
-use reuben_document::format::LoadWarning;
+use reuben_document::format::{LoadWarning, FORMAT_VERSION};
 use reuben_document::resources::{ResolveError, ResourceResolver};
 use reuben_document::{load_instrument, NormalizedDoc};
 
@@ -148,8 +148,8 @@ fn v2_control_block_is_ignored_with_a_warning_and_save_strips_it() {
         "save must strip the retired control block, got:\n{saved}"
     );
     assert!(
-        saved.contains("\"format_version\": 3"),
-        "save writes v3, got:\n{saved}"
+        saved.contains(&format!("\"format_version\": {FORMAT_VERSION}")),
+        "save writes the current version, got:\n{saved}"
     );
 }
 
@@ -261,9 +261,9 @@ fn v3_stamped_doc_with_leftovers_degrades_identically() {
 }
 
 #[test]
-fn v1_doc_migrates_through_to_v3_and_save_writes_v3() {
+fn v1_doc_migrates_through_and_save_writes_current() {
     // The whole chain: absent format_version (= v1) → target-form migration →
-    // presentation strip → stamped v3 on save.
+    // presentation strip → stamped current on save.
     let v1 = r#"{"instrument":"t","interface":{
         "inputs":{"tone":{"target":"/filter.cutoff","label":"Tone"}},
         "outputs":{"out":"/filter.audio"}},
@@ -271,8 +271,8 @@ fn v1_doc_migrates_through_to_v3_and_save_writes_v3() {
     let doc = NormalizedDoc::from_json(v1, &Registry::builtin(), None).expect("v1 keeps loading");
     let saved = doc.to_json_pretty();
     assert!(
-        saved.contains("\"format_version\": 3"),
-        "a migrated v1 doc saves as v3, got:\n{saved}"
+        saved.contains(&format!("\"format_version\": {FORMAT_VERSION}")),
+        "a migrated v1 doc saves as the current version, got:\n{saved}"
     );
     assert!(
         !saved.contains("\"label\""),

@@ -266,7 +266,7 @@ def _from_scratch_document() -> dict[str, Any]:
     the step. `tests/test_tasks.py` holds the two in lockstep.
     """
     return {
-        "format_version": 3,
+        "format_version": 4,
         "instrument": "tone",
         "interface": {"outputs": {"out": {"from": "/out.audio"}}},
         "nodes": [

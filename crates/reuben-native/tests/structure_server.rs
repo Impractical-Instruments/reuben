@@ -173,7 +173,7 @@ fn serves_the_three_verbs_over_loopback_ndjson_in_order() {
             assert_eq!(hash, base_hash, "the served doc carries its content hash");
             assert_eq!(
                 document["format_version"],
-                serde_json::json!(3),
+                serde_json::json!(reuben_api::authoring::FORMAT_VERSION),
                 "the document is normalized to the current format version"
             );
         }
