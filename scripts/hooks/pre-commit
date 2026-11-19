@@ -1,4 +1,4 @@
 #!/bin/sh
-# Every check registered under pre-commit.d/ beside this file, in name order. The logic is in `dispatch`;
-# this file exists only because git looks a hook up by its exact name.
+# Every check registered under pre-commit.d/ beside this file, in name order. The logic is in
+# `dispatch`; this file exists only because git looks a hook up by its exact name.
 exec "$(dirname -- "$0")/dispatch" pre-commit "$@"

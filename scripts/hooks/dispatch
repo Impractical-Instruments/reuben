@@ -57,10 +57,15 @@ if [ ! -t 0 ]; then
     # The same glob also matches the capture of a hook running right now in this worktree (a commit
     # while a push is still in its checks), and deleting that fails its next check, which is then
     # blamed for it. The pid in the name is the owner's, so only a capture whose owner is gone is
-    # reaped. An age bound could not stand in for this: no check has a bounded running time. A
-    # recycled pid only postpones a reap to a later run; it never removes a live capture.
-    # `kill -0` also fails on a live process owned by another user, so two users running hooks in
-    # one git directory at the same moment is the case this does not cover.
+    # reaped. An age bound could not stand in for this: no check has a bounded running time.
+    #
+    # What this leaves open, all of it narrow:
+    #   - a recycled pid that a live non-hook process holds only postpones a reap to a later run;
+    #   - the owner exiting between `kill -0` and `rm`, and a new dispatch taking its pid and
+    #     writing its capture in that gap, loses that capture;
+    #   - `kill -0` cannot see a live owner in another user's account or another pid namespace (a
+    #     container with the worktree bind-mounted, a git dir on a network filesystem shared between
+    #     machines), so a hook running there at the same moment can have its capture reaped.
     if [ -n "$capture" ]; then
         for stale in "${capture%."$$"}".*; do
             [ -f "$stale" ] || continue

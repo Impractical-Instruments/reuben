@@ -734,22 +734,43 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Hook dispatcher tests
         run: cd scripts && python3 -m unittest test_hook_dispatch -v
-      # A hook and its checks are extensionless, so a `*.sh` glob cannot see them: shell is selected
-      # by shebang instead, which also picks up a check added later without editing this step. A
-      # selection that finds nothing fails rather than linting nothing and reading as clean.
-      - name: shellcheck the hook set
+      # Pinned rather than taken from the runner image, so a new image cannot turn this job red on
+      # a change that touched no shell. The digest is the one GitHub records for the release asset.
+      - name: Install shellcheck
+        env:
+          SHELLCHECK_VERSION: v0.11.0
+          SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
         run: |
+          tarball="shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          curl -sSLf -o "$RUNNER_TEMP/$tarball" \
+            "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/${tarball}"
+          echo "${SHELLCHECK_SHA256}  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/shellcheck-${SHELLCHECK_VERSION}" >> "$GITHUB_PATH"
+      # A hook and its checks are extensionless, so a `*.sh` glob cannot see them. Instead every
+      # regular file under scripts/hooks/ must be shell and is linted, and a file this step cannot
+      # recognise as shell fails it by name rather than dropping out of the lint in silence. A file
+      # with no `#!` line is refused too: git would run it as sh, but shellcheck needs the dialect.
+      - name: shellcheck the hook set
+        shell: bash
+        run: |
+          set -euo pipefail
           shellcheck --version
-          files=()
-          while IFS= read -r -d '' f; do
-            if head -n 1 "$f" | grep -qE '^#!.*[/ ](sh|bash)$'; then
+          test -f scripts/install-hooks.sh || { echo "scripts/install-hooks.sh is missing" >&2; exit 1; }
+          files=(scripts/install-hooks.sh)
+          unrecognised=0
+          mapfile -d '' found < <(find scripts/hooks -type f -print0 | sort -z)
+          [ "${#found[@]}" -gt 0 ] || { echo "no files found under scripts/hooks/" >&2; exit 1; }
+          for f in "${found[@]}"; do
+            first=$(head -n 1 "$f" | tr -d '\r')
+            if printf '%s\n' "$first" | grep -qE '^#! ?([^ ]*/)?(env( +-[^ ]+)* +)?(sh|bash|dash)( .*)?$'; then
               files+=("$f")
+            else
+              echo "::error file=$f::not recognised as a shell script (first line: $first)" >&2
+              unrecognised=1
             fi
-          done < <(find scripts/hooks scripts/install-hooks.sh -type f -print0 | sort -z)
-          if [ "${#files[@]}" -eq 0 ]; then
-            echo "no shell scripts selected; the shebang filter is broken" >&2
-            exit 1
-          fi
+          done
+          [ "$unrecognised" -eq 0 ]
           printf '%s\n' "${files[@]}"
           shellcheck "${files[@]}"
 
