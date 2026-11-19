@@ -405,8 +405,8 @@ where
                 // producers, which is what keeps this drain's cost bounded per callback.
                 while let Ok(batch) = osc_rx.try_recv() {
                     for m in &batch {
-                        // Convert flat args -> typed Message at the slot's Engine, where the Plan
-                        // (and so each dest port's Arg type) is known.
+                        // Resolve the address and type the flat args at the slot's Engine, where
+                        // the Plan (and so each dest port's Arg type) is known.
                         slot.queue_osc(&m.address, &m.args);
                     }
                 }

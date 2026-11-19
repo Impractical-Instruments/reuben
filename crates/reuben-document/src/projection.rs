@@ -1207,10 +1207,10 @@ impl ResourceResolver for Rebased<'_> {
 fn build_consumers(doc: &NormalizedDoc, registry: &Registry) -> BTreeMap<String, Vec<OutEdge>> {
     // The addresses a reference can name **whole**: exactly what the loader keys its own
     // exact-match-first on — every node address as written, plus `/{name}` for each input pipe,
-    // which is the address the mint puts in the same flat namespace. A node address cannot hold
-    // a `.`, but a pipe name can (a v1 interface entry named `"my.tone"` migrates to a pipe
-    // minting `/my.tone` verbatim), so an exact address resolves BEFORE the last-`.` split. Getting this set wrong in
-    // either direction is a lie in the one view the agent trusts to tell it what a removal breaks:
+    // which is the address the mint puts in the same flat namespace. A document that loads holds
+    // no `.` in either, but the projection also renders one that does not (a v4 pipe named
+    // `"my.tone"` minting `/my.tone`), so an exact address resolves BEFORE the last-`.` split, as
+    // the loader's does. Getting this set wrong in either direction is a lie in the one view the agent trusts to tell it what a removal breaks:
     // too narrow and the edge lands on `/my` instead of `/my.tone`; too broad and it lands on a
     // key no node has, vanishing from the view entirely. Neither is a shape to approximate — the
     // rule is copied from the loader, so it is written the way the loader writes it.
@@ -1950,7 +1950,8 @@ mod tests {
     }
 
     /// The same hostile instrument, resource and pipe names on a document that loads: the
-    /// projection must quote them on the loading path too, where no caveat line is emitted.
+    /// projection must quote them on the loading path too, where no caveat line is emitted. The
+    /// pipe name breaks the node address rule, so this pre-v4 document loads with it renamed.
     #[test]
     fn a_loading_document_cannot_forge_projection_structure_with_its_own_names() {
         const FORGED: &str = r#"{
@@ -1985,7 +1986,8 @@ mod tests {
     /// The boundary line is the one record assembled from a **second document**, so the child
     /// chooses the strings in it. A child pipe named `"gate\nout: …"` would otherwise forge a
     /// phantom consumer on the *parent* node — a lie about the parent's blast radius, read off a
-    /// document the agent never asked about.
+    /// document the agent never asked about. That name breaks the node address rule, so this
+    /// pre-v4 child has it renamed at parse.
     #[test]
     fn a_hostile_child_cannot_forge_lines_in_its_hosts_zoom() {
         const HOST: &str = r#"{
@@ -2120,15 +2122,14 @@ mod tests {
         assert_eq!(resolver.0.get() - before, 1);
     }
 
-    /// The address rule refuses a `.` in a node address, but not in an interface input pipe's
-    /// name — a v1 entry named `"my.tone"` migrates to a pipe minting `/my.tone` verbatim — so the
-    /// loader resolves an exact address BEFORE the last-`.` split, and the reverse edges must too.
-    /// Splitting first fabricates a consumer on `/my`: `remove_node /my` would be reported as
+    /// The address rule refuses this pipe name, but the projection still renders the document,
+    /// and its reverse edges resolve an exact address BEFORE the last-`.` split as the loader's
+    /// do. Splitting first fabricates a consumer on `/my`: `remove_node /my` would be reported as
     /// breaking `/lvl` while it breaks nothing.
     #[test]
     fn a_dotted_address_is_matched_whole_before_the_last_dot_split() {
         const DOTTED: &str = r#"{
-            "format_version": 3,
+            "format_version": 4,
             "instrument": "dotted",
             "interface": { "inputs": { "my.tone": {"type": "f32", "default": 0.5} } },
             "nodes": [
@@ -2138,8 +2139,7 @@ mod tests {
             ]
         }"#;
         let p = projector(DOTTED);
-        // The document loads, so this is a real wire the engine makes — not a malformed edge case.
-        assert!(!p.index().render().contains("DOES NOT LOAD"));
+        assert!(p.index().render().contains("DOES NOT LOAD"));
         let z = p.zoom(&Selection::names(["/my"]));
         let bystander = z.nodes.iter().find(|n| n.address == "/my").unwrap();
         assert!(bystander.consumers.is_empty(), "{:?}", bystander.consumers);

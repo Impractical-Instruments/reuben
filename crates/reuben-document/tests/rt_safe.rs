@@ -3,9 +3,9 @@
 //! messages (events are zero-copy views). A counting allocator makes any allocation on
 //! the audio path observable.
 //!
-//! One layer up, [`Engine::queue`] + [`Engine::fill`] — the host-facing route queued Messages
-//! reach the renderer through — performs zero allocation too, and frees nothing but the
-//! consumed Messages' own address `String`s.
+//! One layer up, [`Engine::queue_osc`] + [`Engine::fill`] — the route a host's flat-arg control
+//! reaches the renderer through — touches the heap not at all. [`Engine::queue`] takes a Message
+//! its caller built, so it allocates nothing and frees only that Message's address `String`.
 //!
 //! This file is its own test binary. Counting is armed per-thread by the shared [`rt_alloc`]
 //! harness — each measured window arms this thread only around the render loop under test —
@@ -540,13 +540,59 @@ fn engine_fill_with_queued_messages_is_allocation_free_after_warmup() {
         "queue + fill of message-bearing blocks allocated {} time(s)",
         counts.allocs
     );
-    // A consumed Message is dropped after its block, freeing its address `String` — one free
-    // apiece is the payload's own cost. Anything above that is the handoff buffer being freed.
+    // `queue` drops each Message's address `String` once it has resolved it — one free apiece is
+    // the caller's allocation coming back. Anything above that is the handoff buffer being freed.
     assert_eq!(
         counts.frees,
         BLOCKS * PER_BLOCK,
         "queue + fill freed {} time(s) for {} consumed messages",
         counts.frees,
         BLOCKS * PER_BLOCK
+    );
+}
+
+#[test]
+fn engine_queue_osc_and_fill_is_heap_neutral_after_warmup() {
+    let cfg = AudioConfig::new(48_000.0, 256);
+    let graph = load_instrument(DEFAULT_JSON, &Registry::builtin(), &InstrumentsDir)
+        .expect("load default.json")
+        .graph;
+    let mut e = Engine::new(Plan::instantiate(graph, cfg).expect("instantiate"));
+    // Exactly one block per `fill`, so every measured block carries the messages queued before it.
+    let mut out = vec![0.0f32; cfg.block_size * e.channels()];
+
+    const BLOCKS: usize = 100;
+    const PER_BLOCK: usize = 2;
+    // Both inbound targets a host reaches: the dissolved `notes` pipe's address and the node port
+    // it collapsed into. A note-on then a note-off per block, so the voice pool cycles.
+    const ADDRESSES: [&str; PER_BLOCK] = ["/notes/in", "/voicer/notes"];
+    let args = |b: usize, i: usize| {
+        [
+            Arg::F32(48.0 + (b % 24) as f32),
+            Arg::F32((i == 0) as u8 as f32),
+        ]
+    };
+    let mut block = |e: &mut Engine, b: usize| {
+        for (i, address) in ADDRESSES.iter().enumerate() {
+            e.queue_osc(address, &args(b, i));
+        }
+        e.fill(&mut out);
+    };
+
+    for b in 0..16 {
+        block(&mut e, b);
+    }
+
+    assert_counter_is_live();
+    let counts = measure(|| {
+        for b in 0..BLOCKS {
+            block(&mut e, b);
+        }
+    });
+    assert_eq!(e.pending_len(), 0, "fill must consume every queued message");
+    assert_eq!(
+        (counts.allocs, counts.frees),
+        (0, 0),
+        "{BLOCKS} blocks of {PER_BLOCK} queue_osc + fill touched the heap"
     );
 }

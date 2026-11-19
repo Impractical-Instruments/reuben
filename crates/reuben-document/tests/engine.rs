@@ -308,3 +308,181 @@ fn queued_messages_are_consumed_once() {
     e.fill(&mut out);
     assert_eq!(e.pending_len(), 0, "pending messages not drained");
 }
+
+#[test]
+fn control_that_cannot_land_is_dropped_without_touching_the_render() {
+    // An address no port answers, and a real port sent arguments it cannot take, are both dropped
+    // at `queue_osc` — nothing waits for the next block — and the render is bit-identical to one
+    // that was never sent them.
+    let cfg = AudioConfig::new(48_000.0, 256);
+    let mut sent = engine_with_note();
+    let mut clean = engine_with_note();
+    sent.queue_osc("/nowhere/at/all", &[Arg::F32(1.0)]);
+    sent.queue_osc("/voicer", &[Arg::F32(1.0)]);
+    sent.queue_osc("/voicer/notes", &[Arg::Str("loud".into())]);
+    sent.queue_osc("/voicer/notes", &[]);
+    assert_eq!(sent.pending_len(), clean.pending_len());
+
+    // The typed form: an unknown address and a payload the port's kind cannot hold.
+    sent.queue(reuben_core::Message::float("/nowhere/at/all", 1.0, 0));
+    sent.queue(reuben_core::Message::float("/voicer/notes", 1.0, 0));
+
+    let mut a = vec![0.0f32; 8 * cfg.block_size * sent.channels()];
+    let mut b = a.clone();
+    sent.fill(&mut a);
+    clean.fill(&mut b);
+    assert_eq!(sent.pending_len(), 0);
+    assert!(
+        a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()),
+        "dropped control changed the render"
+    );
+}
+
+/// A filter with an enum `mode`, a dissolved `cut` pipe, and an `osc_out` sink fed by an `echo`
+/// pipe: the shapes the shipped instruments lack (enum ports, outbound traffic).
+const PARITY_JSON: &str = r#"{
+  "format_version": 3, "instrument": "parity",
+  "interface": {
+    "inputs": {
+      "cut":  { "type": "f32_buffer", "default": 800, "min": 20, "max": 20000 },
+      "echo": { "type": "f32", "default": 0 }
+    },
+    "outputs": { "main": { "from": "/out.audio" } }
+  },
+  "nodes": [
+    { "type": "oscillator", "address": "/osc" },
+    { "type": "filter", "address": "/filt",
+      "inputs": { "audio": { "from": "/osc.audio" }, "cutoff": { "from": "/cut" } } },
+    { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/filt.audio" } } },
+    { "type": "osc_out", "address": "/fb", "inputs": { "in": { "from": "/echo" } } }
+  ]
+}"#;
+
+/// A fixed-seed xorshift: the parity sweep must replay identically on every run.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+    fn f32(&mut self, lo: f32, hi: f32) -> f32 {
+        lo + (self.next() % 10_000) as f32 / 10_000.0 * (hi - lo)
+    }
+}
+
+#[test]
+fn queued_control_renders_exactly_as_the_addressed_render_path() {
+    // The Engine resolves control when it is queued; `Renderer::render_block_multi` resolves the
+    // same Messages while routing. Random traffic — real ports, dissolved-pipe aliases, garbage
+    // addresses, every arg shape, both queueing entry points — must render bit-identically and
+    // send identical outbound Messages either way.
+    use reuben_core::render::Renderer;
+    use reuben_core::vocab::pitch::{Note, Pitch};
+    use reuben_core::Message;
+
+    const CHORD_JSON: &str = include_str!("../../../instruments/chord-player.json");
+    const CHORD_VOICE_JSON: &str =
+        include_str!("../../../instruments/voices/chord-player-voice.json");
+    const BLOCKS: usize = 300;
+    let cfg = AudioConfig::new(48_000.0, 128);
+    let mut resolver = default_resolver();
+    resolver.insert_text("voices/chord-player-voice.json", CHORD_VOICE_JSON);
+
+    let strs: Vec<Arg> = ["Lp", "Bp", "Smooth", "bogus", ""]
+        .iter()
+        .map(|s| Arg::Str((*s).into()))
+        .collect();
+    let (mut aliases, mut outbound_seen) = (0, 0);
+    for (name, doc) in [
+        ("default", DEFAULT_JSON),
+        ("chord-player", CHORD_JSON),
+        ("parity", PARITY_JSON),
+    ] {
+        let load = || {
+            reuben_document::load_instrument(doc, &Registry::builtin(), &resolver)
+                .expect("loads")
+                .graph
+        };
+        let mut engine = Engine::new(Plan::instantiate(load(), cfg).expect("instantiate"));
+        let mut plan = Plan::instantiate(load(), cfg).expect("instantiate");
+        let mut renderer = Renderer::new(&plan);
+
+        let mut addresses: Vec<String> = plan
+            .input_aliases()
+            .iter()
+            .map(|a| format!("{}/{}", a.address, a.port.name))
+            .collect();
+        aliases += addresses.len();
+        for n in plan.nodes() {
+            addresses.extend(
+                n.descriptor
+                    .inputs
+                    .iter()
+                    .map(|p| format!("{}/{}", n.address, p.name)),
+            );
+        }
+        addresses.extend(["/nowhere", "/", "", "/out", "/voicer/notes/extra"].map(String::from));
+
+        let ch = engine.channels();
+        let mut out = vec![0.0f32; cfg.block_size * ch];
+        let mut master = vec![vec![0.0f32; cfg.block_size]; ch];
+        let mut outbound: Vec<Message> = Vec::new();
+        let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+        for block in 0..BLOCKS {
+            let mut messages = Vec::new();
+            for _ in 0..rng.below(6) {
+                let address = addresses[rng.below(addresses.len())].clone();
+                if rng.below(2) == 0 {
+                    let args: Vec<Arg> = match rng.below(6) {
+                        0 => vec![Arg::F32(rng.f32(0.0, 1.0))],
+                        1 => vec![Arg::I32(rng.below(8) as i32)],
+                        2 => vec![Arg::F32(rng.f32(40.0, 80.0)), Arg::F32(rng.below(2) as f32)],
+                        3 => vec![strs[rng.below(strs.len())].clone()],
+                        4 => vec![],
+                        _ => vec![Arg::I32(1), Arg::F32(0.5), Arg::F32(0.5)],
+                    };
+                    engine.queue_osc(&address, &args);
+                    messages.extend(plan.osc_in_message(&address, &args));
+                } else {
+                    let arg = match rng.below(5) {
+                        0 => Arg::F32(rng.f32(0.0, 1.0)),
+                        1 => Arg::I32(rng.below(8) as i32),
+                        2 => Arg::Note(Note::new(
+                            Pitch::Absolute(rng.f32(40.0, 80.0)),
+                            rng.below(2) as f32,
+                        )),
+                        3 => Arg::Enum(rng.below(4) as u32),
+                        _ => strs[rng.below(strs.len())].clone(),
+                    };
+                    let msg = Message::new(address, arg, rng.below(cfg.block_size));
+                    engine.queue(msg.clone());
+                    messages.push(msg);
+                }
+            }
+
+            engine.fill(&mut out);
+            renderer.render_block_multi(&mut plan, &messages, &[], &mut master, &mut outbound);
+            for f in 0..cfg.block_size {
+                for c in 0..ch {
+                    assert_eq!(
+                        out[f * ch + c].to_bits(),
+                        master[c][f].to_bits(),
+                        "{name}: block {block} frame {f} channel {c} diverged"
+                    );
+                }
+            }
+            let sent: Vec<Message> = engine.drain_outbound().collect();
+            assert_eq!(sent, outbound, "{name}: block {block} outbound diverged");
+            outbound_seen += sent.len();
+            outbound.clear();
+        }
+    }
+    assert!(aliases > 0, "the sweep must reach a dissolved-pipe alias");
+    assert!(outbound_seen > 0, "the sweep must send outbound traffic");
+}

@@ -14,7 +14,7 @@ use slotmap::{new_key_type, SecondaryMap, SlotMap};
 
 use crate::descriptor::Descriptor;
 use crate::message::Arg;
-use crate::operator::{Operator, PortIndex};
+use crate::operator::{InPort, Operator, OutPort};
 
 new_key_type! {
     /// Stable identity of a node within a Graph.
@@ -202,14 +202,49 @@ impl Graph {
         }
     }
 
-    /// Connect `src` output port to `dst` input port. Ports are typed contract handles
-    /// (`OUT_*`/`IN_*`) or bare indices (the loader's resolved ordinals).
+    /// Connect `src` output port to `dst` input port. Each port is a typed contract handle — an
+    /// `OUT_*` const for the source, an `IN_*` const for the destination — or a bare `usize` (the
+    /// loader's resolved ordinals). A handle's direction is checked here, at compile time; a bare
+    /// index is range-checked only at Instantiate, as
+    /// [`PlanError::PortOutOfRange`](crate::plan::PlanError::PortOutOfRange).
+    ///
+    /// ```
+    /// use reuben_core::operators::{oscillator, output, Oscillator, Output};
+    /// use reuben_core::Graph;
+    ///
+    /// let mut g = Graph::new();
+    /// let osc = g.add("/osc", Oscillator::new());
+    /// let out = g.add("/out", Output::new());
+    /// g.connect(osc, oscillator::OUT_AUDIO, out, output::IN_AUDIO);
+    /// ```
+    ///
+    /// An input handle in the source position does not compile:
+    ///
+    /// ```compile_fail,E0277
+    /// # use reuben_core::operators::{oscillator, output, Oscillator, Output};
+    /// # use reuben_core::Graph;
+    /// # let mut g = Graph::new();
+    /// # let osc = g.add("/osc", Oscillator::new());
+    /// # let out = g.add("/out", Output::new());
+    /// g.connect(osc, oscillator::IN_WAVEFORM, out, output::IN_AUDIO);
+    /// ```
+    ///
+    /// Nor does an output handle in the destination position:
+    ///
+    /// ```compile_fail,E0277
+    /// # use reuben_core::operators::{oscillator, output, Oscillator, Output};
+    /// # use reuben_core::Graph;
+    /// # let mut g = Graph::new();
+    /// # let osc = g.add("/osc", Oscillator::new());
+    /// # let out = g.add("/out", Output::new());
+    /// g.connect(osc, oscillator::OUT_AUDIO, out, output::OUT_AUDIO);
+    /// ```
     pub fn connect(
         &mut self,
         src: NodeKey,
-        src_port: impl PortIndex,
+        src_port: impl OutPort,
         dst: NodeKey,
-        dst_port: impl PortIndex,
+        dst_port: impl InPort,
     ) {
         self.connections.push(Connection {
             src,
@@ -219,14 +254,34 @@ impl Graph {
         });
     }
 
-    /// Designate a master output tap broadcast to every logical channel (the mono fan).
-    pub fn tap_output(&mut self, node: NodeKey, port: impl PortIndex) {
+    /// Designate a master output tap broadcast to every logical channel (the mono fan). `port`
+    /// is an `OUT_*` handle or a bare `usize`, as for [`connect`](Self::connect)'s source.
+    ///
+    /// ```
+    /// use reuben_core::operators::{output, Output};
+    /// use reuben_core::Graph;
+    ///
+    /// let mut g = Graph::new();
+    /// let out = g.add("/out", Output::new());
+    /// g.tap_output(out, output::OUT_AUDIO);
+    /// ```
+    ///
+    /// An input handle does not compile:
+    ///
+    /// ```compile_fail,E0277
+    /// # use reuben_core::operators::{output, Output};
+    /// # use reuben_core::Graph;
+    /// # let mut g = Graph::new();
+    /// # let out = g.add("/out", Output::new());
+    /// g.tap_output(out, output::IN_AUDIO);
+    /// ```
+    pub fn tap_output(&mut self, node: NodeKey, port: impl OutPort) {
         self.outputs.push((node, port.index(), None));
     }
 
     /// Designate a master output tap feeding a single logical master `channel` —
     /// e.g. a `pan` op's `left`/`right` tapped as channel 0 / 1.
-    pub fn tap_output_channel(&mut self, node: NodeKey, port: impl PortIndex, channel: usize) {
+    pub fn tap_output_channel(&mut self, node: NodeKey, port: impl OutPort, channel: usize) {
         self.outputs.push((node, port.index(), Some(channel)));
     }
 

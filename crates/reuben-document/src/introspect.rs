@@ -12,7 +12,7 @@ use crate::format::{
 };
 use crate::resources::ResourceResolver;
 use reuben_core::descriptor::{Curve, Descriptor, Port, PortType};
-use reuben_core::plan::{Plan, PlanError};
+use reuben_core::plan::{Plan, PlanError, PortPosition};
 use reuben_core::registry::Registry;
 use reuben_core::AudioConfig;
 
@@ -599,31 +599,33 @@ impl Fault {
     /// - a document-level error (unparseable text, a version, a resource cycle, anonymous outputs)
     ///   has no slot at all.
     fn of_load(e: &LoadError, diag: &Diag) -> Option<Self> {
-        let field = match e {
-            LoadError::UnknownNode { at: None, .. }
-            | LoadError::UnknownPort { at: None, .. }
-            | LoadError::AmbiguousWire { at: None, .. }
-            | LoadError::InterfaceOverride { .. }
-            | LoadError::InterfacePipe { .. }
-            | LoadError::Json(_)
-            | LoadError::UnsupportedVersion { .. }
-            | LoadError::CyclicResource { .. }
-            | LoadError::AnonymousOutputs => return None,
-            LoadError::UnknownConfig { name, .. } | LoadError::ConstantInInputs { name, .. } => {
-                Some(name.clone())
-            }
-            LoadError::BadInputValue { surface, .. }
-            | LoadError::BadInputLiteral { surface, .. } => Some(surface.noun().to_string()),
-            LoadError::UnknownResource { slot, .. } => Some(slot.clone()),
-            LoadError::InvalidAddress { rule, .. } => Some((*rule).to_string()),
-            LoadError::UnknownNode { .. }
-            | LoadError::UnknownPort { .. }
-            | LoadError::AmbiguousWire { .. }
-            | LoadError::UnknownType { .. }
-            | LoadError::DuplicateAddress(_)
-            | LoadError::UnknownInput { .. }
-            | LoadError::TypeMismatch { .. } => None,
-        };
+        let field =
+            match e {
+                LoadError::UnknownNode { at: None, .. }
+                | LoadError::UnknownPort { at: None, .. }
+                | LoadError::AmbiguousWire { at: None, .. }
+                | LoadError::InterfaceOverride { .. }
+                | LoadError::InterfacePipe { .. }
+                | LoadError::Json(_)
+                | LoadError::UnsupportedVersion { .. }
+                | LoadError::CyclicResource { .. }
+                | LoadError::AnonymousOutputs => return None,
+                LoadError::UnknownConfig { name, .. }
+                | LoadError::ConstantInInputs { name, .. } => Some(name.clone()),
+                LoadError::BadInputValue { surface, .. }
+                | LoadError::BadInputLiteral { surface, .. } => Some(surface.noun().to_string()),
+                LoadError::UnknownResource { slot, .. } => Some(slot.clone()),
+                LoadError::InvalidAddress { rule, .. }
+                | LoadError::InvalidPipeName { rule, .. } => Some((*rule).to_string()),
+                LoadError::InputSetTwice { to, .. } => Some(to.clone()),
+                LoadError::UnknownNode { .. }
+                | LoadError::UnknownPort { .. }
+                | LoadError::AmbiguousWire { .. }
+                | LoadError::UnknownType { .. }
+                | LoadError::DuplicateAddress(_)
+                | LoadError::UnknownInput { .. }
+                | LoadError::TypeMismatch { .. } => None,
+            };
         Some(Fault {
             kind: std::mem::discriminant(e),
             node: diag.node.clone(),
@@ -717,6 +719,42 @@ fn faulted(
                     warnings,
                 },
                 vec![fault],
+            )
+        }
+        // Unreachable from a document: the loader resolves port *names*, so every index it hands
+        // Instantiate is a declared one. Kept as a backstop like the arm above. `port` stays
+        // `None` because the refusal carries an index the descriptor has no name for.
+        Err(PlanError::PortOutOfRange {
+            node,
+            position,
+            port,
+            declared,
+        }) => {
+            let (role, side) = match &position {
+                PortPosition::Source => ("wire source".to_string(), "outputs"),
+                PortPosition::Destination => ("wire destination".to_string(), "inputs"),
+                PortPosition::Tap => ("master tap".to_string(), "outputs"),
+                PortPosition::InterfaceInput(name) => {
+                    (format!("interface input {name:?}"), "inputs")
+                }
+                PortPosition::InterfaceOutput(name) => {
+                    (format!("interface output {name:?}"), "outputs")
+                }
+            };
+            // A backstop no document reaches, so it is never attributed.
+            (
+                Report {
+                    ok: false,
+                    errors: vec![Diag {
+                        message: format!(
+                            "{role} names port {port} on {node}, which declares {declared} {side}"
+                        ),
+                        node: Some(node),
+                        port: None,
+                    }],
+                    warnings,
+                },
+                vec![None],
             )
         }
     }

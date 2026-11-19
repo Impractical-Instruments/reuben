@@ -88,7 +88,8 @@ impl NormalizedDoc {
             });
         }
         // Before v1's step 0, so a node it would move aside for a minted pipe address has already
-        // left that address if the rule refuses it, and is renamed once, from what the file holds.
+        // left that address if the rule refuses it, and is renamed once, from what the file holds;
+        // a v1 entry's name is the pipe it will mint, so it is renamed here too.
         if doc.format_version < 4 {
             migrate_addresses(&mut doc);
         }
@@ -131,13 +132,17 @@ impl NormalizedDoc {
     ///
     /// A graph holding an address the node address rule refuses — a spliced subpatch child's
     /// `/<sub>/<node>`, or any hand-built one — is [`LoadError::InvalidAddress`] naming that
-    /// node, never a document that cannot load.
+    /// node, and an interface input whose name mints one is [`LoadError::InvalidPipeName`]; never
+    /// a document that cannot load.
     pub fn from_graph(
         graph: &Graph,
         instrument: impl Into<String>,
         registry: &Registry,
     ) -> Result<Self, LoadError> {
         let doc = InstrumentDoc::from_graph_doc(graph, instrument);
+        for name in doc.interface.iter().flat_map(|i| i.inputs.keys()) {
+            check_pipe_name(name)?;
+        }
         for node in &doc.nodes {
             check_node_address(&node.address)?;
         }
@@ -429,35 +434,30 @@ fn suffixed_unclaimed(base: &str, taken: impl Fn(&str) -> bool) -> String {
         .expect("an unbounded suffix range always finds a free address")
 }
 
-/// The v3→v4 migration: each node address the node address rule refuses is renamed with its
-/// references rewritten. Every refused character becomes `_`, an empty name becomes `node`, and a
-/// result already held by a node or a minted pipe address takes step 0's `_N` suffix.
+/// The v3→v4 migration: each interface input pipe name and node address the node address rule
+/// refuses is renamed with its references rewritten. Every refused character becomes `_`, an empty
+/// name becomes `pipe` or `node`, and a result already claimed takes step 0's `_N` suffix. Pipes
+/// claim first, as they mint before nodes at load, so a node steps aside for a pipe as in step 0.
 ///
 /// Every new name is chosen before any reference is touched, and each reference is then split
-/// once against the addresses as written, the way the loader splits it. Renaming one node at a
-/// time would let `/my.tone`'s rename rewrite `/my.tone.x.audio` before `/my.tone.x` is matched.
+/// once against the addresses as written, the way the loader splits it. Renaming one at a time
+/// would let `/my.tone`'s rename rewrite `/my.tone.x.audio` before `/my.tone.x` is matched.
 fn migrate_addresses(doc: &mut InstrumentDoc) {
-    let minted: BTreeSet<String> = doc
+    let pipes: Vec<String> = doc
         .interface
         .iter()
-        .flat_map(|i| i.inputs.keys().map(|n| format!("/{n}")))
+        .flat_map(|i| i.inputs.keys().cloned())
         .collect();
+    let minted: BTreeSet<String> = pipes.iter().map(|n| format!("/{n}")).collect();
     let written: BTreeSet<String> = doc.nodes.iter().map(|n| n.address.clone()).collect();
     let mut claimed: BTreeSet<String> = written
         .iter()
-        .filter(|a| check_node_address(a).is_ok())
         .chain(&minted)
+        .filter(|a| check_node_address(a).is_ok())
         .cloned()
         .collect();
-    let mut renames: BTreeMap<String, String> = BTreeMap::new();
-    for node in &doc.nodes {
-        let old = &node.address;
-        if check_node_address(old).is_ok() || renames.contains_key(old) {
-            continue;
-        }
+    let mut claim = |old: &str, fallback: &str| {
         let segment: String = old
-            .strip_prefix('/')
-            .unwrap_or(old)
             .chars()
             .map(|c| match refused_address_char(c) {
                 Some(_) => '_',
@@ -465,7 +465,7 @@ fn migrate_addresses(doc: &mut InstrumentDoc) {
             })
             .collect();
         let base = if segment.is_empty() {
-            "/node".to_string()
+            format!("/{fallback}")
         } else {
             format!("/{segment}")
         };
@@ -475,11 +475,37 @@ fn migrate_addresses(doc: &mut InstrumentDoc) {
             base
         };
         claimed.insert(new.clone());
-        renames.insert(old.clone(), new);
+        new
+    };
+    let mut pipe_renames: BTreeMap<String, String> = BTreeMap::new();
+    for name in &pipes {
+        if check_pipe_name(name).is_err() {
+            let new = claim(name, "pipe");
+            let new = new
+                .strip_prefix('/')
+                .expect("a claimed address starts with `/`");
+            pipe_renames.insert(name.clone(), new.to_string());
+        }
     }
-    if renames.is_empty() {
+    let mut node_renames: BTreeMap<String, String> = BTreeMap::new();
+    for node in &doc.nodes {
+        let old = &node.address;
+        if check_node_address(old).is_ok() || node_renames.contains_key(old) {
+            continue;
+        }
+        let new = claim(old.strip_prefix('/').unwrap_or(old), "node");
+        node_renames.insert(old.clone(), new);
+    }
+    if pipe_renames.is_empty() && node_renames.is_empty() {
         return;
     }
+    // Keyed by the address a reference spells. Where a v1 node and the pipe its entry mints share
+    // one, the reference meant the node, so the node's rename is the one it follows.
+    let renames: BTreeMap<String, String> = pipe_renames
+        .iter()
+        .map(|(old, new)| (format!("/{old}"), format!("/{new}")))
+        .chain(node_renames.iter().map(|(o, n)| (o.clone(), n.clone())))
+        .collect();
     let addressable: BTreeSet<&String> = written.iter().chain(&minted).collect();
     let rewrite = |reference: &mut String| {
         let renamed = if addressable.contains(reference) {
@@ -509,14 +535,25 @@ fn migrate_addresses(doc: &mut InstrumentDoc) {
                 InterfaceEntry::Pipe(_) => {}
             }
         }
+        for (old, new) in &pipe_renames {
+            let entry = iface
+                .inputs
+                .remove(old)
+                .expect("a renamed pipe is declared");
+            iface.inputs.insert(new.clone(), entry);
+            doc.migration.warnings.push(LoadWarning::RenamedPipe {
+                from: old.clone(),
+                to: new.clone(),
+            });
+        }
     }
     for tap in &mut doc.outputs {
-        if let Some(new) = renames.get(&tap.node) {
+        if let Some(new) = node_renames.get(&tap.node) {
             tap.node = new.clone();
         }
     }
     for node in &mut doc.nodes {
-        if let Some(new) = renames.get(&node.address) {
+        if let Some(new) = node_renames.get(&node.address) {
             let from = std::mem::replace(&mut node.address, new.clone());
             doc.migration.warnings.push(LoadWarning::RenamedAddress {
                 from,
@@ -854,10 +891,13 @@ fn child_input_pipe(
         })?;
         ctx.docs.insert(canon.clone(), child);
     }
-    let pipe = ctx.docs[&canon]
+    let child = &ctx.docs[&canon];
+    let renamed = renamed_pipes(&child.migration.warnings);
+    let declared = renamed.get(port_name).map_or(port_name, String::as_str);
+    let pipe = child
         .interface
         .as_ref()
-        .and_then(|i| i.inputs.get(port_name))
+        .and_then(|i| i.inputs.get(declared))
         .and_then(|e| e.pipe())
         .cloned()
         .ok_or_else(|| LoadError::UnknownInput {
@@ -1245,16 +1285,143 @@ mod tests {
             "interface":{"inputs":{"a b":"/a b.freq"}},
             "nodes":[{"type":"oscillator","address":"/a b"}]}"#;
         let doc = NormalizedDoc::from_json(json, &reg(), None).expect("migrates");
-        assert_eq!(doc.nodes[0].address, "/a_b");
-        assert_eq!(wire(&doc, "/a_b", "freq"), "/a b");
-        assert_eq!(renames(&doc), [("/a b", "/a_b")]);
+        // The pipe claims first, as it mints before nodes at load; the node steps aside once.
+        assert_eq!(doc.nodes[0].address, "/a_b_2");
+        assert_eq!(wire(&doc, "/a_b_2", "freq"), "/a_b");
+        assert_eq!(renames(&doc), [("/a b", "/a_b_2")]);
+        assert_eq!(pipe_renames(&doc), [("a b", "a_b")]);
         let migration_renames = doc
             .migration
             .warnings
             .iter()
             .filter(|w| w.to_string().contains("renamed"))
             .count();
-        assert_eq!(migration_renames, 1, "{:?}", doc.migration.warnings);
+        assert_eq!(migration_renames, 2, "{:?}", doc.migration.warnings);
+        doc.build(&reg()).expect("the migrated document loads");
+    }
+
+    fn pipe_renames(doc: &NormalizedDoc) -> Vec<(&str, &str)> {
+        doc.migration
+            .warnings
+            .iter()
+            .filter_map(|w| match w {
+                LoadWarning::RenamedPipe { from, to } => Some((from.as_str(), to.as_str())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Three refused pipe names — dotted, spaced (its `_` spelling already taken by another pipe)
+    /// and empty — each consumed through every reference form: a bare wire-ref, a `.out` wire-ref
+    /// and an output feed.
+    fn pipes_doc(version: u32, tone: &str, gain: &str, blank: &str) -> String {
+        serde_json::json!({
+            "format_version": version,
+            "instrument": "t",
+            "interface": {
+                "inputs": {
+                    tone: { "type": "f32_buffer", "default": 330.0, "min": 20.0, "max": 8000.0 },
+                    gain: { "type": "f32_buffer", "default": 0.5 },
+                    blank: { "type": "f32_buffer", "default": 220.0 },
+                    "a_b": { "type": "f32_buffer", "default": 0.25 }
+                },
+                "outputs": {
+                    "main": { "from": "/mix" },
+                    "low": { "from": "/mix2" },
+                    "tone": { "from": format!("/{tone}") }
+                }
+            },
+            "nodes": [
+                { "type": "oscillator", "address": "/osc", "inputs": { "freq": { "from": format!("/{tone}") } } },
+                { "type": "oscillator", "address": "/osc2", "inputs": { "freq": { "from": format!("/{blank}.out") } } },
+                { "type": "mul_f32_signal", "address": "/mix",
+                  "inputs": { "a": { "from": "/osc" }, "b": { "from": format!("/{gain}") } } },
+                { "type": "mul_f32_signal", "address": "/mix2",
+                  "inputs": { "a": { "from": "/osc2" }, "b": { "from": "/a_b.out" } } }
+            ]
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn a_pre_v4_document_renames_each_refused_pipe_name_and_rewrites_its_references() {
+        let doc = NormalizedDoc::from_json(&pipes_doc(3, "my.tone", "a b", ""), &reg(), None)
+            .expect("migrates");
+        let iface = doc.interface.as_ref().unwrap();
+        let names: Vec<&str> = iface.inputs.keys().map(String::as_str).collect();
+        assert_eq!(names, ["a_b", "a_b_2", "my_tone", "pipe"]);
+        assert_eq!(wire(&doc, "/osc", "freq"), "/my_tone");
+        assert_eq!(wire(&doc, "/osc2", "freq"), "/pipe.out");
+        assert_eq!(wire(&doc, "/mix", "b"), "/a_b_2");
+        assert_eq!(wire(&doc, "/mix2", "b"), "/a_b.out");
+        assert_eq!(iface.outputs["tone"].feed().unwrap().from, "/my_tone");
+        assert_eq!(
+            pipe_renames(&doc),
+            [("", "pipe"), ("a b", "a_b_2"), ("my.tone", "my_tone")]
+        );
+        assert!(renames(&doc).is_empty(), "no node address was refused");
+        let message = doc.migration.warnings[0].to_string();
+        assert!(
+            message.contains("OSC"),
+            "the warning says the control address moved: {message}"
+        );
+        assert_eq!(doc.format_version, FORMAT_VERSION);
+
+        let by_hand = NormalizedDoc::from_json(
+            &pipes_doc(FORMAT_VERSION, "my_tone", "a_b_2", "pipe"),
+            &reg(),
+            None,
+        )
+        .expect("parses");
+        assert!(pipe_renames(&by_hand).is_empty());
+        let (migrated, native) = (render(&doc), render(&by_hand));
+        assert!(
+            migrated.iter().any(|s| *s != 0.0),
+            "the fixture renders sound"
+        );
+        assert_eq!(
+            migrated.iter().map(|s| s.to_bits()).collect::<Vec<_>>(),
+            native.iter().map(|s| s.to_bits()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_current_document_with_a_refused_pipe_name_is_not_migrated() {
+        let doc = NormalizedDoc::from_json(
+            &pipes_doc(FORMAT_VERSION, "my.tone", "a b", ""),
+            &reg(),
+            None,
+        )
+        .expect("parses");
+        assert!(pipe_renames(&doc).is_empty());
+        assert!(matches!(
+            doc.build(&reg()),
+            Err(LoadError::InvalidPipeName { .. })
+        ));
+    }
+
+    /// A refused node address whose `_` spelling an input pipe already mints moves past it, and
+    /// a refused pipe name whose spelling a node holds does the same.
+    #[test]
+    fn a_renamed_pipe_and_a_renamed_node_never_claim_one_address() {
+        let json = serde_json::json!({
+            "format_version": 3,
+            "instrument": "t",
+            "interface": { "inputs": {
+                "a_b": { "type": "f32_buffer", "default": 1.0 },
+                "c d": { "type": "f32_buffer", "default": 2.0 }
+            } },
+            "nodes": [
+                { "type": "oscillator", "address": "/a b", "inputs": { "freq": { "from": "/c d" } } },
+                { "type": "oscillator", "address": "/c_d", "inputs": { "freq": { "from": "/a_b" } } }
+            ]
+        })
+        .to_string();
+        let doc = NormalizedDoc::from_json(&json, &reg(), None).expect("migrates");
+        assert_eq!(renames(&doc), [("/a b", "/a_b_2")]);
+        assert_eq!(pipe_renames(&doc), [("c d", "c_d_2")]);
+        assert_eq!(wire(&doc, "/a_b_2", "freq"), "/c_d_2");
+        doc.build(&reg()).expect("the migrated document loads");
     }
 
     #[test]

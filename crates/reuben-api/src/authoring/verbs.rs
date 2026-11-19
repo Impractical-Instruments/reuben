@@ -1894,6 +1894,56 @@ mod tests {
         assert!(store.read("inst.json").contains("/my_osc"));
     }
 
+    #[test]
+    fn adding_an_input_pipe_whose_name_mints_a_refused_address_is_refused() {
+        let doc = r#"{ "format_version": 4, "instrument": "s", "nodes": [] }"#;
+        let store = MemoryStore::with("inst.json", doc);
+        let args = AddInstrumentInterfaceInput {
+            source: "inst.json".to_string(),
+            name: "my.tone".to_string(),
+            type_name: "f32".to_string(),
+            ..Default::default()
+        };
+        let answer = add_instrument_interface_input(&args, &store).expect("the verb runs");
+        assert!(!answer.output.written, "{:?}", answer.output.report);
+        let error = answer
+            .output
+            .report
+            .errors
+            .iter()
+            .find(|d| d.port.as_deref() == Some("my.tone"))
+            .unwrap_or_else(|| panic!("{:?}", answer.output.report.errors));
+        assert!(error.message.contains("`.`"), "{}", error.message);
+        assert_eq!(store.read("inst.json"), doc);
+    }
+
+    /// A pipe rename the edit's migration made reaches the caller as a warning on the new name.
+    #[test]
+    fn an_edit_that_migrates_a_refused_pipe_name_reports_the_rename() {
+        let store = MemoryStore::with(
+            "inst.json",
+            r#"{ "format_version": 3, "instrument": "s",
+                 "interface": { "inputs": { "my tone": { "type": "f32", "default": 0.5 } } },
+                 "nodes": [] }"#,
+        );
+        let args = SetInstrumentName {
+            source: "inst.json".to_string(),
+            name: "t".to_string(),
+            expect: None,
+        };
+        let answer = set_instrument_name(&args, &store).expect("edit");
+        assert!(answer.output.written, "{:?}", answer.output.report);
+        let warning = answer
+            .output
+            .report
+            .warnings
+            .iter()
+            .find(|d| d.port.as_deref() == Some("my_tone"))
+            .unwrap_or_else(|| panic!("{:?}", answer.output.report.warnings));
+        assert!(warning.message.contains("my tone"), "{}", warning.message);
+        assert!(store.read("inst.json").contains("my_tone"));
+    }
+
     /// The loader resolves each sample once and names no node; the read names every node reading
     /// it, so an editor can show the missing file where it is used.
     #[test]

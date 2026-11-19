@@ -772,9 +772,9 @@ fn a_node_at_a_minted_address_steps_aside_with_its_references() {
 }
 
 #[test]
-fn dotted_v1_entry_names_mint_and_resolve() {
-    // A dotted v1 entry name ("my.tone" — just a map key in v1) mints /my.tone; the flipped
-    // consumer ref must resolve to the pipe, not misparse as node "/my" port "tone".
+fn dotted_v1_entry_names_migrate_and_resolve() {
+    // A dotted v1 entry name ("my.tone" — just a map key in v1) would mint `/my.tone`, which the
+    // node address rule refuses, so it mints `/my_tone`; the flipped consumer ref resolves to it.
     const DOTTED: &str = r#"{
       "instrument": "dotted",
       "interface": { "inputs": { "my.tone": "/f.cutoff" } },
@@ -784,14 +784,21 @@ fn dotted_v1_entry_names_mint_and_resolve() {
     let none = MemoryResolver::new();
     let loaded = load_instrument(DOTTED, &reg, &none).expect("dotted names keep loading");
     let g = &loaded.graph;
-    let pipe = g.find("/my.tone").expect("pipe minted verbatim");
+    let pipe = g
+        .find("/my_tone")
+        .expect("pipe minted under the migrated name");
     assert_eq!(g.nodes[pipe].descriptor.type_name, "pipe");
     let f = g.find("/f").unwrap();
     assert!(
         g.connections.iter().any(|c| c.src == pipe && c.dst == f),
         "the consumer wire resolves to the pipe"
     );
-    assert!(g.interface.inputs.contains_key("my.tone"));
+    assert!(g.interface.inputs.contains_key("my_tone"));
+    assert!(loaded.warnings.iter().any(|w| matches!(
+        w,
+        reuben_document::format::LoadWarning::RenamedPipe { from, to }
+            if from == "my.tone" && to == "my_tone"
+    )));
 }
 
 #[test]

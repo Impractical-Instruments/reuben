@@ -284,6 +284,31 @@ impl<F> PortIndex for Out<F> {
     }
 }
 
+/// A [`PortIndex`] that may name an **output** port: an [`Out`] handle, or a bare `usize`. The
+/// bound on a wire's source and a master tap, so an [`In`] handle there fails to compile rather
+/// than indexing past the node's outputs. A bare index is unchecked here; Instantiate
+/// range-checks it.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not an output port",
+    label = "expected an `OUT_*` handle or a bare `usize` here",
+    note = "a wire's source and a master tap name an output; `IN_*` handles name inputs"
+)]
+pub trait OutPort: PortIndex {}
+
+/// A [`PortIndex`] that may name an **input** port: an [`In`] handle, or a bare `usize`. The bound
+/// on a wire's destination; see [`OutPort`].
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not an input port",
+    label = "expected an `IN_*` handle or a bare `usize` here",
+    note = "a wire's destination names an input; `OUT_*` handles name outputs"
+)]
+pub trait InPort: PortIndex {}
+
+impl OutPort for usize {}
+impl InPort for usize {}
+impl<F> OutPort for Out<F> {}
+impl<F: form::InForm> InPort for In<F> {}
+
 pub mod form {
     //! **Port-form markers** — the closed taxonomy of shapes a port read/write can
     //! take, mirroring the three wire forms: [`SignalF32`] (dense per-sample Signal),

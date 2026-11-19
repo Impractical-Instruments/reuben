@@ -379,7 +379,7 @@ identity, so `a.json` and `./a.json` are one cycle-guard/dedup key. For embedded
 core's in-memory `MemoryResolver` serves patches and samples by exact key with no filesystem.
 A document may declare a `format_version`;
 absent means 1, and a version newer than the engine understands refuses to load. The current
-version is **4** — the node address rule (see Addressing), after v3's presentation strip and the
+version is **4** — the node address rule on node addresses and input pipe names (see Addressing), after v3's presentation strip and the
 v2 interface-pipe direction flip. Old documents keep loading forever, migrated at parse: v1's
 target-form `interface` entries flip to pipes + consumer wire-refs (deriving each pipe's
 type/range/default from the old target port; the anonymous `outputs` array becomes named
@@ -389,12 +389,17 @@ retired presentation — is **ignored with a `LoadWarning` naming it** (`Depreca
 never read them; re-saving strips them); and a pre-v4 node `address` the address rule refuses is
 **renamed with a `RenamedAddress` warning** naming old → new — each refused character becomes `_`
 (`/a/osc` → `/a_osc`, `/my.tone` → `/my_tone`), an empty name becomes `/node`, a taken result gets
-an `_N` suffix, and every wire-ref and output feed naming it is rewritten. The node's OSC control
-address moves with it, so a controller still sending to the old one goes quiet until it follows.
+an `_N` suffix, and every wire-ref and output feed naming it is rewritten. An interface input pipe
+whose name mints a refused address is renamed the same way with a `RenamedPipe` warning (an empty
+name becomes `pipe`); pipes claim their names before nodes do. A host that names such a child's
+pipe by its old spelling keeps reaching it until the child is saved, then must use the new name;
+setting it under both names is refused.
+The OSC control address moves with the rename, so a controller still sending to the old one goes
+quiet until it follows.
 Every edit verb writes the current version, so the first edit to an older file is the one that
-lands its renames, and its report carries each `RenamedAddress` warning; later edits carry none. Migrated-vs-native renders are **bit-identical**
+lands its renames, and its report carries each `RenamedAddress` and `RenamedPipe` warning; later edits carry none. Migrated-vs-native renders are **bit-identical**
 (asserted in `crates/reuben-document/tests/format_v2.rs` and `format_v3.rs`, and for the v4
-address renames in `format/normalize.rs`). Save writes v4 — a
+address and pipe renames in `format/normalize.rs`). Save writes v4 — a
 migrated document never saves back under its old number. The whole normalize pipeline —
 version gate, migrations, stamp — lives in `format/normalize.rs` behind the **`NormalizedDoc`**
 type: `NormalizedDoc::from_json` is the
@@ -565,9 +570,10 @@ pattern characters `#*,?[]{}`. `/filter`, `/kick_2` and `/env-amp` pass; `/`, `/
 `/out/sub`, `/a b`, `/osc.audio` and `/ünï` are refused at load in a v4 document, so `validate`,
 every verb and a hand-written file all fail with an error naming the node. An older document is
 migrated instead: each refused address is renamed with a warning (see the format section). The
-rule covers the `address` field only, not interface pipe names. `/<node>/…` belongs to the nodes a
-`subpatch` splices in under its own address, which is also why `NormalizedDoc::from_graph` refuses
-a graph holding a spliced child.
+rule covers an interface input pipe's name too, since the pipe mints `/<name>`: `cutoff` passes,
+and `my.tone`, `a b`, `out/sub` and `""` are refused, with an error naming the pipe. `/<node>/…`
+belongs to the nodes a `subpatch` splices in under its own address, which is also why
+`NormalizedDoc::from_graph` refuses a graph holding a spliced child.
 
 ## Invariants you must not break <!-- lanes: skills,mcp,web -->
 
