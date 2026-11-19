@@ -10,6 +10,7 @@ mod inspector;
 mod pick;
 mod session;
 mod start;
+mod theme;
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -54,6 +55,7 @@ fn main() -> eframe::Result {
         // The engine starts here rather than before `run_native` so a session whose window never
         // opens never takes the audio device or the ports.
         Box::new(|cc| {
+            theme::install(&cc.egui_ctx);
             let root = args.instrument_root.clone().resolve();
             let controls = Controls::open(args.path.as_deref(), root.as_deref());
             let session = args.path.as_deref().map(|path| {

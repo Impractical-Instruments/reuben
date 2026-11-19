@@ -36,6 +36,7 @@ use reuben_api::FsResolver;
 use self::camera::Camera;
 pub use self::gesture::Gesture;
 pub use self::graph::Item;
+pub(crate) use self::graph::PortKind;
 use self::graph::{Graph, PortRef};
 use self::palette::Palette;
 
@@ -534,7 +535,8 @@ impl Canvas {
             ui.colored_label(ui.visuals().warn_fg_color, notice);
         }
         let mut gestures = Vec::new();
-        ui.horizontal(|ui| {
+        // Wrapped, so a narrow window or a wide face cannot push the canvas under the inspector.
+        ui.horizontal_wrapped(|ui| {
             ui.menu_button("Add node", |ui| {
                 if let Some(type_name) = self.palette.ui(ui) {
                     gestures.extend(self.add(&type_name));

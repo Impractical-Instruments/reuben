@@ -8,8 +8,9 @@ use super::graph::{Graph, NodeBox, Port, PortRef, Wire};
 /// The size, in canvas units, of the monospace text every label is drawn in.
 pub const TEXT_SIZE: f32 = 12.0;
 
-/// The advance of one glyph of egui's monospace font (Hack: 0.602 em) at [`TEXT_SIZE`], rounded
-/// up so an estimated label is never narrower than the drawn one.
+/// The advance of one glyph of the monospace face at [`TEXT_SIZE`], rounded up so an estimated
+/// label is never narrower than the drawn one. Courier Prime advances 0.600 em; egui's Hack, the
+/// fallback for glyphs Courier Prime lacks, 0.602 em.
 const GLYPH_WIDTH: f32 = 7.3;
 
 /// Height of one line of the header, and of one port row.

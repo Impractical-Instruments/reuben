@@ -142,7 +142,7 @@ fn node(
             continue;
         }
         ui.separator();
-        ui.strong(title);
+        crate::theme::section(ui, title);
         egui::Grid::new(title)
             .num_columns(2)
             .striped(true)

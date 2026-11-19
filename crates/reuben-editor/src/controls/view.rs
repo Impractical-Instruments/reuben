@@ -3,11 +3,12 @@
 
 use std::path::Path;
 
-use eframe::egui::{self, Color32, Rect, Sense, Stroke, StrokeKind, Vec2};
+use eframe::egui::{self, Rect, Sense, Stroke, StrokeKind, Vec2};
 use reuben_api::engine::ControlSendMessage;
 
 use super::model::{self, Control, Gesture, Kind, Panel, Shape, BLACK_DEPTH};
 use super::Setting;
+use crate::theme;
 
 const CELL_WIDTH: f32 = 72.0;
 const SLIDER_LENGTH: f32 = 96.0;
@@ -30,7 +31,7 @@ const KNOB_TRAVEL: f32 = 160.0;
 
 pub fn header(ui: &mut egui::Ui, surface: Option<&Path>, running: bool) {
     ui.horizontal(|ui| {
-        ui.strong("Controls");
+        theme::section(ui, "Controls");
         ui.weak(match surface {
             Some(path) => format!("from {}", path.display()),
             None => "generated from the instrument's interface".to_string(),
@@ -353,15 +354,15 @@ fn keyboard(
                 let fill = if *held == Some(key.midi) {
                     held_fill
                 } else if black {
-                    Color32::from_gray(24)
+                    theme::KEY_BLACK
                 } else {
-                    Color32::from_gray(236)
+                    theme::KEY_WHITE
                 };
                 painter.rect(
                     key_rect,
                     2.0,
                     fill,
-                    Stroke::new(1.0, Color32::from_gray(90)),
+                    Stroke::new(1.0, theme::KEY_EDGE),
                     StrokeKind::Inside,
                 );
             }

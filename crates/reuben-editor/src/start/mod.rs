@@ -207,7 +207,7 @@ impl Start {
     }
 
     fn library_ui(&mut self, ui: &mut egui::Ui, chosen: &mut Option<PathBuf>) {
-        ui.strong("Library");
+        crate::theme::section(ui, "Library");
         let dir = match &self.library_dir {
             Ok(dir) => dir,
             Err(why) => {
@@ -242,7 +242,7 @@ impl Start {
     }
 
     fn recent_ui(&mut self, ui: &mut egui::Ui, chosen: &mut Option<PathBuf>) {
-        ui.strong("Recent");
+        crate::theme::section(ui, "Recent");
         if let Some(warning) = &self.recent.warning {
             ui.colored_label(ui.visuals().warn_fg_color, warning);
         }
