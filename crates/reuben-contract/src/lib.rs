@@ -410,6 +410,7 @@ pub fn validate(spec: &OperatorSpec) -> Result<(), ContractError> {
         ));
     }
 
+    let mut seen_const = BTreeSet::new();
     for (i, p) in spec.constants.iter().enumerate() {
         let at = Locus::Constant(i);
         if !is_snake_case(&p.name) {
@@ -419,6 +420,12 @@ pub fn validate(spec: &OperatorSpec) -> Result<(), ContractError> {
                     "constant name {:?} must be snake_case: a lowercase letter then [a-z0-9_]",
                     p.name
                 ),
+            ));
+        }
+        if !seen_const.insert(p.name.as_str()) {
+            return Err(ContractError::new(
+                at,
+                format!("duplicate constant name {:?}", p.name),
             ));
         }
         validate_port(at, "constant", p)?;
@@ -449,16 +456,6 @@ pub fn validate(spec: &OperatorSpec) -> Result<(), ContractError> {
                 ));
             }
             validate_port(at, label, p)?;
-        }
-    }
-
-    let mut seen_const = BTreeSet::new();
-    for (i, p) in spec.constants.iter().enumerate() {
-        if !seen_const.insert(p.name.as_str()) {
-            return Err(ContractError::new(
-                Locus::Constant(i),
-                format!("duplicate constant name {:?}", p.name),
-            ));
         }
     }
 
@@ -713,8 +710,9 @@ mod tests {
         assert_eq!(dup_const.message, r#"duplicate constant name "voices""#);
     }
 
-    // A duplicate constant name is the last thing `validate` checks: every per-constant rule and
-    // every input/output rule outranks it, wherever the duplicate sits in the list.
+    // Constants follow the input/output rule: one pass in list order, each entry checked for
+    // snake_case, then duplicate name, then its data rules, and constants are checked before any
+    // input or output.
     fn constants_spec(constants: &[&str], inputs: &[&str], outputs: &[&str]) -> String {
         format!(
             r#"{{ "type_name": "x", "constants": [{}], "inputs": [{}], "outputs": [{}] }}"#,
@@ -732,16 +730,15 @@ mod tests {
     const PORT: &str = r#"{"name":"a","ty":"f32_buffer"}"#;
     const PORT_BAD_NAME: &str = r#"{"name":"A","ty":"f32_buffer"}"#;
     const PORT_OOB: &str = r#"{"name":"b","ty":"f32","f32":{"min":0,"max":1,"default":5}}"#;
+    const DUP_VOICES: &str = r#"duplicate constant name "voices""#;
 
     #[test]
-    fn a_later_constant_error_outranks_an_earlier_duplicate_constant() {
-        let e = err(&constants_spec(&[VOICES, VOICES, BAD_NAME], &[], &[]));
-        assert_eq!(e.locus, Locus::Constant(2));
-        assert!(e.message.contains("snake_case"), "{}", e.message);
-
-        let e = err(&constants_spec(&[VOICES, VOICES, RANGE_OOB], &[], &[]));
-        assert_eq!(e.locus, Locus::Constant(2));
-        assert!(e.message.contains("outside"), "{}", e.message);
+    fn an_earlier_duplicate_constant_outranks_a_later_constant_error() {
+        for later in [BAD_NAME, RANGE_OOB] {
+            let e = err(&constants_spec(&[VOICES, VOICES, later], &[], &[]));
+            assert_eq!(e.locus, Locus::Constant(1));
+            assert_eq!(e.message, DUP_VOICES);
+        }
     }
 
     #[test]
@@ -756,44 +753,25 @@ mod tests {
     }
 
     #[test]
-    fn a_constant_both_duplicate_and_out_of_range_reports_the_range() {
+    fn a_constant_both_duplicate_and_out_of_range_reports_the_duplicate() {
         let e = err(&constants_spec(&[VOICES, VOICES_OOB], &[], &[]));
         assert_eq!(e.locus, Locus::Constant(1));
-        assert_eq!(
-            e.message,
-            r#"constant "voices": default 99 outside [1, 32]"#
-        );
+        assert_eq!(e.message, DUP_VOICES);
     }
 
     #[test]
-    fn an_input_or_output_error_outranks_a_duplicate_constant() {
-        let dup = [VOICES, VOICES];
-        for (inputs, outputs, locus, needle) in [
-            (&[PORT_BAD_NAME][..], &[][..], Locus::Input(0), "snake_case"),
-            (
-                &[PORT, PORT][..],
-                &[][..],
-                Locus::Input(1),
-                "duplicate input",
-            ),
-            (&[PORT_OOB][..], &[][..], Locus::Input(0), "outside"),
-            (
-                &[][..],
-                &[PORT_BAD_NAME][..],
-                Locus::Output(0),
-                "snake_case",
-            ),
-            (
-                &[][..],
-                &[PORT, PORT][..],
-                Locus::Output(1),
-                "duplicate output",
-            ),
-            (&[][..], &[PORT_OOB][..], Locus::Output(0), "outside"),
+    fn a_duplicate_constant_outranks_any_input_or_output_error() {
+        for (inputs, outputs) in [
+            (&[PORT_BAD_NAME][..], &[][..]),
+            (&[PORT, PORT][..], &[][..]),
+            (&[PORT_OOB][..], &[][..]),
+            (&[][..], &[PORT_BAD_NAME][..]),
+            (&[][..], &[PORT, PORT][..]),
+            (&[][..], &[PORT_OOB][..]),
         ] {
-            let e = err(&constants_spec(&dup, inputs, outputs));
-            assert_eq!(e.locus, locus, "{}", e.message);
-            assert!(e.message.contains(needle), "{}", e.message);
+            let e = err(&constants_spec(&[VOICES, VOICES], inputs, outputs));
+            assert_eq!(e.locus, Locus::Constant(1), "{}", e.message);
+            assert_eq!(e.message, DUP_VOICES);
         }
     }
 
