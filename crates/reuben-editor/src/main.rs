@@ -134,7 +134,9 @@ impl Editor {
         self.canvas
             .reload(session.top(), session.root(), &session.tree().top().read);
         self.inspector = Inspector::default();
-        self.controls = Controls::open(Some(path), root);
+        if start::panel_follows(&session, &self.engine) {
+            self.controls = Controls::open(Some(path), root);
+        }
         self.session = Some(session);
         self.start.opened(path);
     }
@@ -145,6 +147,7 @@ impl Editor {
             return;
         };
         let poll = session.poll(Instant::now(), &|| self.engine.channel());
+        start::follow(session, &mut self.engine);
         if poll.reloaded {
             self.canvas
                 .reload(session.top(), session.root(), &session.tree().top().read);

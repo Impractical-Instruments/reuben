@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use reuben_api::authoring::{read_instrument, ReadInstrument};
 use reuben_api::FsResolver;
 
-/// One library document.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
     pub path: PathBuf,
@@ -19,13 +18,22 @@ pub struct Entry {
 }
 
 /// The library directory: `root` when one is given, else `instruments/` in the working directory
-/// when there is one. Absolute, so what is opened from it is named the same from anywhere.
-pub fn locate(root: Option<&Path>) -> Option<PathBuf> {
-    let dir = match root {
-        Some(root) => root.to_path_buf(),
-        None => PathBuf::from("instruments"),
-    };
-    dir.is_dir().then(|| super::recent::absolute(&dir))
+/// when there is one. Absolute, so what is opened from it is named the same from anywhere. `Err`
+/// says, for the start screen, why there is none.
+pub fn locate(root: Option<&Path>) -> Result<PathBuf, String> {
+    match root {
+        Some(root) if root.is_dir() => Ok(super::recent::absolute(root)),
+        Some(root) => Err(format!(
+            "No library: the instrument root {} is not a directory.",
+            root.display()
+        )),
+        None if Path::new("instruments").is_dir() => {
+            Ok(super::recent::absolute(Path::new("instruments")))
+        }
+        None => Err("No library: there is no instruments/ here. Name one with \
+                     --instrument-root or REUBEN_INSTRUMENT_ROOT."
+            .to_string()),
+    }
 }
 
 /// Every `*.json` document directly in `dir`, by name. `root` is the library root references fall
@@ -33,8 +41,9 @@ pub fn locate(root: Option<&Path>) -> Option<PathBuf> {
 pub fn scan(dir: &Path, root: Option<&Path>) -> Result<Vec<Entry>, String> {
     let listing = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let mut entries = Vec::new();
-    for item in listing {
-        let path = item.map_err(|e| format!("{}: {e}", dir.display()))?.path();
+    // An entry the directory cannot report names no file to list, and costs only that entry.
+    for item in listing.flatten() {
+        let path = item.path();
         if path.is_file() && path.extension().is_some_and(|ext| ext == "json") {
             entries.push(entry(path, root));
         }
@@ -116,7 +125,8 @@ mod tests {
     fn the_library_is_the_root_when_one_is_given() {
         let scratch = Scratch::new("library_locate");
         let dir = scratch.path("lib");
-        assert_eq!(locate(Some(&dir)), None, "a root that is not a directory");
+        let missing = locate(Some(&dir)).expect_err("a root that is not a directory");
+        assert!(missing.contains(&dir.display().to_string()), "{missing}");
         std::fs::create_dir_all(&dir).expect("mkdir");
         let located = locate(Some(&dir)).expect("a directory");
         assert!(located.is_absolute());

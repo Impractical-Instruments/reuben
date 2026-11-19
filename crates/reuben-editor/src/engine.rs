@@ -10,6 +10,7 @@
 
 use std::fmt;
 use std::io;
+use std::path::Path;
 
 use reuben_api::engine::Channel;
 use reuben_native::engine::{self, EngineConfig, Instrument, RunningEngine, StartError};
@@ -226,6 +227,40 @@ impl Engine {
             Level::Warning | Level::Error => eprintln!("{line}"),
         }
         self.report.push(line);
+    }
+
+    /// Record that the running engine now plays the instrument at `path`, Swapped in after it
+    /// started: the report names it, and a [`resume`](Self::resume) after a stop starts on it.
+    /// Does nothing when no engine is running.
+    pub fn swapped_to(&mut self, path: &Path) {
+        if self.running.is_none() {
+            return;
+        }
+        let Some(config) = &mut self.config else {
+            return;
+        };
+        let instrument = Instrument::Path(path.to_path_buf());
+        if config.instrument == instrument {
+            return;
+        }
+        config.instrument = instrument;
+        let named = Line::new(Level::Info, format!("instrument: {}", path.display()));
+        println!("{named}");
+        match self
+            .report
+            .iter_mut()
+            .find(|line| line.level == Level::Info && line.text.starts_with("instrument: "))
+        {
+            Some(line) => *line = named,
+            None => self.report.insert(0, named),
+        }
+    }
+
+    /// What the last start was asked to play, or was since Swapped to; `None` when no start was
+    /// ever attempted.
+    #[cfg(test)]
+    pub(crate) fn instrument(&self) -> Option<&Instrument> {
+        self.config.as_ref().map(|config| &config.instrument)
     }
 
     /// The profile the last start was asked for; `None` when no start was ever attempted.
