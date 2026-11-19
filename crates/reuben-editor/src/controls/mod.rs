@@ -140,6 +140,17 @@ impl Controls {
         }
     }
 
+    /// The interface input each control of the panel drives, in the panel's order.
+    #[cfg(test)]
+    pub fn binds(&self) -> Vec<&str> {
+        match &self.loaded {
+            Some(Ok(loaded)) => (loaded.panel.controls.iter())
+                .map(|c| c.bind.as_str())
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
     /// Draw the panel along the bottom of `ui` and send what the player did to `engine`. Draws
     /// nothing when no instrument is open.
     pub fn show(&mut self, ui: &mut egui::Ui, engine: &Engine) {

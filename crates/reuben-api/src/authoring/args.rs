@@ -442,6 +442,21 @@ pub struct SetInstrumentInterfaceOutputMeta {
     pub expect: Option<String>,
 }
 
+/// Arguments for `wire_instrument_interface_output`: feed an existing output pipe from another
+/// internal port.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WireInstrumentInterfaceOutput {
+    /// The document to edit.
+    pub source: String,
+    /// The output pipe name.
+    pub name: String,
+    /// The internal port to feed it from: `/node.port` (or `/node` sole-output sugar).
+    pub from: String,
+    #[serde(default)]
+    pub expect: Option<String>,
+}
+
 /// Arguments for `add_instrument_resource`: add an id→source entry to the resources table.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]

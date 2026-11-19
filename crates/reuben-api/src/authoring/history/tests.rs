@@ -380,6 +380,10 @@ fn run_every_verb(r: &dyn Resources) -> Vec<String> {
         json!({ "source": s, "name": "tap", "unit": "V" }),
         |a| set_instrument_interface_output_meta(a, r),
     ));
+    out.push(call(
+        json!({ "source": s, "name": "tap", "from": "/amp" }),
+        |a| wire_instrument_interface_output(a, r),
+    ));
     out.push(call(json!({ "source": s, "name": "tap" }), |a| {
         remove_instrument_interface_output(a, r)
     }));

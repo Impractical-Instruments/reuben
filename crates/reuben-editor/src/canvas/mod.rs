@@ -12,7 +12,9 @@
 //! Each finished gesture is one [`Gesture`], which the caller makes through [`Gesture::apply`];
 //! nothing here writes. Dragging a box moves the selection with it. Dragging from an output port
 //! draws a wire, and only the inputs whose type takes it are marked; dropping on one wires it.
-//! Delete removes the selected node or unwires the selected wire, F2 renames the selected node,
+//! An output pipe's input is one of them: dropping on it feeds the pipe from the wire's output in
+//! place of what fed it. Delete removes the selected node or interface pipe or unwires the
+//! selected wire, F2 renames the selected node,
 //! and right-click offers the same, or the operator palette on empty canvas.
 
 mod camera;
@@ -29,7 +31,7 @@ use std::path::{Path, PathBuf};
 use eframe::egui::{self, Pos2, Rect, Sense, Vec2};
 use reuben_api::authoring::{
     read_instrument, wire_compatibility, EditResult, InstrumentStructure, LayoutPosition,
-    ReadInstrument, Refusal, WireCompatibility, WireTarget,
+    ReadInstrument, Refusal, WireCompatibility,
 };
 use reuben_api::FsResolver;
 
@@ -351,19 +353,14 @@ impl Canvas {
                     }
                     None => {
                         let source = gesture::wire_source(&doc.graph, from)?;
-                        let (address, input) = gesture::input_end(&doc.graph, to)?;
-                        Some(Gesture::Wire {
-                            address,
-                            input,
-                            from: gesture::wire_ref(&source),
-                        })
+                        gesture::wire_to(&doc.graph, &source, to)
                     }
                 }
             }
         }
     }
 
-    /// Ask the document which inputs take a wire from `from`.
+    /// Ask the document which inputs, and which output pipes, take a wire from `from`.
     fn verdicts(&self, from: PortRef) -> Result<BTreeMap<PortRef, Option<String>>, String> {
         let (Some((path, root)), Some(doc)) = (&self.instrument, self.doc()) else {
             return Ok(BTreeMap::new());
@@ -382,17 +379,14 @@ impl Canvas {
         .map_err(|refusal| refusal.message)?;
         Ok((answer.output.verdicts.into_iter())
             .filter_map(|verdict| {
-                // An output pipe already has its one feed; it is not a target a drop can wire.
-                let WireTarget::NodeInput { node, port } = verdict.target else {
-                    return None;
-                };
-                let at = gesture::input_ref(&doc.graph, &node, &port)?;
+                let at = gesture::target_ref(&doc.graph, &verdict.target)?;
                 Some((at, verdict.reason.filter(|_| !verdict.ok)))
             })
             .collect())
     }
 
-    /// The edit the Delete key makes: unwire the selected wire, or remove the selected node.
+    /// The edit the Delete key makes: unwire the selected wire, or remove the selected node or
+    /// interface pipe.
     fn delete(&self) -> Option<Gesture> {
         match (self.wire, &self.selection) {
             (Some(wire), _) => self.unwire(wire),
@@ -669,6 +663,13 @@ impl Canvas {
 
     fn menu_ui(&mut self, ui: &mut egui::Ui) -> Option<Gesture> {
         match self.menu.clone() {
+            Some(Target::Box(Item::Input(_) | Item::Output(_))) => {
+                if ui.button("Delete").clicked() {
+                    ui.close();
+                    return self.menu_delete();
+                }
+                None
+            }
             Some(Target::Box(Item::Node(_))) => {
                 if ui.button("Rename…").clicked() {
                     self.rename_menu_target();
@@ -691,7 +692,8 @@ impl Canvas {
                 let type_name = self.palette.ui(ui)?;
                 self.add(&type_name)
             }
-            // An interface pipe, or the wire feeding an output pipe: nothing here edits them.
+            // The wire feeding an output pipe: a pipe always has a feed, so there is none to take
+            // away, only another to drop on it.
             _ => {
                 ui.close();
                 None
@@ -782,14 +784,15 @@ impl Canvas {
     }
 }
 
-/// The edit removing `item`, when it is a node.
+/// The edit removing `item`.
 fn remove(item: &Item) -> Option<Gesture> {
-    match item {
-        Item::Node(address) => Some(Gesture::Remove {
+    Some(match item {
+        Item::Node(address) => Gesture::Remove {
             address: address.clone(),
-        }),
-        Item::Input(_) | Item::Output(_) => None,
-    }
+        },
+        Item::Input(name) => Gesture::RemoveInput { name: name.clone() },
+        Item::Output(name) => Gesture::RemoveOutput { name: name.clone() },
+    })
 }
 
 /// Where each box goes when `boxes` are dropped `by` canvas units from where they are drawn: those
@@ -1273,7 +1276,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_removes_the_selected_node_or_unwires_the_selected_wire() {
+    fn delete_removes_the_selected_node_or_pipe_or_unwires_the_selected_wire() {
         let seed = Seed::new();
         let mut canvas = seed.canvas();
         assert_eq!(canvas.delete(), None);
@@ -1303,9 +1306,46 @@ mod tests {
         assert!(canvas.wire.is_some());
         assert_eq!(canvas.delete(), None);
 
-        // An interface pipe is not a node to remove.
         canvas.click(middle_of(&canvas, &Item::Output("main".into())), 1.0, false);
-        assert_eq!(canvas.delete(), None);
+        assert_eq!(
+            canvas.delete(),
+            Some(Gesture::RemoveOutput {
+                name: "main".into()
+            })
+        );
+    }
+
+    #[test]
+    fn a_wire_dropped_on_an_output_pipe_feeds_it_from_that_output() {
+        let seed = Seed::new();
+        let mut canvas = seed.canvas();
+        let main = Item::Output("main".into());
+        let main_at = {
+            let doc = doc(&canvas);
+            let i = doc.graph.index_of(&main).unwrap();
+            geometry::input_pos(&doc.graph.boxes[i], doc.rects[i], 0)
+        };
+        let (_, start) = port(&canvas, "/osc", "audio", true);
+
+        canvas.press(start, false);
+        let Some(Drag::Wire { verdicts, .. }) = &canvas.drag else {
+            panic!("not a wire: {:?}", canvas.drag)
+        };
+        let pipe = doc(&canvas).graph.index_of(&main).unwrap();
+        assert_eq!(
+            verdicts.get(&PortRef {
+                node: pipe,
+                port: 0
+            }),
+            Some(&None)
+        );
+        assert_eq!(
+            canvas.release(main_at),
+            Some(Gesture::Feed {
+                name: "main".into(),
+                from: "/osc.audio".into(),
+            })
+        );
     }
 
     #[test]
@@ -1416,7 +1456,12 @@ mod tests {
         );
 
         canvas.open_menu(middle_of(&canvas, &Item::Output("main".into())), 1.0);
-        assert_eq!(canvas.menu_delete(), None);
+        assert_eq!(
+            canvas.menu_delete(),
+            Some(Gesture::RemoveOutput {
+                name: "main".into()
+            })
+        );
     }
 
     #[test]

@@ -6,14 +6,14 @@ use reuben_api::authoring::{InstrumentStructure, StructureNode};
 use reuben_api::engine::Channel;
 
 use super::model::{drag_speed, fields, widget, Control, Field, Step, Typing, Widget};
-use super::{Edit, Inspector};
+use super::{interface, Edit, Inspector};
 use crate::canvas::Item;
 use crate::session::Session;
 
 const SLIDER_WIDTH: f32 = 180.0;
 
 /// What one frame of the inspector asks for, in the order it was asked.
-enum Ask {
+pub(super) enum Ask {
     Step(Step),
     /// An edit, and the content hash it was made against, or `None` for the document on screen.
     Edit(Edit, Option<String>),
@@ -56,7 +56,10 @@ pub fn show(
                     inspector.holds.begin();
                     inspector.drafts.begin();
                     match selection {
-                        None => instrument(ui, inspector, top, &mut asks),
+                        None => {
+                            instrument(ui, inspector, top, &mut asks);
+                            interface::list(ui, inspector, top, &mut asks);
+                        }
                         Some(Item::Node(address)) => {
                             match top.nodes.iter().find(|n| &n.address == address) {
                                 Some(node) => self::node(ui, inspector, node, &top.hash, &mut asks),
@@ -65,8 +68,12 @@ pub fn show(
                                 }
                             }
                         }
-                        Some(Item::Input(name)) => pipe(ui, "Interface input", name),
-                        Some(Item::Output(name)) => pipe(ui, "Interface output", name),
+                        Some(Item::Input(name)) => {
+                            interface::input(ui, inspector, top, name, &mut asks)
+                        }
+                        Some(Item::Output(name)) => {
+                            interface::output(ui, inspector, top, name, &mut asks)
+                        }
                     }
                     asks.extend(inspector.holds.end().map(Ask::Step));
                     inspector.drafts.end();
@@ -78,11 +85,6 @@ pub fn show(
             Ask::Edit(edit, expect) => inspector.commit(edit, expect, session, channel),
         }
     }
-}
-
-fn pipe(ui: &mut egui::Ui, what: &str, name: &str) {
-    ui.heading(name);
-    ui.weak(what);
 }
 
 fn instrument(
@@ -162,7 +164,19 @@ fn row(
     hash: &str,
     asks: &mut Vec<Ask>,
 ) {
-    let name = ui.label(&field.target.name);
+    labelled_row(ui, inspector, &field.target.name, field, hash, asks);
+}
+
+/// [`row`], with `label` in place of the name of the input it sets.
+pub(super) fn labelled_row(
+    ui: &mut egui::Ui,
+    inspector: &mut Inspector,
+    label: &str,
+    field: &Field,
+    hash: &str,
+    asks: &mut Vec<Ask>,
+) {
+    let name = ui.label(label);
     let hint = if field.set {
         field.kind.clone()
     } else {
@@ -287,15 +301,15 @@ fn typed<'a>(value: &'a mut f64, suffix: &str, integer: bool) -> egui::DragValue
 
 /// What the document holds for a text box, and the document's content hash.
 #[derive(Clone, Copy)]
-struct Current<'a> {
-    text: &'a str,
-    hash: &'a str,
+pub(super) struct Current<'a> {
+    pub text: &'a str,
+    pub hash: &'a str,
 }
 
 /// A text box for `field` of `owner`, showing the document's text until it is typed into. Returns
 /// the new text, and the hash to write it against, when the box loses focus with something
 /// different in it.
-fn text(
+pub(super) fn text(
     ui: &mut egui::Ui,
     inspector: &mut Inspector,
     (owner, field): (&str, &'static str),

@@ -1291,6 +1291,30 @@ pub fn set_instrument_interface_output_meta(
     })
 }
 
+/// Feed an existing interface **output** pipe from another internal port, keeping its name, its
+/// metadata and its layout. `from` is a wire-ref, as [`add_instrument_interface_output`] takes it;
+/// the whole document is validated as for every edit, so a port that does not exist, or a type the
+/// pipe cannot carry, is rejected rather than written.
+pub fn wire_instrument_interface_output(
+    source: &str,
+    name: &str,
+    from: &str,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+) -> Result<EditResult, EditError> {
+    edit_existing(source, registry, resolver, |doc| {
+        let iface = interface_mut(doc);
+        match iface.outputs.get_mut(name) {
+            Some(InterfaceEntry::Feed(pipe)) => {
+                pipe.from = from.to_string();
+                Ok(Applied::clean(Echo::Pipes(Selection::names([name]))))
+            }
+            Some(_) => Err(EditError::Target(format!("`{name}` is not an output pipe"))),
+            None => Err(EditError::Target(format!("no interface output `{name}`"))),
+        }
+    })
+}
+
 // --- layout verb ---------------------------------------------------------------------------------
 
 /// What a `layout` is set on. Two namespaces, so two kinds: an output pipe never mints a node
