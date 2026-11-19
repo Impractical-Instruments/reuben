@@ -576,6 +576,17 @@ pub fn set_instrument_resource(
     })
 }
 
+/// Set the resource id a node reads through its `sample`, `voice` or `patch` slot. Not a roster
+/// verb: no agent-facing door serves it yet.
+pub fn set_instrument_node_resource(
+    args: &SetInstrumentNodeResource,
+    resources: &dyn Resources,
+) -> Result<Answer<EditResult>, Refusal> {
+    run_edit(&args.source, &args.expect, resources, |src, reg, res| {
+        core_edit::set_instrument_node_resource(src, &args.address, &args.slot, &args.id, reg, res)
+    })
+}
+
 /// Set canvas positions on many nodes and interface pipes in one write. Not a roster verb: the
 /// position is the editor's, and no agent-facing door serves it.
 pub fn set_instrument_layout(

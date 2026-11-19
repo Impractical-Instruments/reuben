@@ -1453,5 +1453,38 @@ pub fn remove_instrument_resource(
     })
 }
 
+/// Set the resource id a node reads through `slot`: `sample`, `voice` or `patch`. The id must
+/// already be in the document's `resources` table; whether the node's type takes that slot, and
+/// whether what the id names fits it, is the whole-document validation's to say.
+pub fn set_instrument_node_resource(
+    source: &str,
+    address: &str,
+    slot: &str,
+    id: &str,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+) -> Result<EditResult, EditError> {
+    edit_existing(source, registry, resolver, |doc| {
+        if !doc.resources.contains_key(id) {
+            return Err(EditError::Target(format!("no resource `{id}`")));
+        }
+        let idx = node_index(doc, address)?;
+        let node = &mut doc.nodes[idx];
+        let held = match slot {
+            "sample" => &mut node.sample,
+            "voice" => &mut node.voice,
+            "patch" => &mut node.patch,
+            other => {
+                return Err(EditError::Target(format!(
+                    "`{other}` is not a resource slot; a node reads a resource through `sample`, \
+                     `voice` or `patch`"
+                )))
+            }
+        };
+        *held = Some(id.to_string());
+        Ok(Applied::clean(Echo::Nodes(Selection::names([address]))))
+    })
+}
+
 #[cfg(test)]
 mod tests;

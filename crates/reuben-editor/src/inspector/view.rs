@@ -6,7 +6,7 @@ use reuben_api::authoring::{Diag, InstrumentStructure, StructureNode};
 use reuben_api::engine::Channel;
 
 use super::model::{drag_speed, fields, widget, Control, Field, Step, Typing, Widget};
-use super::{interface, Edit, Inspector};
+use super::{interface, resources, Edit, Inspector};
 use crate::canvas::Item;
 use crate::feedback::Feedback;
 use crate::session::Session;
@@ -67,11 +67,16 @@ pub fn show(
                         None => {
                             instrument(ui, inspector, top, &problems, &mut asks);
                             interface::list(ui, inspector, top, &mut asks);
+                            let document = &session.viewed().path;
+                            resources::list(ui, inspector, top, document, &mut asks);
                         }
                         Some(Item::Node(address)) => {
                             match top.nodes.iter().find(|n| &n.address == address) {
                                 Some(node) => {
-                                    self::node(ui, inspector, node, &top.hash, &problems, &mut asks)
+                                    self::node(
+                                        ui, inspector, node, &top.hash, &problems, &mut asks,
+                                    );
+                                    resources::slots(ui, node, top, &mut asks);
                                 }
                                 None => {
                                     ui.weak(format!("{address} is not in the document."));
