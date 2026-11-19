@@ -12,8 +12,8 @@
 //!   pitch is snapped, a [`Degree`](crate::vocab::pitch::Pitch::Degree) pitch is already in-scale and is
 //!   passed through (the Pitch case, not an address, carries the distinction).
 //! - input 1: `harmony` (`Harmony`, held) — the tonal context to snap against.
-//! - input 2: `target` (`enum` [`SnapTarget`]) — quantization target.
-//! - input 3: `direction` (`enum` [`SnapDir`]) — quantization direction.
+//! - input 2: `target` (`enum` [`SnapTarget`](crate::vocab::SnapTarget)) — quantization target.
+//! - input 3: `direction` (`enum` [`SnapDir`](crate::vocab::SnapDir)) — quantization direction.
 //! - output 0: `notes` (`Note`) — the snapped note (a [`Degree`](crate::vocab::pitch::Pitch::Degree)
 //!   where possible, an [`Absolute`](crate::vocab::pitch::Pitch::Absolute) when a frozen-chord target has
 //!   no degree); wire to a Voicer.

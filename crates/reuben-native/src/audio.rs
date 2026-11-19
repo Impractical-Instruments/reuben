@@ -15,11 +15,11 @@
 //! The callback installs the new map only when the engine's width has caught up to it, so map and
 //! buffer always agree; the transition block is ducked by the ramp.
 //!
-//! This module owns the **logical→device channel map**: [`map_frame`] places the instrument's
+//! This module owns the **logical→device channel map**: `map_frame` places the instrument's
 //! *logical* master channels onto the real device's channel count (an explicit `output.map` in the
-//! profile overrides that implicit policy — [`OutputMap::Explicit`]), and
-//! [`negotiate_output_config`] requests the profile's sample-rate/buffer-size preferences against
-//! the device's supported configs and adopts whatever is granted.
+//! profile overrides that implicit policy — `OutputMap::Explicit`), and `negotiate_output_config`
+//! requests the profile's sample-rate/buffer-size preferences against the device's supported
+//! configs and adopts whatever is granted.
 //!
 //! It also measures the callback against its own real-time budget: a render that takes longer than
 //! the audio time it produced is an output xrun, counted through the shared
@@ -605,7 +605,7 @@ impl OutputMapSlot {
 /// After [`Coordinator::swap_document`] commits, [`publish`](RenderConfigPublisher::publish)
 /// rebuilds the device output map off-thread for the new engine's logical width against the
 /// *retained* `device_channels`, ships it across the render mailbox for the callback to install
-/// (synchronized to the engine, [`OutputMapSlot`]), and returns the input dark-degrade warning.
+/// (synchronized to the engine, `OutputMapSlot`), and returns the input dark-degrade warning.
 /// The structure server calls it under the Coordinator lock, one swap at a time.
 pub struct NativeRenderConfig {
     /// The coordinator end of the parallel render mailbox; `Mutex` only to take `&mut` for the

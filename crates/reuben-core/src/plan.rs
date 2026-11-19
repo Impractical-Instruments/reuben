@@ -219,7 +219,7 @@ pub struct InterfaceOutput {
 
 /// One **dissolved interface pipe**'s live external address. Instantiate collapses
 /// a single-consumer pass-through pipe node out of the schedule (see
-/// [`dissolve_interface_pipes`]) — the pipe stays an authoring/format concept, not a rendered
+/// `dissolve_interface_pipes`) — the pipe stays an authoring/format concept, not a rendered
 /// node — but its minted address (`in` → `/in`) is real boundary surface: the Voicer drives a
 /// voice's `freq`/`gate` by message there, and external OSC lands there. This alias keeps that
 /// address routable: a message to `<address>/<port.name>` delivers to the rewired consumer
@@ -358,7 +358,7 @@ impl Plan {
     /// Convert an inbound OSC datagram — an address plus a flat list of primitive `Arg`s — into the
     /// single typed [`Message`] it routes to, driven by the **destination port's Arg type**
     /// (the boundary). Resolves the address to a node + input port via
-    /// [`crate::render::resolve_port`] — the *same* resolver the render routing path uses, so a
+    /// `crate::render::resolve_port` — the *same* resolver the render routing path uses, so a
     /// nested node behind a prefix-matching ancestor stays reachable on both paths —
     /// then calls [`crate::boundary::osc_in_arg`] with that [`Port`] to type the flat args (the
     /// port's `meta` is what lets a scalar-defaulted `f32_buffer` control like `djfilter.position`

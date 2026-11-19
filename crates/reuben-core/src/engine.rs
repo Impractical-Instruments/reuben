@@ -146,7 +146,7 @@ impl Engine {
     /// [`MigrationTable`](crate::coordinator::MigrationTable) yields via `survivors()`.
     /// Engine owns two Plans here (fresh + retiring) but no longer indexes their nodes: it forwards
     /// to the pointer-swap primitive that lives on [`Plan`] (which owns its nodes). See
-    /// [`Plan::transplant_survivors`] for the box-move semantics, the pairing invariant, and the
+    /// `Plan::transplant_survivors` for the box-move semantics, the pairing invariant, and the
     /// RT-safety guarantee (a bounded `mem::swap` loop — no alloc/drop/lock). Runs at the
     /// render-side install slot's callback top.
     pub fn transplant_survivors(&mut self, retiring: &mut Engine, pairs: &[(usize, usize)]) {

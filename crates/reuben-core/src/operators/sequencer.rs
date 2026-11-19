@@ -1,11 +1,12 @@
 //! Sequencer — a clock-driven step sequencer that emits note Messages.
 //!
-//! Walks a fixed pattern, one step per beat, driven by the [`Clock`]'s beat `gate`: each rising
-//! edge of the clock input advances to the next step (wrapping at `length`) and **emits a degree
-//! [`Note`]** for that step; the note is released when the beat gate falls. It is a note *source*
-//! on the internal message graph — wire its `degrees` output to a
-//! [`Voicer`](crate::operators::Voicer) (`sequencer.degrees → voicer.notes`) and the sequence is
-//! polyphony-, transpose-, and snap-composable, exactly like notes arriving from outside.
+//! Walks a fixed pattern, one step per beat, driven by the
+//! [`Clock`](crate::operators::clock::Clock)'s beat `gate`: each rising edge of the clock input
+//! advances to the next step (wrapping at `length`) and **emits a degree [`Note`]** for that step;
+//! the note is released when the beat gate falls. It is a note *source* on the internal message
+//! graph — wire its `degrees` output to a [`Voicer`](crate::operators::Voicer)
+//! (`sequencer.degrees → voicer.notes`) and the sequence is polyphony-, transpose-, and
+//! snap-composable, exactly like notes arriving from outside.
 //!
 //! `length`, `step1`..`step16`, and `pitch` are **held `Float` inputs**,
 //! each owning its unwired default — read via [`Io::read`]. `gate_mode` is a held **`enum`** input

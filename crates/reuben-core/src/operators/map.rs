@@ -9,7 +9,7 @@
 //! `MapF32Signal` (per-sample) and `MapF32Value` (held). The four bounds follow the
 //! carrier like any number operand (per-sample buffers in the signal form); `curve` is an enum mode,
 //! so it is **always held** (enums have no buffer form). The affine math is the module-level
-//! [`remap`] fn (the pure-fn seam), which owns the curve test.
+//! `remap` fn (the pure-fn seam), which owns the curve test.
 //!
 //! **`f32`-only for now**: `remap` normalizes to a `[0,1]` fraction before scaling, which
 //! truncates to `0` or `1` in integer arithmetic — an integer remap needs a different,

@@ -5,7 +5,7 @@
 //! - **Static fields** — `root` and the scale (`degrees` + `s0`..`s11` step offsets) — are held
 //!   `i32` Value inputs. They are integer quantities by construction — a MIDI root, a degree
 //!   count, and step offsets into an integer step-space (microtonality lives in the
-//!   [`Tuning`](crate::vocab::tuning) layer, not here) — so `i32` carries them without the
+//!   [`Tuning`](mod@crate::tuning) layer, not here) — so `i32` carries them without the
 //!   round-in-`process` dance. A mid-block change block-slices `process` at its frame, so the
 //!   publish stays sample-accurate.
 //! - **Dynamic field** — `chord` — arrives on the held `set` (`Harmony`) input: its chord field is

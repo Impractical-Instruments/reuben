@@ -6,7 +6,7 @@
 //! operator set; [`Registry::register`] lets an embedder add its own operator types
 //! (the seam for the "agents author new Operators in Rust" goal).
 //!
-//! The built-in set is an ordinary array the compiler can see — [`operator_census!`], invoked in
+//! The built-in set is an ordinary array the compiler can see — `operator_census!`, invoked in
 //! `operators/mod.rs` — not a link-time collection.
 
 use alloc::boxed::Box;
@@ -124,9 +124,9 @@ impl Registry {
         Self::default()
     }
 
-    /// The built-in operator set, built from the [`operator_census!`] array in
-    /// [`crate::operators`]. Iteration is in census (source) order; the `BTreeMap` re-keys by
-    /// `type_name`, so the census order never reaches an output.
+    /// The built-in operator set, built from the `operator_census!` array in [`crate::operators`].
+    /// Iteration is in census (source) order; the `BTreeMap` re-keys by `type_name`, so the census
+    /// order never reaches an output.
     pub fn builtin() -> Self {
         Self::from_census(crate::operators::CENSUS.iter().copied().flatten())
     }

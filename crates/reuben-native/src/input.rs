@@ -1,27 +1,27 @@
 //! Live audio input via cpal: the cross-thread, cross-clock path from a real input device into
 //! the engine's logical input master. The input callback produces into a lock-free SPSC ring
-//! ([`InputMap`] mapping device frames onto logical channels); [`InputStage`], owned by the
+//! (`InputMap` mapping device frames onto logical channels); [`InputStage`], owned by the
 //! output callback, drains it and resamples to the engine rate at a servoed ratio.
 //!
 //! Two invariants callers depend on: the producer commits **whole frames at a time**, so the
 //! consumer never observes a torn frame; and both callbacks are RT-safe after startup — the ring
-//! is preallocated, [`LinearResampler`]'s state is two frames, and every policy decision is
+//! is preallocated, `LinearResampler`'s state is two frames, and every policy decision is
 //! arithmetic on values already in cache.
 //!
 //! Constants worth their specific values:
 //!
-//! - [`DriftServo::MAX_CORRECTION`] is 0.5% ≈ 8.6 cents — the largest ratio correction that stays
+//! - `DriftServo::MAX_CORRECTION` is 0.5% ≈ 8.6 cents — the largest ratio correction that stays
 //!   inaudible as pitch shift on live input, so a mismatch wider than the servo can absorb
 //!   surfaces as a counted overrun rather than an audible detune.
-//! - [`RING_FLOOR_BLOCKS`] (= 2) is the servo's target residual, ~10.7 ms at the 256/48k defaults
+//! - `RING_FLOOR_BLOCKS` (= 2) is the servo's target residual, ~10.7 ms at the 256/48k defaults
 //!   — deep enough to ride out an input device's own delivery granularity.
-//! - [`HIGH_WATER_SLACK_BLOCKS`] bounds a stalled-consumer excursion at ~96 ms at defaults: far
+//! - `HIGH_WATER_SLACK_BLOCKS` bounds a stalled-consumer excursion at ~96 ms at defaults: far
 //!   above the floor on purpose, so normal jitter never trips the trim.
 //!
 //! Added latency is floor + 1 input frame of resampler lookahead + 1 core block of staging in
 //! [`RenderSlot::fill_duplex`](reuben_api::render::RenderSlot::fill_duplex) ≈ 3 core blocks (~16 ms
 //! at defaults). The ring's
-//! capacity is much larger ([`RING_HEADROOM_SECS`]) and is headroom, not latency.
+//! capacity is much larger (`RING_HEADROOM_SECS`) and is headroom, not latency.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -552,7 +552,7 @@ impl DriftServo {
 /// The consumer half of the input path, owned by the **output** callback: pulls device-rate
 /// logical frames off the ring and resamples them into the engine-rate interleaved input
 /// block `Engine::fill_duplex` consumes. All policy (warmup prefill, drop-oldest trim,
-/// empty→zeros) lives in [`InputStage::fill`]; everything is preallocated at setup.
+/// empty→zeros) lives in `InputStage::fill`; everything is preallocated at setup.
 pub struct InputStage {
     consumer: rtrb::Consumer<f32>,
     channels: usize,

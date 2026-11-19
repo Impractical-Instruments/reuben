@@ -1,10 +1,11 @@
 //! Per-operator micro-benchmark bridge.
 //!
-//! The macro layer ([`benches/macro_*`](../../benches)) benches end-to-end `render_block` of a
-//! real instrument; this module drives one operator's [`Operator::process`] directly, through the
-//! real engine via [`OpDriver`](crate::op_driver), so a regression is attributable to that
-//! operator. [`WORKLOADS`] is the single source of truth for which operators are benched and how;
-//! [`tests`] forces it to stay in sync with the registry and with `micro_iai.rs`'s CI census.
+//! The macro layer ([`benches/macro_*`](../../benches)) benches end-to-end `render_block` of a real
+//! instrument; this module drives one operator's [`Operator::process`] directly, through the real
+//! engine via [`OpDriver`](crate::op_driver), so a regression is attributable to that operator.
+//! [`WORKLOADS`](crate::bench_support::WORKLOADS) is the single source of truth for which operators
+//! are benched and how; `tests` forces it to stay in sync with the registry and with
+//! `micro_iai.rs`'s CI census.
 
 use alloc::boxed::Box;
 use alloc::vec;
@@ -75,7 +76,7 @@ pub enum Recipe {
 }
 
 /// One operator's micro-bench workload: its registry `kind` and how to drive it. The whole table
-/// is `const`, so it doubles as the forcing-function census (see [`tests`]).
+/// is `const`, so it doubles as the forcing-function census (see `tests`).
 #[derive(Debug, Clone, Copy)]
 pub struct Workload {
     /// The operator's [`Descriptor::type_name`] / registry key.

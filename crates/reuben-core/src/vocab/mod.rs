@@ -136,7 +136,7 @@ const PIPEABLE_ENUMS: &[PipeableEnum] = &[
     ("SnapTarget", SnapTarget::enum_meta),
 ];
 
-/// The declarable vocab-enum type names, in table order — the roster half of [`PIPEABLE_ENUMS`].
+/// The declarable vocab-enum type names, in table order — the roster half of `PIPEABLE_ENUMS`.
 pub fn pipeable_enum_types() -> impl Iterator<Item = &'static str> {
     PIPEABLE_ENUMS.iter().map(|(name, _)| *name)
 }

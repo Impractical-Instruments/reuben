@@ -3,7 +3,7 @@
 //! A node's `inputs` entry is either a **literal** or a **wire-ref** to another node's output
 //! (`{ "from": "/osc.audio" }`, or `{ "from": "/osc" }` when the source has a single output —
 //! an interface input pipe is such a source: `{ "from": "/in" }`). Ports are referenced by
-//! **name** (from the operator's [`Descriptor`](reuben_core::descriptor::Descriptor)), not by index.
+//! **name** (from the operator's [`Descriptor`]), not by index.
 //! [`load`] turns JSON into a [`Graph`] (resolving types via a [`Registry`]); [`load`] is the
 //! single authority on what a legal document is, and [`NormalizedDoc::from_graph`] goes the
 //! other way.
@@ -785,7 +785,7 @@ pub fn load(json: &str, registry: &Registry) -> Result<Graph, LoadError> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoadWarning {
     /// A node names a resource id absent from the `resources` table. `slot` is the resource slot
-    /// the ref targeted (`"sample"`/`"voice"`/`"patch"`, [`NodeDoc::resource_refs`]) so the
+    /// the ref targeted (`"sample"`/`"voice"`/`"patch"`, `NodeDoc::resource_refs`) so the
     /// message names what actually failed.
     MissingResource {
         node: String,

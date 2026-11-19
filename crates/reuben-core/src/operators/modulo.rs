@@ -6,7 +6,7 @@
 //! always returns a value in `[0, b)` for a positive modulus `b`, so a negative dividend wraps
 //! cleanly (`-1 mod 3 == 2`) — exactly what wrapping phase/CV into a range wants, where the
 //! sign-following `%` would emit a negative. A zero modulus would yield `NaN` (or panic, for
-//! integers), so [`mod_fn`] carries an **op-local guard**: `b == 0` produces `0`.
+//! integers), so `mod_fn` carries an **op-local guard**: `b == 0` produces `0`.
 //!
 //! The file is `modulo.rs` (not `mod.rs`, the operators module file); the base ident is `Modulo`, so
 //! the registered type names are `modulo_f32_signal` / `modulo_f32_value`.

@@ -25,7 +25,7 @@
 //! The declared port range makes the saturating arm unreachable in practice — a rounding op's
 //! input is clamped to the type-wide `±1e6` sentinel, well inside `i32` — but the arithmetic is
 //! total on its own terms rather than by a range nothing checks, for the reason spelled out in
-//! [`pointwise`](crate::operators::pointwise).
+//! [`pointwise`].
 //!
 //! # Why the methods are not named `round`/`floor`/`ceil`/`trunc`
 //!

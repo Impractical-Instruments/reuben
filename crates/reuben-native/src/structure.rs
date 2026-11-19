@@ -10,9 +10,9 @@
 //! What is here is what only a native host can supply — the listener and its threads, the device
 //! output map, the render callback's liveness, the counters, and the control ingress:
 //!
-//! - the control ingress is a producer on the same [`ControlBatch`](crate::osc::ControlBatch)
-//!   channel the UDP decode thread feeds, so a `send` and an external datagram are
-//!   indistinguishable downstream and OSC-the-binary-protocol stays at `play`'s foreign edge;
+//! - the control ingress is a producer on the same [`ControlBatch`] channel the UDP decode thread
+//!   feeds, so a `send` and an external datagram are indistinguishable downstream and
+//!   OSC-the-binary-protocol stays at `play`'s foreign edge;
 //! - [`NativeHost::publish_render_config`] rebuilds the device output map off-thread against the
 //!   *retained* device channel count (streams are fixed at `play` start) and ships it across the
 //!   render mailbox, so the callback installs Engine + map together. A swapped-in engine binding
@@ -186,9 +186,9 @@ pub trait RenderConfigPublisher: Send + Sync {
     fn publish(&self, logical: usize, input_channels: usize) -> Vec<Diag>;
 
     /// The render callback's [`RenderLiveness`] (callback counter + period), or `None` if this
-    /// publisher drives no live render thread. A swap's [`SwapPollGate`] samples it to tell a running
+    /// publisher drives no live render thread. A swap's `SwapPollGate` samples it to tell a running
     /// device from a stopped one and bail early instead of holding the Coordinator lock to the full
-    /// [`SWAP_RECLAIM_TIMEOUT`].
+    /// `SWAP_RECLAIM_TIMEOUT`.
     ///
     /// **Deliberately has no default.** The gate's correctness for a real device hinges on this being
     /// wired, so every publisher must decide rather than silently inherit `None`. The invariant: a
@@ -382,7 +382,7 @@ impl EngineHost for NativeHost {
     }
 
     /// Polls the retire slot with a 1ms back-off (the window is OS-free; the clock is ours),
-    /// bounded by a [`SwapPollGate`]: at most [`SWAP_RECLAIM_TIMEOUT`] while the callback keeps
+    /// bounded by a `SwapPollGate`: at most `SWAP_RECLAIM_TIMEOUT` while the callback keeps
     /// ticking, but only the liveness grace once the render callback has stopped ticking. With a
     /// live callback the retiree comes home in one master-gain ramp (~20ms), so the bound only
     /// bites when audio has genuinely stopped.

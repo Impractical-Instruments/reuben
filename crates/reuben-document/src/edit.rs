@@ -1,6 +1,6 @@
 //! The closed document-manipulation vocabulary: the finite set of verbs an agent uses to author an
 //! instrument document without ever touching its bytes. Each verb is a pure
-//! `(source, …) -> EditResult` function that funnels through [`edit_existing`]/[`finish`]: read,
+//! `(source, …) -> EditResult` function that funnels through `edit_existing`/`finish`: read,
 //! apply one surgical edit, re-validate the whole document, write iff valid, and echo back the
 //! post-write hash plus the [`projection`](crate::projection) of what the verb touched. All
 //! engine-free — always-available pure tools, never reaching a live engine.

@@ -8,7 +8,7 @@
 //! defining granular trick is that **position and pitch are decoupled**: you can freeze/scrub the
 //! read position while pitch holds, or transpose while position holds.
 //!
-//! Grains overlap, so the operator owns a **fixed internal pool** of [`MAX_GRAINS`] grain voices,
+//! Grains overlap, so the operator owns a **fixed internal pool** of `MAX_GRAINS` grain voices,
 //! allocated up front (RT-safe: `process` never allocates). When the cloud is denser than the pool
 //! can hold, a would-be spawn is **skipped** (density effectively caps at the pool size). Spray
 //! (per-grain start jitter) draws from a seeded inline xorshift32 so renders stay deterministic
