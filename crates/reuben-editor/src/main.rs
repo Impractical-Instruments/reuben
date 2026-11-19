@@ -147,7 +147,16 @@ impl Editor {
             return;
         };
         let poll = session.poll(Instant::now(), &|| self.engine.channel());
-        start::follow(session, &mut self.engine);
+        start::follow(session, &mut self.engine, reuben_native::engine::start);
+        // A Swap holding the engine's Coordinator keeps whether the input fits unknown: look again
+        // shortly rather than on the next input event.
+        if session.status() == &Status::Current
+            && self.engine.channel().is_some()
+            && self.engine.input_fits().is_none()
+        {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(50));
+        }
         if poll.reloaded {
             self.canvas
                 .reload(session.top(), session.root(), &session.tree().top().read);

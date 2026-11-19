@@ -223,6 +223,14 @@ impl RenderConfigPublisher for HeadlessRenderConfig {
     }
 }
 
+/// Whether an input stream opened `opened_input_channels` wide feeds an engine that binds
+/// `input_channels`. The render callback feeds input only on an exact match; on any other, the
+/// engine's input pipes read silence, and a stream with nothing to feed runs unread. Only a
+/// restart, which opens the stream for the instrument it starts on, changes the width.
+pub fn input_stream_fits(input_channels: usize, opened_input_channels: usize) -> bool {
+    input_channels == opened_input_channels
+}
+
 /// The input dark-degrade warning, shared by the headless and production
 /// publishers so the two can't drift. A swapped-in engine wanting `input_channels` logical input
 /// channels while the open input stream provides `opened_input_channels`: any shortfall (the
@@ -1088,6 +1096,18 @@ mod tests {
             other => panic!("a malformed request must return Error, got {other:?}"),
         }
         cb.stop();
+    }
+
+    #[test]
+    fn an_input_stream_fits_only_an_engine_binding_exactly_its_width() {
+        assert!(input_stream_fits(0, 0), "no input, no stream");
+        assert!(input_stream_fits(2, 2));
+        assert!(!input_stream_fits(1, 0), "input bound, no stream");
+        assert!(!input_stream_fits(0, 1), "a stream nothing reads");
+        assert!(
+            !input_stream_fits(1, 2),
+            "the callback feeds only an exact width"
+        );
     }
 
     #[test]

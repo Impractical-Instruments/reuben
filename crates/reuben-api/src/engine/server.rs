@@ -144,6 +144,16 @@ impl StructureState {
         self.closed.load(Ordering::SeqCst)
     }
 
+    /// The installed engine's logical input channel count, or `None` while another caller holds
+    /// the Coordinator (a swap building its engine) or a panic has poisoned it. Never waits, so a
+    /// UI thread can ask on every frame.
+    pub fn try_installed_input_channels(&self) -> Option<usize> {
+        self.coordinator
+            .try_lock()
+            .ok()
+            .map(|coordinator| coordinator.installed_input_channels())
+    }
+
     fn coordinator(&self) -> Result<MutexGuard<'_, Coordinator>, Poisoned> {
         self.coordinator.lock().map_err(|_| Poisoned)
     }

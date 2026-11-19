@@ -59,6 +59,9 @@ pub struct Engine {
     /// again with another profile. `None` when no start was ever attempted.
     config: Option<EngineConfig>,
     report: Vec<Line>,
+    /// The instrument a restart to fit its input was last tried for, on this run of the engine.
+    /// A restart that could not happen is not tried again every frame.
+    refit_tried: Option<String>,
 }
 
 impl Engine {
@@ -68,6 +71,7 @@ impl Engine {
             running: None,
             config: None,
             report: Vec::new(),
+            refit_tried: None,
         }
     }
 
@@ -256,6 +260,59 @@ impl Engine {
         }
     }
 
+    /// Whether the running engine's input stream fits the instrument it plays now; `None` when no
+    /// engine runs or it cannot say without waiting.
+    pub fn input_fits(&self) -> Option<bool> {
+        self.running.as_ref()?.input_fits()
+    }
+
+    /// Restart through `start` on the instrument installed now, with the same profile, when the
+    /// input stream the engine opened does not fit it: the stream's width is fixed at start, so a
+    /// Swap to an instrument binding other input leaves its input pipes silent, or a stream
+    /// running that nothing reads. Returns whether the engine was stopped to restart, whether or
+    /// not the start succeeded.
+    pub fn fit_input(
+        &mut self,
+        start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
+    ) -> bool {
+        if self.input_fits() != Some(false) {
+            return false;
+        }
+        let Some(profile) = self.profile().cloned() else {
+            return false;
+        };
+        let Some(running) = &self.running else {
+            return false;
+        };
+        let installed = running
+            .channel()
+            .get_document()
+            .ok()
+            .and_then(|document| document.source)
+            .unwrap_or_default();
+        let opened = running.opened_input_channels();
+        if self.refit_tried.as_ref() == Some(&installed) {
+            return false;
+        }
+        self.refit_tried = Some(installed.clone());
+        self.restart_with(profile, start);
+        if self.refit_tried.is_some() {
+            // `restart_with` left the engine as it was: what it reported says why.
+            return false;
+        }
+        // A start that failed has already said why.
+        if self.running.is_some() {
+            self.push(Line::new(
+                Level::Info,
+                format!(
+                    "restarted the engine on {installed}: it binds other input than the \
+                     {opened}-channel input stream opened for the instrument before it"
+                ),
+            ));
+        }
+        true
+    }
+
     /// What the last start was asked to play, or was since Swapped to; `None` when no start was
     /// ever attempted.
     #[cfg(test)]
@@ -283,6 +340,7 @@ impl Engine {
             running,
             config,
             report,
+            refit_tried: None,
         }
     }
 
