@@ -202,11 +202,15 @@ pub fn typed_address(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use reuben_api::authoring::{validate_instrument, ValidateInstrument};
+    use reuben_api::authoring::{
+        set_instrument_name, validate_instrument, SetInstrumentName, ValidateInstrument,
+    };
+    use reuben_api::FsResolver;
     use reuben_native::test_support::within;
 
     use super::super::graph::tests::small;
     use super::*;
+    use crate::edit::test_support::writes;
     use crate::session::test_support::Rig;
     use crate::session::Status;
 
@@ -260,11 +264,13 @@ mod tests {
     /// file that validates.
     fn step(rig: &mut Rig, gesture: Gesture) {
         let before = rig.swaps();
+        let written_before = writes();
         let channel = rig.channel_source();
         let result = gesture
             .apply(&mut rig.session, &channel)
             .unwrap_or_else(|refusal| panic!("{gesture:?}: {refusal}"));
         assert!(result.written, "{gesture:?}: {:?}", result.report);
+        assert_eq!(writes() - written_before, 1, "{gesture:?} made one write");
         let source = rig.top.display().to_string();
         let valid = validate_instrument(
             &ValidateInstrument {
@@ -363,6 +369,41 @@ mod tests {
             rig.settle();
             assert_eq!(rig.swaps(), 0);
             assert_eq!(rig.session.tree(), &before);
+        });
+    }
+
+    #[test]
+    fn a_gesture_made_against_a_view_the_file_has_moved_on_from_is_a_conflict() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("gesture_stale", "default.json");
+            let source = rig.top.display().to_string();
+            // Another writer's edit, which the session has not read yet.
+            let theirs = set_instrument_name(
+                &SetInstrumentName {
+                    source: source.clone(),
+                    name: "renamed-elsewhere".to_string(),
+                    expect: None,
+                },
+                &FsResolver::for_document(&source).stat_only(),
+            )
+            .expect("the verb ran")
+            .output;
+            assert!(theirs.written);
+
+            let written_before = writes();
+            let channel = rig.channel_source();
+            let ours = Gesture::Add {
+                address: "/osc".into(),
+                type_name: "oscillator".into(),
+            }
+            .apply(&mut rig.session, &channel)
+            .expect("the verb ran");
+            assert!(!ours.written, "{:?}", ours.report);
+            assert_eq!(ours.hash, theirs.hash, "nothing of ours landed");
+            assert_eq!(writes(), written_before);
+            let on_disk = rig.session.tree().top().read.clone().expect("it reads");
+            assert_eq!(on_disk.hash, theirs.hash);
+            assert!(on_disk.nodes.iter().all(|n| n.address != "/osc"));
         });
     }
 }

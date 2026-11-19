@@ -31,9 +31,63 @@ pub fn write(
         });
     };
     let expect = document.hash().map(str::to_string);
-    let result = verb(&session.store(source), expect);
+    let store = session.store(source);
+    #[cfg(test)]
+    let store = test_support::Counted(store);
+    let result = verb(&store, expect);
     session.refresh(channel);
     result.map(|answer| answer.output)
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::cell::Cell;
+
+    use reuben_api::authoring::{Created, ResolveError, Resources, SampleBuffer};
+    use reuben_api::FsResolver;
+
+    thread_local! {
+        static WRITES: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// How many documents [`write`](super::write) has written on this thread: one per verb call
+    /// that lands, so a gesture making two verb calls shows as two.
+    pub fn writes() -> usize {
+        WRITES.with(Cell::get)
+    }
+
+    /// The session's store, counting what is written through it.
+    pub struct Counted(pub FsResolver);
+
+    impl Resources for Counted {
+        fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+            self.0.read_samples(source)
+        }
+
+        fn read_text(&self, source: &str) -> Result<String, ResolveError> {
+            self.0.read_text(source)
+        }
+
+        fn write_text(&self, source: &str, text: &str) -> Result<(), ResolveError> {
+            let written = self.0.write_text(source, text);
+            if written.is_ok() {
+                WRITES.with(|w| w.set(w.get() + 1));
+            }
+            written
+        }
+
+        fn create_text(&self, source: &str, text: &str) -> Result<Created, ResolveError> {
+            let created = self.0.create_text(source, text);
+            if matches!(created, Ok(Created::Written)) {
+                WRITES.with(|w| w.set(w.get() + 1));
+            }
+            created
+        }
+
+        fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
+            self.0.canonical(source, referrer)
+        }
+    }
 }
 
 #[cfg(test)]

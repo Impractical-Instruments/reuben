@@ -28,8 +28,8 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui::{self, Pos2, Rect, Sense, Vec2};
 use reuben_api::authoring::{
-    read_instrument, wire_compatibility, EditResult, LayoutPosition, ReadInstrument, Refusal,
-    WireCompatibility, WireTarget,
+    read_instrument, wire_compatibility, EditResult, InstrumentStructure, LayoutPosition,
+    ReadInstrument, Refusal, WireCompatibility, WireTarget,
 };
 use reuben_api::FsResolver;
 
@@ -85,13 +85,17 @@ fn store(instrument: &Path, root: Option<&Path>) -> FsResolver {
 /// Read the instrument file at `instrument`.
 ///
 /// `Err` is a document that cannot be read or parsed. One that reads but does not load is `Ok`,
-/// with the load report's diagnostics on the boxes they name.
-fn load(instrument: &Path, root: Option<&Path>) -> Result<Document, String> {
+/// with the load report's diagnostics in it.
+fn read(instrument: &Path, root: Option<&Path>) -> Result<InstrumentStructure, String> {
     let source = instrument.display().to_string();
-    let structure = read_instrument(&ReadInstrument { source }, &store(instrument, root))
-        .map_err(|refusal| refusal.message)?
-        .output;
-    Ok(Document::of(Graph::from_structure(&structure)))
+    read_instrument(&ReadInstrument { source }, &store(instrument, root))
+        .map(|answer| answer.output)
+        .map_err(|refusal| refusal.message)
+}
+
+fn load(read: &Result<InstrumentStructure, String>) -> Result<Document, String> {
+    let structure = read.as_ref().map_err(String::clone)?;
+    Ok(Document::of(Graph::from_structure(structure)))
 }
 
 /// A drag under way.
@@ -111,6 +115,9 @@ enum Drag {
         /// it does not. An input not listed is not a target at all.
         verdicts: BTreeMap<PortRef, Option<String>>,
     },
+    /// A move or a wire the document changed under: its box and port indices may name other boxes
+    /// now, so the rest of the drag does nothing.
+    Dropped,
 }
 
 /// What is under a point.
@@ -126,6 +133,8 @@ enum Target {
 struct Renaming {
     from: String,
     text: String,
+    /// Why the text as entered is not a name, until it is changed.
+    refused: Option<String>,
 }
 
 /// The canvas of the open instrument, with how it is being looked at and what is selected.
@@ -154,7 +163,7 @@ impl Canvas {
     pub fn open(instrument: Option<&Path>, root: Option<&Path>) -> Self {
         Self {
             instrument: instrument.map(|path| (path.to_path_buf(), root.map(Path::to_path_buf))),
-            loaded: instrument.map(|path| load(path, root)),
+            loaded: instrument.map(|path| load(&read(path, root))),
             camera: None,
             selection: None,
             also: Vec::new(),
@@ -167,11 +176,19 @@ impl Canvas {
         }
     }
 
-    /// Read `instrument` again, keeping the view. The selection is kept while the document still
-    /// has the boxes it names; a selected wire, a drag under way and an open menu are dropped,
-    /// since what they point at may have moved.
-    pub fn reload(&mut self, instrument: &Path, root: Option<&Path>) {
-        let loaded = load(instrument, root);
+    /// Draw `read`, the document at `instrument` as just read, keeping the view. `root` is the
+    /// library root its nested references fall back to, as for the engine.
+    ///
+    /// The selection is kept while the document still has the boxes it names. A selected wire and
+    /// an open menu are let go, and a move or a wire being drawn is dropped for the rest of its
+    /// drag, since the indices they hold may name something else now. A pan carries on.
+    pub fn reload(
+        &mut self,
+        instrument: &Path,
+        root: Option<&Path>,
+        read: &Result<InstrumentStructure, String>,
+    ) {
+        let loaded = load(read);
         if let Ok(doc) = &loaded {
             if (self.selection.as_ref()).is_some_and(|item| doc.graph.index_of(item).is_none()) {
                 self.selection = None;
@@ -184,8 +201,8 @@ impl Canvas {
         self.instrument = Some((instrument.to_path_buf(), root.map(Path::to_path_buf)));
         self.loaded = Some(loaded);
         self.wire = None;
-        if self.drag != Some(Drag::Pan) {
-            self.drag = None;
+        if matches!(self.drag, Some(Drag::Move { .. } | Drag::Wire { .. })) {
+            self.drag = Some(Drag::Dropped);
         }
         self.menu = None;
     }
@@ -295,7 +312,17 @@ impl Canvas {
         match &mut self.drag {
             Some(Drag::Move { by: moved, .. }) => *moved += by,
             Some(Drag::Wire { to, .. }) => *to = point,
-            Some(Drag::Pan) | None => {}
+            Some(Drag::Pan | Drag::Dropped) | None => {}
+        }
+    }
+
+    /// Carry the drag on by `delta` points on screen, the pointer now at `point` in canvas units.
+    fn dragged(&mut self, point: Pos2, delta: Vec2) {
+        let zoom = self.camera.map_or(1.0, |camera| camera.zoom);
+        match &self.drag {
+            Some(Drag::Pan) | None => self.pan(delta),
+            Some(Drag::Dropped) => {}
+            Some(Drag::Move { .. } | Drag::Wire { .. }) => self.drag_to(point, delta / zoom),
         }
     }
 
@@ -304,7 +331,7 @@ impl Canvas {
         let drag = self.drag.take()?;
         let doc = self.doc()?;
         match drag {
-            Drag::Pan => None,
+            Drag::Pan | Drag::Dropped => None,
             Drag::Move { boxes, by } => {
                 (by != Vec2::ZERO).then(|| Gesture::Move(moved(doc, &boxes, by)))
             }
@@ -360,27 +387,81 @@ impl Canvas {
 
     /// The edit the Delete key makes: unwire the selected wire, or remove the selected node.
     fn delete(&self) -> Option<Gesture> {
-        let doc = self.doc()?;
-        if let Some(wire) = self.wire {
-            let (address, input) = gesture::input_end(&doc.graph, doc.graph.wires[wire].to)?;
-            return Some(Gesture::Unwire { address, input });
-        }
-        match &self.selection {
-            Some(Item::Node(address)) => Some(Gesture::Remove {
-                address: address.clone(),
-            }),
-            _ => None,
+        match (self.wire, &self.selection) {
+            (Some(wire), _) => self.unwire(wire),
+            (None, Some(item)) => remove(item),
+            (None, None) => None,
         }
     }
 
-    /// Start renaming the selected node.
-    fn start_renaming(&mut self) {
-        if let Some(Item::Node(address)) = &self.selection {
+    /// The edit the context menu's Delete or Unwire makes, on what the menu was opened on.
+    fn menu_delete(&self) -> Option<Gesture> {
+        match self.menu.as_ref()? {
+            Target::Box(item) => remove(item),
+            Target::Wire(wire) => self.unwire(*wire),
+            Target::Nothing => None,
+        }
+    }
+
+    /// Unwire wire `wire` at its input end. `None` for the wire into an output pipe.
+    fn unwire(&self, wire: usize) -> Option<Gesture> {
+        let graph = &self.doc()?.graph;
+        let (address, input) = gesture::input_end(graph, graph.wires.get(wire)?.to)?;
+        Some(Gesture::Unwire { address, input })
+    }
+
+    /// Open the rename field on the selected node, as F2 does.
+    fn rename_selected(&mut self) {
+        if let Some(item) = self.selection.clone() {
+            self.rename(&item);
+        }
+    }
+
+    /// Open the rename field on the node the context menu was opened on.
+    fn rename_menu_target(&mut self) {
+        if let Some(Target::Box(item)) = self.menu.clone() {
+            self.rename(&item);
+        }
+    }
+
+    fn rename(&mut self, item: &Item) {
+        if let Item::Node(address) = item {
             self.renaming = Some(Renaming {
                 from: address.clone(),
                 text: address.clone(),
+                refused: None,
             });
         }
+    }
+
+    /// The rename the entered text asks for, closing the field. Text that names nothing is refused
+    /// with the field left open.
+    fn commit_rename(&mut self) -> Option<Gesture> {
+        let renaming = self.renaming.as_mut()?;
+        let to = gesture::typed_address(&renaming.text);
+        if to == "/" {
+            renaming.refused = Some("A node needs a name.".to_string());
+            return None;
+        }
+        let from = self.renaming.take()?.from;
+        (to != from).then_some(Gesture::Rename { from, to })
+    }
+
+    /// Open the context menu on what is at `point`, in canvas units, seen at `zoom`, selecting it
+    /// unless it is a box already selected.
+    fn open_menu(&mut self, point: Pos2, zoom: f32) {
+        let target = self.at(point, zoom);
+        match &target {
+            Target::Box(item) if !self.selected().contains(&item) => {
+                self.select(Some(item.clone()))
+            }
+            Target::Wire(wire) => {
+                self.select(None);
+                self.wire = Some(*wire);
+            }
+            _ => {}
+        }
+        self.menu = Some(target);
     }
 
     /// Take in how `gesture` went: a refusal or rejection is said until the next edit lands, and
@@ -417,13 +498,13 @@ impl Canvas {
         }
     }
 
-    /// Draw the canvas over the rest of `ui`, and return the edit a gesture finished this frame
+    /// Draw the canvas over the rest of `ui`, and return the edits the gestures finished this frame
     /// asks for. Draws nothing when no instrument is open.
-    pub fn show(&mut self, ui: &mut egui::Ui) -> Option<Gesture> {
+    pub fn show(&mut self, ui: &mut egui::Ui) -> Vec<Gesture> {
         let doc = match &self.loaded {
             None => {
                 ui.take_available_space();
-                return None;
+                return Vec::new();
             }
             Some(Err(e)) => {
                 ui.colored_label(
@@ -431,7 +512,7 @@ impl Canvas {
                     format!("No canvas: the instrument could not be read. {e}"),
                 );
                 ui.take_available_space();
-                return None;
+                return Vec::new();
             }
             Some(Ok(doc)) => doc,
         };
@@ -446,11 +527,11 @@ impl Canvas {
         if let Some(notice) = &self.notice {
             ui.colored_label(ui.visuals().warn_fg_color, notice);
         }
-        let mut gesture = None;
+        let mut gestures = Vec::new();
         ui.horizontal(|ui| {
             ui.menu_button("Add node", |ui| {
                 if let Some(type_name) = self.palette.ui(ui) {
-                    gesture = self.add(&type_name);
+                    gestures.extend(self.add(&type_name));
                 }
             });
             ui.weak(
@@ -480,15 +561,8 @@ impl Canvas {
             self.drag = Some(Drag::Pan);
         }
         if response.dragged() {
-            let delta = response.drag_delta();
-            match &self.drag {
-                Some(Drag::Pan) | None => self.pan(delta),
-                Some(_) => {
-                    if let Some(p) = response.interact_pointer_pos() {
-                        self.drag_to(to_canvas(p), delta / camera.zoom);
-                    }
-                }
-            }
+            let at = (response.interact_pointer_pos()).map_or(Pos2::ZERO, to_canvas);
+            self.dragged(at, response.drag_delta());
         }
         if let Some(pointer) = pointer {
             let (scroll, zoom) = ui.input(|i| (i.smooth_scroll_delta(), i.zoom_delta()));
@@ -512,23 +586,12 @@ impl Canvas {
         }
         if response.secondary_clicked() {
             if let Some(p) = response.interact_pointer_pos() {
-                let target = self.at(to_canvas(p), camera.zoom);
-                match &target {
-                    Target::Box(item) if !self.selected().contains(&item) => {
-                        self.select(Some(item.clone()))
-                    }
-                    Target::Wire(wire) => {
-                        self.select(None);
-                        self.wire = Some(*wire);
-                    }
-                    _ => {}
-                }
-                self.menu = Some(target);
+                self.open_menu(to_canvas(p), camera.zoom);
             }
         }
         response.context_menu(|ui| {
             if let Some(edit) = self.menu_ui(ui) {
-                gesture = Some(edit);
+                gestures.push(edit);
             }
         });
         if response.has_focus() {
@@ -540,10 +603,10 @@ impl Canvas {
                 )
             });
             if delete {
-                gesture = gesture.or_else(|| self.delete());
+                gestures.extend(self.delete());
             }
             if rename {
-                self.start_renaming();
+                self.rename_selected();
             }
             if escape {
                 self.select(None);
@@ -557,9 +620,10 @@ impl Canvas {
             let at = (response.interact_pointer_pos())
                 .or(pointer)
                 .map_or(Pos2::ZERO, to_canvas);
-            gesture = gesture.or_else(|| self.release(at));
+            gestures.extend(self.release(at));
         }
-        if !response.dragged() && !response.drag_stopped() && self.drag == Some(Drag::Pan) {
+        let idle = !response.dragged() && !response.drag_stopped();
+        if idle && matches!(self.drag, Some(Drag::Pan | Drag::Dropped)) {
             self.drag = None;
         }
         let said: Vec<String> = (pointer.zip(self.doc()))
@@ -572,7 +636,8 @@ impl Canvas {
         if !said.is_empty() {
             response.on_hover_text_at_pointer(said.join("\n"));
         }
-        self.rename_ui(ui, area).or(gesture)
+        gestures.extend(self.rename_ui(ui, area));
+        gestures
     }
 
     fn at_box(&self, point: Pos2) -> bool {
@@ -598,19 +663,19 @@ impl Canvas {
         match self.menu.clone() {
             Some(Target::Box(Item::Node(_))) => {
                 if ui.button("Rename…").clicked() {
-                    self.start_renaming();
+                    self.rename_menu_target();
                     ui.close();
                 }
                 if ui.button("Delete").clicked() {
                     ui.close();
-                    return self.delete();
+                    return self.menu_delete();
                 }
                 None
             }
-            Some(Target::Wire(_)) if self.delete().is_some() => {
+            Some(Target::Wire(_)) if self.menu_delete().is_some() => {
                 if ui.button("Unwire").clicked() {
                     ui.close();
-                    return self.delete();
+                    return self.menu_delete();
                 }
                 None
             }
@@ -626,6 +691,7 @@ impl Canvas {
         }
     }
 
+    /// The rename field, over the node being renamed; returns the rename once it is entered.
     /// The rename field, over the node being renamed; returns the rename once it is entered.
     fn rename_ui(&mut self, ui: &egui::Ui, area: Rect) -> Option<Gesture> {
         let renaming = self.renaming.as_mut()?;
@@ -644,6 +710,12 @@ impl Canvas {
             .show(ui.ctx(), |ui| {
                 let field = ui.text_edit_singleline(&mut renaming.text);
                 field.request_focus();
+                if field.changed() {
+                    renaming.refused = None;
+                }
+                if let Some(why) = &renaming.refused {
+                    ui.colored_label(ui.visuals().error_fg_color, why);
+                }
                 let (enter, escape) = ui.input(|i| {
                     (
                         i.key_pressed(egui::Key::Enter),
@@ -659,18 +731,13 @@ impl Canvas {
                     }
                 });
             });
-        let rename = match done? {
-            true => {
-                let to = gesture::typed_address(&renaming.text);
-                (to != renaming.from).then(|| Gesture::Rename {
-                    from: renaming.from.clone(),
-                    to,
-                })
+        match done? {
+            true => self.commit_rename(),
+            false => {
+                self.renaming = None;
+                None
             }
-            false => None,
-        };
-        self.renaming = None;
-        rename
+        }
     }
 
     fn paint(&self, painter: &egui::Painter, visuals: &egui::Visuals, area: Rect) {
@@ -704,6 +771,16 @@ impl Canvas {
             wiring,
         }
         .paint(painter, visuals);
+    }
+}
+
+/// The edit removing `item`, when it is a node.
+fn remove(item: &Item) -> Option<Gesture> {
+    match item {
+        Item::Node(address) => Some(Gesture::Remove {
+            address: address.clone(),
+        }),
+        Item::Input(_) | Item::Output(_) => None,
     }
 }
 
@@ -751,7 +828,7 @@ mod tests {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../instruments")
             .join(format!("{name}.json"));
-        load(&path, None).unwrap_or_else(|e| panic!("{name} reads: {e}"))
+        load(&read(&path, None)).unwrap_or_else(|e| panic!("{name} reads: {e}"))
     }
 
     /// `doc`'s graph with every stored position dropped, so the test is of the placement rule
@@ -845,7 +922,7 @@ mod tests {
             &store,
         )
         .unwrap();
-        let before = load(&path, None).unwrap();
+        let before = load(&read(&path, None)).unwrap();
         let unmoved = before.graph.index_of(&Item::Node(address.clone())).unwrap();
         assert_eq!(before.graph.boxes[unmoved].stored, None);
         set_instrument_layout(
@@ -862,7 +939,7 @@ mod tests {
         )
         .unwrap();
 
-        let after = load(&path, None).unwrap();
+        let after = load(&read(&path, None)).unwrap();
         let moved = after.graph.index_of(&Item::Node(address)).unwrap();
         assert_eq!(after.rects[moved].min, Pos2::new(640.0, -120.0));
         assert_eq!(overlaps(&after.rects), []);
@@ -910,20 +987,20 @@ mod tests {
         let before = boxes(&canvas);
 
         add("/added");
-        canvas.reload(&path, None);
+        canvas.reload(&path, None, &read(&path, None));
         assert_eq!(boxes(&canvas), before + 1);
         assert_eq!(canvas.camera, Some(camera));
         assert_eq!(canvas.selection, Some(Item::Node("/kept".into())));
 
         canvas.selection = Some(Item::Node("/gone".into()));
-        canvas.reload(&path, None);
+        canvas.reload(&path, None, &read(&path, None));
         assert_eq!(canvas.selection, None);
     }
 
     #[test]
     fn a_file_that_is_not_a_document_is_reported_not_drawn() {
         let missing = PathBuf::from("does-not-exist.json");
-        assert!(load(&missing, None).is_err());
+        assert!(load(&read(&missing, None)).is_err());
     }
 
     #[test]
@@ -1015,6 +1092,14 @@ mod tests {
 
         fn canvas(&self) -> Canvas {
             Canvas::open(Some(&self.path), None)
+        }
+
+        fn reload(&self, canvas: &mut Canvas) {
+            canvas.reload(&self.path, None, &read(&self.path, None));
+        }
+
+        fn source(&self) -> String {
+            self.path.display().to_string()
         }
     }
 
@@ -1123,7 +1208,7 @@ mod tests {
             &FsResolver::for_document(&seed.path.display().to_string()),
         )
         .unwrap();
-        canvas.reload(&seed.path, None);
+        seed.reload(&mut canvas);
         for (i, (now, was)) in doc(&canvas).rects.iter().zip(&before).enumerate() {
             let expected = if i == osc_at { was.translate(by) } else { *was };
             assert_eq!(*now, expected, "box {i}");
@@ -1253,19 +1338,168 @@ mod tests {
     fn renaming_starts_on_the_selected_node_only() {
         let seed = Seed::new();
         let mut canvas = seed.canvas();
-        canvas.start_renaming();
+        canvas.rename_selected();
         assert_eq!(canvas.renaming, None);
         canvas.click(middle_of(&canvas, &Item::Output("main".into())), 1.0, false);
-        canvas.start_renaming();
+        canvas.rename_selected();
         assert_eq!(canvas.renaming, None);
         canvas.click(middle_of(&canvas, &Item::Node("/osc".into())), 1.0, false);
-        canvas.start_renaming();
+        canvas.rename_selected();
         assert_eq!(
             canvas.renaming,
             Some(Renaming {
                 from: "/osc".into(),
                 text: "/osc".into(),
+                refused: None,
             })
         );
+    }
+
+    #[test]
+    fn the_context_menu_acts_on_what_was_right_clicked_not_on_the_selection() {
+        let seed = Seed::new();
+        let mut canvas = seed.canvas();
+        let (osc, clock) = (Item::Node("/osc".into()), Item::Node("/clock".into()));
+        canvas.click(middle_of(&canvas, &osc), 1.0, false);
+        canvas.click(middle_of(&canvas, &clock), 1.0, true);
+        assert_eq!(canvas.selected(), [&osc, &clock]);
+
+        canvas.open_menu(middle_of(&canvas, &clock), 1.0);
+        assert_eq!(
+            canvas.selected(),
+            [&osc, &clock],
+            "a selected box keeps the selection"
+        );
+        assert_eq!(
+            canvas.menu_delete(),
+            Some(Gesture::Remove {
+                address: "/clock".into()
+            })
+        );
+        canvas.rename_menu_target();
+        assert_eq!(
+            canvas.renaming.as_ref().map(|r| r.from.as_str()),
+            Some("/clock")
+        );
+
+        canvas.renaming = None;
+        canvas.open_menu(on_wire(&canvas, &Item::Node("/filter".into())), 1.0);
+        canvas.rename_menu_target();
+        assert_eq!(canvas.renaming, None, "a wire has no name");
+        assert_eq!(
+            canvas.menu_delete(),
+            Some(Gesture::Unwire {
+                address: "/filter".into(),
+                input: "audio".into(),
+            })
+        );
+
+        canvas.open_menu(middle_of(&canvas, &Item::Output("main".into())), 1.0);
+        assert_eq!(canvas.menu_delete(), None);
+    }
+
+    #[test]
+    fn a_rename_to_no_name_is_refused_with_the_field_left_open() {
+        let seed = Seed::new();
+        let mut canvas = seed.canvas();
+        canvas.click(middle_of(&canvas, &Item::Node("/osc".into())), 1.0, false);
+        for nothing in ["", "   ", "/", " / "] {
+            canvas.rename_selected();
+            canvas.renaming.as_mut().unwrap().text = nothing.into();
+            assert_eq!(canvas.commit_rename(), None, "{nothing:?}");
+            let renaming = canvas.renaming.as_ref().expect("still open");
+            assert!(renaming.refused.is_some(), "{nothing:?}");
+        }
+
+        canvas.renaming.as_mut().unwrap().text = "/osc".into();
+        assert_eq!(canvas.commit_rename(), None, "an unchanged name is no edit");
+        assert_eq!(canvas.renaming, None);
+
+        canvas.rename_selected();
+        canvas.renaming.as_mut().unwrap().text = " lead ".into();
+        assert_eq!(
+            canvas.commit_rename(),
+            Some(Gesture::Rename {
+                from: "/osc".into(),
+                to: "/lead".into(),
+            })
+        );
+        assert_eq!(canvas.renaming, None);
+    }
+
+    /// Another writer's edit to the seed: `/filter`'s audio input unwired, so the seed has one wire
+    /// fewer.
+    fn unwire_elsewhere(seed: &Seed) {
+        let edit = reuben_api::authoring::unwire_instrument_input(
+            &reuben_api::authoring::UnwireInstrumentInput {
+                source: seed.source(),
+                address: "/filter".into(),
+                input: "audio".into(),
+                expect: None,
+            },
+            &FsResolver::for_document(&seed.source()),
+        )
+        .unwrap()
+        .output;
+        assert!(edit.written, "{:?}", edit.report);
+    }
+
+    #[test]
+    fn a_reload_during_a_move_or_a_wire_drops_it_and_the_rest_of_the_drag_does_nothing() {
+        let seed = Seed::new();
+        let mut canvas = seed.canvas();
+        let camera = Camera {
+            offset: Vec2::new(3.0, 4.0),
+            zoom: 1.0,
+        };
+        canvas.camera = Some(camera);
+        let (_, start) = port(&canvas, "/osc", "audio", true);
+        let starts = [middle_of(&canvas, &Item::Node("/clock".into())), start];
+        unwire_elsewhere(&seed);
+        for start in starts {
+            canvas.press(start, false);
+            assert!(
+                matches!(canvas.drag, Some(Drag::Move { .. } | Drag::Wire { .. })),
+                "{:?}",
+                canvas.drag
+            );
+            seed.reload(&mut canvas);
+            assert_eq!(canvas.drag, Some(Drag::Dropped));
+            canvas.dragged(start + Vec2::new(40.0, 0.0), Vec2::new(40.0, 0.0));
+            assert_eq!(
+                canvas.camera,
+                Some(camera),
+                "the drag did not turn into a pan"
+            );
+            assert_eq!(canvas.release(start + Vec2::new(40.0, 0.0)), None);
+            assert_eq!(canvas.drag, None);
+        }
+
+        canvas.press(Pos2::new(-5000.0, -5000.0), false);
+        assert_eq!(canvas.drag, Some(Drag::Pan));
+        seed.reload(&mut canvas);
+        canvas.dragged(Pos2::ZERO, Vec2::new(10.0, 0.0));
+        assert_eq!(
+            canvas.camera.map(|c| c.offset),
+            Some(Vec2::new(13.0, 4.0)),
+            "a pan carries on through a reload"
+        );
+    }
+
+    #[test]
+    fn a_reload_lets_go_of_a_selected_wire_the_document_may_no_longer_have() {
+        let seed = Seed::new();
+        let mut canvas = seed.canvas();
+        // The last wire, so that with one wire fewer its index names nothing.
+        let last = doc(&canvas).graph.wires.len() - 1;
+        let into = doc(&canvas).graph.wires[last].to.node;
+        let into = doc(&canvas).graph.boxes[into].item.clone();
+        canvas.click(on_wire(&canvas, &into), 1.0, false);
+        assert_eq!(canvas.wire, Some(last));
+
+        unwire_elsewhere(&seed);
+        seed.reload(&mut canvas);
+        assert_eq!(canvas.wire, None);
+        assert_eq!(canvas.delete(), None);
     }
 }

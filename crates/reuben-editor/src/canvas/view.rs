@@ -48,11 +48,8 @@ pub struct Scene<'a> {
     pub camera: Camera,
     /// The top-left corner of the canvas's area of the window.
     pub origin: Pos2,
-    /// The selected boxes.
     pub selected: Vec<usize>,
-    /// The selected wire.
     pub wire: Option<usize>,
-    /// A wire being drawn.
     pub wiring: Option<Wiring<'a>>,
 }
 
