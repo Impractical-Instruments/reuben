@@ -98,7 +98,7 @@ impl Edit {
 pub struct Inspector {
     holds: Holds,
     drafts: Drafts,
-    /// Why the last edit or live send did not land, until the next one does.
+    /// Why the last live send did not reach the engine, until an edit or a send does.
     error: Option<String>,
     /// How many times a verb has been run to write the document.
     #[cfg(test)]
@@ -135,8 +135,7 @@ impl Inspector {
                     target: target.clone(),
                     value: literal,
                 };
-                self.commit(edit, expect, session, channel);
-                if held && self.error.is_some() {
+                if !self.commit(edit, expect, session, channel) && held {
                     self.restore(&target, session, channel);
                 }
             }
@@ -169,13 +168,9 @@ impl Inspector {
                 Control::Number { value, .. } => target.live(value),
                 _ => None,
             });
-        let Some(message) = held else { return };
-        let refused = self.error.take();
-        self.live(message, channel);
-        self.error = match (refused, self.error.take()) {
-            (Some(refused), Some(unsent)) => Some(format!("{refused}\n{unsent}")),
-            (refused, unsent) => refused.or(unsent),
-        };
+        if let Some(message) = held {
+            self.live(message, channel);
+        }
     }
 
     /// Send `message` to the running engine, when one is running.
@@ -191,14 +186,15 @@ impl Inspector {
     }
 
     /// Write `edit` to the viewed document, against the content hash `expect`, or against the
-    /// document on screen now when `None`.
+    /// document on screen now when `None`. Returns whether it landed; why it did not is the
+    /// session's [`Feedback`](crate::feedback::Feedback).
     fn commit(
         &mut self,
         edit: Edit,
         expect: Option<String>,
         session: &mut Session,
         channel: &dyn Fn() -> Option<Channel>,
-    ) {
+    ) -> bool {
         #[cfg(test)]
         {
             self.writes += 1;
@@ -209,28 +205,8 @@ impl Inspector {
             Some(expect) => edit::write_against(session, channel, &source, expect, verb),
             None => edit::write(session, channel, &source, verb),
         };
-        self.error = match result {
-            Ok(result) if result.written => None,
-            Ok(result) => Some(refused(&result)),
-            Err(refusal) => Some(refusal.message),
-        };
-    }
-}
-
-/// Why an edit that ran wrote nothing.
-fn refused(result: &EditResult) -> String {
-    let said: Vec<String> = (result.report.errors.iter())
-        .map(|e| match (&e.node, &e.port) {
-            (Some(node), Some(port)) => format!("{node}.{port}: {}", e.message),
-            (Some(node), None) => format!("{node}: {}", e.message),
-            _ => e.message.clone(),
-        })
-        .chain(result.notes.iter().cloned())
-        .collect();
-    if said.is_empty() {
-        "the edit was not written".to_string()
-    } else {
-        said.join("\n")
+        self.error = None;
+        matches!(result, Ok(result) if result.written)
     }
 }
 
@@ -253,6 +229,7 @@ mod tests {
 
     use super::*;
     use crate::engine::Engine;
+    use crate::feedback::Feedback;
     use crate::session::test_support::{Rig, Scratch};
     use crate::session::Status;
 
@@ -468,7 +445,11 @@ mod tests {
             release(&mut rig, &mut inspector, &cutoff, 1500.0);
 
             assert_eq!(inspector.writes, 1);
-            assert!(inspector.error.is_some(), "the conflict is reported");
+            assert!(
+                matches!(rig.session.feedback(), Some(Feedback::Conflict { .. })),
+                "the conflict is reported: {:?}",
+                rig.session.feedback()
+            );
             assert_eq!(literal(&rig, "/map_cutoff", "out_max"), json!(5000.0));
             // The held moves, then the value the file holds, so the sound is the file again.
             let received = rig.live_received(4);
@@ -506,7 +487,11 @@ mod tests {
             });
             release(&mut rig, &mut inspector, &cutoff, 9000.0);
 
-            assert!(inspector.error.is_some(), "the conflict is reported");
+            assert!(
+                matches!(rig.session.feedback(), Some(Feedback::Conflict { .. })),
+                "the conflict is reported: {:?}",
+                rig.session.feedback()
+            );
             assert_eq!(literal(&rig, "/map_cutoff", "out_max"), resonance_max);
             assert_eq!(literal(&rig, "/map_old", "out_max"), json!(11000.0));
         });
@@ -597,7 +582,11 @@ mod tests {
                 &mut rig.session,
                 &channel,
             );
-            assert!(inspector.error.is_some(), "a stale draft is a conflict");
+            assert!(
+                matches!(rig.session.feedback(), Some(Feedback::Conflict { .. })),
+                "a stale draft is a conflict: {:?}",
+                rig.session.feedback()
+            );
             assert_eq!(
                 (rig.session
                     .tree()
@@ -629,7 +618,13 @@ mod tests {
                 &mut rig.session,
                 &channel,
             );
-            assert!(inspector.error.is_some());
+            let rejected = rig.session.feedback().expect("the rejection is reported");
+            let top = before.top().source.clone();
+            let at_fault = rejected.rejected(&top);
+            assert!(
+                (at_fault.iter()).any(|d| d.node.as_deref() == Some("/map_cutoff")),
+                "{rejected:?}"
+            );
             assert_eq!(rig.session.tree(), &before);
             rig.settle();
             assert_eq!(rig.swaps(), 0);
