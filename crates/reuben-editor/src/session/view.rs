@@ -58,6 +58,9 @@ fn status(ui: &mut egui::Ui, status: &Status) {
         Status::Current => {
             ui.label("Playing these files.");
         }
+        Status::NoEngine => {
+            ui.label("No engine is running; these files are not playing.");
+        }
         Status::Swapping => {
             ui.label("Swapping…");
         }

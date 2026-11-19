@@ -10,6 +10,8 @@ mod tree;
 mod view;
 mod watch;
 
+use std::collections::BTreeSet;
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
@@ -28,11 +30,16 @@ use self::watch::Watch;
 /// that is gone by the time the Swap lands.
 const QUIET: Duration = Duration::from_millis(50);
 
+/// The longest a touch waits to be read while later touches keep arriving, so files written
+/// without a pause — a script sweeping a value — are still followed.
+const LONGEST_WAIT: Duration = Duration::from_millis(500);
+
 /// Whether the engine plays what is on disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Status {
-    /// It does, or no engine is running to disagree.
     Current,
+    /// No engine is running, so nothing plays.
+    NoEngine,
     /// A Swap of what is on disk is running.
     Swapping,
     /// It does not, and why: the files do not load, or the engine refused the Swap. The engine
@@ -43,7 +50,8 @@ pub enum Status {
 /// What one [`Session::poll`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Poll {
-    /// The tree was read again and differs from the one before.
+    /// The tree was read since the last poll, by it or by [`Session::refresh`], and differed
+    /// from the one before.
     pub reloaded: bool,
     /// Call again no later than this, a touch being inside its quiet period.
     pub wait: Option<Duration>,
@@ -58,8 +66,15 @@ pub struct Session {
     /// `Err` when the platform gave no watcher: the tree is then read only after the editor's own
     /// writes.
     watch: Result<Watch, String>,
+    /// The paths of the nested documents that read in the last tree that loaded. One of these
+    /// going missing holds the Swap, where a reference that never resolved does not.
+    loaded: BTreeSet<PathBuf>,
     /// When the touched files are due to be read.
     due: Option<Instant>,
+    /// When the first touch not yet read was seen.
+    touched_at: Option<Instant>,
+    /// The tree changed since [`poll`](Self::poll) last said so.
+    changed: bool,
     status: Status,
     swapping: bool,
     /// The tree changed while a Swap was running, so what that Swap installs is already stale.
@@ -91,9 +106,16 @@ impl Session {
         Self {
             top: top.to_path_buf(),
             root: root.map(Path::to_path_buf),
+            loaded: if blocked.is_empty() {
+                read_paths(&tree)
+            } else {
+                BTreeSet::new()
+            },
             tree,
             watch,
             due: None,
+            touched_at: None,
+            changed: false,
             status: if blocked.is_empty() {
                 Status::Current
             } else {
@@ -124,9 +146,13 @@ impl Session {
         &self.status
     }
 
-    /// Why the files are not being watched, when they are not.
-    pub fn watch_error(&self) -> Option<&str> {
-        self.watch.as_ref().err().map(String::as_str)
+    /// Why the files, or some of them, are not being watched, when they are not.
+    pub fn watch_error(&self) -> Option<String> {
+        match &self.watch {
+            Err(e) => Some(e.clone()),
+            Ok(watch) if watch.unwatched().is_empty() => None,
+            Ok(watch) => Some(watch.unwatched().join("; ")),
+        }
     }
 
     /// The store to hand a `reuben-api` verb for the document `source`.
@@ -141,25 +167,32 @@ impl Session {
             self.swapped(outcome, channel);
         }
         if self.watch.as_ref().is_ok_and(Watch::touched) {
-            self.due = Some(now + QUIET);
+            let first = *self.touched_at.get_or_insert(now);
+            self.due = Some((now + QUIET).min(first + LONGEST_WAIT));
         }
-        match self.due {
+        let wait = match self.due {
             Some(due) if now >= due => {
                 self.due = None;
+                self.touched_at = None;
                 #[cfg(test)]
                 {
                     self.touches += 1;
                 }
-                Poll {
-                    reloaded: self.refresh(channel),
-                    wait: None,
-                }
+                self.refresh(channel);
+                None
             }
-            due => Poll {
-                reloaded: false,
-                wait: due.map(|due| due - now),
-            },
+            due => due.map(|due| due - now),
+        };
+        Poll {
+            reloaded: std::mem::take(&mut self.changed),
+            wait,
         }
+    }
+
+    /// Offer what is on disk to the engine again, as after a start that the files have moved on
+    /// from.
+    pub fn reinstall(&mut self, channel: &dyn Fn() -> Option<Channel>) {
+        self.install(channel);
     }
 
     /// Read the tree from disk now and, when it differs from the one held, Swap it in. Returns
@@ -169,31 +202,52 @@ impl Session {
     /// calls this and then arrives again through the watcher, from being two Swaps.
     pub fn refresh(&mut self, channel: &dyn Fn() -> Option<Channel>) -> bool {
         let tree = Tree::resolve(&self.top, self.root.as_deref());
+        // Even for an unchanged tree: a directory that came back holds no file yet, so the tree
+        // reads as it did, and only a fresh watch sees the file arrive.
+        if let Ok(watch) = &mut self.watch {
+            watch.set(tree.documents().iter().map(|d| d.path.as_path()));
+        }
         if tree == self.tree {
             return false;
         }
         self.tree = tree;
-        if let Ok(watch) = &mut self.watch {
-            watch.set(self.tree.documents().iter().map(|d| d.path.as_path()));
-        }
+        self.changed = true;
         self.install(channel);
         true
     }
 
+    /// Why the tree must not be swapped in; empty when it may be.
+    fn blocked(&self) -> Vec<String> {
+        let mut why = self.tree.blocked();
+        for document in &self.tree.documents()[1..] {
+            if document.read.is_err()
+                && self.loaded.contains(&document.path)
+                && !document.path.exists()
+            {
+                why.push(format!(
+                    "{}: was part of the instrument and is gone",
+                    document.path.display()
+                ));
+            }
+        }
+        why
+    }
+
     fn install(&mut self, channel: &dyn Fn() -> Option<Channel>) {
-        let blocked = self.tree.blocked();
+        let blocked = self.blocked();
         if !blocked.is_empty() {
             self.status = Status::Held(blocked);
             self.swap_again = false;
             return;
         }
+        self.loaded = read_paths(&self.tree);
         if self.swapping {
             self.status = Status::Swapping;
             self.swap_again = true;
             return;
         }
         let Some(channel) = channel() else {
-            self.status = Status::Current;
+            self.status = Status::NoEngine;
             return;
         };
         let args = SwapInstrument {
@@ -204,9 +258,14 @@ impl Session {
         let wake = Arc::clone(&self.wake);
         // Off the UI thread: a Swap builds the whole new Engine before it returns.
         std::thread::spawn(move || {
-            let outcome = swap_instrument(&args, &channel)
-                .map(|answer| answer.output)
-                .map_err(|refusal| refusal.message);
+            // A panic that took this thread down unreported would leave the session waiting on
+            // this Swap for good.
+            let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                swap_instrument(&args, &channel)
+                    .map(|answer| answer.output)
+                    .map_err(|refusal| refusal.message)
+            }))
+            .unwrap_or_else(|_| Err("the Swap panicked".to_string()));
             if done.send(outcome).is_ok() {
                 wake();
             }
@@ -249,10 +308,18 @@ impl Session {
     }
 }
 
+/// The paths of the nested documents of `tree` that read.
+fn read_paths(tree: &Tree) -> BTreeSet<PathBuf> {
+    (tree.documents()[1..].iter())
+        .filter(|document| document.read.is_ok())
+        .map(|document| document.path.clone())
+        .collect()
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::mpsc::{self};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -318,17 +385,32 @@ pub(crate) mod test_support {
         }
     }
 
+    /// What a test makes the next Swap requests do on their way to the engine.
+    #[derive(Debug, Default)]
+    pub struct Fault {
+        /// How long each Swap request is held before it reaches the engine, in milliseconds.
+        pub delay_ms: AtomicUsize,
+        /// The next Swap request panics instead of reaching the engine.
+        pub panic_once: AtomicBool,
+    }
+
     /// The engine's own transport, counting the Swap requests that cross it.
     #[derive(Debug)]
     struct Counting {
         inner: InProcess,
         swaps: Arc<AtomicUsize>,
+        fault: Arc<Fault>,
     }
 
     impl Transport for Counting {
         fn round_trip(&self, line: &str, read_timeout: Duration) -> std::io::Result<String> {
             if matches!(Request::from_ndjson(line), Ok(Request::Swap { .. })) {
                 self.swaps.fetch_add(1, Ordering::SeqCst);
+                if self.fault.panic_once.swap(false, Ordering::SeqCst) {
+                    panic!("a test asked this Swap to panic");
+                }
+                let delay = self.fault.delay_ms.load(Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(delay as u64));
             }
             self.inner.round_trip(line, read_timeout)
         }
@@ -347,6 +429,7 @@ pub(crate) mod test_support {
         pub session: Session,
         engine: InProcess,
         swaps: Arc<AtomicUsize>,
+        pub fault: Arc<Fault>,
         _callback: FakeCallback,
         _scratch: Scratch,
     }
@@ -379,6 +462,7 @@ pub(crate) mod test_support {
                 top,
                 engine: InProcess::new(state),
                 swaps: Arc::new(AtomicUsize::new(0)),
+                fault: Arc::new(Fault::default()),
                 _callback: FakeCallback::spawn(side, control_rx),
                 _scratch: scratch,
             }
@@ -388,6 +472,7 @@ pub(crate) mod test_support {
             Channel::new(Counting {
                 inner: self.engine.clone(),
                 swaps: Arc::clone(&self.swaps),
+                fault: Arc::clone(&self.fault),
             })
         }
 
@@ -410,10 +495,12 @@ pub(crate) mod test_support {
         pub fn channel_source(&self) -> impl Fn() -> Option<Channel> {
             let engine = self.engine.clone();
             let swaps = Arc::clone(&self.swaps);
+            let fault = Arc::clone(&self.fault);
             move || {
                 Some(Channel::new(Counting {
                     inner: engine.clone(),
                     swaps: Arc::clone(&swaps),
+                    fault: Arc::clone(&fault),
                 }))
             }
         }
@@ -467,6 +554,8 @@ mod tests {
     use reuben_api::FsResolver;
     use reuben_native::test_support::within;
     use serde_json::json;
+
+    use std::sync::atomic::Ordering;
 
     use super::test_support::Rig;
     use super::*;
@@ -693,7 +782,160 @@ mod tests {
         let mut session = Session::open(&lib.join("default.json"), None, || {});
         let written = sidecar_sets_cutoff(&voice, 1200.0);
         assert!(session.refresh(&|| None));
-        assert_eq!(session.status(), &Status::Current);
+        assert_eq!(session.status(), &Status::NoEngine);
         assert_eq!(session.tree().documents()[1].hash(), Some(written.as_str()));
+    }
+
+    #[test]
+    fn a_voice_file_that_goes_missing_is_held_until_it_is_back() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("voice_gone", "default.json");
+            let voice = voice_of(&rig);
+            let playing = rig.playing();
+            let kept = rig.lib.join("kept.json");
+            std::fs::rename(&voice, &kept).unwrap();
+
+            rig.poll_until("held", |rig| matches!(rig.status(), Status::Held(_)));
+            rig.settle();
+            assert_eq!(
+                rig.swaps(),
+                0,
+                "an instrument with no voice was not offered"
+            );
+            assert_eq!(rig.playing(), playing);
+
+            std::fs::rename(&kept, &voice).unwrap();
+            rig.poll_until("the Swap once it is back", |rig| rig.swaps() == 1);
+            rig.settle();
+            assert_eq!(rig.status(), &Status::Current);
+        });
+    }
+
+    #[test]
+    fn a_directory_removed_and_made_again_is_followed_afterwards() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("dir_gone", "default.json");
+            let voice = voice_of(&rig);
+            let voices = voice.parent().unwrap().to_path_buf();
+            let kept = rig.lib.join("kept-voices");
+            std::fs::rename(&voices, &kept).unwrap();
+            rig.poll_until("held", |rig| matches!(rig.status(), Status::Held(_)));
+            rig.settle();
+            assert_eq!(rig.swaps(), 0);
+
+            // A new directory with the same files, as a checkout or a sync leaves.
+            std::fs::create_dir(&voices).unwrap();
+            for entry in std::fs::read_dir(&kept).unwrap() {
+                let entry = entry.unwrap();
+                std::fs::copy(entry.path(), voices.join(entry.file_name())).unwrap();
+            }
+            rig.poll_until("the Swap once it is back", |rig| rig.swaps() == 1);
+            rig.settle();
+            assert_eq!(rig.status(), &Status::Current);
+
+            sidecar_sets_cutoff(&voice, 900.0);
+            rig.poll_until("a write in the new directory", |rig| rig.swaps() == 2);
+        });
+    }
+
+    #[test]
+    fn a_change_while_a_swap_is_running_is_swapped_once_more_when_it_lands() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("mid_swap", "default.json");
+            let voice = voice_of(&rig);
+            rig.fault.delay_ms.store(300, Ordering::SeqCst);
+
+            sidecar_sets_cutoff(&voice, 1200.0);
+            rig.poll_until("the first Swap leaving", |rig| rig.swaps() == 1);
+            let last = sidecar_sets_cutoff(&voice, 800.0);
+            rig.poll_until("the second Swap", |rig| rig.swaps() == 2);
+            rig.poll_until("it landing", |rig| rig.status() == &Status::Current);
+            rig.settle();
+
+            assert_eq!(rig.swaps(), 2);
+            assert_eq!(hash_of(&rig, &voice), Some(last));
+        });
+    }
+
+    #[test]
+    fn a_swap_that_panics_is_reported_and_the_next_change_still_swaps() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("swap_panic", "default.json");
+            let voice = voice_of(&rig);
+            rig.fault.panic_once.store(true, Ordering::SeqCst);
+
+            sidecar_sets_cutoff(&voice, 1200.0);
+            rig.poll_until("the panic reported", |rig| {
+                matches!(rig.status(), Status::Held(_))
+            });
+            rig.settle();
+
+            sidecar_sets_cutoff(&voice, 800.0);
+            rig.poll_until("the next Swap", |rig| rig.swaps() == 2);
+            rig.poll_until("it landing", |rig| rig.status() == &Status::Current);
+        });
+    }
+
+    #[test]
+    fn a_swap_the_engine_cannot_be_reached_for_is_held() {
+        let scratch = test_support::Scratch::new("unreachable");
+        let lib = scratch.library();
+        let voice = lib.join("voices").join("default-voice.json");
+        let mut session = Session::open(&lib.join("default.json"), None, || {});
+        #[derive(Debug)]
+        struct Unreachable;
+        impl reuben_api::engine::Transport for Unreachable {
+            fn round_trip(&self, _: &str, _: Duration) -> std::io::Result<String> {
+                Err(std::io::ErrorKind::ConnectionRefused.into())
+            }
+            fn endpoint(&self) -> &str {
+                "nowhere"
+            }
+        }
+        let gone = || Some(Channel::new(Unreachable));
+        sidecar_sets_cutoff(&voice, 1200.0);
+        assert!(session.refresh(&gone));
+        let deadline = Instant::now() + test_support::SEEN;
+        while session.status() == &Status::Swapping {
+            assert!(Instant::now() < deadline, "the Swap never came back");
+            session.poll(Instant::now(), &gone);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(matches!(session.status(), Status::Held(_)));
+    }
+
+    #[test]
+    fn files_written_without_a_pause_are_still_read() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("no_pause", "default.json");
+            let voice = voice_of(&rig);
+            let until = Instant::now() + Duration::from_secs(2);
+            let mut cutoff = 500.0;
+            while Instant::now() < until {
+                cutoff += 1.0;
+                sidecar_sets_cutoff(&voice, cutoff);
+                let pause = Instant::now() + QUIET / 3;
+                while Instant::now() < pause {
+                    rig.poll();
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            }
+            assert!(
+                rig.touches() > 0,
+                "nothing was read while the writes kept coming"
+            );
+        });
+    }
+
+    #[test]
+    fn a_reload_made_by_refresh_is_reported_by_the_next_poll_once() {
+        let scratch = test_support::Scratch::new("sticky");
+        let lib = scratch.library();
+        let voice = lib.join("voices").join("default-voice.json");
+        let mut session = Session::open(&lib.join("default.json"), None, || {});
+        sidecar_sets_cutoff(&voice, 1200.0);
+        assert!(session.refresh(&|| None));
+        assert!(session.poll(Instant::now(), &|| None).reloaded);
+        assert!(!session.poll(Instant::now(), &|| None).reloaded);
     }
 }

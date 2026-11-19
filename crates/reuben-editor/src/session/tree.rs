@@ -122,8 +122,9 @@ impl Tree {
     ///
     /// A nested document that is on disk and does not load is one: the engine's load would report
     /// it as a warning and install the instrument without that voice or subpatch, replacing a Plan
-    /// that plays with one that does not. A nested document that is not on disk at all is not: the
-    /// instrument may never have had it, and the engine's own warning covers it.
+    /// that plays with one that does not. A nested document that is not on disk at all is not one
+    /// here, since the instrument may never have had it; the session holds the tree when a
+    /// document it had loaded goes missing.
     pub fn blocked(&self) -> Vec<String> {
         let mut why = Vec::new();
         for (index, document) in self.documents.iter().enumerate() {

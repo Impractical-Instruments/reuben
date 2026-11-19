@@ -125,6 +125,12 @@ impl Editor {
         if poll.reloaded {
             self.canvas.reload(session.top(), session.root());
         }
+        // The files load and nothing plays them: the engine stopped, or never started, on a
+        // tree that did not load.
+        if poll.reloaded && session.status() == &Status::NoEngine {
+            self.engine.resume();
+            session.reinstall(&|| self.engine.channel());
+        }
         // A tree that does not load keeps the panel of the instrument still playing.
         if poll.reloaded && !matches!(session.status(), Status::Held(_)) {
             self.controls = Controls::open(Some(session.top()), session.root());
