@@ -14,10 +14,12 @@
 //! `fill_duplex` → `drain_outbound`. Protocol decode (UDP/OSC datagrams, worklet message
 //! buffers) stays in the shells; the Engine takes the already-flat primitive args.
 //!
-//! NOTE (RT-debt): [`Renderer::render_block`] is allocation-free, but [`Engine::fill`]'s
-//! message handoff (the `pending` Vec) still churns the heap when messages flow, so the
-//! audio callback isn't fully allocation-free yet. A lock-free, preallocated handoff is
-//! tracked for later.
+//! RT-safety: the `pending` queue is preallocated and cleared, never replaced, so in steady state
+//! the handoff itself is heap-neutral (a burst past its high-water mark grows it once). The audio
+//! callback is still **not** allocation-free under control traffic: each Message costs one
+//! allocation where it is built ([`Engine::queue_osc`] builds one per call) and one free when it
+//! is dropped after its block — both on the audio thread when the host queues from its callback.
+//! That cost belongs to the Message's owned address; see [`Message::address`].
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -25,6 +27,11 @@ use alloc::vec::Vec;
 use crate::message::{Arg, Message};
 use crate::plan::Plan;
 use crate::render::Renderer;
+
+/// Preallocated capacity of the inbound queue. Sized well past a block's worth of live control
+/// traffic (a played chord plus a few knob moves), so steady state never grows it on the audio
+/// thread.
+const PENDING_CAP: usize = 64;
 
 /// Owns a Plan + Renderer and serves **interleaved logical** audio one block at a time into
 /// arbitrary buffers. "Logical" = the instrument's master channels; mapping those
@@ -69,7 +76,7 @@ impl Engine {
         Self {
             plan,
             renderer,
-            pending: Vec::new(),
+            pending: Vec::with_capacity(PENDING_CAP),
             outbound: Vec::new(),
             channels,
             in_channels,
@@ -225,14 +232,15 @@ impl Engine {
     /// materializes that default (no device stream is not the same as a
     /// silent device stream). Once a stream exists, staged zeros are honest device silence.
     fn render_next(&mut self) {
-        let msgs = core::mem::take(&mut self.pending);
         let inputs: &[Vec<f32>] = if self.in_dirty { &self.in_scratch } else { &[] };
         self.renderer.render_block_multi(
             &mut self.plan,
-            &msgs,
+            &self.pending,
             inputs,
             &mut self.scratch,
             &mut self.outbound,
         );
+        // `clear`, not `mem::take`: the queue keeps its capacity for the next block.
+        self.pending.clear();
     }
 }
