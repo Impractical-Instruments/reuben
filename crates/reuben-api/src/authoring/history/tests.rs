@@ -601,3 +601,71 @@ fn a_hash_not_held_is_refused_whatever_the_expect() {
     restore_instrument(&restore(SRC, "0000000000000000", "stale"), &history)
         .expect_err("nothing is held under that hash");
 }
+
+#[test]
+fn holds_answers_for_a_source_and_hash_and_forgets_what_was_evicted() {
+    let history = DocumentHistory::with_capacity(MemoryStore::with(SRC, &seed()), 2);
+    let original = hash_instrument(&seed(), &history).expect("the seed hashes");
+    let first = set_freq(SRC, 330.0, &history);
+    assert!(history.holds(SRC, &original));
+    assert!(
+        history.holds(&format!("./{SRC}"), &first),
+        "by canonical source"
+    );
+    assert!(
+        !history.holds("other.json", &first),
+        "held for this source only"
+    );
+
+    set_freq(SRC, 440.0, &history);
+    assert!(!history.holds(SRC, &original), "evicted");
+    assert!(history.holds(SRC, &first));
+}
+
+/// A store whose create is its own, so the history is seen to hand a create on rather than
+/// falling back to a read and a write.
+struct CreateOnly(MemoryStore);
+
+impl Resources for CreateOnly {
+    fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+        self.0.read_samples(source)
+    }
+
+    fn read_text(&self, source: &str) -> Result<String, ResolveError> {
+        self.0.read_text(source)
+    }
+
+    fn write_text(&self, source: &str, _text: &str) -> Result<(), ResolveError> {
+        Err(ResolveError::Write(format!("{source}: only created here")))
+    }
+
+    fn create_text(&self, source: &str, text: &str) -> Result<Created, ResolveError> {
+        if self.0.read_text(source).is_ok() {
+            return Ok(Created::Taken);
+        }
+        self.0.put(source, text);
+        Ok(Created::Written)
+    }
+
+    fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
+        self.0.canonical(source, referrer)
+    }
+}
+
+#[test]
+fn a_create_goes_to_the_wrapped_store_and_what_it_created_is_held() {
+    let history = DocumentHistory::new(CreateOnly(MemoryStore::default()));
+    assert!(matches!(
+        history.create_text(SRC, &seed()),
+        Ok(Created::Written)
+    ));
+    let hash = hash_instrument(&seed(), &history).expect("the seed hashes");
+    assert!(history.holds(SRC, &hash));
+
+    assert!(matches!(history.create_text(SRC, "{}"), Ok(Created::Taken)));
+    assert_eq!(
+        history.inner().0.read(SRC),
+        seed(),
+        "a taken source is left as it was"
+    );
+}

@@ -1,13 +1,41 @@
-//! The files of the open instrument and whether the engine is playing them.
+//! The files of the open instrument, whether the engine is playing them, and undo and redo.
 
 use std::path::Path;
 
 use eframe::egui;
 
-use super::{Document, Session, Status};
+use super::{Direction, Document, Session, Status};
 
-/// Draw the session down the left of `ui`.
-pub fn show(ui: &mut egui::Ui, session: &Session) {
+const UNDO: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Z);
+const REDO: egui::KeyboardShortcut = egui::KeyboardShortcut::new(
+    egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
+    egui::Key::Z,
+);
+const REDO_ALT: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Y);
+
+/// The undo or redo the keyboard asked for this frame, unless a text field has the keyboard and
+/// its own undo is the one meant.
+pub fn shortcut(ctx: &egui::Context) -> Option<Direction> {
+    if ctx.text_edit_focused() {
+        return None;
+    }
+    ctx.input_mut(|input| {
+        // Redo first: a shortcut match ignores an extra Shift, so Undo's would take it.
+        if input.consume_shortcut(&REDO) || input.consume_shortcut(&REDO_ALT) {
+            Some(Direction::Redo)
+        } else if input.consume_shortcut(&UNDO) {
+            Some(Direction::Undo)
+        } else {
+            None
+        }
+    })
+}
+
+/// Draw the session down the left of `ui`. Returns the undo or redo clicked.
+pub fn show(ui: &mut egui::Ui, session: &Session) -> Option<Direction> {
+    let mut asked = None;
     egui::Panel::left("session")
         .resizable(true)
         .default_size(260.0)
@@ -15,6 +43,8 @@ pub fn show(ui: &mut egui::Ui, session: &Session) {
             egui::ScrollArea::vertical()
                 .auto_shrink(false)
                 .show(ui, |ui| {
+                    asked = undo(ui, session);
+                    ui.separator();
                     ui.strong("Files");
                     let beside = session.tree().top().path.parent();
                     for document in session.tree().documents() {
@@ -30,6 +60,28 @@ pub fn show(ui: &mut egui::Ui, session: &Session) {
                     }
                 });
         });
+    asked
+}
+
+fn undo(ui: &mut egui::Ui, session: &Session) -> Option<Direction> {
+    let mut asked = None;
+    ui.horizontal(|ui| {
+        let ctx = ui.ctx().clone();
+        for (direction, label, shortcut) in [
+            (Direction::Undo, "Undo", UNDO),
+            (Direction::Redo, "Redo", REDO),
+        ] {
+            let enabled = session.undo().next(direction).is_some();
+            let button = egui::Button::new(label).shortcut_text(ctx.format_shortcut(&shortcut));
+            if ui.add_enabled(enabled, button).clicked() {
+                asked = Some(direction);
+            }
+        }
+    });
+    if let Some(note) = session.undo().note() {
+        ui.colored_label(ui.visuals().warn_fg_color, note);
+    }
+    asked
 }
 
 fn file(ui: &mut egui::Ui, document: &Document, beside: Option<&Path>) {
@@ -81,6 +133,46 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    /// Press Ctrl+Z with the keyboard focus on the widget `widget` draws, and return what
+    /// [`shortcut`] made of it. Asked before the widget is drawn, as the window asks.
+    fn ctrl_z_with_focus_on(
+        mut widget: impl FnMut(&mut egui::Ui) -> egui::Response,
+    ) -> Option<Direction> {
+        let ctx = egui::Context::default();
+        // Nothing here paints, and the font atlas it would upload refuses a silent drop.
+        ctx.run_ui(egui::RawInput::default(), |ui| widget(ui).request_focus())
+            .drop_without_applying_deltas();
+        let press = egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Z,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            }],
+            ..Default::default()
+        };
+        let mut asked = None;
+        ctx.run_ui(press, |ui| {
+            asked = shortcut(ui.ctx());
+            widget(ui);
+        })
+        .drop_without_applying_deltas();
+        asked
+    }
+
+    #[test]
+    fn the_undo_shortcut_works_with_a_button_focused_and_not_in_a_text_field() {
+        assert_eq!(
+            ctrl_z_with_focus_on(|ui| ui.button("a button")),
+            Some(Direction::Undo)
+        );
+        assert_eq!(
+            ctrl_z_with_focus_on(|ui| ui.text_edit_singleline(&mut String::new())),
+            None
+        );
+    }
 
     #[test]
     fn a_file_is_named_from_the_top_level_files_directory() {

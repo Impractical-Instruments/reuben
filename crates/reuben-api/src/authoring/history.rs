@@ -18,7 +18,7 @@ use reuben_document::{content_hash, NormalizedDoc};
 use super::args::RestoreInstrument;
 use super::result::EditResult;
 use super::verbs::{edit_summary, expect_conflict, Answer, Refusal};
-use crate::resources::{Adapter, ResolveError, Resources, SampleBuffer};
+use crate::resources::{Adapter, Created, ResolveError, Resources, SampleBuffer};
 
 /// A [`Resources`] that remembers the documents written through it, so
 /// [`restore_instrument`] can put one back.
@@ -74,6 +74,16 @@ impl<R: Resources> DocumentHistory<R> {
     /// Hand back the wrapped store, dropping every held document.
     pub fn into_inner(self) -> R {
         self.inner
+    }
+
+    /// Whether [`restore_instrument`] can find the state `hash` for `source` — the one refusal a
+    /// caller holding a stack of hashes must tell apart from a failed read or write, since only
+    /// this one means the hash is gone for good.
+    pub fn holds(&self, source: &str, hash: &str) -> bool {
+        let source = self.inner.canonical(source, None);
+        self.held()
+            .iter()
+            .any(|h| h.source == source && h.hash == hash)
     }
 
     fn held(&self) -> MutexGuard<'_, VecDeque<Held>> {
@@ -147,6 +157,18 @@ impl<R: Resources> Resources for DocumentHistory<R> {
             self.record(&source, hash, written);
         }
         Ok(())
+    }
+
+    // Handed on rather than left to the default, which reads and then writes: the wrapped store's
+    // own create is what refuses a file that appears between the two.
+    fn create_text(&self, source: &str, text: &str) -> Result<Created, ResolveError> {
+        let created = self.inner.create_text(source, text)?;
+        if created == Created::Written {
+            if let Some((hash, written)) = self.mint(text) {
+                self.record(&self.inner.canonical(source, None), hash, written);
+            }
+        }
+        Ok(created)
     }
 
     fn canonical(&self, source: &str, referrer: Option<&str>) -> String {

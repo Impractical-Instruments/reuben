@@ -7,21 +7,24 @@
 //! engine keeps playing the last one that did, until the files load again.
 
 mod tree;
+mod undo;
 mod view;
 mod watch;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use reuben_api::authoring::DocumentHistory;
 use reuben_api::engine::{swap_instrument, Channel, SwapInstrument, SwapResult};
 use reuben_api::FsResolver;
 
 pub use self::tree::{Document, Tree};
-pub use self::view::show;
+pub use self::undo::{Direction, Step, Undo};
+pub use self::view::{shortcut, show};
 use self::watch::Watch;
 
 /// How long the tree's files must go untouched before they are read again. One write is several
@@ -81,6 +84,12 @@ pub struct Session {
     swap_again: bool,
     results: (Sender<SwapOutcome>, Receiver<SwapOutcome>),
     wake: Wake,
+    undo: Undo,
+    /// The store each document is written through, kept for the session's life so the states a
+    /// step names stay held for a restore.
+    histories: BTreeMap<String, DocumentHistory<FsResolver>>,
+    /// How many states each of `histories` keeps.
+    states: usize,
     #[cfg(test)]
     touches: usize,
 }
@@ -125,6 +134,9 @@ impl Session {
             swap_again: false,
             results: mpsc::channel(),
             wake,
+            undo: Undo::default(),
+            histories: BTreeMap::new(),
+            states: DocumentHistory::<FsResolver>::DEFAULT_CAPACITY,
             #[cfg(test)]
             touches: 0,
         }
@@ -155,9 +167,31 @@ impl Session {
         }
     }
 
-    /// The store to hand a `reuben-api` verb for the document `source`.
-    pub fn store(&self, source: &str) -> FsResolver {
-        tree::store(source, self.root.as_deref())
+    /// The store to hand a `reuben-api` verb for the document `source`: the one the tree reads it
+    /// through, wrapped in the history a restore returns it to an earlier state from. The same one
+    /// for every call on `source`, for as long as the session is open, so the states its writes
+    /// left stay held.
+    pub fn history(&mut self, source: &str) -> &DocumentHistory<FsResolver> {
+        let root = self.root.as_deref();
+        let states = self.states;
+        self.histories
+            .entry(source.to_string())
+            .or_insert_with(|| DocumentHistory::with_capacity(tree::store(source, root), states))
+    }
+
+    /// Keep `states` states per document from here on, so a test can push one out of the store.
+    #[cfg(test)]
+    pub fn keep_states(&mut self, states: usize) {
+        self.states = states;
+        self.histories.clear();
+    }
+
+    pub fn undo(&self) -> &Undo {
+        &self.undo
+    }
+
+    pub fn undo_mut(&mut self) -> &mut Undo {
+        &mut self.undo
     }
 
     /// Take in what happened since the last call: a finished Swap, and files touched long enough

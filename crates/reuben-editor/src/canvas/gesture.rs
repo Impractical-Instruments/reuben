@@ -211,8 +211,9 @@ mod tests {
     use super::super::graph::tests::small;
     use super::*;
     use crate::edit::test_support::writes;
+    use crate::edit::{restore, Restored};
     use crate::session::test_support::Rig;
-    use crate::session::Status;
+    use crate::session::{Direction, Status};
 
     const HANG_SECS: u64 = 120;
 
@@ -276,7 +277,7 @@ mod tests {
             &ValidateInstrument {
                 source: source.clone(),
             },
-            &rig.session.store(&source),
+            rig.session.history(&source),
         )
         .expect("the file reads")
         .output;
@@ -404,6 +405,49 @@ mod tests {
             let on_disk = rig.session.tree().top().read.clone().expect("it reads");
             assert_eq!(on_disk.hash, theirs.hash);
             assert!(on_disk.nodes.iter().all(|n| n.address != "/osc"));
+        });
+    }
+
+    #[test]
+    fn an_add_and_a_move_are_each_one_step_to_undo_and_redo() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("gesture_undo", "default.json");
+            let channel = rig.channel_source();
+            let top = |rig: &Rig| rig.session.tree().top().read.clone().expect("it reads");
+            let mut hashes = vec![top(&rig).hash];
+            for gesture in [
+                Gesture::Add {
+                    address: "/osc".into(),
+                    type_name: "oscillator".into(),
+                },
+                Gesture::Move(vec![LayoutPosition {
+                    target: LayoutTarget::Node("/osc".into()),
+                    x: 320.0,
+                    y: 40.0,
+                }]),
+            ] {
+                let result = gesture
+                    .apply(&mut rig.session, &channel)
+                    .expect("the verb ran");
+                assert!(result.written, "{gesture:?}: {:?}", result.report);
+                hashes.push(result.hash);
+            }
+
+            for hash in hashes[..2].iter().rev() {
+                let undone = restore(&mut rig.session, &channel, Direction::Undo);
+                assert!(matches!(undone, Restored::Landed), "{undone:?}");
+                assert_eq!(&top(&rig).hash, hash);
+            }
+            assert!(top(&rig).nodes.iter().all(|n| n.address != "/osc"));
+
+            for hash in &hashes[1..] {
+                let redone = restore(&mut rig.session, &channel, Direction::Redo);
+                assert!(matches!(redone, Restored::Landed), "{redone:?}");
+                assert_eq!(&top(&rig).hash, hash);
+            }
+            rig.settle();
+            assert_eq!(rig.status(), &Status::Current);
+            assert_eq!(rig.playing(), hashes[2], "the engine plays the redone file");
         });
     }
 }
