@@ -3,10 +3,13 @@
 //! messages (events are zero-copy views). A counting allocator makes any allocation on
 //! the audio path observable.
 //!
-//! This file is its own test binary with a single test. Counting is armed per-thread by
-//! the shared [`rt_alloc`] harness — each measured window arms this thread only around
-//! the render loop under test — so an allocation on a libtest harness thread cannot
-//! interleave into a window and perturb the count under parallel load.
+//! The same holds one layer up, for [`Engine::fill`]: the host-facing pull that queued
+//! Messages reach the renderer through.
+//!
+//! This file is its own test binary. Counting is armed per-thread by the shared [`rt_alloc`]
+//! harness — each measured window arms this thread only around the render loop under test —
+//! so an allocation on a libtest harness thread (or a sibling test) cannot interleave into a
+//! window and perturb the count under parallel load.
 
 mod rt_alloc;
 
@@ -20,7 +23,7 @@ use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
 use reuben_core::resources::{ResolvedRefs, ResourceStore, SampleBuffer};
 use reuben_core::vocab::pitch::{Note, Pitch};
-use reuben_core::{AudioConfig, Graph, Registry};
+use reuben_core::{AudioConfig, Engine, Graph, Registry};
 use reuben_document::load_instrument;
 use reuben_document::resources::{ResolveError, ResourceResolver};
 
@@ -316,5 +319,63 @@ fn render_block_is_allocation_free_after_warmup() {
     assert_eq!(
         sequenced, 0,
         "sequenced-rig steady-state render allocated {sequenced} time(s)"
+    );
+}
+
+#[test]
+fn engine_fill_with_queued_messages_is_allocation_free_after_warmup() {
+    let cfg = AudioConfig::new(48_000.0, 256);
+    let graph = load_instrument(DEFAULT_JSON, &Registry::builtin(), &InstrumentsDir)
+        .expect("load default.json")
+        .graph;
+    let mut e = Engine::new(Plan::instantiate(graph, cfg).expect("instantiate"));
+    // Exactly one block per `fill`, so every measured block carries the messages queued before it.
+    let mut out = vec![0.0f32; cfg.block_size * e.channels()];
+
+    const BLOCKS: usize = 100;
+    const PER_BLOCK: usize = 2;
+    // Every Message is built outside the measured window: its address `String` is the caller's
+    // allocation, not the handoff's.
+    let note =
+        |pitch: f32| Message::new("/voicer/notes", Note::new(Pitch::Absolute(pitch), 1.0), 0);
+    let mut batches: Vec<Vec<Message>> = (0..BLOCKS + 16)
+        .map(|b| {
+            (0..PER_BLOCK)
+                .map(|i| note(48.0 + ((b + i) % 24) as f32))
+                .collect()
+        })
+        .collect();
+    let mut measured = batches.split_off(16);
+
+    // Warm up with the same traffic, so every scratch buffer reaches its steady-state capacity.
+    for batch in &mut batches {
+        for m in batch.drain(..) {
+            e.queue(m);
+        }
+        e.fill(&mut out);
+    }
+
+    let counts = measure(|| {
+        for batch in &mut measured {
+            for m in batch.drain(..) {
+                e.queue(m);
+            }
+            e.fill(&mut out);
+        }
+    });
+    assert_eq!(e.pending_len(), 0, "fill must consume every queued message");
+    assert_eq!(
+        counts.allocs, 0,
+        "queue + fill of message-bearing blocks allocated {} time(s)",
+        counts.allocs
+    );
+    // A consumed Message is dropped after its block, freeing its address `String` — one free
+    // apiece is the payload's own cost. Anything above that is the handoff buffer being freed.
+    assert_eq!(
+        counts.frees,
+        BLOCKS * PER_BLOCK,
+        "queue + fill freed {} time(s) for {} consumed messages",
+        counts.frees,
+        BLOCKS * PER_BLOCK
     );
 }

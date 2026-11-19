@@ -99,10 +99,9 @@ pub enum Arg {
     ///   next block's `routes[i].held.clear()` (`route_messages`) — or, for an
     ///   operator-emitted string, `scratch.emitted.clear()`. Same thread, same
     ///   one-free-per-replaced-string class as the latch site.
-    /// - **The engine's pending-message hand-off** (`reuben-native`'s `engine.rs`): a queued
-    ///   inbound Message that latched (or routed nowhere) drops with its payload on the audio
-    ///   thread — the same explicitly-tracked RT-debt path that already frees each pending
-    ///   Message's `address: String` per message.
+    /// - **The engine's pending-message hand-off** (`engine.rs`): a queued inbound Message
+    ///   that latched (or routed nowhere) drops with its payload on the audio thread — the same
+    ///   path that already frees each pending Message's `address: String` per message.
     ///
     /// The residual — one `free()` per *replaced or unconsumed* string, only ever on sparse
     /// boundary-driven message traffic, never in the steady-state signal loop (`rt_safe.rs`
@@ -111,8 +110,8 @@ pub enum Arg {
     /// per-message `String` at the same moment (the hand-off paths) or previously deallocated
     /// the `String` backing there (the latch, seed overwrite excepted — see above), so a fence
     /// here would not make the render
-    /// thread allocator-free. Eliminating those frees belongs to the preallocated lock-free
-    /// hand-off the engine's RT-debt note tracks, not to this type.
+    /// thread allocator-free. Eliminating those frees belongs to the engine's hand-off (its
+    /// module note names this cost), not to this type.
     Str(Arc<str>),
 
     // Shared vocab concrete types — each defined once with `#[derive(ArgValue)]`,
