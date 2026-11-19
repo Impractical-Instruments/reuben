@@ -722,8 +722,8 @@ jobs:
 
   # The hook set's chainer (test_hook_dispatch.py), which is what makes every pre-commit and
   # pre-push check run locally at all. It builds throwaway git repos with synthetic registries, so
-  # it needs no toolchain and takes seconds. The same job lints the hook set with shellcheck, which
-  # the runner image already carries.
+  # it needs no toolchain and takes seconds. The same job lints the hook set with a pinned
+  # shellcheck release.
   #
   # ALWAYS runs, and not path-filtered: no remaining filter covers `scripts/hooks/**`, and a job
   # this cheap does not earn one of its own. Gates merges via `ci-passed`'s `needs`.
