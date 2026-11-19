@@ -726,6 +726,149 @@ fn resource_add_then_remove() {
     assert!(readback(&resolver)["resources"].get("kick").is_none());
 }
 
+#[test]
+fn resource_repoint_keeps_the_id_and_refuses_one_that_is_not_there() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed());
+
+    add_instrument_resource(SRC, "kick", "kick.wav", &registry, &resolver).expect("add res");
+    set_instrument_resource(SRC, "kick", "kick-2.wav", &registry, &resolver).expect("repoint");
+    assert_eq!(
+        readback(&resolver)["resources"]["kick"],
+        json!("kick-2.wav")
+    );
+
+    let before = readback(&resolver);
+    let refused = set_instrument_resource(SRC, "snare", "snare.wav", &registry, &resolver)
+        .expect_err("no such resource");
+    assert!(refused.to_string().contains("snare"), "{refused}");
+    assert_eq!(readback(&resolver), before);
+}
+
+/// [`seed`] with a sample player reading the `kick` resource, both samples in the store.
+fn sampled() -> MemoryResolver {
+    let doc = json!({
+        "format_version": 3,
+        "instrument": "test",
+        "resources": { "kick": "kick.wav", "snare": "snare.wav" },
+        "nodes": [ { "type": "sample", "address": "/hit", "sample": "kick" } ],
+        "interface": { "outputs": { "main": { "from": "/hit.audio" } } }
+    });
+    let mut resolver = resolver_with(&doc.to_string());
+    for key in ["kick.wav", "snare.wav", "clap.wav"] {
+        resolver.insert_sample(
+            key,
+            reuben_core::resources::SampleBuffer::new(vec![vec![0.5, -0.5]], 48_000.0),
+        );
+    }
+    resolver
+}
+
+#[test]
+fn repointing_a_resource_keeps_the_nodes_that_read_it_lit() {
+    let registry = Registry::builtin();
+    let resolver = sampled();
+
+    let repointed =
+        set_instrument_resource(SRC, "kick", "clap.wav", &registry, &resolver).expect("it exists");
+    assert!(repointed.written, "{:?}", repointed.report);
+    assert!(
+        repointed.report.warnings.is_empty(),
+        "{:?}",
+        repointed.report
+    );
+    let after = readback(&resolver);
+    assert_eq!(after["resources"]["kick"], json!("clap.wav"));
+    assert_eq!(after["nodes"][0]["sample"], json!("kick"));
+
+    // Removed instead, the id leaves the node reading nothing: written, and dark.
+    let removed = remove_instrument_resource(SRC, "kick", &registry, &resolver).expect("it exists");
+    assert!(removed.written);
+    assert!(
+        (removed.report.warnings.iter()).any(|w| w.node.as_deref() == Some("/hit")),
+        "{:?}",
+        removed.report
+    );
+}
+
+#[test]
+fn a_node_reads_another_resource_through_its_slot() {
+    let registry = Registry::builtin();
+    let resolver = sampled();
+
+    let set = set_instrument_node_resource(SRC, "/hit", "sample", "snare", &registry, &resolver)
+        .expect("the node and the id exist");
+    assert!(set.written, "{:?}", set.report);
+    assert_eq!(readback(&resolver)["nodes"][0]["sample"], json!("snare"));
+
+    let removed = remove_instrument_resource(SRC, "kick", &registry, &resolver).expect("it exists");
+    assert!(removed.written, "nothing reads `kick` now");
+}
+
+#[test]
+fn a_subpatch_reads_another_document_through_its_patch_slot() {
+    let registry = Registry::builtin();
+    let child = |freq: f64| {
+        json!({
+            "format_version": 3,
+            "instrument": "child",
+            "nodes": [ { "type": "oscillator", "address": "/osc", "inputs": { "freq": freq } } ],
+            "interface": { "outputs": { "out": { "from": "/osc.audio" } } }
+        })
+        .to_string()
+    };
+    let parent = json!({
+        "format_version": 3,
+        "instrument": "test",
+        "resources": { "low": "low.json", "high": "high.json", "kick": "kick.wav" },
+        "nodes": [ { "type": "subpatch", "address": "/p", "patch": "low" } ],
+        "interface": { "outputs": { "main": { "from": "/p.out" } } }
+    });
+    let mut resolver = resolver_with(&parent.to_string());
+    resolver.insert_text("low.json", child(110.0));
+    resolver.insert_text("high.json", child(880.0));
+
+    let set = set_instrument_node_resource(SRC, "/p", "patch", "high", &registry, &resolver)
+        .expect("the node and the id exist");
+    assert!(set.written, "{:?}", set.report);
+    assert!(set.report.warnings.is_empty(), "{:?}", set.report);
+    assert_eq!(readback(&resolver)["nodes"][0]["patch"], json!("high"));
+
+    // An id naming no document leaves the subpatch dark, as a missing patch does at load: written,
+    // with the warning on the node.
+    let dark = set_instrument_node_resource(SRC, "/p", "patch", "kick", &registry, &resolver)
+        .expect("the id exists");
+    assert!(dark.written);
+    assert!(
+        (dark.report.warnings.iter()).any(|w| w.node.as_deref() == Some("/p")),
+        "{:?}",
+        dark.report
+    );
+}
+
+#[test]
+fn a_node_resource_names_an_id_the_table_has_and_a_slot_that_exists() {
+    let registry = Registry::builtin();
+    let resolver = sampled();
+    let before = readback(&resolver);
+    for (address, slot, id, named) in [
+        ("/hit", "sample", "ghost", "ghost"),
+        ("/hit", "track", "snare", "track"),
+        ("/ghost", "sample", "snare", "ghost"),
+    ] {
+        let refused = set_instrument_node_resource(SRC, address, slot, id, &registry, &resolver);
+        assert!(
+            matches!(&refused, Err(EditError::Target(why)) if why.contains(named)),
+            "{refused:?}"
+        );
+    }
+    // A slot the node's type does not read is the validation's to reject.
+    let wrong = set_instrument_node_resource(SRC, "/hit", "patch", "snare", &registry, &resolver)
+        .expect("the slot is a resource slot");
+    assert!(!wrong.written);
+    assert_eq!(readback(&resolver), before);
+}
+
 // --- the intent verb -----------------------------------------------------------------------------
 
 /// A document with everything the intent verb has to navigate: two nodes of one type (broadcast),

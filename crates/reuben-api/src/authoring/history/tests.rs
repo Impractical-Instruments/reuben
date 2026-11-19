@@ -399,8 +399,31 @@ fn run_every_verb(r: &dyn Resources) -> Vec<String> {
         json!({ "source": s, "id": "kick", "resource_source": "kick.wav" }),
         |a| add_instrument_resource(a, r),
     ));
+    out.push(call(
+        json!({ "source": s, "id": "kick", "resource_source": "kick-2.wav" }),
+        |a| set_instrument_resource(a, r),
+    ));
     out.push(call(json!({ "source": s, "id": "kick" }), |a| {
         remove_instrument_resource(a, r)
+    }));
+    out.push(call(
+        json!({ "source": s, "id": "kick", "resource_source": "kick.wav" }),
+        |a| add_instrument_resource(a, r),
+    ));
+    out.push(call(
+        json!({ "source": s, "address": "/hit", "type": "sample", "sample": "kick" }),
+        |a| add_instrument_node(a, r),
+    ));
+    out.push(call(
+        json!({ "source": s, "id": "snare", "resource_source": "snare.wav" }),
+        |a| add_instrument_resource(a, r),
+    ));
+    out.push(call(
+        json!({ "source": s, "address": "/hit", "slot": "sample", "id": "snare" }),
+        |a| set_instrument_node_resource(a, r),
+    ));
+    out.push(call(json!({ "source": s, "address": "/hit" }), |a| {
+        remove_instrument_node(a, r)
     }));
     out.push(call(
         json!({ "source": s, "positions": [ { "target": "/osc", "x": 1.0, "y": 2.0 } ] }),

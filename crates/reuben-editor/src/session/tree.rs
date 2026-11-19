@@ -4,7 +4,9 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use reuben_api::authoring::{read_instrument, InstrumentStructure, ReadInstrument, StructureNode};
+use reuben_api::authoring::{
+    read_instrument, InstrumentStructure, ReadInstrument, ResourceEntry, StructureNode,
+};
 use reuben_api::FsResolver;
 
 /// The node slots whose resource is a document rather than a sample.
@@ -24,11 +26,17 @@ pub fn store(source: &str, root: Option<&Path>) -> FsResolver {
 /// The resolved source of the document `node` of `structure` references as its voice or its
 /// patch: the source a load of `structure` reads it from.
 pub fn nested<'a>(structure: &'a InstrumentStructure, node: &StructureNode) -> Option<&'a str> {
+    reference(structure, node).map(|entry| entry.canonical.as_str())
+}
+
+/// The `resources` entry through which `node` of `structure` references its voice or its patch.
+fn reference<'a>(
+    structure: &'a InstrumentStructure,
+    node: &StructureNode,
+) -> Option<&'a ResourceEntry> {
     let reference = (node.resources.iter())
         .find(|reference| DOCUMENT_SLOTS.contains(&reference.slot.as_str()))?;
-    (structure.resources.iter())
-        .find(|entry| entry.id == reference.id)
-        .map(|entry| entry.canonical.as_str())
+    (structure.resources.iter()).find(|entry| entry.id == reference.id)
 }
 
 /// One file of the tree.
@@ -69,9 +77,16 @@ impl Document {
     /// The resolved source of the document the node at `address` references, when this document
     /// reads and has such a node.
     pub fn nested(&self, address: &str) -> Option<&str> {
+        self.reference(address)
+            .map(|entry| entry.canonical.as_str())
+    }
+
+    /// The `resources` entry the node at `address` references its voice or its patch through,
+    /// when this document reads and has such a node.
+    pub fn reference(&self, address: &str) -> Option<&ResourceEntry> {
         let structure = self.read.as_ref().ok()?;
         let node = structure.nodes.iter().find(|n| n.address == address)?;
-        nested(structure, node)
+        reference(structure, node)
     }
 
     /// The document's `instrument` name, or its file name when it does not read.

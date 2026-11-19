@@ -33,10 +33,19 @@ pub fn shortcut(ctx: &egui::Context) -> Option<Direction> {
     })
 }
 
+/// What the trail was asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrailAsk {
+    /// View the document this far down the trail: 0 is the top-level document.
+    Leave(usize),
+    /// Give the viewed document a file of its own for the document one step up.
+    LocalCopy,
+}
+
 /// Draw the way down from the top-level document to the one viewed, as a line of links back up,
-/// and, when the document viewed is one other instruments play too, who they are.
-/// Returns how far down the trail the link clicked goes: 0 is the top-level document.
-pub fn trail(ui: &mut egui::Ui, session: &mut Session) -> Option<usize> {
+/// the local copy action, and, when the document viewed is one other instruments play too, who
+/// they are.
+pub fn trail(ui: &mut egui::Ui, session: &mut Session) -> Option<TrailAsk> {
     if session.trail().is_empty() {
         return None;
     }
@@ -59,8 +68,18 @@ pub fn trail(ui: &mut egui::Ui, session: &mut Session) -> Option<usize> {
             if depth == last {
                 ui.strong(name);
             } else if ui.link(name).clicked() {
-                asked = Some(depth);
+                asked = Some(TrailAsk::Leave(depth));
             }
+        }
+        let above = names[last - 1].clone();
+        let copy = ui.button("Make a local copy").on_hover_text(format!(
+            "Copy this file beside itself and point {above}'s resources entry for it at the copy. \
+             Every node of {above} using that entry, and every instrument that plays {above}, \
+             follows it; the original is left as it is. Undo points the entry back; the copy \
+             stays on disk."
+        ));
+        if copy.clicked() {
+            asked = Some(TrailAsk::LocalCopy);
         }
     });
     let path = session.viewed().path.clone();
@@ -69,7 +88,8 @@ pub fn trail(ui: &mut egui::Ui, session: &mut Session) -> Option<usize> {
             ui.colored_label(
                 ui.visuals().warn_fg_color,
                 format!(
-                    "{} is used by {} instruments ({}): an edit here changes every one of them.",
+                    "{} is used by {} instruments ({}): an edit here changes every one of them. \
+                     Make a local copy to change this one only.",
                     path.file_name().unwrap_or_default().to_string_lossy(),
                     users.len(),
                     users.join(", ")
