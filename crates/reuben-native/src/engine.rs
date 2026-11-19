@@ -25,7 +25,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use reuben_api::engine::{
-    Channel, FromDocumentError, InProcess, LoadWarning, StructureState, DEFAULT_STRUCTURE_ADDR,
+    Channel, FromDocumentError, InProcess, Installed, LoadWarning, StructureState,
+    DEFAULT_STRUCTURE_ADDR,
 };
 use reuben_api::render::{self, AudioConfig, Message};
 use reuben_api::FsResolver;
@@ -171,6 +172,7 @@ pub struct RunningEngine {
     sample_rate: f32,
     block_size: usize,
     warnings: Vec<LoadWarning>,
+    opened_input_channels: usize,
 }
 
 /// What keeps the render side running: the device streams, or the headless stand-in.
@@ -235,6 +237,22 @@ impl RunningEngine {
         self.structure_error.as_ref()
     }
 
+    /// Logical input channels the input stream provides: as many as the instrument the engine
+    /// started on binds, fixed until the engine stops. `0` when no input stream opened.
+    pub fn opened_input_channels(&self) -> usize {
+        self.opened_input_channels
+    }
+
+    /// What the engine has installed now, read without waiting. Its input fits the input stream
+    /// when [`input_stream_fits`](crate::structure::input_stream_fits) says so for its
+    /// `input_channels` and [`opened_input_channels`](Self::opened_input_channels).
+    pub fn installed(&self) -> Installed {
+        match &self.state {
+            Some(state) => state.try_installed(),
+            None => Installed::Poisoned,
+        }
+    }
+
     /// The running counters.
     pub fn diagnostics(&self) -> Snapshot {
         self.diagnostics.snapshot()
@@ -288,7 +306,8 @@ pub fn start(config: EngineConfig) -> Result<RunningEngine, StartError> {
 pub(crate) enum Render<'a> {
     /// A cpal output stream on the profile's device.
     Device,
-    /// No device: [`FakeCallback`] drives the render side at `config`, output-only.
+    /// No device: [`FakeCallback`] drives the render side at `config`, feeding no input; the input
+    /// stream it reports is as wide as a device start would open it.
     Headless {
         config: AudioConfig,
         /// When `Some`, receives a clone of the render callback's outbound sender — a test's
@@ -338,11 +357,12 @@ pub(crate) fn start_with(
 
     let build =
         |cfg: AudioConfig| reuben_api::engine::install_initial(&instrument_json, resolver, cfg);
-    let (output, diagnostics, coordinator, render_config, warnings, audio_config): (
+    let (output, diagnostics, coordinator, render_config, warnings, audio_config, opened_input): (
         _,
         _,
         _,
         Arc<dyn RenderConfigPublisher>,
+        _,
         _,
         _,
     ) = match render {
@@ -364,6 +384,7 @@ pub(crate) fn start_with(
                 live.render_config,
                 live.warnings,
                 audio_config,
+                live.opened_input_channels,
             )
         }
         Render::Headless {
@@ -374,15 +395,19 @@ pub(crate) fn start_with(
             if let Some(slot) = outbound {
                 *slot = osc_out_tx.clone();
             }
+            // Sized as a device start sizes its input stream, so a swap is judged against the
+            // same geometry. No input is fed: the bound pipes read silence.
+            let opened_input = coordinator.installed_input_channels();
             (
                 Output::Headless(FakeCallback::drive(side, osc_rx, osc_out_tx)),
                 Diagnostics::new(),
                 coordinator,
                 Arc::new(HeadlessRenderConfig {
-                    opened_input_channels: 0,
+                    opened_input_channels: opened_input,
                 }),
                 warnings,
                 cfg,
+                opened_input,
             )
         }
     };
@@ -415,6 +440,7 @@ pub(crate) fn start_with(
         sample_rate: audio_config.sample_rate,
         block_size: audio_config.block_size,
         warnings,
+        opened_input_channels: opened_input,
     })
 }
 

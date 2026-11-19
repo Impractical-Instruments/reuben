@@ -53,7 +53,9 @@ use reuben_api::render::{
 use crate::diagnostics::Diagnostics;
 use crate::osc::ControlBatch;
 use crate::profile::DeviceProfile;
-use crate::structure::{dark_degrade_warning, RenderConfigPublisher, RenderLiveness, SwapPollGate};
+use crate::structure::{
+    dark_degrade_warning, input_stream_fits, RenderConfigPublisher, RenderLiveness, SwapPollGate,
+};
 
 /// How long [`NativeRenderConfig::publish`] polls to install a swap's output map before giving up.
 /// The map mailbox is one-in-flight: install is refused until the *previous*
@@ -282,6 +284,9 @@ pub struct LiveAudio {
     pub render_config: Arc<dyn RenderConfigPublisher>,
     /// The initial instrument's non-fatal load warnings.
     pub warnings: Vec<LoadWarning>,
+    /// Logical input channels the input stream provides, fixed for the session; `0` when the
+    /// initial instrument binds none and no input stream opened.
+    pub opened_input_channels: usize,
 }
 
 /// Start live playback on an output device, per `profile` (see the module doc for the swap/output-
@@ -434,7 +439,9 @@ where
                 // which needs a `play` restart). `fill_duplex(&[])`
                 // stages honest device silence into the engine's bound input pipes.
                 let input: &[f32] = match &mut input_stage {
-                    Some(stage) if in_channels > 0 && in_channels == opened_input_channels => {
+                    // A stage exists only for a stream at least one channel wide, so a fit
+                    // implies the engine binds input.
+                    Some(stage) if input_stream_fits(in_channels, opened_input_channels) => {
                         if in_buf.len() < frames * in_channels {
                             in_buf.resize(frames * in_channels, 0.0);
                         }
@@ -504,6 +511,7 @@ where
         coordinator,
         render_config,
         warnings,
+        opened_input_channels,
     })
 }
 

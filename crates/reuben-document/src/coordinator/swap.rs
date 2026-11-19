@@ -120,6 +120,8 @@ pub struct Coordinator {
     /// The native shell reads it to decide the input dark-degrade warning: an engine
     /// that binds input channels no open stream provides degrades to silence with a loud warning.
     installed_input_channels: usize,
+    /// `content_hash(&doc)`, kept beside `doc` so reading it is a copy, not a re-serialization.
+    installed_hash: String,
 }
 
 impl Coordinator {
@@ -142,7 +144,9 @@ impl Coordinator {
         let installed_channels = engine.channels();
         let installed_input_channels = engine.input_channels();
         let (mailbox, render_mailbox) = swap_pair::<InstallBundle>();
+        let installed_hash = content_hash(&doc);
         let coordinator = Coordinator {
+            installed_hash,
             registry,
             resolver,
             config,
@@ -162,7 +166,7 @@ impl Coordinator {
     /// The content hash of the currently installed document — the token a later
     /// swap's `expect` guard compares, and what every report names as "what is playing".
     pub fn installed_hash(&self) -> String {
-        content_hash(&self.doc)
+        self.installed_hash.clone()
     }
 
     /// The canonical installed document: a fresh conversation reads what is playing
@@ -402,6 +406,7 @@ impl Coordinator {
         self.manifest = manifest;
         self.installed_channels = new_channels;
         self.installed_input_channels = new_input_channels;
+        self.installed_hash = content_hash.clone();
 
         SwapReport {
             report: Report {

@@ -10,10 +10,14 @@
 
 use std::fmt;
 use std::io;
+use std::path::Path;
 
-use reuben_api::engine::Channel;
+use reuben_api::authoring::{validate_instrument, ValidateInstrument};
+use reuben_api::engine::{Channel, Installed};
+use reuben_api::FsResolver;
 use reuben_native::engine::{self, EngineConfig, Instrument, RunningEngine, StartError};
 use reuben_native::profile::DeviceProfile;
+use reuben_native::structure::input_stream_fits;
 
 /// How serious a [`Line`] is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +62,10 @@ pub struct Engine {
     /// again with another profile. `None` when no start was ever attempted.
     config: Option<EngineConfig>,
     report: Vec<Line>,
+    /// The installed document (source, content hash) a restart to fit its input was last tried
+    /// for, on this run of the engine. A restart that could not happen is not tried again every
+    /// frame.
+    refit_tried: Option<(Option<String>, String)>,
 }
 
 impl Engine {
@@ -67,6 +75,7 @@ impl Engine {
             running: None,
             config: None,
             report: Vec::new(),
+            refit_tried: None,
         }
     }
 
@@ -153,8 +162,7 @@ impl Engine {
     /// attempted.
     ///
     /// The running engine is left alone, with an error added to the report, when the instrument's
-    /// file can no longer be read: stopping would trade an engine that plays for one that cannot
-    /// start.
+    /// file no longer loads: stopping would trade an engine that plays for one that cannot start.
     ///
     /// `start` is [`engine::start`], or the headless engine in a test.
     pub fn restart_with(
@@ -162,8 +170,19 @@ impl Engine {
         profile: DeviceProfile,
         start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
     ) {
+        self.restart(profile, start, "audio output not changed");
+    }
+
+    /// [`restart_with`](Self::restart_with), saying `refused` first when the file does not load.
+    /// Returns whether the engine was stopped to start again.
+    fn restart(
+        &mut self,
+        profile: DeviceProfile,
+        start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
+        refused: &str,
+    ) -> bool {
         let Some(mut config) = self.config.clone() else {
-            return;
+            return false;
         };
         let mut unsourced = None;
         if let Some(running) = &self.running {
@@ -176,15 +195,15 @@ impl Engine {
             }
         }
         if let Instrument::Path(path) = &config.instrument {
-            if let Err(e) = std::fs::File::open(path) {
+            if let Err(why) = loads(path, config.instrument_root.as_deref()) {
                 self.push(Line::new(
                     Level::Error,
                     format!(
-                        "audio output not changed: {} cannot be read to start again from: {e}",
+                        "{refused}: {} does not load to start again from: {why}",
                         path.display()
                     ),
                 ));
-                return;
+                return false;
             }
         }
         config.profile = profile;
@@ -199,6 +218,7 @@ impl Engine {
                 ),
             ));
         }
+        true
     }
 
     /// Start the engine as it was last asked to start, when none is running. Does nothing when
@@ -228,6 +248,129 @@ impl Engine {
         self.report.push(line);
     }
 
+    /// What the running engine has installed now, read without waiting; `None` when none runs.
+    fn installed(&self) -> Option<Installed> {
+        self.running.as_ref().map(RunningEngine::installed)
+    }
+
+    /// Bring the report and the config up to the instrument the engine has installed now, which a
+    /// Swap — the editor's or `reuben-mcp`'s — may have changed since it started: the report names
+    /// it, and a [`resume`](Self::resume) after a stop starts on it. Never waits.
+    pub fn follow_installed(&mut self) {
+        let Some(Installed::Known {
+            source: Some(source),
+            ..
+        }) = self.installed()
+        else {
+            return;
+        };
+        let Some(config) = &mut self.config else {
+            return;
+        };
+        let instrument = Instrument::Path(source.clone().into());
+        if config.instrument == instrument {
+            return;
+        }
+        config.instrument = instrument;
+        let named = Line::new(Level::Info, format!("instrument: {source}"));
+        println!("{named}");
+        match self
+            .report
+            .iter_mut()
+            .find(|line| line.level == Level::Info && line.text.starts_with("instrument: "))
+        {
+            Some(line) => *line = named,
+            None => self.report.insert(0, named),
+        }
+    }
+
+    /// Whether the running engine's input stream fits the instrument it has installed now; `None`
+    /// when no engine runs or it cannot say without waiting.
+    #[cfg(test)]
+    pub(crate) fn input_fits(&self) -> Option<bool> {
+        let running = self.running.as_ref()?;
+        match running.installed() {
+            Installed::Known { input_channels, .. } => Some(input_stream_fits(
+                input_channels,
+                running.opened_input_channels(),
+            )),
+            Installed::Busy | Installed::Poisoned => None,
+        }
+    }
+
+    /// Whether a Swap holds the running engine, so what it has installed is not known yet.
+    pub fn busy(&self) -> bool {
+        self.installed() == Some(Installed::Busy)
+    }
+
+    /// Restart through `start` on the instrument installed now, with the same profile, when the
+    /// input stream the engine opened does not fit it: the stream's width is fixed at start, so a
+    /// Swap to an instrument binding other input leaves its input pipes silent, or a stream
+    /// running that nothing reads. Returns whether the engine was stopped to restart, whether or
+    /// not the start succeeded.
+    ///
+    /// A restart refused because the file does not load is not tried again for the same installed
+    /// document until [`retry_fit`](Self::retry_fit). Never waits unless it restarts.
+    pub fn fit_input(
+        &mut self,
+        start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
+    ) -> bool {
+        let Some(running) = &self.running else {
+            return false;
+        };
+        let opened = running.opened_input_channels();
+        let Installed::Known {
+            input_channels,
+            content_hash,
+            source,
+        } = running.installed()
+        else {
+            return false;
+        };
+        if input_stream_fits(input_channels, opened) {
+            return false;
+        }
+        let tried = (source, content_hash);
+        if self.refit_tried.as_ref() == Some(&tried) {
+            return false;
+        }
+        let Some(profile) = self.profile().cloned() else {
+            return false;
+        };
+        let name = tried
+            .0
+            .clone()
+            .unwrap_or_else(|| "the instrument installed".to_string());
+        self.refit_tried = Some(tried);
+        if !self.restart(profile, start, "input not reopened") {
+            return false;
+        }
+        // A start that failed has already said why.
+        if self.running.is_some() {
+            self.push(Line::new(
+                Level::Info,
+                format!(
+                    "restarted the engine on {name}: it binds {input_channels} input channel(s), \
+                     and the input stream opened for the instrument before it has {opened}"
+                ),
+            ));
+        }
+        true
+    }
+
+    /// Let [`fit_input`](Self::fit_input) try again a restart it was refused, as when the files
+    /// it could not load have changed.
+    pub fn retry_fit(&mut self) {
+        self.refit_tried = None;
+    }
+
+    /// What the last start was asked to play, or was since Swapped to; `None` when no start was
+    /// ever attempted.
+    #[cfg(test)]
+    pub(crate) fn instrument(&self) -> Option<&Instrument> {
+        self.config.as_ref().map(|config| &config.instrument)
+    }
+
     /// The profile the last start was asked for; `None` when no start was ever attempted.
     pub fn profile(&self) -> Option<&DeviceProfile> {
         self.config.as_ref().map(|config| &config.profile)
@@ -248,6 +391,7 @@ impl Engine {
             running,
             config,
             report,
+            refit_tried: None,
         }
     }
 
@@ -276,6 +420,28 @@ impl Engine {
             reuben_native::diagnostics::log_snapshot(&running.shutdown());
         }
     }
+}
+
+/// Whether the instrument at `path` loads, through the window's own validation; `Err` says why
+/// not.
+fn loads(path: &Path, root: Option<&Path>) -> Result<(), String> {
+    let source = path.display().to_string();
+    let mut store = FsResolver::for_document(&source).stat_only();
+    if let Some(root) = root {
+        store = store.with_root(root);
+    }
+    let report = validate_instrument(&ValidateInstrument { source }, &store)
+        .map_err(|refusal| refusal.message)?
+        .output;
+    if report.ok {
+        return Ok(());
+    }
+    Err(report
+        .errors
+        .into_iter()
+        .map(|e| e.message)
+        .collect::<Vec<_>>()
+        .join("; "))
 }
 
 /// A [`StartError`], with the likely cause named when a port is already taken.
@@ -605,6 +771,35 @@ mod tests {
             }
         });
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_restart_onto_a_file_that_no_longer_loads_keeps_the_engine_playing() {
+        let scratch = crate::session::test_support::Scratch::new("engine_restart_unloadable");
+        let path = scratch.library().join("default.json");
+        within(HANG_SECS, {
+            let path = path.clone();
+            move || {
+                let mut engine = Engine::start_with(config(path.clone()), start_headless);
+                assert!(engine.running().is_some());
+
+                std::fs::write(&path, r#"{"format_version":3,"instrument":"t","nodes":[{"#)
+                    .unwrap();
+                engine.restart_with(DeviceProfile::default(), |_| {
+                    panic!("a file that does not load is not started on")
+                });
+                assert!(engine.running().is_some(), "the old engine still plays");
+                let refused = errors(&engine);
+                assert_eq!(refused.len(), 1, "{refused:?}");
+                assert!(
+                    refused[0].starts_with("audio output not changed: ")
+                        && refused[0].contains("does not load"),
+                    "{}",
+                    refused[0]
+                );
+                engine.shutdown();
+            }
+        });
     }
 
     #[test]

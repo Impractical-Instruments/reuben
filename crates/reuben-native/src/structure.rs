@@ -223,31 +223,45 @@ impl RenderConfigPublisher for HeadlessRenderConfig {
     }
 }
 
-/// The input dark-degrade warning, shared by the headless and production
-/// publishers so the two can't drift. A swapped-in engine wanting `input_channels` logical input
-/// channels while the open input stream provides `opened_input_channels`: any shortfall (the
-/// output-only-stream case is `opened == 0`) means some bound input pipes have no live stream and
-/// **dark-degrade to silence** — a loud warning, never an error (the engine stays silent-but-alive;
-/// a device-topology change needs a `play` restart). Matched geometry is silent.
+/// Whether an input stream opened `opened_input_channels` wide feeds an engine that binds
+/// `input_channels`. The render callback feeds input only on an exact match; on any other, the
+/// engine's input pipes read silence, and a stream with nothing to feed runs unread. Only a
+/// restart, which opens the stream for the instrument it starts on, changes the width.
+pub fn input_stream_fits(input_channels: usize, opened_input_channels: usize) -> bool {
+    input_channels == opened_input_channels
+}
+
+/// The input dark-degrade warning, shared by the headless and production publishers so the two
+/// can't drift. It fires whenever [`input_stream_fits`] does not: a swapped-in engine binding
+/// `input_channels` logical input channels while the open input stream provides
+/// `opened_input_channels` is fed no input at all, so every bound input pipe reads silence; and an
+/// engine binding none leaves the stream running unread. A warning, never an error: the engine
+/// stays alive, and only a restart opens a stream of another width.
 pub(crate) fn dark_degrade_warning(
     input_channels: usize,
     opened_input_channels: usize,
 ) -> Vec<Diag> {
-    if input_channels > opened_input_channels {
-        vec![Diag {
-            node: None,
-            port: None,
-            message: format!(
-                "swapped-in instrument binds {input_channels} input channel(s) but the open input \
-                 stream provides {opened_input_channels} (fixed at `play` start); the \
-                 unmatched input pipes dark-degrade to silence. The engine stays \
-                 alive and silent; restart `play` with a matching input-binding instrument to \
-                 capture live input."
-            ),
-        }]
-    } else {
-        Vec::new()
+    if input_stream_fits(input_channels, opened_input_channels) {
+        return Vec::new();
     }
+    let message = if input_channels == 0 {
+        format!(
+            "swapped-in instrument binds no input channels, but the {opened_input_channels}-channel \
+             input stream opened at `play` start keeps running, unread; restart `play` to close it"
+        )
+    } else {
+        format!(
+            "swapped-in instrument binds {input_channels} input channel(s) but the open input \
+             stream provides {opened_input_channels} (fixed at `play` start); its input pipes \
+             dark-degrade to silence. The engine stays alive and silent; restart `play` with a \
+             matching input-binding instrument to capture live input."
+        )
+    };
+    vec![Diag {
+        node: None,
+        port: None,
+        message,
+    }]
 }
 
 /// The native seams the window's engine verbs are served over: the control ingress, the counters,
@@ -1091,9 +1105,20 @@ mod tests {
     }
 
     #[test]
+    fn an_input_stream_fits_only_an_engine_binding_exactly_its_width() {
+        assert!(input_stream_fits(0, 0), "no input, no stream");
+        assert!(input_stream_fits(2, 2));
+        assert!(!input_stream_fits(1, 0), "input bound, no stream");
+        assert!(!input_stream_fits(0, 1), "a stream nothing reads");
+        assert!(
+            !input_stream_fits(1, 2),
+            "the callback feeds only an exact width"
+        );
+    }
+
+    #[test]
     fn dark_degrade_warning_fires_only_on_unmatched_input_geometry() {
-        // The pure rule: no warning when the engine needs no input or the stream
-        // matches; a warning on any shortfall (output-only stream, or a topology change).
+        // The pure rule: a warning on any width mismatch, none when the widths match.
         assert!(
             dark_degrade_warning(0, 0).is_empty(),
             "no input, no warning"
@@ -1111,8 +1136,12 @@ mod tests {
             "a wider input than the stream warns"
         );
         assert!(
-            dark_degrade_warning(1, 2).is_empty(),
-            "a stream wider than the input is a surplus, not a shortfall — silent"
+            !dark_degrade_warning(1, 2).is_empty(),
+            "the callback feeds only an exact width, so a wider stream feeds nothing"
+        );
+        assert!(
+            !dark_degrade_warning(0, 1).is_empty(),
+            "a stream nothing reads is reported"
         );
     }
 

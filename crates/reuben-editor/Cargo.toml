@@ -21,6 +21,7 @@ reuben-api = { path = "../reuben-api", features = ["fs-resolver"] }
 serde = { workspace = true, features = ["std"] }
 serde_json.workspace = true
 notify.workspace = true
+rfd.workspace = true
 
 [dev-dependencies]
 # The tests reach the embedded engine the way the sidecar does: reuben-mcp's own link over the

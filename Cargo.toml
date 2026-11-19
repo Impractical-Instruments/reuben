@@ -99,6 +99,10 @@ eframe = { version = "0.36", default-features = false, features = ["accesskit", 
 # `reuben-mcp`, a text editor — is seen without polling. A filesystem-event thread, not an async
 # runtime: the tokio fence is untouched.
 notify = "8"
+# The editor's native file dialogs. On Linux, the XDG desktop portal through a libdbus rfd dlopens
+# (zenity when no portal answers), waited on with pollster: nothing to build against, and no async
+# runtime, so the tokio fence is untouched.
+rfd = "0.18"
 # Unix SIGINT/SIGTERM handler for `reuben play`'s clean shutdown:
 # std has no signal API. Already in the tree transitively (via cpal); not an async dependency,
 # so it does not touch the tokio fence. reuben-native takes it only on `cfg(unix)`.

@@ -26,7 +26,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::Duration;
 
 use reuben_document::coordinator::Coordinator;
@@ -144,6 +144,24 @@ impl StructureState {
         self.closed.load(Ordering::SeqCst)
     }
 
+    /// What is installed now, read without waiting, so a UI thread can ask on every frame.
+    pub fn try_installed(&self) -> Installed {
+        let coordinator = match self.coordinator.try_lock() {
+            Ok(coordinator) => coordinator,
+            Err(TryLockError::WouldBlock) => return Installed::Busy,
+            Err(TryLockError::Poisoned(_)) => return Installed::Poisoned,
+        };
+        // Written only under the Coordinator lock, which is held: this never waits.
+        let Ok(source) = self.installed_source() else {
+            return Installed::Poisoned;
+        };
+        Installed::Known {
+            input_channels: coordinator.installed_input_channels(),
+            content_hash: coordinator.installed_hash(),
+            source: source.clone(),
+        }
+    }
+
     fn coordinator(&self) -> Result<MutexGuard<'_, Coordinator>, Poisoned> {
         self.coordinator.lock().map_err(|_| Poisoned)
     }
@@ -163,6 +181,22 @@ impl StructureState {
         self.installed_source = Arc::new(Mutex::new(source));
         self
     }
+}
+
+/// What [`StructureState::try_installed`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Installed {
+    Known {
+        /// The installed engine's logical input channel count.
+        input_channels: usize,
+        content_hash: String,
+        /// Where the installed document came from, as `get_document` reports it.
+        source: Option<String>,
+    },
+    /// Another caller holds the Coordinator, such as a swap building its engine: ask again shortly.
+    Busy,
+    /// A panic poisoned the Coordinator; it answers nothing from here on.
+    Poisoned,
 }
 
 /// A lock a panic poisoned; answered as [`COORDINATOR_POISONED`].
