@@ -1,15 +1,22 @@
 name: Release
 
 # Fires on a `v*` tag. Both GitHub's Releases GUI and
-# `gh release create vX.Y.Z` create the tag and trigger this. Builds a
-# `--release` `reuben` binary on Linux + Windows and attaches each as a
-# versioned archive (tar.gz / zip) + a SHA256 sidecar to the GitHub Release.
-# No installer: reuben is a headless CLI; the bare binary is the convenience
-# artifact, build-from-source stays the primary path.
+# `gh release create vX.Y.Z` create the tag and trigger this. Builds `--release`
+# binaries and attaches each as a versioned archive (tar.gz / zip) + a SHA256
+# sidecar to the GitHub Release:
+#   - `reuben`, the headless CLI, on Linux + Windows. No installer: the bare
+#     binary is the convenience artifact, build-from-source stays the primary path.
+#   - `reuben-editor`, the desktop editor, on Linux + Windows + macOS (Apple
+#     Silicon, unsigned), with the font licences and the instrument library.
+#
+# `workflow_dispatch` is the dry run: run it on a branch and every leg builds and
+# packages, and the archives are uploaded as workflow artifacts only. A dispatch
+# on a tag ref is a release like the tag push.
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 # Needed to create the Release and upload assets.
 permissions:
@@ -28,18 +35,31 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # A named image, not `ubuntu-latest`: the binaries need the glibc they were built
+          # against, so the runner's Ubuntu is the oldest one they run on, and the README states it.
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             ext: tar.gz
+            cli: true
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             ext: zip
+            cli: true
+          # macOS ships the editor only.
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            ext: tar.gz
+            cli: false
     env:
       CARGO_TERM_COLOR: always
+      # The oldest macOS the editor runs on, as the README states it; the Rust default for this
+      # target today, pinned so a toolchain bump cannot raise it unseen.
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # ALSA dev headers for cpal (Linux only); Windows links WASAPI.
+      # ALSA dev headers for cpal (Linux only); Windows links WASAPI, macOS CoreAudio. The
+      # editor needs nothing more to build: winit, glutin and rfd dlopen their client libraries.
       - name: Install ALSA dev headers (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
@@ -51,45 +71,59 @@ jobs:
       - name: Cache cargo registry + build
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
-      - name: Build release binary
-        run: cargo build --release --bin reuben
-
-      # Stage binary + LICENSE + README, archive, and emit a SHA256 sidecar.
-      # The two package steps differ only by platform tooling (tar+sha256sum vs
-      # Compress-Archive+Get-FileHash); both export ASSET/CHECKSUM for upload.
-      - name: Package (Linux)
-        if: runner.os == 'Linux'
+      # The tag names the archives; a dry run on a branch has none, and a branch name can hold a
+      # `/`, so it is named for the commit instead.
+      - name: Version
         shell: bash
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          staging="reuben-${{ github.ref_name }}-${{ matrix.target }}"
-          mkdir "$staging"
-          cp target/release/reuben "$staging"/
-          cp LICENSE README.md "$staging"/
-          tar czf "$staging.${{ matrix.ext }}" "$staging"
-          sha256sum "$staging.${{ matrix.ext }}" > "$staging.${{ matrix.ext }}.sha256"
-          echo "ASSET=$staging.${{ matrix.ext }}" >> "$GITHUB_ENV"
-          echo "CHECKSUM=$staging.${{ matrix.ext }}.sha256" >> "$GITHUB_ENV"
+          if [ "$REF_TYPE" = tag ]; then
+            echo "VERSION=$REF_NAME" >> "$GITHUB_ENV"
+          else
+            echo "VERSION=dev-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          fi
+          echo "EXE=${{ runner.os == 'Windows' && '.exe' || '' }}" >> "$GITHUB_ENV"
 
-      - name: Package (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $staging = "reuben-${{ github.ref_name }}-${{ matrix.target }}"
-          New-Item -ItemType Directory -Path $staging | Out-Null
-          Copy-Item target/release/reuben.exe $staging/
-          Copy-Item LICENSE,README.md $staging/
-          $asset = "$staging.${{ matrix.ext }}"
-          Compress-Archive -Path $staging -DestinationPath $asset
-          $hash = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower()
-          "$hash  $asset" | Out-File -Encoding ascii "$asset.sha256"
-          "ASSET=$asset" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "CHECKSUM=$asset.sha256" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Build reuben
+        if: matrix.cli
+        run: cargo build --release --locked --bin reuben
+
+      # Outside `default-members`, so only `-p` builds it.
+      - name: Build reuben-editor
+        run: cargo build --release --locked -p reuben-editor
+
+      - name: Package reuben
+        if: matrix.cli
+        shell: bash
+        run: >-
+          .github/scripts/package-release.sh
+          "reuben-$VERSION-${{ matrix.target }}" "${{ matrix.ext }}"
+          "target/release/reuben$EXE" LICENSE README.md
+
+      # Courier Prime's OFL must travel with every copy of the font the binary embeds.
+      - name: Package reuben-editor
+        shell: bash
+        run: >-
+          .github/scripts/package-release.sh
+          "reuben-editor-$VERSION-${{ matrix.target }}" "${{ matrix.ext }}"
+          "target/release/reuben-editor$EXE" LICENSE README.md
+          crates/reuben-editor/assets/fonts/CourierPrime-OFL.txt
+          crates/reuben-editor/assets/fonts/Cuomotype-CC0.txt
+          instruments
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
 
       # Each matrix job uploads its own assets; the action gets-or-creates the
-      # Release for this tag, so Linux and Windows land on the same Release.
+      # Release for this tag, so every leg lands on the same Release.
       - name: Attach to GitHub Release
+        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
-          files: |
-            ${{ env.ASSET }}
-            ${{ env.CHECKSUM }}
+          files: dist/*
