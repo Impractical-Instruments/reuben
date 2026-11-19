@@ -1,6 +1,7 @@
 //! `reuben-editor` — the desktop instrument editor.
 
 mod audio;
+mod canvas;
 mod config;
 mod controls;
 mod edit;
@@ -16,6 +17,7 @@ use reuben_native::cli::{EngineFlags, InstrumentRoot};
 use reuben_native::engine::{EngineConfig, Instrument};
 
 use crate::audio::AudioSettings;
+use crate::canvas::Canvas;
 use crate::config::ConfigDir;
 use crate::controls::Controls;
 use crate::engine::{Engine, Level};
@@ -58,13 +60,16 @@ fn main() -> eframe::Result {
         Box::new(|cc| {
             let root = args.instrument_root.clone().resolve();
             let controls = Controls::open(args.path.as_deref(), root.as_deref());
+            let canvas = Canvas::open(args.path.as_deref(), root.as_deref());
             let session = args.path.as_deref().map(|path| {
                 let ctx = cc.egui_ctx.clone();
                 Session::open(path, root.as_deref(), move || ctx.request_repaint())
             });
             let mut audio = AudioSettings::load(ConfigDir::user());
             let engine = start(args, &mut audio, Engine::start);
-            Ok(Box::new(Editor::new(engine, audio, controls, session)))
+            Ok(Box::new(Editor::new(
+                engine, audio, controls, canvas, session,
+            )))
         }),
     )
 }
@@ -90,6 +95,7 @@ struct Editor {
     engine: Engine,
     audio: AudioSettings,
     controls: Controls,
+    canvas: Canvas,
     session: Option<Session>,
 }
 
@@ -98,12 +104,14 @@ impl Editor {
         engine: Engine,
         audio: AudioSettings,
         controls: Controls,
+        canvas: Canvas,
         session: Option<Session>,
     ) -> Self {
         Self {
             engine,
             audio,
             controls,
+            canvas,
             session,
         }
     }
@@ -114,6 +122,9 @@ impl Editor {
             return;
         };
         let poll = session.poll(Instant::now(), &|| self.engine.channel());
+        if poll.reloaded {
+            self.canvas.reload(session.top(), session.root());
+        }
         // A tree that does not load keeps the panel of the instrument still playing.
         if poll.reloaded && !matches!(session.status(), Status::Held(_)) {
             self.controls = Controls::open(Some(session.top()), session.root());
@@ -147,7 +158,7 @@ impl eframe::App for Editor {
                 };
                 ui.colored_label(color, line.to_string());
             }
-            ui.take_available_space();
+            self.canvas.show(ui);
         });
     }
 
