@@ -61,6 +61,9 @@
 # percent. Only the ratio BETWEEN two sizes tells linear from superlinear, so the construct layer
 # is additionally gated on its own absolute growth factor, with no reference to the baseline.
 #
+# Run by hand, it wants a clean swap set: the swaps rewrite those paths from git, so it refuses to
+# start (exit 2) while any of them carries uncommitted, staged or untracked changes.
+#
 # Arg 1: baseline commit SHA (empty => no comparison, just run once).
 set -uo pipefail
 
@@ -146,10 +149,12 @@ run_bench() { local bench="$1"; shift; cargo bench -p "$PKG" --features "$FEATUR
 # the pre-cull instruments/ documents verbatim, valid for the older engine.
 swap_tree() {
   # Hard-fail on a checkout that did not happen. `missing_at` below screens the one predictable
-  # cause (a crate the baseline predates), but ANY failure here — a dirty path, a permission, a
-  # pathspec typo — leaves the tree at HEAD, and the caller would then bench HEAD against itself and
-  # report 0% for every case. There is no `set -e` in this script, so silence is the default; a
-  # snapshot that did not apply must stop the gate rather than green it.
+  # cause (a crate the baseline predates), but ANY failure here — a permission, a pathspec typo —
+  # leaves the tree at HEAD, and the caller would then bench HEAD against itself and report 0% for
+  # every case. There is no `set -e` in this script, so silence is the default; a snapshot that did
+  # not apply must stop the gate rather than green it. A dirty path is NOT such a failure: this
+  # checkout overwrites it without complaint, which is why the script refuses a dirty swap set up
+  # front.
   if ! git checkout "$1" -- "${SRC[@]}" $FIXTURES $BUILD_CONFIG; then
     printf '::error title=Baseline snapshot failed::could not check out the source closure at %s — the gate would otherwise compare HEAD against itself and report no regression\n' "$1"
     exit 1
@@ -226,6 +231,18 @@ if [ -z "$BASE_SHA" ] || ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; t
   note "_No usable baseline ref — ran benches once, no comparison._"
   for b in "${BENCHES[@]}"; do run_bench "$b" || true; done
   exit 0
+fi
+
+# Refuse a dirty swap set before the first swap_tree. `git checkout <ref> -- <paths>` overwrites the
+# working tree AND the index at those paths with no prompt, and uncommitted edits were never objects,
+# so neither the reflog nor fsck can bring them back. Staged, unstaged and untracked all count: an
+# untracked file at a path the baseline carries is overwritten just the same. Nothing is lost by
+# refusing, because the PR side is restored from HEAD too — the gate never measured those edits.
+# CI checks out a fresh tree, so this only ever trips on a hand run.
+dirty="$(git status --porcelain --untracked-files=all -- "${SRC[@]}" $FIXTURES $BENCH_FIXTURES $BUILD_CONFIG)"
+if [ -n "$dirty" ]; then
+  printf '::error title=Uncommitted changes in the swap set::perf-gate.sh rewrites these paths from git and would destroy the changes below with no way to recover them. Commit or stash first — the gate benches HEAD, not the working tree.\n%s\n' "$dirty" >&2
+  exit 2
 fi
 
 note "Baseline: \`$(git rev-parse --short "$BASE_SHA")\` · fail > ${FAIL_PCT}% · warn > ${WARN_PCT}%"
