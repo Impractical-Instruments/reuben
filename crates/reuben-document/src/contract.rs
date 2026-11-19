@@ -64,8 +64,13 @@ impl Diag {
             LoadError::InterfaceOverride { name, .. } | LoadError::InterfacePipe { name, .. } => {
                 (None, Some(name.clone()))
             }
-            LoadError::TypeMismatch { .. }
-            | LoadError::Json(_)
+            // The wire is held on its input end, `to`, spelled `<address>.<input>`; a port name
+            // never holds a `.`, so the last one splits them.
+            LoadError::TypeMismatch { to, .. } => match to.rsplit_once('.') {
+                Some((node, port)) => (Some(node.to_string()), Some(port.to_string())),
+                None => (None, None),
+            },
+            LoadError::Json(_)
             | LoadError::CyclicResource { .. }
             | LoadError::UnsupportedVersion { .. }
             | LoadError::AnonymousOutputs => (None, None),

@@ -12,7 +12,7 @@ use super::camera::Camera;
 use super::geometry::{
     curve, header_text, input_pos, output_pos, wire_curve, LINE, PAD, PORT_RADIUS, TEXT_SIZE,
 };
-use super::graph::{Graph, NodeBox, PortRef};
+use super::graph::{Graph, NodeBox, PortRef, Problem};
 use crate::theme::{self, kind_color};
 
 /// Below this many points text is a smear, so it is left out and the boxes read as shapes.
@@ -26,6 +26,10 @@ const UNSELECTED_WIRE: f32 = 0.2;
 /// How much of its colour an input keeps while a wire is drawn that it does not take.
 const REFUSING_PORT: f32 = 0.25;
 
+/// The radius of the ring round a port a problem names, in port radii: clear of the dot's own
+/// outline, inside the wiring ring's.
+const PROBLEM_RING: f32 = 1.6;
+
 /// One frame of the canvas, with everything it needs to know.
 pub struct Scene<'a> {
     pub graph: &'a Graph,
@@ -37,6 +41,8 @@ pub struct Scene<'a> {
     pub selected: Vec<usize>,
     pub wire: Option<usize>,
     pub wiring: Option<Wiring<'a>>,
+    /// Problems besides the load report's, by the index of the box they are on.
+    pub extra: &'a [(usize, Problem)],
 }
 
 /// A wire being drawn from an output to the pointer.
@@ -127,11 +133,15 @@ impl Scene<'_> {
         } else {
             (visuals.window_fill, 4.0 * zoom)
         };
+        let problems = || {
+            let extra = (self.extra.iter()).filter(|(j, _)| *j == i);
+            b.problems.iter().chain(extra.map(|(_, p)| p))
+        };
         let outline = if selected {
             Stroke::new(2.0, visuals.selection.stroke.color)
-        } else if b.problems.iter().any(|p| p.error) {
+        } else if problems().any(|p| p.error) {
             Stroke::new(1.5, visuals.error_fg_color)
-        } else if !b.problems.is_empty() {
+        } else if problems().next().is_some() {
             Stroke::new(1.5, visuals.warn_fg_color)
         } else {
             visuals.widgets.noninteractive.bg_stroke
@@ -180,6 +190,24 @@ impl Scene<'_> {
                 Stroke::new(1.0, fill),
             );
         };
+        // A port a problem names is ringed in the colour of the worst of them.
+        let ring = |at: Pos2, name: &str| {
+            let named: Vec<&Problem> = problems()
+                .filter(|p| p.port.as_deref() == Some(name))
+                .collect();
+            let color = if named.iter().any(|p| p.error) {
+                visuals.error_fg_color
+            } else if !named.is_empty() {
+                visuals.warn_fg_color
+            } else {
+                return;
+            };
+            painter.circle_stroke(
+                self.at(at),
+                PROBLEM_RING * PORT_RADIUS * zoom,
+                Stroke::new(1.5, color),
+            );
+        };
         for (p, port) in b.inputs.iter().enumerate() {
             let at = input_pos(b, rect, p);
             let mut color = kind_color(port.kind);
@@ -190,12 +218,14 @@ impl Scene<'_> {
                 }
             }
             dot(at, color);
+            ring(at, &port.name);
             let label = Pos2::new(at.x + PAD, at.y);
             text(label, Align2::LEFT_CENTER, &port.name, visuals.text_color());
         }
         for (p, port) in b.outputs.iter().enumerate() {
             let at = output_pos(b, rect, p);
             dot(at, kind_color(port.kind));
+            ring(at, &port.name);
             let label = Pos2::new(at.x - PAD, at.y);
             text(
                 label,

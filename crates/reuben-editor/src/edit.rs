@@ -6,6 +6,7 @@ use std::path::Path;
 use reuben_api::authoring::{restore_instrument, Answer, EditResult, Refusal, Resources};
 use reuben_api::engine::Channel;
 
+use crate::feedback::Feedback;
 use crate::session::{Direction, Session, Step};
 
 /// Run one authoring verb on the document `source` of the open instrument.
@@ -22,7 +23,8 @@ use crate::session::{Direction, Session, Step};
 /// The session reads the files again before this returns, so its tree is what the verb left on
 /// disk, written or not, and a written change is already on its way to the engine. The next
 /// [`Session::poll`] reports the reload. An `Ok` whose `written` is false is a rejected edit or a
-/// conflict; its report says which, on the node and port at fault.
+/// conflict; its report says which, on the node and port at fault. Either way, and for a verb
+/// that could not run, the session holds the [`Feedback`] until an edit lands.
 pub fn write(
     session: &mut Session,
     channel: &dyn Fn() -> Option<Channel>,
@@ -53,6 +55,7 @@ fn run(
     #[cfg(test)]
     let store: &dyn Resources = &counted;
     let result = verb(store, expect.clone()).map(|answer| answer.output);
+    *session.feedback_mut() = Feedback::of(source, expect.as_deref(), &result);
     // A written edit landed on `expect`: the guard refuses any other.
     if let (Ok(edit), Some(before)) = (&result, expect) {
         if edit.written {
@@ -153,6 +156,7 @@ pub fn restore(
     {
         Ok(answer) if answer.output.written => {
             session.undo_mut().crossed(direction);
+            *session.feedback_mut() = None;
             Restored::Landed
         }
         Ok(answer) if answer.output.hash != expect => Restored::Conflict { step },

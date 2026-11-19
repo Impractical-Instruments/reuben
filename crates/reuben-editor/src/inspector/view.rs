@@ -2,7 +2,7 @@
 //! [`Step`]s and [`Edit`]s.
 
 use eframe::egui;
-use reuben_api::authoring::{InstrumentStructure, StructureNode};
+use reuben_api::authoring::{Diag, InstrumentStructure, StructureNode};
 use reuben_api::engine::Channel;
 
 use super::model::{drag_speed, fields, widget, Control, Field, Step, Typing, Widget};
@@ -53,20 +53,26 @@ pub fn show(
                         ui.colored_label(ui.visuals().error_fg_color, e);
                         ui.separator();
                     }
+                    let rejected = (session.feedback()).map_or(&[][..], |feedback| {
+                        feedback.rejected(&session.tree().top().source)
+                    });
+                    let problems = problems(top, rejected, selection);
                     inspector.holds.begin();
                     inspector.drafts.begin();
                     match selection {
-                        None => instrument(ui, inspector, top, &mut asks),
+                        None => instrument(ui, inspector, top, &problems, &mut asks),
                         Some(Item::Node(address)) => {
                             match top.nodes.iter().find(|n| &n.address == address) {
-                                Some(node) => self::node(ui, inspector, node, &top.hash, &mut asks),
+                                Some(node) => {
+                                    self::node(ui, inspector, node, &top.hash, &problems, &mut asks)
+                                }
                                 None => {
                                     ui.weak(format!("{address} is not in the document."));
                                 }
                             }
                         }
-                        Some(Item::Input(name)) => pipe(ui, "Interface input", name),
-                        Some(Item::Output(name)) => pipe(ui, "Interface output", name),
+                        Some(Item::Input(name)) => pipe(ui, "Interface input", name, &problems),
+                        Some(Item::Output(name)) => pipe(ui, "Interface output", name, &problems),
                     }
                     asks.extend(inspector.holds.end().map(Ask::Step));
                     inspector.drafts.end();
@@ -75,23 +81,69 @@ pub fn show(
     for ask in asks {
         match ask {
             Ask::Step(step) => inspector.step(step, session, channel),
-            Ask::Edit(edit, expect) => inspector.commit(edit, expect, session, channel),
+            Ask::Edit(edit, expect) => {
+                inspector.commit(edit, expect, session, channel);
+            }
         }
     }
 }
 
-fn pipe(ui: &mut egui::Ui, what: &str, name: &str) {
+/// One diagnostic about what the inspector shows, and whether it is an error.
+type Problem<'a> = (bool, &'a Diag);
+
+/// What the last rejected edit of `top`, then its load report, say about `selection`: a node's
+/// own, a pipe's own, or with nothing selected those that name neither. A load error the
+/// rejection repeats is listed once.
+fn problems<'a>(
+    top: &'a InstrumentStructure,
+    rejected: &'a [Diag],
+    selection: Option<&Item>,
+) -> Vec<Problem<'a>> {
+    let about = |diag: &&Diag| match selection {
+        None => diag.node.is_none() && diag.port.is_none(),
+        Some(Item::Node(address)) => diag.node.as_ref() == Some(address),
+        Some(Item::Input(name) | Item::Output(name)) => {
+            diag.node.is_none() && diag.port.as_ref() == Some(name)
+        }
+    };
+    let rejected = rejected.iter().filter(about).map(|d| (true, d));
+    let loaded = (top.report.errors.iter().map(|d| (true, d)))
+        .chain(top.report.warnings.iter().map(|d| (false, d)))
+        .filter(|(_, d)| about(d) && !rejected.clone().any(|(_, r)| r == *d));
+    rejected.clone().chain(loaded).collect()
+}
+
+/// `problems`, each in its colour and led by the node port it names.
+fn listed(ui: &mut egui::Ui, problems: &[Problem<'_>]) {
+    for (error, diag) in problems {
+        let color = if *error {
+            ui.visuals().error_fg_color
+        } else {
+            ui.visuals().warn_fg_color
+        };
+        let text = match (&diag.node, &diag.port) {
+            (Some(_), Some(port)) => format!("{port}: {}", diag.message),
+            _ => diag.message.clone(),
+        };
+        ui.colored_label(color, text);
+    }
+}
+
+fn pipe(ui: &mut egui::Ui, what: &str, name: &str, problems: &[Problem<'_>]) {
     ui.heading(name);
     ui.weak(what);
+    listed(ui, problems);
 }
 
 fn instrument(
     ui: &mut egui::Ui,
     inspector: &mut Inspector,
     top: &InstrumentStructure,
+    problems: &[Problem<'_>],
     asks: &mut Vec<Ask>,
 ) {
     ui.weak("Instrument");
+    listed(ui, problems);
     ui.label("Name");
     let current = Current {
         text: &top.instrument,
@@ -115,10 +167,12 @@ fn node(
     inspector: &mut Inspector,
     node: &StructureNode,
     hash: &str,
+    problems: &[Problem<'_>],
     asks: &mut Vec<Ask>,
 ) {
     ui.heading(&node.address);
     ui.weak(&node.type_name);
+    listed(ui, problems);
     ui.label("Description");
     let current = Current {
         text: node.description.as_deref().unwrap_or(""),
@@ -148,7 +202,7 @@ fn node(
             .striped(true)
             .show(ui, |ui| {
                 for field in fields {
-                    row(ui, inspector, field, hash, asks);
+                    row(ui, inspector, field, hash, problems, asks);
                     ui.end_row();
                 }
             });
@@ -160,14 +214,28 @@ fn row(
     inspector: &mut Inspector,
     field: &Field,
     hash: &str,
+    problems: &[Problem<'_>],
     asks: &mut Vec<Ask>,
 ) {
-    let name = ui.label(&field.target.name);
-    let hint = if field.set {
+    let named: Vec<&Problem<'_>> = (problems.iter())
+        .filter(|(_, d)| d.port.as_ref() == Some(&field.target.name))
+        .collect();
+    let name = if named.iter().any(|(error, _)| *error) {
+        ui.colored_label(ui.visuals().error_fg_color, &field.target.name)
+    } else if !named.is_empty() {
+        ui.colored_label(ui.visuals().warn_fg_color, &field.target.name)
+    } else {
+        ui.label(&field.target.name)
+    };
+    let mut hint = if field.set {
         field.kind.clone()
     } else {
         format!("{} — the default", field.kind)
     };
+    for (_, diag) in named {
+        hint.push('\n');
+        hint.push_str(&diag.message);
+    }
     name.on_hover_text(hint);
     match &field.control {
         Control::Number {
@@ -320,4 +388,66 @@ fn text(
     inspector
         .drafts
         .frame(owner, field, current.text, current.hash, typing)
+}
+
+#[cfg(test)]
+mod tests {
+    use reuben_api::authoring::{read_instrument, ReadInstrument};
+    use reuben_api::FsResolver;
+    use serde_json::json;
+
+    use super::*;
+
+    fn diag(node: Option<&str>, port: Option<&str>, message: &str) -> Diag {
+        Diag {
+            node: node.map(str::to_string),
+            port: port.map(str::to_string),
+            message: message.to_string(),
+        }
+    }
+
+    #[test]
+    fn the_selection_shows_what_the_rejection_and_the_load_report_say_about_it() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../instruments/default.json"
+        );
+        let mut top = read_instrument(
+            &ReadInstrument {
+                source: path.to_string(),
+            },
+            &FsResolver::for_document(path).stat_only(),
+        )
+        .expect("it reads")
+        .output;
+        top.report = serde_json::from_value(json!({
+            "ok": true,
+            "errors": [],
+            "warnings": [
+                { "node": "/out", "message": "careful" },
+                { "port": "notes", "message": "unbound" },
+                { "message": "everywhere" },
+            ],
+        }))
+        .unwrap();
+        let rejected = [
+            diag(Some("/out"), Some("audio"), "refused"),
+            diag(Some("/voicer"), None, "elsewhere"),
+        ];
+        let said = |selection: Option<Item>| -> Vec<(bool, String)> {
+            problems(&top, &rejected, selection.as_ref())
+                .into_iter()
+                .map(|(error, d)| (error, d.message.clone()))
+                .collect()
+        };
+        assert_eq!(
+            said(Some(Item::Node("/out".into()))),
+            [(true, "refused".into()), (false, "careful".into())]
+        );
+        assert_eq!(
+            said(Some(Item::Input("notes".into()))),
+            [(false, "unbound".into())]
+        );
+        assert_eq!(said(None), [(false, "everywhere".into())]);
+    }
 }

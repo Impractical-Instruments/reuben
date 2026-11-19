@@ -4,7 +4,7 @@
 
 use eframe::egui::Pos2;
 use reuben_api::authoring::{
-    InputValue, InstrumentStructure, PortInfo, Position, StructureNode, WireSource,
+    Diag, InputValue, InstrumentStructure, PortInfo, Position, StructureNode, WireSource,
 };
 
 /// What a box stands for, and what a selection names.
@@ -58,12 +58,24 @@ pub struct Port {
     pub kind: PortKind,
 }
 
-/// Something the load report says about one box.
+/// Something the load report, or a rejected edit, says about one box.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Problem {
-    /// An error stops the document loading; a warning does not.
+    /// An error stops the document loading, or the edit landing; a warning does not.
     pub error: bool,
+    /// The node port it names, by name. `None` for an interface pipe's box, which is its port.
+    pub port: Option<String>,
     pub message: String,
+}
+
+impl Problem {
+    /// The message, led by the port it names.
+    pub fn said(&self) -> String {
+        match &self.port {
+            Some(port) => format!("{port}: {}", self.message),
+            None => self.message.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -186,31 +198,44 @@ impl Graph {
         let diags = (doc.report.errors.iter().map(|d| (true, d)))
             .chain(doc.report.warnings.iter().map(|d| (false, d)));
         for (error, diag) in diags {
-            let problem = Problem {
-                error,
-                message: diag.message.clone(),
-            };
-            // A diagnostic with a port and no node names an interface pipe, and does not say
-            // whether an input or an output: where one name is both, it goes on both.
-            let at: Vec<usize> = match (&diag.node, &diag.port) {
-                (Some(address), _) => (graph.index_of(&Item::Node(address.clone())))
-                    .into_iter()
-                    .collect(),
-                (None, Some(name)) => [Item::Input(name.clone()), Item::Output(name.clone())]
-                    .iter()
-                    .filter_map(|item| graph.index_of(item))
-                    .collect(),
-                (None, None) => Vec::new(),
-            };
+            let at = graph.pin(diag, error);
             if at.is_empty() {
-                graph.problems.push(problem);
+                graph.problems.push(Problem {
+                    error,
+                    port: None,
+                    message: diag.message.clone(),
+                });
             } else {
-                for i in at {
-                    graph.boxes[i].problems.push(problem.clone());
+                for (i, problem) in at {
+                    graph.boxes[i].problems.push(problem);
                 }
             }
         }
         graph
+    }
+
+    /// The boxes `diag` names, each with the problem to show on it; empty when it names none.
+    ///
+    /// A diagnostic with a port and no node names an interface pipe, and does not say whether an
+    /// input or an output: where one name is both, it goes on both.
+    pub fn pin(&self, diag: &Diag, error: bool) -> Vec<(usize, Problem)> {
+        let problem = |port: Option<&String>| Problem {
+            error,
+            port: port.cloned(),
+            message: diag.message.clone(),
+        };
+        match (&diag.node, &diag.port) {
+            (Some(address), port) => (self.index_of(&Item::Node(address.clone())))
+                .map(|i| (i, problem(port.as_ref())))
+                .into_iter()
+                .collect(),
+            (None, Some(name)) => [Item::Input(name.clone()), Item::Output(name.clone())]
+                .iter()
+                .filter_map(|item| self.index_of(item))
+                .map(|i| (i, problem(None)))
+                .collect(),
+            (None, None) => Vec::new(),
+        }
     }
 
     pub fn index_of(&self, item: &Item) -> Option<usize> {
@@ -463,23 +488,24 @@ pub mod tests {
         .unwrap();
         let graph = Graph::from_structure(&doc);
         let problems = |item| find(&graph, &item).problems.clone();
-        let problem = |error, message: &str| Problem {
+        let problem = |error, port: Option<&str>, message: &str| Problem {
             error,
+            port: port.map(str::to_string),
             message: message.into(),
         };
         assert_eq!(
             problems(Item::Node("/filter".into())),
-            [problem(true, "refused")]
+            [problem(true, Some("in"), "refused")]
         );
         assert_eq!(
             problems(Item::Output("main".into())),
-            [problem(true, "bad feed")]
+            [problem(true, None, "bad feed")]
         );
         assert_eq!(
             problems(Item::Node("/osc".into())),
-            [problem(false, "careful")]
+            [problem(false, None, "careful")]
         );
-        assert_eq!(graph.problems, [problem(true, "nowhere")]);
+        assert_eq!(graph.problems, [problem(true, None, "nowhere")]);
     }
 
     #[test]
@@ -495,6 +521,7 @@ pub mod tests {
         let graph = Graph::from_structure(&doc);
         let unbound = [Problem {
             error: false,
+            port: None,
             message: "unbound".into(),
         }];
         assert_eq!(

@@ -26,6 +26,7 @@ pub use self::tree::{Document, Tree};
 pub use self::undo::{Direction, Step, Undo};
 pub use self::view::{shortcut, show};
 use self::watch::Watch;
+use crate::feedback::Feedback;
 
 /// How long the tree's files must go untouched before they are read again. One write is several
 /// events — a temp file, a rename, sometimes a truncate before the bytes — and a program saving
@@ -85,6 +86,9 @@ pub struct Session {
     results: (Sender<SwapOutcome>, Receiver<SwapOutcome>),
     wake: Wake,
     undo: Undo,
+    /// Why the last edit did not land, until one does: kept here so the canvas and the inspector,
+    /// which both write, show the same one.
+    feedback: Option<Feedback>,
     /// The store each document is written through, kept for the session's life so the states a
     /// step names stay held for a restore.
     histories: BTreeMap<String, DocumentHistory<FsResolver>>,
@@ -135,6 +139,7 @@ impl Session {
             results: mpsc::channel(),
             wake,
             undo: Undo::default(),
+            feedback: None,
             histories: BTreeMap::new(),
             states: DocumentHistory::<FsResolver>::DEFAULT_CAPACITY,
             #[cfg(test)]
@@ -192,6 +197,14 @@ impl Session {
 
     pub fn undo_mut(&mut self) -> &mut Undo {
         &mut self.undo
+    }
+
+    pub fn feedback(&self) -> Option<&Feedback> {
+        self.feedback.as_ref()
+    }
+
+    pub fn feedback_mut(&mut self) -> &mut Option<Feedback> {
+        &mut self.feedback
     }
 
     /// Take in what happened since the last call: a finished Swap, and files touched long enough

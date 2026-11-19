@@ -209,9 +209,11 @@ mod tests {
     use reuben_native::test_support::within;
 
     use super::super::graph::tests::small;
+    use super::super::graph::Graph;
     use super::*;
     use crate::edit::test_support::writes;
     use crate::edit::{restore, Restored};
+    use crate::feedback::Feedback;
     use crate::session::test_support::Rig;
     use crate::session::{Direction, Status};
 
@@ -370,6 +372,34 @@ mod tests {
             rig.settle();
             assert_eq!(rig.swaps(), 0);
             assert_eq!(rig.session.tree(), &before);
+
+            // What the verb said lands on the box and the port the edit was made at.
+            let top = &rig.session.tree().top();
+            let feedback = rig.session.feedback().expect("the rejection is held");
+            assert!(
+                matches!(feedback, Feedback::Rejected { .. }),
+                "{feedback:?}"
+            );
+            let graph = Graph::from_structure(top.read.as_ref().expect("it reads"));
+            let out = graph.index_of(&Item::Node("/out".into())).expect("a box");
+            let pinned: Vec<_> = (feedback.rejected(&top.source).iter())
+                .flat_map(|diag| graph.pin(diag, true))
+                .collect();
+            assert!(
+                (pinned.iter())
+                    .any(|(i, problem)| *i == out && problem.port.as_deref() == Some("audio")),
+                "{feedback:?}"
+            );
+
+            // The next edit that lands lets it go.
+            step(
+                &mut rig,
+                Gesture::Add {
+                    address: "/osc".into(),
+                    type_name: "oscillator".into(),
+                },
+            );
+            assert_eq!(rig.session.feedback(), None);
         });
     }
 
@@ -405,6 +435,12 @@ mod tests {
             let on_disk = rig.session.tree().top().read.clone().expect("it reads");
             assert_eq!(on_disk.hash, theirs.hash);
             assert!(on_disk.nodes.iter().all(|n| n.address != "/osc"));
+            assert_eq!(
+                rig.session.feedback(),
+                Some(&Feedback::Conflict { source }),
+                "the user is told the gesture did not land"
+            );
+            assert!(rig.poll(), "the canvas is told to draw the file again");
         });
     }
 

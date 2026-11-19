@@ -8,7 +8,7 @@ use crate::contract::{Diag, Report};
 use crate::describe::{describe_boundary, BoundaryPortDesc};
 use crate::format::{
     doc_value, load_instrument, load_instrument_doc, pipe_descriptor, DocValue, InputPipeDoc,
-    LoadError, Loaded, NormalizedDoc, PipeDefault,
+    LoadError, LoadWarning, Loaded, NormalizedDoc, PipeDefault,
 };
 use crate::resources::ResourceResolver;
 use reuben_core::descriptor::{Curve, Descriptor, Port, PortType};
@@ -533,7 +533,9 @@ fn localize_wire_ref(reference: &str) -> (Option<String>, Option<String>) {
 /// [`AudioConfig`], so no audio device is opened and nothing renders. The result is the
 /// contract [`Report`] every conversational door serializes.
 pub fn validate(json: &str, registry: &Registry, resolver: &dyn ResourceResolver) -> Report {
-    report_of(load_instrument(json, registry, resolver))
+    report_of(load_instrument(json, registry, resolver), |w| {
+        vec![Diag::from_warning(w)]
+    })
 }
 
 /// [`validate`] for a document already minted, so a caller holding one pays no second parse.
@@ -542,10 +544,23 @@ pub fn validate_doc(
     registry: &Registry,
     resolver: &dyn ResourceResolver,
 ) -> Report {
-    report_of(load_instrument_doc(doc, registry, resolver))
+    validate_doc_with(doc, registry, resolver, |w| vec![Diag::from_warning(w)])
 }
 
-fn report_of(loaded: Result<Loaded, LoadError>) -> Report {
+/// [`validate_doc`], with each load warning turned into the diagnostics `warning` makes of it.
+pub(crate) fn validate_doc_with(
+    doc: &NormalizedDoc,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+    warning: impl Fn(&LoadWarning) -> Vec<Diag>,
+) -> Report {
+    report_of(load_instrument_doc(doc, registry, resolver), warning)
+}
+
+fn report_of(
+    loaded: Result<Loaded, LoadError>,
+    warning: impl Fn(&LoadWarning) -> Vec<Diag>,
+) -> Report {
     let loaded = match loaded {
         Ok(l) => l,
         Err(e) => {
@@ -557,7 +572,7 @@ fn report_of(loaded: Result<Loaded, LoadError>) -> Report {
         }
     };
 
-    let warnings = loaded.warnings.iter().map(Diag::from_warning).collect();
+    let warnings = loaded.warnings.iter().flat_map(warning).collect();
 
     match Plan::instantiate(loaded.graph, AudioConfig::default()) {
         Ok(_) => Report {

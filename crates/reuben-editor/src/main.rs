@@ -6,6 +6,7 @@ mod config;
 mod controls;
 mod edit;
 mod engine;
+mod feedback;
 mod inspector;
 mod pick;
 mod session;
@@ -228,6 +229,9 @@ impl eframe::App for Editor {
             if ui.button("Start screen").clicked() {
                 self.start.show_again();
             }
+            if let Some(session) = &mut self.session {
+                feedback::show(ui, session.feedback_mut());
+            }
             for line in self.engine.report() {
                 let color = match line.level {
                     Level::Info => ui.visuals().text_color(),
@@ -236,7 +240,13 @@ impl eframe::App for Editor {
                 };
                 ui.colored_label(color, line.to_string());
             }
-            self.canvas.show(ui)
+            let rejected = (self.session.as_ref())
+                .and_then(|session| {
+                    let top = &session.tree().top().source;
+                    session.feedback().map(|feedback| feedback.rejected(top))
+                })
+                .unwrap_or_default();
+            self.canvas.show(ui, rejected)
         });
         for gesture in gestures.inner {
             let Some(session) = &mut self.session else {
