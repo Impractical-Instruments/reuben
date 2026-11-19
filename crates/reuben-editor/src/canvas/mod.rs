@@ -7,7 +7,8 @@
 //! Dragging empty canvas pans. Scrolling pans too, and zooms about the pointer when it is a pinch
 //! or has the zoom modifier held. A click selects the box or wire under it, or nothing; with shift
 //! held it adds a box to the selection or takes it out. A double-click on empty canvas brings the
-//! whole document back into view.
+//! whole document back into view; on a node that references a voice or a patch, it asks for that
+//! document to be opened, which [`Canvas::take_entered`] hands the caller.
 //!
 //! Each finished gesture is one [`Gesture`], which the caller makes through [`Gesture::apply`];
 //! nothing here writes. Dragging a box moves the selection with it. Dragging from an output port
@@ -160,6 +161,8 @@ pub struct Canvas {
     palette: Palette,
     /// Why the last gesture did not change the document, until the next one does.
     notice: Option<String>,
+    /// The node whose voice or patch was asked to be opened, until the caller takes it.
+    entered: Option<String>,
 }
 
 impl Canvas {
@@ -177,6 +180,7 @@ impl Canvas {
             renaming: None,
             palette: Palette::new(),
             notice: None,
+            entered: None,
         }
     }
 
@@ -209,6 +213,31 @@ impl Canvas {
             self.drag = Some(Drag::Dropped);
         }
         self.menu = None;
+    }
+
+    /// The file drawn, while one is.
+    pub fn instrument(&self) -> Option<&Path> {
+        self.instrument.as_ref().map(|(path, _)| path.as_path())
+    }
+
+    /// The address of the node whose voice or patch was asked to be opened since the last call.
+    pub fn take_entered(&mut self) -> Option<String> {
+        self.entered.take()
+    }
+
+    /// Say why what was asked of the canvas did not happen, until the next edit lands.
+    pub fn refuse(&mut self, why: String) {
+        self.notice = Some(why);
+    }
+
+    /// The address of the node at `point`, in canvas units, when it references a voice or patch.
+    fn nested_at(&self, point: Pos2) -> Option<String> {
+        let doc = self.doc()?;
+        let b = &doc.graph.boxes[geometry::hit(&doc.rects, point)?];
+        match (&b.item, &b.nested) {
+            (Item::Node(address), Some(_)) => Some(address.clone()),
+            _ => None,
+        }
     }
 
     /// The box selected first: the one the inspector shows.
@@ -575,8 +604,15 @@ impl Canvas {
                 }
             }
         }
-        if response.double_clicked() && !pointer.is_some_and(|p| self.at_box(to_canvas(p))) {
-            self.camera = self.doc().map(|doc| doc.fitted(area));
+        if response.double_clicked() {
+            let at = pointer.map(to_canvas);
+            match at.and_then(|p| self.nested_at(p)) {
+                Some(address) => self.entered = Some(address),
+                None if !at.is_some_and(|p| self.at_box(p)) => {
+                    self.camera = self.doc().map(|doc| doc.fitted(area));
+                }
+                None => {}
+            }
         }
         if response.clicked() || response.drag_started_by(primary) {
             response.request_focus();
@@ -670,7 +706,21 @@ impl Canvas {
                 }
                 None
             }
-            Some(Target::Box(Item::Node(_))) => {
+            Some(Target::Box(Item::Node(address))) => {
+                let nested = self.doc().and_then(|doc| {
+                    let b = &doc.graph.boxes[doc.graph.index_of(&Item::Node(address.clone()))?];
+                    Path::new(b.nested.as_deref()?)
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().into_owned())
+                });
+                if let Some(name) = nested {
+                    if ui.button(format!("Open {name}")).clicked() {
+                        self.entered = Some(address);
+                        ui.close();
+                        return None;
+                    }
+                    ui.separator();
+                }
                 if ui.button("Rename…").clicked() {
                     self.rename_menu_target();
                     ui.close();
@@ -866,6 +916,32 @@ mod tests {
             assert!(graph.wires.len() >= nodes, "{name}");
             assert_eq!(doc.rects.len(), graph.boxes.len());
         }
+    }
+
+    #[test]
+    fn a_double_click_opens_only_a_node_that_references_a_voice_or_patch() {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../instruments/acid-techno.json");
+        let canvas = Canvas::open(Some(&path), None);
+        let doc = canvas.doc().expect("it reads");
+        let centre = |address: &str| {
+            doc.rects[doc
+                .graph
+                .index_of(&Item::Node(address.into()))
+                .expect("a node")]
+            .center()
+        };
+        assert_eq!(
+            canvas.nested_at(centre("/kick_v")),
+            Some("/kick_v".to_string())
+        );
+        let kick = &doc.graph.boxes[doc.graph.index_of(&Item::Node("/kick_v".into())).unwrap()];
+        assert_eq!(kick.subtitle, "voicer › kick-voice");
+        assert!(kick
+            .nested
+            .as_deref()
+            .is_some_and(|s| s.ends_with("kick-voice.json")));
+        assert_eq!(canvas.nested_at(centre("/pad_pump")), None);
     }
 
     #[test]
