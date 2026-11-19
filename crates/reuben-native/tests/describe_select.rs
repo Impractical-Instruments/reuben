@@ -69,3 +69,65 @@ fn every_view_answers_without_terms() {
         );
     }
 }
+
+fn reuben(args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_reuben"))
+        .args(args)
+        .output()
+        .expect("the reuben binary runs")
+}
+
+/// The instrument flags mean nothing to the operator listing: each one is refused there, with or
+/// without an operator name and in compact mode, rather than printing operators as if it was read.
+#[test]
+fn the_operator_route_refuses_the_instrument_flags() {
+    let flags: [(&str, &[&str]); 3] = [
+        ("--view", &["--view", "boundary"]),
+        ("--select", &["--select", "/nope"]),
+        ("--select-type", &["--select-type", "oscillator"]),
+    ];
+    let routes: [&[&str]; 3] = [
+        &["describe"],
+        &["describe", "oscillator"],
+        &["describe", "--compact"],
+    ];
+    for (flag, terms) in flags {
+        for route in routes {
+            let args: Vec<&str> = route.iter().chain(terms).copied().collect();
+            let out = reuben(&args);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(!out.status.success(), "{args:?} must refuse");
+            assert!(
+                out.stdout.is_empty(),
+                "{args:?} printed: {}",
+                String::from_utf8_lossy(&out.stdout)
+            );
+            assert!(
+                stderr.contains(flag) && stderr.contains("instrument"),
+                "{args:?} refusal names {flag} and what it applies to: {stderr}"
+            );
+        }
+    }
+}
+
+/// The CLI refuses in the window's order: a source that is not there is reported as missing on
+/// every view, before any selection is looked at.
+#[test]
+fn a_missing_source_is_reported_before_the_selection_on_every_view() {
+    for view in ["index", "resources", "boundary"] {
+        let out = reuben(&[
+            "describe",
+            "no/such/instrument.json",
+            "--view",
+            view,
+            "--select",
+            "x",
+        ]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "`{view}`: {stderr}");
+        assert!(
+            !stderr.contains("takes no `select`"),
+            "`{view}` reports the missing source, not the selection: {stderr}"
+        );
+    }
+}

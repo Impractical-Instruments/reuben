@@ -145,15 +145,6 @@ pub fn describe_instrument(
     })
 }
 
-/// Refuse `select`/`type` terms that `args.view` would not honour, without reading the document.
-///
-/// [`describe_instrument`] runs this same check first; it is public for a caller that answers a
-/// view through another verb — the CLI reads `boundary` through [`describe_boundary`] — so that
-/// path refuses the terms too instead of printing the whole view as if they had been read.
-pub fn check_describe_selection(args: &DescribeInstrument) -> Result<(), Refusal> {
-    selection_of(args).map(drop)
-}
-
 /// The selection `args` asks for, refused when the view would drop it.
 ///
 /// The grammar is the engine's, so no caller invents its own answer for select-and-type-at-once.
@@ -1199,9 +1190,8 @@ mod tests {
         );
     }
 
-    /// A view either honours a selection or refuses it — never drops it. Every view against both
-    /// spellings of a selection: the ones that narrow answer, the rest refuse and name the ones
-    /// that would have narrowed.
+    /// A view either honours a selection or refuses it — never drops it. The views that narrow
+    /// answer; the rest refuse and name the ones that would have narrowed.
     #[test]
     fn a_view_honours_a_selection_or_refuses_it() {
         let store = MemoryStore::with("nestable.json", NESTABLE);
@@ -1225,24 +1215,19 @@ mod tests {
                     type_name: type_name.clone(),
                 };
                 let answer = describe_instrument(&args, &store);
-                let checked = check_describe_selection(&args);
                 let view = view.as_str();
                 if selectable {
                     answer.unwrap_or_else(|r| panic!("`{view}` narrows by `{spelling}`: {r}"));
-                    checked.unwrap_or_else(|r| panic!("`{view}` takes `{spelling}`: {r}"));
                     continue;
                 }
-                for refusal in [
-                    answer.expect_err("a dropped selection is a wrong answer"),
-                    checked.expect_err("the check is the verb's own"),
-                ] {
-                    let message = &refusal.message;
-                    for named in [&format!("`{view}`"), "\"nodes\"", "\"pipes\""] {
-                        assert!(
-                            message.contains(named),
-                            "`{view}` + `{spelling}` refusal names {named}: {message}"
-                        );
-                    }
+                let message = answer
+                    .expect_err("a dropped selection is a wrong answer")
+                    .message;
+                for named in [&format!("`{view}`"), "\"nodes\"", "\"pipes\""] {
+                    assert!(
+                        message.contains(named),
+                        "`{view}` + `{spelling}` refusal names {named}: {message}"
+                    );
                 }
             }
         }

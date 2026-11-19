@@ -280,15 +280,36 @@ fn an_incoherent_selection_is_refused_rather_than_silently_narrowed() {
     );
 
     // Same rule for every view that does not narrow: terms it cannot honour are refused, never
-    // quietly ignored behind a whole answer.
+    // quietly ignored behind a whole answer. The document has to *load*, or `boundary` would be
+    // refused for that alone and the selection never reached.
+    let loadable = seeded(
+        "unhonoured_selection",
+        serde_json::json!({
+            "format_version": 3,
+            "instrument": "loadable",
+            "nodes": [ { "type": "oscillator", "address": "/osc" } ],
+            "interface": { "outputs": { "out": { "from": "/osc.audio" } } }
+        }),
+    );
+    let loadable = loadable.to_string_lossy().to_string();
     for view in ["index", "resources", "boundary"] {
         let whole = call_tool(
             names::DESCRIBE_INSTRUMENT,
-            serde_json::json!({ "source": source, "view": view, "select": ["/osc"] }),
+            serde_json::json!({ "source": loadable, "view": view }),
         );
         assert!(
-            is_error(&whole),
-            "the {view} view takes no selection; terms it ignores must be an error: {whole}"
+            !is_error(&whole),
+            "the {view} view answers no terms: {whole}"
+        );
+
+        let refused = call_tool(
+            names::DESCRIBE_INSTRUMENT,
+            serde_json::json!({ "source": loadable, "view": view, "select": ["/osc"] }),
+        );
+        let text = refused["content"][0]["text"].as_str().unwrap_or_default();
+        assert!(
+            is_error(&refused) && text.contains("takes no `select`"),
+            "the {view} view takes no selection; terms it ignores must be refused: {refused}"
         );
     }
 }
