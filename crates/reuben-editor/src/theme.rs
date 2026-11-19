@@ -1,6 +1,6 @@
 //! The editor's look, adapted from impracticalinstruments.com: ink on paper, the site's blue wash
 //! behind the canvas, yellow for what is selected, rust for what the pointer is over. Every colour
-//! the editor draws is named here; panels read them back through `ui.visuals()`.
+//! the editor draws is decided here; panels read them back through `ui.visuals()`.
 //!
 //! Type is two faces. Cuomotype (CC0) sets headings and section titles; its weathered glyphs
 //! smear below about 14 px, so body text, numbers and the canvas are Courier Prime (OFL). Each
@@ -37,7 +37,7 @@ const RUST: Color32 = Color32::from_rgb(0xBC, 0x4C, 0x26);
 /// The site's blue, darkened from `#2076a3` until it reads as text at 4.5:1 on every ground.
 const BLUE: Color32 = Color32::from_rgb(0x18, 0x5D, 0x85);
 const WARN: Color32 = Color32::from_rgb(0x7A, 0x50, 0x00);
-const ERROR: Color32 = Color32::from_rgb(0xB3, 0x26, 0x1E);
+const ERROR: Color32 = Color32::from_rgb(0xB0, 0x10, 0x2E);
 
 /// The controls panel's keyboard.
 pub const KEY_WHITE: Color32 = CARD;
@@ -118,8 +118,9 @@ fn visuals() -> Visuals {
     v.window_stroke = Stroke::new(1.0, RULE);
     v.panel_fill = PAPER;
     v.selection.bg_fill = YELLOW;
-    // The colour a selected label's text takes, and the outline of a selected node.
-    v.selection.stroke = Stroke::new(2.0, BLUE);
+    // The colour a selected label's text takes, and the outline of a selected node or held key.
+    // Ink rather than a hue, so it never reads as a port kind.
+    v.selection.stroke = Stroke::new(2.0, STRONG);
     v.text_cursor.stroke = Stroke::new(2.0, BLUE);
 
     let w = &mut v.widgets;
@@ -155,29 +156,37 @@ fn visuals() -> Visuals {
     v
 }
 
+/// How much of its colour a wire keeps while nothing is selected.
+pub const RESTING_WIRE: f32 = 0.8;
+
 /// A port's colour, and the colour of the wires it sends or takes.
 pub fn kind_color(kind: PortKind) -> Color32 {
     match kind {
         PortKind::Signal => RUST,
-        PortKind::Value => Color32::from_rgb(0x20, 0x76, 0xA3),
-        PortKind::Int => Color32::from_rgb(0x13, 0x80, 0x7A),
+        PortKind::Value => Color32::from_rgb(0x1A, 0x6A, 0x94),
+        PortKind::Int => Color32::from_rgb(0x0F, 0x70, 0x69),
         PortKind::Enum => Color32::from_rgb(0x6E, 0x4B, 0xA8),
-        PortKind::Message => Color32::from_rgb(0x3F, 0x7F, 0x2A),
+        PortKind::Message => Color32::from_rgb(0x35, 0x6E, 0x23),
         PortKind::Harmony => Color32::from_rgb(0xB0, 0x30, 0x7A),
-        PortKind::Vocab => Color32::from_rgb(0x9A, 0x74, 0x00),
+        PortKind::Vocab => Color32::from_rgb(0x6E, 0x6A, 0x00),
         PortKind::Text => Color32::from_rgb(0x7A, 0x4E, 0x2D),
         PortKind::Arg => Color32::from_rgb(0x2B, 0x2B, 0x2B),
-        PortKind::Unknown => Color32::from_rgb(0x80, 0x80, 0x80),
+        PortKind::Unknown => Color32::from_rgb(0x6B, 0x6B, 0x6B),
     }
 }
 
 /// A panel's section title, set in capitals in the display face, as the site sets its labels.
+/// On a context [`install`] has not set up, egui would panic on the unbound display family, so the
+/// title falls back to the body face.
 pub fn section(ui: &mut egui::Ui, title: &str) -> egui::Response {
-    ui.label(
-        RichText::new(title.to_uppercase())
-            .font(display(16.0))
-            .color(ui.visuals().strong_text_color()),
-    )
+    let font = display(16.0);
+    let bound = ui.fonts(|f| f.families().contains(&font.family));
+    let text = RichText::new(title.to_uppercase()).color(ui.visuals().strong_text_color());
+    ui.label(if bound {
+        text.font(font)
+    } else {
+        text.strong()
+    })
 }
 
 #[cfg(test)]
@@ -247,8 +256,9 @@ mod tests {
 
     type Named = (&'static str, Color32);
 
-    /// Every colour text is drawn in, against every ground text is drawn on. Not every pair
-    /// occurs on screen; checking them all means no new placement can fall below the line.
+    /// Every colour enabled text is drawn in, against every ground text is drawn on. Not every
+    /// pair occurs on screen; checking them all means no new placement can fall below the line.
+    /// Disabled widgets fade their text to `disabled_alpha`, which WCAG exempts.
     fn text_and_grounds(v: &Visuals) -> (Vec<Named>, Vec<Named>) {
         let w = &v.widgets;
         let text = vec![
@@ -300,32 +310,76 @@ mod tests {
 
     #[test]
     fn the_keyboard_keys_meet_wcag_non_text_contrast() {
+        let held = visuals().selection;
         assert!(contrast(KEY_BLACK, KEY_WHITE) >= 3.0);
         assert!(contrast(KEY_EDGE, KEY_WHITE) >= 3.0);
-        assert!(contrast(visuals().selection.bg_fill, KEY_BLACK) >= 3.0);
+        assert!(contrast(held.bg_fill, KEY_BLACK) >= 3.0);
+        // A held white key is told from its neighbours by its outline.
+        assert!(contrast(held.stroke.color, KEY_WHITE) >= 3.0);
     }
 
-    /// WCAG's 3:1 for graphical objects, against the canvas and the node box a port sits on.
+    /// `c` laid over `ground` at `alpha`, as egui paints a `gamma_multiply`'d colour.
+    fn over(c: Color32, alpha: f32, ground: Color32) -> Color32 {
+        let mix =
+            |a: u8, b: u8| (f32::from(a) * alpha + f32::from(b) * (1.0 - alpha)).round() as u8;
+        Color32::from_rgb(
+            mix(c.r(), ground.r()),
+            mix(c.g(), ground.g()),
+            mix(c.b(), ground.b()),
+        )
+    }
+
+    /// WCAG's 3:1 for graphical objects: a port against the canvas and the node box it sits on,
+    /// and a wire at rest against the canvas.
     #[test]
     fn every_port_kind_stands_out_from_the_canvas_and_its_box() {
         let v = visuals();
+        let canvas = v.extreme_bg_color;
         for kind in KINDS {
             let c = kind_color(kind);
-            for (name, ground) in [("canvas", v.extreme_bg_color), ("node", v.window_fill)] {
-                let ratio = contrast(c, ground);
-                assert!(ratio >= 3.0, "{kind:?} on {name}: {ratio:.2}");
+            for (name, fg, ground) in [
+                ("port on canvas", c, canvas),
+                ("port on node", c, v.window_fill),
+                ("resting wire", over(c, RESTING_WIRE, canvas), canvas),
+            ] {
+                let ratio = contrast(fg, ground);
+                assert!(ratio >= 3.0, "{kind:?} {name}: {ratio:.2}");
             }
         }
     }
 
-    /// 25 in CIELAB is well past "a different colour" (2.3 is a just-noticeable difference) and
-    /// leaves room for a thin, faded wire.
+    /// 2.3 in CIELAB is a just-noticeable difference; 25 between full colours and 20 between
+    /// resting wires is a different colour at a glance on a thin line. Wires dimmed behind a
+    /// selection are meant to recede, and are not held to this.
     #[test]
     fn port_kinds_are_distinguishable_from_one_another() {
+        let canvas = visuals().extreme_bg_color;
         for (i, a) in KINDS.iter().enumerate() {
             for b in &KINDS[i + 1..] {
-                let d = delta_e(kind_color(*a), kind_color(*b));
+                let (ca, cb) = (kind_color(*a), kind_color(*b));
+                let d = delta_e(ca, cb);
                 assert!(d >= 25.0, "{a:?} and {b:?} are {d:.1} apart");
+                let d = delta_e(
+                    over(ca, RESTING_WIRE, canvas),
+                    over(cb, RESTING_WIRE, canvas),
+                );
+                assert!(d >= 20.0, "resting {a:?} and {b:?} wires are {d:.1} apart");
+            }
+        }
+    }
+
+    /// A node's outline says selected, error or warning; none of them may pass for a port kind.
+    #[test]
+    fn status_outlines_are_not_mistaken_for_port_kinds() {
+        let v = visuals();
+        for (name, status) in [
+            ("selected", v.selection.stroke.color),
+            ("error", v.error_fg_color),
+            ("warning", v.warn_fg_color),
+        ] {
+            for kind in KINDS {
+                let d = delta_e(status, kind_color(kind));
+                assert!(d >= 15.0, "{name} and {kind:?} are {d:.1} apart");
             }
         }
     }
@@ -342,5 +396,16 @@ mod tests {
         assert!((width(FontId::proportional(100.0), 'i') - 60.0).abs() < 0.5);
         // Cuomotype is proportional, with an 'i' of 0.34 em.
         assert!((width(display(100.0), 'i') - 34.0).abs() < 0.5);
+        // The canvas sizes its boxes on the monospace advance; Courier Prime's is 0.6 em.
+        assert!((width(FontId::monospace(100.0), 'W') - 60.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn a_section_title_draws_without_the_theme_installed() {
+        egui::Context::default()
+            .run_ui(egui::RawInput::default(), |ui| {
+                section(ui, "Files");
+            })
+            .drop_without_applying_deltas();
     }
 }

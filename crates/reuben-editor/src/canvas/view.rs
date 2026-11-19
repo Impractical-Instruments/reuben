@@ -13,7 +13,7 @@ use super::geometry::{
     curve, header_text, input_pos, output_pos, wire_curve, LINE, PAD, PORT_RADIUS, TEXT_SIZE,
 };
 use super::graph::{Graph, NodeBox, PortRef};
-use crate::theme::kind_color;
+use crate::theme::{self, kind_color};
 
 /// Below this many points text is a smear, so it is left out and the boxes read as shapes.
 const MIN_TEXT: f32 = 5.0;
@@ -105,7 +105,7 @@ impl Scene<'_> {
             } else if self.selected.iter().any(touches) {
                 Stroke::new(width * 1.6, color)
             } else if self.selected.is_empty() && self.wire.is_none() {
-                Stroke::new(width, color.gamma_multiply(0.8))
+                Stroke::new(width, color.gamma_multiply(theme::RESTING_WIRE))
             } else {
                 Stroke::new(width, color.gamma_multiply(UNSELECTED_WIRE))
             };
