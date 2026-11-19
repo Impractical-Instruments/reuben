@@ -87,13 +87,15 @@ impl NormalizedDoc {
                 supported: FORMAT_VERSION,
             });
         }
+        // Before v1's step 0, so a node it would move aside for a minted pipe address has already
+        // left that address if the rule refuses it, and is renamed once, from what the file holds.
+        if doc.format_version < 4 {
+            migrate_addresses(&mut doc);
+        }
         if doc.format_version < 2 {
             migrate_v1(&mut doc, registry, resolver, ctx, referrer)?;
         } else {
             doc.check_pipe_shape()?;
-        }
-        if doc.format_version < 4 {
-            migrate_addresses(&mut doc);
         }
         // v2→v3 is a pure strip, so it runs unconditionally: a v3-stamped
         // document still carrying leftovers degrades identically (ignore-with-warning).
@@ -265,7 +267,9 @@ fn migrate_v1(
             .collect();
         for idx in colliding {
             let old = doc.nodes[idx].address.clone();
-            let new = suffixed_unclaimed(doc, &minted, &old);
+            let new = suffixed_unclaimed(&old, |c| {
+                minted.contains(c) || doc.nodes.iter().any(|n| n.address == c)
+            });
             rename_node(doc, idx, &new);
             doc.migration.warnings.push(LoadWarning::Migration {
                 name: old.clone(),
@@ -417,31 +421,43 @@ fn migrate_v1(
     Ok(())
 }
 
-/// `{base}_2`, `{base}_3`, … — the first no node and no minted pipe address holds.
-fn suffixed_unclaimed(doc: &InstrumentDoc, minted: &BTreeSet<String>, base: &str) -> String {
+/// `{base}_2`, `{base}_3`, … — the first that is not `taken`.
+fn suffixed_unclaimed(base: &str, taken: impl Fn(&str) -> bool) -> String {
     (2usize..)
         .map(|i| format!("{base}_{i}"))
-        .find(|c| !minted.contains(c) && !doc.nodes.iter().any(|n| &n.address == c))
+        .find(|c| !taken(c))
         .expect("an unbounded suffix range always finds a free address")
 }
 
 /// The v3→v4 migration: each node address the node address rule refuses is renamed with its
 /// references rewritten. Every refused character becomes `_`, an empty name becomes `node`, and a
 /// result already held by a node or a minted pipe address takes step 0's `_N` suffix.
+///
+/// Every new name is chosen before any reference is touched, and each reference is then split
+/// once against the addresses as written, the way the loader splits it. Renaming one node at a
+/// time would let `/my.tone`'s rename rewrite `/my.tone.x.audio` before `/my.tone.x` is matched.
 fn migrate_addresses(doc: &mut InstrumentDoc) {
     let minted: BTreeSet<String> = doc
         .interface
         .iter()
         .flat_map(|i| i.inputs.keys().map(|n| format!("/{n}")))
         .collect();
-    for idx in 0..doc.nodes.len() {
-        let old = doc.nodes[idx].address.clone();
-        if check_node_address(&old).is_ok() {
+    let written: BTreeSet<String> = doc.nodes.iter().map(|n| n.address.clone()).collect();
+    let mut claimed: BTreeSet<String> = written
+        .iter()
+        .filter(|a| check_node_address(a).is_ok())
+        .chain(&minted)
+        .cloned()
+        .collect();
+    let mut renames: BTreeMap<String, String> = BTreeMap::new();
+    for node in &doc.nodes {
+        let old = &node.address;
+        if check_node_address(old).is_ok() || renames.contains_key(old) {
             continue;
         }
         let segment: String = old
             .strip_prefix('/')
-            .unwrap_or(&old)
+            .unwrap_or(old)
             .chars()
             .map(|c| match refused_address_char(c) {
                 Some(_) => '_',
@@ -453,21 +469,66 @@ fn migrate_addresses(doc: &mut InstrumentDoc) {
         } else {
             format!("/{segment}")
         };
-        let new = if minted.contains(&base) || doc.nodes.iter().any(|n| n.address == base) {
-            suffixed_unclaimed(doc, &minted, &base)
+        let new = if claimed.contains(&base) {
+            suffixed_unclaimed(&base, |c| claimed.contains(c))
         } else {
             base
         };
-        rename_node(doc, idx, &new);
-        doc.migration
-            .warnings
-            .push(LoadWarning::RenamedAddress { from: old, to: new });
+        claimed.insert(new.clone());
+        renames.insert(old.clone(), new);
+    }
+    if renames.is_empty() {
+        return;
+    }
+    let addressable: BTreeSet<&String> = written.iter().chain(&minted).collect();
+    let rewrite = |reference: &mut String| {
+        let renamed = if addressable.contains(reference) {
+            renames.get(reference.as_str()).cloned()
+        } else {
+            reference
+                .rsplit_once('.')
+                .and_then(|(node, port)| renames.get(node).map(|new| format!("{new}.{port}")))
+        };
+        if let Some(renamed) = renamed {
+            *reference = renamed;
+        }
+    };
+    for node in &mut doc.nodes {
+        for value in node.inputs.values_mut() {
+            if let InputValue::Wire { from } = value {
+                rewrite(from);
+            }
+        }
+    }
+    if let Some(iface) = &mut doc.interface {
+        for entry in iface.inputs.values_mut().chain(iface.outputs.values_mut()) {
+            match entry {
+                InterfaceEntry::Target(t) => rewrite(t),
+                InterfaceEntry::Detailed(m) => rewrite(&mut m.target),
+                InterfaceEntry::Feed(f) => rewrite(&mut f.from),
+                InterfaceEntry::Pipe(_) => {}
+            }
+        }
+    }
+    for tap in &mut doc.outputs {
+        if let Some(new) = renames.get(&tap.node) {
+            tap.node = new.clone();
+        }
+    }
+    for node in &mut doc.nodes {
+        if let Some(new) = renames.get(&node.address) {
+            let from = std::mem::replace(&mut node.address, new.clone());
+            doc.migration.warnings.push(LoadWarning::RenamedAddress {
+                from,
+                to: new.clone(),
+            });
+        }
     }
 }
 
 /// Rename `doc.nodes[idx]` to `new`, rewriting every reference — wire-refs in node `inputs`,
-/// v1 `interface` targets, output feeds, anonymous-tap node names — so the rename is
-/// behavior-invariant.
+/// v1 `interface` targets, anonymous-tap node names — so the rename is behavior-invariant
+/// (migration step 0: a node stepping aside for a minted pipe address).
 fn rename_node(doc: &mut InstrumentDoc, idx: usize, new: &str) {
     let old = std::mem::replace(&mut doc.nodes[idx].address, new.to_string());
     for n in &mut doc.nodes {
@@ -482,8 +543,7 @@ fn rename_node(doc: &mut InstrumentDoc, idx: usize, new: &str) {
             match entry {
                 InterfaceEntry::Target(t) => rename_in_ref(t, &old, new),
                 InterfaceEntry::Detailed(m) => rename_in_ref(&mut m.target, &old, new),
-                InterfaceEntry::Feed(f) => rename_in_ref(&mut f.from, &old, new),
-                InterfaceEntry::Pipe(_) => {}
+                _ => {}
             }
         }
     }
@@ -1022,27 +1082,67 @@ mod tests {
         ));
     }
 
-    /// A v3 document whose addresses break the node address rule. `/a/osc` maps to `/a_osc`, which
-    /// is taken, so it takes the step-0 suffix; every reference form is wired at least once.
-    fn bad_addresses_at(version: u32) -> String {
+    /// A document holding `osc` (taken to `/a_osc`, so suffixed), `tone` and `root` as node
+    /// addresses, each wired through every reference form.
+    fn addresses_doc(version: u32, osc: &str, tone: &str, root: &str) -> String {
         serde_json::json!({
             "format_version": version,
             "instrument": "t",
             "nodes": [
-                { "type": "oscillator", "address": "/a/osc" },
+                { "type": "oscillator", "address": osc, "inputs": { "freq": 330.0 } },
                 { "type": "oscillator", "address": "/a_osc" },
-                { "type": "oscillator", "address": "/my.tone" },
-                { "type": "oscillator", "address": "/" },
+                { "type": "oscillator", "address": tone, "inputs": { "freq": 550.0 } },
+                { "type": "oscillator", "address": root, "inputs": { "freq": 110.0 } },
                 { "type": "mul_f32_signal", "address": "/mix",
-                  "inputs": { "a": { "from": "/a/osc" }, "b": { "from": "/my.tone.audio" } } },
+                  "inputs": { "a": { "from": osc }, "b": { "from": format!("{tone}.audio") } } },
                 { "type": "mul_f32_signal", "address": "/mix2",
-                  "inputs": { "a": { "from": "/a_osc" }, "b": { "from": "/a/osc.audio" } } },
+                  "inputs": { "a": { "from": "/a_osc" }, "b": { "from": format!("{osc}.audio") } } },
                 { "type": "mul_f32_signal", "address": "/mix3",
-                  "inputs": { "a": { "from": "/.audio" } } }
+                  "inputs": { "a": { "from": format!("{root}.audio") }, "b": 0.5 } }
             ],
-            "interface": { "outputs": { "main": { "from": "/my.tone" } } }
+            "interface": { "outputs": {
+                "main": { "from": tone },
+                "mix": { "from": "/mix" },
+                "low": { "from": "/mix3" }
+            } }
         })
         .to_string()
+    }
+
+    fn bad_addresses_at(version: u32) -> String {
+        addresses_doc(version, "/a/osc", "/my.tone", "/")
+    }
+
+    fn render(doc: &NormalizedDoc) -> Vec<f32> {
+        use reuben_core::{plan::Plan, render::Renderer, AudioConfig};
+        let cfg = AudioConfig::new(48_000.0, 64);
+        let mut plan = Plan::instantiate(doc.build(&reg()).expect("builds"), cfg).expect("plans");
+        let mut renderer = Renderer::new(&plan);
+        let mut block = vec![0.0f32; cfg.block_size];
+        let mut all = Vec::new();
+        for _ in 0..8 {
+            renderer.render_block(&mut plan, &[], &mut block);
+            all.extend_from_slice(&block);
+        }
+        all
+    }
+
+    fn wire(doc: &NormalizedDoc, node: &str, input: &str) -> String {
+        match &doc.nodes.iter().find(|n| n.address == node).unwrap().inputs[input] {
+            InputValue::Wire { from } => from.clone(),
+            other => panic!("{node}.{input} is not a wire: {other:?}"),
+        }
+    }
+
+    fn renames(doc: &NormalizedDoc) -> Vec<(&str, &str)> {
+        doc.migration
+            .warnings
+            .iter()
+            .filter_map(|w| match w {
+                LoadWarning::RenamedAddress { from, to } => Some((from.as_str(), to.as_str())),
+                _ => None,
+            })
+            .collect()
     }
 
     #[test]
@@ -1053,37 +1153,17 @@ mod tests {
             addresses,
             ["/a_osc_2", "/a_osc", "/my_tone", "/node", "/mix", "/mix2", "/mix3"]
         );
-        let from = |node: &str, input: &str| match &doc
-            .nodes
-            .iter()
-            .find(|n| n.address == node)
-            .unwrap()
-            .inputs[input]
-        {
-            InputValue::Wire { from } => from.clone(),
-            other => panic!("{node}.{input} is not a wire: {other:?}"),
-        };
-        assert_eq!(from("/mix", "a"), "/a_osc_2");
-        assert_eq!(from("/mix", "b"), "/my_tone.audio");
-        assert_eq!(from("/mix2", "a"), "/a_osc");
-        assert_eq!(from("/mix2", "b"), "/a_osc_2.audio");
-        assert_eq!(from("/mix3", "a"), "/node.audio");
+        assert_eq!(wire(&doc, "/mix", "a"), "/a_osc_2");
+        assert_eq!(wire(&doc, "/mix", "b"), "/my_tone.audio");
+        assert_eq!(wire(&doc, "/mix2", "a"), "/a_osc");
+        assert_eq!(wire(&doc, "/mix2", "b"), "/a_osc_2.audio");
+        assert_eq!(wire(&doc, "/mix3", "a"), "/node.audio");
         let main = doc.interface.as_ref().unwrap().outputs["main"]
             .feed()
             .unwrap();
         assert_eq!(main.from, "/my_tone");
-
-        let renames: Vec<(&str, &str)> = doc
-            .migration
-            .warnings
-            .iter()
-            .filter_map(|w| match w {
-                LoadWarning::RenamedAddress { from, to } => Some((from.as_str(), to.as_str())),
-                _ => None,
-            })
-            .collect();
         assert_eq!(
-            renames,
+            renames(&doc),
             [
                 ("/a/osc", "/a_osc_2"),
                 ("/my.tone", "/my_tone"),
@@ -1096,7 +1176,81 @@ mod tests {
             "the warning says the control address moved: {message}"
         );
         assert_eq!(doc.format_version, FORMAT_VERSION);
-        doc.build(&reg()).expect("the migrated document loads");
+
+        // A migrated document renders bit-identical to the same document written with the new
+        // addresses by hand.
+        let by_hand = NormalizedDoc::from_json(
+            &addresses_doc(FORMAT_VERSION, "/a_osc_2", "/my_tone", "/node"),
+            &reg(),
+            None,
+        )
+        .expect("parses");
+        assert!(renames(&by_hand).is_empty());
+        let (migrated, native) = (render(&doc), render(&by_hand));
+        assert!(
+            migrated.iter().any(|s| *s != 0.0),
+            "the fixture renders sound"
+        );
+        assert_eq!(
+            migrated.iter().map(|s| s.to_bits()).collect::<Vec<_>>(),
+            native.iter().map(|s| s.to_bits()).collect::<Vec<_>>()
+        );
+    }
+
+    /// Every reference resolves once, against the addresses as written, before any rename lands:
+    /// renaming `/my.tone` first must not turn `/my.tone.x.audio` into a reference to a node
+    /// called `/my_tone.x`.
+    #[test]
+    fn a_refused_address_that_is_a_dotted_prefix_of_another_renames_cleanly_in_either_order() {
+        let nodes = [
+            serde_json::json!({ "type": "oscillator", "address": "/my.tone" }),
+            serde_json::json!({ "type": "oscillator", "address": "/my.tone.x" }),
+        ];
+        for order in [[0, 1], [1, 0]] {
+            let json = serde_json::json!({
+                "format_version": 3,
+                "instrument": "t",
+                "nodes": [
+                    nodes[order[0]].clone(),
+                    nodes[order[1]].clone(),
+                    { "type": "mul_f32_signal", "address": "/m1",
+                      "inputs": { "a": { "from": "/my.tone.x.audio" }, "b": { "from": "/my.tone.x" } } },
+                    { "type": "mul_f32_signal", "address": "/m2",
+                      "inputs": { "a": { "from": "/my.tone.audio" }, "b": { "from": "/my.tone" } } }
+                ]
+            })
+            .to_string();
+            let doc = NormalizedDoc::from_json(&json, &reg(), None).expect("migrates");
+            assert_eq!(
+                wire(&doc, "/m1", "a"),
+                "/my_tone_x.audio",
+                "order {order:?}"
+            );
+            assert_eq!(wire(&doc, "/m1", "b"), "/my_tone_x", "order {order:?}");
+            assert_eq!(wire(&doc, "/m2", "a"), "/my_tone.audio", "order {order:?}");
+            assert_eq!(wire(&doc, "/m2", "b"), "/my_tone", "order {order:?}");
+            doc.build(&reg()).expect("the migrated document loads");
+        }
+    }
+
+    /// A v1 node whose address is both refused and the one its interface entry mints is renamed
+    /// once, and the one warning names the address the file holds.
+    #[test]
+    fn a_v1_node_clashing_with_its_pipe_and_breaking_the_rule_is_renamed_once() {
+        let json = r#"{"instrument":"t",
+            "interface":{"inputs":{"a b":"/a b.freq"}},
+            "nodes":[{"type":"oscillator","address":"/a b"}]}"#;
+        let doc = NormalizedDoc::from_json(json, &reg(), None).expect("migrates");
+        assert_eq!(doc.nodes[0].address, "/a_b");
+        assert_eq!(wire(&doc, "/a_b", "freq"), "/a b");
+        assert_eq!(renames(&doc), [("/a b", "/a_b")]);
+        let migration_renames = doc
+            .migration
+            .warnings
+            .iter()
+            .filter(|w| w.to_string().contains("renamed"))
+            .count();
+        assert_eq!(migration_renames, 1, "{:?}", doc.migration.warnings);
     }
 
     #[test]

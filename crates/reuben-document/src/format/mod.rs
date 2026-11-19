@@ -105,7 +105,7 @@ pub struct InstrumentDoc {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct MigrationNotes {
     /// Warnings to surface on the next build of this document ([`LoadWarning::Migration`]).
-    warnings: Vec<LoadWarning>,
+    pub(crate) warnings: Vec<LoadWarning>,
     /// v1 `interface.inputs` names migration dropped (unexpressible in the pipe model): recorded
     /// as **dark** boundary inputs so a host wire onto the name drops with a warning — the same
     /// transitive degradation an unavailable nested target gets — instead of a fatal

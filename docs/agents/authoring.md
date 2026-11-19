@@ -383,8 +383,11 @@ never read them; re-saving strips them); and a pre-v4 node `address` the address
 **renamed with a `RenamedAddress` warning** naming old → new — each refused character becomes `_`
 (`/a/osc` → `/a_osc`, `/my.tone` → `/my_tone`), an empty name becomes `/node`, a taken result gets
 an `_N` suffix, and every wire-ref and output feed naming it is rewritten. The node's OSC control
-address moves with it, so a controller still sending to the old one goes quiet until it follows. Migrated-vs-native renders are **bit-identical**
-(asserted in `crates/reuben-document/tests/format_v2.rs` and `format_v3.rs`). Save writes v4 — a
+address moves with it, so a controller still sending to the old one goes quiet until it follows.
+Every edit verb writes the current version, so the first edit to an older file is the one that
+lands its renames, and its report carries each `RenamedAddress` warning; later edits carry none. Migrated-vs-native renders are **bit-identical**
+(asserted in `crates/reuben-document/tests/format_v2.rs` and `format_v3.rs`, and for the v4
+address renames in `format/normalize.rs`). Save writes v4 — a
 migrated document never saves back under its old number. The whole normalize pipeline —
 version gate, migrations, stamp — lives in `format/normalize.rs` behind the **`NormalizedDoc`**
 type: `NormalizedDoc::from_json` is the
