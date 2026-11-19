@@ -1,17 +1,14 @@
 //! mix — sum up to sixteen mono Signals, each through its own gain, into one Signal.
 //!
-//! `out[i] = Σₖ inₖ[i] · clamp(gainₖ[i], 0, 4)` for k = 1..=16, summed in port order so the
-//! result is bit-identical across runs. A bus of N sources wires `in1`..`inN` and leaves the rest
-//! unwired: an unwired bare Signal input reads silence, so it contributes nothing. A stereo bus is
-//! two `mix` nodes, one per side.
+//! `out[i] = Σₖ inₖ[i] · gainₖ[i]` for k = 1..=16, summed in port order so the result is
+//! bit-identical across runs. A gain is read per sample, so an envelope or follower can ride a
+//! channel level directly. A gain at or below 0, or NaN, mutes its source outright (even an
+//! inf or NaN source); above 4 it is held at 4. A bus of N sources wires `in1`..`inN` and leaves
+//! the rest unwired: an unwired Signal input reads silence, so it contributes nothing. A stereo bus
+//! is two `mix` nodes, one per side.
 //!
 //! The width is fixed because a [`Descriptor`] is a function of the operator type, not the node —
 //! there is no config-sized port set to size it per bus.
-//!
-//! - inputs 0..=15: `in1`..`in16` (Signal) — the sources.
-//! - inputs 16..=31: `gain1`..`gain16` (Signal, default 1.0, 0..=4) — linear gain per source,
-//!   swept per sample, so an envelope or follower can ride a channel level directly.
-//! - output 0: `out` (Signal) — the gained sum.
 
 use alloc::boxed::Box;
 
@@ -45,9 +42,15 @@ crate::operator_contract!(Mix {
     outputs: { out: f32_buffer },
 });
 
-/// The ceiling of every `gainₖ`'s declared range, applied to wired signals too: the declared
-/// range only bounds knob-set values.
+/// The ceiling of every `gainₖ`'s declared range, applied to every gain the operator reads: the
+/// declared range bounds only knob-set values, not a wired signal or a raw OSC float.
 const GAIN_MAX: f32 = 4.0;
+
+/// The gain a channel actually applies: 0 for anything not above 0 (NaN included), so a muted
+/// channel contributes nothing whatever its source holds, and at most [`GAIN_MAX`].
+fn effective_gain(g: f32) -> f32 {
+    if g > 0.0 { g.min(GAIN_MAX) } else { 0.0 }
+}
 
 const CHANNELS: [(In<SignalF32>, In<SignalF32>); 16] = [
     (IN_IN1, IN_GAIN1),
@@ -81,11 +84,11 @@ impl Mix {
     }
 }
 
-/// Whether a buffer is silent for the whole block without scanning it: a non-`varying` input is
-/// a uniform held fill, so sample 0 stands for every sample. An unwired source, or one parked at
-/// gain 0, costs one comparison instead of a pass over the block.
-fn held_zero(io: &Io, port: In<SignalF32>, buf: &[f32]) -> bool {
-    !io.varying(port) && buf.first().is_none_or(|&v| v == 0.0)
+/// Whether a held input stays at `zero` for the whole block without scanning it: a non-`varying`
+/// input is a uniform held fill, so sample 0 stands for every sample. An unwired source, or one
+/// parked at gain 0, costs one comparison instead of a pass over the block.
+fn held_zero(io: &Io, port: In<SignalF32>, buf: &[f32], zero: impl Fn(f32) -> bool) -> bool {
+    !io.varying(port) && buf.first().is_none_or(|&v| zero(v))
 }
 
 impl Operator for Mix {
@@ -102,7 +105,9 @@ impl Operator for Mix {
         for (slot, &(src, gain)) in live.iter_mut().zip(CHANNELS.iter()) {
             let x = io.read(src);
             let g = io.read(gain);
-            if held_zero(io, src, x) || held_zero(io, gain, g) {
+            if held_zero(io, src, x, |v| v == 0.0)
+                || held_zero(io, gain, g, |v| effective_gain(v) == 0.0)
+            {
                 continue;
             }
             *slot = Some((x, g, io.varying(gain)));
@@ -114,10 +119,14 @@ impl Operator for Mix {
         for &(x, g, g_varying) in live.iter().flatten() {
             if g_varying {
                 for ((o, &xi), &gi) in out.iter_mut().zip(x).zip(g) {
-                    *o += xi * gi.clamp(0.0, GAIN_MAX);
+                    let gi = effective_gain(gi);
+                    // A select, not a branch, so the loop stays vectorizable; a muted sample adds
+                    // nothing rather than `xi * 0.0`, which is NaN for an inf or NaN source.
+                    *o += if gi > 0.0 { xi * gi } else { 0.0 };
                 }
             } else {
-                let gain = g.first().map_or(1.0, |&v| v.clamp(0.0, GAIN_MAX));
+                // Not skipped above, so this held gain is above 0.
+                let gain = g.first().map_or(1.0, |&v| effective_gain(v));
                 for (o, &xi) in out.iter_mut().zip(x) {
                     *o += xi * gain;
                 }
@@ -143,15 +152,18 @@ mod tests {
         (0..N).map(|i| offset + scale * i as f32).collect()
     }
 
-    fn close(a: &[f32], b: &[f32]) {
+    /// Bit-exact: each oracle sums in port order, the order the operator promises, so a reordered
+    /// sum fails here.
+    fn exact(a: &[f32], b: &[f32]) {
         assert_eq!(a.len(), b.len());
         for (i, (x, y)) in a.iter().zip(b).enumerate() {
-            assert!(
-                (x - y).abs() <= 1e-4 * y.abs().max(1.0),
-                "frame {i}: {x} != {y}"
-            );
+            assert_eq!(x.to_bits(), y.to_bits(), "frame {i}: {x} != {y}");
         }
     }
+
+    /// The first frame of the second block: a pushed control lands in block 0's change list and
+    /// is a held fill from block 1 on.
+    const BLOCK: usize = 128;
 
     #[test]
     fn contract_is_sixteen_sources_sixteen_gains_one_out() {
@@ -183,7 +195,7 @@ mod tests {
             .drive(IN_IN16, &c)
             .render(N);
         let want: Vec<f32> = (0..N).map(|i| a[i] + b[i] + c[i]).collect();
-        close(d.output(OUT_OUT), &want);
+        exact(d.output(OUT_OUT), &want);
     }
 
     #[test]
@@ -196,7 +208,7 @@ mod tests {
             .set(IN_GAIN3, 2.0)
             .render(N);
         let want: Vec<f32> = (0..N).map(|i| 0.5 * a[i] + 2.0 * b[i]).collect();
-        close(d.output(OUT_OUT), &want);
+        exact(d.output(OUT_OUT), &want);
     }
 
     #[test]
@@ -205,7 +217,7 @@ mod tests {
         let g = ramp(1.0 / N as f32, 0.0);
         let mut d = OpDriver::for_type(Mix::new(), SR);
         d.drive(IN_IN4, &a).drive(IN_GAIN4, &g).render(N);
-        close(d.output(OUT_OUT), &g);
+        exact(d.output(OUT_OUT), &g);
     }
 
     #[test]
@@ -220,7 +232,7 @@ mod tests {
     fn a_held_constant_source_is_not_mistaken_for_silence() {
         let mut d = OpDriver::for_type(Mix::new(), SR);
         d.set(IN_IN6, 0.25).set(IN_GAIN6, 2.0).render(N);
-        close(d.output(OUT_OUT), &[0.5; N]);
+        exact(d.output(OUT_OUT), &[0.5; N]);
     }
 
     #[test]
@@ -234,7 +246,53 @@ mod tests {
             .drive(IN_IN2, &ones)
             .drive(IN_GAIN2, &under)
             .render(N);
-        close(d.output(OUT_OUT), &[GAIN_MAX; N]);
+        exact(d.output(OUT_OUT), &[GAIN_MAX; N]);
+    }
+
+    #[test]
+    fn held_gain_pushed_past_its_range_is_clamped() {
+        // A raw OSC float reaches a Signal port unclamped, then reads as a held fill.
+        let mut d = OpDriver::for_type(Mix::new(), SR);
+        d.set(IN_IN1, 1.0).push(IN_GAIN1, 0, 10.0).render(N);
+        assert!(d.output(OUT_OUT)[BLOCK..].iter().all(|&v| v == GAIN_MAX));
+    }
+
+    #[test]
+    fn a_driven_source_starting_at_zero_is_mixed() {
+        // An oscillator at phase 0 or an envelope at rest starts at exactly 0.0.
+        let a: Vec<f32> = (0..N).map(|i| (i % BLOCK) as f32 * 0.001).collect();
+        let mut d = OpDriver::for_type(Mix::new(), SR);
+        d.drive(IN_IN8, &a).render(N);
+        exact(d.output(OUT_OUT), &a);
+    }
+
+    #[test]
+    fn every_source_pairs_with_its_own_gain() {
+        // By descriptor index, not through `CHANNELS`, so a mispaired table entry fails here.
+        for k in 0..16 {
+            let g = 0.25 * (k + 1) as f32;
+            let mut d = OpDriver::for_type(Mix::new(), SR);
+            d.set(k, 1.0).set(16 + k, g).render(N);
+            exact(d.output(OUT_OUT), &[g; N]);
+        }
+    }
+
+    #[test]
+    fn a_gain_not_above_zero_mutes_even_a_non_finite_source() {
+        let nan = [f32::NAN; N];
+        let inf = [f32::INFINITY; N];
+        // Held below the range, held NaN, driven at 0, and driven NaN: all mute.
+        let mut d = OpDriver::for_type(Mix::new(), SR);
+        d.drive(IN_IN1, &nan)
+            .set(IN_GAIN1, -1.0)
+            .drive(IN_IN2, &inf)
+            .push(IN_GAIN2, 0, f32::NAN)
+            .drive(IN_IN3, &inf)
+            .drive(IN_GAIN3, &[0.0; N])
+            .set(IN_IN4, 1.0)
+            .drive(IN_GAIN4, &nan)
+            .render(N);
+        assert!(d.output(OUT_OUT)[BLOCK..].iter().all(|&v| v == 0.0));
     }
 
     #[test]
