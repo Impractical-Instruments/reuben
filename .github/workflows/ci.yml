@@ -204,6 +204,17 @@ jobs:
       - name: Test
         run: cargo test --features reuben-document/bench,reuben-document/schemars
 
+      # The RT-safety suites again, in release: "the render thread never allocates" is a property
+      # of the optimized code that ships, and inlining or elision can change it, so debug alone
+      # does not gate it. Only these suites are named: every other test's outcome is the same at
+      # any opt level, so a blanket `cargo test --release` would be a second full workspace build
+      # that buys nothing.
+      - name: RT-safety tests (release)
+        run: >-
+          cargo test --release -p reuben-document
+          --test rt_safe --test coordinator_rt_safe
+          --test install_slot_rt_safe --test m2_swap_harness
+
       # The render-only build of the window, which no in-tree consumer compiles: the hosts that
       # take it — the browser worklet, a bare-metal embedder — live in other repositories behind a
       # submodule pin. Without this step the authoring/render fence would be an intention that

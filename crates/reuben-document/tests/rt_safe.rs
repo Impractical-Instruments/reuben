@@ -10,7 +10,7 @@
 
 mod rt_alloc;
 
-use rt_alloc::{measure, Counting};
+use rt_alloc::{assert_counter_is_live, measure, Counting};
 
 use std::sync::Arc;
 
@@ -71,6 +71,8 @@ fn render_block_is_allocation_free_after_warmup() {
     for _ in 0..16 {
         r.render_block(&mut plan, &[], &mut out);
     }
+
+    assert_counter_is_live();
 
     // Steady state: a held note with no new messages must not allocate.
     let held = measure(|| {

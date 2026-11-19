@@ -12,6 +12,7 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
+use std::hint::black_box;
 use std::thread::LocalKey;
 
 thread_local! {
@@ -106,4 +107,19 @@ pub fn measure(f: impl FnOnce()) -> Counts {
         allocs: ALLOCS.with(Cell::get) - allocs_before,
         frees: FREES.with(Cell::get) - frees_before,
     }
+}
+
+/// Live-counter probe: an ordinary `Box` allocation inside a measured window must register, so a
+/// zero-alloc assertion elsewhere cannot be vacuous — a dead counter would also read zero. Call
+/// once before the measured window.
+///
+/// The `black_box` is load-bearing: without it, release codegen elides the allocate-then-drop
+/// pair and a live counter reads zero. It belongs on this probe only — never inside a measured
+/// window, which must stay exactly the code that ships.
+pub fn assert_counter_is_live() {
+    let probe = measure(|| drop(black_box(Box::new([0u64; 8]))));
+    assert!(
+        probe.allocs > 0 && probe.frees > 0,
+        "the counting harness must observe an ordinary Box allocation and free"
+    );
 }
