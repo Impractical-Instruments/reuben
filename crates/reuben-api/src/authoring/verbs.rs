@@ -533,6 +533,18 @@ pub fn set_instrument_interface_output_meta(
     })
 }
 
+/// Feed an existing interface output pipe from another internal port, keeping its metadata and
+/// layout. Not a roster verb: an agent removes and re-adds the pipe, and the editor needs the
+/// change as one write, so that dropping a wire on the pipe is one undo step.
+pub fn wire_instrument_interface_output(
+    args: &WireInstrumentInterfaceOutput,
+    resources: &dyn Resources,
+) -> Result<Answer<EditResult>, Refusal> {
+    run_edit(&args.source, &args.expect, resources, |src, reg, res| {
+        core_edit::wire_instrument_interface_output(src, &args.name, &args.from, reg, res)
+    })
+}
+
 /// Add a resource to the document's id→source table.
 pub fn add_instrument_resource(
     args: &AddInstrumentResource,

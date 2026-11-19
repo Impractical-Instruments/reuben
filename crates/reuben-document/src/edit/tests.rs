@@ -1583,3 +1583,58 @@ fn the_trailing_newline_is_not_part_of_the_content_hash() {
     };
     assert_eq!(mint(&text), mint(bare));
 }
+
+// --- output pipe feed ----------------------------------------------------------------------------
+
+#[test]
+fn wire_output_feeds_the_pipe_from_another_port_and_keeps_its_metadata() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed());
+    set_instrument_interface_output_meta(
+        SRC,
+        "main",
+        None,
+        None,
+        None,
+        Some("V"),
+        &registry,
+        &resolver,
+    )
+    .expect("a unit");
+    set_instrument_layout(SRC, &[(output("main"), at(9.0, 3.0))], &registry, &resolver)
+        .expect("a position");
+
+    let result = wire_instrument_interface_output(SRC, "main", "/osc", &registry, &resolver)
+        .expect("the pipe exists");
+
+    assert!(result.written, "{:?}", result.report);
+    let main = &readback(&resolver)["interface"]["outputs"]["main"];
+    assert_eq!(main["from"], json!("/osc"));
+    assert_eq!(main["unit"], json!("V"));
+    assert_eq!(main["layout"], json!({ "x": 9.0, "y": 3.0 }));
+}
+
+#[test]
+fn wire_output_from_a_port_that_does_not_exist_is_rejected_and_not_written() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed());
+    let before = readback(&resolver);
+
+    let result = wire_instrument_interface_output(SRC, "main", "/ghost", &registry, &resolver)
+        .expect("the pipe exists");
+
+    assert!(!result.written);
+    assert!(!result.report.ok);
+    assert_eq!(readback(&resolver), before);
+}
+
+#[test]
+fn wire_output_refuses_an_output_pipe_the_document_does_not_have() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed());
+    let refused = wire_instrument_interface_output(SRC, "ghost", "/osc", &registry, &resolver);
+    assert!(
+        matches!(&refused, Err(EditError::Target(why)) if why.contains("ghost")),
+        "{refused:?}"
+    );
+}

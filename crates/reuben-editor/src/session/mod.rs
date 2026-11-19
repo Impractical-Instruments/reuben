@@ -510,6 +510,7 @@ pub(crate) mod test_support {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
+    use reuben_api::authoring::{new_instrument, NewInstrument};
     use reuben_api::engine::{
         get_current_instrument, install_initial, Channel, InProcess, Request, StructureState,
         Transport,
@@ -631,6 +632,30 @@ pub(crate) mod test_support {
             let scratch = Scratch::new(test);
             let lib = scratch.library();
             let top = lib.join(instrument);
+            Self::started(scratch, lib, top)
+        }
+
+        /// A rig on a new instrument, as `new_instrument` seeds it, at `lib/<name>.json`.
+        pub fn fresh(test: &str, name: &str) -> Self {
+            let scratch = Scratch::new(test);
+            let lib = scratch.path("lib");
+            std::fs::create_dir_all(&lib).expect("create the library directory");
+            let top = lib.join(format!("{name}.json"));
+            let source = top.display().to_string();
+            let seeded = new_instrument(
+                &NewInstrument {
+                    source: source.clone(),
+                    name: name.to_string(),
+                },
+                &FsResolver::for_document(&source),
+            )
+            .expect("the seed is written")
+            .output;
+            assert!(seeded.written, "{:?}", seeded.report);
+            Self::started(scratch, lib, top)
+        }
+
+        fn started(scratch: Scratch, lib: PathBuf, top: PathBuf) -> Self {
             let text = std::fs::read_to_string(&top).expect("read the fixture");
             let (coordinator, side, _warnings) = install_initial(
                 &text,

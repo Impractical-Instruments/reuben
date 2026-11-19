@@ -216,6 +216,43 @@ fn field(node: &StructureNode, port: &PortInfo) -> Field {
     }
 }
 
+/// The value row of the interface input pipe `pipe`: the pipe is a node at `/<name>` whose one
+/// input `in` holds what the pipe gives when nothing feeds it.
+///
+/// A number pipe declaring no value is shown at zero, so that it can be given one.
+pub fn pipe_field(pipe: &PortInfo) -> Field {
+    let target = Target {
+        address: format!("/{}", pipe.name),
+        name: PIPE_INPUT.to_string(),
+        constant: false,
+        integer: pipe.kind == "int",
+        pipe: false,
+    };
+    let control = match &pipe.default {
+        Some(value) => literal_control(pipe, value),
+        None if pipe.variants.is_empty() => match literal_control(pipe, &json!(0.0)) {
+            number @ Control::Number { .. } => number,
+            _ => Control::Shown {
+                text: "nothing until it is fed".to_string(),
+            },
+        },
+        // Nothing picked yet; picking writes the value as for a pipe that declares one.
+        None => Control::Choice {
+            variants: pipe.variants.clone(),
+            value: String::new(),
+        },
+    };
+    Field {
+        target,
+        kind: pipe.kind.clone(),
+        control,
+        set: pipe.default.is_some(),
+    }
+}
+
+/// The input every interface input pipe takes its value on.
+const PIPE_INPUT: &str = "in";
+
 fn literal_control(port: &PortInfo, value: &Value) -> Control {
     if !port.variants.is_empty() {
         let value = match value {

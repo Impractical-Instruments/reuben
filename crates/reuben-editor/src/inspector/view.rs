@@ -6,17 +6,21 @@ use reuben_api::authoring::{Diag, InstrumentStructure, StructureNode};
 use reuben_api::engine::Channel;
 
 use super::model::{drag_speed, fields, widget, Control, Field, Step, Typing, Widget};
-use super::{Edit, Inspector};
+use super::{interface, Edit, Inspector};
 use crate::canvas::Item;
+use crate::feedback::Feedback;
 use crate::session::Session;
 
 const SLIDER_WIDTH: f32 = 180.0;
 
 /// What one frame of the inspector asks for, in the order it was asked.
-enum Ask {
+pub(super) enum Ask {
     Step(Step),
     /// An edit, and the content hash it was made against, or `None` for the document on screen.
     Edit(Edit, Option<String>),
+    /// An edit asked for that names no edit to make, and why: it is reported as the verb's own
+    /// refusal would be.
+    Refuse(String),
 }
 
 /// Draw the inspector down the right of `ui` for `selection` in the document the session views,
@@ -60,7 +64,10 @@ pub fn show(
                     inspector.holds.begin();
                     inspector.drafts.begin();
                     match selection {
-                        None => instrument(ui, inspector, top, &problems, &mut asks),
+                        None => {
+                            instrument(ui, inspector, top, &problems, &mut asks);
+                            interface::list(ui, inspector, top, &mut asks);
+                        }
                         Some(Item::Node(address)) => {
                             match top.nodes.iter().find(|n| &n.address == address) {
                                 Some(node) => {
@@ -71,8 +78,12 @@ pub fn show(
                                 }
                             }
                         }
-                        Some(Item::Input(name)) => pipe(ui, "Interface input", name, &problems),
-                        Some(Item::Output(name)) => pipe(ui, "Interface output", name, &problems),
+                        Some(Item::Input(name)) => {
+                            interface::input(ui, inspector, top, name, &problems, &mut asks)
+                        }
+                        Some(Item::Output(name)) => {
+                            interface::output(ui, inspector, top, name, &problems, &mut asks)
+                        }
                     }
                     asks.extend(inspector.holds.end().map(Ask::Step));
                     inspector.drafts.end();
@@ -84,12 +95,13 @@ pub fn show(
             Ask::Edit(edit, expect) => {
                 inspector.commit(edit, expect, session, channel);
             }
+            Ask::Refuse(message) => refuse(session, message),
         }
     }
 }
 
 /// One diagnostic about what the inspector shows, and whether it is an error.
-type Problem<'a> = (bool, &'a Diag);
+pub(super) type Problem<'a> = (bool, &'a Diag);
 
 /// What the last rejected edit of `top`, then its load report, say about `selection`: a node's
 /// own, a pipe's own, or with nothing selected those that name neither. A load error the
@@ -114,7 +126,7 @@ fn problems<'a>(
 }
 
 /// `problems`, each in its colour and led by the node port it names.
-fn listed(ui: &mut egui::Ui, problems: &[Problem<'_>]) {
+pub(super) fn listed(ui: &mut egui::Ui, problems: &[Problem<'_>]) {
     for (error, diag) in problems {
         let color = if *error {
             ui.visuals().error_fg_color
@@ -127,12 +139,6 @@ fn listed(ui: &mut egui::Ui, problems: &[Problem<'_>]) {
         };
         ui.colored_label(color, text);
     }
-}
-
-fn pipe(ui: &mut egui::Ui, what: &str, name: &str, problems: &[Problem<'_>]) {
-    ui.heading(name);
-    ui.weak(what);
-    listed(ui, problems);
 }
 
 fn instrument(
@@ -217,15 +223,36 @@ fn row(
     problems: &[Problem<'_>],
     asks: &mut Vec<Ask>,
 ) {
+    labelled_row(
+        ui,
+        inspector,
+        &field.target.name,
+        field,
+        hash,
+        problems,
+        asks,
+    );
+}
+
+/// [`row`], with `label` in place of the name of the input it sets.
+pub(super) fn labelled_row(
+    ui: &mut egui::Ui,
+    inspector: &mut Inspector,
+    label: &str,
+    field: &Field,
+    hash: &str,
+    problems: &[Problem<'_>],
+    asks: &mut Vec<Ask>,
+) {
     let named: Vec<&Problem<'_>> = (problems.iter())
         .filter(|(_, d)| d.port.as_ref() == Some(&field.target.name))
         .collect();
     let name = if named.iter().any(|(error, _)| *error) {
-        ui.colored_label(ui.visuals().error_fg_color, &field.target.name)
+        ui.colored_label(ui.visuals().error_fg_color, label)
     } else if !named.is_empty() {
-        ui.colored_label(ui.visuals().warn_fg_color, &field.target.name)
+        ui.colored_label(ui.visuals().warn_fg_color, label)
     } else {
-        ui.label(&field.target.name)
+        ui.label(label)
     };
     let mut hint = if field.set {
         field.kind.clone()
@@ -355,15 +382,15 @@ fn typed<'a>(value: &'a mut f64, suffix: &str, integer: bool) -> egui::DragValue
 
 /// What the document holds for a text box, and the document's content hash.
 #[derive(Clone, Copy)]
-struct Current<'a> {
-    text: &'a str,
-    hash: &'a str,
+pub(super) struct Current<'a> {
+    pub text: &'a str,
+    pub hash: &'a str,
 }
 
 /// A text box for `field` of `owner`, showing the document's text until it is typed into. Returns
 /// the new text, and the hash to write it against, when the box loses focus with something
 /// different in it.
-fn text(
+pub(super) fn text(
     ui: &mut egui::Ui,
     inspector: &mut Inspector,
     (owner, field): (&str, &'static str),
@@ -388,6 +415,12 @@ fn text(
     inspector
         .drafts
         .frame(owner, field, current.text, current.hash, typing)
+}
+
+/// Hold `message` as the session's feedback, as the refusal of an edit of the viewed document.
+pub(super) fn refuse(session: &mut Session, message: String) {
+    let source = session.viewed().source.clone();
+    *session.feedback_mut() = Some(Feedback::Refused { source, message });
 }
 
 #[cfg(test)]

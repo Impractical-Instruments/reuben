@@ -1,5 +1,6 @@
-//! The inspector: the selected node's inputs, constants and description, or with nothing selected
-//! the instrument's name and description.
+//! The inspector: the selected node's inputs, constants and description, the selected interface
+//! pipe's value and metadata, or with nothing selected the instrument's name, description and
+//! interface pipes.
 //!
 //! What it shows is the session's read of the document it views, so it is always the file. Every
 //! change it makes is one authoring verb through [`edit::write`], except a number being dragged in
@@ -7,6 +8,7 @@
 //! it is let go. A voice's nodes have no address the engine can be sent to, and a patch's
 //! have one per node using the patch, so a number dragged in either is only written, on release.
 
+mod interface;
 mod model;
 mod view;
 
@@ -18,7 +20,8 @@ use reuben_api::authoring::{
 use reuben_api::engine::{send_live_controls, Channel, ControlSendMessage, SendLiveControls};
 use serde_json::Value;
 
-use self::model::{fields, Control, Drafts, Holds, Step, Target};
+use self::interface::{Adding, PipeEdit};
+use self::model::{fields, pipe_field, Control, Drafts, Holds, Step, Target};
 use crate::edit;
 use crate::session::Session;
 
@@ -31,6 +34,7 @@ enum Edit {
     NodeDescription { address: String, text: String },
     Name(String),
     Description(String),
+    Pipe(PipeEdit),
 }
 
 impl Edit {
@@ -89,6 +93,7 @@ impl Edit {
                 },
                 store,
             ),
+            Edit::Pipe(edit) => edit.run(source, store, expect),
         }
     }
 }
@@ -98,6 +103,7 @@ impl Edit {
 pub struct Inspector {
     holds: Holds,
     drafts: Drafts,
+    adding: Adding,
     /// Why the last live send did not reach the engine, until an edit or a send does.
     error: Option<String>,
     /// How many times a verb has been run to write the document.
@@ -154,20 +160,25 @@ impl Inspector {
         if !session.trail().is_empty() {
             return;
         }
-        let Ok(top) = &session.tree().top().read else {
+        let Ok(top) = &session.viewed().read else {
             return;
         };
-        let held = (top.nodes.iter())
+        let node = (top.nodes.iter())
             .find(|node| node.address == target.address)
             .and_then(|node| {
                 fields(node)
                     .into_iter()
                     .find(|field| field.target == *target)
-            })
-            .and_then(|field| match field.control {
-                Control::Number { value, .. } => target.live(value),
-                _ => None,
             });
+        let pipe = || {
+            (top.inputs.iter())
+                .map(|pipe| pipe_field(&pipe.port))
+                .find(|field| field.target == *target)
+        };
+        let held = node.or_else(pipe).and_then(|field| match field.control {
+            Control::Number { value, .. } => target.live(value),
+            _ => None,
+        });
         if let Some(message) = held {
             self.live(message, channel);
         }
@@ -200,13 +211,18 @@ impl Inspector {
             self.writes += 1;
         }
         let source = session.viewed().source.clone();
+        let added = edit.clone();
         let verb = |store: &dyn Resources, expect| edit.run(&source, store, expect);
         let result = match expect {
             Some(expect) => edit::write_against(session, channel, &source, expect, verb),
             None => edit::write(session, channel, &source, verb),
         };
         self.error = None;
-        matches!(result, Ok(result) if result.written)
+        let landed = matches!(result, Ok(result) if result.written);
+        if let (true, Edit::Pipe(added)) = (landed, added) {
+            self.adding.added(&added);
+        }
+        landed
     }
 }
 
@@ -217,8 +233,8 @@ mod tests {
     use std::time::Duration;
 
     use reuben_api::authoring::{
-        read_instrument, rename_instrument_node, InputValue, ReadInstrument, RenameInstrumentNode,
-        StructureNode,
+        read_instrument, rename_instrument_node, InputValue, PortInfo, ReadInstrument,
+        RenameInstrumentNode, StructureNode, WireSource,
     };
     use reuben_api::render::Arg;
     use reuben_api::FsResolver;
@@ -227,7 +243,10 @@ mod tests {
     use reuben_native::test_support::{start_headless, within};
     use serde_json::json;
 
+    use super::interface::Meta;
     use super::*;
+    use crate::canvas::Gesture;
+    use crate::controls::Controls;
     use crate::engine::Engine;
     use crate::feedback::Feedback;
     use crate::session::test_support::{Rig, Scratch};
@@ -704,6 +723,319 @@ mod tests {
                 }
             }
             engine.shutdown();
+        });
+    }
+
+    fn pipe(rig: &Rig, name: &str) -> PortInfo {
+        let top = (rig.session.tree().top().read.as_ref()).expect("the top reads");
+        (top.inputs.iter())
+            .find(|p| p.port.name == name)
+            .unwrap_or_else(|| panic!("{name} is an interface input"))
+            .port
+            .clone()
+    }
+
+    /// Commit `edit` and wait until the engine plays what it wrote.
+    fn landed(rig: &mut Rig, inspector: &mut Inspector, edit: Edit) {
+        let channel = rig.channel_source();
+        let wrote = inspector.commit(edit.clone(), None, &mut rig.session, &channel);
+        assert!(wrote, "{edit:?}: {:?}", rig.session.feedback());
+        played(rig);
+    }
+
+    fn played(rig: &mut Rig) {
+        let hash = (rig.session.tree().top().hash())
+            .expect("the top reads")
+            .to_string();
+        rig.poll_until("the engine playing the edit", |rig| rig.playing() == hash);
+    }
+
+    fn gesture(rig: &mut Rig, gesture: Gesture) {
+        let channel = rig.channel_source();
+        let edit = gesture
+            .apply(&mut rig.session, &channel)
+            .expect("the verb ran");
+        assert!(edit.written, "{gesture:?}: {:?}", edit.report);
+        played(rig);
+    }
+
+    #[test]
+    fn a_seed_is_made_audible_and_given_a_control_from_the_inspector_and_the_canvas() {
+        within(HANG_SECS * 2, || {
+            let mut rig = Rig::fresh("inspector_from_scratch", "scratch");
+            let mut inspector = Inspector::default();
+            let top = |rig: &Rig| rig.session.tree().top().read.clone().expect("reads");
+            assert!(top(&rig).outputs.is_empty());
+
+            gesture(
+                &mut rig,
+                Gesture::Add {
+                    address: "/osc".into(),
+                    type_name: "oscillator".into(),
+                },
+            );
+            let output = Adding::default().output(&top(&rig)).expect("a feed");
+            assert_eq!(
+                output,
+                PipeEdit::AddOutput {
+                    name: "out".into(),
+                    from: "/osc.audio".into()
+                }
+            );
+            landed(&mut rig, &mut inspector, Edit::Pipe(output));
+            let boundary = top(&rig).outputs;
+            assert_eq!(boundary.len(), 1);
+            assert_eq!(
+                boundary[0].from,
+                WireSource::NodeOutput {
+                    node: "/osc".into(),
+                    port: "audio".into()
+                }
+            );
+
+            // Expose the oscillator's pitch as a control.
+            landed(
+                &mut rig,
+                &mut inspector,
+                Edit::Pipe(PipeEdit::AddInput {
+                    name: "pitch".into(),
+                    type_name: "f32".into(),
+                    value: Some(json!(220.0)),
+                }),
+            );
+            gesture(
+                &mut rig,
+                Gesture::Wire {
+                    address: "/osc".into(),
+                    input: "freq".into(),
+                    from: "/pitch".into(),
+                },
+            );
+            landed(
+                &mut rig,
+                &mut inspector,
+                Edit::Pipe(PipeEdit::InputMeta {
+                    name: "pitch".into(),
+                    meta: Meta {
+                        min: Some(20.0),
+                        max: Some(2000.0),
+                        curve: Some("exp".into()),
+                        unit: Some("Hz".into()),
+                        channel: None,
+                    },
+                }),
+            );
+            let port = pipe(&rig, "pitch");
+            assert_eq!((port.min, port.max), (Some(20.0), Some(2000.0)));
+            assert_eq!(port.curve.as_deref(), Some("exponential"));
+            assert_eq!(port.unit, "Hz");
+            assert_eq!(Controls::open(Some(&rig.top), None).binds(), ["pitch"]);
+
+            // Its value is swept live on the pipe's own input, and written once on release.
+            let value = pipe_field(&port).target;
+            assert_eq!(value.address, "/pitch");
+            let mut frame = |rig: &mut Rig, value: f64, holding: bool| {
+                let top = top(rig);
+                let held = pipe_field(&pipe(rig, "pitch")).target;
+                inspector.holds.begin();
+                let mut steps =
+                    (inspector.holds).number(&held, (220.0, &top.hash), value, holding, holding);
+                steps.extend(inspector.holds.end());
+                let channel = rig.channel_source();
+                for step in steps {
+                    inspector.step(step, &mut rig.session, &channel);
+                }
+            };
+            frame(&mut rig, 330.0, true);
+            frame(&mut rig, 440.0, true);
+            let received = rig.live_received(2);
+            assert_eq!(received.len(), 2, "{received:?}");
+            assert!(received.iter().all(|m| m.address == "/pitch/in"));
+            frame(&mut rig, 440.0, false);
+            played(&mut rig);
+            assert_eq!(rig.session.feedback(), None);
+            assert_eq!(pipe(&rig, "pitch").default, Some(json!(440.0)));
+
+            // A parent nesting it sees the control on its subpatch node's face.
+            let parent = rig.lib.join("parent.json");
+            std::fs::write(
+                &parent,
+                r#"{"format_version":3,"instrument":"parent",
+                    "resources":{"child":"scratch.json"},
+                    "nodes":[{"type":"subpatch","address":"/sub","patch":"child"}]}"#,
+            )
+            .expect("the parent");
+            let source = parent.display().to_string();
+            let read = read_instrument(
+                &ReadInstrument {
+                    source: source.clone(),
+                },
+                &FsResolver::for_document(&source).stat_only(),
+            )
+            .expect("the parent reads")
+            .output;
+            let face: Vec<&str> = (read.nodes[0].ports.inputs.iter())
+                .map(|p| p.name.as_str())
+                .collect();
+            assert_eq!(face, ["pitch"]);
+
+            // A second node takes over the output, and both pipes come out again.
+            gesture(
+                &mut rig,
+                Gesture::Add {
+                    address: "/filter".into(),
+                    type_name: "filter".into(),
+                },
+            );
+            gesture(
+                &mut rig,
+                Gesture::Feed {
+                    name: "out".into(),
+                    from: "/filter.audio".into(),
+                },
+            );
+            assert_eq!(
+                top(&rig).outputs[0].from,
+                WireSource::NodeOutput {
+                    node: "/filter".into(),
+                    port: "audio".into()
+                }
+            );
+            landed(
+                &mut rig,
+                &mut inspector,
+                Edit::Pipe(PipeEdit::RemoveInput("pitch".into())),
+            );
+            landed(
+                &mut rig,
+                &mut inspector,
+                Edit::Pipe(PipeEdit::RemoveOutput("out".into())),
+            );
+            let after = top(&rig);
+            assert!(after.inputs.is_empty() && after.outputs.is_empty());
+            assert_eq!(
+                Controls::open(Some(&rig.top), None).binds(),
+                [] as [&str; 0]
+            );
+        });
+    }
+
+    #[test]
+    fn an_input_added_to_a_viewed_subpatch_is_a_port_on_the_parents_subpatch_node() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("inspector_subpatch_pipe", "mic-space.json");
+            rig.session
+                .enter("/space")
+                .expect("/space nests space.json");
+            let child = rig.lib.join("patches").join("space.json");
+            assert_eq!(rig.session.viewed().path, child);
+            let face = |rig: &Rig| -> Vec<String> {
+                let top = (rig.session.tree().top().read.as_ref()).expect("the top reads");
+                let space = (top.nodes.iter())
+                    .find(|n| n.address == "/space")
+                    .expect("the subpatch node");
+                (space.ports.inputs.iter())
+                    .map(|p| p.name.clone())
+                    .collect()
+            };
+            assert!(!face(&rig).iter().any(|p| p == "width"));
+            let mut inspector = Inspector::default();
+            let channel = rig.channel_source();
+
+            let wrote = inspector.commit(
+                Edit::Pipe(PipeEdit::AddInput {
+                    name: "width".into(),
+                    type_name: "f32".into(),
+                    value: Some(json!(0.5)),
+                }),
+                None,
+                &mut rig.session,
+                &channel,
+            );
+            assert!(wrote, "{:?}", rig.session.feedback());
+            assert_eq!(rig.session.viewed().path, child);
+            let viewed = (rig.session.viewed().read.clone()).expect("the child reads");
+            assert!(viewed.inputs.iter().any(|p| p.port.name == "width"));
+            assert!(face(&rig).iter().any(|p| p == "width"), "{:?}", face(&rig));
+
+            let wrote = inspector.commit(
+                Edit::Pipe(PipeEdit::RemoveInput("width".into())),
+                None,
+                &mut rig.session,
+                &channel,
+            );
+            assert!(wrote, "{:?}", rig.session.feedback());
+            assert!(!face(&rig).iter().any(|p| p == "width"));
+            rig.poll_until("the Swap of the writes", |rig| rig.swaps() >= 1);
+            rig.settle();
+            assert_eq!(rig.status(), &Status::Current);
+        });
+    }
+
+    #[test]
+    fn a_rejected_feed_is_the_sessions_feedback_not_the_inspectors_error() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("inspector_pipe_rejected", "default.json");
+            let mut inspector = Inspector::default();
+            let channel = rig.channel_source();
+            let before = rig.session.tree().clone();
+            let wrote = inspector.commit(
+                Edit::Pipe(PipeEdit::Feed {
+                    name: "out".into(),
+                    from: "/ghost.audio".into(),
+                }),
+                None,
+                &mut rig.session,
+                &channel,
+            );
+            assert!(!wrote);
+            assert_eq!(
+                inspector.error, None,
+                "a rejection is not a live-send failure"
+            );
+            assert_eq!(rig.session.tree(), &before);
+            let feedback = rig
+                .session
+                .feedback()
+                .expect("the rejection is held")
+                .clone();
+            let source = rig.session.viewed().source.clone();
+            assert!(
+                matches!(feedback, Feedback::Rejected { .. }),
+                "{feedback:?}"
+            );
+            // The fault is the feed's: it is pinned on what the feed names, here a node the
+            // document does not have, so the banner alone says it.
+            let at: Vec<_> = (feedback.rejected(&source).iter())
+                .map(|diag| (diag.node.as_deref(), diag.port.as_deref()))
+                .collect();
+            assert_eq!(at, [(Some("/ghost"), None)], "{feedback:?}");
+        });
+    }
+
+    #[test]
+    fn an_add_row_that_names_no_pipe_is_refused_through_the_sessions_feedback() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("inspector_pipe_unnamed", "default.json");
+            let mut inspector = Inspector::default();
+            let channel = rig.channel_source();
+            let why = Adding::default().input().expect_err("no name");
+            view::refuse(&mut rig.session, why.clone());
+            assert_eq!(
+                rig.session.feedback(),
+                Some(&Feedback::Refused {
+                    source: rig.session.viewed().source.clone(),
+                    message: why
+                })
+            );
+            let landed = inspector.commit(
+                Edit::Pipe(PipeEdit::RemoveOutput("out".into())),
+                None,
+                &mut rig.session,
+                &channel,
+            );
+            assert!(landed);
+            assert_eq!(rig.session.feedback(), None, "a landed edit lets it go");
         });
     }
 }

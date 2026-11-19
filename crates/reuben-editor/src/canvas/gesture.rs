@@ -1,10 +1,12 @@
 //! What a finished gesture on the canvas asks of the document, and the one authoring verb each is.
 
 use reuben_api::authoring::{
-    add_instrument_node, remove_instrument_node, rename_instrument_node, set_instrument_layout,
-    unwire_instrument_input, wire_instrument_input, AddInstrumentNode, EditResult, LayoutPosition,
-    LayoutTarget, OutputTarget, Refusal, RemoveInstrumentNode, RenameInstrumentNode,
-    SetInstrumentLayout, UnwireInstrumentInput, WireInstrumentInput, WireSource,
+    add_instrument_node, remove_instrument_interface_input, remove_instrument_interface_output,
+    remove_instrument_node, rename_instrument_node, set_instrument_layout, unwire_instrument_input,
+    wire_instrument_input, wire_instrument_interface_output, AddInstrumentNode, EditResult,
+    LayoutPosition, LayoutTarget, OutputTarget, Refusal, RemoveInstrumentInterfacePipe,
+    RemoveInstrumentNode, RenameInstrumentNode, SetInstrumentLayout, UnwireInstrumentInput,
+    WireInstrumentInput, WireInstrumentInterfaceOutput, WireSource, WireTarget,
 };
 use reuben_api::engine::Channel;
 
@@ -37,6 +39,17 @@ pub enum Gesture {
     Unwire {
         address: String,
         input: String,
+    },
+    /// The output pipe `name`, fed from the wire-ref `from` in place of what fed it.
+    Feed {
+        name: String,
+        from: String,
+    },
+    RemoveInput {
+        name: String,
+    },
+    RemoveOutput {
+        name: String,
     },
 }
 
@@ -110,6 +123,31 @@ impl Gesture {
                     },
                     store,
                 ),
+                Gesture::Feed { name, from } => wire_instrument_interface_output(
+                    &WireInstrumentInterfaceOutput {
+                        source,
+                        name,
+                        from,
+                        expect,
+                    },
+                    store,
+                ),
+                Gesture::RemoveInput { name } => remove_instrument_interface_input(
+                    &RemoveInstrumentInterfacePipe {
+                        source,
+                        name,
+                        expect,
+                    },
+                    store,
+                ),
+                Gesture::RemoveOutput { name } => remove_instrument_interface_output(
+                    &RemoveInstrumentInterfacePipe {
+                        source,
+                        name,
+                        expect,
+                    },
+                    store,
+                ),
             }
         })
     }
@@ -149,13 +187,44 @@ pub fn wire_source(graph: &Graph, from: PortRef) -> Option<WireSource> {
     }
 }
 
-/// The node address and input name of the input `to`. `None` for an output pipe's, which no wire
-/// verb edits: a pipe has its one feed from the moment it is added.
+/// The node address and input name of the input `to`. `None` for an output pipe's, which is fed
+/// rather than wired and never unwired: a pipe has its one feed from the moment it is added.
 pub fn input_end(graph: &Graph, to: PortRef) -> Option<(String, String)> {
     let b = graph.boxes.get(to.node)?;
     match &b.item {
         Item::Node(address) => Some((address.clone(), b.inputs.get(to.port)?.name.clone())),
         Item::Input(_) | Item::Output(_) => None,
+    }
+}
+
+/// The edit a wire from `from` dropped on the input `to` makes: wiring a node's input, or feeding
+/// an output pipe.
+pub fn wire_to(graph: &Graph, from: &WireSource, to: PortRef) -> Option<Gesture> {
+    let from = wire_ref(from);
+    match &graph.boxes.get(to.node)?.item {
+        Item::Output(name) => Some(Gesture::Feed {
+            name: name.clone(),
+            from,
+        }),
+        _ => {
+            let (address, input) = input_end(graph, to)?;
+            Some(Gesture::Wire {
+                address,
+                input,
+                from,
+            })
+        }
+    }
+}
+
+/// The box standing for the target of a wire compatibility verdict, and its input port.
+pub fn target_ref(graph: &Graph, target: &WireTarget) -> Option<PortRef> {
+    match target {
+        WireTarget::NodeInput { node, port } => input_ref(graph, node, port),
+        WireTarget::InterfaceOutput { name } => Some(PortRef {
+            node: graph.index_of(&Item::Output(name.clone()))?,
+            port: 0,
+        }),
     }
 }
 
