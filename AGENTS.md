@@ -15,7 +15,7 @@ which consumes this one as a submodule.
 ```sh
 cargo test                                             # every member but reuben-editor
 cargo fmt --all --check                                # CI format gate
-cargo clippy --all-targets -- -D warnings              # CI lint gate
+cargo clippy --all-targets --features reuben-document/bench -- -D warnings  # CI lint gate + pre-push hook
 cargo clippy -p reuben-editor --all-targets -- -D warnings  # the editor's own gate
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --features reuben-document/bench,reuben-document/schemars  # CI doc gate
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p reuben-editor  # the editor's doc gate
