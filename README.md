@@ -2,7 +2,7 @@
 
 Deterministic CI performance trend: callgrind **instruction counts (Ir)** for rendering **1 s of audio** (375 × 128-frame blocks @ 48 kHz), recorded on every direct push to `dev`. Instruction counts don't jitter — every visible move is a real code change (or a toolchain bump).
 
-**159 commits** · 2026-07-12 → 2026-11-18 · 12500 data points · last: `e10dd55` (2026-11-18T19:34:33-05:00)
+**160 commits** · 2026-07-12 → 2026-11-18 · 12596 data points · last: `a2e8d08` (2026-11-18T19:55:03-05:00)
 
 *Companion trend: the **main** series lives on the [`bench-history`](https://github.com/Impractical-Instruments/reuben/tree/bench-history) branch.*
 
@@ -21,7 +21,7 @@ Deterministic CI performance trend: callgrind **instruction counts (Ir)** for re
 | `autotune` | 35.2M | ±0.0% | **-13.9%** | 2026-07-12 |
 | `echo` | 37.6M | ±0.0% | **-13.1%** | 2026-07-12 |
 | `reverb` | 44.9M | ±0.0% | **-11.2%** | 2026-07-12 |
-| `sampler-arp` | 15.5M | +0.1% | -2.4% | 2026-07-12 |
+| `sampler-arp` | 15.5M | ±0.0% | -2.4% | 2026-07-12 |
 
 ## Per-node engine overhead
 
@@ -79,7 +79,7 @@ Cost paid **once per Swap**, on the caller's thread — which in the browser is 
 | `macro/autotune` | 35.2M | ±0.0% | **-13.9%** | 2026-07-12 |
 | `macro/echo` | 37.6M | ±0.0% | **-13.1%** | 2026-07-12 |
 | `macro/reverb` | 44.9M | ±0.0% | **-11.2%** | 2026-07-12 |
-| `macro/sampler-arp` | 15.5M | +0.1% | -2.4% | 2026-07-12 |
+| `macro/sampler-arp` | 15.5M | ±0.0% | -2.4% | 2026-07-12 |
 | `construct/deep_n2048` | 55.8M | ±0.0% | **-15.4%** | 2026-07-30 |
 | `construct/deep_n4096` | 113.1M | ±0.0% | **-14.8%** | 2026-07-30 |
 | `construct/deep_n8192` | 227.0M | ±0.0% | **-17.8%** | 2026-07-30 |
@@ -95,9 +95,9 @@ Cost paid **once per Swap**, on the caller's thread — which in the browser is 
 | `compressor` | 8.14M | ±0.0% | **-16.0%** | 2026-07-20 |
 | `sample_loop` | 6.77M | ±0.0% | ±0.0% | 2026-11-13 |
 | `pan` | 6.08M | ±0.0% | -0.2% | 2026-07-12 |
-| `sequencer` | 4.76M | -0.1% | -2.7% | 2026-07-12 |
+| `sequencer` | 4.76M | ±0.0% | -2.7% | 2026-07-12 |
 | `saturator` | 4.64M | ±0.0% | **-46.4%** | 2026-07-12 |
-| `euclid` | 3.96M | -0.2% | **-3.7%** | 2026-07-12 |
+| `euclid` | 3.96M | ±0.0% | **-3.7%** | 2026-07-12 |
 | `sample` | 3.91M | ±0.0% | +1.0% | 2026-07-12 |
 | `delay` | 3.68M | ±0.0% | -1.2% | 2026-07-12 |
 | `lfo` | 2.98M | ±0.0% | -2.7% | 2026-07-12 |
