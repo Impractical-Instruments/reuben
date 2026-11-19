@@ -99,17 +99,15 @@ pub enum Arg {
     ///   next block's `routes[i].held.clear()` (`route_messages`) — or, for an
     ///   operator-emitted string, `scratch.emitted.clear()`. Same thread, same
     ///   one-free-per-replaced-string class as the latch site.
-    /// - **The engine's pending-message hand-off** (`engine.rs`): a queued inbound Message
-    ///   that latched (or routed nowhere) drops with its payload on the audio thread — at the
-    ///   same moment its [`Message::address`] is freed.
+    /// - **The engine's pending-control hand-off** (`engine.rs`): a queued inbound payload
+    ///   that latched (or was rejected by its port) drops on the audio thread when the queue
+    ///   clears after its block.
     ///
     /// The residual — one `free()` per *replaced or unconsumed* string, only ever on sparse
     /// boundary-driven message traffic, never in the steady-state signal loop — is accepted
-    /// rather than fenced with a retain/reclaim buffer: every reachable site either already
-    /// deallocates a per-message `String` at the same moment (the hand-off paths) or previously
-    /// deallocated the `String` backing there (the latch, seed overwrite excepted — see above),
-    /// so a fence here would not make the render thread allocator-free. That per-message cost
-    /// is the `Message` representation's, documented on [`Message::address`].
+    /// rather than fenced with a retain/reclaim buffer: no live operator declares a `Str` input
+    /// (see the latch bullet; `registry.rs`'s `no_builtin_declares_a_str_input` pins it), so the only string control that reaches the render thread today
+    /// is the `osc_out` echo, whose last drop is designed to land off it.
     Str(Arc<str>),
 
     // Shared vocab concrete types — each defined once with `#[derive(ArgValue)]`,
@@ -252,11 +250,11 @@ pub struct Message {
     /// OSC-style address path, e.g. `/osc/freq` or `/note`. Kept for OSC shape, boundary
     /// routing, and debug — **never** internal dispatch (that is the wired edge's job).
     ///
-    /// RT cost: an owned `String`, so every inbound control Message costs one heap allocation
-    /// where it is built ([`Message::new`], which `Engine::queue_osc` calls) and one free where
-    /// it is dropped (after the block that consumed it). A host that queues from its audio
-    /// callback pays both on the audio thread. The engine's queue is heap-neutral; this is the
-    /// owner of the per-message cost.
+    /// RT cost: an owned `String`, so building a Message allocates and dropping one frees.
+    /// Inbound control never pays it on the render thread: `Engine::queue_osc` resolves the
+    /// address to a port index and queues no Message, and `Engine::queue` drops the address of
+    /// a Message its caller built. Render-thread builders that remain: each `osc_out` emission
+    /// (one Message per outbound send) and the Voicer, which rewrites reused Messages in place.
     pub address: String,
     /// Sample offset within the current Render block at which this Message applies. The
     /// internal timestamp OSC lacks; incoming external OSC is stamped 0 ("now").

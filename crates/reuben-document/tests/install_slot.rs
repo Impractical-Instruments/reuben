@@ -384,3 +384,60 @@ fn a_short_duplex_input_dark_degrades_instead_of_panicking_during_the_ramp() {
         );
     }
 }
+
+/// A held level straight to the master: the rendered sample *is* the `lvl` control's latch, so a
+/// control message's arrival (or absence) reads directly off the output.
+fn level_doc() -> String {
+    r#"{ "format_version": 3, "instrument": "lvl",
+         "interface": {
+           "inputs":  { "lvl": { "type": "f32_buffer", "default": 0.25, "min": 0, "max": 1 } },
+           "outputs": { "main": { "from": "/out.audio" } } },
+         "nodes": [
+           { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/lvl" } } } ] }"#
+        .to_string()
+}
+
+#[test]
+fn control_queued_before_an_install_does_not_reach_the_installed_engine() {
+    // Control is queued on the Engine that is live when it arrives and applied at that Engine's
+    // next rendered block. Queue it while the outgoing Engine is mid-block late in the down-ramp,
+    // so that Engine renders no further block before the install: the message is never applied,
+    // neither by the outgoing Engine nor by the one installed in its place.
+    let (mut coord, mut slot) = setup(&level_doc());
+    let ch = slot.channels();
+    let block = slot.block_size();
+    let before = render(&mut slot, 4 * block);
+    assert_eq!(frame_mag(&before, ch, 4 * block - 1), 0.25, "default level");
+
+    let report = coord.swap_document(&level_doc());
+    assert!(report.report.ok, "swap should succeed: {:?}", report.report);
+
+    let edge = slot.ramp_edge_frames();
+    // Stop short of the install on a frame that leaves the outgoing Engine mid-block, with the
+    // rest of the down-ramp served from that block's scratch.
+    let lead = edge - edge % block + 1;
+    assert!(
+        lead < edge && lead % block != 0,
+        "ramp {edge} vs block {block}"
+    );
+    render(&mut slot, lead);
+    slot.queue_osc("/lvl/in", &[reuben_core::Arg::F32(0.9)]);
+    let after = render(&mut slot, 2 * edge + 4 * block);
+    assert!(!slot.is_ramping(), "the swap completed");
+    let tail = frame_mag(&after, ch, after.len() / ch - 1);
+    assert_eq!(tail, 0.25, "control queued across the install was dropped");
+}
+
+#[test]
+fn control_queued_after_an_install_reaches_the_installed_engine() {
+    // The dual: once the install has landed, control reaches the new Engine as usual.
+    let (mut coord, mut slot) = setup(&level_doc());
+    let (ch, block, edge) = (slot.channels(), slot.block_size(), slot.ramp_edge_frames());
+    render(&mut slot, 4 * block);
+    assert!(coord.swap_document(&level_doc()).report.ok);
+    render(&mut slot, edge + 1);
+    slot.queue_osc("/lvl/in", &[reuben_core::Arg::F32(0.9)]);
+    let after = render(&mut slot, 2 * edge + 4 * block);
+    let tail = frame_mag(&after, ch, after.len() / ch - 1);
+    assert_eq!(tail, 0.9, "control queued after the install applies");
+}

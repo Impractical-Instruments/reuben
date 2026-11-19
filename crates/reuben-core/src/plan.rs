@@ -28,6 +28,7 @@ use crate::descriptor::{Descriptor, Port, PortType};
 use crate::graph::{Connection, Graph, NodeKey};
 use crate::message::{Arg, Message};
 use crate::operator::Operator;
+use crate::render::Target;
 use crate::vocab::harmony::Harmony;
 use crate::vocab::pitch::Pitch;
 
@@ -384,30 +385,40 @@ impl Plan {
 
     /// Convert an inbound OSC datagram — an address plus a flat list of primitive `Arg`s — into the
     /// single typed [`Message`] it routes to, driven by the **destination port's Arg type**
-    /// (the boundary). Resolves the address to a node + input port via
-    /// `crate::render::resolve_port` — the *same* resolver the render routing path uses, so a
-    /// nested node behind a prefix-matching ancestor stays reachable on both paths —
-    /// then calls [`crate::boundary::osc_in_arg`] with that [`Port`] to type the flat args (the
-    /// port's `meta` is what lets a scalar-defaulted `f32_buffer` control like `djfilter.position`
-    /// cross, while bare audio does not). `None` if no node/port matches or the args don't fit the
-    /// port. External OSC carries no timestamp, so the Message is stamped frame 0 ("now").
+    /// (the boundary). Resolves the address with `Plan::resolve` — the *same* resolver
+    /// render routing uses, so a nested node behind a prefix-matching ancestor stays reachable on
+    /// both paths — then calls [`crate::boundary::osc_in_arg`] with that [`Port`] to type the flat
+    /// args (the port's `meta` is what lets a scalar-defaulted `f32_buffer` control like
+    /// `djfilter.position` cross, while bare audio does not). `None` if no node/port matches or the
+    /// args don't fit the port. External OSC carries no timestamp, so the Message is stamped
+    /// frame 0 ("now").
     pub fn osc_in_message(&self, address: &str, args: &[Arg]) -> Option<Message> {
-        // A dissolved pipe's minted address stays live: type the args by the
-        // pipe's own synthesized port, exactly as when the pipe was a rendered node.
-        let port = self
-            .input_alias(address)
-            .map(|a| &a.port)
-            .or_else(|| crate::render::resolve_port(&self.nodes, address).map(|(_, _, p)| p))?;
-        let arg = crate::boundary::osc_in_arg(port, args)?;
+        let (_, arg) = self.osc_in(address, args)?;
         Some(Message::new(address, arg, 0))
     }
 
-    /// The dissolved-pipe alias `address` targets, if any — the pipe-form `/name/in` address of
-    /// an interface pipe [`dissolve_interface_pipes`] collapsed out of the schedule.
-    pub(crate) fn input_alias(&self, address: &str) -> Option<&InputAlias> {
-        self.input_aliases
-            .iter()
-            .find(|a| crate::render::local_address(address, &a.address) == Some(a.port.name))
+    /// [`Plan::osc_in_message`] without building the Message: the target and the typed payload.
+    /// Allocation-free unless the port's own conversion allocates.
+    pub(crate) fn osc_in(&self, address: &str, args: &[Arg]) -> Option<(Target, Arg)> {
+        let (target, port) = self.resolve(address)?;
+        let arg = crate::boundary::osc_in_arg(port, args)?;
+        Some((target, arg))
+    }
+
+    /// Resolve an inbound address to the [`Target`] it reaches in this Plan, and the [`Port`] that
+    /// types it. A dissolved pipe's minted address is checked first: it belonged to a node the
+    /// pipe's dissolve removed, so it can never shadow a live port, and it stays live by typing
+    /// args with the pipe's own synthesized port. A linear scan over aliases, then nodes × ports.
+    pub(crate) fn resolve(&self, address: &str) -> Option<(Target, &Port)> {
+        if let Some((i, a)) =
+            self.input_aliases.iter().enumerate().find(|(_, a)| {
+                crate::render::local_address(address, &a.address) == Some(a.port.name)
+            })
+        {
+            return Some((Target::Alias(i), &a.port));
+        }
+        crate::render::resolve_port(&self.nodes, address)
+            .map(|(node, port, p)| (Target::Port { node, port }, p))
     }
 
     /// Instantiate a Graph into an executable Plan (the construction sub-step of a Swap).

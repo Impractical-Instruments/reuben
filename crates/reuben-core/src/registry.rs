@@ -234,6 +234,25 @@ mod tests {
         }
     }
 
+    #[test]
+    fn no_builtin_declares_a_str_input() {
+        // `Arg::Str`'s render-thread dealloc analysis (`message.rs`) accepts its residual frees
+        // because no Value port can latch a string. A built-in `Str` input breaks that premise.
+        use crate::descriptor::PortType;
+        let r = Registry::builtin();
+        for e in r.entries() {
+            for p in &e.descriptor.inputs {
+                assert!(
+                    !matches!(p.ty, PortType::Str),
+                    "{}.{} declares a `Str` input: revisit the render-thread free argument on \
+                     `Arg::Str` in message.rs before landing it",
+                    e.descriptor.type_name,
+                    p.name
+                );
+            }
+        }
+    }
+
     // Determinism is two independent properties, and each is blind to the other's mutation. They
     // are kept as two tests so a failure says which one broke.
 

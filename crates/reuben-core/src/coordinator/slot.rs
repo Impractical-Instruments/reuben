@@ -142,7 +142,9 @@ impl RenderSlot {
     }
 
     /// Queue an inbound external message in flat primitive form on the live Engine — the
-    /// slot forwards it, exactly as a shell would to a bare Engine.
+    /// slot forwards it, exactly as a shell would to a bare Engine. It is resolved against that
+    /// Engine's Plan and applied at that Engine's next rendered block; if an install replaces the
+    /// Engine first, the message is not applied.
     pub fn queue_osc(&mut self, address: &str, args: &[Arg]) {
         self.engine.queue_osc(address, args);
     }
