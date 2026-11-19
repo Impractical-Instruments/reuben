@@ -1086,8 +1086,10 @@ pub fn set_instrument_constant(
 }
 
 /// Remove an instantiate-time constant from a node, so the operator's declared default for it
-/// applies again. A constant that was not set is reported, not an error, as
-/// [`unwire_instrument_input`] reports an input with nothing on it.
+/// applies again. A declared constant that was not set is reported, not an error, as
+/// [`unwire_instrument_input`] reports an input with nothing on it; a name the operator does not
+/// declare and the node does not hold is refused, so a misspelling is not answered as done. One
+/// the node holds is removed whether declared or not, since removing it is the repair.
 ///
 /// This document's own interface input pipes are addressable here and **refuse**, as
 /// [`set_instrument_constant`] refuses them.
@@ -1104,16 +1106,28 @@ pub fn remove_instrument_constant(
              constant to remove."
                 .to_string()
         })?;
-        let notes = if doc.nodes[idx].config.remove(name).is_some() {
-            Vec::new()
-        } else {
-            vec![format!(
-                "`{name}` was not set on `{address}`; nothing to remove"
-            )]
-        };
+        let node = &mut doc.nodes[idx];
+        if node.config.remove(name).is_some() {
+            return Ok(Applied::clean(Echo::Nodes(Selection::names([address]))));
+        }
+        let declared: Vec<&str> = (registry.get(&node.type_name).into_iter())
+            .flat_map(|entry| entry.descriptor.constants.iter().map(|port| port.name))
+            .collect();
+        if !declared.contains(&name) {
+            let constants = match declared.as_slice() {
+                [] => "it declares none".to_string(),
+                names => format!("its constants are `{}`", names.join("`, `")),
+            };
+            return Err(EditError::Target(format!(
+                "`{address}` ({}) has no constant `{name}`: {constants}",
+                node.type_name
+            )));
+        }
         Ok(Applied {
             echo: Echo::Nodes(Selection::names([address])),
-            notes,
+            notes: vec![format!(
+                "`{name}` was not set on `{address}`; nothing to remove"
+            )],
         })
     })
 }

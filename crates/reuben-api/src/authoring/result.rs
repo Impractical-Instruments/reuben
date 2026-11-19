@@ -313,10 +313,27 @@ pub struct NodeResource {
 /// One interface input pipe.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct InterfaceInput {
-    /// The pipe as a port: its name, declared type and declared metadata.
+    /// The pipe as a port: its name, declared type, and its effective range and curve.
     pub port: PortInfo,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout: Option<Position>,
+    /// The range and curve exactly as the pipe declares them.
+    #[serde(default)]
+    pub declared: DeclaredMeta,
+}
+
+/// An input pipe's range and curve as written, each absent where the pipe declares none: an
+/// undeclared range is effectively unbounded, and an undeclared curve is the curve of the port
+/// the pipe feeds, so [`InterfaceInput::port`] cannot say which of its values were declared.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct DeclaredMeta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+    /// `linear` or `exponential`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curve: Option<String>,
 }
 
 /// One interface output pipe, as declared. Its type is that of the port feeding it.
@@ -474,6 +491,11 @@ impl InstrumentStructure {
                 .map(|p| InterfaceInput {
                     port: PortInfo::from_core(&p.port),
                     layout: p.layout.map(Position::from_core),
+                    declared: DeclaredMeta {
+                        min: p.declared.min,
+                        max: p.declared.max,
+                        curve: p.declared.curve.map(str::to_string),
+                    },
                 })
                 .collect(),
             outputs: s

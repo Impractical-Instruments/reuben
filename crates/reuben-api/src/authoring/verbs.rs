@@ -962,8 +962,8 @@ pub(super) fn edit_summary(result: &EditResult) -> String {
 mod tests {
     use super::*;
     use crate::authoring::result::{
-        InputValue, NodeConstant, NodeInput, NodeResource, PortInfo, Position, ResourceEntry,
-        StructureNode,
+        DeclaredMeta, InputValue, NodeConstant, NodeInput, NodeResource, PortInfo, Position,
+        ResourceEntry, StructureNode,
     };
     use crate::resources::{ResolveError, SampleBuffer};
     use std::cell::RefCell;
@@ -2068,6 +2068,47 @@ mod tests {
         .output;
         let ports: Vec<PortInfo> = doc.inputs.iter().map(|i| i.port.clone()).collect();
         assert_eq!(ports, boundary.inputs);
+    }
+
+    /// The port carries what the pipe resolves to, which an undeclared range or curve does not
+    /// show; `declared` is what the pipe itself writes, so a cleared field reads as absent.
+    #[test]
+    fn an_interface_input_reads_its_declared_range_and_curve_apart_from_the_effective_ones() {
+        let store = MemoryStore::with(
+            "inst.json",
+            r#"{
+                "format_version": 3,
+                "instrument": "declared",
+                "nodes": [ { "type": "oscillator", "address": "/osc",
+                             "inputs": { "freq": { "from": "/bare" } } } ],
+                "interface": { "inputs": {
+                    "bare": { "type": "f32", "default": 440 },
+                    "swept": { "type": "f32", "min": 20, "max": 20000, "curve": "exp" }
+                } }
+            }"#,
+        );
+        let doc = read("inst.json", &store);
+        let pipe = |name: &str| {
+            (doc.inputs.iter())
+                .find(|i| i.port.name == name)
+                .unwrap_or_else(|| panic!("{name}"))
+                .clone()
+        };
+        let bare = pipe("bare");
+        assert_eq!(bare.declared, DeclaredMeta::default());
+        assert!(
+            bare.port.min.is_some() && bare.port.curve.is_some(),
+            "the port still reports what is effective: {:?}",
+            bare.port
+        );
+        assert_eq!(
+            pipe("swept").declared,
+            DeclaredMeta {
+                min: Some(20.0),
+                max: Some(20000.0),
+                curve: Some("exponential".to_string()),
+            }
+        );
     }
 
     #[test]

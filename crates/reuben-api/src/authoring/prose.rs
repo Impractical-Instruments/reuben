@@ -51,8 +51,7 @@ pub const ADD_INSTRUMENT_NODE: &str =
 pub const REMOVE_INSTRUMENT_NODE: &str =
     "Remove a node. Cascades: auto-unwires every consumer wired from it and drops every \
      interface output fed from it, reporting exactly what it broke — no unwire-first dance. \
-     Changing a node's type or resource is remove-and-re-add: its wires are dropped (consumers \
-     listed in notes) and must be re-made.";
+     Changing a node's type or resource is remove-and-re-add, so those wires must be re-made.";
 
 pub const RENAME_INSTRUMENT_NODE: &str =
     "Rename a node from one address to another (which must be free), rewiring every consumer \
@@ -89,8 +88,9 @@ pub const SET_INSTRUMENT_CONSTANT: &str =
      `voices`). Echoes the change (from -> to), not the node.";
 
 pub const REMOVE_INSTRUMENT_CONSTANT: &str =
-    "Remove a constant from a node, reverting it to the operator's declared default. A constant \
-     that was not set is noted, not an error.";
+    "Remove a constant from a node, reverting it to the operator's declared default. A declared \
+     constant that was not set is noted, not an error; a name the operator does not declare is \
+     refused.";
 
 pub const ADD_INSTRUMENT_INTERFACE_INPUT: &str =
     "Add a boundary input pipe: a declared-type input that mints an address `/name` internal \

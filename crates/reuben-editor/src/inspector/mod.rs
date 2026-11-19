@@ -908,8 +908,9 @@ mod tests {
             assert_eq!(port.unit, "Hz");
             assert_eq!(Controls::open(Some(&rig.top), None).binds(), ["pitch"]);
 
-            // A field the set-meta verb writes is cleared through its own verb, the rest kept. A
-            // pipe declaring no curve reads as linear.
+            // A field the set-meta verb writes is cleared through its own verb, the rest kept. The
+            // port reports the effective curve, the one the oscillator's `freq` input sweeps by;
+            // what the pipe declares reads apart from it, so a cleared field reads as absent.
             landed(
                 &mut rig,
                 &mut inspector,
@@ -920,11 +921,39 @@ mod tests {
                 }),
             );
             let port = pipe(&rig, "pitch");
-            assert_eq!(
-                (port.curve.as_deref(), port.unit.as_str()),
-                (Some("linear"), "")
-            );
+            assert_eq!(port.unit, "");
             assert_eq!((port.min, port.max), (Some(20.0), Some(2000.0)));
+            let declared = |rig: &Rig| {
+                let top = top(rig);
+                (top.inputs.iter())
+                    .find(|p| p.port.name == "pitch")
+                    .expect("pitch")
+                    .declared
+                    .clone()
+            };
+            assert_eq!(declared(&rig).curve, None);
+            assert_eq!(
+                (declared(&rig).min, declared(&rig).max),
+                (Some(20.0), Some(2000.0))
+            );
+            landed(
+                &mut rig,
+                &mut inspector,
+                Edit::Pipe(PipeEdit::ClearMeta {
+                    name: "pitch".into(),
+                    direction: PipeDirection::Input,
+                    fields: vec![MetaField::Min],
+                }),
+            );
+            assert_eq!(
+                declared(&rig).min,
+                None,
+                "a cleared bound reads as undeclared, not as the effective sentinel"
+            );
+            assert!(
+                pipe(&rig, "pitch").min.is_some(),
+                "the effective floor remains"
+            );
             landed(
                 &mut rig,
                 &mut inspector,

@@ -484,8 +484,10 @@ pub struct ClearInstrumentInterfaceMeta {
     pub source: String,
     /// The pipe name.
     pub name: String,
+    /// Whether `name` is an input or an output pipe.
     pub direction: PipeDirection,
-    /// The fields to remove; at least one.
+    /// The fields to remove.
+    #[schemars(length(min = 1))]
     pub fields: Vec<MetaField>,
     #[serde(default)]
     pub expect: Option<String>,

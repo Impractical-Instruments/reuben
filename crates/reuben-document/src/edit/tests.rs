@@ -2086,6 +2086,29 @@ fn removing_a_constant_reverts_it_to_the_operators_default() {
     );
 }
 
+/// A name the operator does not declare cannot be "not set": it is a misspelling, and answering it
+/// with a note would tell the caller the edit it meant had landed.
+#[test]
+fn removing_a_constant_the_operator_does_not_declare_is_refused_naming_the_declared_ones() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_with_voicer());
+    let before = readback(&resolver);
+
+    let typo = remove_instrument_constant(SRC, "/voices", "voicez", &registry, &resolver)
+        .expect_err("the voicer declares no `voicez`");
+    let message = typo.to_string();
+    assert!(matches!(typo, EditError::Target(_)), "{typo:?}");
+    assert!(
+        message.contains("`voicez`") && message.contains("`voices`"),
+        "the refusal names the constants there are: {message}"
+    );
+
+    let none = remove_instrument_constant(SRC, "/amp", "voices", &registry, &resolver)
+        .expect_err("a multiply declares no constants");
+    assert!(none.to_string().contains("declares none"), "{none}");
+    assert_eq!(before, readback(&resolver));
+}
+
 #[test]
 fn removing_a_constant_from_no_node_is_refused_and_writes_nothing() {
     let registry = Registry::builtin();

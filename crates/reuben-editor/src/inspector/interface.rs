@@ -2,9 +2,10 @@
 //! nothing selected, and the metadata of the pipe selected on the canvas.
 //!
 //! Each change is one authoring verb. A pipe's type is chosen when it is added: no verb changes it.
-//! A metadata row emptied clears that field through `clear_instrument_interface_meta`, since the
-//! set-meta verbs write only the fields they are given. The curve has no clear: a pipe declaring
-//! none reads back, and sweeps, as `lin`, so picking `lin` is all a clear would show.
+//! A metadata row emptied, or the curve set to inherit, clears that field through
+//! `clear_instrument_interface_meta`, since the set-meta verbs write only the fields they are given.
+//! An input pipe's rows show what it declares, not what is effective: an undeclared range is
+//! effectively unbounded, and an undeclared curve is the curve of the port the pipe feeds.
 
 use eframe::egui;
 use reuben_api::authoring::{
@@ -389,7 +390,7 @@ pub fn input(
         ui.weak(format!("No interface input {name} in the document."));
         return;
     };
-    let InterfaceInput { port, .. } = pipe;
+    let InterfaceInput { port, declared, .. } = pipe;
     ui.heading(name);
     ui.weak(format!("Interface input · {}", port.kind));
     listed(ui, problems);
@@ -417,8 +418,8 @@ pub fn input(
             // The loader takes a range on a number pipe only, and a curve on a continuous one.
             let numeric = matches!(port.kind.as_str(), "value" | "signal" | "int");
             let curved = matches!(port.kind.as_str(), "value" | "signal");
-            let min = number_text(port.min);
-            let max = number_text(port.max);
+            let min = number_text(declared.min);
+            let max = number_text(declared.max);
             if numeric {
                 meta = meta.or(field(
                     ui,
@@ -437,27 +438,18 @@ pub fn input(
             }
             if curved {
                 ui.label("curve");
-                let mut curve = match port.curve.as_deref() {
-                    Some("exponential") => "exp",
-                    Some("linear") => "lin",
-                    _ => "",
-                }
-                .to_string();
+                let mut curve = curve_token(declared.curve.as_deref()).to_string();
                 let was = curve.clone();
                 egui::ComboBox::from_id_salt(("pipe curve", name))
-                    .selected_text(&curve)
+                    .selected_text(curve_label(&curve))
                     .show_ui(ui, |ui| {
-                        for token in ["lin", "exp"] {
-                            ui.selectable_value(&mut curve, token.to_string(), token);
+                        for token in ["", "lin", "exp"] {
+                            ui.selectable_value(&mut curve, token.to_string(), curve_label(token));
                         }
                     });
                 ui.end_row();
                 if curve != was {
-                    let curve = Change::Set(Meta {
-                        curve: Some(curve),
-                        ..Meta::default()
-                    });
-                    meta = meta.or(Some(Ok((curve, top.hash.clone()))));
+                    meta = meta.or(Some(Ok((curve_change(curve), top.hash.clone()))));
                 }
             }
             meta = meta.or(field(
@@ -625,6 +617,34 @@ fn typed(typed: Option<Typed>, name: &str, direction: PipeDirection) -> Option<A
         },
     };
     Some(Ask::Edit(Edit::Pipe(edit), Some(hash)))
+}
+
+/// The token the curve picker holds for a declared curve: `""` for none declared.
+fn curve_token(declared: Option<&str>) -> &'static str {
+    match declared {
+        Some("exponential") => "exp",
+        Some("linear") => "lin",
+        _ => "",
+    }
+}
+
+fn curve_label(token: &str) -> &str {
+    match token {
+        "" => "none (inherit)",
+        token => token,
+    }
+}
+
+/// The change picking `token` asks for: a declared curve, or none, so the pipe inherits the curve
+/// of the port it feeds.
+fn curve_change(token: String) -> Change {
+    match token.as_str() {
+        "" => Change::Clear(MetaField::Curve),
+        _ => Change::Set(Meta {
+            curve: Some(token),
+            ..Meta::default()
+        }),
+    }
 }
 
 fn number_text(value: Option<f64>) -> String {
@@ -824,6 +844,22 @@ pub(super) mod tests {
         assert_eq!(
             parse_channel("channel", ""),
             Ok(Change::Clear(MetaField::Channel))
+        );
+    }
+
+    #[test]
+    fn the_curve_picker_shows_what_the_pipe_declares_and_inherit_clears_it() {
+        assert_eq!(curve_token(None), "");
+        assert_eq!(curve_token(Some("linear")), "lin");
+        assert_eq!(curve_token(Some("exponential")), "exp");
+        assert_eq!(curve_label(""), "none (inherit)");
+        assert_eq!(curve_change(String::new()), Change::Clear(MetaField::Curve));
+        assert_eq!(
+            curve_change("lin".into()),
+            Change::Set(Meta {
+                curve: Some("lin".into()),
+                ..Meta::default()
+            })
         );
     }
 

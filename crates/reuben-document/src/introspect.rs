@@ -98,7 +98,7 @@ pub(crate) fn widen(v: f32) -> f64 {
     v.to_string().parse().unwrap_or(v as f64)
 }
 
-fn curve(c: Curve) -> &'static str {
+pub(crate) fn curve(c: Curve) -> &'static str {
     match c {
         Curve::Linear => "linear",
         Curve::Exponential => "exponential",
