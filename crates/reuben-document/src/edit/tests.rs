@@ -537,6 +537,151 @@ fn the_edit_that_migrates_a_refused_address_reports_the_rename_once() {
     assert!(renamed(&second).is_empty(), "{:?}", second.report.warnings);
 }
 
+/// Pipe names whose minted `/<name>` an OSC host cannot reach, or that read as a wire-ref or a
+/// spliced child.
+const BAD_PIPE_NAMES: &[&str] = &["", "a b", "/x", "x/", "out/sub", "ünï", "osc.audio"];
+
+#[test]
+fn add_input_pipe_with_a_name_breaking_the_rule_is_refused() {
+    let registry = Registry::builtin();
+    let add = |name: &str, resolver: &MemoryResolver| {
+        add_instrument_interface_input(
+            SRC,
+            name,
+            "f32",
+            None,
+            Some(json!(0.5)),
+            None,
+            None,
+            None,
+            None,
+            &registry,
+            resolver,
+        )
+    };
+    for bad in BAD_PIPE_NAMES {
+        let resolver = resolver_with(&seed());
+        let before = readback(&resolver);
+        let result = add(bad, &resolver)
+            .unwrap_or_else(|e| panic!("{bad:?}: the call runs; the edit is refused: {e}"));
+        assert!(!result.report.ok, "{bad:?} must be refused");
+        assert!(!result.written, "{bad:?}: nothing is written");
+        assert_eq!(
+            before,
+            readback(&resolver),
+            "{bad:?}: the document is untouched"
+        );
+        assert!(
+            result
+                .report
+                .errors
+                .iter()
+                .any(|d| d.port.as_deref() == Some(*bad) && d.message.contains("address")),
+            "{bad:?}: the diagnostic names the pipe and the rule: {:?}",
+            result.report.errors
+        );
+    }
+    let resolver = resolver_with(&seed());
+    let good = add("Tone-2_a", &resolver).expect("add");
+    assert!(good.report.ok && good.written, "{:?}", good.report);
+}
+
+/// As with a node address: the edit that writes a v3 document's renamed pipe reports it, once.
+#[test]
+fn the_edit_that_migrates_a_refused_pipe_name_reports_the_rename_once() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(
+        &json!({
+            "format_version": 3,
+            "instrument": "t",
+            "interface": { "inputs": { "my tone": { "type": "f32_buffer", "default": 330.0 } } },
+            "nodes": [{ "type": "oscillator", "address": "/osc",
+                        "inputs": { "freq": { "from": "/my tone" } } }]
+        })
+        .to_string(),
+    );
+    let renamed = |result: &EditResult| -> Vec<(Option<String>, String)> {
+        result
+            .report
+            .warnings
+            .iter()
+            .filter(|d| d.message.contains("renamed"))
+            .map(|d| (d.port.clone(), d.message.clone()))
+            .collect()
+    };
+
+    let first = set_instrument_name(SRC, "u", &registry, &resolver).expect("edit");
+    assert!(first.report.ok && first.written, "{:?}", first.report);
+    let reported = renamed(&first);
+    assert_eq!(reported.len(), 1, "{:?}", first.report.warnings);
+    assert_eq!(reported[0].0.as_deref(), Some("my_tone"));
+    assert!(reported[0].1.contains("my tone"), "{}", reported[0].1);
+    let after = readback(&resolver);
+    assert!(
+        after["interface"]["inputs"].get("my_tone").is_some(),
+        "{after}"
+    );
+    assert_eq!(
+        after["nodes"][0]["inputs"]["freq"]["from"],
+        json!("/my_tone")
+    );
+
+    let second = set_instrument_name(SRC, "v", &registry, &resolver).expect("edit");
+    assert!(second.written);
+    assert!(renamed(&second).is_empty(), "{:?}", second.report.warnings);
+}
+
+/// The structure read shows a migrated child's pipe under its new name, so wiring that name looks
+/// like wiring an unset port. When the host already sets the pipe under the old name, the edit is
+/// refused, naming both, and nothing is written.
+#[test]
+fn wiring_a_renamed_child_pipe_the_host_already_sets_by_its_old_name_is_refused() {
+    let registry = Registry::builtin();
+    let mut resolver = resolver_with(
+        &json!({
+            "format_version": 4,
+            "instrument": "h",
+            "resources": { "v": "v.json" },
+            "interface": { "inputs": {
+                "t": { "type": "f32", "default": 0.1 },
+                "u": { "type": "f32", "default": 0.2 }
+            } },
+            "nodes": [{ "type": "subpatch", "address": "/sub", "patch": "v",
+                        "inputs": { "a b": { "from": "/t" } } }]
+        })
+        .to_string(),
+    );
+    resolver.insert_text(
+        "v.json",
+        json!({
+            "format_version": 3,
+            "instrument": "c",
+            "interface": { "inputs": {
+                "a b": { "type": "f32", "default": 0.5 },
+                "a_b": { "type": "f32", "default": 0.5 }
+            } },
+            "nodes": []
+        })
+        .to_string(),
+    );
+    let before = readback(&resolver);
+    let result = wire_instrument_input(SRC, "/sub", "a_b_2", "/u", &registry, &resolver)
+        .expect("the verb runs; the edit is refused");
+    assert!(!result.report.ok && !result.written, "{:?}", result.report);
+    assert_eq!(before, readback(&resolver), "nothing is written");
+    let error = result
+        .report
+        .errors
+        .iter()
+        .find(|d| d.node.as_deref() == Some("/sub") && d.port.as_deref() == Some("a b"))
+        .unwrap_or_else(|| panic!("{:?}", result.report.errors));
+    assert!(
+        error.message.contains(r#"Keep only "a_b_2""#),
+        "{}",
+        error.message
+    );
+}
+
 // --- one-shot add --------------------------------------------------------------------------------
 
 #[test]

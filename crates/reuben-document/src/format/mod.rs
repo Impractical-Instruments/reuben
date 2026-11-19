@@ -34,9 +34,10 @@ use reuben_core::resources::{ResolvedRefs, ResourceStore, SampleBuffer, SampleId
 /// and the top-level anonymous `outputs` block are v1-only, auto-migrated at parse. **v3**
 ///: presentation decouples from the instrument — the per-node `control` block and
 /// `label`/`widget` on interface pipes retire; the loader drops leftovers with a
-/// [`LoadWarning`] naming each (ignore-with-warning, never fatal). **v4**: a node's `address`
-/// must pass the node address rule; an older document's refused address is renamed at parse
-/// with a [`LoadWarning::RenamedAddress`].
+/// [`LoadWarning`] naming each (ignore-with-warning, never fatal). **v4**: a node's `address`,
+/// and the `/<name>` an interface input pipe mints, must pass the node address rule; in an older
+/// document a refused one is renamed at parse with a [`LoadWarning::RenamedAddress`] or
+/// [`LoadWarning::RenamedPipe`].
 pub const FORMAT_VERSION: u32 = 4;
 
 fn default_format_version() -> u32 {
@@ -592,6 +593,16 @@ pub enum LoadError {
     /// A node's authored address breaks the address rule: `/` then one non-empty segment of
     /// printable ASCII holding no whitespace, no `/`, no `.` and none of `#*,?[]{}`.
     InvalidAddress { address: String, rule: &'static str },
+    /// An interface input pipe's name mints `/<name>`, an address that breaks the node address
+    /// rule; `rule` says which part.
+    InvalidPipeName { name: String, rule: &'static str },
+    /// A `subpatch` node sets one child input pipe under two names: `to`, the name the child
+    /// declares, and `from`, the name the child's file spells and its migration renamed.
+    InputSetTwice {
+        node: String,
+        from: String,
+        to: String,
+    },
     /// A wire-ref or output references a node that doesn't exist.
     UnknownNode(String),
     /// A reference names no **output** on the node it points at — a wire-ref's source, a master
@@ -685,6 +696,16 @@ impl fmt::Display for LoadError {
             LoadError::InvalidAddress { address, rule } => {
                 write!(f, "node address {address:?} {rule}")
             }
+            LoadError::InputSetTwice { node, from, to } => write!(
+                f,
+                "node {node:?} sets the child's input pipe {to:?} twice: as {to:?}, and as \
+                 {from:?}, the name the child's file spells it by before its migration renamed \
+                 it. Keep only {to:?}"
+            ),
+            LoadError::InvalidPipeName { name, rule } => write!(
+                f,
+                "interface input pipe {name:?} mints the node address \"/{name}\", which {rule}"
+            ),
             LoadError::UnknownNode(n) => write!(f, "reference to unknown node {n:?}"),
             LoadError::UnknownPort { node, port } => {
                 write!(f, "node {node:?} has no port {port:?}")
@@ -875,6 +896,9 @@ pub enum LoadWarning {
     /// A pre-v4 node address broke the node address rule and was renamed at parse, every
     /// reference to it rewritten. Its OSC control address moved with it.
     RenamedAddress { from: String, to: String },
+    /// A pre-v4 interface input pipe's name minted an address the node address rule refuses, so
+    /// the pipe was renamed at parse and every reference to its address rewritten.
+    RenamedPipe { from: String, to: String },
 }
 
 impl fmt::Display for LoadWarning {
@@ -911,7 +935,17 @@ impl fmt::Display for LoadWarning {
                 f,
                 "node {from:?} renamed to {to:?} (references rewritten): its address breaks the \
                  node address rule. Its OSC control address moved too — a controller still \
-                 sending to {from}/<input> goes quiet until it follows"
+                 sending to {:?} goes quiet until it follows",
+                format!("{from}/<input>")
+            ),
+            LoadWarning::RenamedPipe { from, to } => write!(
+                f,
+                "interface input pipe {from:?} renamed to {to:?} (references rewritten): the \
+                 address it mints breaks the node address rule. Its OSC control address moved to \
+                 \"/{to}/in\" — a controller still sending to {:?} goes quiet until it follows. \
+                 A document hosting this one as a subpatch still reaches it as {from:?} until \
+                 this one is saved, and must then say {to:?}",
+                format!("/{from}/in")
             ),
             LoadWarning::UnboundInputPipe { name } => write!(
                 f,
@@ -1602,6 +1636,7 @@ impl InstrumentDoc {
         // Voicer, external OSC, P3's input master) lands on its single `in` port.
         if let Some(iface) = &self.interface {
             for (name, entry) in &iface.inputs {
+                check_pipe_name(name)?;
                 let pipe = entry.pipe().ok_or_else(|| LoadError::InterfacePipe {
                     name: name.clone(),
                     reason: "the target-pointing entry form is v1-only — declare the pipe's \
@@ -1824,6 +1859,7 @@ impl InstrumentDoc {
                     load_child_cached(child_doc, &canon, registry, resolver, ctx)?
                 }
             };
+            let renamed_inputs = renamed_pipes(&loaded.warnings);
             warnings.extend(loaded.warnings.into_iter().map(|w| w.nested_in(&n.address)));
             // A subpatch-inlined child's channel bindings are discarded at splice — inert
             //, exactly as under a Voicer, and warned symmetrically: the same
@@ -1833,13 +1869,25 @@ impl InstrumentDoc {
                     LoadWarning::InertChannelBinding { name: pipe.clone() }.nested_in(&n.address),
                 );
             }
-            let face = splice_subpatch(
+            let mut face = splice_subpatch(
                 &mut graph,
                 loaded.graph,
                 &n.address,
                 &mut addresses,
                 &mut ctx.addresses,
             )?;
+            face.renamed_inputs = renamed_inputs;
+            // Renames are one-to-one, so the only two keys that can reach one pipe are its new
+            // name and the old one it replaced.
+            for (from, to) in &face.renamed_inputs {
+                if n.inputs.contains_key(from) && n.inputs.contains_key(to) {
+                    return Err(LoadError::InputSetTwice {
+                        node: n.address.clone(),
+                        from: from.clone(),
+                        to: to.clone(),
+                    });
+                }
+            }
 
             // Boundary literals (`"wet": 0.3`): validated against the face and the
             // inner port the interface names, then applied as that inner node's value-override.
@@ -1850,7 +1898,7 @@ impl InstrumentDoc {
                     continue; // pass 2
                 }
                 let Some(fp) = face.input(name) else {
-                    if face.dark_inputs.contains(name) {
+                    if face.dark_input(name) {
                         continue; // dark boundary port: the literal is dropped
                     }
                     return Err(LoadError::UnknownInput {
@@ -1872,7 +1920,7 @@ impl InstrumentDoc {
             for fp in &face.inputs {
                 let p = &graph.nodes[fp.node].descriptor.inputs[fp.port];
                 let bare_signal = p.ty.is_buffer() && p.meta.is_none();
-                if bare_signal && !n.inputs.contains_key(&fp.name) {
+                if bare_signal && !n.inputs.keys().any(|k| face.declared(k) == fp.name) {
                     warnings.push(LoadWarning::UnwiredPipe {
                         node: n.address.clone(),
                         name: fp.name.clone(),
@@ -2366,6 +2414,9 @@ struct BoundaryFace {
     dark_inputs: BTreeSet<String>,
     /// Declared output names whose target went dark inside the child (see `dark_inputs`).
     dark_outputs: BTreeSet<String>,
+    /// Input names the child's file still spells, each mapped to the name its parse renamed it
+    /// to: a host written against the file keeps reaching the pipe until the child is re-saved.
+    renamed_inputs: BTreeMap<String, String>,
 }
 
 /// One synthesized boundary port: the external name and the inlined internal target it stands for.
@@ -2377,9 +2428,19 @@ struct FacePort {
 }
 
 impl BoundaryFace {
+    /// The name the child's built interface holds for the host's `name`.
+    fn declared<'a>(&'a self, name: &'a str) -> &'a str {
+        self.renamed_inputs.get(name).map_or(name, String::as_str)
+    }
+
     /// The face input named `name`, if the child's `interface` exposes one.
     fn input(&self, name: &str) -> Option<&FacePort> {
+        let name = self.declared(name);
         self.inputs.iter().find(|p| p.name == name)
+    }
+
+    fn dark_input(&self, name: &str) -> bool {
+        self.dark_inputs.contains(self.declared(name))
     }
 
     /// Resolve a face output like [`resolve_out_port`] does for a descriptor, plus the dark
@@ -2619,7 +2680,7 @@ fn resolve_input(
     match faces.get(addr) {
         Some(face) => match face.input(name) {
             Some(fp) => Ok(Some((fp.node, fp.port, fp.ty.clone()))),
-            None if face.dark_inputs.contains(name) => Ok(None),
+            None if face.dark_input(name) => Ok(None),
             None => Err(LoadError::UnknownInput {
                 node: addr.to_string(),
                 input: name.to_string(),
@@ -2684,22 +2745,49 @@ fn resolve_output(
 /// The address rule for a node a document authors. Spliced subpatch internals are exempt: the
 /// splice owns `/<node>/…`, which is why an authored address may hold no `/` of its own.
 pub(super) fn check_node_address(address: &str) -> Result<(), LoadError> {
-    let invalid = |rule| {
-        Err(LoadError::InvalidAddress {
+    let rule = match address.strip_prefix('/') {
+        Some(segment) => refused_segment(segment),
+        None => Some("must start with `/`"),
+    };
+    match rule {
+        Some(rule) => Err(LoadError::InvalidAddress {
             address: address.to_string(),
             rule,
-        })
-    };
-    let Some(segment) = address.strip_prefix('/') else {
-        return invalid("must start with `/`");
-    };
-    if segment.is_empty() {
-        return invalid("needs a name after the `/`");
-    }
-    match segment.chars().find_map(refused_address_char) {
-        Some(rule) => invalid(rule),
+        }),
         None => Ok(()),
     }
+}
+
+/// The input pipes a pre-v4 document's parse renamed, from the name its file spells to the one it
+/// now declares, read off that parse's warnings. A host names a child's pipe through this, at
+/// parse and at build alike, so the two can't disagree on what an old spelling reaches.
+pub(super) fn renamed_pipes(warnings: &[LoadWarning]) -> BTreeMap<String, String> {
+    warnings
+        .iter()
+        .filter_map(|w| match w {
+            LoadWarning::RenamedPipe { from, to } => Some((from.clone(), to.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The address rule for the `/<name>` an interface input pipe mints, reported against the name.
+pub(super) fn check_pipe_name(name: &str) -> Result<(), LoadError> {
+    match refused_segment(name) {
+        Some(rule) => Err(LoadError::InvalidPipeName {
+            name: name.to_string(),
+            rule,
+        }),
+        None => Ok(()),
+    }
+}
+
+/// Why `segment`, the name after an address's leading `/`, breaks the rule, or `None`.
+fn refused_segment(segment: &str) -> Option<&'static str> {
+    if segment.is_empty() {
+        return Some("needs a name after the `/`");
+    }
+    segment.chars().find_map(refused_address_char)
 }
 
 /// Why `c` may not appear in a node address's one segment, or `None` when it may.
@@ -2791,6 +2879,7 @@ fn splice_subpatch(
         // visible as dark — a parent reference degrades instead of failing (transitivity).
         dark_inputs: child.interface.dark_inputs,
         dark_outputs: child.interface.dark_outputs,
+        renamed_inputs: BTreeMap::new(),
     })
 }
 
@@ -3531,6 +3620,199 @@ mod tests {
             load_instrument(host, &reg(), &PatchResolver(BAD_CHILD)),
             Err(LoadError::InvalidAddress { address, .. }) if address == "/o sc"
         ));
+    }
+
+    /// Input pipe names whose minted `/<name>` the node address rule refuses.
+    const BAD_PIPE_NAMES: &[&str] = &[
+        "",
+        "a b",
+        "/x",
+        "x/",
+        "out/sub",
+        "ünï",
+        "osc.audio",
+        "a\tb",
+        "x*",
+        "x?",
+        "x#",
+        "x,y",
+        "x[1]",
+        "x{a}",
+    ];
+
+    fn one_pipe_doc(version: u32, name: &str) -> String {
+        serde_json::json!({
+            "format_version": version,
+            "instrument": "t",
+            "interface": { "inputs": { name: { "type": "f32", "default": 0.5 } } },
+            "nodes": []
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn an_input_pipe_name_minting_a_refused_address_is_refused_naming_the_pipe() {
+        for bad in BAD_PIPE_NAMES {
+            match load(&one_pipe_doc(FORMAT_VERSION, bad), &reg()) {
+                Err(e @ LoadError::InvalidPipeName { .. }) => {
+                    let diag = crate::contract::Diag::from_load(&e);
+                    assert_eq!(diag.port.as_deref(), Some(*bad), "{e}");
+                    let message = e.to_string();
+                    assert!(message.contains(&format!("{bad:?}")), "{message}");
+                    assert!(message.contains("interface input pipe"), "{message}");
+                }
+                other => panic!(
+                    "{bad:?} must be refused as a pipe name, got {:?}",
+                    other.map(|_| ())
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn an_input_pipe_name_inside_the_address_rule_loads() {
+        for good in GOOD_NODE_ADDRESSES {
+            let name = good
+                .strip_prefix('/')
+                .expect("a good address starts with `/`");
+            match load(&one_pipe_doc(FORMAT_VERSION, name), &reg()) {
+                Ok(g) => assert!(g.find(good).is_some(), "{name:?} mints {good:?}"),
+                Err(e) => panic!("{name:?} must load: {e}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_nested_child_holding_a_refused_pipe_name_is_refused() {
+        let host = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
+            {"type":"subpatch","address":"/sub","patch":"v"}]}"#;
+        let child = one_pipe_doc(FORMAT_VERSION, "o sc");
+        assert!(matches!(
+            load_instrument(host, &reg(), &PatchResolver(&child)),
+            Err(LoadError::InvalidPipeName { name, .. }) if name == "o sc"
+        ));
+    }
+
+    /// A host still names a pre-v4 child's pipe as the child's file spells it: the child's parse
+    /// renamed it, and the face answers to the old name, so the host keeps loading and wiring
+    /// until the child is saved under the new one.
+    #[test]
+    fn a_host_reaches_a_migrated_child_pipe_by_its_old_name() {
+        let host = r#"{"format_version":4,"instrument":"p","resources":{"v":"v.json"},
+            "interface":{"inputs":{"t":{"type":"f32","default":0.25}}},
+            "nodes":[{"type":"subpatch","address":"/sub","patch":"v",
+                      "inputs":{"my.tone":{"from":"/t"}}}]}"#;
+        let child = one_pipe_doc(3, "my.tone");
+        let loaded = load_instrument(host, &reg(), &PatchResolver(&child)).expect("loads");
+        let g = &loaded.graph;
+        let (t, inner) = (g.find("/t").unwrap(), g.find("/sub/my_tone").unwrap());
+        assert!(g.connections.iter().any(|c| c.src == t && c.dst == inner));
+        assert!(
+            loaded.warnings.iter().any(|w| matches!(
+                unwrap_nested(w),
+                LoadWarning::RenamedPipe { from, to } if from == "my.tone" && to == "my_tone"
+            )),
+            "{:?}",
+            loaded.warnings
+        );
+
+        let literal = host.replace(r#"{"from":"/t"}"#, "0.75");
+        load_instrument(&literal, &reg(), &PatchResolver(&child)).expect("a literal follows too");
+
+        let saved_child = one_pipe_doc(FORMAT_VERSION, "my_tone");
+        assert!(matches!(
+            load_instrument(host, &reg(), &PatchResolver(&saved_child)),
+            Err(LoadError::UnknownInput { node, input }) if node == "/sub" && input == "my.tone"
+        ));
+    }
+
+    /// A v1 host re-exporting a pre-v4 child's pipe by the name the child's file spells: the
+    /// re-export's pipe declaration is read off the child as it parsed, renamed, so the host
+    /// reads through the same rename the face applies at build.
+    #[test]
+    fn a_v1_host_re_exports_a_migrated_child_pipe_by_its_old_name() {
+        let host = r#"{"instrument":"h","resources":{"c":"c.json"},
+            "interface":{"inputs":{"tone":"/sub.a b"}},
+            "nodes":[{"type":"subpatch","address":"/sub","patch":"c"}]}"#;
+        let child = one_pipe_doc(3, "a b");
+        let loaded = load_instrument(host, &reg(), &PatchResolver(&child)).expect("loads");
+        let g = &loaded.graph;
+        let (tone, inner) = (g.find("/tone").unwrap(), g.find("/sub/a_b").unwrap());
+        assert!(g
+            .connections
+            .iter()
+            .any(|c| c.src == tone && c.dst == inner));
+        assert_eq!(
+            g.nodes[tone].descriptor.inputs[0].ty,
+            PortType::F32,
+            "the re-export copies the child's own declaration"
+        );
+    }
+
+    /// A child with pipes `a b` (renamed to `a_b_2`, as `a_b` is taken) and `a_b`.
+    const TWICE_CHILD: &str = r#"{"format_version":3,"instrument":"c","interface":{"inputs":{
+        "a b":{"type":"f32","default":0.5},"a_b":{"type":"f32","default":0.5}}},"nodes":[]}"#;
+
+    /// Under the old name and the new one, a host would bind one child pipe twice: two wires
+    /// into one port, or two literals where one silently wins. Either way it is refused.
+    #[test]
+    fn a_host_setting_a_renamed_child_pipe_under_both_names_is_refused() {
+        let host = |old: &str, new: &str| {
+            format!(
+                r#"{{"format_version":4,"instrument":"p","resources":{{"v":"v.json"}},
+                "interface":{{"inputs":{{"t":{{"type":"f32","default":0.1}},
+                                       "u":{{"type":"f32","default":0.2}}}}}},
+                "nodes":[{{"type":"subpatch","address":"/sub","patch":"v",
+                          "inputs":{{"a b":{old},"a_b_2":{new}}}}}]}}"#
+            )
+        };
+        let (wire_t, wire_u) = (r#"{"from":"/t"}"#, r#"{"from":"/u"}"#);
+        for (old, new) in [
+            (wire_t, wire_u),
+            ("0.2", "0.9"),
+            (wire_t, "0.9"),
+            ("0.2", wire_u),
+        ] {
+            match load_instrument(&host(old, new), &reg(), &PatchResolver(TWICE_CHILD)) {
+                Err(e @ LoadError::InputSetTwice { .. }) => {
+                    let diag = crate::contract::Diag::from_load(&e);
+                    assert_eq!(diag.node.as_deref(), Some("/sub"), "{e}");
+                    assert_eq!(diag.port.as_deref(), Some("a b"), "{e}");
+                    let message = e.to_string();
+                    assert!(message.contains(r#""a_b_2""#), "{message}");
+                }
+                other => panic!(
+                    "({old}, {new}) must be refused, got {:?}",
+                    other.map(|l| l.graph.connections.len())
+                ),
+            }
+        }
+        // Each name alone binds once, and the untouched `a_b` is a pipe of its own.
+        let one = host(wire_t, "0.9").replace(r#""a b":{"from":"/t"},"#, "");
+        load_instrument(&one, &reg(), &PatchResolver(TWICE_CHILD)).expect("the new name alone");
+        let other = host(wire_t, "0.9").replace(r#""a_b_2":0.9"#, r#""a_b":0.9"#);
+        load_instrument(&other, &reg(), &PatchResolver(TWICE_CHILD))
+            .expect("the old name and an unrelated pipe");
+    }
+
+    /// A rename warning carries the name the file spelled, which may hold anything; printed raw,
+    /// a newline in it would forge a second diagnostic line.
+    #[test]
+    fn a_rename_warning_never_prints_the_old_name_raw() {
+        let hostile = "a\nerror [x]: forged";
+        for w in [
+            LoadWarning::RenamedPipe {
+                from: hostile.to_string(),
+                to: "a_error__x_:_forged".to_string(),
+            },
+            LoadWarning::RenamedAddress {
+                from: format!("/{hostile}"),
+                to: "/a_error__x_:_forged".to_string(),
+            },
+        ] {
+            let message = w.to_string();
+            assert!(!message.contains('\n'), "{message}");
+        }
     }
 
     #[test]
@@ -4520,8 +4802,8 @@ mod tests {
 
     // The instrument-kind resource. A resolver whose `resolve_text` returns a voice
     // patch's JSON; `resolve_instrument` builds it into a sub-Graph (with its interface resolved).
-    struct PatchResolver(&'static str);
-    impl ResourceResolver for PatchResolver {
+    struct PatchResolver<'a>(&'a str);
+    impl ResourceResolver for PatchResolver<'_> {
         fn resolve(&self, source: &str) -> Result<SampleBuffer, crate::resources::ResolveError> {
             Err(crate::resources::ResolveError::NotFound(source.to_string()))
         }
@@ -5056,14 +5338,35 @@ mod tests {
     }
 
     #[test]
-    fn a_pipe_minted_address_colliding_with_a_spliced_one_is_fatal() {
-        // A pipe name is not held to the node address rule, so `sub/osc` mints `/sub/osc` in pass
-        // 0 and the splice's own uniqueness check is what refuses the child's `/sub/osc`.
-        let json = r#"{"format_version":3,"instrument":"p","resources":{"v":"v.json"},
-            "interface":{"inputs":{"sub/osc":{"type":"f32","default":0.5}}},
-            "nodes":[{"type":"subpatch","address":"/sub","patch":"v"}]}"#;
+    fn a_pipe_cannot_mint_a_spliced_address() {
+        // The pipe name is refused before the splice runs; a pre-v4 one is renamed off the
+        // spliced address at parse, so the child's `/sub/osc` lands beside it.
+        let at = |version: u32| {
+            format!(
+                r#"{{"format_version":{version},"instrument":"p","resources":{{"v":"v.json"}},
+                "interface":{{"inputs":{{"sub/osc":{{"type":"f32","default":0.5}}}}}},
+                "nodes":[{{"type":"subpatch","address":"/sub","patch":"v"}}]}}"#
+            )
+        };
         assert!(matches!(
-            load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE)),
+            load_instrument(&at(FORMAT_VERSION), &reg(), &PatchResolver(VOICE_IFACE)),
+            Err(LoadError::InvalidPipeName { name, .. }) if name == "sub/osc"
+        ));
+        let migrated =
+            load_instrument(&at(3), &reg(), &PatchResolver(VOICE_IFACE)).expect("migrates");
+        assert!(migrated.graph.find("/sub_osc").is_some());
+        assert!(migrated.graph.find("/sub/osc").is_some());
+    }
+
+    #[test]
+    fn the_splice_refuses_a_child_address_already_claimed() {
+        // No document reaches this: every authored or minted address is one segment and every
+        // spliced one is two or more. The check stays as the backstop for that invariant.
+        let child = load(VOICE_IFACE, &reg()).expect("load");
+        let mut table = AddressTable::default();
+        let mut claimed = BTreeSet::from([table.intern("/sub/osc")]);
+        assert!(matches!(
+            splice_subpatch(&mut Graph::new(), child, "/sub", &mut claimed, &mut table),
             Err(LoadError::DuplicateAddress(a)) if a == "/sub/osc"
         ));
     }

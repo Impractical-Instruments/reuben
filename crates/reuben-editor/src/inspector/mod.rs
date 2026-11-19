@@ -1021,6 +1021,38 @@ mod tests {
     }
 
     #[test]
+    fn an_input_pipe_named_past_the_address_rule_is_rejected_naming_the_pipe() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("inspector_pipe_bad_name", "default.json");
+            let mut inspector = Inspector::default();
+            let channel = rig.channel_source();
+            let before = rig.session.tree().clone();
+            let wrote = inspector.commit(
+                Edit::Pipe(PipeEdit::AddInput {
+                    name: "my tone".into(),
+                    type_name: "f32".into(),
+                    value: Some(json!(0.5)),
+                }),
+                None,
+                &mut rig.session,
+                &channel,
+            );
+            assert!(!wrote);
+            assert_eq!(rig.session.tree(), &before);
+            let feedback = rig.session.feedback().expect("the rejection is held");
+            let source = rig.session.viewed().source.clone();
+            let errors = feedback.rejected(&source);
+            assert!(
+                errors
+                    .iter()
+                    .any(|d| d.port.as_deref() == Some("my tone")
+                        && d.message.contains("whitespace")),
+                "{feedback:?}"
+            );
+        });
+    }
+
+    #[test]
     fn an_add_row_that_names_no_pipe_is_refused_through_the_sessions_feedback() {
         within(HANG_SECS, || {
             let mut rig = Rig::open("inspector_pipe_unnamed", "default.json");
