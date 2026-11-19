@@ -286,7 +286,8 @@ impl Engine {
 
     /// Whether the running engine's input stream fits the instrument it has installed now; `None`
     /// when no engine runs or it cannot say without waiting.
-    pub fn input_fits(&self) -> Option<bool> {
+    #[cfg(test)]
+    pub(crate) fn input_fits(&self) -> Option<bool> {
         let running = self.running.as_ref()?;
         match running.installed() {
             Installed::Known { input_channels, .. } => Some(input_stream_fits(

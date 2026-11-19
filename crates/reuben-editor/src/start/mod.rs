@@ -284,6 +284,7 @@ mod tests {
     use crate::config::test_support::TempConfig;
     use crate::engine::test_support::HANG_SECS;
     use crate::session::test_support::Scratch;
+    use crate::session::Direction;
 
     /// The headless engine on ephemeral loopback ports, so parallel tests never collide.
     fn headless(mut config: EngineConfig) -> Result<RunningEngine, StartError> {
@@ -699,6 +700,58 @@ mod tests {
                 engine.report().iter().any(|line| line.text == named),
                 "{:?}",
                 engine.report()
+            );
+            engine.shutdown();
+        });
+    }
+
+    #[test]
+    fn an_undo_after_opening_another_instrument_does_not_touch_the_first() {
+        within(HANG_SECS, || {
+            let temp = TempConfig::new();
+            let mut audio = AudioSettings::load_with(temp.dir(), two_devices);
+            let scratch = Scratch::new("start_undo");
+            let lib = scratch.library();
+            let mut engine = Engine::idle();
+            let first = lib.join("default.json");
+            let mut session = open(&first, &launch(), &mut audio, &mut engine, || {}, headless);
+            let source = first.display().to_string();
+            let channel = || engine.channel();
+            let edit = crate::edit::write(&mut session, &channel, &source, |store, expect| {
+                set_instrument_name(
+                    &SetInstrumentName {
+                        source: source.clone(),
+                        name: "renamed".to_string(),
+                        expect,
+                    },
+                    store,
+                )
+            })
+            .expect("the verb ran");
+            assert!(edit.written, "{:?}", edit.report);
+            assert!(session.undo().next(Direction::Undo).is_some());
+            let edited = std::fs::read(&first).unwrap();
+
+            let second = lib.join("groovebox.json");
+            let mut session = open(
+                &second,
+                &launch(),
+                &mut audio,
+                &mut engine,
+                || {},
+                |_| panic!("a running engine is Swapped to"),
+            );
+            assert!(session.undo().next(Direction::Undo).is_none());
+            let channel = || engine.channel();
+            let restored = crate::edit::restore(&mut session, &channel, Direction::Undo);
+            assert!(
+                matches!(restored, crate::edit::Restored::Nothing),
+                "{restored:?}"
+            );
+            assert_eq!(
+                std::fs::read(&first).unwrap(),
+                edited,
+                "the first file is left as it is"
             );
             engine.shutdown();
         });
