@@ -675,12 +675,16 @@ fn migrate_input_entry(
     let port_name = port.ok_or_else(|| LoadError::UnknownPort {
         node: addr.to_string(),
         port: target.to_string(),
+        at: None,
     })?;
     let node_idx = doc
         .nodes
         .iter()
         .position(|n| n.address == addr)
-        .ok_or_else(|| LoadError::UnknownNode(addr.to_string()))?;
+        .ok_or_else(|| LoadError::UnknownNode {
+            address: addr.to_string(),
+            at: None,
+        })?;
     let entry = registry
         .get(&doc.nodes[node_idx].type_name)
         .ok_or_else(|| LoadError::UnknownType {

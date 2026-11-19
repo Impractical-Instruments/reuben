@@ -412,6 +412,25 @@ def _assert_repair(document: dict[str, Any]) -> None:
     assert_reaches_output(document, "oscillator")
 
 
+OSC_NOTE = "Sine source for the voice."
+
+
+def _assert_repair_and_note(document: dict[str, Any]) -> None:
+    _assert_repair(document)
+    expected = copy.deepcopy(VOICE_DOCUMENT)
+    for node in expected["nodes"]:
+        if node["address"] == "/osc":
+            node["doc"] = OSC_NOTE
+    expected.pop("format_version", None)
+    produced = {key: entry for key, entry in document.items() if key != "format_version"}
+    if json.loads(json.dumps(expected, sort_keys=True)) != json.loads(
+        json.dumps(produced, sort_keys=True)
+    ):
+        moved = _changed_addresses(expected, produced)
+        detail = ", ".join(moved) if moved else "the node order"
+        raise AssertionError(f"the document is not the repair plus the note: {detail}")
+
+
 TASKS: list[Task] = [
     Task(
         key="from_scratch",
@@ -509,6 +528,42 @@ TASKS: list[Task] = [
             ),
         ],
         assertion=_assert_repair,
+    ),
+    Task(
+        key="repair_and_note",
+        shape="unrelated edit to a broken document",
+        # The note is asked for first, as the trap was met: an edit unrelated to the defect, on a
+        # document that refuses every edit until the defect is fixed. A model that tries the note
+        # first is refused with the dangling edge named as pre-existing, not as its own.
+        prompt=(
+            f"In `instrument.json`, set the `/osc` node's description to \"{OSC_NOTE}\". The "
+            "document does not load at the moment, so fix that as well, keeping every node that is "
+            "there now."
+        ),
+        seed={DOCUMENT: BROKEN},
+        # The fix lands before the note: write-iff-valid refuses the note until the document
+        # validates, so the ideal order is the repair's three calls, then the one the task asked
+        # for first.
+        reference=[
+            Step("mcp", "validate_instrument", {"source": DOCUMENT}),
+            Step("mcp", "describe_instrument", {"source": DOCUMENT, "view": "index"}),
+            Step(
+                "mcp",
+                "wire_instrument_input",
+                {
+                    "source": DOCUMENT,
+                    "address": "/env_vca",
+                    "input": "b",
+                    "from": "/env_curve",
+                },
+            ),
+            Step(
+                "mcp",
+                "set_instrument_node_description",
+                {"source": DOCUMENT, "address": "/osc", "description": OSC_NOTE},
+            ),
+        ],
+        assertion=_assert_repair_and_note,
     ),
 ]
 

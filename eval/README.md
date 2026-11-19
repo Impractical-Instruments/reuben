@@ -68,11 +68,19 @@ The first four shapes are frozen by
 | `intent_word` | apply an intent word ("warmer") | `voices/default-voice.json` |
 | `intent_fan_out` | apply an intent word that reaches nine targets ("looser") | `acid-techno.json` + the voices it nests |
 | `repair` | fix a document that won't load | `voices/default-voice.json`, one edge dangled |
+| `repair_and_note` | an unrelated edit asked for first, on a document that won't load | the same broken fixture |
 
 `intent_fan_out` is a **new series**, added with the intent verb: `intent_word` exercises one target
 (`warmer` matches one of its three moves on that fixture), which is exactly the case where a fan-out
 claim is invisible. Adding a task rather than re-pointing one keeps the frozen four comparable
 across the whole trend.
+
+`repair_and_note` is another new series, for the trap the first live runs met on `repair`: an edit
+unrelated to the defect, tried on a document that refuses every edit until the defect is fixed. Its
+prompt asks for a node's note first and the fix second; the reference does them in the only order
+that writes. Its floor is the surface's price for telling the two apart — on the live tier, a model
+that tries the note first is refused with the dangling edge under `pre_existing`, not as its own
+error.
 
 **Pass is `validate_instrument` clean AND a structural assertion.** It owns legality — the harness never
 re-implements it — and the assertion owns "did the asked-for thing actually happen". Both are

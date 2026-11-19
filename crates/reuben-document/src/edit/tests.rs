@@ -112,6 +112,316 @@ fn an_invalid_edit_is_rejected_and_nothing_is_written() {
     assert_eq!(before, readback(&resolver));
 }
 
+// --- pre-existing vs introduced errors -----------------------------------------------------------
+
+/// [`seed`] with `/amp.a` wired from a node that is not there: invalid on arrival.
+fn seed_dangling() -> String {
+    seed().replace(r#""from":"/osc""#, r#""from":"/gone""#)
+}
+
+#[test]
+fn an_unrelated_edit_to_an_invalid_document_is_rejected_for_what_was_already_there() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_dangling());
+    let before = readback(&resolver);
+
+    let result =
+        set_instrument_node_description(SRC, "/osc", Some("the tone"), &registry, &resolver)
+            .expect("the verb ran");
+
+    assert!(!result.written && !result.report.ok, "{result:?}");
+    assert!(
+        result.report.errors.is_empty(),
+        "the edit introduced nothing: {result:?}"
+    );
+    assert_eq!(result.pre_existing.len(), 1, "{result:?}");
+    let at = &result.pre_existing[0];
+    assert_eq!(
+        (at.node.as_deref(), at.port.as_deref()),
+        (Some("/amp"), Some("a"))
+    );
+    assert!(at.message.contains("/gone"), "{at:?}");
+    assert_eq!(before, readback(&resolver));
+}
+
+#[test]
+fn an_invalid_edit_to_a_valid_document_introduces_every_error() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed());
+
+    let result = wire_instrument_input(SRC, "/amp", "a", "/nope", &registry, &resolver)
+        .expect("the verb ran");
+
+    assert!(!result.written);
+    assert_eq!(result.report.errors.len(), 1, "{result:?}");
+    assert!(result.pre_existing.is_empty(), "{result:?}");
+}
+
+#[test]
+fn the_edit_that_fixes_the_only_error_is_written() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_dangling());
+
+    let result = wire_instrument_input(SRC, "/amp", "a", "/osc", &registry, &resolver)
+        .expect("the verb ran");
+
+    assert!(result.written && result.report.ok, "{result:?}");
+    assert!(result.pre_existing.is_empty());
+}
+
+/// The loader stops at the first error, so an edit that adds one the load reaches first is refused
+/// for its own, with a note naming the one the load used to stop at.
+#[test]
+fn an_error_the_edit_adds_ahead_of_one_already_there_is_its_own() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_dangling());
+
+    let result = set_instrument_input(
+        SRC,
+        "/osc",
+        "waveform",
+        json!("Square"),
+        &registry,
+        &resolver,
+    )
+    .expect("the verb ran");
+
+    assert!(!result.written);
+    assert_eq!(result.report.errors.len(), 1, "{result:?}");
+    assert_eq!(result.report.errors[0].node.as_deref(), Some("/osc"));
+    assert!(result.pre_existing.is_empty(), "{result:?}");
+    assert_eq!(result.notes.len(), 1, "{result:?}");
+    assert!(result.notes[0].contains("/gone"), "{result:?}");
+}
+
+/// An edit that rewrites the faulty value itself, to another faulty value, is matched on what the
+/// fault is and where, not on its message — which names the new value.
+#[test]
+fn a_fault_is_matched_by_kind_and_locus_not_message() {
+    let registry = Registry::builtin();
+    let resolver =
+        resolver_with(&seed().replace(r#""freq":220.0"#, r#""freq":220.0,"waveform":"Square""#));
+
+    let result = set_instrument_input(
+        SRC,
+        "/osc",
+        "waveform",
+        json!("Triangle"),
+        &registry,
+        &resolver,
+    )
+    .expect("the verb ran");
+
+    assert!(!result.written);
+    assert!(result.report.errors.is_empty(), "{result:?}");
+    assert_eq!(result.pre_existing.len(), 1, "{result:?}");
+    assert!(
+        result.pre_existing[0].message.contains("Triangle"),
+        "the message is the attempted document's: {result:?}"
+    );
+}
+
+/// A document the loader cannot get past at all — an operator the registry does not hold — still
+/// attributes: the same hard failure, before and after, is the one already there.
+#[test]
+fn a_document_that_does_not_load_attributes_its_load_failure() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed().replace("mul_f32_signal", "nosuchoperator"));
+
+    let result = set_instrument_name(SRC, "renamed", &registry, &resolver).expect("the verb ran");
+
+    assert!(!result.written);
+    assert!(result.report.errors.is_empty(), "{result:?}");
+    assert_eq!(result.pre_existing.len(), 1, "{result:?}");
+    assert!(result.pre_existing[0].message.contains("nosuchoperator"));
+}
+
+/// Text that is not a document is no edit at all: there is nothing to attribute.
+#[test]
+fn an_unparseable_document_is_still_refused_before_any_edit() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with("{ not json");
+
+    let err = set_instrument_name(SRC, "renamed", &registry, &resolver).expect_err("unparseable");
+    assert!(matches!(err, EditError::Parse(_)), "got {err:?}");
+}
+
+/// The edit that writes a migration renames an address the fault is located at; the document
+/// before it is compared in its migrated form, so the fault is still the one already there.
+#[test]
+fn a_fault_at_a_migrated_address_is_matched_after_the_migration() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(
+        &json!({
+            "format_version": 3,
+            "instrument": "t",
+            "nodes": [{ "type": "oscillator", "address": "/my osc", "inputs": { "bogus": 1.0 } }]
+        })
+        .to_string(),
+    );
+
+    let result = set_instrument_name(SRC, "u", &registry, &resolver).expect("the verb ran");
+
+    assert!(!result.written);
+    assert!(result.report.errors.is_empty(), "{result:?}");
+    assert_eq!(result.pre_existing.len(), 1, "{result:?}");
+    assert_eq!(result.pre_existing[0].node.as_deref(), Some("/my_osc"));
+}
+
+/// With a second dangling reference the document cannot be repaired one wire at a time: each fix
+/// leaves the other fault, so each is refused, and write-iff-valid holds the file where it was.
+///
+/// The load stops at `/gone`, so `/lost` is invisible before the first fix: that fix is refused for
+/// `/lost` and told the load used to stop at `/gone`. The second fix is refused for `/gone`, which
+/// the load did reach, as pre-existing.
+#[test]
+fn two_independent_faults_refuse_each_single_fix() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(
+        &json!({
+            "format_version": 3,
+            "instrument": "test",
+            "nodes": [
+                { "type": "oscillator", "address": "/osc", "inputs": { "freq": 220.0 } },
+                { "type": "mul_f32_signal", "address": "/amp", "inputs": { "a": { "from": "/gone" }, "b": 0.5 } },
+                { "type": "mul_f32_signal", "address": "/amp2", "inputs": { "a": { "from": "/lost" }, "b": 0.5 } }
+            ],
+            "interface": { "outputs": { "main": { "from": "/amp" } } }
+        })
+        .to_string(),
+    );
+
+    let first = wire_instrument_input(SRC, "/amp", "a", "/osc", &registry, &resolver)
+        .expect("the verb ran");
+    let second = wire_instrument_input(SRC, "/amp2", "a", "/osc", &registry, &resolver)
+        .expect("the verb ran");
+
+    assert!(!first.written && !second.written, "{first:?} {second:?}");
+    assert_eq!(first.report.errors[0].node.as_deref(), Some("/amp2"));
+    assert!(first.pre_existing.is_empty(), "{first:?}");
+    assert_eq!(first.notes.len(), 1, "{first:?}");
+    assert!(first.notes[0].contains("/gone"), "{first:?}");
+    assert!(second.report.errors.is_empty(), "{second:?}");
+    assert_eq!(second.pre_existing[0].node.as_deref(), Some("/amp"));
+    assert!(second.notes.is_empty(), "{second:?}");
+}
+
+/// The loader reports one error per validation, so the multiset rule is held here directly, over
+/// faults taken from real validations.
+#[test]
+fn faults_match_as_a_multiset() {
+    let registry = Registry::builtin();
+    let fault_of = |json: &str| {
+        let (report, faults) = validate_faulted(json, &registry, &MemoryResolver::new());
+        (report.errors[0].clone(), faults[0].clone())
+    };
+    let (a, fa) = fault_of(&seed_dangling());
+    let (b, fb) = fault_of(&seed().replace("mul_f32_signal", "nosuchoperator"));
+
+    let split = |errors: Vec<(Diag, Option<Fault>)>, found: Vec<(Diag, Option<Fault>)>| {
+        let (mut errs, faults): (Vec<_>, Vec<_>) = errors.into_iter().unzip();
+        let (prior, found): (Vec<_>, Vec<_>) = found.into_iter().unzip();
+        let split = split_pre_existing(&mut errs, faults, prior, found);
+        (split.pre_existing, errs, split.displaced)
+    };
+    let a = (a, fa);
+    let b = (b, fb);
+
+    assert_eq!(
+        split(vec![a.clone(), b.clone()], vec![a.clone()]),
+        (vec![a.0.clone()], vec![b.0.clone()], vec![])
+    );
+    assert_eq!(
+        split(vec![a.clone(), a.clone()], vec![a.clone()]),
+        (vec![a.0.clone()], vec![a.0.clone()], vec![])
+    );
+    assert_eq!(
+        split(vec![a.clone()], vec![a.clone(), a.clone()]),
+        (vec![a.0.clone()], vec![], vec![a.0.clone()])
+    );
+    assert_eq!(
+        split(vec![b.clone()], vec![a.clone()]),
+        (vec![], vec![b.0.clone()], vec![a.0.clone()])
+    );
+    // An error with no fault matches nothing, not even an identical one.
+    let blind = (a.0.clone(), None);
+    assert_eq!(
+        split(vec![blind.clone()], vec![blind]),
+        (vec![], vec![a.0.clone()], vec![a.0])
+    );
+}
+
+/// A cycle names no node, so a new one cannot be proven to be the one already there: it stays the
+/// edit's.
+#[test]
+fn a_new_cycle_is_never_passed_off_as_an_old_one() {
+    let registry = Registry::builtin();
+    let mul = |address: &str, from: &str| json!({ "type": "mul_f32_signal", "address": address, "inputs": { "a": { "from": from } } });
+    let resolver = resolver_with(
+        &json!({
+            "format_version": 3,
+            "instrument": "test",
+            "nodes": [mul("/a", "/b"), mul("/b", "/a"), mul("/c", "/a")]
+        })
+        .to_string(),
+    );
+
+    let result =
+        wire_instrument_input(SRC, "/a", "a", "/c", &registry, &resolver).expect("the verb ran");
+
+    assert!(!result.written);
+    assert_eq!(result.report.errors.len(), 1, "{result:?}");
+    assert!(
+        result.report.errors[0].message.contains("cycle"),
+        "{result:?}"
+    );
+    assert!(result.pre_existing.is_empty(), "{result:?}");
+}
+
+/// Two wires naming the same missing node are two faults, each at the input it is written at: the
+/// edit that adds the second is charged with it.
+#[test]
+fn a_second_wire_to_the_same_missing_node_is_the_edits_own() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_dangling());
+
+    let result = wire_instrument_input(SRC, "/osc", "freq", "/gone", &registry, &resolver)
+        .expect("the verb ran");
+
+    assert!(!result.written);
+    assert!(result.pre_existing.is_empty(), "{result:?}");
+    let at = &result.report.errors[0];
+    assert_eq!(
+        (at.node.as_deref(), at.port.as_deref()),
+        (Some("/osc"), Some("freq")),
+        "{result:?}"
+    );
+}
+
+/// A rename moves a node's faults with it: the error at the new address is the one the old address
+/// had.
+#[test]
+fn a_rename_carries_the_nodes_faults_to_its_new_address() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed().replace(r#""b":0.5"#, r#""b":0.5,"bogus":1.0"#));
+
+    let result =
+        rename_instrument_node(SRC, "/amp", "/gain", &registry, &resolver).expect("the verb ran");
+
+    assert!(!result.written);
+    assert!(result.report.errors.is_empty(), "{result:?}");
+    let at = &result.pre_existing[0];
+    assert_eq!(
+        (at.node.as_deref(), at.port.as_deref()),
+        (Some("/gain"), Some("bogus")),
+        "{result:?}"
+    );
+    assert!(
+        !result.notes.iter().any(|n| n.contains("first error")),
+        "{result:?}"
+    );
+}
+
 #[test]
 fn a_missing_target_node_is_a_precondition_error_not_a_report() {
     let registry = Registry::builtin();

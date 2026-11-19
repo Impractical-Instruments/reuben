@@ -843,6 +843,7 @@ pub(super) fn expect_conflict(
                 }],
                 warnings: Vec::new(),
             },
+            pre_existing: Vec::new(),
             written: false,
             hash: actual,
             notes: Vec::new(),
@@ -950,9 +951,23 @@ pub(super) fn edit_summary(result: &EditResult) -> String {
             n => format!("{base}; {n} note(s)"),
         }
     } else {
+        let errors = match (result.pre_existing.len(), result.report.errors.len()) {
+            (0, n) => format!("{n} error(s)"),
+            (p, 0) => format!(
+                "the document already had {p} error(s) before this edit (pre_existing); no edit is \
+                 written until it validates, so fix those first"
+            ),
+            (p, n) => format!(
+                "{n} error(s), and the document already had {p} more before this edit \
+                 (pre_existing); no edit is written until it validates, so fix those first"
+            ),
+        };
+        let notes = match result.notes.len() {
+            0 => String::new(),
+            n => format!("; {n} note(s)"),
+        };
         format!(
-            "not written — {} error(s); the document is unchanged (content_hash {})",
-            result.report.errors.len(),
+            "not written — {errors}{notes}; the document is unchanged (content_hash {})",
             result.hash
         )
     }
@@ -1089,6 +1104,91 @@ mod tests {
             "the guard echoes the current index: {:?}",
             answer.output.zoom
         );
+    }
+
+    /// [`SEED`] with a second node wired from one that is not there: invalid on arrival.
+    const DANGLING: &str = r#"{
+        "format_version": 3,
+        "instrument": "guard-test",
+        "nodes": [
+            { "type": "oscillator", "address": "/osc", "inputs": { "freq": 220.0 } },
+            { "type": "mul_f32_signal", "address": "/amp", "inputs": { "a": { "from": "/gone" } } }
+        ]
+    }"#;
+
+    /// A rejection carries what the document already had apart from what the edit added, through
+    /// the window's own shape and into the one-line gloss.
+    #[test]
+    fn a_rejection_names_the_errors_the_document_already_had() {
+        let store = MemoryStore::with("inst.json", DANGLING);
+        let describe = SetInstrumentNodeDescription {
+            source: "inst.json".to_string(),
+            address: "/osc".to_string(),
+            description: Some("the tone".to_string()),
+            expect: None,
+        };
+
+        let answer = set_instrument_node_description(&describe, &store).expect("the verb ran");
+
+        assert!(!answer.output.written && !answer.output.report.ok);
+        assert!(
+            answer.output.report.errors.is_empty(),
+            "{:?}",
+            answer.output
+        );
+        assert_eq!(answer.output.pre_existing.len(), 1, "{:?}", answer.output);
+        assert_eq!(answer.output.pre_existing[0].node.as_deref(), Some("/amp"));
+        assert!(
+            answer
+                .summary
+                .contains("already had 1 error(s) before this edit")
+                && answer.summary.contains("fix those first"),
+            "{}",
+            answer.summary
+        );
+        let wire = serde_json::to_value(&answer.output).expect("serializes");
+        assert_eq!(wire["pre_existing"][0]["port"], "a", "{wire}");
+
+        // Ahead of `/gone` in the load, so this one is the edit's own.
+        let wire_in = WireInstrumentInput {
+            source: "inst.json".to_string(),
+            address: "/osc".to_string(),
+            input: "freq".to_string(),
+            from: "/nope".to_string(),
+            expect: None,
+        };
+        let added = wire_instrument_input(&wire_in, &store).expect("the verb ran");
+        assert!(!added.output.written);
+        assert_eq!(added.output.report.errors.len(), 1, "{:?}", added.output);
+        assert!(
+            added
+                .summary
+                .starts_with("not written — 1 error(s); 1 note(s);"),
+            "{}",
+            added.summary
+        );
+    }
+
+    /// A rejected edit to a valid document carries nothing as pre-existing, and its wire shape
+    /// omits the field.
+    #[test]
+    fn a_rejection_of_a_valid_document_has_nothing_pre_existing() {
+        let store = MemoryStore::with("inst.json", SEED);
+        let wire_in = WireInstrumentInput {
+            source: "inst.json".to_string(),
+            address: "/osc".to_string(),
+            input: "freq".to_string(),
+            from: "/nope".to_string(),
+            expect: None,
+        };
+
+        let answer = wire_instrument_input(&wire_in, &store).expect("the verb ran");
+
+        assert!(!answer.output.written);
+        assert_eq!(answer.output.report.errors.len(), 1);
+        assert!(answer.output.pre_existing.is_empty());
+        let wire = serde_json::to_value(&answer.output).expect("serializes");
+        assert!(wire.get("pre_existing").is_none(), "{wire}");
     }
 
     /// A precondition that cannot hold is a refusal, not a rejected edit — the split every door
@@ -2276,16 +2376,17 @@ mod tests {
         assert_eq!(read("inst.json", &store).hash, guarded.hash);
     }
 
-    /// The loader names the missing *source* of a dangling wire, which is no node of this
-    /// document; the read puts the error on the node and input that hold the wire.
+    /// The missing *source* of a dangling wire is no node of this document; validation and the
+    /// read both put the error on the node and input that hold the wire.
     #[test]
     fn a_dangling_wire_still_reads_with_the_error_on_its_node() {
         let dangling = with_wire(&out("/ghost", "audio"), &inp("/flt", "audio"));
         let doc = read("inst.json", &wire_store(&dangling));
         assert!(!doc.report.ok);
+        let validated = &validates(&dangling).errors[0];
         assert_eq!(
-            validates(&dangling).errors[0].node.as_deref(),
-            Some("/ghost")
+            (validated.node.as_deref(), validated.port.as_deref()),
+            (Some("/flt"), Some("audio"))
         );
         assert_eq!(doc.report.errors.len(), 1, "{:?}", doc.report);
         let error = &doc.report.errors[0];

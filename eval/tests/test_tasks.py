@@ -414,12 +414,55 @@ class TestIntentFanOutAssertion(unittest.TestCase):
             tasks._assert_intent_fan_out(document)
 
 
+class TestRepairAndNote(unittest.TestCase):
+    """The trap this task exists for: an unrelated edit to a document that does not validate."""
+
+    def _noted(self, document: dict) -> dict:
+        document = copy.deepcopy(document)
+        for node in document["nodes"]:
+            if node["address"] == "/osc":
+                node["doc"] = tasks.OSC_NOTE
+        return document
+
+    def test_the_repair_plus_the_note_passes(self) -> None:
+        tasks._assert_repair_and_note(self._noted(tasks.VOICE_DOCUMENT))
+
+    def test_the_repair_without_the_note_fails(self) -> None:
+        with self.assertRaises(AssertionError):
+            tasks._assert_repair_and_note(copy.deepcopy(tasks.VOICE_DOCUMENT))
+
+    def test_the_note_without_the_repair_fails(self) -> None:
+        with self.assertRaises(AssertionError):
+            tasks._assert_repair_and_note(self._noted(json.loads(tasks.BROKEN)))
+
+    @unittest.skipUnless(sidecar_available(), "reuben-mcp not built")
+    def test_the_note_tried_first_is_refused_for_the_edge_it_did_not_break(self) -> None:
+        """What a model meets when it takes the prompt in order: the refusal names the dangling
+        edge as pre-existing and charges the note with nothing, so the next move is the fix."""
+        with tempfile.TemporaryDirectory(prefix="reuben-repair-note-") as root:
+            path = pathlib.Path(root) / tasks.DOCUMENT
+            path.write_text(tasks.BROKEN, encoding="utf-8")
+            with Sidecar(pathlib.Path(root)) as sidecar:
+                result = sidecar.call_tool(
+                    "set_instrument_node_description",
+                    {"source": tasks.DOCUMENT, "address": "/osc", "description": tasks.OSC_NOTE},
+                )
+        structured = result.structured or {}
+        self.assertIs(structured.get("written"), False, structured)
+        self.assertEqual(structured["report"]["errors"], [], structured)
+        self.assertEqual(
+            [(d.get("node"), d.get("port")) for d in structured.get("pre_existing", [])],
+            [("/env_vca", "b")],
+            structured,
+        )
+
+
 class TestTaskRoster(unittest.TestCase):
     def test_the_shapes_are_all_present(self) -> None:
         """The shapes are frozen; losing one silently narrows what the gate can see."""
         self.assertEqual(
             {task.key for task in tasks.TASKS},
-            {"from_scratch", "tweak", "intent_word", "intent_fan_out", "repair"},
+            {"from_scratch", "tweak", "intent_word", "intent_fan_out", "repair", "repair_and_note"},
         )
 
     @unittest.skipUnless(sidecar_available(), "reuben-mcp not built")

@@ -119,7 +119,7 @@ impl Restored {
                     "Cannot {verb}: {} would not load in that state:",
                     file_name(&step.source)
                 );
-                for error in &result.report.errors {
+                for error in result.report.errors.iter().chain(&result.pre_existing) {
                     note.push('\n');
                     for at in [&error.node, &error.port].into_iter().flatten() {
                         note.push_str(at);
@@ -863,12 +863,14 @@ mod tests {
             let Restored::Rejected { step, result } = &refused else {
                 panic!("{refused:?}");
             };
-            assert!(!result.report.errors.is_empty());
+            // The file as it is now fails the same way, so what stops the undo was already there.
+            assert!(result.report.errors.is_empty(), "{result:?}");
+            assert!(!result.pre_existing.is_empty(), "{result:?}");
             assert_eq!(step.source, top);
             assert_eq!(hash(&rig, &top), renamed, "nothing written");
             assert_eq!(rig.session.undo().next(Direction::Undo), Some(step));
             let note = rig.session.undo().note().expect("a note");
-            assert!(note.contains(&result.report.errors[0].message), "{note}");
+            assert!(note.contains(&result.pre_existing[0].message), "{note}");
         });
     }
 
