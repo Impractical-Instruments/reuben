@@ -578,8 +578,7 @@ fn field(
     current: Current<'_>,
     parse: fn(&str, &str) -> Result<Meta, String>,
 ) -> Option<Typed> {
-    ui.label(name);
-    let typed = text(ui, inspector, (owner, name), current, false);
+    let typed = text(ui, inspector, name, (owner, name), current, false);
     ui.end_row();
     let (typed, hash) = typed?;
     Some(parse(name, typed.trim()).map(|meta| (meta, hash)))

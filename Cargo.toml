@@ -95,6 +95,9 @@ tokio = { version = "1", default-features = false }
 # dependency tree and build time. `wayland` + `x11` are both on so one Linux binary runs under
 # either session; winit dlopens their client libraries, so building needs no -dev packages.
 eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
+# The editor's UI tests: they run the editor's frames headless and find widgets by their AccessKit
+# labels. Tracks `eframe`'s version. No `snapshot`/`wgpu` features: nothing renders to pixels.
+egui_kittest = { version = "0.36", default-features = false, features = ["eframe"] }
 # The editor's watch over the open instrument's files, so a write by anything — the editor itself,
 # `reuben-mcp`, a text editor — is seen without polling. A filesystem-event thread, not an async
 # runtime: the tokio fence is untouched.

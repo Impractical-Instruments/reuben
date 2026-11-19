@@ -18,6 +18,8 @@ mod pick;
 mod session;
 mod start;
 mod theme;
+#[cfg(test)]
+mod ui_tests;
 
 use std::path::PathBuf;
 use std::time::Instant;

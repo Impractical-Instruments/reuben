@@ -459,8 +459,22 @@ struct Draft {
     owner: String,
     field: &'static str,
     text: String,
-    /// The content hash of the document when typing began; the text is written against it.
+    /// What the document held for the field when the draft began.
+    base: String,
+    /// The content hash of the last document seen holding `base` for the field; the text is
+    /// written against it.
     hash: String,
+}
+
+impl Draft {
+    /// Take `hash` while the document still holds `base` for the field. A write elsewhere in the
+    /// document, such as the box focus left writing the frame this one took it, is then no
+    /// conflict; a change to this field still is.
+    fn follow(&mut self, current: &str, hash: &str) {
+        if current == self.base {
+            self.hash = hash.to_string();
+        }
+    }
 }
 
 /// What one text box did this frame.
@@ -518,19 +532,17 @@ impl Drafts {
         if typing.focused {
             match found {
                 Some(i) => {
-                    self.drafts[i] = (
-                        Draft {
-                            text: typing.text,
-                            ..self.drafts[i].0.clone()
-                        },
-                        true,
-                    )
+                    let draft = &mut self.drafts[i].0;
+                    draft.follow(current, hash);
+                    draft.text = typing.text;
+                    self.drafts[i].1 = true;
                 }
                 None => self.drafts.push((
                     Draft {
                         owner: owner.to_string(),
                         field,
                         text: typing.text,
+                        base: current.to_string(),
                         hash: hash.to_string(),
                     },
                     true,
@@ -538,7 +550,8 @@ impl Drafts {
             }
             return None;
         }
-        let (draft, _) = self.drafts.remove(found?);
+        let (mut draft, _) = self.drafts.remove(found?);
+        draft.follow(current, hash);
         (typing.lost && !typing.escaped && typing.text != current)
             .then_some((typing.text, draft.hash))
     }
@@ -965,7 +978,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_text_is_written_once_when_the_box_loses_focus_against_the_hash_typing_began_on() {
+    fn typed_text_is_written_once_when_the_box_loses_focus() {
         let mut drafts = Drafts::default();
         assert_eq!(
             typed(&mut drafts, "h0", typing("old", true, false, false)),
@@ -978,7 +991,7 @@ mod tests {
         assert_eq!(drafts.text("/filter", "description"), Some("new"));
         assert_eq!(
             typed(&mut drafts, "h1", typing("new", false, true, false)),
-            Some(("new".to_string(), "h0".to_string()))
+            Some(("new".to_string(), "h1".to_string()))
         );
         assert_eq!(drafts.text("/filter", "description"), None);
         assert_eq!(
@@ -1041,6 +1054,43 @@ mod tests {
         assert_eq!(description, Some(("new".to_string(), "h0".to_string())));
         assert_eq!(drafts.text("/filter", "description"), None);
         assert_eq!(drafts.text("", "name"), Some("inst"));
+    }
+
+    #[test]
+    fn a_write_elsewhere_in_the_document_is_followed_and_one_to_the_field_is_not() {
+        let frame = |drafts: &mut Drafts, current: &str, hash: &str, typing: Typing| {
+            drafts.begin();
+            let edit = drafts.frame("/filter", "description", current, hash, typing);
+            drafts.end();
+            edit
+        };
+        // Another box's write lands after focus arrives, and the first key comes the next frame.
+        let mut drafts = Drafts::default();
+        frame(&mut drafts, "old", "h0", typing("old", true, false, false));
+        frame(&mut drafts, "old", "h1", typing("new", true, false, false));
+        assert_eq!(
+            frame(&mut drafts, "old", "h1", typing("new", false, true, false)),
+            Some(("new".to_string(), "h1".to_string()))
+        );
+        // Something else writes this field while it is typed into: the write keeps the hash the
+        // field was last seen unchanged at, so it is refused as a conflict.
+        let mut drafts = Drafts::default();
+        frame(&mut drafts, "old", "h0", typing("new", true, false, false));
+        frame(
+            &mut drafts,
+            "theirs",
+            "h1",
+            typing("new", true, false, false),
+        );
+        assert_eq!(
+            frame(
+                &mut drafts,
+                "theirs",
+                "h1",
+                typing("new", false, true, false)
+            ),
+            Some(("new".to_string(), "h0".to_string()))
+        );
     }
 
     #[test]

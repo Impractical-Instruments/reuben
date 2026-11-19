@@ -27,6 +27,7 @@ rfd.workspace = true
 # The tests reach the embedded engine the way the sidecar does: reuben-mcp's own link over the
 # loopback socket (the TCP transport lives only there).
 reuben-mcp = { path = "../reuben-mcp" }
+egui_kittest.workspace = true
 
 [[bin]]
 name = "reuben-editor"
