@@ -8,7 +8,7 @@
 # push and that is a call for whoever owns the local/CI cost trade.
 # Runs at the push boundary (not per-commit) so the compile cost is amortized.
 # Skips when the pushed commits touch no Rust (docs/config-only pushes).
-# One check in the pre-push set, run by `.githooks/dispatch` — see CONTRIBUTING.md.
+# One check in the pre-push set, run by `dispatch` — see CONTRIBUTING.md.
 # Bypass the whole set:  git push --no-verify
 set -euo pipefail
 

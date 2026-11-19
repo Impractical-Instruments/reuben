@@ -2,7 +2,7 @@
 # Block commits that would fail CI's `cargo fmt --all --check` (.github/workflows/ci.yml).
 # Mirrors CI exactly: whole-workspace, check-only — never rewrites your files.
 # Skips when no Rust is staged (docs-only commits don't pay for a fmt run).
-# One check in the pre-commit set, run by `.githooks/dispatch` — see CONTRIBUTING.md.
+# One check in the pre-commit set, run by `dispatch` — see CONTRIBUTING.md.
 # Bypass the whole set:  git commit --no-verify
 set -euo pipefail
 

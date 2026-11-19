@@ -739,7 +739,8 @@ jobs:
 
   # The hook set's chainer (test_hook_dispatch.py), which is what makes every pre-commit and
   # pre-push check run locally at all. It builds throwaway git repos with synthetic registries, so
-  # it needs no toolchain and takes under a second.
+  # it needs no toolchain and takes seconds. The same job lints the hook set with a pinned
+  # shellcheck release.
   #
   # ALWAYS runs, and not path-filtered: no remaining filter covers `scripts/hooks/**`, and a job
   # this cheap does not earn one of its own. Gates merges via `ci-passed`'s `needs`.
@@ -750,6 +751,45 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Hook dispatcher tests
         run: cd scripts && python3 -m unittest test_hook_dispatch -v
+      # Pinned rather than taken from the runner image, so a new image cannot turn this job red on
+      # a change that touched no shell. The digest is the one GitHub records for the release asset.
+      - name: Install shellcheck
+        env:
+          SHELLCHECK_VERSION: v0.11.0
+          SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+        run: |
+          tarball="shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          curl -sSLf -o "$RUNNER_TEMP/$tarball" \
+            "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/${tarball}"
+          echo "${SHELLCHECK_SHA256}  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/shellcheck-${SHELLCHECK_VERSION}" >> "$GITHUB_PATH"
+      # A hook and its checks are extensionless, so a `*.sh` glob cannot see them. Instead every
+      # regular file under scripts/hooks/ must be shell and is linted, and a file this step cannot
+      # recognise as shell fails it by name rather than dropping out of the lint in silence. A file
+      # with no `#!` line is refused too: git would run it as sh, but shellcheck needs the dialect.
+      - name: shellcheck the hook set
+        shell: bash
+        run: |
+          set -euo pipefail
+          shellcheck --version
+          test -f scripts/install-hooks.sh || { echo "scripts/install-hooks.sh is missing" >&2; exit 1; }
+          files=(scripts/install-hooks.sh)
+          unrecognised=0
+          mapfile -d '' found < <(find scripts/hooks -type f -print0 | sort -z)
+          [ "${#found[@]}" -gt 0 ] || { echo "no files found under scripts/hooks/" >&2; exit 1; }
+          for f in "${found[@]}"; do
+            first=$(head -n 1 "$f" | tr -d '\r')
+            if printf '%s\n' "$first" | grep -qE '^#! ?([^ ]*/)?(env( +-[^ ]+)* +)?(sh|bash|dash)( .*)?$'; then
+              files+=("$f")
+            else
+              echo "::error file=$f::not recognised as a shell script (first line: $first)" >&2
+              unrecognised=1
+            fi
+          done
+          [ "$unrecognised" -eq 0 ]
+          printf '%s\n' "${files[@]}"
+          shellcheck "${files[@]}"
 
   # The doc-claim ledger (extract_doc_claims.py): every file path and code identifier the
   # governed docs name resolves against the real tree, and a `Guarded by:` line names a test that

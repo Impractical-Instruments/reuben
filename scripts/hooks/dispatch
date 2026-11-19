@@ -24,7 +24,8 @@ if [ -z "$hook" ]; then
 fi
 shift
 
-here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+# CDPATH would make `cd` resolve a relative name against somewhere else and print where it went.
+here=$(unset CDPATH; cd -- "$(dirname -- "$0")" && pwd)
 registry="$here/$hook.d"
 [ -d "$registry" ] || exit 0
 
@@ -52,9 +53,28 @@ if [ ! -t 0 ]; then
     capture=$(git rev-parse --git-path "githook-stdin.$$" 2>/dev/null || true)
     # A SIGKILL cannot run a trap, so a previous run may have left its capture behind. Nothing else
     # ever reaps these, and they are invisible to `git gc` and `git worktree prune`.
+    #
+    # The same glob also matches the capture of a hook running right now in this worktree (a commit
+    # while a push is still in its checks), and deleting that fails its next check, which is then
+    # blamed for it. The pid in the name is the owner's, so only a capture whose owner is gone is
+    # reaped. An age bound could not stand in for this: no check has a bounded running time.
+    #
+    # What this leaves open, all of it narrow:
+    #   - a recycled pid that a live non-hook process holds only postpones a reap to a later run;
+    #   - the owner exiting between `kill -0` and `rm`, and a new dispatch taking its pid and
+    #     writing its capture in that gap, loses that capture;
+    #   - `kill -0` cannot see a live owner in another user's account or another pid namespace (a
+    #     container with the worktree bind-mounted, a git dir on a network filesystem shared between
+    #     machines), so a hook running there at the same moment can have its capture reaped.
     if [ -n "$capture" ]; then
-        for stale in "${capture%.$$}".*; do
-            [ -f "$stale" ] && [ "$stale" != "$capture" ] && rm -f "$stale"
+        for stale in "${capture%."$$"}".*; do
+            [ -f "$stale" ] || continue
+            owner=${stale##*.}
+            case "$owner" in
+                '' | *[!0-9]*) continue ;;
+            esac
+            kill -0 "$owner" 2>/dev/null && continue
+            rm -f "$stale"
         done
     fi
     if [ -n "$capture" ] && cat >"$capture" 2>/dev/null; then
