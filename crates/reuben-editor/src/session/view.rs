@@ -1,13 +1,41 @@
-//! The files of the open instrument and whether the engine is playing them.
+//! The files of the open instrument, whether the engine is playing them, and undo and redo.
 
 use std::path::Path;
 
 use eframe::egui;
 
-use super::{Document, Session, Status};
+use super::{Direction, Document, Session, Status};
 
-/// Draw the session down the left of `ui`.
-pub fn show(ui: &mut egui::Ui, session: &Session) {
+const UNDO: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Z);
+const REDO: egui::KeyboardShortcut = egui::KeyboardShortcut::new(
+    egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
+    egui::Key::Z,
+);
+const REDO_ALT: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Y);
+
+/// The undo or redo the keyboard asked for this frame, unless a text field has the keyboard and
+/// its own undo is the one meant.
+pub fn shortcut(ctx: &egui::Context) -> Option<Direction> {
+    if ctx.egui_wants_keyboard_input() {
+        return None;
+    }
+    ctx.input_mut(|input| {
+        // Redo first: a shortcut match ignores an extra Shift, so Undo's would take it.
+        if input.consume_shortcut(&REDO) || input.consume_shortcut(&REDO_ALT) {
+            Some(Direction::Redo)
+        } else if input.consume_shortcut(&UNDO) {
+            Some(Direction::Undo)
+        } else {
+            None
+        }
+    })
+}
+
+/// Draw the session down the left of `ui`. Returns the undo or redo clicked.
+pub fn show(ui: &mut egui::Ui, session: &Session) -> Option<Direction> {
+    let mut asked = None;
     egui::Panel::left("session")
         .resizable(true)
         .default_size(260.0)
@@ -15,6 +43,8 @@ pub fn show(ui: &mut egui::Ui, session: &Session) {
             egui::ScrollArea::vertical()
                 .auto_shrink(false)
                 .show(ui, |ui| {
+                    asked = undo(ui, session);
+                    ui.separator();
                     ui.strong("Files");
                     let beside = session.tree().top().path.parent();
                     for document in session.tree().documents() {
@@ -30,6 +60,28 @@ pub fn show(ui: &mut egui::Ui, session: &Session) {
                     }
                 });
         });
+    asked
+}
+
+fn undo(ui: &mut egui::Ui, session: &Session) -> Option<Direction> {
+    let mut asked = None;
+    ui.horizontal(|ui| {
+        let ctx = ui.ctx().clone();
+        for (direction, label, shortcut) in [
+            (Direction::Undo, "Undo", UNDO),
+            (Direction::Redo, "Redo", REDO),
+        ] {
+            let enabled = session.undo().next(direction).is_some();
+            let button = egui::Button::new(label).shortcut_text(ctx.format_shortcut(&shortcut));
+            if ui.add_enabled(enabled, button).clicked() {
+                asked = Some(direction);
+            }
+        }
+    });
+    if let Some(note) = session.undo().note() {
+        ui.colored_label(ui.visuals().warn_fg_color, note);
+    }
+    asked
 }
 
 fn file(ui: &mut egui::Ui, document: &Document, beside: Option<&Path>) {

@@ -145,8 +145,13 @@ impl eframe::App for Editor {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.follow_files(ui);
         egui::Panel::top("audio").show(ui, |ui| self.audio.ui(ui, &mut self.engine));
-        if let Some(session) = &self.session {
-            session::show(ui, session);
+        if let Some(session) = &mut self.session {
+            let asked = session::shortcut(ui.ctx()).or(session::show(ui, session));
+            if let Some(direction) = asked {
+                edit::restore(session, &|| self.engine.channel(), direction);
+                // The reload it made is taken in by the next frame's poll.
+                ui.ctx().request_repaint();
+            }
         }
         // Before the central panel, which takes whatever space is left.
         self.controls.show(ui, &self.engine);
