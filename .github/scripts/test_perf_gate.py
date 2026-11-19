@@ -1,4 +1,4 @@
-"""Tests for perf-gate.sh's handling of the working tree it swaps.
+"""Tests for perf-gate.sh's handling of the working tree it swaps, and of the new-operator skip list.
 
 The gate swaps its source closure to the baseline with `git checkout <ref> -- <paths>`, which
 rewrites the working tree and the index at those paths without a prompt. So it must refuse to start
@@ -23,8 +23,9 @@ import unittest
 
 SCRIPT = pathlib.Path(__file__).with_name("perf-gate.sh").resolve()
 
-# One file per swapped pathspec, so every member of the swap set is exercised. The census file has to
-# carry a `WORKLOADS` const, or the gate stops at its census check before it reaches a swap.
+# One file per swapped pathspec, so every member of the swap set is exercised. The baseline predates
+# the kinds file, so its census is the `WORKLOADS` const the gate falls back to; HEAD carries the
+# kinds file, or the gate stops at its census check before it reaches a swap.
 _BASE_TREE = {
     "crates/reuben-document/src/lib.rs": "// document base\n",
     "crates/reuben-core/src/lib.rs": "// core base\n",
@@ -40,7 +41,10 @@ _BASE_TREE = {
 }
 # Tracked at the baseline although the ignore rules cover it; HEAD deletes it.
 _BASE_IGNORED = "instruments/take.wav"
+_KINDS_FILE = "crates/reuben-document/benches/micro_kinds.txt"
+_BENCH_SUPPORT = "crates/reuben-core/src/bench_support.rs"
 _HEAD_CHANGES = {
+    _KINDS_FILE: "# generated\ngain\n",
     "crates/reuben-core/src/lib.rs": "// core head\n",
     "crates/reuben-core/src/added.rs": "// only HEAD has this\n",
     "instruments/pad.json": '{"v": 2}\n',
@@ -55,6 +59,7 @@ seen=""
 [ -e crates/reuben-core/src/retired.rs ] && seen="$seen retired"
 [ -e crates/reuben-core/src/added.rs ] && seen="$seen added"
 echo "$* |$seen" >>"$PERF_GATE_TEST_LOG"
+[ -n "$PERF_GATE_TEST_SKIP_LOG" ] && echo "${REUBEN_MICRO_BENCH_SKIP-unset}" >>"$PERF_GATE_TEST_SKIP_LOG"
 [ -n "$PERF_GATE_TEST_SLEEP" ] && sleep "$PERF_GATE_TEST_SLEEP"
 exit 1
 """
@@ -102,6 +107,7 @@ class PerfGateWorkingTree(unittest.TestCase):
         self.env["PERF_GATE_TEST_REPO"] = str(self.repo)
         self.env["PERF_GATE_TEST_LOG"] = str(self.cargo_log)
         self.env.pop("PERF_GATE_TEST_SLEEP", None)
+        self.env.pop("PERF_GATE_TEST_SKIP_LOG", None)
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -281,6 +287,152 @@ class PerfGateWorkingTree(unittest.TestCase):
         self.assertEqual(_git(self.repo, "status", "--porcelain", "--untracked-files=all"), "")
         self.assertEqual(self._tracked_state(), self.head_tree)
 
+
+def _kinds_file(*kinds: str) -> str:
+    return "# Generated. Do not hand-edit.\n" + "".join(f"{k}\n" for k in kinds)
+
+
+def _workloads(*kinds: str) -> str:
+    """A `bench_support.rs` whose `WORKLOADS` names `kinds`, with the prose and the trailing quoted
+    strings the scan has to stay clear of. `overhead` is named by its const, as the real table did."""
+    lines = "".join(
+        "    w(overhead::KIND, Recipe::Default),\n" if k == "overhead" else f'    w("{k}", Recipe::Default),\n'
+        for k in kinds
+    )
+    return (
+        "//! `pub const WORKLOADS` is mentioned in prose too.\n"
+        f"pub const WORKLOADS: &[Workload] = &[\n{lines}];\n"
+        'pub const SAMPLE_LOOP: &str = "not_a_kind";\n'
+    )
+
+
+def _legacy_skip(head: list[str], base: list[str]) -> str:
+    """The skip list the gate computed before the kinds file existed, when both sides' `WORKLOADS`
+    named every benched kind: HEAD's kinds minus the baseline's, sorted, comma-joined. The scan never
+    saw `overhead`, which both sides named by its const."""
+    return ",".join(sorted((set(head) - set(base)) - {"overhead"}))
+
+
+class PerfGateNewOperatorSkip(unittest.TestCase):
+    """`REUBEN_MICRO_BENCH_SKIP`: the kinds HEAD benches that the baseline cannot register.
+
+    Each case writes the census each side carries, runs the real gate with the `cargo` stub, and
+    reads the value every bench run received. The expectation is always `_legacy_skip` over the full
+    kind sets the two sides bench — what the gate computed when `WORKLOADS` still listed every kind.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        root = pathlib.Path(self._tmp.name)
+        self.repo = root / "repo"
+        self.repo.mkdir()
+        _git(self.repo, "init", "-q")
+        _git(self.repo, "config", "user.email", "test@example.invalid")
+        _git(self.repo, "config", "user.name", "test")
+        _git(self.repo, "config", "commit.gpgsign", "false")
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        stub = bin_dir / "cargo"
+        stub.write_text(_STUB)
+        stub.chmod(0o755)
+        self.skip_log = root / "skip.log"
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith("GITHUB_")}
+        self.env["PATH"] = f"{bin_dir}{os.pathsep}{self.env['PATH']}"
+        self.env["PERF_GATE_TEST_REPO"] = str(self.repo)
+        self.env["PERF_GATE_TEST_LOG"] = str(root / "cargo.log")
+        self.env["PERF_GATE_TEST_SKIP_LOG"] = str(self.skip_log)
+        self.env.pop("PERF_GATE_TEST_SLEEP", None)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _commit(self, files: dict[str, str], message: str) -> str:
+        for rel, text in files.items():
+            path = self.repo / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-q", "--allow-empty", "-m", message)
+        return _git(self.repo, "rev-parse", "HEAD").strip()
+
+    def _run(self, base: dict[str, str], head: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        """Commit `base`, then `head` over it, and run the gate from HEAD against `base`."""
+        tree = {k: v for k, v in _BASE_TREE.items() if k != _BENCH_SUPPORT}
+        base_sha = self._commit({**tree, **base}, "base")
+        self._commit(head, "head")
+        return subprocess.run(
+            ["bash", str(SCRIPT), base_sha],
+            cwd=self.repo,
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+    def _skip(self, base: dict[str, str], head: dict[str, str]) -> str:
+        """Run the gate over `base` and `head` (see `_run`) and return the one skip list every
+        bench run was handed."""
+        proc = self._run(base, head)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        seen = set(self.skip_log.read_text().splitlines())
+        self.assertEqual(len(seen), 1, f"bench runs were handed different skip lists: {seen}")
+        return seen.pop()
+
+    # -- baseline that has the kinds file --------------------------------------------------------
+
+    def test_baseline_with_the_kinds_file_and_no_new_operator(self) -> None:
+        kinds = ["chord", "gain", "overhead"]
+        census = {_KINDS_FILE: _kinds_file(*kinds), _BENCH_SUPPORT: _workloads("chord")}
+        self.assertEqual(self._skip(census, {}), _legacy_skip(kinds, kinds))
+        self.assertEqual(_legacy_skip(kinds, kinds), "")
+
+    def test_baseline_with_the_kinds_file_and_a_new_operator(self) -> None:
+        base = ["chord", "gain", "overhead"]
+        head = ["chord", "delay", "gain", "overhead"]
+        # The baseline's `WORKLOADS` names only its recipe overrides. Reading it instead of the kinds
+        # file would skip `gain` and `overhead` too, which the baseline benches.
+        skip = self._skip(
+            {_KINDS_FILE: _kinds_file(*base), _BENCH_SUPPORT: _workloads("chord")},
+            {_KINDS_FILE: _kinds_file(*head)},
+        )
+        self.assertEqual(skip, _legacy_skip(head, base))
+        self.assertEqual(skip, "delay")
+
+    # -- baseline from before the kinds file: the `WORKLOADS` fallback ----------------------------
+
+    def test_baseline_without_the_kinds_file_and_no_new_operator(self) -> None:
+        kinds = ["chord", "gain", "overhead", "sample_loop"]
+        skip = self._skip(
+            {_BENCH_SUPPORT: _workloads(*kinds)},
+            {_KINDS_FILE: _kinds_file(*kinds), _BENCH_SUPPORT: _workloads("chord", "sample_loop")},
+        )
+        self.assertEqual(skip, _legacy_skip(kinds, kinds))
+        self.assertEqual(skip, "")
+
+    def test_baseline_without_the_kinds_file_and_new_operators(self) -> None:
+        base = ["chord", "gain", "overhead", "sample_loop"]
+        head = ["add_f32_value", "chord", "gain", "overhead", "sample_loop", "zigzag"]
+        skip = self._skip(
+            {_BENCH_SUPPORT: _workloads(*base)},
+            {_KINDS_FILE: _kinds_file(*head), _BENCH_SUPPORT: _workloads("chord", "sample_loop")},
+        )
+        self.assertEqual(skip, _legacy_skip(head, base))
+        self.assertEqual(skip, "add_f32_value,zigzag")
+
+    # -- the head census guard ----------------------------------------------------------------------
+
+    def _assert_census_refused(self, head: dict[str, str]) -> None:
+        proc = self._run({_BENCH_SUPPORT: _workloads("gain")}, head)
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("Operator census not found", proc.stdout)
+        self.assertIn("gen_bench_census", proc.stdout)
+        self.assertFalse(self.skip_log.exists(), "the gate benched without a census")
+
+    def test_head_without_the_kinds_file_fails_before_any_bench(self) -> None:
+        self._assert_census_refused({})
+
+    def test_head_kinds_file_with_no_kinds_fails_before_any_bench(self) -> None:
+        self._assert_census_refused({_KINDS_FILE: "# comments only\n"})
 
 if __name__ == "__main__":
     unittest.main()

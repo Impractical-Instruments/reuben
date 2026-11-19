@@ -1,17 +1,19 @@
 //! Per-operator micro-benchmark bridge.
 //!
-//! The macro layer ([`benches/macro_*`](../../benches)) benches end-to-end `render_block` of a real
-//! instrument; this module drives one operator's [`Operator::process`] directly, through the real
-//! engine via [`OpDriver`](crate::op_driver), so a regression is attributable to that operator.
-//! [`WORKLOADS`](crate::bench_support::WORKLOADS) is the single source of truth for which operators
-//! are benched and how; `tests` forces it to stay in sync with the registry and with
-//! `micro_iai.rs`'s CI census.
+//! The macro layer ([`benches/macro_*`](../../benches)) benches end-to-end `render_block` of a
+//! real instrument; this module drives one operator's [`Operator::process`] directly, through the
+//! real engine via [`OpDriver`](crate::op_driver), so a regression is attributable to that
+//! operator. Every kind in [`crate::bench_census::kinds`] is benched;
+//! [`WORKLOADS`](crate::bench_support::WORKLOADS) names only the ones that need a recipe other than
+//! [`Recipe::Default`](crate::bench_support::Recipe::Default), and
+//! [`all_workloads`](crate::bench_support::all_workloads) applies it.
 
 use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 use num_traits::Float;
 
+use crate::bench_census;
 use crate::descriptor::{Descriptor, PortType};
 use crate::op_driver::OpDriver;
 use crate::registry::Registry;
@@ -25,8 +27,7 @@ pub const BLOCK_SIZE: usize = 128;
 /// `375 * 128 == 48_000` == exactly 1 s of audio, the same fixed schedule the macro layer renders.
 pub const BLOCKS: usize = 375;
 
-/// How an operator's inputs are driven for its micro bench. One per [`WORKLOADS`] entry; the
-/// variant captures the *minimum* a given operator needs to exercise its real per-sample path
+/// How an operator's inputs are driven for its micro bench. The variant captures the *minimum* a given operator needs to exercise its real per-sample path
 /// rather than an early-out idle path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Recipe {
@@ -75,11 +76,10 @@ pub enum Recipe {
     Value,
 }
 
-/// One operator's micro-bench workload: its registry `kind` and how to drive it. The whole table
-/// is `const`, so it doubles as the forcing-function census (see `tests`).
+/// One micro-bench workload: its kind and how to drive it.
 #[derive(Debug, Clone, Copy)]
 pub struct Workload {
-    /// The operator's [`Descriptor::type_name`] / registry key.
+    /// The operator's [`Descriptor::type_name`] / registry key, or a bench-only kind.
     pub kind: &'static str,
     pub recipe: Recipe,
 }
@@ -88,99 +88,27 @@ const fn w(kind: &'static str, recipe: Recipe) -> Workload {
     Workload { kind, recipe }
 }
 
-/// Every built-in operator, with the recipe that exercises its real path, plus the bench-only
-/// [`overhead`] case. MUST stay in lockstep with [`Registry::builtin`] — the forcing-function test
-/// fails CI if an operator is missing here (`overhead` is its one carved-out exception: benched but
-/// deliberately unregistered). Keep alphabetical for easy diffing against the registry's stable
-/// (type-name) order.
+/// The kinds whose micro bench needs a recipe other than [`Recipe::Default`]. Every other kind in
+/// [`bench_census::kinds`] is benched with `Default` and has no line here. Keep alphabetical.
 pub const WORKLOADS: &[Workload] = &[
-    w("abs_f32_signal", Recipe::Default),
-    w("abs_f32_value", Recipe::Default),
-    w("abs_i32_value", Recipe::Default),
-    w("add_f32_signal", Recipe::Default),
-    w("add_f32_value", Recipe::Default),
-    w("add_i32_value", Recipe::Default),
-    w("ceil_f32_i32_value", Recipe::Default),
-    w("ceil_f32_signal", Recipe::Default),
-    w("ceil_f32_value", Recipe::Default),
     w("chord", Recipe::ChordSet),
-    w("clamp_f32_signal", Recipe::Default),
-    w("clamp_f32_value", Recipe::Default),
-    w("clamp_i32_value", Recipe::Default),
-    w("clock", Recipe::Default),
     w("compressor", Recipe::Sidechain),
-    w("delay", Recipe::Default),
     w("differentiate_f32_signal", Recipe::Value),
-    w("div_f32_signal", Recipe::Default),
-    w("div_f32_value", Recipe::Default),
-    w("div_i32_value", Recipe::Default),
-    w("djfilter", Recipe::Default),
     w("envelope", Recipe::Gate),
     w("euclid", Recipe::Clocked),
-    w("filter", Recipe::Default),
-    w("floor_f32_i32_value", Recipe::Default),
-    w("floor_f32_signal", Recipe::Default),
-    w("floor_f32_value", Recipe::Default),
     w("granulator", Recipe::Grains),
-    w("harmony", Recipe::Default),
     w("integrate_f32_signal", Recipe::Value),
-    w("lfo", Recipe::Default),
     w("m2s", Recipe::Value),
-    w("map_f32_signal", Recipe::Default),
-    w("map_f32_value", Recipe::Default),
-    w("max_f32_signal", Recipe::Default),
-    w("max_f32_value", Recipe::Default),
-    w("max_i32_value", Recipe::Default),
-    w("min_f32_signal", Recipe::Default),
-    w("min_f32_value", Recipe::Default),
-    w("min_i32_value", Recipe::Default),
-    w("modulo_f32_signal", Recipe::Default),
-    w("modulo_f32_value", Recipe::Default),
-    w("modulo_i32_value", Recipe::Default),
-    w("mul_f32_signal", Recipe::Default),
-    w("mul_f32_value", Recipe::Default),
-    w("mul_i32_value", Recipe::Default),
-    w("negate_f32_signal", Recipe::Default),
-    w("negate_f32_value", Recipe::Default),
-    w("negate_i32_value", Recipe::Default),
-    w("noise", Recipe::Default),
     w("osc_out", Recipe::Value),
-    w("oscillator", Recipe::Default),
-    w("output", Recipe::Default),
-    // Bench-only, not a registered operator (see the [`overhead`] module): the zero-DSP point that
-    // isolates the engine's per-node stepping overhead as its own gated, attributable case.
-    w(overhead::KIND, Recipe::Default),
-    w("pan", Recipe::Default),
-    w("pitch2freq", Recipe::Default),
     w("plucked_string", Recipe::Gate),
-    w("power_f32_signal", Recipe::Default),
-    w("power_f32_value", Recipe::Default),
-    w("reciprocal_f32_signal", Recipe::Default),
-    w("reciprocal_f32_value", Recipe::Default),
     w("resonator", Recipe::Gate),
-    w("reverb", Recipe::Default),
-    w("round_f32_i32_value", Recipe::Default),
-    w("round_f32_signal", Recipe::Default),
-    w("round_f32_value", Recipe::Default),
     w("sample", Recipe::Sample),
-    // A literal, not `SAMPLE_LOOP`: the perf gate reads this table's quoted kinds with a text scan
-    // to skip baseline-absent workloads, and a const name is invisible to it.
-    w("sample_loop", Recipe::SampleLoop),
+    w(SAMPLE_LOOP, Recipe::SampleLoop),
     w("saturator", Recipe::Audio),
     w("sequencer", Recipe::Clocked),
     w("snap", Recipe::Notes),
     w("strum", Recipe::Position),
-    w("sub_f32_signal", Recipe::Default),
-    w("sub_f32_value", Recipe::Default),
-    w("sub_i32_value", Recipe::Default),
-    // `subpatch` registers no ports and dissolves at build, so the loader never
-    // lets one reach a Plan; the harness constructs it directly and steps its no-op `process`,
-    // benching the format anchor for census completeness.
-    w("subpatch", Recipe::Default),
     w("transpose", Recipe::Notes),
-    w("trunc_f32_i32_value", Recipe::Default),
-    w("trunc_f32_signal", Recipe::Default),
-    w("trunc_f32_value", Recipe::Default),
     // `unpack_note`'s `in` is a `Note` port (like `osc_out`), so `Value` pushes an event into it —
     // one note runs the frame-sorted latch + field emits rather than the idle baseline.
     w("unpack_note", Recipe::Value),
@@ -209,7 +137,7 @@ pub mod overhead {
     use crate::operator::{Io, Operator};
 
     /// The workload/bench kind string — a name the registry census must never claim.
-    pub const KIND: &str = "overhead";
+    pub const KIND: &str = crate::bench_census::OVERHEAD;
 
     // A representative surface, not a used one: two held Values + a Signal out is the modal
     // operator shape, so the engine builds/clears/materializes what it would for a real node.
@@ -243,23 +171,23 @@ pub mod overhead {
     }
 }
 
-/// A second workload for the sample player: loop mode, which the one-shot `Recipe::Sample` never
-/// reaches. Bench-only like [`overhead`], but it benches a registered operator rather than a probe,
-/// so [`OpHarness::for_kind`] resolves it through [`VARIANTS`] to the operator it drives.
-pub const SAMPLE_LOOP: &str = "sample_loop";
+pub use crate::bench_census::{SAMPLE_LOOP, VARIANTS};
 
-/// Workload kinds that bench a mode of a registered operator, as `(workload kind, operator kind)`.
-/// Each gets its own gated case, so a mode the default recipe never reaches has a baseline of its
-/// own. The census forcing function carves these out alongside [`overhead`].
-pub const VARIANTS: &[(&str, &str)] = &[(SAMPLE_LOOP, "sample")];
-
-/// Look up the workload for an operator kind. Panics if absent — a bench referenced a kind with no
-/// workload, which the forcing-function test would also have caught.
-pub fn workload(kind: &str) -> Workload {
-    *WORKLOADS
+/// The recipe `kind` is benched with: its [`WORKLOADS`] line, else [`Recipe::Default`].
+pub fn recipe(kind: &str) -> Recipe {
+    WORKLOADS
         .iter()
         .find(|w| w.kind == kind)
-        .unwrap_or_else(|| panic!("no micro-bench workload for operator kind {kind:?}"))
+        .map_or(Recipe::Default, |w| w.recipe)
+}
+
+/// Every micro-bench workload: each kind in [`bench_census::kinds`] with its [`recipe`], sorted by
+/// kind.
+pub fn all_workloads() -> Vec<Workload> {
+    bench_census::kinds(&Registry::builtin())
+        .into_iter()
+        .map(|kind| w(kind, recipe(kind)))
+        .collect()
 }
 
 /// A fully-prepared single-operator bench. Built by [`OpHarness::for_kind`] *outside* the measured
@@ -273,7 +201,7 @@ pub struct OpHarness {
 }
 
 impl OpHarness {
-    /// Build the bench for an operator `kind`, applying its [`WORKLOADS`] recipe through a real
+    /// Build the bench for an operator `kind`, applying its [`recipe`] through a real
     /// [`OpDriver`]. Setup only — plan instantiation, resource decode, and event/buffer construction
     /// all happen here, never in [`render`](Self::render).
     pub fn for_kind(kind: &str) -> Self {
@@ -295,7 +223,7 @@ impl OpHarness {
             .unwrap_or_else(|| panic!("unknown operator kind {op:?}"));
         let desc = entry.descriptor.clone();
         let mut driver = OpDriver::from_boxed((entry.make)(), desc.clone(), SAMPLE_RATE);
-        apply_recipe(&mut driver, &desc, workload(kind).recipe);
+        apply_recipe(&mut driver, &desc, recipe(kind));
         Self {
             driver,
             frames: BLOCKS * BLOCK_SIZE,
@@ -420,44 +348,29 @@ mod tests {
     use super::*;
     use alloc::collections::BTreeSet;
 
-    /// Forcing function: every registered operator must have a [`WORKLOADS`] entry, so a new
-    /// operator can't silently escape the micro layer. Runs in the `check` job under
-    /// `--features bench`.
+    /// Every [`WORKLOADS`] line overrides a kind that is benched, with a recipe that differs from
+    /// the one it would get anyway — so a removed or renamed operator cannot leave a dead override,
+    /// and the table cannot drift back into restating the registry.
     #[test]
-    fn every_operator_has_a_micro_bench_workload() {
-        let registered: BTreeSet<&str> = Registry::builtin().type_names().collect();
-        let mut benched: BTreeSet<&str> = WORKLOADS.iter().map(|w| w.kind).collect();
-        // The one deliberate registry/bench asymmetry: `overhead` is benched but never registered
-        // (bench-only, not part of the instrument format — see the `overhead` module docs). Remove
-        // it before comparing; if it ever *does* get registered, the duplicate-name panic in
-        // `Registry::builtin` and the assert below both have it covered.
-        assert!(
-            benched.remove(overhead::KIND),
-            "the bench-only `overhead` workload disappeared from WORKLOADS"
-        );
-        assert!(
-            !registered.contains(overhead::KIND),
-            "`overhead` is bench-only and must never be a registered operator — registering it \
-             would leak it into the schema and patchable graphs"
-        );
-        // Mode variants bench a registered operator under a second name: drop the name, and hold
-        // the operator it drives to the registry.
-        for (variant, op) in VARIANTS {
+    fn every_workload_override_is_live() {
+        let benched: BTreeSet<&str> = bench_census::kinds(&Registry::builtin())
+            .into_iter()
+            .collect();
+        let mut seen = BTreeSet::new();
+        for w in WORKLOADS {
             assert!(
-                benched.remove(variant),
-                "the {variant:?} variant workload disappeared from WORKLOADS"
+                benched.contains(w.kind),
+                "WORKLOADS names {:?}, which is not a micro-bench kind — remove the stale line",
+                w.kind
             );
             assert!(
-                registered.contains(op) && !registered.contains(variant),
-                "variant {variant:?} must drive a registered operator ({op:?}) under a name the \
-                 registry does not claim"
+                w.recipe != Recipe::Default,
+                "WORKLOADS names {:?} with Recipe::Default, which every kind gets without a line — \
+                 remove it",
+                w.kind
             );
+            assert!(seen.insert(w.kind), "WORKLOADS names {:?} twice", w.kind);
         }
-        assert_eq!(
-            registered, benched,
-            "WORKLOADS is out of sync with the operator registry — add a `w(\"<kind>\", …)` entry \
-             in bench_support.rs for any new operator (or remove a stale one)"
-        );
     }
 
     /// The overhead case is a true zero-DSP point: a typical port surface (two Values in, one
@@ -484,87 +397,12 @@ mod tests {
         assert!(driver.emits().is_empty(), "overhead must emit nothing");
     }
 
-    /// The kinds `micro_iai.rs`'s `micro_bench_ops!` census names, read out of that file's own
-    /// source.
-    ///
-    /// The census cannot be a const here for `micro_iai.rs` to consume: the perf gate swaps
-    /// `reuben-core/src` to the baseline ref while keeping the HEAD bench, so a census in this file
-    /// would vanish from under the run (the same constraint that keeps the skip list in the
-    /// harness). The bench itself lives in `reuben-document` — every realistic workload is an
-    /// instrument document — which is why this path climbs out of the crate; the gate never swaps
-    /// `benches/`, so reading across is reading HEAD either way. And it cannot be introspected from the bench either, since a `harness = false`
-    /// bench hosts no libtest. Reading the source is what lets the list exist exactly once: the
-    /// alternative was a hand-kept `MICRO_IAI_KINDS` mirror, which two lists can drift *together*
-    /// and still satisfy.
-    ///
-    /// The scan is bounded to the `micro_bench_ops! {` invocation block rather than run over the
-    /// whole file, because the file *talks about* its own line shape: matching `=> "…"` anywhere
-    /// picked up `"<operator kind>"` and `"kind"` out of the doc comments. Block delimiters are
-    /// structural, so prose above and below cannot leak in whatever the docs say.
-    fn iai_census_kinds() -> BTreeSet<&'static str> {
-        const SRC: &str = include_str!("../../reuben-document/benches/micro_iai.rs");
-        SRC.lines()
-            .skip_while(|l| !l.starts_with("micro_bench_ops! {"))
-            .skip(1)
-            .take_while(|l| !l.starts_with('}'))
-            .filter_map(|l| {
-                let (_, rest) = l.split_once("=> \"")?;
-                let (kind, _) = rest.split_once('"')?;
-                Some(kind)
-            })
-            .collect()
-    }
-
-    /// Forcing function: the iai CI gate must cover every workload, so a new operator can't be
-    /// benched locally (criterion auto-iterates `WORKLOADS`) yet escape the gate. Lives here, not
-    /// beside the iai bench, because a `harness = false` bench can't host a libtest. On failure:
-    /// add the missing `<id> => "<kind>",` line to `micro_iai.rs`'s `micro_bench_ops!`.
-    #[test]
-    fn iai_list_covers_every_workload() {
-        let benched: BTreeSet<&str> = WORKLOADS.iter().map(|w| w.kind).collect();
-        assert_eq!(
-            benched,
-            iai_census_kinds(),
-            "micro_iai.rs's `micro_bench_ops!` census is out of sync with WORKLOADS"
-        );
-    }
-
-    /// The scan backing [`iai_census_kinds`] is the one part of the forcing function with no
-    /// compiler behind it, so pin its shape directly rather than trusting the comparison above to
-    /// notice. A scan that reads *too little* is caught there (it would demand entries already
-    /// present); a scan that reads *too much* is what actually happened on the first attempt, when
-    /// an unbounded scan pulled `"<operator kind>"` out of a doc comment.
-    #[test]
-    fn iai_census_scan_reads_exactly_the_census() {
-        let kinds = iai_census_kinds();
-        assert!(
-            kinds.len() > 50,
-            "the census scan found only {} kinds — the `<id> => \"<kind>\",` shape in \
-             micro_iai.rs likely changed and the scan no longer matches it",
-            kinds.len()
-        );
-        // Every operator kind is a snake_case type name. Prose swept up from a comment would not
-        // be, which is the failure this guards.
-        for k in &kinds {
-            assert!(
-                !k.is_empty()
-                    && k.bytes()
-                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
-                "{k:?} is not an operator kind — the census scan is reading past the \
-                 `micro_bench_ops! {{ .. }}` block"
-            );
-        }
-        // The bench-only case is in the census but never in the registry, so it is the one kind
-        // whose presence proves the scan reaches lines the registry could not have supplied.
-        assert!(kinds.contains(overhead::KIND), "{kinds:?}");
-    }
-
     /// Every workload builds and renders a full block schedule without panicking — a cheap smoke
     /// test that the harness wires each operator's `Io` correctly (right slice lengths, resource
     /// bound, latch/streams attached) regardless of its port shape.
     #[test]
     fn every_workload_renders() {
-        for w in WORKLOADS {
+        for w in all_workloads() {
             let out = OpHarness::for_kind(w.kind).render();
             assert!(
                 out.is_finite(),

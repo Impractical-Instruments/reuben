@@ -3,18 +3,18 @@
 //! companion to `macro_criterion` — when the macro layer flags a graph got slower, this attributes
 //! it to an operator. Dev-facing; never runs in CI (the gate is `micro_iai`).
 //!
-//! Iterates [`WORKLOADS`] at runtime, so a new operator is benched automatically once it has a
-//! workload entry. Run via `cargo reuben-bench --bench micro_criterion` (the alias enables the
+//! Iterates [`all_workloads`] at runtime, so a new operator is benched as soon as it is
+//! registered. Run via `cargo reuben-bench --bench micro_criterion` (the alias enables the
 //! `bench` feature this target requires).
 
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
-use reuben_core::bench_support::{OpHarness, BLOCKS, BLOCK_SIZE, WORKLOADS};
+use reuben_core::bench_support::{all_workloads, OpHarness, BLOCKS, BLOCK_SIZE};
 
 fn operators(c: &mut Criterion) {
     let mut group = c.benchmark_group("operator");
     // One iteration renders BLOCKS*BLOCK_SIZE frames; throughput => samples/sec.
     group.throughput(Throughput::Elements((BLOCKS * BLOCK_SIZE) as u64));
-    for w in WORKLOADS {
+    for w in all_workloads() {
         group.bench_function(w.kind, |b| {
             // Rebuild fresh state per iteration so operator state never carries over; only the
             // render loop is timed.

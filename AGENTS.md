@@ -21,6 +21,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --features reuben-document/bench,
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p reuben-editor  # the editor's doc gate
 cargo run -p reuben-native --example gen_library_index # after ANY instrument change
 cargo run -p reuben-document --example gen_vocabulary      # after editing docs/agents/vocabulary.json
+cargo run -p reuben-core --example gen_bench_census    # after adding/renaming/removing an operator
 cargo run -p reuben-native --bin reuben -- describe    # list operators/ports/params
 ```
 
