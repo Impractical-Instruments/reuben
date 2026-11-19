@@ -138,6 +138,7 @@ jobs:
               - '**/Cargo.toml'
               - 'Cargo.lock'
               - 'deny.toml'
+              - '.github/about/**'
               - '.github/workflows/ci.yml'
             # The dashboard renders both trends and is the half a human actually reads. Its own
             # filter rather than riding `eval`'s: that job builds `reuben-mcp` twice and swaps the
@@ -275,28 +276,41 @@ jobs:
         run: cargo test -p reuben-editor
 
   # Every crate in the tree, the editor's included and on every target, must carry a licence
-  # `deny.toml` allows. The release archives ship third-party notices generated from the same
-  # tree, so a crate whose licence is not on the list fails here rather than at a release.
+  # `deny.toml` allows. The release archives ship third-party notices that cargo-about generates
+  # from the same tree under `.github/about/`, so the job also generates each one the release
+  # does: a crate cargo-about cannot identify, or a drift between its accepted set and deny's,
+  # fails here rather than at a tag.
   licenses:
-    name: dependency licences (cargo-deny)
+    name: dependency licences (cargo-deny, cargo-about)
     runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.licenses == 'true' && (github.event_name == 'push' || github.event.pull_request.draft == false)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # cargo-deny reads the graph through `cargo metadata`, which resolves the pinned toolchain.
+      # Both tools read the graph through `cargo metadata`, which resolves the pinned toolchain.
       - name: Setup pinned Rust toolchain
         uses: ./.github/actions/setup-rust
 
-      - name: Install cargo-deny
+      # The same versions release.yml installs.
+      - name: Install cargo-deny and cargo-about
         uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
         with:
-          tool: cargo-deny@0.20.2
+          tool: cargo-deny@0.20.2,cargo-about@0.9.3
 
-      # `--workspace` takes in reuben-editor, which is outside `default-members`.
       - name: Check licences
         run: cargo deny --workspace --locked check licenses
+
+      # Every package and target pair release.yml generates notices for.
+      - name: Generate release notices
+        run: |
+          for target in x86_64-unknown-linux-gnu x86_64-pc-windows-msvc aarch64-apple-darwin; do
+            for package in reuben-native reuben-editor; do
+              cargo about generate --locked --fail --target "$target" \
+                -c .github/about/about.toml -m "crates/$package/Cargo.toml" \
+                -o /dev/null .github/about/notices.hbs
+            done
+          done
 
   windows:
     name: build + test (windows)

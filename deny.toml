@@ -12,12 +12,13 @@ allow = [
     "Apache-2.0",
     "MIT",
     "BSD-3-Clause",
+    # Permissive (inotify, inotify-sys, libloading).
     "ISC",
-    # Permissive, attribution-only; the Windows clipboard crates arboard pulls in take no other.
+    # Boost: permissive, no notice required in a binary (clipboard-win, error-code, under arboard).
     "BSL-1.0",
     # Public-domain dedication (notify).
     "CC0-1.0",
-    # Permissive, attribution-only (foldhash, slotmap, zlib-rs).
+    # Permissive; no notice required in a binary (foldhash, slotmap, zlib-rs).
     "Zlib",
     # The Unicode data licence, which unicode-ident's tables carry alongside MIT/Apache.
     "Unicode-3.0",
