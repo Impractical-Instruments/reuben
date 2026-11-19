@@ -559,6 +559,17 @@ impl ReubenServer {
     }
 
     #[tool(
+        name = "remove_instrument_constant",
+        output_schema = edit_result_schema()
+    )]
+    async fn remove_instrument_constant(
+        &self,
+        Parameters(p): Parameters<authoring::RemoveInstrumentConstant>,
+    ) -> Result<CallToolResult, McpError> {
+        answered(authoring::remove_instrument_constant(&p, &store(&p.source)))
+    }
+
+    #[tool(
         name = "add_instrument_interface_input",
         output_schema = edit_result_schema()
     )]
@@ -637,6 +648,20 @@ impl ReubenServer {
         Parameters(p): Parameters<authoring::SetInstrumentInterfaceOutputMeta>,
     ) -> Result<CallToolResult, McpError> {
         answered(authoring::set_instrument_interface_output_meta(
+            &p,
+            &store(&p.source),
+        ))
+    }
+
+    #[tool(
+        name = "clear_instrument_interface_meta",
+        output_schema = edit_result_schema()
+    )]
+    async fn clear_instrument_interface_meta(
+        &self,
+        Parameters(p): Parameters<authoring::ClearInstrumentInterfaceMeta>,
+    ) -> Result<CallToolResult, McpError> {
+        answered(authoring::clear_instrument_interface_meta(
             &p,
             &store(&p.source),
         ))

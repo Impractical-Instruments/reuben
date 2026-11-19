@@ -323,6 +323,21 @@ pub struct SetInstrumentConstant {
     pub expect: Option<String>,
 }
 
+/// Arguments for `remove_instrument_constant`: drop a node's constant back to the operator's
+/// default.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveInstrumentConstant {
+    /// The document to edit.
+    pub source: String,
+    /// The address of the node.
+    pub address: String,
+    /// The constant name to remove.
+    pub name: String,
+    #[serde(default)]
+    pub expect: Option<String>,
+}
+
 /// Arguments for `add_instrument_interface_input`: add a boundary input pipe.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -438,6 +453,42 @@ pub struct SetInstrumentInterfaceOutputMeta {
     pub max: Option<f64>,
     #[serde(default)]
     pub unit: Option<String>,
+    #[serde(default)]
+    pub expect: Option<String>,
+}
+
+/// Which half of the interface a pipe is declared in: input and output pipe names are separate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PipeDirection {
+    Input,
+    Output,
+}
+
+/// A pipe metadata field the set-meta verbs write. `curve` is an input pipe's only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MetaField {
+    Channel,
+    Min,
+    Max,
+    Curve,
+    Unit,
+}
+
+/// Arguments for `clear_instrument_interface_meta`: remove metadata fields from a pipe.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ClearInstrumentInterfaceMeta {
+    /// The document to edit.
+    pub source: String,
+    /// The pipe name.
+    pub name: String,
+    /// Whether `name` is an input or an output pipe.
+    pub direction: PipeDirection,
+    /// The fields to remove.
+    #[schemars(length(min = 1))]
+    pub fields: Vec<MetaField>,
     #[serde(default)]
     pub expect: Option<String>,
 }

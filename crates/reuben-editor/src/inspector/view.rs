@@ -213,10 +213,31 @@ fn node(
             .show(ui, |ui| {
                 for field in fields {
                     row(ui, inspector, field, hash, problems, asks);
+                    if let Some(edit) = reset(ui, field) {
+                        asks.push(Ask::Edit(edit, Some(hash.to_string())));
+                    }
                     ui.end_row();
                 }
             });
     }
+}
+
+/// A button on a constant the node sets, to remove it so the operator's default applies again.
+fn reset(ui: &mut egui::Ui, field: &Field) -> Option<Edit> {
+    let edit = removal(field)?;
+    (ui.small_button("reset"))
+        .on_hover_text("Remove this constant: the operator's default applies.")
+        .clicked()
+        .then_some(edit)
+}
+
+/// The edit removing `field`'s constant, when it is a constant the node sets. A node of unknown
+/// type has no default to fall back to, so its constants have none.
+pub(super) fn removal(field: &Field) -> Option<Edit> {
+    (field.target.constant && field.set && !field.kind.is_empty()).then(|| Edit::RemoveConstant {
+        address: field.target.address.clone(),
+        name: field.target.name.clone(),
+    })
 }
 
 fn row(

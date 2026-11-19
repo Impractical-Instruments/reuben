@@ -194,6 +194,11 @@ fn every_input_verb_resolves_a_pipe_address_and_refuses_in_its_terms() {
                 .unwrap_err(),
             "`config`",
         ),
+        (
+            "remove_constant",
+            remove_instrument_constant(SRC, "/cutoff", "voices", &registry, &resolver).unwrap_err(),
+            "`config`",
+        ),
     ];
     for (verb, err, why) in refusals {
         let message = err.to_string();
@@ -2035,4 +2040,229 @@ fn wire_output_refuses_an_output_pipe_the_document_does_not_have() {
         matches!(&refused, Err(EditError::Target(why)) if why.contains("ghost")),
         "{refused:?}"
     );
+}
+
+// --- the inverse verbs: clearing pipe metadata, removing a constant ------------------------------
+
+/// [`seed_with_pipe`] with the metadata the set-meta verbs write held by a pipe of each direction.
+/// `gain` is a signal pipe, the only kind that may bind a `channel`; `main` holds no range, since
+/// the loader takes one only on an output fed from a port that declares a numeric range.
+fn seed_with_meta() -> String {
+    json!({
+        "format_version": 3,
+        "instrument": "test",
+        "nodes": [
+            { "type": "oscillator", "address": "/osc", "inputs": { "freq": { "from": "/cutoff" } } },
+            { "type": "mul_f32_signal", "address": "/amp",
+              "inputs": { "a": { "from": "/osc" }, "b": { "from": "/gain" } } }
+        ],
+        "interface": {
+            "inputs": {
+                "cutoff": { "type": "f32", "min": 20.0, "max": 20000.0, "curve": "exp",
+                            "unit": "Hz", "default": 440.0 },
+                "gain": { "type": "f32_buffer", "channel": 0, "min": 0.0, "max": 1.0, "unit": "x" }
+            },
+            "outputs": { "main": { "from": "/amp", "channel": 0, "unit": "V" } }
+        }
+    })
+    .to_string()
+}
+
+#[test]
+fn clearing_input_meta_drops_each_named_field_and_keeps_the_rest() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_with_meta());
+
+    let result = clear_instrument_interface_meta(
+        SRC,
+        "cutoff",
+        PipeDirection::Input,
+        &[MetaField::Min, MetaField::Curve, MetaField::Unit],
+        &registry,
+        &resolver,
+    )
+    .expect("the pipe holds every field named");
+    assert!(result.report.ok && result.written, "{result:?}");
+    assert!(result.notes.is_empty(), "{:?}", result.notes);
+
+    let cutoff = &readback(&resolver)["interface"]["inputs"]["cutoff"];
+    for gone in ["min", "curve", "unit"] {
+        assert!(cutoff.get(gone).is_none(), "`{gone}` is cleared: {cutoff}");
+    }
+    assert_eq!(cutoff["max"], json!(20000.0), "an unnamed field is kept");
+    assert_eq!(
+        cutoff["default"],
+        json!(440.0),
+        "the seed is the value verb's"
+    );
+
+    let channel = clear_instrument_interface_meta(
+        SRC,
+        "gain",
+        PipeDirection::Input,
+        &[MetaField::Channel, MetaField::Max],
+        &registry,
+        &resolver,
+    )
+    .expect("a signal pipe's channel clears");
+    assert!(channel.written, "{channel:?}");
+    let gain = &readback(&resolver)["interface"]["inputs"]["gain"];
+    assert!(
+        gain.get("channel").is_none() && gain.get("max").is_none(),
+        "{gain}"
+    );
+    assert_eq!(gain["min"], json!(0.0));
+}
+
+#[test]
+fn clearing_output_meta_drops_each_named_field_and_keeps_the_feed() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_with_meta());
+
+    let result = clear_instrument_interface_meta(
+        SRC,
+        "main",
+        PipeDirection::Output,
+        &[MetaField::Channel, MetaField::Unit],
+        &registry,
+        &resolver,
+    )
+    .expect("the output holds every field named");
+    assert!(result.report.ok && result.written, "{result:?}");
+
+    let main = &readback(&resolver)["interface"]["outputs"]["main"];
+    assert_eq!(main, &json!({ "from": "/amp" }), "only the feed is left");
+}
+
+/// The pipe already ends where it was asked to, so an absent field is the caller's to hear about
+/// and nothing to refuse — the posture `unwire_instrument_input` takes on an input with nothing on
+/// it. A repeated field is cleared once and noted never.
+#[test]
+fn clearing_a_field_the_pipe_does_not_hold_is_noted_not_refused() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_with_pipe());
+    let before = readback(&resolver);
+
+    let result = clear_instrument_interface_meta(
+        SRC,
+        "cutoff",
+        PipeDirection::Input,
+        &[MetaField::Unit, MetaField::Min, MetaField::Min],
+        &registry,
+        &resolver,
+    )
+    .expect("an absent field is not a precondition failure");
+    assert!(result.report.ok && result.written, "{result:?}");
+    assert_eq!(
+        result.notes,
+        ["`unit` was not set on input pipe `cutoff`; nothing to clear"]
+    );
+    let after = readback(&resolver);
+    assert!(after["interface"]["inputs"]["cutoff"].get("min").is_none());
+    assert_eq!(
+        after["interface"]["inputs"]["cutoff"]["max"],
+        before["interface"]["inputs"]["cutoff"]["max"]
+    );
+}
+
+#[test]
+fn clearing_meta_refuses_what_no_pipe_could_satisfy_and_writes_nothing() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_with_meta());
+    let before = readback(&resolver);
+    let clear = |name: &str, direction, fields: &[MetaField]| {
+        clear_instrument_interface_meta(SRC, name, direction, fields, &registry, &resolver)
+            .expect_err("refused")
+            .to_string()
+    };
+
+    let curve = clear(
+        "main",
+        PipeDirection::Output,
+        &[MetaField::Unit, MetaField::Curve],
+    );
+    assert!(
+        curve.contains("`curve`") && curve.contains("output pipe"),
+        "a field the direction cannot carry is named: {curve}"
+    );
+    assert!(clear("cutoff", PipeDirection::Input, &[]).contains("at least one"));
+    assert!(clear("ghost", PipeDirection::Input, &[MetaField::Unit])
+        .contains("no interface input `ghost`"));
+    assert!(
+        clear("cutoff", PipeDirection::Output, &[MetaField::Unit])
+            .contains("no interface output `cutoff`"),
+        "the two directions are separate namespaces"
+    );
+    assert!(clear("main", PipeDirection::Input, &[MetaField::Unit])
+        .contains("no interface input `main`"));
+
+    assert_eq!(before, readback(&resolver), "a refusal writes nothing");
+}
+
+#[test]
+fn removing_a_constant_reverts_it_to_the_operators_default() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_with_voicer());
+    set_instrument_constant(SRC, "/voices", "voices", json!(4), &registry, &resolver)
+        .expect("set constant");
+    assert_eq!(
+        readback(&resolver)["nodes"][0]["config"]["voices"].as_f64(),
+        Some(4.0)
+    );
+
+    let removed = remove_instrument_constant(SRC, "/voices", "voices", &registry, &resolver)
+        .expect("the constant is set");
+    assert!(removed.report.ok && removed.written, "{removed:?}");
+    assert!(removed.notes.is_empty(), "{:?}", removed.notes);
+    assert!(
+        readback(&resolver)["nodes"][0].get("config").is_none(),
+        "the node holds no override: {}",
+        readback(&resolver)["nodes"][0]
+    );
+    assert!(removed.zoom.contains("/voices"), "{}", removed.zoom);
+
+    let again = remove_instrument_constant(SRC, "/voices", "voices", &registry, &resolver)
+        .expect("a constant that is not set is not a precondition failure");
+    assert!(again.written, "{again:?}");
+    assert_eq!(again.hash, removed.hash, "nothing changed");
+    assert_eq!(
+        again.notes,
+        ["`voices` was not set on `/voices`; nothing to remove"]
+    );
+}
+
+/// A name the operator does not declare cannot be "not set": it is a misspelling, and answering it
+/// with a note would tell the caller the edit it meant had landed.
+#[test]
+fn removing_a_constant_the_operator_does_not_declare_is_refused_naming_the_declared_ones() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_with_voicer());
+    let before = readback(&resolver);
+
+    let typo = remove_instrument_constant(SRC, "/voices", "voicez", &registry, &resolver)
+        .expect_err("the voicer declares no `voicez`");
+    let message = typo.to_string();
+    assert!(matches!(typo, EditError::Target(_)), "{typo:?}");
+    assert!(
+        message.contains("`voicez`") && message.contains("`voices`"),
+        "the refusal names the constants there are: {message}"
+    );
+
+    let none = remove_instrument_constant(SRC, "/amp", "voices", &registry, &resolver)
+        .expect_err("a multiply declares no constants");
+    assert!(none.to_string().contains("declares none"), "{none}");
+    assert_eq!(before, readback(&resolver));
+}
+
+#[test]
+fn removing_a_constant_from_no_node_is_refused_and_writes_nothing() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_with_voicer());
+    let before = readback(&resolver);
+
+    let err = remove_instrument_constant(SRC, "/ghost", "voices", &registry, &resolver)
+        .expect_err("no such node");
+    assert!(matches!(err, EditError::Target(_)), "{err:?}");
+    assert!(err.to_string().contains("/ghost"), "{err}");
+    assert_eq!(before, readback(&resolver));
 }

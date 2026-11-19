@@ -14,9 +14,10 @@ mod resources;
 mod view;
 
 use reuben_api::authoring::{
-    set_instrument_constant, set_instrument_description, set_instrument_input, set_instrument_name,
-    set_instrument_node_description, Answer, EditResult, Refusal, Resources, SetInstrumentConstant,
-    SetInstrumentDescription, SetInstrumentInput, SetInstrumentName, SetInstrumentNodeDescription,
+    remove_instrument_constant, set_instrument_constant, set_instrument_description,
+    set_instrument_input, set_instrument_name, set_instrument_node_description, Answer, EditResult,
+    Refusal, RemoveInstrumentConstant, Resources, SetInstrumentConstant, SetInstrumentDescription,
+    SetInstrumentInput, SetInstrumentName, SetInstrumentNodeDescription,
 };
 use reuben_api::engine::{send_live_controls, Channel, ControlSendMessage, SendLiveControls};
 use serde_json::Value;
@@ -32,8 +33,19 @@ pub use self::view::show;
 /// One change to the document.
 #[derive(Debug, Clone, PartialEq)]
 enum Edit {
-    Value { target: Target, value: Value },
-    NodeDescription { address: String, text: String },
+    Value {
+        target: Target,
+        value: Value,
+    },
+    /// The constant `name` removed from the node at `address`, so the operator's default applies.
+    RemoveConstant {
+        address: String,
+        name: String,
+    },
+    NodeDescription {
+        address: String,
+        text: String,
+    },
     Name(String),
     Description(String),
     Pipe(PipeEdit),
@@ -67,6 +79,15 @@ impl Edit {
                     address: target.address,
                     input: target.name,
                     value,
+                    expect,
+                },
+                store,
+            ),
+            Edit::RemoveConstant { address, name } => remove_instrument_constant(
+                &RemoveInstrumentConstant {
+                    source,
+                    address,
+                    name,
                     expect,
                 },
                 store,
@@ -249,6 +270,8 @@ mod tests {
     use reuben_native::osc;
     use reuben_native::test_support::{start_headless, within};
     use serde_json::json;
+
+    use reuben_api::authoring::{MetaField, PipeDirection};
 
     use super::interface::Meta;
     use super::*;
@@ -441,6 +464,53 @@ mod tests {
             rig.settle();
             assert_eq!(rig.swaps(), 1);
             assert_eq!(rig.live_received(1), [], "a constant is never sent live");
+        });
+    }
+
+    #[test]
+    fn a_set_constant_is_removed_back_to_its_default_and_an_unset_one_offers_no_removal() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("inspector_remove_constant", INSTRUMENT);
+            let mut inspector = Inspector::default();
+            let channel = rig.channel_source();
+            let voices = |rig: &Rig| {
+                fields(&node(rig, "/voicer"))
+                    .into_iter()
+                    .find(|f| f.target.name == "voices")
+                    .expect("the voicer has a voices constant")
+            };
+            let set = voices(&rig);
+            assert!(set.set, "{set:?}");
+            let edit = view::removal(&set).expect("a set constant is removable");
+            assert_eq!(
+                edit,
+                Edit::RemoveConstant {
+                    address: "/voicer".into(),
+                    name: "voices".into()
+                }
+            );
+            let hash = (rig.session.viewed().read.as_ref())
+                .expect("reads")
+                .hash
+                .clone();
+
+            assert!(inspector.commit(edit, Some(hash), &mut rig.session, &channel));
+            assert_eq!(inspector.error, None);
+            assert_eq!(inspector.writes, 1);
+            assert!(node(&rig, "/voicer").constants.is_empty());
+            let unset = voices(&rig);
+            assert!(!unset.set, "{unset:?}");
+            assert_eq!(
+                view::removal(&unset),
+                None,
+                "a default is nothing to remove"
+            );
+            assert_eq!(
+                view::removal(&fields(&node(&rig, "/map_cutoff"))[0]),
+                None,
+                "an input is not a constant"
+            );
+            rig.poll_until("the Swap of the write", |rig| rig.swaps() == 1);
         });
     }
 
@@ -837,6 +907,75 @@ mod tests {
             assert_eq!(port.curve.as_deref(), Some("exponential"));
             assert_eq!(port.unit, "Hz");
             assert_eq!(Controls::open(Some(&rig.top), None).binds(), ["pitch"]);
+
+            // A field the set-meta verb writes is cleared through its own verb, the rest kept. The
+            // port reports the effective curve, the one the oscillator's `freq` input sweeps by;
+            // what the pipe declares reads apart from it, so a cleared field reads as absent.
+            landed(
+                &mut rig,
+                &mut inspector,
+                Edit::Pipe(PipeEdit::ClearMeta {
+                    name: "pitch".into(),
+                    direction: PipeDirection::Input,
+                    fields: vec![MetaField::Curve, MetaField::Unit],
+                }),
+            );
+            let port = pipe(&rig, "pitch");
+            assert_eq!(port.unit, "");
+            assert_eq!((port.min, port.max), (Some(20.0), Some(2000.0)));
+            let declared = |rig: &Rig| {
+                let top = top(rig);
+                (top.inputs.iter())
+                    .find(|p| p.port.name == "pitch")
+                    .expect("pitch")
+                    .declared
+                    .clone()
+            };
+            assert_eq!(declared(&rig).curve, None);
+            assert_eq!(
+                (declared(&rig).min, declared(&rig).max),
+                (Some(20.0), Some(2000.0))
+            );
+            landed(
+                &mut rig,
+                &mut inspector,
+                Edit::Pipe(PipeEdit::ClearMeta {
+                    name: "pitch".into(),
+                    direction: PipeDirection::Input,
+                    fields: vec![MetaField::Min],
+                }),
+            );
+            assert_eq!(
+                declared(&rig).min,
+                None,
+                "a cleared bound reads as undeclared, not as the effective sentinel"
+            );
+            assert!(
+                pipe(&rig, "pitch").min.is_some(),
+                "the effective floor remains"
+            );
+            landed(
+                &mut rig,
+                &mut inspector,
+                Edit::Pipe(PipeEdit::OutputMeta {
+                    name: "out".into(),
+                    meta: Meta {
+                        unit: Some("V".into()),
+                        ..Meta::default()
+                    },
+                }),
+            );
+            assert_eq!(top(&rig).outputs[0].unit.as_deref(), Some("V"));
+            landed(
+                &mut rig,
+                &mut inspector,
+                Edit::Pipe(PipeEdit::ClearMeta {
+                    name: "out".into(),
+                    direction: PipeDirection::Output,
+                    fields: vec![MetaField::Unit],
+                }),
+            );
+            assert_eq!(top(&rig).outputs[0].unit, None);
 
             // Its value is swept live on the pipe's own input, and written once on release.
             let value = pipe_field(&port).target;

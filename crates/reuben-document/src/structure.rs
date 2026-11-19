@@ -13,7 +13,7 @@ use crate::format::{
     parse_wire, ConfigValue, DocValue, InputValue, Layout, LoadWarning, NodeDoc, NormalizedDoc,
     WirePorts, WireTarget,
 };
-use crate::introspect::{describe, describe_patch, validate_doc_with, PortInfo};
+use crate::introspect::{curve, describe, describe_patch, validate_doc_with, PortInfo};
 use crate::projection::Rebased;
 use crate::resources::ResourceResolver;
 use reuben_core::registry::Registry;
@@ -88,8 +88,21 @@ pub enum Source {
 
 #[derive(Debug, Clone)]
 pub struct InputPipe {
+    /// The pipe as the port it mints, carrying the *effective* range and curve.
     pub port: PortInfo,
     pub layout: Option<Layout>,
+    pub declared: Declared,
+}
+
+/// An input pipe's range and curve as written, each `None` where the pipe declares none. Not
+/// recoverable from the port: an undeclared range reads there as the loader's unbounded sentinel,
+/// and an undeclared curve as linear, though the pipe takes the curve of the port it feeds.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Declared {
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    /// `linear` or `exponential`, the words [`PortInfo::curve`] uses.
+    pub curve: Option<&'static str>,
 }
 
 /// An output pipe as declared: its type is the feeding port's, found through `from`.
@@ -196,6 +209,11 @@ pub fn read(
             Some(InputPipe {
                 port: PortInfo::from_pipe(name, pipe),
                 layout: pipe.layout,
+                declared: Declared {
+                    min: pipe.min,
+                    max: pipe.max,
+                    curve: pipe.curve.map(|c| curve(c.into())),
+                },
             })
         })
         .collect();
