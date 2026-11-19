@@ -284,7 +284,9 @@ impl Canvas {
         }
     }
 
-    fn select(&mut self, item: Option<Item>) {
+    /// Select `item` alone, as a click on its box does. A UI test selects through it too: the
+    /// canvas paints its boxes, so there is no widget to click.
+    pub(crate) fn select(&mut self, item: Option<Item>) {
         self.selection = item;
         self.also.clear();
         self.wire = None;

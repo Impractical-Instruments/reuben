@@ -155,20 +155,19 @@ fn instrument(
 ) {
     ui.weak("Instrument");
     listed(ui, problems);
-    ui.label("Name");
     let current = Current {
         text: &top.instrument,
         hash: &top.hash,
     };
-    if let Some((name, hash)) = text(ui, inspector, ("", "name"), current, false) {
+    if let Some((name, hash)) = text(ui, inspector, "Name", ("", "name"), current, false) {
         asks.push(Ask::Edit(Edit::Name(name), Some(hash)));
     }
-    ui.label("Description");
     let current = Current {
         text: top.description.as_deref().unwrap_or(""),
         hash: &top.hash,
     };
-    if let Some((text, hash)) = text(ui, inspector, ("", "description"), current, true) {
+    let field = ("", "description");
+    if let Some((text, hash)) = text(ui, inspector, "Description", field, current, true) {
         asks.push(Ask::Edit(Edit::Description(text), Some(hash)));
     }
 }
@@ -184,12 +183,12 @@ fn node(
     ui.heading(&node.address);
     ui.weak(&node.type_name);
     listed(ui, problems);
-    ui.label("Description");
     let current = Current {
         text: node.description.as_deref().unwrap_or(""),
         hash,
     };
-    if let Some((text, hash)) = text(ui, inspector, (&node.address, "description"), current, true) {
+    let field = (node.address.as_str(), "description");
+    if let Some((text, hash)) = text(ui, inspector, "Description", field, current, true) {
         asks.push(Ask::Edit(
             Edit::NodeDescription {
                 address: node.address.clone(),
@@ -392,12 +391,13 @@ pub(super) struct Current<'a> {
     pub hash: &'a str,
 }
 
-/// A text box for `field` of `owner`, showing the document's text until it is typed into. Returns
-/// the new text, and the hash to write it against, when the box loses focus with something
-/// different in it.
+/// `label`, then a text box for `field` of `owner` named by it, showing the document's text until it
+/// is typed into. Returns the new text, and the hash to write it against, when the box loses focus
+/// with something different in it.
 pub(super) fn text(
     ui: &mut egui::Ui,
     inspector: &mut Inspector,
+    label: &str,
     (owner, field): (&str, &'static str),
     current: Current<'_>,
     multiline: bool,
@@ -410,7 +410,10 @@ pub(super) fn text(
     } else {
         egui::TextEdit::singleline(&mut text)
     };
-    let response = ui.add(edit.desired_width(f32::INFINITY));
+    let label = ui.label(label);
+    let response = ui
+        .add(edit.desired_width(f32::INFINITY))
+        .labelled_by(label.id);
     let typing = Typing {
         text,
         focused: response.has_focus(),

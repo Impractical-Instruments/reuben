@@ -135,13 +135,13 @@ pub fn show(ui: &mut egui::Ui, feedback: &mut Option<Feedback>) {
     egui::Frame::group(ui.style())
         .stroke(egui::Stroke::new(1.0, color))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.colored_label(color, shown.headline());
-                dismissed = ui.small_button("Dismiss").clicked();
-            });
+            // Not beside the headline: a horizontal row does not wrap, and the headline would push
+            // the central panel over the inspector.
+            ui.colored_label(color, shown.headline());
             for line in shown.details() {
                 ui.colored_label(color, line);
             }
+            dismissed = ui.small_button("Dismiss").clicked();
         });
     if dismissed {
         *feedback = None;

@@ -459,7 +459,7 @@ struct Draft {
     owner: String,
     field: &'static str,
     text: String,
-    /// The content hash of the document when typing began; the text is written against it.
+    /// The content hash of the document the text was last unchanged from; it is written against it.
     hash: String,
 }
 
@@ -518,13 +518,14 @@ impl Drafts {
         if typing.focused {
             match found {
                 Some(i) => {
-                    self.drafts[i] = (
-                        Draft {
-                            text: typing.text,
-                            ..self.drafts[i].0.clone()
-                        },
-                        true,
-                    )
+                    let draft = &mut self.drafts[i].0;
+                    // Until it differs, the text is the document's, so it follows the document's
+                    // hash: focus can arrive the same frame another box's write is made.
+                    if typing.text == current {
+                        draft.hash = hash.to_string();
+                    }
+                    draft.text = typing.text;
+                    self.drafts[i].1 = true;
                 }
                 None => self.drafts.push((
                     Draft {
@@ -1041,6 +1042,19 @@ mod tests {
         assert_eq!(description, Some(("new".to_string(), "h0".to_string())));
         assert_eq!(drafts.text("/filter", "description"), None);
         assert_eq!(drafts.text("", "name"), Some("inst"));
+    }
+
+    #[test]
+    fn a_box_focused_as_another_writes_types_against_the_document_that_write_left() {
+        let mut drafts = Drafts::default();
+        // Focus moves from another box, whose write lands after this frame: still `h0`.
+        typed(&mut drafts, "h0", typing("old", true, false, false));
+        typed(&mut drafts, "h1", typing("old", true, false, false));
+        typed(&mut drafts, "h1", typing("new", true, false, false));
+        assert_eq!(
+            typed(&mut drafts, "h1", typing("new", false, true, false)),
+            Some(("new".to_string(), "h1".to_string()))
+        );
     }
 
     #[test]
