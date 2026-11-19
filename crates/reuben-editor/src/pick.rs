@@ -15,6 +15,15 @@ pub fn instrument_to_create(dir: Option<&Path>) -> Option<PathBuf> {
     Some(with_json_extension(path))
 }
 
+/// Ask for a WAV file to name as a sample resource, starting in `dir`.
+pub fn sample(dir: Option<&Path>) -> Option<PathBuf> {
+    in_dir(
+        rfd::FileDialog::new().add_filter("Sample", &["wav", "WAV"]),
+        dir,
+    )
+    .pick_file()
+}
+
 /// `path` ending in `.json`, so the library lists the document made there. Appended rather than
 /// set: `my.synth` becomes `my.synth.json`, not `my.json`.
 fn with_json_extension(path: PathBuf) -> PathBuf {
@@ -27,7 +36,13 @@ fn with_json_extension(path: PathBuf) -> PathBuf {
 }
 
 fn dialog(dir: Option<&Path>) -> rfd::FileDialog {
-    let dialog = rfd::FileDialog::new().add_filter("Instrument", &["json"]);
+    in_dir(
+        rfd::FileDialog::new().add_filter("Instrument", &["json"]),
+        dir,
+    )
+}
+
+fn in_dir(dialog: rfd::FileDialog, dir: Option<&Path>) -> rfd::FileDialog {
     match dir {
         Some(dir) => dialog.set_directory(dir),
         None => dialog,

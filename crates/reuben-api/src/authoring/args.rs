@@ -497,6 +497,22 @@ pub struct SetInstrumentResource {
     pub expect: Option<String>,
 }
 
+/// Arguments for `set_instrument_node_resource`: the resource id a node reads through one slot.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetInstrumentNodeResource {
+    /// The document to edit.
+    pub source: String,
+    /// The node's address.
+    pub address: String,
+    /// `sample`, `voice` or `patch`.
+    pub slot: String,
+    /// An id in the document's `resources` table.
+    pub id: String,
+    #[serde(default)]
+    pub expect: Option<String>,
+}
+
 /// Arguments for `set_instrument_layout`: canvas positions for many nodes and interface pipes,
 /// written together. An unknown target, or one named twice, refuses the whole call.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]

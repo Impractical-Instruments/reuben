@@ -1,6 +1,6 @@
 //! The inspector: the selected node's inputs, constants and description, the selected interface
-//! pipe's value and metadata, or with nothing selected the instrument's name, description and
-//! interface pipes.
+//! pipe's value and metadata, or with nothing selected the instrument's name, description,
+//! interface pipes and resources table.
 //!
 //! What it shows is the session's read of the document it views, so it is always the file. Every
 //! change it makes is one authoring verb through [`edit::write`], except a number being dragged in
@@ -10,6 +10,7 @@
 
 mod interface;
 mod model;
+mod resources;
 mod view;
 
 use reuben_api::authoring::{
@@ -22,6 +23,7 @@ use serde_json::Value;
 
 use self::interface::{Adding, PipeEdit};
 use self::model::{fields, pipe_field, Control, Drafts, Holds, Step, Target};
+use self::resources::ResourceEdit;
 use crate::edit;
 use crate::session::Session;
 
@@ -35,6 +37,7 @@ enum Edit {
     Name(String),
     Description(String),
     Pipe(PipeEdit),
+    Resource(ResourceEdit),
 }
 
 impl Edit {
@@ -94,6 +97,7 @@ impl Edit {
                 store,
             ),
             Edit::Pipe(edit) => edit.run(source, store, expect),
+            Edit::Resource(edit) => edit.run(source, store, expect),
         }
     }
 }
@@ -104,6 +108,7 @@ pub struct Inspector {
     holds: Holds,
     drafts: Drafts,
     adding: Adding,
+    resource: resources::Draft,
     /// Why the last live send did not reach the engine, until an edit or a send does.
     error: Option<String>,
     /// How many times a verb has been run to write the document.
@@ -219,8 +224,10 @@ impl Inspector {
         };
         self.error = None;
         let landed = matches!(result, Ok(result) if result.written);
-        if let (true, Edit::Pipe(added)) = (landed, added) {
-            self.adding.added(&added);
+        match (landed, added) {
+            (true, Edit::Pipe(added)) => self.adding.added(&added),
+            (true, Edit::Resource(ResourceEdit::Add { .. })) => self.resource.added(),
+            _ => {}
         }
         landed
     }
