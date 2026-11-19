@@ -2,7 +2,7 @@
 
 Deterministic CI performance trend: callgrind **instruction counts (Ir)** for rendering **1 s of audio** (375 × 128-frame blocks @ 48 kHz), recorded on every direct push to `dev`. Instruction counts don't jitter — every visible move is a real code change (or a toolchain bump).
 
-**181 commits** · 2026-07-12 → 2026-11-19 · 14612 data points · last: `3aa7dc5` (2026-11-19T08:15:33-05:00)
+**182 commits** · 2026-07-12 → 2026-11-19 · 14708 data points · last: `531fb87` (2026-11-19T08:15:58-05:00)
 
 *Companion trend: the **main** series lives on the [`bench-history`](https://github.com/Impractical-Instruments/reuben/tree/bench-history) branch.*
 
@@ -21,7 +21,7 @@ Deterministic CI performance trend: callgrind **instruction counts (Ir)** for re
 | `autotune` | 35.2M | ±0.0% | **-13.9%** | 2026-07-12 |
 | `echo` | 37.6M | ±0.0% | **-13.1%** | 2026-07-12 |
 | `reverb` | 44.9M | ±0.0% | **-11.2%** | 2026-07-12 |
-| `sampler-arp` | 15.5M | ±0.0% | -2.4% | 2026-07-12 |
+| `sampler-arp` | 15.4M | -0.1% | -2.5% | 2026-07-12 |
 
 ## Per-node engine overhead
 
@@ -43,22 +43,22 @@ Cost paid **once per Swap**, on the caller's thread — which in the browser is 
 
 | Case | Latest Ir | vs prev | vs first | since |
 |---|---:|---:|---:|---|
-| `deep_n2048` | 55.7M | ±0.0% | **-15.4%** | 2026-07-30 |
-| `deep_n4096` | 113.1M | ±0.0% | **-14.8%** | 2026-07-30 |
-| `deep_n8192` | 227.0M | ±0.0% | **-17.8%** | 2026-07-30 |
-| `nest_n2048` | 41.3M | ±0.0% | **-26.8%** | 2026-07-30 |
-| `nest_n4096` | 83.9M | ±0.0% | **-27.0%** | 2026-07-30 |
-| `nest_n8192` | 169.5M | ±0.0% | **-26.4%** | 2026-07-30 |
-| `wide_n2048` | 45.8M | ±0.0% | **-16.8%** | 2026-07-30 |
-| `wide_n4096` | 93.1M | ±0.0% | **-19.9%** | 2026-07-30 |
-| `wide_n8192` | 186.9M | ±0.0% | **-20.2%** | 2026-07-30 |
+| `deep_n2048` | 59.1M | **+6.1%** | **-10.3%** | 2026-07-30 |
+| `deep_n4096` | 120.0M | **+6.1%** | **-9.6%** | 2026-07-30 |
+| `deep_n8192` | 240.7M | **+6.1%** | **-12.8%** | 2026-07-30 |
+| `nest_n2048` | 43.1M | **+4.6%** | **-23.5%** | 2026-07-30 |
+| `nest_n4096` | 87.6M | **+4.5%** | **-23.7%** | 2026-07-30 |
+| `nest_n8192` | 177.7M | **+4.8%** | **-22.8%** | 2026-07-30 |
+| `wide_n2048` | 49.5M | **+8.1%** | **-10.0%** | 2026-07-30 |
+| `wide_n4096` | 100.7M | **+8.2%** | **-13.3%** | 2026-07-30 |
+| `wide_n8192` | 202.6M | **+8.4%** | **-13.6%** | 2026-07-30 |
 
 | Shape | Nodes | Latest growth |
 |---|---:|---:|
 | deep | 2,048 → 4,096 | 2.03x |
 | deep | 4,096 → 8,192 | 2.01x |
 | nest | 2,048 → 4,096 | 2.03x |
-| nest | 4,096 → 8,192 | 2.02x |
+| nest | 4,096 → 8,192 | 2.03x |
 | wide | 2,048 → 4,096 | 2.03x |
 | wide | 4,096 → 8,192 | 2.01x |
 
@@ -79,16 +79,16 @@ Cost paid **once per Swap**, on the caller's thread — which in the browser is 
 | `macro/autotune` | 35.2M | ±0.0% | **-13.9%** | 2026-07-12 |
 | `macro/echo` | 37.6M | ±0.0% | **-13.1%** | 2026-07-12 |
 | `macro/reverb` | 44.9M | ±0.0% | **-11.2%** | 2026-07-12 |
-| `macro/sampler-arp` | 15.5M | ±0.0% | -2.4% | 2026-07-12 |
-| `construct/deep_n2048` | 55.7M | ±0.0% | **-15.4%** | 2026-07-30 |
-| `construct/deep_n4096` | 113.1M | ±0.0% | **-14.8%** | 2026-07-30 |
-| `construct/deep_n8192` | 227.0M | ±0.0% | **-17.8%** | 2026-07-30 |
-| `construct/nest_n2048` | 41.3M | ±0.0% | **-26.8%** | 2026-07-30 |
-| `construct/nest_n4096` | 83.9M | ±0.0% | **-27.0%** | 2026-07-30 |
-| `construct/nest_n8192` | 169.5M | ±0.0% | **-26.4%** | 2026-07-30 |
-| `construct/wide_n2048` | 45.8M | ±0.0% | **-16.8%** | 2026-07-30 |
-| `construct/wide_n4096` | 93.1M | ±0.0% | **-19.9%** | 2026-07-30 |
-| `construct/wide_n8192` | 186.9M | ±0.0% | **-20.2%** | 2026-07-30 |
+| `macro/sampler-arp` | 15.4M | -0.1% | -2.5% | 2026-07-12 |
+| `construct/deep_n2048` | 59.1M | **+6.1%** | **-10.3%** | 2026-07-30 |
+| `construct/deep_n4096` | 120.0M | **+6.1%** | **-9.6%** | 2026-07-30 |
+| `construct/deep_n8192` | 240.7M | **+6.1%** | **-12.8%** | 2026-07-30 |
+| `construct/nest_n2048` | 43.1M | **+4.6%** | **-23.5%** | 2026-07-30 |
+| `construct/nest_n4096` | 87.6M | **+4.5%** | **-23.7%** | 2026-07-30 |
+| `construct/nest_n8192` | 177.7M | **+4.8%** | **-22.8%** | 2026-07-30 |
+| `construct/wide_n2048` | 49.5M | **+8.1%** | **-10.0%** | 2026-07-30 |
+| `construct/wide_n4096` | 100.7M | **+8.2%** | **-13.3%** | 2026-07-30 |
+| `construct/wide_n8192` | 202.6M | **+8.4%** | **-13.6%** | 2026-07-30 |
 | `granulator` | 27.7M | ±0.0% | +0.7% | 2026-07-12 |
 | `resonator` | 15.3M | ±0.0% | **-17.6%** | 2026-07-12 |
 | `reverb` | 11.0M | ±0.0% | -0.4% | 2026-07-12 |
@@ -195,22 +195,22 @@ The deterministic tier of the eval harness: each task's **reference solution** (
 
 | Task | Metric | Latest | vs prev | vs first | since |
 |---|---|---:|---:|---:|---|
-| `from_scratch` | grounding tokens | 19,448 | ±0.0% | **+303.7%** | 2026-07-22 |
+| `from_scratch` | grounding tokens | 19,439 | ±0.0% | **+303.5%** | 2026-07-22 |
 | `from_scratch` | fixed grounding | 19,144 | ±0.0% | **+301.6%** | 2026-07-22 |
 | `from_scratch` | document chars | 0 | — | **-100.0%** | 2026-07-22 |
 | `intent_fan_out` | grounding tokens | 19,398 | ±0.0% | +1.9% | 2026-07-28 |
 | `intent_fan_out` | fixed grounding | 19,144 | ±0.0% | +2.0% | 2026-07-28 |
 | `intent_fan_out` | document chars | 0 | — | — | 2026-07-28 |
-| `intent_word` | grounding tokens | 19,260 | ±0.0% | +1.9% | 2026-07-28 |
+| `intent_word` | grounding tokens | 19,257 | ±0.0% | +1.9% | 2026-07-28 |
 | `intent_word` | fixed grounding | 19,144 | ±0.0% | +2.0% | 2026-07-28 |
 | `intent_word` | document chars | 0 | — | — | 2026-07-28 |
 | `nudge` | grounding tokens | 19,324 | ±0.0% | **+207.6%** | 2026-07-22 |
 | `nudge` | fixed grounding | 17,808 | ±0.0% | **+273.6%** | 2026-07-22 |
 | `nudge` | document chars | 2,098 | ±0.0% | ±0.0% | 2026-07-22 |
-| `repair` | grounding tokens | 19,359 | ±0.0% | **+301.5%** | 2026-07-22 |
+| `repair` | grounding tokens | 19,362 | ±0.0% | **+301.5%** | 2026-07-22 |
 | `repair` | fixed grounding | 19,144 | ±0.0% | **+301.6%** | 2026-07-22 |
 | `repair` | document chars | 0 | — | **-100.0%** | 2026-07-22 |
-| `tweak` | grounding tokens | 19,204 | ±0.0% | **+301.8%** | 2026-07-22 |
+| `tweak` | grounding tokens | 19,206 | ±0.0% | **+301.8%** | 2026-07-22 |
 | `tweak` | fixed grounding | 19,144 | ±0.0% | **+301.6%** | 2026-07-22 |
 | `tweak` | document chars | 0 | — | **-100.0%** | 2026-07-22 |
 
