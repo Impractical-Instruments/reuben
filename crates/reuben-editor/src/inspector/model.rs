@@ -19,13 +19,23 @@ pub struct Target {
     pub constant: bool,
     /// The port is an integer, so its value is written as one.
     pub integer: bool,
+    /// The node is a `subpatch`, whose ports are its child's interface pipes.
+    pub pipe: bool,
 }
 
 impl Target {
     /// The live control message that sets this input to `value`, or `None` for a constant.
+    ///
+    /// An operator's input is addressed `/<node>/<input>`. A subpatch's port is the child's
+    /// interface pipe, a node of its own at `/<node>/<pipe>` that takes control on its `in`.
     pub fn live(&self, value: f64) -> Option<ControlSendMessage> {
+        let address = if self.pipe {
+            format!("{}/{}/in", self.address, self.name)
+        } else {
+            format!("{}/{}", self.address, self.name)
+        };
         (!self.constant).then(|| ControlSendMessage {
-            address: format!("{}/{}", self.address, self.name),
+            address,
             args: vec![json!(value)],
         })
     }
@@ -106,6 +116,7 @@ fn field(node: &StructureNode, port: &PortInfo) -> Field {
         name: port.name.clone(),
         constant: port.constant,
         integer: port.kind == "int",
+        pipe: node.type_name == "subpatch",
     };
     let held = if port.constant {
         (node.constants.iter())
@@ -185,6 +196,7 @@ fn unported(node: &StructureNode) -> Vec<Field> {
                 name: name.to_string(),
                 constant,
                 integer: false,
+                pipe: false,
             },
             kind: String::new(),
             control: Control::Shown {
@@ -215,8 +227,13 @@ pub fn wire_source(from: &WireSource) -> String {
 pub enum Step {
     /// Send this value of this input to the engine, and write nothing.
     Live(Target, f64),
-    /// Write this value to the document.
-    Commit(Target, f64),
+    /// Write this value to the document. `expect` is the content hash the value was set against:
+    /// the document as it was when the number was taken up, or `None` for the one on screen now.
+    Commit {
+        target: Target,
+        value: f64,
+        expect: Option<String>,
+    },
 }
 
 /// The number being held, while a slider or drag value is held down.
@@ -224,19 +241,26 @@ pub enum Step {
 struct Held {
     target: Target,
     value: f64,
-    /// What the document held when it was taken up.
+    /// What the document held when the number was taken up, as this target holds it.
     from: f64,
+    /// The content hash of the document when the number was taken up. The release is written
+    /// against it, so a document changed under the hold is a conflict, not overwritten.
+    hash: String,
 }
 
 impl Held {
     fn commit(self) -> Option<Step> {
-        (self.value != self.from).then_some(Step::Commit(self.target, self.value))
+        (self.value != self.from).then_some(Step::Commit {
+            target: self.target,
+            value: self.value,
+            expect: Some(self.hash),
+        })
     }
 }
 
 /// Drag, then commit: while a number is held its moves go to the engine live and the document is
 /// not written; letting go writes the value it was let go at, once, unless that is the value the
-/// document already holds.
+/// document held when it was taken up.
 ///
 /// Each frame starts with [`begin`](Self::begin), reports every number field drawn through
 /// [`number`](Self::number), and ends with [`end`](Self::end).
@@ -259,16 +283,18 @@ impl Holds {
             .map(|held| held.value)
     }
 
-    /// One frame of one number field: the document holds `document`, the field shows `value`,
-    /// the pointer is or is not `holding` it, and it did or did not change this frame.
+    /// One frame of one number field: the document, whose content hash is `hash`, holds
+    /// `document`; the field shows `value`; the pointer is or is not `holding` it; and it did or did
+    /// not change this frame.
     pub fn number(
         &mut self,
         target: &Target,
-        document: f64,
+        document: (f64, &str),
         value: f64,
         holding: bool,
         changed: bool,
     ) -> Vec<Step> {
+        let (document, hash) = (target.quantize(document.0), document.1);
         let value = target.quantize(value);
         let mine = self.value(target).is_some();
         if holding {
@@ -277,21 +303,27 @@ impl Holds {
                 // Another number still held is let go of before this one is taken up.
                 steps.extend(self.release());
             }
-            let before = self.value(target).unwrap_or(document);
-            self.held = Some(Held {
+            let held = self.held.get_or_insert_with(|| Held {
                 target: target.clone(),
-                value,
+                value: document,
                 from: document,
+                hash: hash.to_string(),
             });
+            let moved = changed && value != held.value;
+            held.value = value;
             self.claimed = true;
-            if changed && value != before && !target.constant {
+            if moved && !target.constant {
                 steps.push(Step::Live(target.clone(), value));
             }
             steps
         } else if mine {
             self.release().into_iter().collect()
         } else if changed && value != document {
-            vec![Step::Commit(target.clone(), value)]
+            vec![Step::Commit {
+                target: target.clone(),
+                value,
+                expect: None,
+            }]
         } else {
             Vec::new()
         }
@@ -307,8 +339,114 @@ impl Holds {
         }
     }
 
+    /// Drop the held number without writing it: there is no document to write it to.
+    pub fn cancel(&mut self) {
+        self.held = None;
+    }
+
     fn release(&mut self) -> Option<Step> {
         self.held.take().and_then(Held::commit)
+    }
+}
+
+/// A text box being typed into.
+#[derive(Debug, Clone, PartialEq)]
+struct Draft {
+    /// Whose text: a node's address, or empty for the instrument's own.
+    owner: String,
+    field: &'static str,
+    text: String,
+    /// The content hash of the document when typing began; the text is written against it.
+    hash: String,
+}
+
+/// What one text box did this frame.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Typing {
+    /// What the box holds after this frame's keys.
+    pub text: String,
+    pub focused: bool,
+    /// The box gave up focus this frame.
+    pub lost: bool,
+    /// Escape was pressed this frame.
+    pub escaped: bool,
+}
+
+/// Type, then commit: what is typed into a text box is kept here, and written once, when the box
+/// loses focus with something new in it. Escape, or the box no longer being drawn, drops it.
+///
+/// Each frame starts with [`begin`](Self::begin), reports every text box drawn through
+/// [`frame`](Self::frame), and ends with [`end`](Self::end).
+#[derive(Debug, Default)]
+pub struct Drafts {
+    /// Each with whether its box was drawn this frame. Focus moving from one box to another
+    /// leaves two for a frame: the box taking focus, and the one losing it.
+    drafts: Vec<(Draft, bool)>,
+}
+
+impl Drafts {
+    pub fn begin(&mut self) {
+        for (_, drawn) in &mut self.drafts {
+            *drawn = false;
+        }
+    }
+
+    fn find(&self, owner: &str, field: &str) -> Option<usize> {
+        (self.drafts.iter()).position(|(d, _)| d.owner == owner && d.field == field)
+    }
+
+    /// What `owner`'s `field` box holds while it is being typed into.
+    pub fn text(&self, owner: &str, field: &str) -> Option<&str> {
+        self.find(owner, field)
+            .map(|i| self.drafts[i].0.text.as_str())
+    }
+
+    /// One frame of `owner`'s `field` box, over a document whose content hash is `hash` and which
+    /// holds `current` for it. Returns the text to write and the hash to write it against.
+    pub fn frame(
+        &mut self,
+        owner: &str,
+        field: &'static str,
+        current: &str,
+        hash: &str,
+        typing: Typing,
+    ) -> Option<(String, String)> {
+        let found = self.find(owner, field);
+        if typing.focused {
+            match found {
+                Some(i) => {
+                    self.drafts[i] = (
+                        Draft {
+                            text: typing.text,
+                            ..self.drafts[i].0.clone()
+                        },
+                        true,
+                    )
+                }
+                None => self.drafts.push((
+                    Draft {
+                        owner: owner.to_string(),
+                        field,
+                        text: typing.text,
+                        hash: hash.to_string(),
+                    },
+                    true,
+                )),
+            }
+            return None;
+        }
+        let (draft, _) = self.drafts.remove(found?);
+        (typing.lost && !typing.escaped && typing.text != current)
+            .then_some((typing.text, draft.hash))
+    }
+
+    /// End the frame, dropping every draft whose box was not drawn.
+    pub fn end(&mut self) {
+        self.drafts.retain(|(_, drawn)| *drawn);
+    }
+
+    pub fn cancel(&mut self) {
+        self.drafts.clear();
     }
 }
 
@@ -412,6 +550,7 @@ mod tests {
             name: "cutoff".to_string(),
             constant: false,
             integer: false,
+            pipe: false,
         }
     }
 
@@ -421,6 +560,7 @@ mod tests {
             name: "voices".to_string(),
             constant: true,
             integer: true,
+            pipe: false,
         }
     }
 
@@ -524,14 +664,51 @@ mod tests {
         assert_eq!(cutoff().literal(440.5), json!(440.5));
     }
 
+    #[test]
+    fn a_subpatch_port_goes_live_at_its_pipe() {
+        let mut node = filter();
+        node.type_name = "subpatch".to_string();
+        let cutoff = fields(&node)
+            .into_iter()
+            .find(|f| f.target.name == "cutoff")
+            .expect("a cutoff port")
+            .target;
+        assert!(cutoff.pipe);
+        let live = cutoff.live(440.0).expect("a runtime input");
+        assert_eq!(live.address, "/filter/cutoff/in");
+    }
+
     fn live(value: f64) -> Step {
         Step::Live(cutoff(), value)
     }
 
-    /// What the document holds for every target in these tests.
-    const DOCUMENT: f64 = 300.0;
+    fn commit(target: Target, value: f64, expect: Option<&str>) -> Step {
+        Step::Commit {
+            target,
+            value,
+            expect: expect.map(str::to_string),
+        }
+    }
 
-    /// One frame in which only `target`'s field is drawn.
+    /// What the document holds for every target in these tests, and its hash.
+    const DOCUMENT: f64 = 300.0;
+    const HASH: &str = "h0";
+
+    /// One frame in which only `target`'s field is drawn, over a document holding `document`.
+    fn frame_on(
+        holds: &mut Holds,
+        target: &Target,
+        document: (f64, &str),
+        value: f64,
+        holding: bool,
+        changed: bool,
+    ) -> Vec<Step> {
+        holds.begin();
+        let mut steps = holds.number(target, document, value, holding, changed);
+        steps.extend(holds.end());
+        steps
+    }
+
     fn frame(
         holds: &mut Holds,
         target: &Target,
@@ -539,10 +716,7 @@ mod tests {
         holding: bool,
         changed: bool,
     ) -> Vec<Step> {
-        holds.begin();
-        let mut steps = holds.number(target, DOCUMENT, value, holding, changed);
-        steps.extend(holds.end());
-        steps
+        frame_on(holds, target, (DOCUMENT, HASH), value, holding, changed)
     }
 
     #[test]
@@ -558,17 +732,49 @@ mod tests {
         assert_eq!(steps, [live(400.0), live(800.0), live(1600.0)]);
 
         let release = frame(&mut holds, &target, 1600.0, false, false);
-        assert_eq!(release, [Step::Commit(target.clone(), 1600.0)]);
+        assert_eq!(release, [commit(target.clone(), 1600.0, Some(HASH))]);
         assert_eq!(holds.value(&target), None);
         assert_eq!(frame(&mut holds, &target, 1600.0, false, false), []);
+    }
+
+    #[test]
+    fn a_release_is_written_against_the_document_as_it_was_when_taken_up() {
+        let mut holds = Holds::default();
+        let target = cutoff();
+        frame(&mut holds, &target, 900.0, true, true);
+        // Another writer changes the document under the hold, to the very value held.
+        frame_on(&mut holds, &target, (900.0, "h1"), 900.0, true, false);
+        assert_eq!(
+            frame_on(&mut holds, &target, (900.0, "h1"), 900.0, false, false),
+            [commit(target, 900.0, Some(HASH))]
+        );
     }
 
     #[test]
     fn a_held_frame_that_does_not_move_sends_nothing() {
         let mut holds = Holds::default();
         let target = cutoff();
-        frame(&mut holds, &target, 300.0, true, true);
-        assert_eq!(frame(&mut holds, &target, 300.0, true, true), []);
+        frame(&mut holds, &target, 500.0, true, true);
+        assert_eq!(frame(&mut holds, &target, 500.0, true, true), []);
+    }
+
+    #[test]
+    fn a_click_that_does_not_move_writes_nothing_however_finely_the_document_is_spelled() {
+        let mut holds = Holds::default();
+        let target = cutoff();
+        let fine = (0.1234567, HASH);
+        assert_eq!(
+            frame_on(&mut holds, &target, fine, 0.1234567, true, false),
+            []
+        );
+        assert_eq!(
+            frame_on(&mut holds, &target, fine, 0.1234567, false, false),
+            []
+        );
+        assert_eq!(
+            frame_on(&mut holds, &target, fine, 0.1234567, false, true),
+            []
+        );
     }
 
     #[test]
@@ -580,7 +786,7 @@ mod tests {
         assert_eq!(holds.value(&target), Some(5.0));
         assert_eq!(
             frame(&mut holds, &target, 5.0, false, false),
-            [Step::Commit(target, 5.0)]
+            [commit(target, 5.0, Some(HASH))]
         );
     }
 
@@ -595,12 +801,12 @@ mod tests {
     }
 
     #[test]
-    fn a_change_made_without_holding_commits_at_once() {
+    fn a_change_made_without_holding_commits_at_once_against_the_document_on_screen() {
         let mut holds = Holds::default();
         let target = cutoff();
         assert_eq!(
             frame(&mut holds, &target, 512.0, false, true),
-            [Step::Commit(target, 512.0)]
+            [commit(target, 512.0, None)]
         );
     }
 
@@ -610,9 +816,21 @@ mod tests {
         let target = cutoff();
         frame(&mut holds, &target, 700.0, true, true);
         holds.begin();
-        assert_eq!(holds.end(), Some(Step::Commit(target, 700.0)));
+        assert_eq!(holds.end(), Some(commit(target, 700.0, Some(HASH))));
         holds.begin();
         assert_eq!(holds.end(), None);
+    }
+
+    #[test]
+    fn a_cancelled_hold_is_never_written() {
+        let mut holds = Holds::default();
+        let target = cutoff();
+        frame(&mut holds, &target, 700.0, true, true);
+        holds.cancel();
+        assert_eq!(holds.value(&target), None);
+        holds.begin();
+        assert_eq!(holds.end(), None);
+        assert_eq!(frame(&mut holds, &target, DOCUMENT, false, false), []);
     }
 
     #[test]
@@ -620,9 +838,105 @@ mod tests {
         let mut holds = Holds::default();
         frame(&mut holds, &cutoff(), 700.0, true, true);
         holds.begin();
-        let steps = holds.number(&voices(), DOCUMENT, 3.0, true, true);
-        assert_eq!(steps, [Step::Commit(cutoff(), 700.0)]);
+        let steps = holds.number(&voices(), (DOCUMENT, HASH), 3.0, true, true);
+        assert_eq!(steps, [commit(cutoff(), 700.0, Some(HASH))]);
         assert_eq!(holds.end(), None);
         assert_eq!(holds.value(&voices()), Some(3.0));
+    }
+
+    fn typing(text: &str, focused: bool, lost: bool, escaped: bool) -> Typing {
+        Typing {
+            text: text.to_string(),
+            focused,
+            lost,
+            escaped,
+        }
+    }
+
+    /// One frame in which only the `/filter` description box is drawn, over `hash`.
+    fn typed(drafts: &mut Drafts, hash: &str, typing: Typing) -> Option<(String, String)> {
+        drafts.begin();
+        let edit = drafts.frame("/filter", "description", "old", hash, typing);
+        drafts.end();
+        edit
+    }
+
+    #[test]
+    fn typed_text_is_written_once_when_the_box_loses_focus_against_the_hash_typing_began_on() {
+        let mut drafts = Drafts::default();
+        assert_eq!(
+            typed(&mut drafts, "h0", typing("old", true, false, false)),
+            None
+        );
+        assert_eq!(
+            typed(&mut drafts, "h1", typing("new", true, false, false)),
+            None
+        );
+        assert_eq!(drafts.text("/filter", "description"), Some("new"));
+        assert_eq!(
+            typed(&mut drafts, "h1", typing("new", false, true, false)),
+            Some(("new".to_string(), "h0".to_string()))
+        );
+        assert_eq!(drafts.text("/filter", "description"), None);
+        assert_eq!(
+            typed(&mut drafts, "h1", typing("old", false, false, false)),
+            None
+        );
+    }
+
+    #[test]
+    fn escape_drops_what_was_typed() {
+        let mut drafts = Drafts::default();
+        typed(&mut drafts, "h0", typing("new", true, false, false));
+        assert_eq!(
+            typed(&mut drafts, "h0", typing("new", false, true, true)),
+            None
+        );
+        assert_eq!(drafts.text("/filter", "description"), None);
+    }
+
+    #[test]
+    fn losing_focus_with_nothing_new_writes_nothing() {
+        let mut drafts = Drafts::default();
+        typed(&mut drafts, "h0", typing("old", true, false, false));
+        assert_eq!(
+            typed(&mut drafts, "h0", typing("old", false, true, false)),
+            None
+        );
+    }
+
+    #[test]
+    fn a_draft_whose_box_is_not_drawn_is_dropped_and_never_written() {
+        let mut drafts = Drafts::default();
+        typed(&mut drafts, "h0", typing("new", true, false, false));
+        // The node goes away under the box: a frame draws no box for it.
+        drafts.begin();
+        drafts.end();
+        assert_eq!(drafts.text("/filter", "description"), None);
+        // A box for the same address drawn later starts from the document, and writes nothing.
+        assert_eq!(
+            typed(&mut drafts, "h1", typing("old", false, true, false)),
+            None
+        );
+    }
+
+    #[test]
+    fn focus_moving_to_another_box_writes_the_first_and_keeps_typing_in_the_second() {
+        let mut drafts = Drafts::default();
+        typed(&mut drafts, "h0", typing("new", true, false, false));
+        drafts.begin();
+        let name = drafts.frame("", "name", "inst", "h0", typing("inst", true, false, false));
+        let description = drafts.frame(
+            "/filter",
+            "description",
+            "old",
+            "h0",
+            typing("new", false, true, false),
+        );
+        drafts.end();
+        assert_eq!(name, None);
+        assert_eq!(description, Some(("new".to_string(), "h0".to_string())));
+        assert_eq!(drafts.text("/filter", "description"), None);
+        assert_eq!(drafts.text("", "name"), Some("inst"));
     }
 }

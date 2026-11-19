@@ -5,8 +5,8 @@ use eframe::egui;
 use reuben_api::authoring::{InstrumentStructure, StructureNode};
 use reuben_api::engine::Channel;
 
-use super::model::{fields, Control, Field, Step};
-use super::{Draft, Edit, Inspector};
+use super::model::{fields, Control, Field, Step, Typing};
+use super::{Edit, Inspector};
 use crate::canvas::Item;
 use crate::session::Session;
 
@@ -15,7 +15,8 @@ const SLIDER_WIDTH: f32 = 180.0;
 /// What one frame of the inspector asks for, in the order it was asked.
 enum Ask {
     Step(Step),
-    Edit(Edit),
+    /// An edit, and the content hash it was made against, or `None` for the document on screen.
+    Edit(Edit, Option<String>),
 }
 
 /// Draw the inspector down the right of `ui` for `selection` in the session's top-level document,
@@ -38,6 +39,7 @@ pub fn show(
                     let top = match &session.tree().top().read {
                         Ok(top) => top,
                         Err(e) => {
+                            inspector.unreadable();
                             ui.colored_label(
                                 ui.visuals().error_fg_color,
                                 format!(
@@ -52,11 +54,12 @@ pub fn show(
                         ui.separator();
                     }
                     inspector.holds.begin();
+                    inspector.drafts.begin();
                     match selection {
                         None => instrument(ui, inspector, top, &mut asks),
                         Some(Item::Node(address)) => {
                             match top.nodes.iter().find(|n| &n.address == address) {
-                                Some(node) => self::node(ui, inspector, node, &mut asks),
+                                Some(node) => self::node(ui, inspector, node, &top.hash, &mut asks),
                                 None => {
                                     ui.weak(format!("{address} is not in the document."));
                                 }
@@ -66,12 +69,13 @@ pub fn show(
                         Some(Item::Output(name)) => pipe(ui, "Interface output", name),
                     }
                     asks.extend(inspector.holds.end().map(Ask::Step));
+                    inspector.drafts.end();
                 });
         });
     for ask in asks {
         match ask {
             Ask::Step(step) => inspector.step(step, session, channel),
-            Ask::Edit(edit) => inspector.commit(edit, session, channel),
+            Ask::Edit(edit, expect) => inspector.commit(edit, expect, session, channel),
         }
     }
 }
@@ -89,33 +93,45 @@ fn instrument(
 ) {
     ui.weak("Instrument");
     ui.label("Name");
-    if let Some(name) = text(ui, inspector, "", "name", &top.instrument, false) {
-        asks.push(Ask::Edit(Edit::Name(name)));
+    let current = Current {
+        text: &top.instrument,
+        hash: &top.hash,
+    };
+    if let Some((name, hash)) = text(ui, inspector, ("", "name"), current, false) {
+        asks.push(Ask::Edit(Edit::Name(name), Some(hash)));
     }
     ui.label("Description");
-    let description = top.description.as_deref().unwrap_or("");
-    if let Some(text) = text(ui, inspector, "", "description", description, true) {
-        asks.push(Ask::Edit(Edit::Description(text)));
+    let current = Current {
+        text: top.description.as_deref().unwrap_or(""),
+        hash: &top.hash,
+    };
+    if let Some((text, hash)) = text(ui, inspector, ("", "description"), current, true) {
+        asks.push(Ask::Edit(Edit::Description(text), Some(hash)));
     }
 }
 
-fn node(ui: &mut egui::Ui, inspector: &mut Inspector, node: &StructureNode, asks: &mut Vec<Ask>) {
+fn node(
+    ui: &mut egui::Ui,
+    inspector: &mut Inspector,
+    node: &StructureNode,
+    hash: &str,
+    asks: &mut Vec<Ask>,
+) {
     ui.heading(&node.address);
     ui.weak(&node.type_name);
     ui.label("Description");
-    let description = node.description.as_deref().unwrap_or("");
-    if let Some(text) = text(
-        ui,
-        inspector,
-        &node.address,
-        "description",
-        description,
-        true,
-    ) {
-        asks.push(Ask::Edit(Edit::NodeDescription {
-            address: node.address.clone(),
-            text,
-        }));
+    let current = Current {
+        text: node.description.as_deref().unwrap_or(""),
+        hash,
+    };
+    if let Some((text, hash)) = text(ui, inspector, (&node.address, "description"), current, true) {
+        asks.push(Ask::Edit(
+            Edit::NodeDescription {
+                address: node.address.clone(),
+                text,
+            },
+            Some(hash),
+        ));
     }
 
     let fields = fields(node);
@@ -132,14 +148,20 @@ fn node(ui: &mut egui::Ui, inspector: &mut Inspector, node: &StructureNode, asks
             .striped(true)
             .show(ui, |ui| {
                 for field in fields {
-                    row(ui, inspector, field, asks);
+                    row(ui, inspector, field, hash, asks);
                     ui.end_row();
                 }
             });
     }
 }
 
-fn row(ui: &mut egui::Ui, inspector: &mut Inspector, field: &Field, asks: &mut Vec<Ask>) {
+fn row(
+    ui: &mut egui::Ui,
+    inspector: &mut Inspector,
+    field: &Field,
+    hash: &str,
+    asks: &mut Vec<Ask>,
+) {
     let name = ui.label(&field.target.name);
     let hint = if field.set {
         field.kind.clone()
@@ -171,9 +193,10 @@ fn row(ui: &mut egui::Ui, inspector: &mut Inspector, field: &Field, asks: &mut V
                 })
                 .inner;
             let holding = response.is_pointer_button_down_on() || response.dragged();
-            let steps = inspector
-                .holds
-                .number(target, *value, shown, holding, response.changed());
+            let steps =
+                inspector
+                    .holds
+                    .number(target, (*value, hash), shown, holding, response.changed());
             asks.extend(steps.into_iter().map(Ask::Step));
         }
         Control::Choice { variants, value } => {
@@ -186,10 +209,13 @@ fn row(ui: &mut egui::Ui, inspector: &mut Inspector, field: &Field, asks: &mut V
                     }
                 });
             if &picked != value {
-                asks.push(Ask::Edit(Edit::Value {
-                    target: field.target.clone(),
-                    value: serde_json::Value::String(picked),
-                }));
+                asks.push(Ask::Edit(
+                    Edit::Value {
+                        target: field.target.clone(),
+                        value: serde_json::Value::String(picked),
+                    },
+                    None,
+                ));
             }
         }
         Control::Wired { from } => {
@@ -223,6 +249,9 @@ fn number(
             let mut slider = egui::Slider::new(value, min..=max)
                 // A logarithmic slider cannot start at zero.
                 .logarithmic(exponential && min > 0.0)
+                // A value the document holds outside the range is shown as it is, not clamped
+                // into it: clamping on draw would be a change no one made.
+                .clamping(egui::SliderClamping::Edits)
                 .show_value(false);
             if integer {
                 slider = slider.integer();
@@ -244,7 +273,8 @@ fn typed<'a>(value: &'a mut f64, suffix: &str, integer: bool) -> egui::DragValue
     let drag = egui::DragValue::new(value)
         .suffix(suffix)
         // A typed value lands once, on Enter or when the box loses focus, not per keystroke.
-        .update_while_editing(false);
+        .update_while_editing(false)
+        .clamp_existing_to_range(false);
     if integer {
         drag.fixed_decimals(0)
     } else {
@@ -252,40 +282,39 @@ fn typed<'a>(value: &'a mut f64, suffix: &str, integer: bool) -> egui::DragValue
     }
 }
 
-/// A text box for one of `owner`'s text fields, showing `current` until it is typed into. Returns
-/// the new text when the box loses focus with something different in it.
+/// What the document holds for a text box, and the document's content hash.
+#[derive(Clone, Copy)]
+struct Current<'a> {
+    text: &'a str,
+    hash: &'a str,
+}
+
+/// A text box for `field` of `owner`, showing the document's text until it is typed into. Returns
+/// the new text, and the hash to write it against, when the box loses focus with something
+/// different in it.
 fn text(
     ui: &mut egui::Ui,
     inspector: &mut Inspector,
-    owner: &str,
-    field: &'static str,
-    current: &str,
+    (owner, field): (&str, &'static str),
+    current: Current<'_>,
     multiline: bool,
-) -> Option<String> {
-    let mine = |d: &Draft| d.owner == owner && d.field == field;
-    let mut text = match &inspector.draft {
-        Some(draft) if mine(draft) => draft.text.clone(),
-        _ => current.to_string(),
-    };
+) -> Option<(String, String)> {
+    let mut text = (inspector.drafts.text(owner, field))
+        .unwrap_or(current.text)
+        .to_string();
     let edit = if multiline {
         egui::TextEdit::multiline(&mut text).desired_rows(3)
     } else {
         egui::TextEdit::singleline(&mut text)
     };
     let response = ui.add(edit.desired_width(f32::INFINITY));
-    if response.has_focus() {
-        inspector.draft = Some(Draft {
-            owner: owner.to_string(),
-            field,
-            text,
-        });
-        return None;
-    }
-    if response.lost_focus() || inspector.draft.as_ref().is_some_and(mine) {
-        inspector.draft = None;
-        if text != current {
-            return Some(text);
-        }
-    }
-    None
+    let typing = Typing {
+        text,
+        focused: response.has_focus(),
+        lost: response.lost_focus(),
+        escaped: ui.input(|i| i.key_pressed(egui::Key::Escape)),
+    };
+    inspector
+        .drafts
+        .frame(owner, field, current.text, current.hash, typing)
 }

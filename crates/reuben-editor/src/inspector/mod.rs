@@ -16,7 +16,7 @@ use reuben_api::authoring::{
 use reuben_api::engine::{send_live_controls, Channel, ControlSendMessage, SendLiveControls};
 use serde_json::Value;
 
-use self::model::{Holds, Step, Target};
+use self::model::{Drafts, Holds, Step, Target};
 use crate::edit;
 use crate::session::Session;
 
@@ -91,26 +91,26 @@ impl Edit {
     }
 }
 
-/// A text field being typed into, kept until it loses focus.
-#[derive(Debug, Clone, PartialEq)]
-struct Draft {
-    /// Which field: the node's address, or empty for the instrument's own.
-    owner: String,
-    /// `name` or `description`.
-    field: &'static str,
-    text: String,
-}
-
 /// What the inspector keeps between frames.
 #[derive(Debug, Default)]
 pub struct Inspector {
     holds: Holds,
-    draft: Option<Draft>,
+    drafts: Drafts,
     /// Why the last edit or live send did not land, until the next one does.
     error: Option<String>,
+    /// How many times a verb has been run to write the document.
+    #[cfg(test)]
+    writes: usize,
 }
 
 impl Inspector {
+    /// Forget what is held and typed: the document they were set against cannot be read, so
+    /// there is nothing to write them to.
+    fn unreadable(&mut self) {
+        self.holds.cancel();
+        self.drafts.cancel();
+    }
+
     /// Do what a number field asked for this frame.
     fn step(&mut self, step: Step, session: &mut Session, channel: &dyn Fn() -> Option<Channel>) {
         match step {
@@ -119,9 +119,13 @@ impl Inspector {
                     self.live(message, channel);
                 }
             }
-            Step::Commit(target, value) => {
+            Step::Commit {
+                target,
+                value,
+                expect,
+            } => {
                 let value = target.literal(value);
-                self.commit(Edit::Value { target, value }, session, channel);
+                self.commit(Edit::Value { target, value }, expect, session, channel);
             }
         }
     }
@@ -138,12 +142,25 @@ impl Inspector {
         self.error = sent.err().map(|refusal| refusal.message);
     }
 
-    /// Write `edit` to the top-level document.
-    fn commit(&mut self, edit: Edit, session: &mut Session, channel: &dyn Fn() -> Option<Channel>) {
+    /// Write `edit` to the top-level document, against the content hash `expect`, or against the
+    /// document on screen now when `None`.
+    fn commit(
+        &mut self,
+        edit: Edit,
+        expect: Option<String>,
+        session: &mut Session,
+        channel: &dyn Fn() -> Option<Channel>,
+    ) {
+        #[cfg(test)]
+        {
+            self.writes += 1;
+        }
         let source = session.tree().top().source.clone();
-        let result = edit::write(session, channel, &source, |store, expect| {
-            edit.run(&source, store, expect)
-        });
+        let verb = |store: &dyn Resources, expect| edit.run(&source, store, expect);
+        let result = match expect {
+            Some(expect) => edit::write_against(session, channel, &source, expect, verb),
+            None => edit::write(session, channel, &source, verb),
+        };
         self.error = match result {
             Ok(result) if result.written => None,
             Ok(result) => Some(refused(&result)),
@@ -171,13 +188,25 @@ fn refused(result: &EditResult) -> String {
 
 #[cfg(test)]
 mod tests {
-    use reuben_api::authoring::{InputValue, StructureNode};
-    use reuben_native::test_support::within;
+    use std::net::UdpSocket;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use reuben_api::authoring::{
+        read_instrument, rename_instrument_node, InputValue, ReadInstrument, RenameInstrumentNode,
+        StructureNode,
+    };
+    use reuben_api::render::Arg;
+    use reuben_api::FsResolver;
+    use reuben_native::engine::{EngineConfig, Instrument};
+    use reuben_native::osc;
+    use reuben_native::test_support::{start_headless, within};
     use serde_json::json;
 
     use super::model::{fields, Control};
     use super::*;
-    use crate::session::test_support::Rig;
+    use crate::engine::Engine;
+    use crate::session::test_support::{Rig, Scratch};
     use crate::session::Status;
 
     const HANG_SECS: u64 = 60;
@@ -187,13 +216,7 @@ mod tests {
     const INSTRUMENT: &str = "strum-harp.json";
 
     fn node(rig: &Rig, address: &str) -> StructureNode {
-        let top = rig
-            .session
-            .tree()
-            .top()
-            .read
-            .as_ref()
-            .expect("the top reads");
+        let top = (rig.session.tree().top().read.as_ref()).expect("the top reads");
         (top.nodes.iter())
             .find(|n| n.address == address)
             .unwrap_or_else(|| panic!("{address} is a node"))
@@ -210,9 +233,7 @@ mod tests {
 
     fn literal(rig: &Rig, address: &str, name: &str) -> Value {
         let node = node(rig, address);
-        let held = node
-            .inputs
-            .iter()
+        let held = (node.inputs.iter())
             .find(|i| i.name == name)
             .map(|i| i.value.clone())
             .or_else(|| {
@@ -228,38 +249,52 @@ mod tests {
         }
     }
 
-    /// Hold `target`, move it through `values`, and let go: the frames a slider sweep makes.
-    fn sweep(
-        rig: &mut Rig,
-        inspector: &mut Inspector,
-        target: &Target,
-        values: &[f64],
-        during: impl Fn(&mut Rig),
-    ) {
-        let channel = rig.channel_source();
+    /// One frame of `target`'s number field as the view draws it: over the session's current read
+    /// of the document, showing `value`, held or not.
+    fn frame(rig: &mut Rig, inspector: &mut Inspector, target: &Target, value: f64, holding: bool) {
+        let top = rig
+            .session
+            .tree()
+            .top()
+            .read
+            .clone()
+            .expect("the top reads");
         let document = match fields(&node(rig, &target.address))
             .into_iter()
-            .find(|f| &f.target == target)
+            .find(|f| f.target.name == target.name)
             .map(|f| f.control)
         {
             Some(Control::Number { value, .. }) => value,
             other => panic!("{target:?} is {other:?}"),
         };
-        for &value in values {
-            inspector.holds.begin();
-            for step in inspector.holds.number(target, document, value, true, true) {
-                inspector.step(step, &mut rig.session, &channel);
-            }
-            assert_eq!(inspector.holds.end(), None);
-            assert_eq!(inspector.error, None);
-            during(rig);
-        }
-        let last = *values.last().expect("a sweep moves");
         inspector.holds.begin();
-        for step in inspector.holds.number(target, document, last, false, false) {
+        let mut steps =
+            (inspector.holds).number(target, (document, &top.hash), value, holding, holding);
+        steps.extend(inspector.holds.end());
+        let channel = rig.channel_source();
+        for step in steps {
             inspector.step(step, &mut rig.session, &channel);
         }
-        assert_eq!(inspector.holds.end(), None);
+    }
+
+    /// Hold `target` and move it through `values`, without letting go.
+    fn hold(rig: &mut Rig, inspector: &mut Inspector, target: &Target, values: &[f64]) {
+        for &value in values {
+            frame(rig, inspector, target, value, true);
+            assert_eq!(inspector.error, None);
+        }
+    }
+
+    fn release(rig: &mut Rig, inspector: &mut Inspector, target: &Target, value: f64) {
+        frame(rig, inspector, target, value, false);
+    }
+
+    /// The write `reuben-mcp` makes while the inspector holds a value.
+    fn sidecar(rig: &mut Rig, write: impl FnOnce(&str, &FsResolver)) {
+        let source = rig.session.tree().top().source.clone();
+        write(&source, &FsResolver::for_document(&source).stat_only());
+        let channel = rig.channel_source();
+        rig.session.refresh(&channel);
     }
 
     #[test]
@@ -272,16 +307,28 @@ mod tests {
             let before = rig.session.tree().top().hash().map(str::to_string);
 
             let values: Vec<f64> = (0..40).map(|i| 600.0 + 250.0 * f64::from(i)).collect();
-            sweep(&mut rig, &mut inspector, &cutoff, &values, |rig| {
-                assert_eq!(rig.swaps(), 0, "a held value is never written");
-                assert_eq!(
-                    rig.session.tree().top().hash(),
-                    before.as_deref(),
-                    "a held value is never written"
-                );
-            });
-            assert_eq!(inspector.error, None);
+            for &value in &values {
+                frame(&mut rig, &mut inspector, &cutoff, value, true);
+                assert_eq!(inspector.error, None);
+                assert_eq!(inspector.writes, 0, "a held value is never written");
+                assert_eq!(rig.swaps(), 0);
+                assert_eq!(rig.session.tree().top().hash(), before.as_deref());
+            }
+            let received = rig.live_received(values.len());
+            let sent: Vec<(String, Vec<Arg>)> = (received.into_iter())
+                .map(|m| (m.address, m.args))
+                .collect();
+            let expected: Vec<(String, Vec<Arg>)> = (values.iter())
+                .map(|&v| ("/map_cutoff/out_max".to_string(), vec![Arg::F32(v as f32)]))
+                .collect();
+            assert_eq!(
+                sent, expected,
+                "every move reached the render side, in order"
+            );
 
+            release(&mut rig, &mut inspector, &cutoff, 10350.0);
+            assert_eq!(inspector.error, None);
+            assert_eq!(inspector.writes, 1, "letting go writes once");
             assert_ne!(rig.session.tree().top().hash(), before.as_deref());
             assert_eq!(literal(&rig, "/map_cutoff", "out_max"), json!(10350.0));
             rig.poll_until("the Swap of the write", |rig| rig.swaps() == 1);
@@ -293,25 +340,117 @@ mod tests {
                 rig.session.tree().top().hash(),
                 "the engine plays the released value"
             );
+            assert_eq!(inspector.writes, 1);
         });
     }
 
     #[test]
-    fn a_held_constant_is_written_once_on_release() {
+    fn a_held_constant_is_written_once_on_release_and_never_sent() {
         within(HANG_SECS, || {
             let mut rig = Rig::open("inspector_constant", INSTRUMENT);
             let mut inspector = Inspector::default();
             let voices = target(&rig, "/voicer", "voices");
             assert!(voices.constant && voices.integer, "{voices:?}");
 
-            sweep(&mut rig, &mut inspector, &voices, &[7.0, 5.6, 4.2], |rig| {
-                assert_eq!(rig.swaps(), 0);
-            });
+            hold(&mut rig, &mut inspector, &voices, &[7.0, 5.6, 4.2]);
+            assert_eq!(inspector.writes, 0);
+            release(&mut rig, &mut inspector, &voices, 4.2);
             assert_eq!(inspector.error, None);
+            assert_eq!(inspector.writes, 1);
             assert_eq!(literal(&rig, "/voicer", "voices").as_f64(), Some(4.0));
             rig.poll_until("the Swap of the write", |rig| rig.swaps() == 1);
             rig.settle();
             assert_eq!(rig.swaps(), 1);
+            assert_eq!(rig.live_received(1), [], "a constant is never sent live");
+        });
+    }
+
+    #[test]
+    fn a_value_written_by_another_hand_during_a_hold_is_kept_and_the_release_reported() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("inspector_held_conflict", INSTRUMENT);
+            let mut inspector = Inspector::default();
+            let cutoff = target(&rig, "/map_cutoff", "out_max");
+
+            hold(&mut rig, &mut inspector, &cutoff, &[900.0, 1200.0]);
+            sidecar(&mut rig, |source, store| {
+                let edit = set_instrument_input(
+                    &SetInstrumentInput {
+                        source: source.to_string(),
+                        address: "/map_cutoff".into(),
+                        input: "out_max".into(),
+                        value: json!(5000.0),
+                        expect: None,
+                    },
+                    store,
+                )
+                .expect("the verb ran")
+                .output;
+                assert!(edit.written, "{:?}", edit.report);
+            });
+            hold(&mut rig, &mut inspector, &cutoff, &[1500.0]);
+            release(&mut rig, &mut inspector, &cutoff, 1500.0);
+
+            assert_eq!(inspector.writes, 1);
+            assert!(inspector.error.is_some(), "the conflict is reported");
+            assert_eq!(literal(&rig, "/map_cutoff", "out_max"), json!(5000.0));
+        });
+    }
+
+    #[test]
+    fn a_release_after_another_hand_reshuffles_the_addresses_lands_on_no_node() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("inspector_renamed", INSTRUMENT);
+            let mut inspector = Inspector::default();
+            let cutoff = target(&rig, "/map_cutoff", "out_max");
+            let resonance_max = literal(&rig, "/map_res", "out_max");
+
+            hold(&mut rig, &mut inspector, &cutoff, &[9000.0]);
+            sidecar(&mut rig, |source, store| {
+                for (from, to) in [("/map_cutoff", "/map_old"), ("/map_res", "/map_cutoff")] {
+                    let edit = rename_instrument_node(
+                        &RenameInstrumentNode {
+                            source: source.to_string(),
+                            from: from.into(),
+                            to: to.into(),
+                            expect: None,
+                        },
+                        store,
+                    )
+                    .expect("the verb ran")
+                    .output;
+                    assert!(edit.written, "{:?}", edit.report);
+                }
+            });
+            release(&mut rig, &mut inspector, &cutoff, 9000.0);
+
+            assert!(inspector.error.is_some(), "the conflict is reported");
+            assert_eq!(literal(&rig, "/map_cutoff", "out_max"), resonance_max);
+            assert_eq!(literal(&rig, "/map_old", "out_max"), json!(11000.0));
+        });
+    }
+
+    #[test]
+    fn a_hold_over_a_document_that_stops_reading_is_dropped_not_written_later() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("inspector_unreadable", INSTRUMENT);
+            let mut inspector = Inspector::default();
+            let cutoff = target(&rig, "/map_cutoff", "out_max");
+            let path = rig.session.tree().top().path.clone();
+            let text = std::fs::read_to_string(&path).expect("the instrument");
+            let channel = rig.channel_source();
+
+            hold(&mut rig, &mut inspector, &cutoff, &[9000.0]);
+            std::fs::write(&path, "{ not json").expect("break the file");
+            rig.session.refresh(&channel);
+            assert!(rig.session.tree().top().read.is_err());
+            inspector.unreadable();
+
+            std::fs::write(&path, &text).expect("restore the file");
+            rig.session.refresh(&channel);
+            release(&mut rig, &mut inspector, &cutoff, 9000.0);
+            assert_eq!(inspector.writes, 0);
+            assert_eq!(literal(&rig, "/map_cutoff", "out_max"), json!(11000.0));
         });
     }
 
@@ -328,8 +467,7 @@ mod tests {
             let Control::Choice { variants, value } = &curve.control else {
                 panic!("{curve:?}");
             };
-            let other = variants
-                .iter()
+            let other = (variants.iter())
                 .find(|v| *v != value)
                 .expect("a second curve");
 
@@ -345,9 +483,10 @@ mod tests {
                 Edit::Name("strum-harp-edited".into()),
                 Edit::Description("edited in the inspector".into()),
             ] {
-                inspector.commit(edit.clone(), &mut rig.session, &channel);
+                inspector.commit(edit.clone(), None, &mut rig.session, &channel);
                 assert_eq!(inspector.error, None, "{edit:?}");
             }
+            assert_eq!(inspector.writes, 4);
 
             let top = rig.session.tree().top().read.clone().expect("reads");
             assert_eq!(literal(&rig, "/map_cutoff", "curve"), json!(other));
@@ -363,11 +502,31 @@ mod tests {
                     address: "/map_cutoff".into(),
                     text: "  ".into(),
                 },
+                Some(top.hash.clone()),
                 &mut rig.session,
                 &channel,
             );
             assert_eq!(inspector.error, None);
             assert_eq!(node(&rig, "/map_cutoff").description, None);
+
+            inspector.commit(
+                Edit::Description("against a stale read".into()),
+                Some(top.hash),
+                &mut rig.session,
+                &channel,
+            );
+            assert!(inspector.error.is_some(), "a stale draft is a conflict");
+            assert_eq!(
+                (rig.session
+                    .tree()
+                    .top()
+                    .read
+                    .as_ref()
+                    .expect("reads")
+                    .description)
+                    .as_deref(),
+                Some("edited in the inspector")
+            );
         });
     }
 
@@ -378,13 +537,13 @@ mod tests {
             let mut inspector = Inspector::default();
             let channel = rig.channel_source();
             let before = rig.session.tree().clone();
-            let mut mode = target(&rig, "/map_cutoff", "curve");
-            mode.integer = false;
+            let curve = target(&rig, "/map_cutoff", "curve");
             inspector.commit(
                 Edit::Value {
-                    target: mode,
+                    target: curve,
                     value: json!("NoSuchCurve"),
                 },
+                None,
                 &mut rig.session,
                 &channel,
             );
@@ -392,6 +551,82 @@ mod tests {
             assert_eq!(rig.session.tree(), &before);
             rig.settle();
             assert_eq!(rig.swaps(), 0);
+        });
+    }
+
+    /// A subpatch whose child echoes its `level` pipe on OSC-out, so a live value that reached the
+    /// pipe comes back out.
+    const CHILD: &str = r#"{"format_version":3,"instrument":"child",
+        "interface":{"inputs":{"level":{"type":"f32","default":0.2,"min":0.0,"max":1.0}},
+                     "outputs":{"out":{"from":"/osc.audio"}}},
+        "nodes":[{"type":"oscillator","address":"/osc"},
+                 {"type":"osc_out","address":"/level_echo","inputs":{"in":{"from":"/level"}}}]}"#;
+    const PARENT: &str = r#"{"format_version":3,"instrument":"parent",
+        "resources":{"child":"child.json"},
+        "interface":{"outputs":{"out":{"from":"/sub.out"}}},
+        "nodes":[{"type":"subpatch","address":"/sub","patch":"child","inputs":{"level":0.2}}]}"#;
+
+    #[test]
+    fn a_live_value_on_a_subpatch_port_reaches_the_childs_pipe() {
+        let scratch = Scratch::new("inspector_subpatch");
+        let parent: PathBuf = scratch.path("parent.json");
+        std::fs::write(scratch.path("child.json"), CHILD).expect("the child");
+        std::fs::write(&parent, PARENT).expect("the parent");
+
+        within(HANG_SECS, move || {
+            let source = parent.display().to_string();
+            let top = read_instrument(
+                &ReadInstrument {
+                    source: source.clone(),
+                },
+                &FsResolver::for_document(&source).stat_only(),
+            )
+            .expect("the parent reads")
+            .output;
+            assert!(top.report.ok, "{:?}", top.report);
+            let sub = (top.nodes.iter())
+                .find(|n| n.address == "/sub")
+                .expect("/sub");
+            let level = (fields(sub).into_iter())
+                .find(|f| f.target.name == "level")
+                .expect("the child's level pipe")
+                .target;
+
+            let sink = UdpSocket::bind("127.0.0.1:0").expect("an OSC-out sink");
+            sink.set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("a read timeout");
+            let mut engine = Engine::start_with(
+                EngineConfig {
+                    osc_in: None,
+                    osc_out: Some(sink.local_addr().expect("bound").to_string()),
+                    structure: None,
+                    ..EngineConfig::new(Instrument::Path(parent))
+                },
+                start_headless,
+            );
+            assert!(engine.channel().is_some(), "{:?}", engine.report());
+            let channel = || engine.channel();
+
+            let mut inspector = Inspector::default();
+            // Addressed as an operator's input would be, the value reaches nothing.
+            let mut stray = level.live(0.25).expect("a runtime input");
+            stray.address = format!("{}/{}", level.address, level.name);
+            inspector.live(stray, &channel);
+            inspector.live(level.live(0.75).expect("a runtime input"), &channel);
+            assert_eq!(inspector.error, None);
+
+            let mut buf = [0u8; 1024];
+            loop {
+                let n = sink.recv(&mut buf).expect("the echo of the live value");
+                let args: Vec<Arg> = (osc::decode(&buf[..n]).expect("decode").into_iter())
+                    .flat_map(|m| m.args)
+                    .collect();
+                assert!(!args.contains(&Arg::F32(0.25)), "the stray send was routed");
+                if args.contains(&Arg::F32(0.75)) {
+                    break;
+                }
+            }
+            engine.shutdown();
         });
     }
 }
