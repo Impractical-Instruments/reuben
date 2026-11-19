@@ -8,6 +8,7 @@
 
 mod tree;
 mod undo;
+mod users;
 mod view;
 mod watch;
 
@@ -22,9 +23,10 @@ use reuben_api::authoring::DocumentHistory;
 use reuben_api::engine::{swap_instrument, Channel, SwapInstrument, SwapResult};
 use reuben_api::FsResolver;
 
-pub use self::tree::{Document, Tree};
+pub use self::tree::{nested, Document, Tree};
 pub use self::undo::{Direction, Step, Undo};
-pub use self::view::{shortcut, show};
+use self::users::users;
+pub use self::view::{shortcut, show, trail};
 use self::watch::Watch;
 
 /// How long the tree's files must go untouched before they are read again. One write is several
@@ -62,10 +64,22 @@ pub struct Poll {
 
 type Wake = Arc<dyn Fn() + Send + Sync>;
 
+/// One step from a document down into the document one of its nodes references.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Crumb {
+    /// The node, in the document one step up.
+    pub address: String,
+    /// The document the node references, as the session's tree spells it.
+    pub source: String,
+}
+
 pub struct Session {
     top: PathBuf,
     root: Option<PathBuf>,
     tree: Tree,
+    /// The way from the top-level document down to the one being viewed; empty while the
+    /// top-level document is.
+    trail: Vec<Crumb>,
     /// `Err` when the platform gave no watcher: the tree is then read only after the editor's own
     /// writes.
     watch: Result<Watch, String>,
@@ -90,6 +104,9 @@ pub struct Session {
     histories: BTreeMap<String, DocumentHistory<FsResolver>>,
     /// How many states each of `histories` keeps.
     states: usize,
+    /// Per nested document viewed, the library instruments that play it, or why they could not
+    /// be listed. Listed once per session: it reads every instrument of the library.
+    users: BTreeMap<PathBuf, Result<Vec<String>, String>>,
     #[cfg(test)]
     touches: usize,
 }
@@ -121,6 +138,7 @@ impl Session {
                 BTreeSet::new()
             },
             tree,
+            trail: Vec::new(),
             watch,
             due: None,
             touched_at: None,
@@ -137,6 +155,7 @@ impl Session {
             undo: Undo::default(),
             histories: BTreeMap::new(),
             states: DocumentHistory::<FsResolver>::DEFAULT_CAPACITY,
+            users: BTreeMap::new(),
             #[cfg(test)]
             touches: 0,
         }
@@ -152,6 +171,55 @@ impl Session {
 
     pub fn tree(&self) -> &Tree {
         &self.tree
+    }
+
+    pub fn trail(&self) -> &[Crumb] {
+        &self.trail
+    }
+
+    /// The document being viewed: the top-level one, or the one at the end of the trail.
+    pub fn viewed(&self) -> &Document {
+        (self.trail.last())
+            .and_then(|crumb| self.tree.document(&crumb.source))
+            .unwrap_or_else(|| self.tree.top())
+    }
+
+    /// View the document the node at `address` of the viewed document references as its voice or
+    /// its patch.
+    pub fn enter(&mut self, address: &str) -> Result<(), String> {
+        let Some(source) = self.viewed().nested(address) else {
+            return Err(format!("{address} references no voice or patch"));
+        };
+        let source = source.to_string();
+        if self.tree.document(&source).is_none() {
+            return Err(format!("{source} is not a file of the open instrument"));
+        }
+        self.trail.push(Crumb {
+            address: address.to_string(),
+            source,
+        });
+        Ok(())
+    }
+
+    /// View the document `depth` steps down the trail: 0 is the top-level document.
+    pub fn leave(&mut self, depth: usize) {
+        self.trail.truncate(depth);
+    }
+
+    /// The names of the instruments that play the viewed document, or why they could not be
+    /// listed: those beside the top-level file and those directly in the library root. `None`
+    /// while the top-level document is viewed.
+    pub fn users(&mut self) -> Option<&Result<Vec<String>, String>> {
+        if self.trail.is_empty() {
+            return None;
+        }
+        let path = self.viewed().path.clone();
+        let beside = self.tree.top().path.parent().map(Path::to_path_buf);
+        let root = self.root.as_deref();
+        Some(self.users.entry(path).or_insert_with_key(|path| {
+            let libraries: Vec<&Path> = beside.as_deref().into_iter().chain(root).collect();
+            users(&libraries, root, path)
+        }))
     }
 
     pub fn status(&self) -> &Status {
@@ -245,6 +313,7 @@ impl Session {
             return false;
         }
         self.tree = tree;
+        self.trail = followed(&self.tree, std::mem::take(&mut self.trail));
         self.changed = true;
         self.install(channel);
         true
@@ -340,6 +409,23 @@ impl Session {
             Err(e) => Status::Held(vec![e]),
         };
     }
+}
+
+/// As much of `trail` as `tree` still leads down: each step's node still in the document above it
+/// and still referencing the same document. The rest is let go, the view going back up to the
+/// last document still reached.
+fn followed(tree: &Tree, trail: Vec<Crumb>) -> Vec<Crumb> {
+    let mut at = tree.top();
+    let mut kept = Vec::with_capacity(trail.len());
+    for crumb in trail {
+        let next = (at.nested(&crumb.address))
+            .filter(|source| *source == crumb.source)
+            .and_then(|source| tree.document(source));
+        let Some(next) = next else { break };
+        at = next;
+        kept.push(crumb);
+    }
+    kept
 }
 
 /// The paths of the nested documents of `tree` that read.
@@ -589,7 +675,9 @@ mod tests {
     use std::path::Path;
 
     use reuben_api::authoring::{
-        set_instrument_constant, set_instrument_input, SetInstrumentConstant, SetInstrumentInput,
+        rename_instrument_node, set_instrument_constant, set_instrument_description,
+        set_instrument_input, RenameInstrumentNode, SetInstrumentConstant,
+        SetInstrumentDescription, SetInstrumentInput,
     };
     use reuben_api::FsResolver;
     use reuben_native::test_support::within;
@@ -637,6 +725,79 @@ mod tests {
             .iter()
             .find(|d| d.path == path)
             .and_then(|d| d.hash().map(str::to_string))
+    }
+
+    #[test]
+    fn the_trail_goes_down_through_a_voice_into_its_patch_and_back_up() {
+        let scratch = test_support::Scratch::new("trail");
+        let lib = scratch.library();
+        let mut session = Session::open(&lib.join("acid-techno.json"), None, || {});
+        assert!(
+            session.users().is_none(),
+            "the top-level document is viewed"
+        );
+        assert!(session.enter("/tempo").is_err(), "no voice or patch there");
+        assert!(session.trail().is_empty());
+
+        session.enter("/kick_v").expect("a voicer");
+        session.enter("/vca").expect("a subpatch inside the voice");
+        assert_eq!(
+            session.viewed().path,
+            lib.join("voices").join("shaped-vca.json")
+        );
+        let addresses: Vec<&str> = session.trail().iter().map(|c| c.address.as_str()).collect();
+        assert_eq!(addresses, ["/kick_v", "/vca"]);
+
+        session.leave(1);
+        assert_eq!(
+            session.viewed().path,
+            lib.join("voices").join("kick-voice.json")
+        );
+        session.leave(0);
+        assert_eq!(session.viewed().path, session.tree().top().path);
+    }
+
+    #[test]
+    fn the_trail_goes_back_up_to_what_the_files_still_reach() {
+        let scratch = test_support::Scratch::new("trail_follows");
+        let lib = scratch.library();
+        let top = lib.join("acid-techno.json");
+        let mut session = Session::open(&top, None, || {});
+        session.enter("/kick_v").expect("a voicer");
+        session.enter("/vca").expect("a subpatch");
+
+        let source = spelled(&top);
+        let store = || FsResolver::for_document(&source).stat_only();
+        // An edit that leaves the way down as it was keeps the view.
+        let described = set_instrument_description(
+            &SetInstrumentDescription {
+                source: source.clone(),
+                description: Some("moved".to_string()),
+                expect: None,
+            },
+            &store(),
+        )
+        .expect("the verb ran")
+        .output;
+        assert!(described.written, "{:?}", described.report);
+        assert!(session.refresh(&|| None));
+        assert_eq!(session.trail().len(), 2);
+
+        let renamed = rename_instrument_node(
+            &RenameInstrumentNode {
+                source: source.clone(),
+                from: "/kick_v".to_string(),
+                to: "/kick_drum".to_string(),
+                expect: None,
+            },
+            &store(),
+        )
+        .expect("the verb ran")
+        .output;
+        assert!(renamed.written, "{:?}", renamed.report);
+        assert!(session.refresh(&|| None));
+        assert!(session.trail().is_empty());
+        assert_eq!(session.viewed().path, session.tree().top().path);
     }
 
     #[test]

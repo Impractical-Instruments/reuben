@@ -33,6 +33,60 @@ pub fn shortcut(ctx: &egui::Context) -> Option<Direction> {
     })
 }
 
+/// Draw the way down from the top-level document to the one viewed, as a line of links back up,
+/// and, when the document viewed is one other instruments play too, who they are.
+/// Returns how far down the trail the link clicked goes: 0 is the top-level document.
+pub fn trail(ui: &mut egui::Ui, session: &mut Session) -> Option<usize> {
+    if session.trail().is_empty() {
+        return None;
+    }
+    let mut asked = None;
+    ui.horizontal_wrapped(|ui| {
+        let tree = session.tree();
+        let names: Vec<String> = std::iter::once(tree.top().name())
+            .chain((session.trail().iter()).map(|crumb| {
+                (tree.document(&crumb.source)).map_or_else(|| crumb.source.clone(), Document::name)
+            }))
+            .collect();
+        let last = names.len() - 1;
+        for (depth, name) in names.iter().enumerate() {
+            if depth > 0 {
+                let crumb = &session.trail()[depth - 1];
+                ui.weak("›");
+                ui.weak(crumb.address.trim_start_matches('/'));
+                ui.weak("›");
+            }
+            if depth == last {
+                ui.strong(name);
+            } else if ui.link(name).clicked() {
+                asked = Some(depth);
+            }
+        }
+    });
+    let path = session.viewed().path.clone();
+    match session.users() {
+        Some(Ok(users)) if users.len() > 1 => {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                format!(
+                    "{} is used by {} instruments ({}): an edit here changes every one of them.",
+                    path.file_name().unwrap_or_default().to_string_lossy(),
+                    users.len(),
+                    users.join(", ")
+                ),
+            );
+        }
+        Some(Err(e)) => {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                format!("Could not tell which other instruments use this file: {e}"),
+            );
+        }
+        _ => {}
+    }
+    asked
+}
+
 /// Draw the session down the left of `ui`. Returns the undo or redo clicked.
 pub fn show(ui: &mut egui::Ui, session: &Session) -> Option<Direction> {
     let mut asked = None;
