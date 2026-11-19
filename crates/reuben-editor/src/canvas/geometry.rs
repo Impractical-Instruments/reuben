@@ -106,6 +106,12 @@ pub fn wire_curve(graph: &Graph, rects: &[Rect], wire: &Wire) -> [Pos2; 4] {
     let from = output_pos(&graph.boxes[node], rects[node], port);
     let PortRef { node, port } = wire.to;
     let to = input_pos(&graph.boxes[node], rects[node], port);
+    curve(from, to)
+}
+
+/// The control points of the cubic Bézier a wire follows from an output at `from` to an input at
+/// `to`.
+pub fn curve(from: Pos2, to: Pos2) -> [Pos2; 4] {
     let handle = ((to.x - from.x).abs() / 2.0).clamp(MIN_HANDLE, MAX_HANDLE);
     [
         from,
@@ -113,6 +119,76 @@ pub fn wire_curve(graph: &Graph, rects: &[Rect], wire: &Wire) -> [Pos2; 4] {
         to - Vec2::new(handle, 0.0),
         to,
     ]
+}
+
+/// The output port whose dot is nearest `point`, if one is within `reach`.
+pub fn output_at(graph: &Graph, rects: &[Rect], point: Pos2, reach: f32) -> Option<PortRef> {
+    nearest_port(graph, rects, point, reach, |b| b.outputs.len(), output_pos)
+}
+
+/// The input port whose dot is nearest `point`, if one is within `reach`.
+pub fn input_at(graph: &Graph, rects: &[Rect], point: Pos2, reach: f32) -> Option<PortRef> {
+    nearest_port(graph, rects, point, reach, |b| b.inputs.len(), input_pos)
+}
+
+fn nearest_port(
+    graph: &Graph,
+    rects: &[Rect],
+    point: Pos2,
+    reach: f32,
+    count: impl Fn(&NodeBox) -> usize,
+    at: impl Fn(&NodeBox, Rect, usize) -> Pos2,
+) -> Option<PortRef> {
+    let mut best: Option<(f32, PortRef)> = None;
+    for (node, (b, rect)) in graph.boxes.iter().zip(rects).enumerate() {
+        for port in 0..count(b) {
+            let distance = at(b, *rect, port).distance(point);
+            if distance <= reach && best.is_none_or(|(d, _)| distance < d) {
+                best = Some((distance, PortRef { node, port }));
+            }
+        }
+    }
+    best.map(|(_, port)| port)
+}
+
+/// Straight pieces a wire's curve is cut into to measure how near a point is to it: fine enough
+/// that the cut never strays a pixel from the drawn curve at the zooms text is shown at.
+const WIRE_PIECES: usize = 32;
+
+/// The wire passing nearest `point`, if one passes within `reach`.
+pub fn wire_at(graph: &Graph, rects: &[Rect], point: Pos2, reach: f32) -> Option<usize> {
+    let mut best: Option<(f32, usize)> = None;
+    for (i, wire) in graph.wires.iter().enumerate() {
+        let [a, b, c, d] = wire_curve(graph, rects, wire);
+        let along = |t: f32| {
+            let u = 1.0 - t;
+            (a.to_vec2() * (u * u * u)
+                + b.to_vec2() * (3.0 * u * u * t)
+                + c.to_vec2() * (3.0 * u * t * t)
+                + d.to_vec2() * (t * t * t))
+                .to_pos2()
+        };
+        let mut from = a;
+        for step in 1..=WIRE_PIECES {
+            let to = along(step as f32 / WIRE_PIECES as f32);
+            let distance = segment_distance(point, from, to);
+            if distance <= reach && best.is_none_or(|(d, _)| distance < d) {
+                best = Some((distance, i));
+            }
+            from = to;
+        }
+    }
+    best.map(|(_, i)| i)
+}
+
+fn segment_distance(p: Pos2, a: Pos2, b: Pos2) -> f32 {
+    let ab = b - a;
+    let t = if ab.length_sq() == 0.0 {
+        0.0
+    } else {
+        ((p - a).dot(ab) / ab.length_sq()).clamp(0.0, 1.0)
+    };
+    p.distance(a + ab * t)
 }
 
 /// The box under `point`. Boxes are painted in order, so where two overlap the later one is on
@@ -236,6 +312,62 @@ mod tests {
         assert_eq!(b.y, a.y);
         assert_eq!(c.y, d.y);
         assert!(b.x > a.x && c.x < d.x);
+    }
+
+    fn spread(g: &Graph) -> Vec<Rect> {
+        g.boxes
+            .iter()
+            .enumerate()
+            .map(|(i, b)| rect_of(b, Pos2::new(i as f32 * 300.0, i as f32 * 40.0)))
+            .collect()
+    }
+
+    #[test]
+    fn a_port_is_found_by_its_dot_and_only_within_reach() {
+        let g = graph();
+        let rects = spread(&g);
+        let cutoff_in = input_pos(&g.boxes[2], rects[2], 1);
+        let near = cutoff_in + Vec2::new(3.0, -2.0);
+        assert_eq!(
+            input_at(&g, &rects, near, 6.0),
+            Some(PortRef { node: 2, port: 1 })
+        );
+        assert_eq!(input_at(&g, &rects, near, 2.0), None);
+        // An input's dot is not an output's.
+        assert_eq!(output_at(&g, &rects, cutoff_in, 6.0), None);
+        let osc_out = output_pos(&g.boxes[1], rects[1], 0);
+        assert_eq!(
+            output_at(&g, &rects, osc_out, 6.0),
+            Some(PortRef { node: 1, port: 0 })
+        );
+    }
+
+    #[test]
+    fn of_two_ports_in_reach_the_nearer_is_found() {
+        let g = graph();
+        let rects = spread(&g);
+        let [first, second] = [0, 1].map(|i| input_pos(&g.boxes[2], rects[2], i));
+        let nearer_second = first + (second - first) * 0.6;
+        assert_eq!(
+            input_at(&g, &rects, nearer_second, LINE),
+            Some(PortRef { node: 2, port: 1 })
+        );
+    }
+
+    #[test]
+    fn a_wire_is_found_along_its_curve_and_not_off_it() {
+        let g = graph();
+        let rects = spread(&g);
+        let index = 0;
+        let [a, b, c, d] = wire_curve(&g, &rects, &g.wires[index]);
+        // The curve's midpoint, t = 0.5.
+        let middle =
+            ((a.to_vec2() + b.to_vec2() * 3.0 + c.to_vec2() * 3.0 + d.to_vec2()) / 8.0).to_pos2();
+        assert_eq!(wire_at(&g, &rects, middle, 2.0), Some(index));
+        assert_eq!(
+            wire_at(&g, &rects, middle + Vec2::new(0.0, 200.0), 2.0),
+            None
+        );
     }
 
     #[test]
