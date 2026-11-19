@@ -5,7 +5,7 @@
 //! master-gain ramp, and assert the callback-side install step — drain, ramp, box-transplant,
 //! post the retiree — is **heap-neutral** and the window was **non-vacuous** (ramp ran and
 //! completed, a retiree came home). Holds that skeleton, the `16 blocks > 2×ramp` window
-//! constant, and the live-counter probe. Counting is armed per-thread by
+//! constant, and re-exports the live-counter probe. Counting is armed per-thread by
 //! [`crate::rt_alloc::measure`]; every binary declaring `mod swap_rt_safe;` must also declare
 //! `mod rt_alloc;`.
 #![allow(dead_code)] // not every including binary calls every helper.
@@ -21,16 +21,7 @@ use crate::rt_alloc::measure;
 /// ramp width in [`assert_install_step_heap_neutral`], so the ">2×ramp" claim can't silently rot.
 pub const RAMP_SPAN_BLOCKS: usize = 16;
 
-/// Live-counter probe: an ordinary `Box` allocation inside a measured window must register, so the
-/// zero-alloc assertions elsewhere cannot be vacuous — a dead counter would also read zero. Call
-/// once before the measured swap window.
-pub fn assert_counter_is_live() {
-    let probe = measure(|| drop(Box::new([0u64; 8])));
-    assert!(
-        probe.allocs > 0,
-        "the counting harness must observe an ordinary Box allocation"
-    );
-}
+pub use crate::rt_alloc::assert_counter_is_live;
 
 /// Measured window: fill [`RAMP_SPAN_BLOCKS`] `block`-frame buffers spanning the whole master-gain
 /// ramp (down → install-at-zero → up), then assert the callback-side install step made **zero** heap

@@ -11,7 +11,7 @@
 
 mod rt_alloc;
 
-use rt_alloc::{measure, Counting};
+use rt_alloc::{assert_counter_is_live, measure, Counting};
 
 use reuben_core::coordinator::swap_pair;
 
@@ -34,13 +34,8 @@ fn render_side_drain_and_post_never_alloc_or_free() {
         .install(Box::new(Payload { _state: [1; 32] }))
         .expect("first install");
 
-    // Sanity: prove the counting harness is live, so a zero below can't be vacuous — an
-    // ordinary Box allocation inside a measured window must register on the counter.
-    let probe = measure(|| drop(Box::new(0u64)));
-    assert!(
-        probe.allocs > 0,
-        "the counting allocator must observe an ordinary Box allocation"
-    );
+    // Sanity: prove the counting harness is live, so a zero below can't be vacuous.
+    assert_counter_is_live();
 
     // Measured window: 100k full swap cycles. The render side drains, pointer-swaps
     // its resident payload, and posts the retiree; the Coordinator reclaims and
