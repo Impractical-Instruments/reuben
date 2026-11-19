@@ -9,11 +9,18 @@
 use std::sync::Arc;
 
 use eframe::egui::{
-    self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, RichText, Stroke,
-    Style, TextStyle, Theme, Visuals,
+    self, Color32, ColorImage, CornerRadius, FontData, FontDefinitions, FontFamily, FontId,
+    IconData, RichText, Stroke, Style, TextStyle, TextureFilter, TextureHandle, TextureOptions,
+    Theme, Vec2, Visuals,
 };
 
 use crate::canvas::PortKind;
+
+// Impractical Instruments' own mark, the bulb without the ring text, downscaled from the 2800 px
+// master `ImpracticalInstruments-Icon-v2.png`.
+const ICON: &[u8] = include_bytes!("../assets/logo/icon-256.png");
+/// Twice the largest size [`logo`] is drawn at, for 2x displays.
+const MARK: &[u8] = include_bytes!("../assets/logo/mark-128.png");
 
 const DISPLAY: &str = "cuomotype";
 const BODY: &str = "courier-prime";
@@ -49,6 +56,40 @@ pub fn install(ctx: &egui::Context) {
     ctx.set_fonts(fonts());
     ctx.set_theme(Theme::Light);
     ctx.set_style_of(Theme::Light, style());
+    if let Some(mark) = decode(MARK) {
+        let image = ColorImage::from_rgba_unmultiplied(
+            [mark.width as usize, mark.height as usize],
+            &mark.rgba,
+        );
+        // Drawn well below its own size in the top bar, where without mipmaps it aliases.
+        let options = TextureOptions {
+            mipmap_mode: Some(TextureFilter::Linear),
+            ..TextureOptions::LINEAR
+        };
+        let texture = ctx.load_texture("logo", image, options);
+        ctx.data_mut(|d| d.insert_temp(logo_id(), texture));
+    }
+}
+
+/// The window and taskbar icon.
+pub fn icon() -> Option<IconData> {
+    decode(ICON)
+}
+
+fn decode(png: &[u8]) -> Option<IconData> {
+    eframe::icon_data::from_png_bytes(png).ok()
+}
+
+fn logo_id() -> egui::Id {
+    egui::Id::new("theme-logo")
+}
+
+/// The logo, `size` points square. Draws nothing on a context [`install`] has not set up.
+pub fn logo(ui: &mut egui::Ui, size: f32) {
+    let texture = ui.ctx().data(|d| d.get_temp::<TextureHandle>(logo_id()));
+    if let Some(texture) = texture {
+        ui.add(egui::Image::new((texture.id(), Vec2::splat(size))));
+    }
 }
 
 fn fonts() -> FontDefinitions {
@@ -398,6 +439,24 @@ mod tests {
         assert!((width(display(100.0), 'i') - 34.0).abs() < 0.5);
         // The canvas sizes its boxes on the monospace advance; Courier Prime's is 0.6 em.
         assert!((width(FontId::monospace(100.0), 'W') - 60.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn the_logo_decodes_and_draws() {
+        let icon = icon().expect("the embedded icon is a PNG");
+        assert_eq!((icon.width, icon.height), (256, 256));
+        let mark = decode(MARK).expect("the embedded mark is a PNG");
+        assert_eq!((mark.width, mark.height), (128, 128));
+        let ctx = egui::Context::default();
+        install(&ctx);
+        let mut drawn = None;
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let before = ui.min_rect().height();
+            logo(ui, 32.0);
+            drawn = Some(ui.min_rect().height() - before);
+        })
+        .drop_without_applying_deltas();
+        assert!(drawn.unwrap() >= 32.0);
     }
 
     #[test]

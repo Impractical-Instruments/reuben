@@ -171,6 +171,7 @@ impl Start {
             .auto_shrink(false)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
+                    crate::theme::logo(ui, 64.0);
                     ui.heading("reuben-editor");
                     if open && ui.button("Back to the open instrument").clicked() {
                         self.shown = false;

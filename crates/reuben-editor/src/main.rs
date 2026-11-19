@@ -42,11 +42,15 @@ struct Args {
 
 fn main() -> eframe::Result {
     let args = Args::parse();
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("reuben-editor")
+        .with_app_id("reuben-editor")
+        .with_inner_size([1280.0, 800.0]);
+    if let Some(icon) = theme::icon() {
+        viewport = viewport.with_icon(icon);
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("reuben-editor")
-            .with_app_id("reuben-editor")
-            .with_inner_size([1280.0, 800.0]),
+        viewport,
         ..Default::default()
     };
     eframe::run_native(
@@ -184,7 +188,13 @@ impl Editor {
 impl eframe::App for Editor {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.follow_files(ui);
-        egui::Panel::top("audio").show(ui, |ui| self.audio.ui(ui, &mut self.engine));
+        egui::Panel::top("audio").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                theme::logo(ui, 22.0);
+                // Vertical, so the device row keeps the rest of the width to wrap in.
+                ui.vertical(|ui| self.audio.ui(ui, &mut self.engine));
+            });
+        });
         if let Some(session) = &mut self.session {
             let asked = session::shortcut(ui.ctx()).or(session::show(ui, session));
             if let Some(direction) = asked {
