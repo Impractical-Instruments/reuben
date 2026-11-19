@@ -12,7 +12,8 @@ use super::camera::Camera;
 use super::geometry::{
     curve, header_text, input_pos, output_pos, wire_curve, LINE, PAD, PORT_RADIUS, TEXT_SIZE,
 };
-use super::graph::{Graph, NodeBox, PortKind, PortRef};
+use super::graph::{Graph, NodeBox, PortRef};
+use crate::theme::{self, kind_color};
 
 /// Below this many points text is a smear, so it is left out and the boxes read as shapes.
 const MIN_TEXT: f32 = 5.0;
@@ -24,21 +25,6 @@ const UNSELECTED_WIRE: f32 = 0.2;
 
 /// How much of its colour an input keeps while a wire is drawn that it does not take.
 const REFUSING_PORT: f32 = 0.25;
-
-fn kind_color(kind: PortKind) -> Color32 {
-    match kind {
-        PortKind::Signal => Color32::from_rgb(0xE8, 0x9A, 0x3C),
-        PortKind::Value => Color32::from_rgb(0x5B, 0xA8, 0xE6),
-        PortKind::Int => Color32::from_rgb(0x4F, 0xC4, 0xB8),
-        PortKind::Enum => Color32::from_rgb(0xB0, 0x8C, 0xE8),
-        PortKind::Message => Color32::from_rgb(0x6C, 0xC2, 0x6C),
-        PortKind::Harmony => Color32::from_rgb(0xE8, 0x7C, 0xB4),
-        PortKind::Vocab => Color32::from_rgb(0xD8, 0xC8, 0x50),
-        PortKind::Text => Color32::from_rgb(0xC8, 0xC8, 0xB0),
-        PortKind::Arg => Color32::from_rgb(0xD0, 0x78, 0x60),
-        PortKind::Unknown => Color32::from_rgb(0x99, 0x99, 0x99),
-    }
-}
 
 /// One frame of the canvas, with everything it needs to know.
 pub struct Scene<'a> {
@@ -119,7 +105,7 @@ impl Scene<'_> {
             } else if self.selected.iter().any(touches) {
                 Stroke::new(width * 1.6, color)
             } else if self.selected.is_empty() && self.wire.is_none() {
-                Stroke::new(width, color.gamma_multiply(0.8))
+                Stroke::new(width, color.gamma_multiply(theme::RESTING_WIRE))
             } else {
                 Stroke::new(width, color.gamma_multiply(UNSELECTED_WIRE))
             };

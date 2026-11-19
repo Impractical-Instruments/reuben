@@ -45,7 +45,7 @@ pub fn show(ui: &mut egui::Ui, session: &Session) -> Option<Direction> {
                 .show(ui, |ui| {
                     asked = undo(ui, session);
                     ui.separator();
-                    ui.strong("Files");
+                    crate::theme::section(ui, "Files");
                     let beside = session.tree().top().path.parent();
                     for document in session.tree().documents() {
                         file(ui, document, beside);
