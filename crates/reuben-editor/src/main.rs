@@ -253,15 +253,7 @@ impl eframe::App for Editor {
                 };
                 ui.colored_label(color, line.to_string());
             }
-            let gestures = self.canvas.show(ui);
-            if let (Some(address), Some(session)) = (self.canvas.take_entered(), &mut self.session)
-            {
-                match session.enter(&address) {
-                    Ok(()) => view(&mut self.canvas, &mut self.inspector, session),
-                    Err(why) => self.canvas.refuse(why),
-                }
-            }
-            gestures
+            self.canvas.show(ui)
         });
         for gesture in gestures.inner {
             let Some(session) = &mut self.session else {
@@ -270,6 +262,14 @@ impl eframe::App for Editor {
             let result = gesture.apply(session, &|| self.engine.channel());
             self.canvas.applied(&gesture, &result);
             // The write is read back already; the next frame redraws from it.
+            ui.ctx().request_repaint();
+        }
+        // After the gestures, which were made on the document drawn this frame.
+        if let (Some(address), Some(session)) = (self.canvas.take_entered(), &mut self.session) {
+            match session.enter(&address) {
+                Ok(()) => view(&mut self.canvas, &mut self.inspector, session),
+                Err(why) => self.canvas.refuse(why),
+            }
             ui.ctx().request_repaint();
         }
     }

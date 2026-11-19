@@ -213,7 +213,7 @@ mod tests {
     use crate::edit::test_support::writes;
     use crate::edit::{restore, Restored};
     use crate::session::test_support::Rig;
-    use crate::session::{Direction, Status};
+    use crate::session::{Direction, Listing, Status};
 
     const HANG_SECS: u64 = 120;
 
@@ -365,10 +365,18 @@ mod tests {
                 .enter("/kick_v")
                 .expect("/kick_v voices kick-voice");
             assert_eq!(rig.session.viewed().path, voice);
-            let users = rig.session.users().cloned().expect("a voice is viewed");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while rig.session.users() == Some(&Listing::Checking) {
+                assert!(std::time::Instant::now() < deadline, "never listed");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
             assert_eq!(
-                users.expect("the library lists"),
-                ["acid-techno", "euclidean-drums", "groovebox"]
+                rig.session.users(),
+                Some(&Listing::Listed(Ok(vec![
+                    "acid-techno".to_string(),
+                    "euclidean-drums".to_string(),
+                    "groovebox".to_string()
+                ])))
             );
 
             let channel = rig.channel_source();

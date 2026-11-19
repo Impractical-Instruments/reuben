@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use super::Tree;
 
 /// The names of the instruments directly in any of `libraries` whose tree reaches the document at
-/// `path`, sorted. `root` is the library root references fall back to, as for the engine.
+/// `path`, sorted. `root` is the library root references fall back to, as for the engine. A
+/// directory that cannot be listed is passed over, and is the answer only when none can be.
 ///
 /// An instrument counts once however many of its nodes reach the file, or however many of
 /// `libraries` hold it, and one that is the file itself does not count: it is the file, not a user
@@ -15,9 +16,15 @@ use super::Tree;
 pub fn users(libraries: &[&Path], root: Option<&Path>, path: &Path) -> Result<Vec<String>, String> {
     let target = same_file(path);
     let mut tops = BTreeSet::new();
+    let mut unlisted = Vec::new();
     for library in libraries {
-        let listing =
-            std::fs::read_dir(library).map_err(|e| format!("{}: {e}", library.display()))?;
+        let listing = match std::fs::read_dir(library) {
+            Ok(listing) => listing,
+            Err(e) => {
+                unlisted.push(format!("{}: {e}", library.display()));
+                continue;
+            }
+        };
         // An entry the directory cannot report names no instrument, and costs only that entry.
         for entry in listing.flatten() {
             let top = entry.path();
@@ -25,6 +32,9 @@ pub fn users(libraries: &[&Path], root: Option<&Path>, path: &Path) -> Result<Ve
                 tops.insert(same_file(&top));
             }
         }
+    }
+    if unlisted.len() == libraries.len() {
+        return Err(unlisted.join("; "));
     }
     let mut names = Vec::new();
     for top in tops {
@@ -69,11 +79,10 @@ mod tests {
         let scratch = Scratch::new("users_nested");
         let lib = scratch.library();
         let vca = lib.join("voices").join("shaped-vca.json");
-        let names = users(&[&lib], None, &vca).expect("the library lists");
-        let mut once = names.clone();
-        once.dedup();
-        assert_eq!(names, once);
-        assert!(names.contains(&"acid-techno".to_string()), "{names:?}");
+        assert_eq!(
+            users(&[&lib], None, &vca).expect("the library lists"),
+            ["acid-techno", "euclidean-drums", "groovebox"]
+        );
     }
 
     #[test]
@@ -106,6 +115,18 @@ mod tests {
         assert_eq!(
             users(&[&mine, &lib, &lib], Some(&lib), &voice).expect("both list"),
             ["default", "my-default"]
+        );
+    }
+
+    #[test]
+    fn a_root_that_is_not_there_costs_only_itself() {
+        let scratch = Scratch::new("users_one_missing");
+        let lib = scratch.library();
+        let kick = lib.join("voices").join("kick-voice.json");
+        let nothing = scratch.path("nothing");
+        assert_eq!(
+            users(&[&lib, &nothing], Some(&nothing), &kick).expect("the library lists"),
+            ["acid-techno", "euclidean-drums", "groovebox"]
         );
     }
 

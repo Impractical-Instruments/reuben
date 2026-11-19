@@ -4,7 +4,7 @@ use std::path::Path;
 
 use eframe::egui;
 
-use super::{Direction, Document, Session, Status};
+use super::{Direction, Document, Listing, Session, Status};
 
 const UNDO: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Z);
@@ -65,7 +65,7 @@ pub fn trail(ui: &mut egui::Ui, session: &mut Session) -> Option<usize> {
     });
     let path = session.viewed().path.clone();
     match session.users() {
-        Some(Ok(users)) if users.len() > 1 => {
+        Some(Listing::Listed(Ok(users))) if users.len() > 1 => {
             ui.colored_label(
                 ui.visuals().warn_fg_color,
                 format!(
@@ -76,7 +76,10 @@ pub fn trail(ui: &mut egui::Ui, session: &mut Session) -> Option<usize> {
                 ),
             );
         }
-        Some(Err(e)) => {
+        Some(Listing::Checking) => {
+            ui.weak("Checking which other instruments use this file…");
+        }
+        Some(Listing::Listed(Err(e))) => {
             ui.colored_label(
                 ui.visuals().warn_fg_color,
                 format!("Could not tell which other instruments use this file: {e}"),

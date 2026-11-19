@@ -64,6 +64,14 @@ pub struct Poll {
 
 type Wake = Arc<dyn Fn() + Send + Sync>;
 
+/// Who plays the viewed nested document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Listing {
+    Checking,
+    /// The names of the instruments, sorted, or why they could not be listed.
+    Listed(Result<Vec<String>, String>),
+}
+
 /// One step from a document down into the document one of its nodes references.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Crumb {
@@ -104,9 +112,10 @@ pub struct Session {
     histories: BTreeMap<String, DocumentHistory<FsResolver>>,
     /// How many states each of `histories` keeps.
     states: usize,
-    /// Per nested document viewed, the library instruments that play it, or why they could not
-    /// be listed. Listed once per session: it reads every instrument of the library.
-    users: BTreeMap<PathBuf, Result<Vec<String>, String>>,
+    /// The file `users` is about, and the instruments that play it, as last listed.
+    users: Option<(PathBuf, Listing)>,
+    /// Where a listing under way will arrive. Replaced, and so let go, by the next listing.
+    listing: Option<Receiver<Result<Vec<String>, String>>>,
     #[cfg(test)]
     touches: usize,
 }
@@ -155,7 +164,8 @@ impl Session {
             undo: Undo::default(),
             histories: BTreeMap::new(),
             states: DocumentHistory::<FsResolver>::DEFAULT_CAPACITY,
-            users: BTreeMap::new(),
+            users: None,
+            listing: None,
             #[cfg(test)]
             touches: 0,
         }
@@ -198,28 +208,65 @@ impl Session {
             address: address.to_string(),
             source,
         });
+        self.list_users();
         Ok(())
     }
 
     /// View the document `depth` steps down the trail: 0 is the top-level document.
     pub fn leave(&mut self, depth: usize) {
         self.trail.truncate(depth);
+        self.list_users();
     }
 
-    /// The names of the instruments that play the viewed document, or why they could not be
-    /// listed: those beside the top-level file and those directly in the library root. `None`
-    /// while the top-level document is viewed.
-    pub fn users(&mut self) -> Option<&Result<Vec<String>, String>> {
+    /// The instruments that play the viewed document: those beside the top-level file and those
+    /// directly in the library root. `None` while the top-level document is viewed.
+    pub fn users(&mut self) -> Option<&Listing> {
+        if let Some(listed) = self.listing.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.listing = None;
+            if let Some((_, listing)) = &mut self.users {
+                *listing = Listing::Listed(listed);
+            }
+        }
+        self.users.as_ref().map(|(_, listing)| listing)
+    }
+
+    /// List again who plays the viewed document, off the UI thread: it reads every instrument
+    /// beside the top-level file and in the root. Every time the view moves or the files change,
+    /// since another instrument may have taken up or let go of the file meanwhile. The last answer
+    /// for the same file stands until the new one arrives.
+    fn list_users(&mut self) {
+        self.listing = None;
         if self.trail.is_empty() {
-            return None;
+            self.users = None;
+            return;
         }
         let path = self.viewed().path.clone();
         let beside = self.tree.top().path.parent().map(Path::to_path_buf);
-        let root = self.root.as_deref();
-        Some(self.users.entry(path).or_insert_with_key(|path| {
-            let libraries: Vec<&Path> = beside.as_deref().into_iter().chain(root).collect();
-            users(&libraries, root, path)
-        }))
+        let root = self.root.clone();
+        let (done, listing) = mpsc::channel();
+        let scanned = path.clone();
+        let wake = Arc::clone(&self.wake);
+        std::thread::spawn(move || {
+            let libraries: Vec<&Path> = beside
+                .as_deref()
+                .into_iter()
+                .chain(root.as_deref())
+                .collect();
+            if done
+                .send(users(&libraries, root.as_deref(), &scanned))
+                .is_ok()
+            {
+                wake();
+            }
+        });
+        self.listing = Some(listing);
+        if self
+            .users
+            .as_ref()
+            .is_none_or(|(listed, _)| *listed != path)
+        {
+            self.users = Some((path, Listing::Checking));
+        }
     }
 
     pub fn status(&self) -> &Status {
@@ -314,6 +361,7 @@ impl Session {
         }
         self.tree = tree;
         self.trail = followed(&self.tree, std::mem::take(&mut self.trail));
+        self.list_users();
         self.changed = true;
         self.install(channel);
         true
@@ -732,10 +780,7 @@ mod tests {
         let scratch = test_support::Scratch::new("trail");
         let lib = scratch.library();
         let mut session = Session::open(&lib.join("acid-techno.json"), None, || {});
-        assert!(
-            session.users().is_none(),
-            "the top-level document is viewed"
-        );
+        assert_eq!(session.users(), None, "the top-level document is viewed");
         assert!(session.enter("/tempo").is_err(), "no voice or patch there");
         assert!(session.trail().is_empty());
 
