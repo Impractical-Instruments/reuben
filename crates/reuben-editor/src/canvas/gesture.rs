@@ -12,7 +12,7 @@ use super::graph::{Graph, Item, PortRef};
 use crate::edit;
 use crate::session::Session;
 
-/// One edit of the open instrument's top-level document.
+/// One edit of the document the session views.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Gesture {
     /// Boxes dropped where they were dragged to.
@@ -48,7 +48,7 @@ impl Gesture {
         session: &mut Session,
         channel: &dyn Fn() -> Option<Channel>,
     ) -> Result<EditResult, Refusal> {
-        let source = session.tree().top().source.clone();
+        let source = session.viewed().source.clone();
         edit::write(session, channel, &source, |store, expect| {
             let source = source.clone();
             match self.clone() {
@@ -215,7 +215,7 @@ mod tests {
     use crate::edit::{restore, Restored};
     use crate::feedback::Feedback;
     use crate::session::test_support::Rig;
-    use crate::session::{Direction, Status};
+    use crate::session::{Direction, Listing, Status};
 
     const HANG_SECS: u64 = 120;
 
@@ -350,6 +350,100 @@ mod tests {
             let mut nodes: Vec<&str> = top.nodes.iter().map(|n| n.address.as_str()).collect();
             nodes.sort_unstable();
             assert_eq!(nodes, ["/lowpass", "/osc", "/out"]);
+        });
+    }
+
+    /// The acceptance case for editing a shared voice: from inside acid-techno, a gesture on
+    /// `kick-voice` writes that file and no other, the top-level instrument is swapped in, and the
+    /// three library instruments playing the voice are named.
+    #[test]
+    fn a_gesture_inside_a_voice_writes_the_voice_and_swaps_the_instrument() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("gesture_voice", "acid-techno.json");
+            let voice = rig.lib.join("voices").join("kick-voice.json");
+            let top = rig.session.tree().top().hash().map(str::to_string);
+            let playing = rig.playing();
+            rig.session
+                .enter("/kick_v")
+                .expect("/kick_v voices kick-voice");
+            assert_eq!(rig.session.viewed().path, voice);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while rig.session.users() == Some(&Listing::Checking) {
+                assert!(std::time::Instant::now() < deadline, "never listed");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert_eq!(
+                rig.session.users(),
+                Some(&Listing::Listed(Ok(vec![
+                    "acid-techno".to_string(),
+                    "euclidean-drums".to_string(),
+                    "groovebox".to_string()
+                ])))
+            );
+
+            let channel = rig.channel_source();
+            let result = Gesture::Remove {
+                address: "/sweep_cv".into(),
+            }
+            .apply(&mut rig.session, &channel)
+            .expect("the verb ran");
+            assert!(result.written, "{:?}", result.report);
+            assert_eq!(
+                rig.session.viewed().path,
+                voice,
+                "the view stays in the voice"
+            );
+            assert_eq!(rig.session.viewed().hash(), Some(result.hash.as_str()));
+            assert_eq!(rig.session.tree().top().hash(), top.as_deref());
+            rig.poll_until("the Swap of the write", |rig| rig.swaps() == 1);
+            rig.settle();
+            assert_eq!(rig.swaps(), 1);
+            assert_eq!(rig.status(), &Status::Current);
+            assert_eq!(
+                rig.playing(),
+                playing,
+                "the top-level document is the one playing; only its voice moved"
+            );
+
+            rig.session.leave(0);
+            assert_eq!(rig.session.viewed().hash(), top.as_deref());
+        });
+    }
+
+    /// A rejection made while a voice is viewed is pinned on that voice's canvas, at the node and
+    /// port the edit was made at, and on nothing of the top-level document.
+    #[test]
+    fn a_rejection_inside_a_voice_is_pinned_on_the_voice_canvas() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("gesture_voice_rejected", "default.json");
+            rig.session
+                .enter("/voicer")
+                .expect("/voicer voices default-voice");
+            let channel = rig.channel_source();
+            // Audio into a scalar input: the wire's types do not match.
+            let result = Gesture::Wire {
+                address: "/env".into(),
+                input: "gate".into(),
+                from: "/osc.audio".into(),
+            }
+            .apply(&mut rig.session, &channel)
+            .expect("the verb ran");
+            assert!(!result.written, "{:?}", result.report);
+
+            let viewed = rig.session.viewed();
+            let feedback = rig.session.feedback().expect("the rejection is held");
+            let graph = Graph::from_structure(viewed.read.as_ref().expect("it reads"));
+            let env = graph.index_of(&Item::Node("/env".into())).expect("a box");
+            let pinned: Vec<_> = (feedback.rejected(&viewed.source).iter())
+                .flat_map(|diag| graph.pin(diag, true))
+                .collect();
+            assert!(
+                (pinned.iter())
+                    .any(|(i, problem)| *i == env && problem.port.as_deref() == Some("gate")),
+                "{feedback:?}"
+            );
+            let top = &rig.session.tree().top().source;
+            assert!(feedback.rejected(top).is_empty(), "{feedback:?}");
         });
     }
 

@@ -2,6 +2,8 @@
 //! on each, and the wires between them. Built from the structured read of the document; nothing
 //! here draws.
 
+use std::path::Path;
+
 use eframe::egui::Pos2;
 use reuben_api::authoring::{
     Diag, InputValue, InstrumentStructure, PortInfo, Position, StructureNode, WireSource,
@@ -93,6 +95,9 @@ pub struct NodeBox {
     /// The position the document stores for this box's top-left corner, when it stores one.
     pub stored: Option<Pos2>,
     pub problems: Vec<Problem>,
+    /// The resolved source of the document a node references as its voice or its patch, which a
+    /// double-click opens.
+    pub nested: Option<String>,
 }
 
 impl NodeBox {
@@ -142,10 +147,11 @@ impl Graph {
                 }],
                 stored: pipe.layout.map(pos),
                 problems: Vec::new(),
+                nested: None,
             });
         }
         let first_node = boxes.len();
-        boxes.extend(doc.nodes.iter().map(node_box));
+        boxes.extend(doc.nodes.iter().map(|node| node_box(doc, node)));
         let first_output = boxes.len();
         for pipe in &doc.outputs {
             boxes.push(NodeBox {
@@ -159,6 +165,7 @@ impl Graph {
                 outputs: Vec::new(),
                 stored: pipe.layout.map(pos),
                 problems: Vec::new(),
+                nested: None,
             });
         }
 
@@ -273,7 +280,7 @@ fn pos(p: Position) -> Pos2 {
     Pos2::new(p.x, p.y)
 }
 
-fn node_box(node: &StructureNode) -> NodeBox {
+fn node_box(doc: &InstrumentStructure, node: &StructureNode) -> NodeBox {
     let ports = |infos: &[PortInfo]| {
         infos
             .iter()
@@ -285,14 +292,23 @@ fn node_box(node: &StructureNode) -> NodeBox {
             })
             .collect()
     };
+    let nested = crate::session::nested(doc, node).map(str::to_string);
+    let subtitle = match nested
+        .as_deref()
+        .and_then(|source| Path::new(source).file_stem())
+    {
+        Some(stem) => format!("{} › {}", node.type_name, stem.to_string_lossy()),
+        None => node.type_name.clone(),
+    };
     NodeBox {
         item: Item::Node(node.address.clone()),
         title: node.address.clone(),
-        subtitle: node.type_name.clone(),
+        subtitle,
         inputs: ports(&node.ports.inputs),
         outputs: ports(&node.ports.outputs),
         stored: node.layout.map(pos),
         problems: Vec::new(),
+        nested,
     }
 }
 

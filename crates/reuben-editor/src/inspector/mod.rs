@@ -1,9 +1,11 @@
 //! The inspector: the selected node's inputs, constants and description, or with nothing selected
 //! the instrument's name and description.
 //!
-//! What it shows is the session's read of the top-level document, so it is always the file. Every
-//! change it makes is one authoring verb through [`edit::write`], except a number being dragged: its
-//! moves go to the engine live, and the document is written once, when it is let go.
+//! What it shows is the session's read of the document it views, so it is always the file. Every
+//! change it makes is one authoring verb through [`edit::write`], except a number being dragged in
+//! the top-level document: its moves go to the engine live, and the document is written once, when
+//! it is let go. A voice's nodes have no address the engine can be sent to, and a patch's
+//! have one per node using the patch, so a number dragged in either is only written, on release.
 
 mod model;
 mod view;
@@ -115,6 +117,9 @@ impl Inspector {
     fn step(&mut self, step: Step, session: &mut Session, channel: &dyn Fn() -> Option<Channel>) {
         match step {
             Step::Live(target, value) => {
+                if !session.trail().is_empty() {
+                    return;
+                }
                 if let Some(message) = target.live(value) {
                     self.live(message, channel);
                 }
@@ -146,6 +151,9 @@ impl Inspector {
         session: &Session,
         channel: &dyn Fn() -> Option<Channel>,
     ) {
+        if !session.trail().is_empty() {
+            return;
+        }
         let Ok(top) = &session.tree().top().read else {
             return;
         };
@@ -177,7 +185,7 @@ impl Inspector {
         self.error = sent.err().map(|refusal| refusal.message);
     }
 
-    /// Write `edit` to the top-level document, against the content hash `expect`, or against the
+    /// Write `edit` to the viewed document, against the content hash `expect`, or against the
     /// document on screen now when `None`. Returns whether it landed; why it did not is the
     /// session's [`Feedback`](crate::feedback::Feedback).
     fn commit(
@@ -191,7 +199,7 @@ impl Inspector {
         {
             self.writes += 1;
         }
-        let source = session.tree().top().source.clone();
+        let source = session.viewed().source.clone();
         let verb = |store: &dyn Resources, expect| edit.run(&source, store, expect);
         let result = match expect {
             Some(expect) => edit::write_against(session, channel, &source, expect, verb),
@@ -232,7 +240,7 @@ mod tests {
     const INSTRUMENT: &str = "strum-harp.json";
 
     fn node(rig: &Rig, address: &str) -> StructureNode {
-        let top = (rig.session.tree().top().read.as_ref()).expect("the top reads");
+        let top = (rig.session.viewed().read.as_ref()).expect("the viewed document reads");
         (top.nodes.iter())
             .find(|n| n.address == address)
             .unwrap_or_else(|| panic!("{address} is a node"))
@@ -268,13 +276,7 @@ mod tests {
     /// One frame of `target`'s number field as the view draws it: over the session's current read
     /// of the document, showing `value`, held or not.
     fn frame(rig: &mut Rig, inspector: &mut Inspector, target: &Target, value: f64, holding: bool) {
-        let top = rig
-            .session
-            .tree()
-            .top()
-            .read
-            .clone()
-            .expect("the top reads");
+        let top = (rig.session.viewed().read.clone()).expect("the viewed document reads");
         let document = match fields(&node(rig, &target.address))
             .into_iter()
             .find(|f| f.target.name == target.name)
@@ -357,6 +359,41 @@ mod tests {
                 "the engine plays the released value"
             );
             assert_eq!(inspector.writes, 1);
+        });
+    }
+
+    /// Inside a voice, a held number would name a node of the top-level instrument that happens to
+    /// share its address: it is only written, and the write goes to the voice.
+    #[test]
+    fn a_number_held_inside_a_voice_is_never_sent_and_letting_go_writes_the_voice() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("inspector_voice", "acid-techno.json");
+            rig.session
+                .enter("/kick_v")
+                .expect("/kick_v voices kick-voice");
+            let voice = rig.lib.join("voices").join("kick-voice.json");
+            assert_eq!(rig.session.viewed().path, voice);
+            let top = rig.session.tree().top().hash().map(str::to_string);
+            let before = rig.session.viewed().hash().map(str::to_string);
+            let mut inspector = Inspector::default();
+            let viewed = (rig.session.viewed().read.clone()).expect("the voice reads");
+            let held = (viewed.nodes.iter())
+                .flat_map(fields)
+                .find(|f| !f.target.constant && matches!(f.control, Control::Number { .. }))
+                .expect("the voice has a number to hold")
+                .target;
+
+            hold(&mut rig, &mut inspector, &held, &[60.0, 70.0]);
+            release(&mut rig, &mut inspector, &held, 72.0);
+            assert_eq!(inspector.error, None);
+            assert_eq!(inspector.writes, 1);
+            assert_eq!(rig.live_received(1), [], "nothing was sent live");
+            assert_ne!(rig.session.viewed().hash(), before.as_deref());
+            assert_eq!(rig.session.viewed().path, voice);
+            assert_eq!(rig.session.tree().top().hash(), top.as_deref());
+            rig.poll_until("the Swap of the write", |rig| rig.swaps() == 1);
+            rig.settle();
+            assert_eq!(rig.status(), &Status::Current);
         });
     }
 
