@@ -120,15 +120,18 @@ impl Operator for Mix {
             if g_varying {
                 for ((o, &xi), &gi) in out.iter_mut().zip(x).zip(g) {
                     let gi = effective_gain(gi);
-                    // A select, not a branch, so the loop stays vectorizable; a muted sample adds
-                    // nothing rather than `xi * 0.0`, which is NaN for an inf or NaN source.
+                    // A muted sample adds nothing rather than `xi * 0.0`, which is NaN for an
+                    // inf or NaN source.
                     *o += if gi > 0.0 { xi * gi } else { 0.0 };
                 }
             } else {
-                // Not skipped above, so this held gain is above 0.
+                // The gather skips a held gain of effective 0; the guard keeps the mute rule here
+                // too, so it does not rest on that skip.
                 let gain = g.first().map_or(1.0, |&v| effective_gain(v));
-                for (o, &xi) in out.iter_mut().zip(x) {
-                    *o += xi * gain;
+                if gain > 0.0 {
+                    for (o, &xi) in out.iter_mut().zip(x) {
+                        *o += xi * gain;
+                    }
                 }
             }
         }
@@ -161,8 +164,7 @@ mod tests {
         }
     }
 
-    /// The first frame of the second block: a pushed control lands in block 0's change list and
-    /// is a held fill from block 1 on.
+    /// The render block, so a ramp can restart at 0.0 on every block boundary.
     const BLOCK: usize = 128;
 
     #[test]
@@ -254,7 +256,7 @@ mod tests {
         // A raw OSC float reaches a Signal port unclamped, then reads as a held fill.
         let mut d = OpDriver::for_type(Mix::new(), SR);
         d.set(IN_IN1, 1.0).push(IN_GAIN1, 0, 10.0).render(N);
-        assert!(d.output(OUT_OUT)[BLOCK..].iter().all(|&v| v == GAIN_MAX));
+        assert!(d.output(OUT_OUT).iter().all(|&v| v == GAIN_MAX));
     }
 
     #[test]
@@ -292,7 +294,7 @@ mod tests {
             .set(IN_IN4, 1.0)
             .drive(IN_GAIN4, &nan)
             .render(N);
-        assert!(d.output(OUT_OUT)[BLOCK..].iter().all(|&v| v == 0.0));
+        assert!(d.output(OUT_OUT).iter().all(|&v| v == 0.0));
     }
 
     #[test]
