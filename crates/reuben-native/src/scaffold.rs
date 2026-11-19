@@ -187,10 +187,14 @@ fn render_operator(spec: &OperatorSpec) -> String {
 
     // Imports — pull in the bind_resources types only when there are resources. The contract
     // macro emits fully-qualified `Descriptor`/`Port`/etc paths, so the file needs only
-    // `Descriptor` (for the `descriptor()` delegate's return type).
+    // `Descriptor` (for the `descriptor()` delegate's return type). `reuben-core` is `no_std`
+    // outside its lib test target, so `Box`/`Arc` come from `alloc`: a `std` path, or leaning on
+    // the `std` prelude, compiles under `cargo test` and fails under `cargo build`.
+    out.push_str("use alloc::boxed::Box;\n");
     if has_resources {
-        out.push_str("use std::sync::Arc;\n\n");
+        out.push_str("use alloc::sync::Arc;\n");
     }
+    out.push('\n');
     out.push_str("use crate::descriptor::Descriptor;\n");
     out.push_str("use crate::operator::{Io, Operator};\n");
     if has_resources {
@@ -470,7 +474,29 @@ mod tests {
         let src = render(r#"{ "type_name": "smp", "resources": ["wave"] }"#);
         assert!(src.contains("resources: { wave },"), "{src}");
         assert!(src.contains("fn bind_resources("), "{src}");
-        assert!(src.contains("use std::sync::Arc;"), "{src}");
+        assert!(src.contains("use alloc::sync::Arc;"), "{src}");
+    }
+
+    #[test]
+    fn imports_resolve_without_std() {
+        // The textual half of `tests/scaffold_compiles.rs`: no `std` path, and every `alloc`
+        // type the file names is imported, since no prelude supplies one in `no_std`.
+        for json in [
+            r#"{ "type_name": "plain" }"#,
+            r#"{ "type_name": "smp", "resources": ["wave"] }"#,
+        ] {
+            let src = render(json);
+            assert!(
+                !src.contains("std::"),
+                "no `std` path in a no_std crate:\n{src}"
+            );
+            assert!(src.contains("use alloc::boxed::Box;"), "{src}");
+            assert_eq!(
+                src.contains("Arc<"),
+                src.contains("use alloc::sync::Arc;"),
+                "{src}"
+            );
+        }
     }
 
     #[test]
