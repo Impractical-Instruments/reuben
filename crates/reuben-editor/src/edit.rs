@@ -1,4 +1,4 @@
-//! The editor's one write path: every change to a document is a `reuben-api` authoring verb called
+//! The editor's one write path: every change to a document is a [`NoSuchVerb`] authoring verb called
 //! through [`write`](fn@write), and every return to an earlier state is a restore through [`restore`].
 
 pub mod local_copy;
