@@ -26,6 +26,10 @@ render = []
 # Implies `authoring`: it implements the resolver trait the loader calls, and there is nothing
 # for it to resolve *for* without the loader.
 fs-resolver = ["authoring", "dep:hound"]
+# The loopback TCP transport a client outside the engine dials the structure channel with. Off by
+# default for the same reason as `fs-resolver`: the transport is the client's to supply, and this is
+# one implementation of it, shared by the processes that dial `reuben play`.
+tcp = ["authoring"]
 
 [dependencies]
 reuben-core = { path = "../reuben-core" }

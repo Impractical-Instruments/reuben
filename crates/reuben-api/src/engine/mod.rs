@@ -11,7 +11,8 @@
 //! - [`wire`] — what both ends serialize. Neither door owns it, so neither can move it alone.
 //! - [`verbs`](self) over a [`Channel`] — the client side. A door supplies a [`Transport`]
 //!   (sockets, timeouts, its own reconnect policy) and gets the framing, the response
-//!   classification, the result shapes and the glosses.
+//!   classification, the result shapes and the glosses. The loopback TCP one a process outside the
+//!   engine dials with is `TcpTransport`, behind the `tcp` feature.
 //! - [`server`] — the serving side, over an [`EngineHost`] seam. A host supplies its device map,
 //!   its control ingress, its counters and the clock its deferred free waits on; the window
 //!   decides what each verb *means*, the expect guard included. [`InProcess`] is the transport a
@@ -31,6 +32,8 @@ mod channel;
 pub mod prose;
 mod result;
 pub mod server;
+#[cfg(feature = "tcp")]
+mod tcp;
 mod verbs;
 pub mod wire;
 
@@ -58,6 +61,8 @@ pub use reuben_document::coordinator::PreparedSwap;
 pub use reuben_document::format::LoadWarning;
 /// Why an initial install failed: the document did not load, or it loaded and would not plan.
 pub use reuben_document::FromDocumentError;
+#[cfg(feature = "tcp")]
+pub use tcp::{TcpTransport, DEFAULT_CONNECT_TIMEOUT};
 pub use verbs::*;
 pub use wire::{
     Conflict, ControlArg, ControlMessage, DiagnosticsReport, DiffSummary, DocSource,

@@ -6,9 +6,10 @@
 //! [`ChannelError::Unreachable`] carrying the window's start-the-engine guidance — so this module
 //! never hangs and never panics.
 //!
-//! What is *not* here is the socket. A door supplies the [`Transport`]: loopback TCP for the MCP
-//! sidecar, whatever an in-process host has instead. The framing, the timeout policy and the
-//! response classification are the window's, so two doors cannot disagree about what a reply means.
+//! What is *not* here is the socket. A door supplies the [`Transport`]: loopback TCP for a process
+//! dialing `reuben play` (the `tcp` feature's), whatever an in-process host has instead. The
+//! framing, the timeout policy and the response classification are the window's, so two doors
+//! cannot disagree about what a reply means.
 
 use alloc::boxed::Box;
 use alloc::format;
@@ -93,8 +94,8 @@ pub enum SwapOutcome {
 ///
 /// **The injectable seam**, and deliberately the lowest one: everything above it — framing,
 /// parsing, the unreachable/protocol split — is exercised rather than replaced by a test double.
-/// Below it live the socket mechanics, which are the door's — a loopback TCP one ships with the
-/// MCP sidecar and is driven over a real socket there.
+/// Below it live the socket mechanics, which are the door's — the loopback TCP one is behind the
+/// `tcp` feature, and `reuben-mcp`'s tests drive it over a real socket.
 pub trait Transport: Send + Sync + fmt::Debug {
     /// One request line out, one response line back. `read_timeout` is per-call because `ping`
     /// runs on a tighter budget than the other verbs. Any I/O failure — refused connect,

@@ -26,6 +26,7 @@ path = "src/main.rs"
 reuben-api = { path = "../reuben-api", default-features = false, features = [
     "authoring",
     "fs-resolver",
+    "tcp",
 ] }
 # stdio server only: `server` + `macros` for the tool router, `transport-io` for the stdio pipe.
 # No HTTP/reqwest/streamable-http transport — the network stack stays out.

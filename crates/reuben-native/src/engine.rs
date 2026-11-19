@@ -470,7 +470,8 @@ fn resolve_structure(addr: &str) -> Result<io::Result<Vec<SocketAddr>>, StartErr
 }
 
 /// The instrument's JSON, the resolver its references resolve through, and the source name
-/// `get_document` reports for it (`None` for the built-in rig, which has no source to name).
+/// `get_document` reports for it: the path made absolute against the working directory, `None`
+/// for the built-in rig, which has no source to name.
 ///
 /// The Coordinator owns the resolver for the session, and every swap resolves through it. Its base
 /// directory is the anchor for this document and for a swap by value; a by-path swap hands the
@@ -487,7 +488,11 @@ fn read_instrument(
                     path: path.clone(),
                     error,
                 })?;
-            let source = path.display().to_string();
+            // Absolute, because a client reading it back may run in another directory.
+            let source = std::path::absolute(&path)
+                .unwrap_or_else(|_| path.clone())
+                .display()
+                .to_string();
             (json, FsResolver::for_instrument(&path), Some(source))
         }
         Instrument::Default => (DEFAULT_JSON.to_string(), FsResolver::new("."), None),

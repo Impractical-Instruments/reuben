@@ -133,6 +133,46 @@ The editor follows the files: a change to the instrument, or to any voice or sub
 references — from `reuben-mcp`, a text editor, anything — is swapped in as it is saved. A change
 that does not load is shown, and the last instrument that loaded keeps playing.
 
+#### Attaching to a running engine
+
+The editor can also play an engine it did not start, such as a `reuben play` started by a
+launcher script for a show. It reaches that engine on its structure channel, which `reuben play`
+opens on `127.0.0.1:9124`:
+
+```sh
+cargo reuben-play instruments/groovebox.json  # elsewhere, already running
+cargo run -p reuben-editor -- --attach 127.0.0.1:9124
+```
+
+The editor opens the file the engine plays, so its controls play the engine live, and a save is
+swapped in as usual. If the instrument's file changed since the engine read it, the editor swaps
+it in when it attaches. That check covers the instrument's own file, not the voice and subpatch
+files it references: save the instrument again to swap those in. The audio device and the engine
+flags (`--io-map`, `--osc-out`) stay the ones `reuben play` was started with.
+
+The editor checks the engine once a second. If another client has it play a different file, or it
+is restarted on one, the editor opens that file rather than swapping its own over it. A file
+swapped in by a relative path is not opened, since there is no knowing which file it is from the
+editor's directory. If the engine stops answering, the editor says so in its top bar and keeps
+trying. Closing the editor, or losing the link, never stops the engine.
+
+Control values from the editor and from any other OSC sender reach the same inputs, and the
+last one written wins. The editor does not hold a swap from another client to ask first, as it
+does for an engine it started: whoever writes last wins.
+
+The structure channel listens on loopback only. To attach to an engine on another machine,
+tunnel the port over SSH and attach to your end. Every control move then waits on a round trip
+through the tunnel, so expect some lag:
+
+```sh
+ssh -N -L 9124:127.0.0.1:9124 show-machine
+cargo run -p reuben-editor -- --attach 127.0.0.1:9124
+```
+
+The editor reads the instrument's files, controls included, from its own disk, and a swap names
+the file by path for the engine to read from its disk. So for a remote engine, the files must be
+at the same paths on both machines (a shared mount, for example).
+
 The editor is in progress: editing the instrument's graph on a canvas is not there yet.
 
 ## More

@@ -183,3 +183,253 @@ fn the_edit_banner_leaves_the_inspector_uncovered() {
         );
     }
 }
+
+/// Write an instrument at `lib/attached.json`, `level` resting at `level`, whose `level` input
+/// comes back out on OSC-out.
+fn echoing(scratch: &Scratch, level: f64) -> PathBuf {
+    let lib = scratch.path("lib");
+    std::fs::create_dir_all(&lib).expect("create the library directory");
+    let top = lib.join("attached.json");
+    let text = json!({
+        "format_version": 3,
+        "instrument": "attached",
+        "interface": {
+            "inputs": {"level": {"type": "f32", "default": level, "min": 0.0, "max": 1.0}},
+            "outputs": {"out": {"from": "/osc.audio"}}
+        },
+        "nodes": [
+            {"type": "oscillator", "address": "/osc"},
+            {"type": "osc_out", "address": "/level_echo", "inputs": {"in": {"from": "/level"}}}
+        ]
+    })
+    .to_string();
+    std::fs::write(&top, text).expect("write the instrument");
+    top
+}
+
+/// The editor as `main` builds it for `--attach addr`, showing `session` if it is given one.
+fn attached(addr: String, config: &TempConfig, session: Option<Session>) -> Editor {
+    let args = Args::parse_from(["reuben-editor", "--attach", &addr]);
+    Editor {
+        engine: Engine::attach(addr, || {}),
+        audio: AudioSettings::load_with(config.dir(), two_devices),
+        controls: Controls::open(None, None),
+        canvas: Canvas::open(None, None),
+        inspector: Inspector::default(),
+        session,
+        start: Start::new(config.dir(), None),
+        launch: Launch {
+            root: None,
+            flags: args.engine,
+            swap_hold: None,
+        },
+        held: HeldSwaps::new(|| {}),
+    }
+}
+
+/// The `level` resting value of the document `played` has installed.
+fn installed_level(played: &reuben_native::engine::RunningEngine) -> serde_json::Value {
+    let installed = played.channel().get_document().unwrap().document;
+    installed["interface"]["inputs"]["level"]["default"].clone()
+}
+
+/// Step the harness until `done`, sleeping between steps so the link's thread and the session's
+/// Swap get to run.
+fn step_until(harness: &mut Harness<'_, Editor>, what: &str, done: impl Fn(&Editor) -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !done(harness.state()) {
+        assert!(std::time::Instant::now() < deadline, "never {what}");
+        harness.run_steps(1);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn an_editor_attached_to_a_running_engine_plays_it_and_swaps_its_saves() {
+    use egui::accesskit::Role;
+    use reuben_api::render::Arg;
+    use reuben_native::engine::EngineConfig;
+    use reuben_native::osc;
+    use reuben_native::test_support::{start_headless, within};
+
+    let scratch = Scratch::new("ui_attached");
+    let config = TempConfig::new();
+    let top = echoing(&scratch, 0.2);
+    let sink = std::net::UdpSocket::bind("127.0.0.1:0").expect("an OSC-out sink");
+    sink.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .expect("a read timeout");
+    let target = sink.local_addr().expect("bound").to_string();
+
+    within(crate::engine::test_support::HANG_SECS, move || {
+        // `reuben play`, started by someone else.
+        let played = start_headless(EngineConfig {
+            osc_out: Some(target),
+            ..crate::engine::test_support::config(top.clone())
+        })
+        .expect("the engine starts");
+        let addr = played.structure_addr().expect("bound").to_string();
+
+        let mut harness = harness(attached(addr, &config, None));
+
+        step_until(&mut harness, "opened what the engine plays", |editor| {
+            editor.session.is_some()
+        });
+        assert_eq!(harness.state().session.as_ref().unwrap().top(), top);
+        assert_eq!(harness.state().controls.binds(), vec!["level"]);
+        harness.get_by_label(&format!(
+            "Attached to the engine on {}",
+            played.structure_addr().unwrap()
+        ));
+
+        // Moving the fader reaches the engine it is attached to.
+        harness.get_by_role(Role::Slider).focus();
+        harness.run_steps(1);
+        harness.key_press(egui::Key::ArrowRight);
+        harness.run_steps(2);
+        let mut buf = [0u8; 1024];
+        loop {
+            let n = sink.recv(&mut buf).expect("the level came back");
+            let echoed = osc::decode(&buf[..n]).expect("decode");
+            if echoed.iter().any(|m| m.args != vec![Arg::F32(0.2)]) {
+                break;
+            }
+        }
+
+        // Saving the file Swaps it in. The engine holds the document as it migrated it, so the
+        // saved value is what is compared.
+        echoing(&scratch, 0.7);
+        step_until(&mut harness, "swapped the save in", |_| {
+            installed_level(&played) == json!(0.7)
+        });
+
+        harness.state_mut().engine.shutdown();
+        played
+            .channel()
+            .ping()
+            .expect("closing the editor stopped nothing");
+        reuben_native::diagnostics::log_snapshot(&played.shutdown());
+    });
+}
+
+#[test]
+fn attaching_swaps_in_a_file_changed_since_the_engine_read_it() {
+    use reuben_native::test_support::{start_headless, within};
+
+    let scratch = Scratch::new("ui_attached_stale");
+    let config = TempConfig::new();
+    let top = echoing(&scratch, 0.2);
+    within(crate::engine::test_support::HANG_SECS, move || {
+        let played = start_headless(crate::engine::test_support::config(top.clone()))
+            .expect("the engine starts");
+        // Changed on disk, and not Swapped in, before the editor attaches.
+        echoing(&scratch, 0.7);
+        let addr = played.structure_addr().expect("bound").to_string();
+        let mut harness = harness(attached(addr, &config, None));
+        step_until(&mut harness, "swapped in what is on disk", |_| {
+            installed_level(&played) == json!(0.7)
+        });
+        harness.state_mut().engine.shutdown();
+        reuben_native::diagnostics::log_snapshot(&played.shutdown());
+    });
+}
+
+#[test]
+fn an_engine_playing_another_file_has_it_opened_not_the_shown_one_swapped_over_it() {
+    use reuben_native::test_support::{start_headless, within};
+
+    let scratch = Scratch::new("ui_attached_other");
+    let config = TempConfig::new();
+    let shown = instrument(&scratch);
+    let other = echoing(&scratch, 0.2);
+    within(crate::engine::test_support::HANG_SECS, move || {
+        let played = start_headless(crate::engine::test_support::config(other.clone()))
+            .expect("the engine starts");
+        let addr = played.structure_addr().expect("bound").to_string();
+        // Changes to `shown` the engine never got, as when they were saved while it was down.
+        let mut session = Session::open(&shown, None, || {});
+        session.reinstall(&|| None);
+        assert_eq!(session.status(), &Status::NoEngine);
+        let mut harness = harness(attached(addr, &config, Some(session)));
+        step_until(&mut harness, "opened what the engine plays", |editor| {
+            editor.session.as_ref().is_some_and(|s| s.top() == other)
+        });
+        harness.run_steps(4);
+        let installed = played.channel().get_document().unwrap();
+        assert_eq!(installed.source, Some(other.display().to_string()));
+        assert_eq!(installed_level(&played), json!(0.2));
+        harness.state_mut().engine.shutdown();
+        reuben_native::diagnostics::log_snapshot(&played.shutdown());
+    });
+}
+
+#[test]
+fn a_session_saying_nothing_plays_is_current_once_the_engine_answers_with_its_files() {
+    use reuben_native::test_support::{start_headless, within};
+
+    let scratch = Scratch::new("ui_attached_back");
+    let config = TempConfig::new();
+    let top = echoing(&scratch, 0.2);
+    within(crate::engine::test_support::HANG_SECS, move || {
+        let played = start_headless(crate::engine::test_support::config(top.clone()))
+            .expect("the engine starts");
+        let addr = played.structure_addr().expect("bound").to_string();
+        // Saved while the engine was not answering; it came back on the same files.
+        let mut session = Session::open(&top, None, || {});
+        session.reinstall(&|| None);
+        assert_eq!(session.status(), &Status::NoEngine);
+        let mut harness = harness(attached(addr, &config, Some(session)));
+        step_until(&mut harness, "said the files play", |editor| {
+            editor.session.as_ref().unwrap().status() == &Status::Current
+        });
+        harness.state_mut().engine.shutdown();
+        reuben_native::diagnostics::log_snapshot(&played.shutdown());
+    });
+}
+
+/// A transport whose one exchange waits until it is let go, then fails: a Swap held in flight.
+#[derive(Debug)]
+struct Gate(std::sync::Mutex<std::sync::mpsc::Receiver<()>>);
+
+impl reuben_api::engine::Transport for Gate {
+    fn round_trip(&self, _: &str, _: std::time::Duration) -> std::io::Result<String> {
+        let _ = self.0.lock().unwrap().recv();
+        Err(std::io::Error::other("let go"))
+    }
+    fn endpoint(&self) -> &str {
+        "gate"
+    }
+}
+
+#[test]
+fn what_the_engine_plays_while_a_swap_runs_is_followed_once_it_lands() {
+    use reuben_api::engine::Channel;
+    use reuben_native::test_support::{start_headless, within};
+
+    let scratch = Scratch::new("ui_attached_mid_swap");
+    let config = TempConfig::new();
+    let shown = instrument(&scratch);
+    let other = echoing(&scratch, 0.2);
+    within(crate::engine::test_support::HANG_SECS, move || {
+        let played = start_headless(crate::engine::test_support::config(other.clone()))
+            .expect("the engine starts");
+        let addr = played.structure_addr().expect("bound").to_string();
+        let (release, gate) = std::sync::mpsc::channel();
+        let gate = std::sync::Mutex::new(Some(Channel::new(Gate(std::sync::Mutex::new(gate)))));
+        let mut session = Session::open(&shown, None, || {});
+        session.reinstall(&|| gate.lock().unwrap().take());
+        assert_eq!(session.status(), &Status::Swapping);
+
+        let mut harness = harness(attached(addr, &config, Some(session)));
+        // The engine has answered with what it plays, and the Swap still runs.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        harness.run_steps(4);
+        assert_eq!(harness.state().session.as_ref().unwrap().top(), shown);
+
+        release.send(()).unwrap();
+        step_until(&mut harness, "opened what the engine plays", |editor| {
+            editor.session.as_ref().is_some_and(|s| s.top() == other)
+        });
+        harness.state_mut().engine.shutdown();
+        reuben_native::diagnostics::log_snapshot(&played.shutdown());
+    });
+}
