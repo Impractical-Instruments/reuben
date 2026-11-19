@@ -9,10 +9,11 @@
 //! - The `micro_bench_ops!` block in [`IAI_BENCH`]. iai's `#[bench::<id>]` attributes are
 //!   compile-time, so the bench cannot walk the registry.
 //!
-//! Compiled into every build, unlike `bench_support`, so the staleness tests in
+//! Compiled into every host build, unlike `bench_support`, so the staleness tests in
 //! `reuben-document/tests/bench_census.rs` run under a plain `cargo test` and the generator needs no
 //! feature flag. They live beside the files they check: this crate's own tests also compile in a
-//! copy of it that has no `reuben-document` beside it.
+//! copy of it that has no `reuben-document` beside it. Left out of bare-metal builds, where its
+//! string sorting would only add machine code to an image nothing benches.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -103,12 +104,27 @@ pub fn kinds(registry: &Registry) -> Vec<&'static str> {
     kinds
 }
 
-/// The bench id `kind` is gated under.
-pub fn bench_id(kind: &str) -> &str {
-    LEGACY_IDS
-        .iter()
-        .find(|(k, _)| *k == kind)
-        .map_or(kind, |(_, id)| id)
+/// Rust keywords in any edition, strict and reserved. A bench id is an identifier in
+/// `#[bench::<id>]`; `r#<kw>` compiles there, but iai then names the callgrind case `r#<kw>`.
+const KEYWORDS: &[&str] = &[
+    "abstract", "as", "async", "await", "become", "box", "break", "const", "continue", "crate",
+    "do", "dyn", "else", "enum", "extern", "false", "final", "fn", "for", "gen", "if", "impl",
+    "in", "let", "loop", "macro", "match", "mod", "move", "mut", "override", "priv", "pub", "ref",
+    "return", "self", "static", "struct", "super", "trait", "true", "try", "type", "typeof",
+    "unsafe", "unsized", "use", "virtual", "where", "while", "yield",
+];
+
+/// The bench id `kind` is gated under: its legacy id, else the kind itself, else — for a kind that
+/// is a Rust keyword — the kind with an `_op` suffix.
+pub fn bench_id(kind: &str) -> String {
+    if let Some((_, id)) = LEGACY_IDS.iter().find(|(k, _)| *k == kind) {
+        return String::from(*id);
+    }
+    let mut id = String::from(kind);
+    if KEYWORDS.contains(&kind) {
+        id.push_str("_op");
+    }
+    id
 }
 
 /// The kinds file's text. Lines starting with `#` are comments; every other line is one kind.
@@ -194,11 +210,23 @@ mod tests {
     #[test]
     fn bench_ids_are_unique() {
         let kinds = kinds(&Registry::builtin());
-        let mut ids: Vec<&str> = kinds.iter().map(|k| bench_id(k)).collect();
+        let mut ids: Vec<String> = kinds.iter().map(|k| bench_id(k)).collect();
         ids.sort_unstable();
         let before = ids.len();
         ids.dedup();
         assert_eq!(before, ids.len(), "two micro-bench kinds share a bench id");
+    }
+
+    #[test]
+    fn a_keyword_kind_gets_an_identifier_id() {
+        assert_eq!(bench_id("loop"), "loop_op");
+        assert_eq!(bench_id("self"), "self_op");
+        assert_eq!(bench_id("looper"), "looper");
+        assert_eq!(bench_id("abs_f32_signal"), "abs");
+        assert_eq!(
+            render_iai_census(&["match"]),
+            "micro_bench_ops! {\n    match_op => \"match\",\n}\n"
+        );
     }
 
     #[test]

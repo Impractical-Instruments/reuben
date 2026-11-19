@@ -27,8 +27,8 @@ pub const BLOCK_SIZE: usize = 128;
 /// `375 * 128 == 48_000` == exactly 1 s of audio, the same fixed schedule the macro layer renders.
 pub const BLOCKS: usize = 375;
 
-/// How an operator's inputs are driven for its micro bench. The variant captures the *minimum* a given operator needs to exercise its real per-sample path
-/// rather than an early-out idle path.
+/// How an operator's inputs are driven for its micro bench. The variant captures the *minimum* a
+/// given operator needs to exercise its real per-sample path rather than an early-out idle path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Recipe {
     /// Every `Float` input held at its descriptor default (constant ⇒ `varying = false`, so a
@@ -183,6 +183,10 @@ pub fn recipe(kind: &str) -> Recipe {
 
 /// Every micro-bench workload: each kind in [`bench_census::kinds`] with its [`recipe`], sorted by
 /// kind.
+///
+/// That includes `subpatch`. It registers no ports and dissolves at build, so the loader never lets
+/// one reach a Plan; the harness constructs it directly and steps its no-op `process`, benching the
+/// format anchor for census completeness.
 pub fn all_workloads() -> Vec<Workload> {
     bench_census::kinds(&Registry::builtin())
         .into_iter()

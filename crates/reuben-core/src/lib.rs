@@ -62,6 +62,7 @@ pub mod __float {
 #[cfg(feature = "bench")]
 pub mod bench_support;
 
+#[cfg(not(target_os = "none"))]
 #[doc(hidden)]
 pub mod bench_census;
 
