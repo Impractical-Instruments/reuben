@@ -97,7 +97,9 @@ const INSTRUCTIONS: &str = "reuben authoring sidecar. The instrument document is
      truth; keep it in sync with the sound. **Never open, read or write an instrument file \
      yourself** — name it by `source` and let these tools do it: `describe_instrument` reads its \
      structure, the `*_instrument_*` verbs edit it one change at a time, and each one re-validates \
-     the whole document and writes only if it is valid. Start `reuben play` in another terminal \
+     the whole document and writes only if it is valid — so while a document has errors, every \
+     edit is refused: a rejection lists the ones it already had as `pre_existing`; fix those \
+     first. Start `reuben play` in another terminal \
      first — the engine tools (`send_live_controls`, `swap_instrument`, `get_current_instrument`, \
      `get_engine_diagnostics`) fail fast until it is reachable. The loop: `send_live_controls` to \
      audition a change (ephemeral — clobbered at the next swap), then edit the document and \
@@ -2223,6 +2225,54 @@ mod tests {
             Some(true),
             "a missing target is isError: {result:?}"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A rejection for an error the document already had says so in the text a model reads, and
+    /// carries it apart from the edit's own in the structured result.
+    #[test]
+    fn a_rejection_for_a_pre_existing_error_says_so() {
+        let dir = std::env::temp_dir().join("reuben_mcp_edit_pre_existing_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("inst.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "format_version": 3,
+                "instrument": "door-test",
+                "nodes": [
+                    { "type": "oscillator", "address": "/osc", "inputs": { "freq": { "from": "/gone" } } }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let server = ReubenServer::new();
+        let result = block_on(server.set_instrument_node_description(Parameters(
+            authoring::SetInstrumentNodeDescription {
+                source: path.display().to_string(),
+                address: "/osc".to_string(),
+                description: Some("the tone".to_string()),
+                expect: None,
+            },
+        )))
+        .expect("returns a result");
+
+        assert_ne!(result.is_error, Some(true), "a rejection is ordinary");
+        let text = first_text(&result);
+        assert!(
+            text.contains("already had 1 error(s) before this edit")
+                && text.contains("fix those first"),
+            "{text}"
+        );
+        let s = result
+            .structured_content
+            .as_ref()
+            .expect("structured payload");
+        assert_eq!(s["report"]["errors"], serde_json::json!([]), "{s}");
+        assert_eq!(s["pre_existing"][0]["node"], "/gone", "{s}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

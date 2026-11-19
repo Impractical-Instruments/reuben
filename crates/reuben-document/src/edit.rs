@@ -31,7 +31,7 @@ use crate::format::{
     ConfigValue, CurveDoc, InputPipeDoc, InputValue, InstrumentDoc, InterfaceDoc, InterfaceEntry,
     Layout, NodeDoc, NormalizedDoc, OutputPipeDoc, PipeDefault, FORMAT_VERSION, PIPE_INPUT_PORT,
 };
-use crate::introspect::validate;
+use crate::introspect::{validate_faulted, Fault};
 use crate::projection::{Projector, Rebased, Scalar, Selection};
 use crate::resources::{Created, ResolveError, ResourceResolver};
 use crate::vocabulary::Section;
@@ -44,8 +44,14 @@ mod intent;
 #[derive(Debug, Clone, Serialize)]
 pub struct EditResult {
     /// The whole-document validation report. `ok` is the write decision: `true` means the edit
-    /// passed and was persisted; `false` means nothing was written and `errors` says why.
+    /// passed and was persisted; `false` means nothing was written. On a rejection `errors` holds
+    /// what the document did not already carry before the edit; what it did is in `pre_existing`.
     pub report: Report,
+    /// The errors of a rejected edit that the document already carried before it. Every edit to a
+    /// document that does not validate is rejected, however unrelated, so these are what to fix
+    /// first. Empty when the edit was written, or when nothing was at the source before it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pre_existing: Vec<Diag>,
     /// Whether the edit was actually written to the source. Equals `report.ok` — surfaced
     /// explicitly so a small model never has to infer "did my change land?" from the report shape.
     pub written: bool,
@@ -175,17 +181,27 @@ fn edit_existing(
     let current_hash = content_hash(&current);
     let mut doc = current.into_inner();
     let applied = mutate(&mut doc)?;
-    finish(source, registry, resolver, doc, applied, current_hash)
+    finish(
+        source,
+        registry,
+        resolver,
+        &json,
+        doc,
+        applied,
+        current_hash,
+    )
 }
 
 /// Re-normalize the edited document, validate it whole, write iff valid, and build the result. The
 /// hash is the post-write content hash: the new document's when written, the prior document's when
 /// rejected. The zoom always projects the *attempted* document, so a rejected edit still shows the
-/// author what they tried alongside the errors that stopped it.
+/// author what they tried alongside the errors that stopped it. `before` is the text the edit was
+/// made to, which a rejection is validated against to tell its own errors from the ones it found.
 fn finish(
     source: &str,
     registry: &Registry,
     resolver: &dyn ResourceResolver,
+    before: &str,
     doc: InstrumentDoc,
     applied: Applied,
     current_hash: String,
@@ -194,6 +210,7 @@ fn finish(
         source,
         registry,
         resolver,
+        Some(before),
         doc,
         applied,
         current_hash,
@@ -218,10 +235,13 @@ enum Place {
     Create,
 }
 
+/// `before` is the text at `source` the edit was made to, `None` when the verb makes the document.
+#[allow(clippy::too_many_arguments)]
 fn finish_at(
     source: &str,
     registry: &Registry,
     resolver: &dyn ResourceResolver,
+    before: Option<&str>,
     doc: InstrumentDoc,
     applied: Applied,
     current_hash: String,
@@ -232,7 +252,29 @@ fn finish_at(
     let normalized = NormalizedDoc::from_doc(doc, registry, Some(resolver))
         .map_err(|e| EditError::Parse(e.to_string()))?;
     let new_json = normalized.to_document_text();
-    let mut report = validate(&new_json, registry, resolver);
+    let (mut report, faults) = validate_faulted(&new_json, registry, resolver);
+    let mut notes = applied.notes;
+    // Only a rejection pays for the second validation; a written edit has nothing to attribute.
+    let pre_existing = match before {
+        Some(before) if !report.ok => {
+            let (prior, found) = validate_faulted(before, registry, resolver);
+            let split = split_pre_existing(&mut report.errors, faults, prior.errors, found);
+            // The load stops at its first error, so a prior error the result does not report
+            // was either cleared by the edit or is hidden behind one the edit put ahead of it.
+            if !report.errors.is_empty() {
+                notes.extend(split.displaced.iter().map(|d| {
+                    format!(
+                        "before this edit the document's first error was {}; the load reports only \
+                         its first error, so this edit either cleared that one or added the one \
+                         reported ahead of it",
+                        located(d)
+                    )
+                }));
+            }
+            split.pre_existing
+        }
+        _ => Vec::new(),
+    };
     if report.ok {
         // The text validated is already current, so the renames and strips the parse made reach
         // the caller only from here — on the edit that writes them, and never again.
@@ -259,11 +301,60 @@ fn finish_at(
     let zoom = render_echo(&new_json, registry, resolver, &applied.echo);
     Ok(EditResult {
         report,
+        pre_existing,
         written,
         hash,
-        notes: applied.notes,
+        notes,
         zoom,
     })
+}
+
+/// A rejected edit's errors, attributed against the document it was made to.
+struct Split {
+    /// What the document already carried, moved out of the edit's errors.
+    pre_existing: Vec<Diag>,
+    /// What the document carried that the edit's result does not report.
+    displaced: Vec<Diag>,
+}
+
+/// Move out of `errors` each one whose fault `found` also holds. `faults[i]` is `errors[i]`'s, and
+/// `found[i]` is `prior[i]`'s. A multiset match: each fault in `found` accounts for one error at
+/// most, so an edit that duplicates a fault the document already had is charged with the copy.
+///
+/// Both sides are validated from text through the same parse, so each has had the same migration
+/// applied and an address the migration renames is spelled the same way in both.
+fn split_pre_existing(
+    errors: &mut Vec<Diag>,
+    faults: Vec<Fault>,
+    prior: Vec<Diag>,
+    found: Vec<Fault>,
+) -> Split {
+    let mut unmatched: Vec<_> = prior.into_iter().zip(found).collect();
+    let mut pre_existing = Vec::new();
+    let mut introduced = Vec::new();
+    for (error, fault) in errors.drain(..).zip(faults) {
+        match unmatched.iter().position(|(_, f)| *f == fault) {
+            Some(i) => {
+                unmatched.swap_remove(i);
+                pre_existing.push(error);
+            }
+            None => introduced.push(error),
+        }
+    }
+    *errors = introduced;
+    Split {
+        pre_existing,
+        displaced: unmatched.into_iter().map(|(d, _)| d).collect(),
+    }
+}
+
+/// `diag`'s message, led by the node and port it names.
+fn located(diag: &Diag) -> String {
+    match (&diag.node, &diag.port) {
+        (Some(node), Some(port)) => format!("{node}.{port}: {}", diag.message),
+        (Some(at), None) | (None, Some(at)) => format!("{at}: {}", diag.message),
+        (None, None) => diag.message.clone(),
+    }
 }
 
 /// Render the echo view of the (attempted) document. A projection failure is reported inline rather
@@ -329,6 +420,7 @@ pub fn restore_instrument(
             errors: vec![error],
             warnings: Vec::new(),
         },
+        pre_existing: Vec::new(),
         written: false,
         hash: current_hash.clone(),
         notes: Vec::new(),
@@ -361,6 +453,7 @@ pub fn restore_instrument(
         source,
         registry,
         resolver,
+        &json,
         doc.into_inner(),
         Applied::clean(Echo::Index),
         current_hash.clone(),
@@ -620,6 +713,7 @@ pub fn new_instrument(
         source,
         registry,
         resolver,
+        None,
         doc,
         Applied::clean(Echo::Nodes(Selection::names(["/"]))),
         String::new(),
@@ -690,6 +784,7 @@ pub fn copy_instrument(
         &to_id,
         registry,
         &at_to,
+        None,
         doc,
         Applied::clean(Echo::Nodes(Selection::names(["/"]))),
         String::new(),

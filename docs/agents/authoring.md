@@ -60,6 +60,12 @@ Why the steps are what they are:
   Every verb re-validates the **whole** document through the engine's own load path — still the
   single validation authority — and **writes only if it is valid**, so a rejected edit leaves the
   file exactly as it was. Then swap it in.
+- **A broken document refuses every edit until it is fixed.** Write-iff-valid holds for every
+  verb, so an edit to a document that was already invalid is refused however unrelated it is. A
+  rejection separates the errors: `report.errors` holds what the document did not already have,
+  `pre_existing` what it did. Fix the `pre_existing` errors first. Validation reports one error at
+  a time, so an error can be hidden behind the one reported; when a fix is refused for an error
+  that was not reported before, a note names the one the load used to stop at.
 - **Sending is ephemeral audition.** A live control message (`/filt/cutoff 1500`) changes
   render state only — sweep a cutoff, try a tempo. The next Swap re-reads inputs from the
   installed document, so an un-folded tweak is **clobbered by design**. (The MCP tool is

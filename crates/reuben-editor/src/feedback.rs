@@ -20,7 +20,11 @@ pub enum Feedback {
     Rejected {
         source: String,
         hash: String,
+        /// The edit's own errors, then those the document already had before it: one slice, so
+        /// all of them pin where they are.
         errors: Vec<Diag>,
+        /// How many of `errors`, at its end, the document already had before the edit.
+        pre_existing: usize,
         notes: Vec<String>,
     },
     /// The verb could not run on `source`.
@@ -44,7 +48,11 @@ impl Feedback {
             Ok(edit) => Some(Self::Rejected {
                 source,
                 hash: edit.hash.clone(),
-                errors: edit.report.errors.clone(),
+                errors: (edit.report.errors.iter())
+                    .chain(&edit.pre_existing)
+                    .cloned()
+                    .collect(),
+                pre_existing: edit.pre_existing.len(),
                 notes: edit.notes.clone(),
             }),
             Err(refusal) => Some(Self::Refused {
@@ -81,6 +89,16 @@ impl Feedback {
                  program or an undo. It is shown as it is now; make the edit again to apply it.",
                 file_name(source)
             ),
+            Self::Rejected {
+                source,
+                errors,
+                pre_existing,
+                ..
+            } if *pre_existing > 0 && *pre_existing == errors.len() => format!(
+                "Your edit was not written: {} was already invalid before it, and no edit is \
+                 written until it is valid. Fix what is below first. The file is unchanged.",
+                file_name(source)
+            ),
             Self::Rejected { source, .. } => format!(
                 "Your edit was not written: it would leave {} invalid. The file is unchanged.",
                 file_name(source)
@@ -94,13 +112,25 @@ impl Feedback {
         }
     }
 
-    /// The lines under the headline: each error of a rejected edit, at the node and port it names,
-    /// then what the verb noted.
+    /// The lines under the headline: each error of a rejected edit, at the node and port it names
+    /// and marked when the document already had it, then what the verb noted.
     pub fn details(&self) -> Vec<String> {
-        let Self::Rejected { errors, notes, .. } = self else {
+        let Self::Rejected {
+            errors,
+            pre_existing,
+            notes,
+            ..
+        } = self
+        else {
             return Vec::new();
         };
-        (errors.iter().map(located))
+        let (own, already) = errors.split_at(errors.len() - pre_existing);
+        (own.iter().map(located))
+            .chain(
+                already
+                    .iter()
+                    .map(|d| format!("already there: {}", located(d))),
+            )
             .chain(notes.iter().cloned())
             .collect()
     }
@@ -155,12 +185,22 @@ mod tests {
     use super::*;
 
     fn answered(written: bool, hash: &str, errors: Vec<Diag>) -> Result<EditResult, Refusal> {
+        answered_with(written, hash, errors, Vec::new())
+    }
+
+    fn answered_with(
+        written: bool,
+        hash: &str,
+        errors: Vec<Diag>,
+        pre_existing: Vec<Diag>,
+    ) -> Result<EditResult, Refusal> {
         Ok(EditResult {
             report: Report {
                 ok: written,
                 errors,
                 warnings: Vec::new(),
             },
+            pre_existing,
             written,
             hash: hash.to_string(),
             notes: Vec::new(),
@@ -221,6 +261,51 @@ mod tests {
         assert!(!held.outlived(|_| Some("h")));
         assert!(held.outlived(|_| Some("moved on")));
         assert!(held.outlived(|_| None));
+    }
+
+    #[test]
+    fn a_rejection_for_what_the_document_already_had_says_so_and_pins_it() {
+        let held = Feedback::of(
+            "a.json",
+            None,
+            &answered_with(false, "h", vec![], vec![diag("/gone", "in")]),
+        )
+        .expect("held");
+        assert!(
+            held.headline().contains("already invalid before it"),
+            "{}",
+            held.headline()
+        );
+        assert_eq!(
+            held.details(),
+            vec!["already there: /gone.in: no".to_string()]
+        );
+        assert_eq!(held.rejected("a.json"), &[diag("/gone", "in")]);
+
+        let both = Feedback::of(
+            "a.json",
+            None,
+            &answered_with(
+                false,
+                "h",
+                vec![diag("/osc", "freq")],
+                vec![diag("/gone", "in")],
+            ),
+        )
+        .expect("held");
+        assert!(
+            both.headline().contains("it would leave a.json invalid"),
+            "{}",
+            both.headline()
+        );
+        assert_eq!(
+            both.details(),
+            vec![
+                "/osc.freq: no".to_string(),
+                "already there: /gone.in: no".to_string()
+            ]
+        );
+        assert_eq!(both.rejected("a.json").len(), 2);
     }
 
     #[test]

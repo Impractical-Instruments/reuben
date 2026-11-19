@@ -561,34 +561,116 @@ fn report_of(
     loaded: Result<Loaded, LoadError>,
     warning: impl Fn(&LoadWarning) -> Vec<Diag>,
 ) -> Report {
+    faulted(loaded, warning).0
+}
+
+/// [`validate`], with each error's [`Fault`] alongside it: `faults[i]` is what `errors[i]` is.
+pub(crate) fn validate_faulted(
+    json: &str,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+) -> (Report, Vec<Fault>) {
+    faulted(load_instrument(json, registry, resolver), |w| {
+        vec![Diag::from_warning(w)]
+    })
+}
+
+/// What an error is and where it is, without its message. Two validations of one document, either
+/// side of an edit, agree on this for the same fault even when the message interpolates a value the
+/// edit changed — the wrong literal, the mistyped source — which a message comparison would not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Fault {
+    kind: FaultKind,
+    node: Option<String>,
+    port: Option<String>,
+    /// The part of the locus a [`Diag`] does not carry: the config constant, resource slot or
+    /// source, or address rule the error is about.
+    field: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FaultKind {
+    Load(std::mem::Discriminant<LoadError>),
+    Cycle,
+    FormMismatch,
+}
+
+impl Fault {
+    fn of_load(e: &LoadError, diag: &Diag) -> Self {
+        let field = match e {
+            LoadError::UnknownConfig { name, .. } | LoadError::ConstantInInputs { name, .. } => {
+                Some(name.clone())
+            }
+            LoadError::UnknownResource { slot, .. } => Some(slot.clone()),
+            LoadError::CyclicResource { source } => Some(source.clone()),
+            LoadError::InvalidAddress { rule, .. } => Some((*rule).to_string()),
+            _ => None,
+        };
+        Fault {
+            kind: FaultKind::Load(std::mem::discriminant(e)),
+            node: diag.node.clone(),
+            port: diag.port.clone(),
+            field,
+        }
+    }
+
+    fn of_plan(kind: FaultKind, diag: &Diag) -> Self {
+        Fault {
+            kind,
+            node: diag.node.clone(),
+            port: diag.port.clone(),
+            field: None,
+        }
+    }
+}
+
+fn faulted(
+    loaded: Result<Loaded, LoadError>,
+    warning: impl Fn(&LoadWarning) -> Vec<Diag>,
+) -> (Report, Vec<Fault>) {
     let loaded = match loaded {
         Ok(l) => l,
         Err(e) => {
-            return Report {
-                ok: false,
-                errors: vec![Diag::from_load(&e)],
-                warnings: Vec::new(),
-            }
+            let diag = Diag::from_load(&e);
+            let fault = Fault::of_load(&e, &diag);
+            return (
+                Report {
+                    ok: false,
+                    errors: vec![diag],
+                    warnings: Vec::new(),
+                },
+                vec![fault],
+            );
         }
     };
 
     let warnings = loaded.warnings.iter().flat_map(warning).collect();
 
     match Plan::instantiate(loaded.graph, AudioConfig::default()) {
-        Ok(_) => Report {
-            ok: true,
-            errors: Vec::new(),
-            warnings,
-        },
-        Err(PlanError::Cycle) => Report {
-            ok: false,
-            errors: vec![Diag {
+        Ok(_) => (
+            Report {
+                ok: true,
+                errors: Vec::new(),
+                warnings,
+            },
+            Vec::new(),
+        ),
+        Err(PlanError::Cycle) => {
+            let diag = Diag {
                 node: None,
                 port: None,
                 message: "graph has a cycle (no valid execution order)".to_string(),
-            }],
-            warnings,
-        },
+            };
+            let fault = Fault::of_plan(FaultKind::Cycle, &diag);
+            (
+                Report {
+                    ok: false,
+                    errors: vec![diag],
+                    warnings,
+                },
+                vec![fault],
+            )
+        }
         Err(PlanError::FormMismatch { src, dst, reason }) => {
             // Localize to the destination endpoint: a form mismatch is rejected at
             // the *input* port that can't accept the source's form (Signal→Value, Event→Signal,
@@ -602,15 +684,20 @@ fn report_of(
             // here if some future path hands `instantiate` a form-mismatched graph that skipped
             // load. It still localizes like every other Diag if it ever does.
             let (node, port) = localize_wire_ref(&dst);
-            Report {
-                ok: false,
-                errors: vec![Diag {
-                    node,
-                    port,
-                    message: format!("wire {src} → {dst}: {reason}"),
-                }],
-                warnings,
-            }
+            let diag = Diag {
+                node,
+                port,
+                message: format!("wire {src} → {dst}: {reason}"),
+            };
+            let fault = Fault::of_plan(FaultKind::FormMismatch, &diag);
+            (
+                Report {
+                    ok: false,
+                    errors: vec![diag],
+                    warnings,
+                },
+                vec![fault],
+            )
         }
     }
 }

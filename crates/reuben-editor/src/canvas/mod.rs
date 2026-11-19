@@ -1468,6 +1468,7 @@ mod tests {
                     errors: Vec::new(),
                     warnings: Vec::new(),
                 },
+                pre_existing: Vec::new(),
                 written,
                 hash: String::new(),
                 notes: Vec::new(),

@@ -49,6 +49,11 @@ pub struct EditResult {
     /// The whole-document validation report. `ok` is the write decision: `true` means the edit
     /// passed and was persisted; `false` means nothing was written and `errors` says why.
     pub report: Report,
+    // The errors of a rejected edit that the document already had before it; `report.errors` then
+    // holds only the rest. A `//`, not a `///`: a field doc ships once per verb's output schema, and
+    // the server instructions already say what this is.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pre_existing: Vec<Diag>,
     /// Whether the edit was actually written to the source. Equals `report.ok` — surfaced
     /// explicitly so a small model never has to infer "did my change land?" from the report shape.
     pub written: bool,
@@ -377,6 +382,7 @@ impl EditResult {
     pub(crate) fn from_core(r: core_edit::EditResult) -> Self {
         EditResult {
             report: Report::from_core(r.report),
+            pre_existing: r.pre_existing.iter().map(Diag::from_core).collect(),
             written: r.written,
             hash: r.hash,
             notes: r.notes,
