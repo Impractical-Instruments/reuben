@@ -25,7 +25,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use reuben_api::engine::{
-    Channel, FromDocumentError, InProcess, LoadWarning, StructureState, DEFAULT_STRUCTURE_ADDR,
+    Channel, FromDocumentError, InProcess, Installed, LoadWarning, StructureState,
+    DEFAULT_STRUCTURE_ADDR,
 };
 use reuben_api::render::{self, AudioConfig, Message};
 use reuben_api::FsResolver;
@@ -242,17 +243,14 @@ impl RunningEngine {
         self.opened_input_channels
     }
 
-    /// Whether the input stream fits the instrument installed now, by
-    /// [`input_stream_fits`](crate::structure::input_stream_fits): `false` after a swap to an
-    /// instrument binding input the stream does not provide, or binding none while a stream runs.
-    /// Only a restart on the installed instrument makes it fit. `None` while a swap holds the
-    /// Coordinator; asking never waits.
-    pub fn input_fits(&self) -> Option<bool> {
-        let installed = self.state.as_ref()?.try_installed_input_channels()?;
-        Some(crate::structure::input_stream_fits(
-            installed,
-            self.opened_input_channels,
-        ))
+    /// What the engine has installed now, read without waiting. Its input fits the input stream
+    /// when [`input_stream_fits`](crate::structure::input_stream_fits) says so for its
+    /// `input_channels` and [`opened_input_channels`](Self::opened_input_channels).
+    pub fn installed(&self) -> Installed {
+        match &self.state {
+            Some(state) => state.try_installed(),
+            None => Installed::Poisoned,
+        }
     }
 
     /// The running counters.

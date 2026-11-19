@@ -64,19 +64,24 @@ pub fn open(
     session
 }
 
-/// Bring `engine` up to a Swap `session` has landed: its report names the instrument, and an
-/// engine whose input stream does not fit that instrument is restarted on it through `start`. A
-/// restart that fails leaves the session saying nothing plays. Called every frame; does nothing
-/// until the session's files are what the engine plays.
+/// Bring `engine` up to what it has installed: its report names the instrument, and, once the
+/// session's files are what it plays, an engine whose input stream does not fit them is restarted
+/// on them through `start`. A restart that fails leaves the session saying nothing plays.
+/// `reloaded` is whether the session read its files again since the last call, which lets a
+/// restart refused for files that did not load be tried again. Called every frame.
 pub fn follow(
     session: &mut Session,
     engine: &mut Engine,
+    reloaded: bool,
     start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
 ) {
+    engine.follow_installed();
+    if reloaded {
+        engine.retry_fit();
+    }
     if session.status() != &Status::Current {
         return;
     }
-    engine.swapped_to(session.top());
     if engine.fit_input(start) && engine.channel().is_none() {
         session.reinstall(&|| None);
     }
@@ -270,7 +275,8 @@ impl Start {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use reuben_api::engine::get_current_instrument;
+    use reuben_api::authoring::{set_instrument_name, SetInstrumentName};
+    use reuben_api::engine::{get_current_instrument, swap_instrument, SwapInstrument};
     use reuben_native::test_support::{start_headless, within};
 
     use super::*;
@@ -380,7 +386,7 @@ mod tests {
                 Some(second.display().to_string().as_str())
             );
 
-            follow(&mut session, &mut engine, headless);
+            follow(&mut session, &mut engine, false, headless);
             assert_eq!(engine.instrument(), Some(&Instrument::Path(second.clone())));
             let named: Vec<_> = engine
                 .report()
@@ -446,11 +452,11 @@ mod tests {
                 "mic-space would read silence"
             );
 
-            follow(&mut session, &mut engine, headless);
+            follow(&mut session, &mut engine, false, headless);
             restarted_with_input(&engine, &mic);
             assert_eq!(session.status(), &Status::Current);
 
-            follow(&mut session, &mut engine, |_| {
+            follow(&mut session, &mut engine, false, |_| {
                 panic!("an engine whose input fits is not restarted again")
             });
             engine.shutdown();
@@ -484,7 +490,7 @@ mod tests {
             }
             assert_eq!(engine.input_fits(), Some(false));
 
-            follow(&mut session, &mut engine, headless);
+            follow(&mut session, &mut engine, false, headless);
             restarted_with_input(&engine, &path);
             engine.shutdown();
         });
@@ -515,12 +521,184 @@ mod tests {
                 |_| panic!("a running engine is Swapped to first"),
             );
             swapped_in(&mut session, &engine);
-            follow(&mut session, &mut engine, headless);
+            follow(&mut session, &mut engine, false, headless);
             let running = engine.running().expect("the restarted engine runs");
             assert_eq!(running.opened_input_channels(), 0, "no stream runs unread");
             assert_eq!(
                 playing(&engine).as_deref(),
                 Some(plain.display().to_string().as_str())
+            );
+            engine.shutdown();
+        });
+    }
+
+    /// An engine playing `default.json` of a scratch library with mic-space Swapped in over it,
+    /// its input not yet fitted.
+    fn mic_swapped_in(
+        test: &str,
+        audio: &mut AudioSettings,
+    ) -> (Scratch, PathBuf, Session, Engine) {
+        let scratch = Scratch::new(test);
+        let lib = scratch.library();
+        let mut engine = Engine::idle();
+        let _first = open(
+            &lib.join("default.json"),
+            &launch(),
+            audio,
+            &mut engine,
+            || {},
+            headless,
+        );
+        let mic = lib.join("mic-space.json");
+        let mut session = open(
+            &mic,
+            &launch(),
+            audio,
+            &mut engine,
+            || {},
+            |_| panic!("a running engine is Swapped to first"),
+        );
+        swapped_in(&mut session, &engine);
+        assert_eq!(engine.input_fits(), Some(false));
+        (scratch, mic, session, engine)
+    }
+
+    fn errors(engine: &Engine) -> Vec<String> {
+        (engine.report().iter())
+            .filter(|line| line.level == crate::engine::Level::Error)
+            .map(|line| line.text.clone())
+            .collect()
+    }
+
+    #[test]
+    fn a_refused_input_restart_is_not_retried_every_frame_but_is_once_the_files_change() {
+        within(HANG_SECS, || {
+            let temp = TempConfig::new();
+            let mut audio = AudioSettings::load_with(temp.dir(), two_devices);
+            let (_scratch, mic, mut session, mut engine) =
+                mic_swapped_in("start_refit_refused", &mut audio);
+            let text = std::fs::read_to_string(&mic).unwrap();
+
+            std::fs::write(&mic, BROKEN).unwrap();
+            follow(&mut session, &mut engine, false, |_| {
+                panic!("a file that does not load is not started on")
+            });
+            assert!(engine.running().is_some(), "mic-space plays on");
+            let refused = errors(&engine);
+            assert_eq!(refused.len(), 1, "{refused:?}");
+            assert!(
+                refused[0].starts_with("input not reopened: "),
+                "{}",
+                refused[0]
+            );
+
+            for _ in 0..3 {
+                follow(&mut session, &mut engine, false, |_| panic!("tried again"));
+            }
+            assert_eq!(errors(&engine), refused, "nothing new each frame");
+
+            std::fs::write(&mic, text).unwrap();
+            follow(&mut session, &mut engine, true, headless);
+            restarted_with_input(&engine, &mic);
+            engine.shutdown();
+        });
+    }
+
+    #[test]
+    fn a_refused_input_restart_is_retried_when_another_document_is_installed() {
+        within(HANG_SECS, || {
+            let temp = TempConfig::new();
+            let mut audio = AudioSettings::load_with(temp.dir(), two_devices);
+            let (_scratch, mic, mut session, mut engine) =
+                mic_swapped_in("start_refit_new_hash", &mut audio);
+            let text = std::fs::read_to_string(&mic).unwrap();
+            std::fs::write(&mic, BROKEN).unwrap();
+            follow(&mut session, &mut engine, false, |_| panic!("not loadable"));
+            assert_eq!(errors(&engine).len(), 1);
+
+            // The file comes back changed, and the change is Swapped in by something other than
+            // the session.
+            std::fs::write(&mic, text).unwrap();
+            let renamed = set_instrument_name(
+                &SetInstrumentName {
+                    source: mic.display().to_string(),
+                    name: "mic-space-2".to_string(),
+                    expect: None,
+                },
+                &FsResolver::for_document(&mic.display().to_string()).stat_only(),
+            )
+            .expect("the verb ran")
+            .output;
+            assert!(renamed.written, "{:?}", renamed.report);
+            let swapped = swap_instrument(
+                &SwapInstrument {
+                    path: mic.display().to_string(),
+                    expect: None,
+                },
+                &engine.channel().expect("running"),
+            )
+            .expect("the swap reached the engine");
+            assert!(swapped.output.report.report.ok, "{}", swapped.summary);
+
+            follow(&mut session, &mut engine, false, headless);
+            restarted_with_input(&engine, &mic);
+            engine.shutdown();
+        });
+    }
+
+    #[test]
+    fn a_failed_input_restart_leaves_the_session_saying_nothing_plays() {
+        within(HANG_SECS, || {
+            let temp = TempConfig::new();
+            let mut audio = AudioSettings::load_with(temp.dir(), two_devices);
+            let (_scratch, _mic, mut session, mut engine) =
+                mic_swapped_in("start_refit_failed", &mut audio);
+            // A structure address off loopback is refused before anything starts.
+            follow(&mut session, &mut engine, false, |mut config| {
+                config.osc_in = Some("127.0.0.1:0".to_string());
+                config.structure = Some("192.0.2.1:9".to_string());
+                start_headless(config)
+            });
+            assert!(engine.channel().is_none());
+            assert_eq!(session.status(), &Status::NoEngine);
+        });
+    }
+
+    #[test]
+    fn the_report_names_what_a_sidecar_swapped_in_not_the_open_file() {
+        within(HANG_SECS, || {
+            let temp = TempConfig::new();
+            let mut audio = AudioSettings::load_with(temp.dir(), two_devices);
+            let scratch = Scratch::new("start_sidecar_swap");
+            let lib = scratch.library();
+            let mut engine = Engine::idle();
+            let open_file = lib.join("default.json");
+            let mut session = open(
+                &open_file,
+                &launch(),
+                &mut audio,
+                &mut engine,
+                || {},
+                headless,
+            );
+            let other = lib.join("groovebox.json");
+            let swapped = swap_instrument(
+                &SwapInstrument {
+                    path: other.display().to_string(),
+                    expect: None,
+                },
+                &engine.channel().expect("running"),
+            )
+            .expect("the swap reached the engine");
+            assert!(swapped.output.report.report.ok, "{}", swapped.summary);
+
+            follow(&mut session, &mut engine, false, headless);
+            assert_eq!(engine.instrument(), Some(&Instrument::Path(other.clone())));
+            let named = format!("instrument: {}", other.display());
+            assert!(
+                engine.report().iter().any(|line| line.text == named),
+                "{:?}",
+                engine.report()
             );
             engine.shutdown();
         });
@@ -696,7 +874,7 @@ mod tests {
                 session.status()
             );
             assert!(!panel_follows(&session, &engine));
-            follow(&mut session, &mut engine, headless);
+            follow(&mut session, &mut engine, false, headless);
             assert_eq!(engine.instrument(), Some(&Instrument::Path(first.clone())));
             assert_eq!(
                 playing(&engine).as_deref(),
