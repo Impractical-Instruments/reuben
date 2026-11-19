@@ -843,8 +843,8 @@ mod tests {
 
     use reuben_api::authoring::{Diag, Report};
     use reuben_api::engine::{
-        ControlArg, ControlMessage, DiagnosticsReport, DiffSummary, Request, Response, SwapReport,
-        DEFAULT_STRUCTURE_ADDR,
+        ControlArg, ControlMessage, DiagnosticsReport, DiffSummary, HeldSwap, Request, Response,
+        SwapReport, DEFAULT_STRUCTURE_ADDR,
     };
     use reuben_api::tools::names;
     use std::io;
@@ -1276,6 +1276,15 @@ mod tests {
             }),
         );
         assert_payload_conforms(
+            names::SWAP_INSTRUMENT,
+            "held for the editor's user",
+            &engine::SwapResult::held(HeldSwap {
+                requested: "instruments/groovebox.json".to_string(),
+                playing: Some("instruments/acid-techno.json".to_string()),
+                content_hash: "00c0ffee".to_string(),
+            }),
+        );
+        assert_payload_conforms(
             names::GET_CURRENT_INSTRUMENT,
             "installed document",
             &engine::CurrentInstrument {
@@ -1653,6 +1662,46 @@ mod tests {
             serde_json::json!("00c0ffee"),
             "a rejected swap reports the hash still playing, not the one asked for: {s}"
         );
+    }
+
+    #[test]
+    fn swap_instrument_held_reads_as_not_yet_installed_rather_than_failed() {
+        let fake = FakeTransport::reachable().with_swap(Response::Held(HeldSwap {
+            requested: "instruments/groovebox.json".to_string(),
+            playing: Some("instruments/acid-techno.json".to_string()),
+            content_hash: "00c0ffee".to_string(),
+        }));
+        let result = block_on(server_with(fake).swap_instrument(Parameters(
+            engine::SwapInstrument {
+                path: "instruments/groovebox.json".to_string(),
+                expect: None,
+            },
+        )))
+        .expect("swap returns a result");
+        assert_ne!(result.is_error, Some(true), "{result:?}");
+        let s = result
+            .structured_content
+            .as_ref()
+            .expect("structured payload");
+        assert_eq!(s["ok"], serde_json::json!(false), "nothing installed: {s}");
+        assert_eq!(s["content_hash"], serde_json::json!("00c0ffee"));
+        assert_eq!(
+            s["held"]["requested"],
+            serde_json::json!("instruments/groovebox.json")
+        );
+        assert_eq!(
+            s["held"]["playing"],
+            serde_json::json!("instruments/acid-techno.json")
+        );
+        let text = first_text(&result);
+        for expected in [
+            "not installed yet",
+            "instruments/acid-techno.json keeps playing",
+            "get_current_instrument",
+            "retrying",
+        ] {
+            assert!(text.contains(expected), "{expected:?} missing from {text}");
+        }
     }
 
     #[test]

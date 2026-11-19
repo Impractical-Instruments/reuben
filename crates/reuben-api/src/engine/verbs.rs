@@ -106,8 +106,8 @@ pub fn get_engine_status(channel: &Channel, door_version: &str) -> Answer<Engine
 
 /// Install a document from a path as the playing engine.
 ///
-/// An `ok: false` load report and an `expect` conflict are both ordinary answers: the channel
-/// worked, and the report is the deliverable.
+/// An `ok: false` load report, an `expect` conflict and a held swap are all ordinary answers: the
+/// channel worked, and the report is the deliverable.
 pub fn swap_instrument(
     args: &SwapInstrument,
     channel: &Channel,
@@ -128,6 +128,22 @@ pub fn swap_instrument(
             );
             Ok(Answer {
                 output: SwapResult::conflict(conflict),
+                summary,
+            })
+        }
+        Ok(SwapOutcome::Held(held)) => {
+            let playing = held
+                .playing
+                .clone()
+                .unwrap_or_else(|| format!("content_hash {}", held.content_hash));
+            let summary = format!(
+                "not installed yet: the engine is embedded in reuben-editor, whose user has been \
+                 asked whether to open {}; {playing} keeps playing. Not a failure and not worth \
+                 retrying — check get_current_instrument later to see whether they accepted",
+                held.requested
+            );
+            Ok(Answer {
+                output: SwapResult::held(held),
                 summary,
             })
         }

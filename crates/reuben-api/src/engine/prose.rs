@@ -32,7 +32,10 @@ pub const SWAP_INSTRUMENT: &str =
      reports how many survived and which reset. Returns the validation report + content_hash \
      + (on success) that diff summary; ok:false installs nothing and the old sound keeps \
      playing. Pass `expect` (a content_hash) to guard against a stale swap — a mismatch \
-     returns a conflict, no install.";
+     returns a conflict, no install. When the engine runs inside reuben-editor and the path is \
+     not the instrument its user has open, the swap returns `held` instead: nothing installs \
+     yet and the user is asked. That is not a failure — don't retry; check \
+     get_current_instrument later.";
 
 pub const GET_CURRENT_INSTRUMENT: &str =
     "Report what the engine is playing: the source it was installed from, the installed content \

@@ -6,6 +6,7 @@ mod config;
 mod controls;
 mod edit;
 mod engine;
+mod held_swap;
 mod inspector;
 mod pick;
 mod session;
@@ -25,6 +26,7 @@ use crate::canvas::Canvas;
 use crate::config::ConfigDir;
 use crate::controls::Controls;
 use crate::engine::{Engine, Level};
+use crate::held_swap::HeldSwaps;
 use crate::inspector::Inspector;
 use crate::session::{Session, Status};
 use crate::start::{Launch, Start};
@@ -74,12 +76,20 @@ fn main() -> eframe::Result {
             if let Some(path) = args.path.as_deref().filter(|p| p.is_file()) {
                 start_screen.opened(path);
             }
+            let held = HeldSwaps::new({
+                let ctx = cc.egui_ctx.clone();
+                move || ctx.request_repaint()
+            });
+            if let Some(path) = args.path.as_deref() {
+                held.opened(path);
+            }
             let launch = Launch {
                 root,
                 flags: args.engine.clone(),
+                swap_hold: Some(held.swap_hold()),
             };
             let mut audio = AudioSettings::load(ConfigDir::user());
-            let engine = start(args, &mut audio, Engine::start);
+            let engine = start(args, &mut audio, &launch, Engine::start);
             Ok(Box::new(Editor {
                 engine,
                 audio,
@@ -89,6 +99,7 @@ fn main() -> eframe::Result {
                 session,
                 start: start_screen,
                 launch,
+                held,
             }))
         }),
     )
@@ -99,6 +110,7 @@ fn main() -> eframe::Result {
 fn start(
     args: Args,
     audio: &mut AudioSettings,
+    launch: &Launch,
     start_engine: impl FnOnce(EngineConfig) -> Engine,
 ) -> Engine {
     let Some(path) = args.path else {
@@ -106,7 +118,10 @@ fn start(
     };
     let root = args.instrument_root.resolve();
     match audio.engine_config(&args.engine, Instrument::Path(path), root) {
-        Ok(config) => start_engine(config),
+        Ok(config) => start_engine(EngineConfig {
+            swap_hold: launch.swap_hold.clone(),
+            ..config
+        }),
         Err(e) => Engine::not_started(e),
     }
 }
@@ -120,6 +135,7 @@ struct Editor {
     session: Option<Session>,
     start: Start,
     launch: Launch,
+    held: HeldSwaps,
 }
 
 impl Editor {
@@ -145,6 +161,7 @@ impl Editor {
         }
         self.session = Some(session);
         self.start.opened(path);
+        self.held.opened(path);
     }
 
     /// Take in what the session saw change on disk, and rebuild what is drawn from the files.
@@ -195,6 +212,10 @@ impl eframe::App for Editor {
                 ui.vertical(|ui| self.audio.ui(ui, &mut self.engine));
             });
         });
+        let open = self.session.as_ref().map(Session::top);
+        if let Some(path) = held_swap::show(ui, &self.held, open) {
+            self.open(&path, ui.ctx());
+        }
         if let Some(session) = &mut self.session {
             let asked = session::shortcut(ui.ctx()).or(session::show(ui, session));
             if let Some(direction) = asked {
@@ -263,7 +284,12 @@ mod tests {
     fn start_nothing(args: Args) -> Engine {
         let temp = TempConfig::new();
         let mut audio = AudioSettings::load_with(temp.dir(), two_devices);
-        start(args, &mut audio, |_| {
+        let launch = Launch {
+            root: None,
+            flags: args.engine.clone(),
+            swap_hold: None,
+        };
+        start(args, &mut audio, &launch, |_| {
             panic!("these arguments describe no engine to start")
         })
     }

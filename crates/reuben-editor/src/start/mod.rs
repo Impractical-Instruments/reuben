@@ -12,6 +12,7 @@ use reuben_api::authoring::{new_instrument, NewInstrument};
 use reuben_api::FsResolver;
 use reuben_native::cli::EngineFlags;
 use reuben_native::engine::{EngineConfig, Instrument, RunningEngine, StartError};
+use reuben_native::structure::SwapHold;
 
 use self::library::Entry;
 use self::recent::Recent;
@@ -26,6 +27,7 @@ use crate::session::{Session, Status};
 pub struct Launch {
     pub root: Option<PathBuf>,
     pub flags: EngineFlags,
+    pub swap_hold: Option<SwapHold>,
 }
 
 /// Open the instrument at `path`: a session on its files, and `engine` playing it. A running
@@ -49,11 +51,16 @@ pub fn open(
         session.reinstall(&|| engine.channel());
         return session;
     }
-    let config = audio.engine_config(
-        &launch.flags,
-        Instrument::Path(path.to_path_buf()),
-        launch.root.clone(),
-    );
+    let config = audio
+        .engine_config(
+            &launch.flags,
+            Instrument::Path(path.to_path_buf()),
+            launch.root.clone(),
+        )
+        .map(|config| EngineConfig {
+            swap_hold: launch.swap_hold.clone(),
+            ..config
+        });
     *engine = match config {
         Ok(config) => Engine::start_with(config, start),
         Err(e) => Engine::not_started(e),
@@ -301,6 +308,7 @@ mod tests {
         Launch {
             root: None,
             flags: EngineFlags::default(),
+            swap_hold: None,
         }
     }
 
@@ -825,6 +833,7 @@ mod tests {
                 io_map: Some(PathBuf::from("does-not-exist.json")),
                 ..EngineFlags::default()
             },
+            swap_hold: None,
         };
         let session = open(
             &crate::engine::test_support::library("default.json"),
@@ -874,6 +883,7 @@ mod tests {
             let launch = Launch {
                 root: Some(lib.clone()),
                 flags: EngineFlags::default(),
+                swap_hold: None,
             };
 
             let mut engine = Engine::idle();

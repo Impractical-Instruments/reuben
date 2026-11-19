@@ -10,7 +10,7 @@ use alloc::string::String;
 
 use serde::{Deserialize, Serialize};
 
-use super::wire::{Conflict, SwapReport};
+use super::wire::{Conflict, HeldSwap, SwapReport};
 
 /// Output for `send`: how many messages were queued.
 ///
@@ -61,9 +61,10 @@ pub struct EngineStatus {
 }
 
 /// Output for `swap`: the shared swap report (ok, errors, warnings, content_hash, and on success
-/// the diff summary) plus, on an `expect`-guard miss, `conflict`.
+/// the diff summary) plus, on an `expect`-guard miss, `conflict`, or, when the editor's user was
+/// asked first, `held`.
 ///
-// One `outputSchema` spans the install, validation-failure and guard-miss cases; both the flattened
+// One `outputSchema` spans the install, validation-failure, guard-miss and held cases; both the flattened
 // `SwapReport` and the `Conflict` are the same types the structure channel serializes, so the tool
 // shape and the wire shape cannot drift.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -75,6 +76,10 @@ pub struct SwapResult {
     /// Present only on an `expect`-guard miss: nothing was installed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conflict: Option<Conflict>,
+    /// Present only when the swap was held for the editor's user to accept: nothing was installed
+    /// yet. Not a failure to retry; check `get_current_instrument` later.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<HeldSwap>,
 }
 
 impl SwapResult {
@@ -84,6 +89,7 @@ impl SwapResult {
         Self {
             report,
             conflict: None,
+            held: None,
         }
     }
 
@@ -94,6 +100,17 @@ impl SwapResult {
         Self {
             report: SwapReport::rejected(conflict.actual.clone()),
             conflict: Some(conflict),
+            held: None,
+        }
+    }
+
+    /// The host held the swap to ask its user: nothing installed, and the report is the rejected
+    /// one naming what keeps playing.
+    pub fn held(held: HeldSwap) -> Self {
+        Self {
+            report: SwapReport::rejected(held.content_hash.clone()),
+            conflict: None,
+            held: Some(held),
         }
     }
 }
