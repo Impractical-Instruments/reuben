@@ -7,12 +7,14 @@ mod controls;
 mod edit;
 mod engine;
 mod inspector;
+mod pick;
 mod session;
+mod start;
 
 use std::path::PathBuf;
 use std::time::Instant;
 
-use clap::{CommandFactory, Parser};
+use clap::Parser;
 use eframe::egui;
 use reuben_native::cli::{EngineFlags, InstrumentRoot};
 use reuben_native::engine::{EngineConfig, Instrument};
@@ -24,11 +26,12 @@ use crate::controls::Controls;
 use crate::engine::{Engine, Level};
 use crate::inspector::Inspector;
 use crate::session::{Session, Status};
+use crate::start::{Launch, Start};
 
 #[derive(Parser)]
 #[command(name = "reuben-editor", about = "Edit and play reuben instruments.")]
 struct Args {
-    /// Instrument JSON to open and play; omit to open the window with no engine running.
+    /// Instrument JSON to open and play; omit to choose one on the start screen.
     path: Option<PathBuf>,
     #[command(flatten)]
     instrument_root: InstrumentRoot,
@@ -38,15 +41,6 @@ struct Args {
 
 fn main() -> eframe::Result {
     let args = Args::parse();
-    if args.path.is_none() && (args.engine.osc_out.is_some() || args.engine.io_map.is_some()) {
-        Args::command()
-            .error(
-                clap::error::ErrorKind::MissingRequiredArgument,
-                "--osc-out and --io-map configure the engine, which runs only for an instrument \
-                 PATH",
-            )
-            .exit();
-    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("reuben-editor")
@@ -70,11 +64,26 @@ fn main() -> eframe::Result {
             if let Some(session) = &session {
                 canvas.reload(session.top(), session.root(), &session.tree().top().read);
             }
+            let mut start_screen = Start::new(ConfigDir::user(), root.as_deref());
+            if let Some(path) = args.path.as_deref().filter(|p| p.is_file()) {
+                start_screen.opened(path);
+            }
+            let launch = Launch {
+                root,
+                flags: args.engine.clone(),
+            };
             let mut audio = AudioSettings::load(ConfigDir::user());
             let engine = start(args, &mut audio, Engine::start);
-            Ok(Box::new(Editor::new(
-                engine, audio, controls, canvas, session,
-            )))
+            Ok(Box::new(Editor {
+                engine,
+                audio,
+                controls,
+                canvas,
+                inspector: Inspector::default(),
+                session,
+                start: start_screen,
+                launch,
+            }))
         }),
     )
 }
@@ -103,24 +112,31 @@ struct Editor {
     canvas: Canvas,
     inspector: Inspector,
     session: Option<Session>,
+    start: Start,
+    launch: Launch,
 }
 
 impl Editor {
-    fn new(
-        engine: Engine,
-        audio: AudioSettings,
-        controls: Controls,
-        canvas: Canvas,
-        session: Option<Session>,
-    ) -> Self {
-        Self {
-            engine,
-            audio,
-            controls,
-            canvas,
-            inspector: Inspector::default(),
-            session,
-        }
+    /// Open the instrument at `path` in place of whatever is open. The canvas and the inspector
+    /// start over from the new session's read, and its undo history is its own.
+    fn open(&mut self, path: &std::path::Path, ctx: &egui::Context) {
+        let root = self.launch.root.as_deref();
+        let ctx = ctx.clone();
+        let session = start::open(
+            path,
+            &self.launch,
+            &mut self.audio,
+            &mut self.engine,
+            move || ctx.request_repaint(),
+            reuben_native::engine::start,
+        );
+        self.canvas = Canvas::open(None, None);
+        self.canvas
+            .reload(session.top(), session.root(), &session.tree().top().read);
+        self.inspector = Inspector::default();
+        self.controls = Controls::open(Some(path), root);
+        self.session = Some(session);
+        self.start.opened(path);
     }
 
     /// Take in what the session saw change on disk, and rebuild what is drawn from the files.
@@ -176,8 +192,15 @@ impl eframe::App for Editor {
         // The root `Ui` paints no background of its own, leaving eframe's clear color; the panel
         // frame paints the theme's fill instead.
         let gestures = egui::Frame::central_panel(ui.style()).show(ui, |ui| {
-            if self.engine.report().is_empty() {
-                ui.label("No instrument open. Run `reuben-editor <instrument.json>` to play one.");
+            if self.session.is_none() || self.start.shown() {
+                let chosen = self.start.show(ui, self.session.is_some());
+                if let Some(path) = chosen {
+                    self.open(&path, ui.ctx());
+                }
+                return Vec::new();
+            }
+            if ui.button("Start screen").clicked() {
+                self.start.show_again();
             }
             for line in self.engine.report() {
                 let color = match line.level {

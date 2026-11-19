@@ -51,6 +51,9 @@ keyboard for it. Linux only for now, and it needs a desktop session (X11 or Wayl
 cargo run -p reuben-editor -- instruments/groovebox.json
 ```
 
+Without a path it opens on a start screen: play an instrument from the library (`instruments/`,
+or the `--instrument-root` you name), create a new one, or reopen a recent file.
+
 The editor follows the files: a change to the instrument, or to any voice or subpatch file it
 references — from `reuben-mcp`, a text editor, anything — is swapped in as it is saved. A change
 that does not load is shown, and the last instrument that loaded keeps playing.
