@@ -5,7 +5,7 @@ use eframe::egui;
 use reuben_api::authoring::{InstrumentStructure, StructureNode};
 use reuben_api::engine::Channel;
 
-use super::model::{fields, Control, Field, Step, Typing};
+use super::model::{drag_speed, fields, widget, Control, Field, Step, Typing, Widget};
 use super::{Edit, Inspector};
 use crate::canvas::Item;
 use crate::session::Session;
@@ -243,12 +243,15 @@ fn number(
     } else {
         format!(" {unit}")
     };
-    match (min, max) {
-        (Some(min), Some(max)) if min < max => {
+    match widget(min, max, exponential) {
+        Widget::Slider {
+            min,
+            max,
+            logarithmic,
+        } => {
             ui.spacing_mut().slider_width = SLIDER_WIDTH;
             let mut slider = egui::Slider::new(value, min..=max)
-                // A logarithmic slider cannot start at zero.
-                .logarithmic(exponential && min > 0.0)
+                .logarithmic(logarithmic)
                 // A value the document holds outside the range is shown as it is, not clamped
                 // into it: clamping on draw would be a change no one made.
                 .clamping(egui::SliderClamping::Edits)
@@ -259,8 +262,8 @@ fn number(
             let slid = ui.add(slider);
             slid | ui.add(typed(value, &suffix, integer).range(min..=max))
         }
-        (min, max) => {
-            let speed = if integer { 0.1 } else { 0.01 };
+        Widget::Drag { min, max } => {
+            let speed = drag_speed(*value, integer);
             let drag = typed(value, &suffix, integer)
                 .speed(speed)
                 .range(min.unwrap_or(f64::NEG_INFINITY)..=max.unwrap_or(f64::INFINITY));

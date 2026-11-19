@@ -88,6 +88,72 @@ pub enum Control {
     Shown { text: String },
 }
 
+/// The widest linear range a slider spans. Across a slider about 180 points long this is some
+/// 550 a point, already coarse; the registry's `±1000000`, its spelling of "no musical bound",
+/// is twenty times past it.
+const WIDEST_LINEAR: f64 = 1e5;
+
+/// The most decades a logarithmic slider spans: 20 Hz to 20 kHz is three.
+const MOST_DECADES: f64 = 6.0;
+
+/// The fraction of its own size a dragged number moves per point: 2800 moves 14 a point, so a few
+/// hundred hertz is a short drag either way.
+const DRAG_FRACTION: f64 = 0.005;
+
+/// How far a dragged number moves per point at least, so one at or near zero still moves.
+const DRAG_FLOOR: f64 = 0.01;
+
+/// How a number is set by pointer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Widget {
+    /// A slider across `min..=max`.
+    Slider {
+        min: f64,
+        max: f64,
+        logarithmic: bool,
+    },
+    /// A value dragged by an amount that grows with its size, kept inside whichever bounds are
+    /// declared when it is changed.
+    Drag { min: Option<f64>, max: Option<f64> },
+}
+
+/// The widget for a number with the declared range `min..=max` and curve.
+///
+/// A range only gets a slider when a slider can sweep it usefully: both ends declared, and no
+/// wider than [`WIDEST_LINEAR`] linearly or [`MOST_DECADES`] logarithmically. Anything else is
+/// treated as unbounded.
+pub fn widget(min: Option<f64>, max: Option<f64>, exponential: bool) -> Widget {
+    let drag = Widget::Drag { min, max };
+    let (Some(lo), Some(hi)) = (min, max) else {
+        return drag;
+    };
+    if lo.partial_cmp(&hi) != Some(std::cmp::Ordering::Less) {
+        return drag;
+    }
+    // A logarithmic slider cannot start at zero.
+    let logarithmic = exponential && lo > 0.0;
+    let fits = if logarithmic {
+        (hi / lo).log10() <= MOST_DECADES
+    } else {
+        hi - lo <= WIDEST_LINEAR
+    };
+    if fits {
+        Widget::Slider {
+            min: lo,
+            max: hi,
+            logarithmic,
+        }
+    } else {
+        drag
+    }
+}
+
+/// How far a dragged number now at `value` moves per point of pointer travel.
+pub fn drag_speed(value: f64, integer: bool) -> f64 {
+    let floor = if integer { 0.1 } else { DRAG_FLOOR };
+    (value.abs() * DRAG_FRACTION).max(floor)
+}
+
 /// One row of the inspector for a node.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Field {
@@ -938,5 +1004,69 @@ mod tests {
         assert_eq!(description, Some(("new".to_string(), "h0".to_string())));
         assert_eq!(drafts.text("/filter", "description"), None);
         assert_eq!(drafts.text("", "name"), Some("inst"));
+    }
+
+    #[test]
+    fn a_musical_range_is_a_slider_and_the_registrys_unbounded_range_is_dragged() {
+        assert_eq!(
+            widget(Some(20.0), Some(20000.0), true),
+            Widget::Slider {
+                min: 20.0,
+                max: 20000.0,
+                logarithmic: true
+            }
+        );
+        assert_eq!(
+            widget(Some(0.0), Some(1.0), false),
+            Widget::Slider {
+                min: 0.0,
+                max: 1.0,
+                logarithmic: false
+            }
+        );
+        assert!(matches!(
+            widget(Some(-1000.0), Some(20000.0), false),
+            Widget::Slider { .. }
+        ));
+        assert_eq!(
+            widget(Some(-1e6), Some(1e6), false),
+            Widget::Drag {
+                min: Some(-1e6),
+                max: Some(1e6)
+            }
+        );
+    }
+
+    #[test]
+    fn a_range_a_slider_cannot_sweep_is_dragged() {
+        for (min, max, exponential) in [
+            (Some(0.0), Some(1e6), true),
+            (Some(1e-3), Some(1e6), true),
+            (Some(0.0), None, false),
+            (None, Some(1.0), false),
+            (None, None, false),
+            (Some(1.0), Some(1.0), false),
+            (Some(2.0), Some(1.0), false),
+        ] {
+            assert_eq!(
+                widget(min, max, exponential),
+                Widget::Drag { min, max },
+                "{min:?}..{max:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_drag_moves_in_proportion_to_the_value_and_never_stalls_at_zero() {
+        let points_from_2800_to_2000 = 800.0 / drag_speed(2800.0, false);
+        assert!(
+            (20.0..=150.0).contains(&points_from_2800_to_2000),
+            "{points_from_2800_to_2000}"
+        );
+        assert!(drag_speed(0.5, false) <= 0.01);
+        assert_eq!(drag_speed(0.0, false), drag_speed(-0.0, false));
+        assert!(drag_speed(0.0, false) > 0.0);
+        assert_eq!(drag_speed(-2800.0, false), drag_speed(2800.0, false));
+        assert!(drag_speed(0.0, true) >= 0.1, "a whole number still steps");
     }
 }
