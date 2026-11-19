@@ -326,16 +326,19 @@ fn render_process(spec: &OperatorSpec) -> String {
     out.push_str(
         "        // TODO Stage B: implement the DSP. This stub writes silence — the operator is\n        // structurally valid but makes no sound until you fill it in.\n",
     );
-    let sig_outs = signal_output_consts(spec);
-    if sig_outs.is_empty() {
-        out.push_str("        let _ = io;\n");
-    } else {
-        out.push_str("        let n = io.frames();\n");
-        out.push_str(&format!(
-            "        for port in [{}] {{\n",
-            sig_outs.join(", ")
-        ));
-        out.push_str("            io.write(port)[..n].fill(0.0);\n        }\n");
+    // One output is a plain statement, not a one-element loop: clippy's `single_element_loop`
+    // rejects the loop under `-D warnings`, and one output is the common shape.
+    match signal_output_consts(spec).as_slice() {
+        [] => out.push_str("        let _ = io;\n"),
+        [port] => {
+            out.push_str("        let n = io.frames();\n");
+            out.push_str(&format!("        io.write({port})[..n].fill(0.0);\n"));
+        }
+        ports => {
+            out.push_str("        let n = io.frames();\n");
+            out.push_str(&format!("        for port in [{}] {{\n", ports.join(", ")));
+            out.push_str("            io.write(port)[..n].fill(0.0);\n        }\n");
+        }
     }
     out.push_str("    }\n");
     out
@@ -427,10 +430,16 @@ mod tests {
 
     #[test]
     fn process_stub_writes_silence_to_signal_outputs_only() {
-        let src =
-            render(r#"{ "type_name": "o", "outputs": [ {"name":"audio","ty":"f32_buffer"} ] }"#);
+        let src = render(
+            r#"{ "type_name": "o", "outputs": [ {"name":"audio","ty":"f32_buffer"}, {"name":"p","ty":"pitch"} ] }"#,
+        );
+        assert!(src.contains("io.write(OUT_AUDIO)[..n].fill(0.0);"), "{src}");
+        assert!(!src.contains("for port in"), "{src}");
+        let src = render(
+            r#"{ "type_name": "o", "outputs": [ {"name":"l","ty":"f32_buffer"}, {"name":"r","ty":"f32_buffer"} ] }"#,
+        );
+        assert!(src.contains("for port in [OUT_L, OUT_R]"), "{src}");
         assert!(src.contains("io.write(port)[..n].fill(0.0)"), "{src}");
-        assert!(src.contains("for port in [OUT_AUDIO]"), "{src}");
     }
 
     #[test]
@@ -454,7 +463,7 @@ mod tests {
         );
         assert!(src.contains("outputs: { audio: f32_buffer }"), "{src}");
         // A `f32_buffer` output gets a silence-stub write.
-        assert!(src.contains("for port in [OUT_AUDIO]"), "{src}");
+        assert!(src.contains("io.write(OUT_AUDIO)[..n].fill(0.0);"), "{src}");
     }
 
     #[test]

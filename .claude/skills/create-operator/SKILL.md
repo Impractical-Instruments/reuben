@@ -63,9 +63,13 @@ Run all `reuben`/`cargo` commands from the repo root.
    patcher's. In order:
    1. `cargo test -p reuben-core` — your tests (the real oracle) and the census invariants
       (`census_accounts_for_every_operator` proves your op is not silently uncensused; names stay
-      unique + snake_case). Then `cargo build -p reuben-core`: the crate is `no_std` everywhere
-      but its lib test target, so a bare `Box`, `Vec` or `std::` path passes `cargo test` and
-      fails here — import from `alloc`, as every existing operator does.
+      unique + snake_case). Then CI's bare-metal build,
+      `cargo build -p reuben-core --target thumbv7em-none-eabihf --release` (the pinned toolchain
+      already carries the target). `cargo test` sees neither failure it catches: the crate is
+      `no_std` everywhere but its lib test target, so a bare `Box`, `Vec` or `std::` path passes
+      `cargo test` (import from `alloc`, as every existing operator does); and the target is
+      32-bit with no 64-bit atomics, so an `AtomicU64` or a `1 << 40` in a `usize` passes every
+      host build.
    2. **Register a micro-bench workload** (#30) — a forcing function in
       [`bench_support.rs`](../../../crates/reuben-core/src/bench_support.rs) (`#[cfg(feature = "bench")]`,
       so plain `cargo test` **won't** catch it — only CI's `check` job does) requires every registered
