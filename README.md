@@ -2,7 +2,7 @@
 
 Deterministic CI performance trend: callgrind **instruction counts (Ir)** for rendering **1 s of audio** (375 × 128-frame blocks @ 48 kHz), recorded on every direct push to `dev`. Instruction counts don't jitter — every visible move is a real code change (or a toolchain bump).
 
-**183 commits** · 2026-07-12 → 2026-11-19 · 14804 data points · last: `c37f4eb` (2026-11-19T08:26:37-05:00)
+**184 commits** · 2026-07-12 → 2026-11-19 · 14900 data points · last: `57a4e7e` (2026-11-19T08:43:11-05:00)
 
 *Companion trend: the **main** series lives on the [`bench-history`](https://github.com/Impractical-Instruments/reuben/tree/bench-history) branch.*
 
@@ -17,11 +17,11 @@ Deterministic CI performance trend: callgrind **instruction counts (Ir)** for re
 
 | Instrument | Latest Ir | vs prev | vs first | since |
 |---|---:|---:|---:|---|
-| `auto-filter` | 37.4M | ±0.0% | **-14.7%** | 2026-07-12 |
-| `autotune` | 35.2M | ±0.0% | **-13.8%** | 2026-07-12 |
-| `echo` | 37.6M | ±0.0% | **-13.1%** | 2026-07-12 |
-| `reverb` | 44.9M | ±0.0% | **-11.2%** | 2026-07-12 |
-| `sampler-arp` | 15.4M | ±0.0% | -2.5% | 2026-07-12 |
+| `auto-filter` | 35.9M | **-4.3%** | **-18.3%** | 2026-07-12 |
+| `autotune` | 33.5M | **-4.9%** | **-18.0%** | 2026-07-12 |
+| `echo` | 36.0M | **-4.1%** | **-16.7%** | 2026-07-12 |
+| `reverb` | 43.3M | **-3.5%** | **-14.3%** | 2026-07-12 |
+| `sampler-arp` | 14.1M | **-8.7%** | **-11.0%** | 2026-07-12 |
 
 ## Per-node engine overhead
 
@@ -30,7 +30,7 @@ Deterministic CI performance trend: callgrind **instruction counts (Ir)** for re
   <img alt="Line chart of per-node engine overhead across dev commits" src="charts/overhead-light.svg">
 </picture>
 
-`overhead` is a bench-only no-op operator behind a typical port shape, so its entire cost is the engine's per-node stepping overhead (edge clear, routing, materialize, `Io` build — see `bench_support.rs`). The `proxy (abs_f32_value)` line is the cheapest value-rate case — ~99% the same overhead — covering history from before the dedicated case landed; its level differs (a smaller port surface), so the two are separate lines, never stitched. Latest: **534k Ir** ≈ **1,423 instructions per node per block**. This overhead is a constant offset on every micro case and scales with node count in an instrument.
+`overhead` is a bench-only no-op operator behind a typical port shape, so its entire cost is the engine's per-node stepping overhead (edge clear, routing, materialize, `Io` build — see `bench_support.rs`). The `proxy (abs_f32_value)` line is the cheapest value-rate case — ~99% the same overhead — covering history from before the dedicated case landed; its level differs (a smaller port surface), so the two are separate lines, never stitched. Latest: **455k Ir** ≈ **1,213 instructions per node per block**. This overhead is a constant offset on every micro case and scales with node count in an instrument.
 
 ## Graph construction (construct)
 
@@ -75,11 +75,11 @@ Cost paid **once per Swap**, on the caller's thread — which in the browser is 
 
 | Case | Latest Ir | vs prev | vs first | since |
 |---|---:|---:|---:|---|
-| `macro/auto-filter` | 37.4M | ±0.0% | **-14.7%** | 2026-07-12 |
-| `macro/autotune` | 35.2M | ±0.0% | **-13.8%** | 2026-07-12 |
-| `macro/echo` | 37.6M | ±0.0% | **-13.1%** | 2026-07-12 |
-| `macro/reverb` | 44.9M | ±0.0% | **-11.2%** | 2026-07-12 |
-| `macro/sampler-arp` | 15.4M | ±0.0% | -2.5% | 2026-07-12 |
+| `macro/auto-filter` | 35.9M | **-4.3%** | **-18.3%** | 2026-07-12 |
+| `macro/autotune` | 33.5M | **-4.9%** | **-18.0%** | 2026-07-12 |
+| `macro/echo` | 36.0M | **-4.1%** | **-16.7%** | 2026-07-12 |
+| `macro/reverb` | 43.3M | **-3.5%** | **-14.3%** | 2026-07-12 |
+| `macro/sampler-arp` | 14.1M | **-8.7%** | **-11.0%** | 2026-07-12 |
 | `construct/deep_n2048` | 59.1M | ±0.0% | **-10.3%** | 2026-07-30 |
 | `construct/deep_n4096` | 120.0M | ±0.0% | **-9.6%** | 2026-07-30 |
 | `construct/deep_n8192` | 240.7M | ±0.0% | **-12.8%** | 2026-07-30 |
@@ -89,88 +89,88 @@ Cost paid **once per Swap**, on the caller's thread — which in the browser is 
 | `construct/wide_n2048` | 49.5M | ±0.0% | **-10.0%** | 2026-07-30 |
 | `construct/wide_n4096` | 100.7M | ±0.0% | **-13.3%** | 2026-07-30 |
 | `construct/wide_n8192` | 202.5M | ±0.0% | **-13.6%** | 2026-07-30 |
-| `granulator` | 27.7M | ±0.0% | +0.7% | 2026-07-12 |
-| `resonator` | 15.3M | ±0.0% | **-17.6%** | 2026-07-12 |
-| `reverb` | 11.0M | ±0.0% | -0.4% | 2026-07-12 |
-| `compressor` | 8.14M | ±0.0% | **-16.0%** | 2026-07-20 |
-| `sample_loop` | 6.77M | ±0.0% | ±0.0% | 2026-11-13 |
-| `pan` | 6.08M | ±0.0% | -0.2% | 2026-07-12 |
-| `sequencer` | 4.76M | ±0.0% | -2.7% | 2026-07-12 |
-| `saturator` | 4.64M | ±0.0% | **-46.4%** | 2026-07-12 |
-| `euclid` | 3.96M | ±0.0% | **-3.7%** | 2026-07-12 |
-| `sample` | 3.91M | ±0.0% | +1.0% | 2026-07-12 |
-| `delay` | 3.68M | ±0.0% | -1.2% | 2026-07-12 |
-| `lfo` | 2.98M | ±0.0% | -2.7% | 2026-07-12 |
-| `clock` | 2.71M | ±0.0% | -1.4% | 2026-07-12 |
-| `oscillator` | 2.56M | ±0.0% | **-3.2%** | 2026-07-12 |
-| `modulo_f32_signal` | 2.40M | ±0.0% | **-40.8%** | 2026-07-12 |
-| `djfilter` | 2.26M | ±0.0% | -2.8% | 2026-07-12 |
-| `plucked_string` | 2.21M | ±0.0% | -0.3% | 2026-11-11 |
-| `power_f32_signal` | 2.11M | ±0.0% | **-40.2%** | 2026-07-12 |
-| `envelope` | 2.00M | ±0.0% | **+14.9%** | 2026-07-12 |
-| `filter` | 1.62M | ±0.0% | **-3.1%** | 2026-07-12 |
-| `noise` | 1.52M | ±0.0% | -2.2% | 2026-07-12 |
-| `strum` | 1.43M | ±0.0% | -1.4% | 2026-07-12 |
-| `m2s` | 1.06M | ±0.0% | **-3.2%** | 2026-07-12 |
-| `integrate_f32_signal` | 1.00M | ±0.0% | **-3.6%** | 2026-07-12 |
-| `map_f32_signal` | 995k | ±0.0% | **-78.2%** | 2026-07-12 |
-| `clamp_f32_signal` | 788k | ±0.0% | **-71.8%** | 2026-07-12 |
-| `round_f32_signal` | 753k | ±0.0% | **-4.0%** | 2026-07-22 |
-| `differentiate_f32_signal` | 751k | ±0.0% | **-4.8%** | 2026-07-12 |
-| `harmony` | 741k | ±0.0% | **-8.9%** | 2026-07-12 |
-| `div_f32_signal` | 715k | ±0.0% | **-55.5%** | 2026-07-12 |
-| `mul_f32_signal` | 705k | ±0.0% | **-50.1%** | 2026-07-12 |
-| `sub_f32_signal` | 705k | ±0.0% | **-50.1%** | 2026-07-12 |
-| `max_f32_signal` | 705k | ±0.0% | **-50.1%** | 2026-07-12 |
-| `min_f32_signal` | 705k | ±0.0% | **-50.1%** | 2026-07-12 |
-| `add_f32_signal` | 705k | ±0.0% | **-50.1%** | 2026-07-12 |
-| `abs_f32_signal` | 699k | ±0.0% | **-6.1%** | 2026-07-12 |
-| `negate_f32_signal` | 699k | ±0.0% | **-6.1%** | 2026-07-12 |
-| `trunc_f32_signal` | 698k | ±0.0% | **-4.3%** | 2026-07-22 |
-| `ceil_f32_signal` | 698k | ±0.0% | **-4.3%** | 2026-07-22 |
-| `floor_f32_signal` | 698k | ±0.0% | **-4.3%** | 2026-07-22 |
-| `reciprocal_f32_signal` | 663k | ±0.0% | **-5.3%** | 2026-07-12 |
-| `map_f32_value` | 601k | ±0.0% | **-4.0%** | 2026-07-12 |
-| `output` | 598k | ±0.0% | **-5.9%** | 2026-07-12 |
-| `voicer` | 575k | ±0.0% | **-4.8%** | 2026-07-12 |
-| `unpack_note` | 572k | ±0.0% | **-3.7%** | 2026-07-20 |
-| `overhead` | 534k | ±0.0% | **-6.3%** | 2026-07-12 |
-| `clamp_f32_value` | 532k | ±0.0% | **-4.5%** | 2026-07-12 |
-| `clamp_i32_value` | 530k | ±0.0% | **-4.1%** | 2026-07-21 |
-| `pitch2freq` | 529k | ±0.0% | **-4.2%** | 2026-07-20 |
-| `modulo_f32_value` | 526k | ±0.0% | **-4.5%** | 2026-07-12 |
-| `power_f32_value` | 521k | ±0.0% | **-4.6%** | 2026-07-12 |
-| `modulo_i32_value` | 514k | ±0.0% | **-4.1%** | 2026-07-21 |
-| `div_f32_value` | 512k | ±0.0% | **-4.7%** | 2026-07-12 |
-| `max_f32_value` | 512k | ±0.0% | **-4.6%** | 2026-07-12 |
-| `min_f32_value` | 512k | ±0.0% | **-4.6%** | 2026-07-12 |
-| `add_f32_value` | 511k | ±0.0% | **-4.6%** | 2026-07-12 |
-| `div_i32_value` | 511k | ±0.0% | **-4.1%** | 2026-07-21 |
-| `sub_f32_value` | 511k | ±0.0% | **-4.6%** | 2026-07-12 |
-| `mul_f32_value` | 511k | ±0.0% | **-4.6%** | 2026-07-12 |
-| `sub_i32_value` | 511k | ±0.0% | **-4.1%** | 2026-07-21 |
-| `add_i32_value` | 511k | ±0.0% | **-4.1%** | 2026-07-21 |
-| `mul_i32_value` | 510k | ±0.0% | **-4.1%** | 2026-07-21 |
-| `max_i32_value` | 510k | ±0.0% | **-4.1%** | 2026-07-21 |
-| `min_i32_value` | 510k | ±0.0% | **-4.1%** | 2026-07-21 |
-| `snap` | 507k | ±0.0% | **-3.9%** | 2026-07-12 |
-| `round_f32_i32_value` | 496k | ±0.0% | **-5.3%** | 2026-07-22 |
-| `floor_f32_i32_value` | 494k | ±0.0% | **-5.3%** | 2026-07-22 |
-| `trunc_f32_i32_value` | 494k | ±0.0% | **-5.3%** | 2026-07-22 |
-| `ceil_f32_i32_value` | 494k | ±0.0% | **-5.3%** | 2026-07-22 |
-| `round_f32_value` | 492k | ±0.0% | **-5.5%** | 2026-07-22 |
-| `negate_i32_value` | 492k | ±0.0% | **-4.1%** | 2026-07-21 |
-| `reciprocal_f32_value` | 492k | ±0.0% | **-4.7%** | 2026-07-12 |
-| `abs_f32_value` | 491k | ±0.0% | **-4.7%** | 2026-07-12 |
-| `negate_f32_value` | 491k | ±0.0% | **-4.7%** | 2026-07-12 |
-| `ceil_f32_value` | 491k | ±0.0% | **-5.5%** | 2026-07-22 |
-| `trunc_f32_value` | 491k | ±0.0% | **-5.5%** | 2026-07-22 |
-| `floor_f32_value` | 491k | ±0.0% | **-5.5%** | 2026-07-22 |
-| `abs_i32_value` | 490k | ±0.0% | **-4.2%** | 2026-07-21 |
-| `transpose` | 489k | ±0.0% | **-3.7%** | 2026-07-12 |
-| `chord` | 469k | ±0.0% | **-5.6%** | 2026-07-12 |
-| `osc_out` | 431k | ±0.0% | **-3.9%** | 2026-07-12 |
-| `subpatch` | 400k | ±0.0% | **-3.9%** | 2026-07-12 |
+| `granulator` | 27.6M | -0.4% | +0.3% | 2026-07-12 |
+| `resonator` | 15.2M | -0.6% | **-18.1%** | 2026-07-12 |
+| `reverb` | 10.9M | -0.8% | -1.2% | 2026-07-12 |
+| `compressor` | 8.04M | -1.3% | **-17.1%** | 2026-07-20 |
+| `sample_loop` | 6.67M | -1.5% | -1.5% | 2026-11-13 |
+| `pan` | 6.00M | -1.3% | -1.5% | 2026-07-12 |
+| `saturator` | 4.55M | -1.9% | **-47.4%** | 2026-07-12 |
+| `sequencer` | 4.47M | **-6.0%** | **-8.5%** | 2026-07-12 |
+| `sample` | 3.81M | -2.6% | -1.7% | 2026-07-12 |
+| `euclid` | 3.78M | **-4.4%** | **-8.0%** | 2026-07-12 |
+| `delay` | 3.59M | -2.4% | **-3.5%** | 2026-07-12 |
+| `lfo` | 2.90M | -2.8% | **-5.4%** | 2026-07-12 |
+| `oscillator` | 2.48M | **-3.1%** | **-6.2%** | 2026-07-12 |
+| `clock` | 2.34M | **-13.6%** | **-14.8%** | 2026-07-12 |
+| `modulo_f32_signal` | 2.32M | **-3.3%** | **-42.8%** | 2026-07-12 |
+| `djfilter` | 2.16M | **-4.4%** | **-7.0%** | 2026-07-12 |
+| `plucked_string` | 2.11M | **-4.3%** | **-4.5%** | 2026-11-11 |
+| `power_f32_signal` | 2.03M | **-3.8%** | **-42.5%** | 2026-07-12 |
+| `envelope` | 1.91M | **-4.5%** | **+9.8%** | 2026-07-12 |
+| `filter` | 1.53M | **-5.4%** | **-8.4%** | 2026-07-12 |
+| `noise` | 1.44M | **-5.1%** | **-7.2%** | 2026-07-12 |
+| `strum` | 1.35M | **-6.0%** | **-7.3%** | 2026-07-12 |
+| `m2s` | 971k | **-8.1%** | **-11.1%** | 2026-07-12 |
+| `integrate_f32_signal` | 929k | **-7.5%** | **-10.8%** | 2026-07-12 |
+| `map_f32_signal` | 900k | **-9.6%** | **-80.3%** | 2026-07-12 |
+| `clamp_f32_signal` | 704k | **-10.7%** | **-74.8%** | 2026-07-12 |
+| `round_f32_signal` | 678k | **-10.0%** | **-13.6%** | 2026-07-22 |
+| `differentiate_f32_signal` | 676k | **-10.0%** | **-14.3%** | 2026-07-12 |
+| `div_f32_signal` | 635k | **-11.2%** | **-60.5%** | 2026-07-12 |
+| `mul_f32_signal` | 625k | **-11.3%** | **-55.8%** | 2026-07-12 |
+| `sub_f32_signal` | 625k | **-11.3%** | **-55.8%** | 2026-07-12 |
+| `max_f32_signal` | 625k | **-11.3%** | **-55.8%** | 2026-07-12 |
+| `min_f32_signal` | 625k | **-11.3%** | **-55.8%** | 2026-07-12 |
+| `add_f32_signal` | 625k | **-11.3%** | **-55.8%** | 2026-07-12 |
+| `abs_f32_signal` | 624k | **-10.7%** | **-16.2%** | 2026-07-12 |
+| `negate_f32_signal` | 624k | **-10.7%** | **-16.2%** | 2026-07-12 |
+| `trunc_f32_signal` | 623k | **-10.8%** | **-14.6%** | 2026-07-22 |
+| `ceil_f32_signal` | 623k | **-10.8%** | **-14.6%** | 2026-07-22 |
+| `floor_f32_signal` | 623k | **-10.8%** | **-14.6%** | 2026-07-22 |
+| `harmony` | 617k | **-16.8%** | **-24.2%** | 2026-07-12 |
+| `reciprocal_f32_signal` | 588k | **-11.3%** | **-16.0%** | 2026-07-12 |
+| `output` | 523k | **-12.5%** | **-17.7%** | 2026-07-12 |
+| `map_f32_value` | 508k | **-15.6%** | **-19.0%** | 2026-07-12 |
+| `unpack_note` | 498k | **-13.0%** | **-16.2%** | 2026-07-20 |
+| `voicer` | 491k | **-14.6%** | **-18.7%** | 2026-07-12 |
+| `overhead` | 455k | **-14.8%** | **-20.2%** | 2026-07-12 |
+| `pitch2freq` | 450k | **-14.9%** | **-18.5%** | 2026-07-20 |
+| `clamp_f32_value` | 450k | **-15.5%** | **-19.4%** | 2026-07-12 |
+| `modulo_f32_value` | 447k | **-15.0%** | **-18.8%** | 2026-07-12 |
+| `clamp_i32_value` | 447k | **-15.6%** | **-19.1%** | 2026-07-21 |
+| `power_f32_value` | 443k | **-15.1%** | **-19.0%** | 2026-07-12 |
+| `modulo_i32_value` | 435k | **-15.3%** | **-18.8%** | 2026-07-21 |
+| `div_f32_value` | 434k | **-15.4%** | **-19.3%** | 2026-07-12 |
+| `max_f32_value` | 433k | **-15.4%** | **-19.3%** | 2026-07-12 |
+| `min_f32_value` | 433k | **-15.4%** | **-19.3%** | 2026-07-12 |
+| `add_f32_value` | 433k | **-15.4%** | **-19.3%** | 2026-07-12 |
+| `div_i32_value` | 433k | **-15.4%** | **-18.9%** | 2026-07-21 |
+| `sub_f32_value` | 433k | **-15.4%** | **-19.3%** | 2026-07-12 |
+| `mul_f32_value` | 433k | **-15.4%** | **-19.3%** | 2026-07-12 |
+| `sub_i32_value` | 432k | **-15.4%** | **-18.9%** | 2026-07-21 |
+| `add_i32_value` | 432k | **-15.4%** | **-18.9%** | 2026-07-21 |
+| `mul_i32_value` | 431k | **-15.4%** | **-19.0%** | 2026-07-21 |
+| `max_i32_value` | 431k | **-15.5%** | **-18.9%** | 2026-07-21 |
+| `min_i32_value` | 431k | **-15.5%** | **-18.9%** | 2026-07-21 |
+| `round_f32_i32_value` | 422k | **-15.0%** | **-19.5%** | 2026-07-22 |
+| `floor_f32_i32_value` | 420k | **-15.0%** | **-19.5%** | 2026-07-22 |
+| `trunc_f32_i32_value` | 420k | **-15.0%** | **-19.5%** | 2026-07-22 |
+| `ceil_f32_i32_value` | 420k | **-15.0%** | **-19.5%** | 2026-07-22 |
+| `round_f32_value` | 418k | **-15.1%** | **-19.8%** | 2026-07-22 |
+| `negate_i32_value` | 418k | **-15.1%** | **-18.6%** | 2026-07-21 |
+| `reciprocal_f32_value` | 418k | **-15.1%** | **-19.1%** | 2026-07-12 |
+| `abs_f32_value` | 417k | **-15.1%** | **-19.1%** | 2026-07-12 |
+| `negate_f32_value` | 417k | **-15.1%** | **-19.1%** | 2026-07-12 |
+| `ceil_f32_value` | 416k | **-15.1%** | **-19.8%** | 2026-07-22 |
+| `trunc_f32_value` | 416k | **-15.1%** | **-19.8%** | 2026-07-22 |
+| `floor_f32_value` | 416k | **-15.1%** | **-19.8%** | 2026-07-22 |
+| `abs_i32_value` | 416k | **-15.1%** | **-18.7%** | 2026-07-21 |
+| `snap` | 407k | **-19.8%** | **-22.9%** | 2026-07-12 |
+| `chord` | 380k | **-19.0%** | **-23.6%** | 2026-07-12 |
+| `transpose` | 375k | **-23.2%** | **-26.1%** | 2026-07-12 |
+| `osc_out` | 357k | **-17.1%** | **-20.4%** | 2026-07-12 |
+| `subpatch` | 323k | **-19.4%** | **-22.5%** | 2026-07-12 |
 
 </details>
 
