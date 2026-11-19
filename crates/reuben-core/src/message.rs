@@ -100,18 +100,16 @@ pub enum Arg {
     ///   operator-emitted string, `scratch.emitted.clear()`. Same thread, same
     ///   one-free-per-replaced-string class as the latch site.
     /// - **The engine's pending-message hand-off** (`engine.rs`): a queued inbound Message
-    ///   that latched (or routed nowhere) drops with its payload on the audio thread — the same
-    ///   path that already frees each pending Message's `address: String` per message.
+    ///   that latched (or routed nowhere) drops with its payload on the audio thread — at the
+    ///   same moment its [`Message::address`] is freed.
     ///
     /// The residual — one `free()` per *replaced or unconsumed* string, only ever on sparse
-    /// boundary-driven message traffic, never in the steady-state signal loop (`rt_safe.rs`
-    /// still holds: no string Messages, no allocator traffic) — is accepted rather than fenced
-    /// with a retain/reclaim buffer: every reachable site either already deallocates a
-    /// per-message `String` at the same moment (the hand-off paths) or previously deallocated
-    /// the `String` backing there (the latch, seed overwrite excepted — see above), so a fence
-    /// here would not make the render
-    /// thread allocator-free. Eliminating those frees belongs to the engine's hand-off (its
-    /// module note names this cost), not to this type.
+    /// boundary-driven message traffic, never in the steady-state signal loop — is accepted
+    /// rather than fenced with a retain/reclaim buffer: every reachable site either already
+    /// deallocates a per-message `String` at the same moment (the hand-off paths) or previously
+    /// deallocated the `String` backing there (the latch, seed overwrite excepted — see above),
+    /// so a fence here would not make the render thread allocator-free. That per-message cost
+    /// is the `Message` representation's, documented on [`Message::address`].
     Str(Arc<str>),
 
     // Shared vocab concrete types — each defined once with `#[derive(ArgValue)]`,
@@ -253,6 +251,12 @@ pub trait OscArg: Sized {
 pub struct Message {
     /// OSC-style address path, e.g. `/osc/freq` or `/note`. Kept for OSC shape, boundary
     /// routing, and debug — **never** internal dispatch (that is the wired edge's job).
+    ///
+    /// RT cost: an owned `String`, so every inbound control Message costs one heap allocation
+    /// where it is built ([`Message::new`], which `Engine::queue_osc` calls) and one free where
+    /// it is dropped (after the block that consumed it). A host that queues from its audio
+    /// callback pays both on the audio thread. The engine's queue is heap-neutral; this is the
+    /// owner of the per-message cost.
     pub address: String,
     /// Sample offset within the current Render block at which this Message applies. The
     /// internal timestamp OSC lacks; incoming external OSC is stamped 0 ("now").

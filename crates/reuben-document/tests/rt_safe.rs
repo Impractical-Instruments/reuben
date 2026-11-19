@@ -3,8 +3,9 @@
 //! messages (events are zero-copy views). A counting allocator makes any allocation on
 //! the audio path observable.
 //!
-//! The same holds one layer up, for [`Engine::fill`]: the host-facing pull that queued
-//! Messages reach the renderer through.
+//! One layer up, [`Engine::queue`] + [`Engine::fill`] — the host-facing route queued Messages
+//! reach the renderer through — performs zero allocation too, and frees nothing but the
+//! consumed Messages' own address `String`s.
 //!
 //! This file is its own test binary. Counting is armed per-thread by the shared [`rt_alloc`]
 //! harness — each measured window arms this thread only around the render loop under test —

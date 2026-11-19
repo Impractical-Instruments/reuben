@@ -15,9 +15,11 @@
 //! buffers) stays in the shells; the Engine takes the already-flat primitive args.
 //!
 //! RT-safety: the `pending` queue is preallocated and cleared, never replaced, so in steady state
-//! neither [`Engine::queue`] nor [`Engine::fill`] touches the heap for the handoff itself. Two
-//! costs remain the caller's: a burst past the queue's high-water mark grows it once, and each
-//! consumed [`Message`] is dropped after its block, freeing its address `String`.
+//! the handoff itself is heap-neutral (a burst past its high-water mark grows it once). The audio
+//! callback is still **not** allocation-free under control traffic: each Message costs one
+//! allocation where it is built ([`Engine::queue_osc`] builds one per call) and one free when it
+//! is dropped after its block — both on the audio thread when the host queues from its callback.
+//! That cost belongs to the Message's owned address; see [`Message::address`].
 
 use alloc::vec;
 use alloc::vec::Vec;
