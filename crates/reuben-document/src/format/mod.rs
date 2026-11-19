@@ -3511,14 +3511,10 @@ mod tests {
 
         const BAD_CHILD: &str = r#"{"format_version":3,"instrument":"c",
             "nodes":[{"type":"oscillator","address":"/o sc"}]}"#;
-        let outcome = match load_instrument(host, &reg(), &PatchResolver(BAD_CHILD)) {
-            Ok(l) => format!("{:?}", l.warnings),
-            Err(e) => e.to_string(),
-        };
-        assert!(
-            outcome.contains("/o sc"),
-            "a child's bad authored address is reported: {outcome}"
-        );
+        assert!(matches!(
+            load_instrument(host, &reg(), &PatchResolver(BAD_CHILD)),
+            Err(LoadError::InvalidAddress { address, .. }) if address == "/o sc"
+        ));
     }
 
     #[test]
@@ -5038,6 +5034,19 @@ mod tests {
         assert!(matches!(
             load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE)),
             Err(LoadError::InvalidAddress { address, .. }) if address == "/sub/osc"
+        ));
+    }
+
+    #[test]
+    fn a_pipe_minted_address_colliding_with_a_spliced_one_is_fatal() {
+        // A pipe name is not held to the node address rule, so `sub/osc` mints `/sub/osc` in pass
+        // 0 and the splice's own uniqueness check is what refuses the child's `/sub/osc`.
+        let json = r#"{"format_version":3,"instrument":"p","resources":{"v":"v.json"},
+            "interface":{"inputs":{"sub/osc":{"type":"f32","default":0.5}}},
+            "nodes":[{"type":"subpatch","address":"/sub","patch":"v"}]}"#;
+        assert!(matches!(
+            load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE)),
+            Err(LoadError::DuplicateAddress(a)) if a == "/sub/osc"
         ));
     }
 
