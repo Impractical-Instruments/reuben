@@ -92,6 +92,9 @@ impl NormalizedDoc {
         } else {
             doc.check_pipe_shape()?;
         }
+        if doc.format_version < 4 {
+            migrate_addresses(&mut doc);
+        }
         // v2→v3 is a pure strip, so it runs unconditionally: a v3-stamped
         // document still carrying leftovers degrades identically (ignore-with-warning).
         doc.strip_retired_presentation();
@@ -118,19 +121,25 @@ impl NormalizedDoc {
 
     /// Derive a document from a built [`Graph`] — the flatten/export path, not save.
     ///
-    /// Use it to export a self-contained flat
-    /// instrument or to materialize a programmatically built graph; don't round-trip an edited
-    /// *nested* instrument through it. Nodes are emitted in a stable order, and within a node
+    /// Use it to export a self-contained flat instrument or to materialize a programmatically
+    /// built graph. Nodes are emitted in a stable order, and within a node
     /// `config`/`inputs` keys are sorted (BTreeMap), so output is deterministic. A `Constant`
     /// override goes to `config`; a materialized `Float` override, an `Enum` choice (as its
     /// symbol), and every inbound wire go to `inputs`.
-    pub fn from_graph(graph: &Graph, instrument: impl Into<String>, registry: &Registry) -> Self {
-        Self::from_doc(
-            InstrumentDoc::from_graph_doc(graph, instrument),
-            registry,
-            None,
-        )
-        .expect("a flattened graph is current-shaped by construction")
+    ///
+    /// A graph holding an address the node address rule refuses — a spliced subpatch child's
+    /// `/<sub>/<node>`, or any hand-built one — is [`LoadError::InvalidAddress`] naming that
+    /// node, never a document that cannot load.
+    pub fn from_graph(
+        graph: &Graph,
+        instrument: impl Into<String>,
+        registry: &Registry,
+    ) -> Result<Self, LoadError> {
+        let doc = InstrumentDoc::from_graph_doc(graph, instrument);
+        for node in &doc.nodes {
+            check_node_address(&node.address)?;
+        }
+        Self::from_doc(doc, registry, None)
     }
 }
 
@@ -256,15 +265,7 @@ fn migrate_v1(
             .collect();
         for idx in colliding {
             let old = doc.nodes[idx].address.clone();
-            let mut i = 1usize;
-            let new = loop {
-                i += 1;
-                let candidate = format!("{old}_{i}");
-                if !minted.contains(&candidate) && !doc.nodes.iter().any(|n| n.address == candidate)
-                {
-                    break candidate;
-                }
-            };
+            let new = suffixed_unclaimed(doc, &minted, &old);
             rename_node(doc, idx, &new);
             doc.migration.warnings.push(LoadWarning::Migration {
                 name: old.clone(),
@@ -416,9 +417,57 @@ fn migrate_v1(
     Ok(())
 }
 
+/// `{base}_2`, `{base}_3`, … — the first no node and no minted pipe address holds.
+fn suffixed_unclaimed(doc: &InstrumentDoc, minted: &BTreeSet<String>, base: &str) -> String {
+    (2usize..)
+        .map(|i| format!("{base}_{i}"))
+        .find(|c| !minted.contains(c) && !doc.nodes.iter().any(|n| &n.address == c))
+        .expect("an unbounded suffix range always finds a free address")
+}
+
+/// The v3→v4 migration: each node address the node address rule refuses is renamed with its
+/// references rewritten. Every refused character becomes `_`, an empty name becomes `node`, and a
+/// result already held by a node or a minted pipe address takes step 0's `_N` suffix.
+fn migrate_addresses(doc: &mut InstrumentDoc) {
+    let minted: BTreeSet<String> = doc
+        .interface
+        .iter()
+        .flat_map(|i| i.inputs.keys().map(|n| format!("/{n}")))
+        .collect();
+    for idx in 0..doc.nodes.len() {
+        let old = doc.nodes[idx].address.clone();
+        if check_node_address(&old).is_ok() {
+            continue;
+        }
+        let segment: String = old
+            .strip_prefix('/')
+            .unwrap_or(&old)
+            .chars()
+            .map(|c| match refused_address_char(c) {
+                Some(_) => '_',
+                None => c,
+            })
+            .collect();
+        let base = if segment.is_empty() {
+            "/node".to_string()
+        } else {
+            format!("/{segment}")
+        };
+        let new = if minted.contains(&base) || doc.nodes.iter().any(|n| n.address == base) {
+            suffixed_unclaimed(doc, &minted, &base)
+        } else {
+            base
+        };
+        rename_node(doc, idx, &new);
+        doc.migration
+            .warnings
+            .push(LoadWarning::RenamedAddress { from: old, to: new });
+    }
+}
+
 /// Rename `doc.nodes[idx]` to `new`, rewriting every reference — wire-refs in node `inputs`,
-/// v1 `interface` targets, anonymous-tap node names — so the rename is behavior-invariant
-/// (migration step 0: a node stepping aside for a minted pipe address).
+/// v1 `interface` targets, output feeds, anonymous-tap node names — so the rename is
+/// behavior-invariant.
 fn rename_node(doc: &mut InstrumentDoc, idx: usize, new: &str) {
     let old = std::mem::replace(&mut doc.nodes[idx].address, new.to_string());
     for n in &mut doc.nodes {
@@ -433,7 +482,8 @@ fn rename_node(doc: &mut InstrumentDoc, idx: usize, new: &str) {
             match entry {
                 InterfaceEntry::Target(t) => rename_in_ref(t, &old, new),
                 InterfaceEntry::Detailed(m) => rename_in_ref(&mut m.target, &old, new),
-                _ => {}
+                InterfaceEntry::Feed(f) => rename_in_ref(&mut f.from, &old, new),
+                InterfaceEntry::Pipe(_) => {}
             }
         }
     }
@@ -820,7 +870,9 @@ mod tests {
         let doc = NormalizedDoc::from_json(r#"{"instrument":"t","nodes":[]}"#, &reg(), None)
             .expect("v1 parses");
         assert_eq!(doc.format_version, FORMAT_VERSION);
-        assert!(doc.to_json_pretty().contains("\"format_version\": 3"));
+        assert!(doc
+            .to_json_pretty()
+            .contains(&format!("\"format_version\": {FORMAT_VERSION}")));
     }
 
     #[test]
@@ -967,6 +1019,93 @@ mod tests {
         assert!(matches!(
             NormalizedDoc::from_doc(raw, &reg(), None),
             Err(LoadError::UnsupportedVersion { found: 99, .. })
+        ));
+    }
+
+    /// A v3 document whose addresses break the node address rule. `/a/osc` maps to `/a_osc`, which
+    /// is taken, so it takes the step-0 suffix; every reference form is wired at least once.
+    fn bad_addresses_at(version: u32) -> String {
+        serde_json::json!({
+            "format_version": version,
+            "instrument": "t",
+            "nodes": [
+                { "type": "oscillator", "address": "/a/osc" },
+                { "type": "oscillator", "address": "/a_osc" },
+                { "type": "oscillator", "address": "/my.tone" },
+                { "type": "oscillator", "address": "/" },
+                { "type": "mul_f32_signal", "address": "/mix",
+                  "inputs": { "a": { "from": "/a/osc" }, "b": { "from": "/my.tone.audio" } } },
+                { "type": "mul_f32_signal", "address": "/mix2",
+                  "inputs": { "a": { "from": "/a_osc" }, "b": { "from": "/a/osc.audio" } } },
+                { "type": "mul_f32_signal", "address": "/mix3",
+                  "inputs": { "a": { "from": "/.audio" } } }
+            ],
+            "interface": { "outputs": { "main": { "from": "/my.tone" } } }
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn a_pre_v4_document_renames_each_refused_address_and_rewrites_its_references() {
+        let doc = NormalizedDoc::from_json(&bad_addresses_at(3), &reg(), None).expect("migrates");
+        let addresses: Vec<&str> = doc.nodes.iter().map(|n| n.address.as_str()).collect();
+        assert_eq!(
+            addresses,
+            ["/a_osc_2", "/a_osc", "/my_tone", "/node", "/mix", "/mix2", "/mix3"]
+        );
+        let from = |node: &str, input: &str| match &doc
+            .nodes
+            .iter()
+            .find(|n| n.address == node)
+            .unwrap()
+            .inputs[input]
+        {
+            InputValue::Wire { from } => from.clone(),
+            other => panic!("{node}.{input} is not a wire: {other:?}"),
+        };
+        assert_eq!(from("/mix", "a"), "/a_osc_2");
+        assert_eq!(from("/mix", "b"), "/my_tone.audio");
+        assert_eq!(from("/mix2", "a"), "/a_osc");
+        assert_eq!(from("/mix2", "b"), "/a_osc_2.audio");
+        assert_eq!(from("/mix3", "a"), "/node.audio");
+        let main = doc.interface.as_ref().unwrap().outputs["main"]
+            .feed()
+            .unwrap();
+        assert_eq!(main.from, "/my_tone");
+
+        let renames: Vec<(&str, &str)> = doc
+            .migration
+            .warnings
+            .iter()
+            .filter_map(|w| match w {
+                LoadWarning::RenamedAddress { from, to } => Some((from.as_str(), to.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            renames,
+            [
+                ("/a/osc", "/a_osc_2"),
+                ("/my.tone", "/my_tone"),
+                ("/", "/node")
+            ]
+        );
+        let message = doc.migration.warnings[0].to_string();
+        assert!(
+            message.contains("OSC"),
+            "the warning says the control address moved: {message}"
+        );
+        assert_eq!(doc.format_version, FORMAT_VERSION);
+        doc.build(&reg()).expect("the migrated document loads");
+    }
+
+    #[test]
+    fn a_current_document_with_a_refused_address_is_not_migrated() {
+        let doc = NormalizedDoc::from_json(&bad_addresses_at(FORMAT_VERSION), &reg(), None)
+            .expect("parses");
+        assert!(matches!(
+            doc.build(&reg()),
+            Err(LoadError::InvalidAddress { address, .. }) if address == "/a/osc"
         ));
     }
 }

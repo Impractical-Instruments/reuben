@@ -575,7 +575,7 @@ fn new_instrument_creates_a_valid_document_and_refuses_to_overwrite() {
     // The minimal required document and nothing else
     assert_eq!(
         readback(&resolver),
-        json!({ "format_version": 3, "instrument": "fresh", "nodes": [] }),
+        json!({ "format_version": FORMAT_VERSION, "instrument": "fresh", "nodes": [] }),
         "new_instrument writes exactly the minimal valid document"
     );
 

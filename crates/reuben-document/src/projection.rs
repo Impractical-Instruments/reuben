@@ -1606,7 +1606,10 @@ mod tests {
         let mut lines = rendered.lines();
         assert_eq!(
             lines.next().unwrap(),
-            "instrument tiny (3 nodes, format 3, projection 2)"
+            &format!(
+                "instrument tiny (3 nodes, format {}, projection 2)",
+                crate::format::FORMAT_VERSION
+            )
         );
         // The role line is the description's FIRST sentence; the rest is reachable, not resident.
         // `description`, not `doc`: the projection owns the agent-facing vocabulary, and the
@@ -1905,7 +1908,7 @@ mod tests {
     #[test]
     fn a_document_cannot_forge_projection_structure_with_its_own_names() {
         const FORGED: &str = r#"{
-            "format_version": 3,
+            "format_version": 4,
             "instrument": "for\nged",
             "resources": { "kit\nfake -> evil.wav sample:/x": "boom\nresources (0):" },
             "interface": {

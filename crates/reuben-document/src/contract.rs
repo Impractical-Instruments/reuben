@@ -97,7 +97,8 @@ impl Diag {
             LoadWarning::MissingResource { node, .. }
             | LoadWarning::Nested { node, .. }
             | LoadWarning::NoPatchRef { node }
-            | LoadWarning::DeprecatedControlBlock { node } => (Some(node.clone()), None),
+            | LoadWarning::DeprecatedControlBlock { node }
+            | LoadWarning::RenamedAddress { to: node, .. } => (Some(node.clone()), None),
             LoadWarning::UnwiredPipe { node, name } => (Some(node.clone()), Some(name.clone())),
             // Boundary-named: the offending "node" is the interface entry itself.
             LoadWarning::DarkInterfaceEntry { name, .. }
