@@ -35,6 +35,9 @@ carries prebuilt archives, each with a `.sha256` file beside it:
 Check a download with `sha256sum -c <archive>.sha256` (`shasum -a 256 -c` on macOS). Run the
 CLI from a terminal as `./reuben play` (`reuben.exe play` on Windows).
 
+Every archive carries `THIRD-PARTY-NOTICES.txt` beside `LICENSE`: the licence of each Rust crate
+built into that binary, for that platform.
+
 The editor archive holds the binary, the instrument library (`instruments/`), the control
 surfaces for it (`surfaces/`), and the licences of the fonts built into it (`font-licences/`).
 Extract it anywhere and start `reuben-editor` from the extracted folder: its start screen offers

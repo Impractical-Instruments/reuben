@@ -1,0 +1,30 @@
+# `cargo deny check licenses`: every crate in the tree, on every target, must be licensed under an
+# expression this list satisfies. An `OR` is satisfied by any one allowed alternative, so a crate
+# that offers GPL or LGPL beside MIT/Apache (self_cell, r-efi) is taken under the permissive one
+# and those licences stay off the list. The release archives' third-party notices are generated
+# from the same tree by cargo-about, whose `about.toml` accepts the same set.
+[graph]
+all-features = true
+
+[licenses]
+version = 2
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-3-Clause",
+    "ISC",
+    # Permissive, attribution-only; the Windows clipboard crates arboard pulls in take no other.
+    "BSL-1.0",
+    # Public-domain dedication (notify).
+    "CC0-1.0",
+    # Permissive, attribution-only (foldhash, slotmap, zlib-rs).
+    "Zlib",
+    # The Unicode data licence, which unicode-ident's tables carry alongside MIT/Apache.
+    "Unicode-3.0",
+]
+
+# Font licences, allowed only for the crate that embeds the fonts: they are copyleft for the font
+# itself and require their text to travel with every copy, which the editor archive does.
+[[licenses.exceptions]]
+crate = "epaint_default_fonts"
+allow = ["OFL-1.1", "Ubuntu-font-1.0"]

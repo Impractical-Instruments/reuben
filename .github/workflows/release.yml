@@ -9,6 +9,7 @@ name: Release
 #   - `reuben-editor`, the desktop editor, on Linux + Windows + macOS (Apple
 #     Silicon, unsigned), with its font licences, the instrument library and the
 #     control surfaces.
+# Every archive carries a THIRD-PARTY-NOTICES.txt for the crates linked into its binary.
 #
 # `workflow_dispatch` is the dry run: run it on a branch and every leg builds and
 # packages, and the archives are uploaded as workflow artifacts only. A dispatch
@@ -95,13 +96,36 @@ jobs:
       - name: Build reuben-editor
         run: cargo build --release --locked -p reuben-editor
 
+      - name: Install cargo-about
+        uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+        with:
+          tool: cargo-about@0.9.3
+
+      # One notices file per binary and target: the editor links the egui/winit/glow tree the CLI
+      # does not, and each target links its own audio and windowing crates. Generated from the
+      # package that owns the binary; `--fail` stops the release on a crate whose licence cannot be
+      # identified or is not accepted in `about.toml`.
+      - name: Third-party notices
+        shell: bash
+        env:
+          CLI: ${{ matrix.cli }}
+        run: |
+          notices() {
+            mkdir -p "notices/$1"
+            cargo about generate --locked --fail --target "${{ matrix.target }}" \
+              -c .github/about/about.toml -m "crates/$2/Cargo.toml" \
+              -o "notices/$1/THIRD-PARTY-NOTICES.txt" .github/about/notices.hbs
+          }
+          if [ "$CLI" = true ]; then notices reuben reuben-native; fi
+          notices reuben-editor reuben-editor
+
       - name: Package reuben
         if: matrix.cli
         shell: bash
         run: >-
           .github/scripts/package-release.sh
           "reuben-$VERSION-${{ matrix.target }}" "${{ matrix.ext }}"
-          "target/release/reuben$EXE" LICENSE README.md
+          "target/release/reuben$EXE" LICENSE notices/reuben/THIRD-PARTY-NOTICES.txt README.md
 
       # Every font the editor embeds ships with its licence, as the OFL and the Ubuntu Font
       # Licence require: the two in the editor's assets, and the ones egui's `default_fonts`
@@ -126,8 +150,8 @@ jobs:
         run: >-
           .github/scripts/package-release.sh
           "reuben-editor-$VERSION-${{ matrix.target }}" "${{ matrix.ext }}"
-          "target/release/reuben-editor$EXE" LICENSE README.md
-          font-licences instruments surfaces
+          "target/release/reuben-editor$EXE" LICENSE notices/reuben-editor/THIRD-PARTY-NOTICES.txt
+          README.md font-licences instruments surfaces
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

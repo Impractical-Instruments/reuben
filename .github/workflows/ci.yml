@@ -45,6 +45,7 @@ jobs:
       eval: ${{ steps.filter.outputs.eval }}
       dashboard: ${{ steps.filter.outputs.dashboard }}
       editor: ${{ steps.filter.outputs.editor }}
+      licenses: ${{ steps.filter.outputs.licenses }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -131,6 +132,13 @@ jobs:
             editor:
               - *workspace
               - 'crates/reuben-editor/**'
+            # The dependency tree's licences: any manifest or the lockfile can add a crate, and
+            # deny.toml is the allow-list itself.
+            licenses:
+              - '**/Cargo.toml'
+              - 'Cargo.lock'
+              - 'deny.toml'
+              - '.github/workflows/ci.yml'
             # The dashboard renders both trends and is the half a human actually reads. Its own
             # filter rather than riding `eval`'s: that job builds `reuben-mcp` twice and swaps the
             # measured surface to a baseline commit, and a one-line edit to a charting script has no
@@ -265,6 +273,30 @@ jobs:
 
       - name: Test
         run: cargo test -p reuben-editor
+
+  # Every crate in the tree, the editor's included and on every target, must carry a licence
+  # `deny.toml` allows. The release archives ship third-party notices generated from the same
+  # tree, so a crate whose licence is not on the list fails here rather than at a release.
+  licenses:
+    name: dependency licences (cargo-deny)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.licenses == 'true' && (github.event_name == 'push' || github.event.pull_request.draft == false)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # cargo-deny reads the graph through `cargo metadata`, which resolves the pinned toolchain.
+      - name: Setup pinned Rust toolchain
+        uses: ./.github/actions/setup-rust
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+        with:
+          tool: cargo-deny@0.20.2
+
+      # `--workspace` takes in reuben-editor, which is outside `default-members`.
+      - name: Check licences
+        run: cargo deny --workspace --locked check licenses
 
   windows:
     name: build + test (windows)
@@ -708,8 +740,8 @@ jobs:
     name: ci-passed
     runs-on: ubuntu-latest
     needs:
-      [changes, lockstep, check, editor, windows, bench, eval-gate, dashboard, hook-dispatch,
-       sample-guard, doc-claims]
+      [changes, lockstep, check, editor, licenses, windows, bench, eval-gate, dashboard,
+       hook-dispatch, sample-guard, doc-claims]
     if: always()
     steps:
       - name: Fail if any required job failed or was cancelled (skipped is OK)

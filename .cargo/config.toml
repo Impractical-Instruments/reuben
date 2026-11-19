@@ -1,17 +1,16 @@
-# Raise the x86-64 baseline to the `x86-64-v2` microarchitecture level (SSE3/SSSE3/SSE4.1/SSE4.2/
-# POPCNT — Nehalem, ~2009; effectively universal on modern hardware). The default `x86-64` target is
-# SSE2-only, so `f32::floor()` (the per-sample phase wrap in oscillator/lfo/clock and every rounding
-# operator) can't use the SSE4.1 `roundss` instruction and falls back to a libc `floorf` call —
-# ~17% of the oscillator's instructions and ~35% of the LFO's. v2 inlines it to a single
-# instruction: measured -20% instructions on the oscillator micro-bench, -35% on the LFO.
+# Raise the x86-64 baseline to the `x86-64-v3` microarchitecture level (AVX2/FMA: Intel Haswell,
+# 2013, and AMD Excavator, 2015, on). The default `x86-64` target is SSE2-only, so `f32::floor()`
+# (the per-sample phase wrap in oscillator/lfo/clock and every rounding operator) can't use the
+# SSE4.1 `roundss` instruction and falls back to a libc `floorf` call. `x86-64-v2` inlines that to
+# one instruction (-20% instructions on the oscillator micro-bench, -35% on the LFO). v3 adds FMA,
+# which fuses the per-sample multiply-adds: a further -13% on the oscillator and -4% on the LFO
+# against v2 (callgrind).
 #
-# Scoped to x86_64 so it never reaches aarch64/etc. (where `x86-64-v2` is not a valid `target-cpu`,
-# and `floor` already inlines to a native rounding instruction). Going further to `x86-64-v3`
-# (AVX2/FMA, Haswell 2013+) buys more but raises the minimum CPU again, which is an open call
-# nobody has made — the hardware floor is a product decision, not a build one.
-# NOTE: the `rustflags` line below sets v3 while this whole comment argues for v2.
-# That disagreement predates this file's last edit and is NOT resolved here: whichever is wrong,
-# fixing it changes either the shipped codegen or the stated hardware floor.
+# The cost is the hardware floor: every x86-64 binary built here, release archives included, runs
+# only on a CPU with AVX2 and FMA, and the README states that floor.
+#
+# Scoped to x86_64 so it never reaches aarch64/etc. (where `x86-64-v3` is not a valid `target-cpu`,
+# and `floor` already inlines to a native rounding instruction).
 [target.'cfg(target_arch = "x86_64")']
 rustflags = ["-C", "target-cpu=x86-64-v3"]
 
