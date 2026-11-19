@@ -274,6 +274,27 @@ pub struct NativeHost {
     diagnostics: Arc<Diagnostics>,
     control: Sender<ControlBatch>,
     render_config: Arc<dyn RenderConfigPublisher>,
+    hold: Option<SwapHold>,
+}
+
+/// What decides whether a client's by-path swap is held for the host's user rather than
+/// installed: [`EngineHost::hold_swap`], as a value an
+/// [`EngineConfig`](crate::engine::EngineConfig) can carry. Called with the path as the client spelled it, which the engine reads against the
+/// working directory; `true` holds it. Runs under the Coordinator lock, so it must not wait on
+/// the user.
+#[derive(Clone)]
+pub struct SwapHold(Arc<dyn Fn(&str) -> bool + Send + Sync>);
+
+impl SwapHold {
+    pub fn new(hold: impl Fn(&str) -> bool + Send + Sync + 'static) -> Self {
+        Self(Arc::new(hold))
+    }
+}
+
+impl std::fmt::Debug for SwapHold {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SwapHold")
+    }
 }
 
 impl NativeHost {
@@ -291,7 +312,14 @@ impl NativeHost {
             render_config: Arc::new(HeadlessRenderConfig {
                 opened_input_channels: 0,
             }),
+            hold: None,
         }
+    }
+
+    /// Hold the client swaps `hold` says to. Without it none is held, as `reuben play` wants.
+    pub fn with_swap_hold(mut self, hold: Option<SwapHold>) -> Self {
+        self.hold = hold;
+        self
     }
 
     /// Wire the production render-config seam (`play`'s native map publisher). Without this a swap
@@ -347,6 +375,10 @@ impl EngineHost for NativeHost {
 
     fn publish_render_config(&self, logical: usize, input_channels: usize) -> Vec<Diag> {
         self.render_config.publish(logical, input_channels)
+    }
+
+    fn hold_swap(&self, path: &str) -> bool {
+        self.hold.as_ref().is_some_and(|hold| (hold.0)(path))
     }
 
     /// Polls the retire slot with a 1ms back-off (the window is OS-free; the clock is ours),

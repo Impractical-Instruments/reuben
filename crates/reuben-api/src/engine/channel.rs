@@ -21,8 +21,8 @@ use std::time::Duration;
 
 use super::prose::ENGINE_UNREACHABLE_GUIDANCE;
 use super::wire::{
-    Conflict, ControlMessage, DiagnosticsReport, DocSource, DocumentSnapshot, Request, Response,
-    SwapReport,
+    Conflict, ControlMessage, DiagnosticsReport, DocSource, DocumentSnapshot, HeldSwap, Request,
+    Response, SwapReport,
 };
 
 /// How long to wait for the one response line before giving up on a *wedged* server (connected but
@@ -75,7 +75,7 @@ impl fmt::Display for ChannelError {
 
 impl std::error::Error for ChannelError {}
 
-/// The outcome of a `swap` that reached the engine — both arms are answers, not failures
+/// The outcome of a `swap` that reached the engine — every arm is an answer, not a failure
 /// (transport failures are [`ChannelError`]).
 #[derive(Debug, Clone, PartialEq)]
 pub enum SwapOutcome {
@@ -83,6 +83,9 @@ pub enum SwapOutcome {
     Installed(SwapReport),
     /// The `expect` guard missed: nothing installed; the [`Conflict`] names what keeps playing.
     Conflict(Conflict),
+    /// The host held the swap to ask its user first: nothing installed; the [`HeldSwap`] names
+    /// what keeps playing.
+    Held(HeldSwap),
 }
 
 /// The one thing a structure channel must be able to do: hand a request line to the engine and
@@ -156,8 +159,9 @@ impl Channel {
         match self.exchange(&Request::Swap { source, expect })? {
             Response::SwapReport(report) => Ok(SwapOutcome::Installed(report)),
             Response::Conflict(conflict) => Ok(SwapOutcome::Conflict(conflict)),
+            Response::Held(held) => Ok(SwapOutcome::Held(held)),
             Response::Error { message } => Err(ChannelError::Channel(message)),
-            other => Err(unexpected("swap", "swap_report/conflict", &other)),
+            other => Err(unexpected("swap", "swap_report/conflict/held", &other)),
         }
     }
 

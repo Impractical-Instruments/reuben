@@ -37,7 +37,7 @@ use super::channel::Transport;
 
 use super::wire::{
     over_long_batch_refusal, Conflict, ControlMessage, DiagnosticsReport, DocSource,
-    DocumentSnapshot, Request, Response, SwapReport, EMPTY_BATCH_REFUSAL, MAX_SEND_BATCH,
+    DocumentSnapshot, HeldSwap, Request, Response, SwapReport, EMPTY_BATCH_REFUSAL, MAX_SEND_BATCH,
 };
 
 /// What a host must provide for the window to serve the engine verbs — the device, the clock and
@@ -61,6 +61,18 @@ pub trait EngineHost: Send + Sync {
     /// space. A host whose `path` and whose store are relative to different places overrides it.
     fn document_origin(&self, path: &str) -> String {
         path.to_string()
+    }
+
+    /// Whether to hold, rather than install, a by-path swap of `path` that a client sent through
+    /// [`dispatch`], so the host's user can be asked first. Called under the Coordinator lock once
+    /// the `expect` guard passed and the document loaded and planned, so only a swap that would
+    /// install is ever held; `true` answers [`Response::Held`] and installs nothing. Whatever
+    /// asking the user means is the host's, and must not wait on them.
+    ///
+    /// Never consulted for a swap made through [`InProcess`], which is the host's own, nor for one
+    /// by value, which names no source to ask about. Defaults to never holding.
+    fn hold_swap(&self, _path: &str) -> bool {
+        false
     }
 
     /// Hand a control batch to the engine's ingress **as one unit**, so a gesture cannot straddle
@@ -219,12 +231,27 @@ impl From<Poisoned> for Response {
 /// An unreadable line is a channel-level [`Response::Error`] (distinct from a domain answer that
 /// reports failure), so a malformed request still gets exactly one framed reply and the
 /// one-response-per-request invariant holds.
+///
+/// This is a client's entry, so a by-path swap is offered to [`EngineHost::hold_swap`] first.
+/// [`InProcess`], the host's own transport, never is.
 pub fn dispatch(state: &StructureState, line: &str) -> Response {
+    serve(state, line, Caller::Client)
+}
+
+/// Who sent a request: a client of the host's server, whose swap the host may hold, or the host
+/// itself through [`InProcess`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Caller {
+    Client,
+    Host,
+}
+
+fn serve(state: &StructureState, line: &str, caller: Caller) -> Response {
     match Request::from_ndjson(line) {
         Ok(Request::Ping) => Response::Pong,
         Ok(Request::GetDocument) => get_document(state).unwrap_or_else(Response::from),
         Ok(Request::GetDiagnostics) => Response::Diagnostics(state.host.diagnostics()),
-        Ok(Request::Swap { source, expect }) => handle_swap(state, source, expect),
+        Ok(Request::Swap { source, expect }) => handle_swap(state, source, expect, caller),
         Ok(Request::Send { messages }) => handle_send(state, messages),
         Err(e) => Response::Error {
             message: format!("unreadable request: {e}"),
@@ -248,12 +275,13 @@ fn get_document(state: &StructureState) -> Result<Response, Poisoned> {
 }
 
 /// The structure channel with no socket under it: a [`Transport`] that hands each request line to
-/// [`dispatch`] on the caller's thread, so a host embedding the engine drives the same verbs over
-/// the same [`StructureState`] its loopback server serves.
+/// the same dispatch a socket client reaches, on the caller's thread, so a host embedding the
+/// engine drives the same verbs over the same [`StructureState`] its loopback server serves.
 ///
 /// The request still crosses the NDJSON envelope. That is the point, not an overhead to optimize
 /// away: the framing and the response classification are then the ones a socket client gets, so an
-/// in-process caller and the MCP sidecar cannot see different answers to the same request.
+/// in-process caller and the MCP sidecar cannot see different answers to the same request — with
+/// the one exception the host asks for: its own swaps are never held ([`EngineHost::hold_swap`]).
 ///
 /// `round_trip` fails in exactly the two cases a socket client would see a dead peer: the host has
 /// [closed](StructureState::close) the state (the engine is torn down), or the request panicked —
@@ -290,9 +318,11 @@ impl Transport for InProcess {
         }
         // Unwind-safe in the sense that matters: the only state a panic can leave half-written
         // is behind the Coordinator lock, which the panic poisons and `dispatch` then refuses.
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dispatch(&self.state, line)))
-            .map(|response| response.to_ndjson())
-            .map_err(|_| std::io::Error::other("the engine panicked answering the request"))
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            serve(&self.state, line, Caller::Host)
+        }))
+        .map(|response| response.to_ndjson())
+        .map_err(|_| std::io::Error::other("the engine panicked answering the request"))
     }
 
     fn endpoint(&self) -> &str {
@@ -350,12 +380,19 @@ fn handle_send(state: &StructureState, messages: Vec<ControlMessage>) -> Respons
 ///    Coordinator's swap, which owns no guard at all, by design.
 /// 3. **Swap**: the Coordinator validates + builds a whole new Engine off-thread, fills the install
 ///    mailbox, and returns the real report. A load/plan error aborts with `ok: false` and the prior
-///    hash — the old engine keeps playing (retain-prior).
+///    hash — the old engine keeps playing (retain-prior). A client's by-path swap that validated
+///    is offered to [`EngineHost::hold_swap`] between the build and the install; a held one is
+///    dropped and answers [`Response::Held`].
 /// 4. **Publish** the render config for the new engine's geometry and fold any warning into the
 ///    report — BEFORE the reclaim, so the map is in flight before the callback installs the new
 ///    engine and the two mailboxes stay in lockstep.
 /// 5. **Reclaim** the retired Engine off-thread, clearing the mailbox for the next swap.
-fn handle_swap(state: &StructureState, source: DocSource, expect: Option<String>) -> Response {
+fn handle_swap(
+    state: &StructureState,
+    source: DocSource,
+    expect: Option<String>,
+    caller: Caller,
+) -> Response {
     // Name the source before resolving consumes it — recorded only if the install below succeeds, so
     // a rejected swap leaves `get_document` still naming what is actually playing. An install by
     // value has no source to name.
@@ -388,11 +425,39 @@ fn handle_swap(state: &StructureState, source: DocSource, expect: Option<String>
     }
 
     // Unguarded by construction: arbitration was settled above.
-    let mut report = SwapReport::from_core(match &origin {
-        Some(origin) => coordinator.swap_document_from(&json, origin),
+    let core_report = match &origin {
+        Some(origin) => {
+            // The one-call swap's own first step, kept so a build here peaks at live + new.
+            drop(coordinator.try_reclaim());
+            match coordinator.prepare_document_from(&json, origin) {
+                // A document that does not load is rejected with its errors, never held: the
+                // user is only asked about something that would install.
+                Err(rejected) => rejected,
+                Ok(prepared) => {
+                    let holds = caller == Caller::Client
+                        && installed_from
+                            .as_deref()
+                            .is_some_and(|path| state.host.hold_swap(path));
+                    if holds {
+                        drop(prepared);
+                        let playing = match state.installed_source() {
+                            Ok(source) => source.clone(),
+                            Err(poisoned) => return poisoned.into(),
+                        };
+                        return Response::Held(HeldSwap {
+                            requested: installed_from.unwrap_or_default(),
+                            playing,
+                            content_hash: coordinator.installed_hash(),
+                        });
+                    }
+                    coordinator.commit_swap(prepared)
+                }
+            }
+        }
         // By value there is nowhere the document came from: the session's anchor stands.
         None => coordinator.swap_document(&json),
-    });
+    };
+    let mut report = SwapReport::from_core(core_report);
     if report.report.ok {
         // The installed document advanced, so the source that named it does too — under the
         // Coordinator lock, so the two never disagree about which install a reader is looking at.
@@ -482,11 +547,24 @@ mod tests {
     /// critical section — when `panic_on_publish` is set.
     struct Host {
         panic_on_publish: bool,
+        /// Holds every client swap it is offered, and counts the offers.
+        hold: bool,
+        offered: std::sync::atomic::AtomicUsize,
     }
+
+    /// The one path [`Host`] reads [`DOC`] from.
+    const PATH: &str = "t.json";
 
     impl EngineHost for Host {
         fn read_document(&self, path: &str) -> Result<String, String> {
+            if path == PATH {
+                return Ok(DOC.to_string());
+            }
             Err(format!("no file {path}"))
+        }
+        fn hold_swap(&self, _path: &str) -> bool {
+            self.offered.fetch_add(1, Ordering::SeqCst);
+            self.hold
         }
         fn deliver_control(&self, _: Vec<ControlMessage>) -> Result<(), IngressClosed> {
             Ok(())
@@ -504,10 +582,109 @@ mod tests {
     }
 
     fn state(panic_on_publish: bool) -> StructureState {
+        state_with(Host {
+            panic_on_publish,
+            hold: false,
+            offered: Default::default(),
+        })
+        .0
+    }
+
+    fn state_with(host: Host) -> (StructureState, Arc<Host>) {
         let (coordinator, _side, _) =
             crate::engine::install_initial(DOC, NoStore, reuben_core::AudioConfig::new(48e3, 128))
                 .expect("install");
-        StructureState::new(coordinator, Arc::new(Host { panic_on_publish }))
+        let host = Arc::new(host);
+        let state = StructureState::new(coordinator, Arc::clone(&host) as Arc<dyn EngineHost>)
+            .with_installed_source(Some("playing.json".to_string()));
+        (state, host)
+    }
+
+    fn holding() -> (StructureState, Arc<Host>) {
+        state_with(Host {
+            panic_on_publish: false,
+            hold: true,
+            offered: Default::default(),
+        })
+    }
+
+    fn swap_by_path(expect: Option<String>) -> String {
+        Request::Swap {
+            source: DocSource::Path(PATH.to_string()),
+            expect,
+        }
+        .to_ndjson()
+    }
+
+    #[test]
+    fn a_client_swap_the_host_holds_installs_nothing_and_names_what_plays() {
+        let (state, _host) = holding();
+        let before = state.try_installed();
+        match dispatch(&state, &swap_by_path(None)) {
+            Response::Held(held) => {
+                assert_eq!(held.requested, PATH);
+                assert_eq!(held.playing.as_deref(), Some("playing.json"));
+                let Installed::Known { content_hash, .. } = &before else {
+                    panic!("{before:?}");
+                };
+                assert_eq!(&held.content_hash, content_hash);
+            }
+            other => panic!("expected a held swap, got {other:?}"),
+        }
+        assert_eq!(state.try_installed(), before);
+    }
+
+    #[test]
+    fn the_hosts_own_swap_is_never_offered_for_holding() {
+        let (state, host) = holding();
+        let channel = Channel::new(InProcess::new(state.clone()));
+        match channel.swap(DocSource::Path(PATH.to_string()), None) {
+            Ok(super::super::SwapOutcome::Installed(report)) => {
+                assert!(report.report.ok, "{:?}", report.report.errors)
+            }
+            other => panic!("expected an install, got {other:?}"),
+        }
+        assert_eq!(host.offered.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_stale_expect_conflicts_before_the_host_is_asked_to_hold() {
+        let (state, host) = holding();
+        match dispatch(&state, &swap_by_path(Some("0badc0de".to_string()))) {
+            Response::Conflict(conflict) => assert_eq!(conflict.expected, "0badc0de"),
+            other => panic!("expected a conflict, got {other:?}"),
+        }
+        assert_eq!(host.offered.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn an_unreadable_source_is_rejected_before_the_host_is_asked_to_hold() {
+        let (state, host) = holding();
+        let line = Request::Swap {
+            source: DocSource::Path("missing.json".to_string()),
+            expect: None,
+        }
+        .to_ndjson();
+        match dispatch(&state, &line) {
+            Response::SwapReport(report) => assert!(!report.report.ok),
+            other => panic!("expected a rejected report, got {other:?}"),
+        }
+        assert_eq!(host.offered.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_swap_by_value_names_no_source_to_hold() {
+        let (state, host) = holding();
+        let line = Request::Swap {
+            source: DocSource::Document(serde_json::from_str(DOC).expect("doc json")),
+            expect: None,
+        }
+        .to_ndjson();
+        match dispatch(&state, &line) {
+            Response::SwapReport(report) => assert!(report.report.ok),
+            other => panic!("expected an install, got {other:?}"),
+        }
+        assert_eq!(host.offered.load(Ordering::SeqCst), 0);
     }
 
     fn swap_by_value(channel: &Channel) -> Result<super::super::SwapOutcome, ChannelError> {

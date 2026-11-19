@@ -206,6 +206,27 @@ pub struct Conflict {
     pub actual: String,
 }
 
+/// The swap was held, not installed: the engine is embedded in reuben-editor, whose user has a
+/// different file open, and they have been asked whether to open this one instead. Nothing changed and
+/// `playing` keeps playing. Not a failure: retrying asks them again. Check
+/// `get_current_instrument` later: its `source` becomes `requested` if they accept.
+///
+// Everything above ships to models as the `$defs.HeldSwap` description in the `swap` tool's
+// advertised outputSchema. Notes for humans go below this line.
+//
+// One type, three doors, as for `Conflict`: `Response::Held`, `SwapOutcome::Held`, and the `swap`
+// tool's `held` field.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct HeldSwap {
+    /// The source this swap asked to install, which the editor's user has been asked to open.
+    pub requested: String,
+    /// The source still playing, when the engine knows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playing: Option<String>,
+    /// The content hash still playing.
+    pub content_hash: String,
+}
+
 /// The document the engine is currently playing, paired with its content hash — the token to pass
 /// as a later swap's `expect` guard — and the `source` it was installed from.
 ///
@@ -331,6 +352,9 @@ pub enum Response {
     /// hashes ride the wire flat next to the `reply` tag under the user-facing field names (the
     /// tool schema is `conflict: {expected, actual}` — the same struct, not a re-wrap).
     Conflict(Conflict),
+    /// A `Swap` the host held rather than installed, so its user can be asked first: nothing
+    /// installed, and the [`HeldSwap`] names what keeps playing. Flat next to the `reply` tag.
+    Held(HeldSwap),
     /// `Send`'s ack: the engine **received** the whole batch and queued it for the next rendered
     /// block.
     ///
@@ -398,6 +422,14 @@ mod tests {
 
     use super::*;
     use crate::authoring::{Diag, Report};
+
+    fn held_swap() -> HeldSwap {
+        HeldSwap {
+            requested: "instruments/groovebox.json".to_string(),
+            playing: Some("instruments/acid-techno.json".to_string()),
+            content_hash: "00c0ffee00c0ffee".to_string(),
+        }
+    }
 
     /// A populated SwapReport exercising every field, so the round-trip proves the envelope
     /// carries the contract type intact (shapes must not drift).
@@ -628,6 +660,7 @@ mod tests {
             })),
             "conflict"
         );
+        assert_eq!(tag(&Response::Held(held_swap())), "held");
         assert_eq!(
             tag(&Response::Error {
                 message: String::new(),
@@ -672,6 +705,7 @@ mod tests {
                 expected: "0badc0de0badc0de".to_string(),
                 actual: "00c0ffee00c0ffee".to_string(),
             }),
+            Response::Held(held_swap()),
             Response::Error {
                 message: "unreadable request".to_string(),
             },

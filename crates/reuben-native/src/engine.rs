@@ -36,7 +36,9 @@ use crate::diagnostics::{self, Diagnostics, PeriodicLogger, Snapshot};
 use crate::osc::{self, ControlBatch, DEFAULT_OSC_PORT};
 use crate::profile::DeviceProfile;
 use crate::rigs::DEFAULT_JSON;
-use crate::structure::{HeadlessRenderConfig, NativeHost, RenderConfigPublisher, StructureServer};
+use crate::structure::{
+    HeadlessRenderConfig, NativeHost, RenderConfigPublisher, StructureServer, SwapHold,
+};
 use crate::test_support::FakeCallback;
 
 /// The core render block size `reuben play` runs at.
@@ -81,6 +83,9 @@ pub struct EngineConfig {
     /// Log every OSC message received and sent to stdout. Off by default: the stdout lock on the
     /// I/O paths adds jitter.
     pub log_osc: bool,
+    /// Which swaps arriving over the structure socket are held for the host's user rather than
+    /// installed. `None` holds none, which is `reuben play`.
+    pub swap_hold: Option<SwapHold>,
 }
 
 impl EngineConfig {
@@ -96,6 +101,7 @@ impl EngineConfig {
             osc_out: None,
             structure: Some(DEFAULT_STRUCTURE_ADDR.to_string()),
             log_osc: false,
+            swap_hold: None,
         }
     }
 }
@@ -329,6 +335,7 @@ pub(crate) fn start_with(
         osc_out,
         structure,
         log_osc,
+        swap_hold,
     } = config;
 
     let structure = match structure {
@@ -416,7 +423,9 @@ pub(crate) fn start_with(
 
     // The structure channel owns the Coordinator — the single writer of graph structure — and
     // publishes each swap's device output map through `render_config`.
-    let host = NativeHost::new(Arc::clone(&diagnostics), osc_tx).with_render_config(render_config);
+    let host = NativeHost::new(Arc::clone(&diagnostics), osc_tx)
+        .with_render_config(render_config)
+        .with_swap_hold(swap_hold);
     let state =
         StructureState::new(coordinator, Arc::new(host)).with_installed_source(initial_source);
     let (structure, structure_error) = match structure {

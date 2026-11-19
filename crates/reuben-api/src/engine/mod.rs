@@ -61,7 +61,8 @@ pub use reuben_document::FromDocumentError;
 pub use verbs::*;
 pub use wire::{
     Conflict, ControlArg, ControlMessage, DiagnosticsReport, DiffSummary, DocSource,
-    DocumentSnapshot, Request, Response, SwapReport, DEFAULT_STRUCTURE_ADDR, MAX_SEND_BATCH,
+    DocumentSnapshot, HeldSwap, Request, Response, SwapReport, DEFAULT_STRUCTURE_ADDR,
+    MAX_SEND_BATCH,
 };
 
 /// Build the [`Coordinator`] + [`RenderSide`](crate::render::RenderSide) pair for `doc_json`, at
