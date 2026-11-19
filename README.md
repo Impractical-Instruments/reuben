@@ -2,7 +2,7 @@
 
 Deterministic CI performance trend: callgrind **instruction counts (Ir)** for rendering **1 s of audio** (375 × 128-frame blocks @ 48 kHz), recorded on every direct push to `dev`. Instruction counts don't jitter — every visible move is a real code change (or a toolchain bump).
 
-**168 commits** · 2026-07-12 → 2026-11-18 · 13364 data points · last: `564b73f` (2026-11-18T21:16:59-05:00)
+**169 commits** · 2026-07-12 → 2026-11-18 · 13460 data points · last: `a65d95a` (2026-11-18T21:22:31-05:00)
 
 *Companion trend: the **main** series lives on the [`bench-history`](https://github.com/Impractical-Instruments/reuben/tree/bench-history) branch.*
 
@@ -195,23 +195,23 @@ The deterministic tier of the eval harness: each task's **reference solution** (
 
 | Task | Metric | Latest | vs prev | vs first | since |
 |---|---|---:|---:|---:|---|
-| `from_scratch` | grounding tokens | 19,167 | ±0.0% | **+297.8%** | 2026-07-22 |
-| `from_scratch` | fixed grounding | 18,863 | ±0.0% | **+295.7%** | 2026-07-22 |
+| `from_scratch` | grounding tokens | 19,448 | +1.5% | **+303.7%** | 2026-07-22 |
+| `from_scratch` | fixed grounding | 19,144 | +1.5% | **+301.6%** | 2026-07-22 |
 | `from_scratch` | document chars | 0 | — | **-100.0%** | 2026-07-22 |
-| `intent_fan_out` | grounding tokens | 19,117 | ±0.0% | +0.5% | 2026-07-28 |
-| `intent_fan_out` | fixed grounding | 18,863 | ±0.0% | +0.5% | 2026-07-28 |
+| `intent_fan_out` | grounding tokens | 19,398 | +1.5% | +1.9% | 2026-07-28 |
+| `intent_fan_out` | fixed grounding | 19,144 | +1.5% | +2.0% | 2026-07-28 |
 | `intent_fan_out` | document chars | 0 | — | — | 2026-07-28 |
-| `intent_word` | grounding tokens | 18,979 | ±0.0% | +0.5% | 2026-07-28 |
-| `intent_word` | fixed grounding | 18,863 | ±0.0% | +0.5% | 2026-07-28 |
+| `intent_word` | grounding tokens | 19,260 | +1.5% | +1.9% | 2026-07-28 |
+| `intent_word` | fixed grounding | 19,144 | +1.5% | +2.0% | 2026-07-28 |
 | `intent_word` | document chars | 0 | — | — | 2026-07-28 |
 | `nudge` | grounding tokens | 19,324 | ±0.0% | **+207.6%** | 2026-07-22 |
 | `nudge` | fixed grounding | 17,808 | ±0.0% | **+273.6%** | 2026-07-22 |
 | `nudge` | document chars | 2,098 | ±0.0% | ±0.0% | 2026-07-22 |
-| `repair` | grounding tokens | 19,078 | ±0.0% | **+295.6%** | 2026-07-22 |
-| `repair` | fixed grounding | 18,863 | ±0.0% | **+295.7%** | 2026-07-22 |
+| `repair` | grounding tokens | 19,359 | +1.5% | **+301.5%** | 2026-07-22 |
+| `repair` | fixed grounding | 19,144 | +1.5% | **+301.6%** | 2026-07-22 |
 | `repair` | document chars | 0 | — | **-100.0%** | 2026-07-22 |
-| `tweak` | grounding tokens | 18,923 | ±0.0% | **+295.9%** | 2026-07-22 |
-| `tweak` | fixed grounding | 18,863 | ±0.0% | **+295.7%** | 2026-07-22 |
+| `tweak` | grounding tokens | 19,204 | +1.5% | **+301.8%** | 2026-07-22 |
+| `tweak` | fixed grounding | 19,144 | +1.5% | **+301.6%** | 2026-07-22 |
 | `tweak` | document chars | 0 | — | **-100.0%** | 2026-07-22 |
 
 - **Fixed grounding** is what every turn of every task pays before the model does anything: the server `instructions` plus every tool schema. It creeps when a tool description or the authoring guide grows, and nothing else watches it.
