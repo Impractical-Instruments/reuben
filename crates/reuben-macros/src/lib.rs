@@ -38,21 +38,21 @@ pub fn operator_contract(input: proc_macro::TokenStream) -> proc_macro::TokenStr
 }
 
 /// Generate a family of stateless pointwise number operators from one scalar fn. See
-/// the [`number_op`] module docs for the grammar and what each `numbers × carriers` variant emits.
+/// the `number_op` module docs for the grammar and what each `numbers × carriers` variant emits.
 #[proc_macro]
 pub fn number_operator_contract(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     number_op::expand(input.into()).into()
 }
 
 /// Generate an `unpack_<type>` operator that destructures a product vocab type into its held
-/// fields. See the [`unpack`] module docs for the grammar and what it emits.
+/// fields. See the `unpack` module docs for the grammar and what it emits.
 #[proc_macro]
 pub fn unpack_op(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     unpack::expand(input.into()).into()
 }
 
 /// Integrate a shared *vocab* type with the central `Arg` enum: `From`/`TryFrom`
-/// for every type, plus the Enum-over-OSC table for unit enums. See [`argvalue`].
+/// for every type, plus the Enum-over-OSC table for unit enums. See `argvalue`.
 #[proc_macro_derive(ArgValue)]
 pub fn derive_arg_value(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     argvalue::expand(input.into()).into()

@@ -5,7 +5,7 @@
 //! sample.
 //!
 //! **Non-panicking.** [`Ord::clamp`] (and [`f32::clamp`]) panics when `min > max`; since `lo`/`hi`
-//! are live inputs that could momentarily cross, [`clamp_fn`] instead composes `max(lo)` then
+//! are live inputs that could momentarily cross, `clamp_fn` instead composes `max(lo)` then
 //! `min(hi)` by hand — an inverted range collapses to `hi` rather than panicking on the hot path.
 //!
 //! - input 0: `x` (`Float`) — the value to bound. Unwired default `0`.

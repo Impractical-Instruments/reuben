@@ -6,7 +6,7 @@
 //! Reads and writes go through typed handles: `operator_contract!` emits one [`In`]/[`Out`]
 //! const per port whose [`form`] marker fixes what [`Io::read`]/[`Io::write`] return and carries
 //! the declared default, so a wrong-form read does not compile. The one type-erased held read
-//! left is [`Io::latch_arg`], the interface pipe's forwarding seam.
+//! left is `Io::latch_arg`, the interface pipe's forwarding seam.
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;

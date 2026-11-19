@@ -15,7 +15,7 @@ use crate::vocab::pitch::{Note, Pitch};
 /// deliberately not generalized further now.
 ///
 /// On the hot path the engine keeps buffers in its per-edge arena and hands operators
-/// borrowed [`BlockView`](crate::signal::BlockView) /
+/// borrowed [`BlockView`] /
 /// [`BlockMut`](crate::signal::BlockMut) (zero-copy across an edge, disjoint within a
 /// node). This owned form is the conceptual / boundary representation that completes the [`Arg`]
 /// enum.
@@ -173,7 +173,7 @@ impl From<i32> for Arg {
 /// Decode a borrowed [`Arg`] into an operator's requested payload type — the read side of the
 /// typed handle read (`io.read`). One trait spans every payload an
 /// operator reads: the OSC primitives (`f32`/`i32`/`&str`), the dense [`Buffer`](Arg::F32Buffer) as a
-/// borrowed [`BlockView`](crate::signal::BlockView), and the shared *vocab* concrete types (whose
+/// borrowed [`BlockView`], and the shared *vocab* concrete types (whose
 /// impl `#[derive(ArgValue)]` generates, delegating to their `TryFrom<&Arg>`).
 ///
 /// The `'a` lifetime lets a payload **borrow** from the Arg (a `&'a str`, an audio buffer) so a

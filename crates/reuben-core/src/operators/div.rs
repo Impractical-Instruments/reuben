@@ -5,7 +5,7 @@
 //! to its default at the Signal input).
 //!
 //! Division by zero would yield `±inf`/`NaN` (or panic, for integers) and poison the audio graph, so
-//! [`div_fn`] carries an **op-local guard**: a zero divisor produces `0` (a finite, silent result)
+//! `div_fn` carries an **op-local guard**: a zero divisor produces `0` (a finite, silent result)
 //! rather than infinity.
 //!
 //! - input 0: `a` (`Float`) — the dividend. Unwired default `0`.

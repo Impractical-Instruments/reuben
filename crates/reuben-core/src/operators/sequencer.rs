@@ -1,6 +1,6 @@
 //! Sequencer — a clock-driven step sequencer that emits note Messages.
 //!
-//! Walks a fixed pattern, one step per beat, driven by the [`Clock`]'s beat `gate`: each rising
+//! Walks a fixed pattern, one step per beat, driven by the [`Clock`](crate::operators::clock::Clock)'s beat `gate`: each rising
 //! edge of the clock input advances to the next step (wrapping at `length`) and **emits a degree
 //! [`Note`]** for that step; the note is released when the beat gate falls. It is a note *source*
 //! on the internal message graph — wire its `degrees` output to a

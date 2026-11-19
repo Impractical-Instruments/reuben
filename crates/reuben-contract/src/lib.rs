@@ -5,7 +5,7 @@
 //! turn that one declaration into code, so the spec types, the naming rules, and [`validate`] live
 //! here, in a crate both depend on.
 //!
-//! A port carries an **[`Arg`](reuben_core::message::Arg) type**, named by
+//! A port carries an **`Arg` type**, named by
 //! [`PortSpec::ty`]: `f32_buffer` (a dense per-sample signal), `f32` (a materialized scalar control
 //! with a `{ .. }` meta block), `i32` (a bounded integer control / constant), `enum` (a held vocab
 //! enum, naming its shared `vocab` type), `note`, `harmony`, or `arg` (the type-agnostic
@@ -70,7 +70,7 @@ pub enum Curve {
 /// default, range, and display metadata. Required on a `f32` port (a bare per-sample wire is
 /// `f32_buffer`, not `f32`). The **one** definition: the macro AST, the model layer,
 /// and the runtime descriptor all use this type — the owning
-/// [`Port`](reuben_core::descriptor::Port) carries the name, so a control's name lives in
+/// `Port` carries the name, so a control's name lives in
 /// exactly one place.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct F32Meta {
@@ -106,7 +106,7 @@ impl I32Meta {
     }
 }
 
-/// A port's [`Arg`](reuben_core::message::Arg) type — **payload-carrying**: the type and the
+/// A port's `Arg` type — **payload-carrying**: the type and the
 /// meta it takes are one datum, so "meta iff type" is
 /// unrepresentable rather than validated. The one authoring-side taxonomy: the proc-macro's
 /// grammar parses into it, the scaffold's JSON deserializes into it (via the flat wire shape —
@@ -165,7 +165,7 @@ const PORT_TY_WORDS: [&str; 8] = [
 /// A port in the contract — its name plus its payload-carrying [`PortTy`].
 ///
 /// Deserializes from the **flat wire shape** the scaffold JSON has always used —
-/// `{"name":"cutoff","ty":"f32","f32":{..}}` — via [`PortSpecFlat`]: a shape-invalid port (an
+/// `{"name":"cutoff","ty":"f32","f32":{..}}` — via `PortSpecFlat`: a shape-invalid port (an
 /// unknown `ty`, a missing or stray meta block, a stray key) fails at parse time with the
 /// reason in the error text, before [`validate`] ever runs.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -249,9 +249,9 @@ impl TryFrom<PortSpecFlat> for PortSpec {
 }
 
 /// The contract for an Operator — one declaration of its ports, instantiate-time
-/// [`Constant`s](reuben_core::descriptor::Descriptor::constants), and resources. The scaffold
+/// `Constant`s, and resources. The scaffold
 /// hand-authors / deserializes it; the proc-macro parses it from `operator_contract!` syntax.
-/// Mirrors a [`reuben_core::descriptor::Descriptor`].
+/// Mirrors a `reuben_core::descriptor::Descriptor`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct OperatorSpec {
     pub type_name: String,
@@ -261,7 +261,7 @@ pub struct OperatorSpec {
     pub outputs: Vec<PortSpec>,
     /// Instantiate-time **`Constant`** ports — plan-time config (e.g. a voicer's
     /// `voices`), each an immutable [`PortSpec`]. Empty for the common operator. Mirrors
-    /// [`reuben_core::descriptor::Descriptor::constants`].
+    /// `reuben_core::descriptor::Descriptor::constants`.
     #[serde(default)]
     pub constants: Vec<PortSpec>,
     #[serde(default)]

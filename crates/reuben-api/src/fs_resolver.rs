@@ -220,7 +220,7 @@ impl Resources for FsResolver {
     /// warning names the path the author most likely meant.
     ///
     /// A [document-scoped](FsResolver::for_document) resolver answers for its own document here
-    /// too, and must: identity has to agree with where [`locate`](FsResolver::locate) actually
+    /// too, and must: identity has to agree with where `locate` actually
     /// reads and writes, or a document that references itself would be keyed under a path it does
     /// not live at and slip the cycle guard.
     fn canonical(&self, source: &str, referrer: Option<&str>) -> String {

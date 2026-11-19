@@ -9,9 +9,9 @@
 //! - input 0: `pitch` ([`Pitch`](crate::vocab::pitch::Pitch), held) — the symbolic pitch to resolve;
 //!   a [`Degree`](crate::vocab::pitch::Pitch::Degree) resolves through the live scale + tuning (so it
 //!   re-spells on `/key`/`/mode`), an [`Absolute`](crate::vocab::pitch::Pitch::Absolute) through 12-TET.
-//!   Default [`Pitch::DEFAULT`] (tonic `Degree(0)`).
+//!   Default [`Pitch::DEFAULT`](crate::vocab::pitch::Pitch::DEFAULT) (tonic `Degree(0)`).
 //! - input 1: `harmony` ([`Harmony`](crate::vocab::harmony::Harmony), held) — the tonal frame to
-//!   resolve against. Default [`Harmony::DEFAULT`] (C major, 12-TET).
+//!   resolve against. Default [`Harmony::DEFAULT`](crate::vocab::harmony::Harmony::DEFAULT) (C major, 12-TET).
 //! - output 0: `freq` (`f32`, held **Value**) — the resolved frequency in Hz. Piecewise-constant: it
 //!   changes only when a new pitch arrives or `Harmony` re-spells, so it is emitted as a held Value
 //!   (a sparse change), not a per-sample Signal. An oscillator's `freq` Signal input accepts it

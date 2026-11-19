@@ -1,6 +1,6 @@
 //! reuben-document — authoring instrument documents, and turning them into an engine Plan.
 //!
-//! The instrument format and its loader ([`format`]), the edit verbs ([`edit`]), the agent's view of
+//! The instrument format and its loader ([`format`](mod@format)), the edit verbs ([`edit`]), the agent's view of
 //! a document ([`projection`], [`introspect`], [`describe`]), the report shapes those produce
 //! ([`contract`]), a document as data for a program to draw ([`structure`]), the serde-shaped
 //! intent vocabulary ([`vocabulary`]), the resource seam every one of them resolves through

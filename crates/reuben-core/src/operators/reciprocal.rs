@@ -2,7 +2,7 @@
 //!
 //! Turn a ratio into its inverse, a frequency into a period, a rate into a time.
 //!
-//! Taking the reciprocal of zero would yield `±inf` (or panic, for integers), so [`recip_fn`] carries
+//! Taking the reciprocal of zero would yield `±inf` (or panic, for integers), so `recip_fn` carries
 //! an **op-local guard**: a zero input produces `0` (a finite result) rather than infinity.
 //!
 //! **`f32`-only by judgment, not by bounds.** `recip_fn` compiles perfectly well at `i32` — and is
