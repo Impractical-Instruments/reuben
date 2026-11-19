@@ -140,24 +140,28 @@ launcher script for a show. It reaches that engine on its structure channel, whi
 opens on `127.0.0.1:9124`:
 
 ```sh
-cargo reuben-play /abs/path/to/show.json      # elsewhere, already running
+cargo reuben-play instruments/groovebox.json  # elsewhere, already running
 cargo run -p reuben-editor -- --attach 127.0.0.1:9124
 ```
 
 The editor opens the file the engine plays, so its controls play the engine live, and a save is
-swapped in as usual. The audio device stays the one `reuben play` chose, and the engine flags
-(`--io-map`, `--osc-out`) do not apply. Start `reuben play` on an absolute path: it reports the
-path as it was given, and a relative one means nothing from another directory.
+swapped in as usual. If the file changed since the engine read it, the editor swaps it in when it
+attaches. The audio device and the engine flags (`--io-map`, `--osc-out`) stay the ones
+`reuben play` was started with.
 
-If the engine stops answering, the editor says so in its top bar and keeps trying. Closing the
-editor, or losing the link, never stops the engine.
+The editor checks the engine once a second. If another client has it play a different file, or it
+is restarted on one, the editor opens that file. The editor never swaps its own file over a
+different one. A file swapped in by a relative path is not opened, since
+there is no knowing which file it is from the editor's directory. If the engine stops answering, the editor says so in its top bar and keeps trying.
+Closing the editor, or losing the link, never stops the engine.
 
 Control values from the editor and from any other OSC sender reach the same inputs, and the
 last one written wins. The editor does not hold a swap from another client to ask first, as it
 does for an engine it started: whoever writes last wins.
 
 The structure channel listens on loopback only. To attach to an engine on another machine,
-tunnel the port over SSH and attach to your end:
+tunnel the port over SSH and attach to your end. Every control move then waits on a round trip
+through the tunnel, so expect some lag:
 
 ```sh
 ssh -N -L 9124:127.0.0.1:9124 show-machine

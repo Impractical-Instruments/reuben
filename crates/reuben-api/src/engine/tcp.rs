@@ -37,13 +37,30 @@ impl TcpTransport {
 
 impl Transport for TcpTransport {
     fn round_trip(&self, line: &str, read_timeout: Duration) -> io::Result<String> {
-        // Resolve to a concrete SocketAddr — connect_timeout needs one (and is what bounds the
-        // connect; a plain `connect` could block far longer than our budget).
-        let addr = self.addr.to_socket_addrs()?.next().ok_or_else(|| {
-            io::Error::other(format!("no socket address resolved for {}", self.addr))
-        })?;
-
-        let stream = TcpStream::connect_timeout(&addr, self.connect_timeout)?;
+        // `connect_timeout` takes one resolved address, and is what bounds the connect: a plain
+        // `connect` could block far longer than the budget. Each address a name resolves to is
+        // tried in turn, as `localhost` may resolve to `::1` before the `127.0.0.1` a server binds.
+        let mut last = None;
+        let mut connected = None;
+        for addr in self.addr.to_socket_addrs()? {
+            match TcpStream::connect_timeout(&addr, self.connect_timeout) {
+                Ok(stream) => {
+                    connected = Some(stream);
+                    break;
+                }
+                Err(e) => last = Some(e),
+            }
+        }
+        let stream = match (connected, last) {
+            (Some(stream), _) => stream,
+            (None, Some(e)) => return Err(e),
+            (None, None) => {
+                return Err(io::Error::other(format!(
+                    "no socket address resolved for {}",
+                    self.addr
+                )))
+            }
+        };
         stream.set_read_timeout(Some(read_timeout))?;
         stream.set_write_timeout(Some(read_timeout))?;
         let _ = stream.set_nodelay(true);

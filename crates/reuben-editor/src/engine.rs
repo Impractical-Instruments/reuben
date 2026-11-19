@@ -57,6 +57,14 @@ impl fmt::Display for Line {
     }
 }
 
+/// What an attached engine plays: the file it was installed from, and the content hash of what it
+/// installed from it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Playing {
+    pub source: String,
+    pub content_hash: String,
+}
+
 /// The embedded engine, when one is running, and what starting it reported; or the link to an
 /// attached one.
 ///
@@ -107,51 +115,58 @@ impl Engine {
         self.attached.as_ref()
     }
 
-    /// Take in what the attached engine's link found since the last call. Returns the file the
-    /// engine plays each time it answers again — on the first probe too — and names one; the
-    /// report names it, or says why there is none. Never waits; does nothing when not attached.
-    pub fn follow_link(&mut self) -> Option<String> {
+    /// Take in what the attached engine's link found since the last call. Returns what the engine
+    /// plays when that changed — on the first probe too, and after it stopped answering — and is a
+    /// file the editor can open; the report names it, or says why it cannot be opened. Never waits;
+    /// does nothing when not attached.
+    pub fn follow_link(&mut self) -> Option<Playing> {
         let link = self.attached.as_ref()?;
         let addr = link.addr().to_string();
         let mut playing = None;
         for change in link.changes() {
-            match change {
+            playing = None;
+            let unopenable = match change {
                 Change::Up {
-                    playing: Ok(Some(source)),
-                } if Path::new(&source).is_relative() && !Path::new(&source).is_file() => {
-                    self.push(Line::new(
-                        Level::Warning,
-                        format!(
-                            "the engine on {addr} plays {source}, which is relative to the \
-                             directory `reuben play` started in and is not a file from here: start \
-                             it on an absolute path to open it"
-                        ),
-                    ));
-                }
+                    source: Some(source),
+                    ..
+                } if Path::new(&source).is_relative() => Some(format!(
+                    "plays {source}, which is relative to the directory it was started in, so \
+                     there is no knowing which file it is from here: name it by an absolute path"
+                )),
                 Change::Up {
-                    playing: Ok(Some(source)),
+                    source: Some(source),
+                    content_hash,
                 } => {
                     self.name_instrument(&source);
-                    playing = Some(source);
+                    playing = Some(Playing {
+                        source,
+                        content_hash,
+                    });
+                    None
                 }
-                Change::Up { playing: Ok(None) } => self.push(Line::new(
-                    Level::Warning,
-                    format!(
-                        "the engine on {addr} plays a document installed without a file, so \
-                         there is no file to open"
-                    ),
-                )),
-                Change::Up { playing: Err(e) } => self.push(Line::new(
-                    Level::Warning,
-                    format!("the engine on {addr} did not say what it plays: {e}"),
-                )),
+                Change::Up { source: None, .. } => Some(
+                    "plays a document installed without a file, so there is no file to open"
+                        .to_string(),
+                ),
                 Change::Down(e) => {
                     eprintln!("warning: lost the engine on {addr}; trying again: {e}");
-                    playing = None;
+                    continue;
                 }
-            }
+            };
+            self.note_link(&addr, unopenable);
         }
         playing
+    }
+
+    /// Say why what the attached engine on `addr` plays cannot be opened, in place of the last
+    /// thing said about it; `None` takes that back.
+    fn note_link(&mut self, addr: &str, unopenable: Option<String>) {
+        let about = format!("the engine on {addr} ");
+        self.report
+            .retain(|line| !(line.level == Level::Warning && line.text.starts_with(&about)));
+        if let Some(why) = unopenable {
+            self.push(Line::new(Level::Warning, format!("{about}{why}")));
+        }
     }
 
     /// Nothing runs because the engine could not even be configured.
@@ -486,6 +501,8 @@ impl Engine {
     ///
     /// For control traffic only on the UI thread: a send is handed to the render side without
     /// waiting, where a swap made through the same channel builds the new Engine before returning.
+    /// To an attached engine every exchange is a loopback round trip, which a stopped `reuben play`
+    /// holds for up to the channel's read budget.
     pub fn channel(&self) -> Option<Channel> {
         if let Some(link) = &self.attached {
             return (link.up() != Some(false)).then(|| link.channel());
@@ -906,7 +923,7 @@ mod tests {
     }
 
     /// Calls [`Engine::follow_link`] until it names what the attached engine plays.
-    fn await_playing(engine: &mut Engine) -> String {
+    fn await_playing(engine: &mut Engine) -> Playing {
         loop {
             if let Some(playing) = engine.follow_link() {
                 return playing;
@@ -945,7 +962,12 @@ mod tests {
             let addr = played.structure_addr().expect("the structure server bound");
 
             let mut engine = Engine::attach(addr.to_string(), || {});
-            assert_eq!(await_playing(&mut engine), instrument.display().to_string());
+            let playing = await_playing(&mut engine);
+            assert_eq!(playing.source, instrument.display().to_string());
+            assert_eq!(
+                playing.content_hash,
+                played.channel().get_document().unwrap().content_hash
+            );
             assert!(engine
                 .report()
                 .iter()
@@ -987,30 +1009,45 @@ mod tests {
     }
 
     #[test]
-    fn an_attached_engine_playing_a_relative_path_that_is_not_a_file_here_is_not_opened() {
-        // Relative to the test's directory, the crate's own; the target directory may live
-        // elsewhere, so the file is made beside the sources and removed once the engine read it.
-        let relative = PathBuf::from(format!("attach_relative_{}.json", std::process::id()));
-        std::fs::copy(library("default.json"), &relative).expect("a relative instrument");
-        within(HANG_SECS, {
-            let relative = relative.clone();
-            move || {
-                let played = start_headless(config(relative.clone())).expect("the engine starts");
-                std::fs::remove_file(&relative).expect("remove it");
-                let addr = played.structure_addr().expect("bound");
-                let mut engine = Engine::attach(addr.to_string(), || {});
-                let warned = loop {
-                    assert_eq!(engine.follow_link(), None);
-                    if let Some(line) = engine.report().iter().find(|l| l.level == Level::Warning) {
-                        break line.text.clone();
-                    }
-                    std::thread::sleep(Duration::from_millis(10));
-                };
-                assert!(warned.contains("absolute path"), "{warned}");
-                engine.shutdown();
-                reuben_native::diagnostics::log_snapshot(&played.shutdown());
-            }
+    fn a_relative_path_is_named_absolute_and_one_swapped_in_by_another_client_is_not_opened() {
+        within(HANG_SECS, || {
+            // Relative to the test's working directory, the crate's own.
+            let relative = "../../instruments/default.json";
+            let played =
+                start_headless(config(PathBuf::from(relative))).expect("the engine starts");
+            let addr = played.structure_addr().expect("bound");
+            let mut engine = Engine::attach(addr.to_string(), || {});
+            let source = PathBuf::from(await_playing(&mut engine).source);
+            assert!(source.is_absolute(), "{}", source.display());
+            assert!(source.is_file(), "{}", source.display());
+
+            // A by-path Swap names the file as the client spelled it, relative to the engine.
+            let swapped = played
+                .channel()
+                .swap(
+                    reuben_api::engine::DocSource::Path(
+                        "../../instruments/groovebox.json".to_string(),
+                    ),
+                    None,
+                )
+                .expect("the swap reached the engine");
+            assert!(matches!(
+                swapped,
+                reuben_api::engine::SwapOutcome::Installed(_)
+            ));
+            let warned = loop {
+                assert_eq!(engine.follow_link(), None);
+                let warnings: Vec<_> = (engine.report().iter())
+                    .filter(|l| l.level == Level::Warning)
+                    .collect();
+                if let [line] = warnings.as_slice() {
+                    break line.text.clone();
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            assert!(warned.contains("absolute path"), "{warned}");
+            engine.shutdown();
+            reuben_native::diagnostics::log_snapshot(&played.shutdown());
         });
-        let _ = std::fs::remove_file(&relative);
     }
 }

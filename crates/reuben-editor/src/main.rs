@@ -46,9 +46,13 @@ struct Args {
     /// Instrument JSON to open and play; omit to choose one on the start screen.
     path: Option<PathBuf>,
     /// Attach to a `reuben play` already running instead of starting an engine, at its structure
-    /// channel's address: open the instrument it plays and play it live. The engine flags do not
-    /// apply, and the audio device stays the one `reuben play` chose.
-    #[arg(long, value_name = "HOST:PORT", conflicts_with = "path")]
+    /// channel's address: open the instrument it plays and play it live. The audio device and the
+    /// engine flags stay what `reuben play` was started with.
+    #[arg(
+        long,
+        value_name = "HOST:PORT",
+        conflicts_with_all = ["path", "osc_out", "io_map"]
+    )]
     attach: Option<String>,
     #[command(flatten)]
     instrument_root: InstrumentRoot,
@@ -203,29 +207,35 @@ impl Editor {
         self.start.opened(path);
     }
 
-    /// Follow what the attached engine plays, as it answers again: open the file it names, with
-    /// no Swap, since it plays it already. A session whose files the engine has not been given —
-    /// they changed while it was not answering — offers them again instead, as the last write.
+    /// Follow what the attached engine plays, as it changes: open the file it names, with no Swap,
+    /// since it plays it already. Its files are Swapped in only where they are not what the engine
+    /// installed from them — they changed while it was not answering, or before the editor
+    /// attached — and never over another file the engine was given since.
     fn follow_attached(&mut self, ctx: &egui::Context) {
         let Some(playing) = self.engine.follow_link() else {
             return;
         };
-        let playing = PathBuf::from(playing);
-        if let Some(session) = &mut self.session {
-            if !matches!(session.status(), Status::Current | Status::Swapping) {
-                session.reinstall(&|| self.engine.channel());
-                return;
-            }
-            if session.top() == playing {
-                return;
+        let path = PathBuf::from(&playing.source);
+        match &self.session {
+            // What it installs is seen at a later probe.
+            Some(session) if session.status() == &Status::Swapping => return,
+            Some(session) if session.top() == path => {}
+            _ => {
+                let wake = {
+                    let ctx = ctx.clone();
+                    move || ctx.request_repaint()
+                };
+                let session = Session::open(&path, self.launch.root.as_deref(), wake);
+                self.show(session, &path, true);
             }
         }
-        let wake = {
-            let ctx = ctx.clone();
-            move || ctx.request_repaint()
+        let Some(session) = &mut self.session else {
+            return;
         };
-        let session = Session::open(&playing, self.launch.root.as_deref(), wake);
-        self.show(session, &playing, true);
+        let on_disk = session.tree().documents().first().and_then(|d| d.hash());
+        if on_disk != Some(playing.content_hash.as_str()) {
+            session.reinstall(&|| self.engine.channel());
+        }
     }
 
     /// Take in what the session saw change on disk, and rebuild what is drawn from the files.

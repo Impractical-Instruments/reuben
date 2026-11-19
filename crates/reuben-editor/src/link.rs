@@ -2,8 +2,9 @@
 //! running, reached over its loopback structure channel.
 //!
 //! The editor owns nothing behind the link — no device, no port, no process — so losing it stops
-//! nothing. A thread probes the engine every [`PROBE_EVERY`] and says when it stops answering and
-//! when it answers again.
+//! nothing. A thread asks the engine what it plays every [`PROBE_EVERY`], and says when that
+//! changes: when it stops answering, when it answers again, and when another client, or a restart
+//! between two probes, has it play something else.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -13,8 +14,8 @@ use std::time::Duration;
 use eframe::egui;
 use reuben_api::engine::{Channel, TcpTransport, DEFAULT_CONNECT_TIMEOUT};
 
-/// How often the link is probed: a lost engine is noticed, and one that came back is reached
-/// again, within this. A ping over loopback costs well under a millisecond.
+/// How often the link is probed: a lost engine is noticed, and a change to what it plays is seen,
+/// within this. Reading the installed document over loopback costs well under a millisecond.
 const PROBE_EVERY: Duration = Duration::from_secs(1);
 
 const UNKNOWN: u8 = 0;
@@ -24,10 +25,11 @@ const DOWN: u8 = 2;
 /// What a probe found changed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
-    /// The engine answers, on the first probe or after it stopped. `playing` is the file it has
-    /// installed: `Ok(None)` when it was installed without one, `Err` when it would not say.
+    /// The engine answers with what it plays, on the first probe, after it stopped answering, or
+    /// because what it plays changed. `source` is `None` for a document installed without a file.
     Up {
-        playing: Result<Option<String>, String>,
+        source: Option<String>,
+        content_hash: String,
     },
     /// The engine stopped answering, and why.
     Down(String),
@@ -121,25 +123,34 @@ fn probe(
     stopped: &Receiver<()>,
     wake: impl Fn(),
 ) {
-    let mut was = UNKNOWN;
+    let mut last = None;
     loop {
-        let (now, change) = match channel.ping() {
-            Ok(()) => (UP, None),
-            Err(e) => (DOWN, Some(Change::Down(e.to_string()))),
+        let change = match channel.get_document() {
+            Ok(document) => {
+                state.store(UP, Ordering::Release);
+                let seen = Change::Up {
+                    source: document.source,
+                    content_hash: document.content_hash,
+                };
+                (last.as_ref() != Some(&seen)).then_some(seen)
+            }
+            Err(e) if e.is_unreachable() => {
+                let was = state.swap(DOWN, Ordering::AcqRel);
+                (was != DOWN).then(|| Change::Down(e.to_string()))
+            }
+            // It answered without saying what it plays, as while a Swap holds it: asked again at
+            // the next probe.
+            Err(_) => {
+                state.store(UP, Ordering::Release);
+                None
+            }
         };
-        if now != was {
-            let change = change.unwrap_or_else(|| Change::Up {
-                playing: (channel.get_document())
-                    .map(|document| document.source)
-                    .map_err(|e| e.to_string()),
-            });
-            // Before the change is sent, so a reader taking it sees the state it describes.
-            state.store(now, Ordering::Release);
+        if let Some(change) = change {
+            last = Some(change.clone());
             if changed.send(change).is_err() {
                 return;
             }
             wake();
-            was = now;
         }
         match stopped.recv_timeout(PROBE_EVERY) {
             Err(RecvTimeoutError::Timeout) => {}

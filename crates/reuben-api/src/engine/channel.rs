@@ -7,8 +7,9 @@
 //! never hangs and never panics.
 //!
 //! What is *not* here is the socket. A door supplies the [`Transport`]: loopback TCP for a process
-//! dialing `reuben play` (the `tcp` feature's), whatever an in-process host has instead. The framing, the timeout policy and the
-//! response classification are the window's, so two doors cannot disagree about what a reply means.
+//! dialing `reuben play` (the `tcp` feature's), whatever an in-process host has instead. The
+//! framing, the timeout policy and the response classification are the window's, so two doors
+//! cannot disagree about what a reply means.
 
 use alloc::boxed::Box;
 use alloc::format;
