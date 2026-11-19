@@ -48,7 +48,9 @@ impl Diag {
     /// localized into structured fields so an agent can jump straight to the offending node.
     pub fn from_load(e: &LoadError) -> Self {
         let (node, port) = match e {
-            LoadError::UnknownType { address, .. } => (Some(address.clone()), None),
+            LoadError::UnknownType { address, .. } | LoadError::InvalidAddress { address, .. } => {
+                (Some(address.clone()), None)
+            }
             LoadError::DuplicateAddress(a) | LoadError::UnknownNode(a) => (Some(a.clone()), None),
             LoadError::UnknownPort { node, port } => (Some(node.clone()), Some(port.clone())),
             LoadError::UnknownInput { node, input } => (Some(node.clone()), Some(input.clone())),

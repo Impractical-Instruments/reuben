@@ -427,6 +427,80 @@ fn rename_node_reports_the_precondition_that_failed() {
     );
 }
 
+/// The addresses an OSC host cannot reach, or that read as a wire-ref or a spliced child.
+const BAD_ADDRESSES: &[&str] = &["/", "/a b", "//x", "/x/", "/out/sub", "/ünï", "/osc.audio"];
+
+/// The verb's report names the node and nothing is written.
+fn assert_refused_as_address(
+    result: &EditResult,
+    bad: &str,
+    before: &serde_json::Value,
+    after: &serde_json::Value,
+) {
+    assert!(
+        !result.report.ok,
+        "{bad:?} must be refused: {:?}",
+        result.report
+    );
+    assert!(!result.written, "{bad:?}: nothing is written");
+    assert_eq!(before, after, "{bad:?}: the document on disk is untouched");
+    assert!(
+        result
+            .report
+            .errors
+            .iter()
+            .any(|d| d.node.as_deref() == Some(bad) && d.message.contains("address")),
+        "{bad:?}: the diagnostic names the node and the rule: {:?}",
+        result.report.errors
+    );
+}
+
+#[test]
+fn rename_node_to_an_address_breaking_the_rule_is_refused() {
+    let registry = Registry::builtin();
+    for bad in BAD_ADDRESSES {
+        let resolver = resolver_with(&seed());
+        let before = readback(&resolver);
+        let result = rename_instrument_node(SRC, "/osc", bad, &registry, &resolver)
+            .unwrap_or_else(|e| panic!("{bad:?}: the call runs; the edit is refused: {e}"));
+        assert_refused_as_address(&result, bad, &before, &readback(&resolver));
+    }
+    let resolver = resolver_with(&seed());
+    let good =
+        rename_instrument_node(SRC, "/osc", "/Osc-2_a", &registry, &resolver).expect("rename");
+    assert!(good.report.ok && good.written, "{:?}", good.report);
+}
+
+#[test]
+fn add_node_at_an_address_breaking_the_rule_is_refused() {
+    let registry = Registry::builtin();
+    let add = |address: &str, resolver: &MemoryResolver| {
+        add_instrument_node(
+            SRC,
+            address,
+            "oscillator",
+            BTreeMap::new(),
+            BTreeMap::new(),
+            None,
+            None,
+            None,
+            None,
+            &registry,
+            resolver,
+        )
+    };
+    for bad in BAD_ADDRESSES {
+        let resolver = resolver_with(&seed());
+        let before = readback(&resolver);
+        let result = add(bad, &resolver)
+            .unwrap_or_else(|e| panic!("{bad:?}: the call runs; the edit is refused: {e}"));
+        assert_refused_as_address(&result, bad, &before, &readback(&resolver));
+    }
+    let resolver = resolver_with(&seed());
+    let good = add("/lfo_2", &resolver).expect("add");
+    assert!(good.report.ok && good.written, "{:?}", good.report);
+}
+
 // --- one-shot add --------------------------------------------------------------------------------
 
 #[test]

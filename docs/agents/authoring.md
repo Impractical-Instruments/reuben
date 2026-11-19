@@ -544,6 +544,13 @@ index is an **error**, never a silent snap to the default. A `Note` input takes 
 Full wildcard dispatch (`/drums/*/decay`) is designed but not built — today a Message targets at
 most one node.
 
+A node's own `address` is `/` plus **one** non-empty name: printable ASCII, with no whitespace,
+no second `/`, no `.` (it separates a node from its port in a wire-ref), and none of the OSC
+pattern characters `#*,?[]{}`. `/filter`, `/kick_2` and `/env-amp` pass; `/`, `//x`,
+`/out/sub`, `/a b`, `/osc.audio` and `/ünï` are refused at load, so `validate`, every verb and a
+hand-written file all fail with an error naming the node. `/<node>/…` belongs to the nodes a
+`subpatch` splices in under its own address.
+
 ## Invariants you must not break <!-- lanes: skills,mcp,web -->
 
 - **Determinism** — output is bit-identical regardless of executor or thread interleaving. No wall-clock, no RNG without

@@ -1918,9 +1918,10 @@ mod tests {
         }"#;
         let p = projector(FORGED);
         let index = p.index().render();
-        // The forging document still loads — quoting is the only thing standing between the
-        // agent and a phantom record.
-        assert!(!index.contains("DOES NOT LOAD"), "{index}");
+        // The address rule refuses both node addresses, but a document that does not load is
+        // still projected — so quoting, not the loader, is what stands between the agent and a
+        // phantom record.
+        assert!(index.contains("DOES NOT LOAD"), "{index}");
         // The newline in the instrument name is escaped, not emitted — it cannot split the header.
         assert!(index.contains(r#"instrument "for\nged""#), "{index}");
         assert!(index.contains(r#""in: freq=999" oscillator"#), "{index}");
@@ -1931,17 +1932,16 @@ mod tests {
         // three forgeable paths survived a review round — and a fixture with no `interface` and no
         // `resources` makes the pipe and resource arms vacuous, which is how they survived
         // another. Each view below has real, hostile content to render.
-        assert_eq!(p.zoom(&Selection::All).render().lines().count(), 2);
+        // The does-not-load caveat heads some views; it is the engine's line, not a record.
+        let records = |rendered: String| rendered.lines().filter(|l| *l != LOAD_CAVEAT).count();
+        assert_eq!(records(p.zoom(&Selection::All).render()), 2);
         // Header + the one pipe. The pipe's own name would otherwise forge a second pipe row.
-        assert_eq!(p.pipes(&Selection::All).render().lines().count(), 2);
+        assert_eq!(records(p.pipes(&Selection::All).render()), 2);
         // Header + the one entry. Its id and its source would each forge a row.
-        assert_eq!(p.resources().render().lines().count(), 2);
+        assert_eq!(records(p.resources().render()), 2);
         // A selection term is caller text, and a door forwards agent- or user-authored names.
         assert_eq!(
-            p.zoom(&Selection::names(["no\nmatch: forged"]))
-                .render()
-                .lines()
-                .count(),
+            records(p.zoom(&Selection::names(["no\nmatch: forged"])).render()),
             1
         );
     }
@@ -2084,19 +2084,19 @@ mod tests {
         assert_eq!(resolver.0.get() - before, 1);
     }
 
-    /// Nothing forbids a `.` in a node address — a v1 interface entry named `"my.tone"` migrates
-    /// to a pipe minting `/my.tone` verbatim — so the loader resolves an exact address BEFORE the
-    /// last-`.` split, and the reverse edges must too. Splitting first fabricates a consumer on
-    /// `/my` and hides the real one on `/my.tone`: `remove_node /my.tone` would be reported as
-    /// breaking nothing while it breaks `/lvl`.
+    /// The address rule refuses a `.` in a node address, but not in an interface input pipe's
+    /// name — a v1 entry named `"my.tone"` migrates to a pipe minting `/my.tone` verbatim — so the
+    /// loader resolves an exact address BEFORE the last-`.` split, and the reverse edges must too.
+    /// Splitting first fabricates a consumer on `/my`: `remove_node /my` would be reported as
+    /// breaking `/lvl` while it breaks nothing.
     #[test]
     fn a_dotted_address_is_matched_whole_before_the_last_dot_split() {
         const DOTTED: &str = r#"{
             "format_version": 3,
             "instrument": "dotted",
+            "interface": { "inputs": { "my.tone": {"type": "f32", "default": 0.5} } },
             "nodes": [
                 {"type": "oscillator", "address": "/my"},
-                {"type": "oscillator", "address": "/my.tone"},
                 {"type": "mul_f32_signal", "address": "/lvl",
                  "inputs": {"a": {"from": "/my.tone"}}}
             ]
@@ -2104,10 +2104,7 @@ mod tests {
         let p = projector(DOTTED);
         // The document loads, so this is a real wire the engine makes — not a malformed edge case.
         assert!(!p.index().render().contains("DOES NOT LOAD"));
-        let z = p.zoom(&Selection::names(["/my", "/my.tone"]));
-        let real = z.nodes.iter().find(|n| n.address == "/my.tone").unwrap();
-        assert_eq!(real.consumers.len(), 1, "{:?}", real.consumers);
-        assert_eq!(real.consumers[0].port.as_deref(), Some("audio"));
+        let z = p.zoom(&Selection::names(["/my"]));
         let bystander = z.nodes.iter().find(|n| n.address == "/my").unwrap();
         assert!(bystander.consumers.is_empty(), "{:?}", bystander.consumers);
     }
@@ -2285,40 +2282,6 @@ mod tests {
         assert!(!zoom.contains("DARK:"), "{zoom}");
         // The parent's reference is sound, so the child's face still describes.
         assert!(zoom.contains("boundary: child"), "{zoom}");
-    }
-
-    /// The addressable set is the loader's, not an approximation of it. A node addressed
-    /// slashlessly (`my.audio`) is legal and loads; the loader's `by_addr` holds it verbatim, so
-    /// `{"from": "/my.audio"}` does **not** whole-match and splits into `/my` port `audio`. A
-    /// projection that whole-matched anyway would file the edge under a key no node has, and the
-    /// consumer would vanish from the reverse-edge view altogether.
-    #[test]
-    fn a_slashless_address_does_not_whole_match_a_slashed_reference() {
-        const SLASHLESS: &str = r#"{
-            "format_version": 3,
-            "instrument": "slashless",
-            "nodes": [
-                {"type": "oscillator", "address": "/my"},
-                {"type": "oscillator", "address": "my.audio"},
-                {"type": "mul_f32_signal", "address": "/lvl",
-                 "inputs": {"a": {"from": "/my.audio"}}}
-            ]
-        }"#;
-        let p = projector(SLASHLESS);
-        // The engine accepts this document, so the edge it makes is the edge to report.
-        assert!(!p.index().render().contains("DOES NOT LOAD"));
-        let z = p.zoom(&Selection::All);
-        let by = |addr: &str| {
-            z.nodes
-                .iter()
-                .find(|n| n.address == addr)
-                .unwrap()
-                .consumers
-                .clone()
-        };
-        assert_eq!(by("/my").len(), 1, "{:?}", by("/my"));
-        assert_eq!(by("/my")[0].port.as_deref(), Some("audio"));
-        assert!(by("my.audio").is_empty(), "{:?}", by("my.audio"));
     }
 
     /// A `subpatch` declares no outputs of its own — its ports are its child's face — so sugar

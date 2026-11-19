@@ -587,6 +587,9 @@ pub enum LoadError {
     UnknownType { address: String, type_name: String },
     /// Two nodes share an address.
     DuplicateAddress(String),
+    /// A node's authored address breaks the address rule: `/` then one non-empty segment of
+    /// printable ASCII holding no whitespace, no `/`, no `.` and none of `#*,?[]{}`.
+    InvalidAddress { address: String, rule: &'static str },
     /// A wire-ref or output references a node that doesn't exist.
     UnknownNode(String),
     /// A reference names no **output** on the node it points at — a wire-ref's source, a master
@@ -677,6 +680,9 @@ impl fmt::Display for LoadError {
                 write!(f, "node {address}: unknown operator type {type_name:?}")
             }
             LoadError::DuplicateAddress(a) => write!(f, "duplicate node address {a:?}"),
+            LoadError::InvalidAddress { address, rule } => {
+                write!(f, "node address {address:?} {rule}")
+            }
             LoadError::UnknownNode(n) => write!(f, "reference to unknown node {n:?}"),
             LoadError::UnknownPort { node, port } => {
                 write!(f, "node {node:?} has no port {port:?}")
@@ -1645,6 +1651,7 @@ impl InstrumentDoc {
 
         // Pass 1: nodes, config constants, literal inputs.
         for n in &self.nodes {
+            check_node_address(&n.address)?;
             let entry = registry
                 .get(&n.type_name)
                 .ok_or_else(|| LoadError::UnknownType {
@@ -2663,6 +2670,40 @@ fn resolve_output(
     }
 }
 
+/// The address rule for a node a document authors. Spliced subpatch internals are exempt: the
+/// splice owns `/<node>/…`, which is why an authored address may hold no `/` of its own.
+fn check_node_address(address: &str) -> Result<(), LoadError> {
+    let invalid = |rule| {
+        Err(LoadError::InvalidAddress {
+            address: address.to_string(),
+            rule,
+        })
+    };
+    let Some(segment) = address.strip_prefix('/') else {
+        return invalid("must start with `/`");
+    };
+    if segment.is_empty() {
+        return invalid("needs a name after the `/`");
+    }
+    for c in segment.chars() {
+        let rule = match c {
+            '/' => {
+                "holds a second `/` — a node address is one segment, and `/<node>/…` is where a \
+                 subpatch splices its child's nodes"
+            }
+            '.' => "holds a `.`, which separates a node from its port in a wire-ref",
+            '#' | '*' | ',' | '?' | '[' | ']' | '{' | '}' => {
+                "holds an OSC pattern character (one of `#*,?[]{}`)"
+            }
+            c if !c.is_ascii() => "holds a non-ASCII character — OSC addresses are ASCII",
+            c if !c.is_ascii_graphic() => "holds whitespace or a control character",
+            _ => continue,
+        };
+        return invalid(rule);
+    }
+    Ok(())
+}
+
 /// Inline a resolved subpatch child into `parent`: move every child node in
 /// under `prefix` (its address becomes `<prefix><child address>`, compounding for deeper nests),
 /// remap the child's edges onto the new keys, and synthesize the boundary face from the child's
@@ -3385,6 +3426,99 @@ mod tests {
             load(json, &reg()),
             Err(LoadError::DuplicateAddress(_))
         ));
+    }
+
+    /// Addresses an OSC host cannot send to, or that read as a wire-ref or a spliced child.
+    const BAD_NODE_ADDRESSES: &[&str] = &[
+        "/",
+        "/a b",
+        "//x",
+        "/x/",
+        "/out/sub",
+        "/ünï",
+        "osc",
+        "",
+        "/osc.audio",
+        "/a\tb",
+        "/x*",
+        "/x?",
+        "/x#",
+        "/x,y",
+        "/x[1]",
+        "/x{a}",
+    ];
+
+    /// Addresses the rule must keep accepting: printable ASCII minus the excluded set.
+    const GOOD_NODE_ADDRESSES: &[&str] = &[
+        "/osc",
+        "/a",
+        "/kick_2",
+        "/Filter-Env",
+        "/x:y",
+        "/a+b",
+        "/@x",
+        "/~tilde!",
+    ];
+
+    #[test]
+    fn a_node_address_breaking_the_address_rule_is_refused_naming_the_node() {
+        for bad in BAD_NODE_ADDRESSES {
+            let json = serde_json::json!({
+                "instrument": "t",
+                "nodes": [{ "type": "output", "address": bad }]
+            })
+            .to_string();
+            match load(&json, &reg()) {
+                Err(e @ LoadError::InvalidAddress { .. }) => {
+                    let diag = crate::contract::Diag::from_load(&e);
+                    assert_eq!(diag.node.as_deref(), Some(*bad), "{e}");
+                    assert!(e.to_string().contains(&format!("{bad:?}")), "{e}");
+                }
+                other => panic!(
+                    "{bad:?} must be refused as an address, got {:?}",
+                    other.map(|_| ())
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn a_node_address_inside_the_address_rule_loads() {
+        for good in GOOD_NODE_ADDRESSES {
+            let json = serde_json::json!({
+                "instrument": "t",
+                "nodes": [{ "type": "output", "address": good }]
+            })
+            .to_string();
+            if let Err(e) = load(&json, &reg()) {
+                panic!("{good:?} must load: {e}");
+            }
+        }
+    }
+
+    /// The rule binds the addresses a document authors, not the `<subpatch>/<child>` addresses the
+    /// splice manufactures, and it binds a child's own authored addresses when it is loaded nested.
+    #[test]
+    fn the_address_rule_binds_authored_addresses_not_spliced_ones() {
+        let host = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
+            {"type":"subpatch","address":"/sub","patch":"v"}]}"#;
+        let loaded = load_instrument(host, &reg(), &PatchResolver(VOICE_IFACE)).expect("load");
+        assert!(loaded
+            .graph
+            .nodes
+            .values()
+            .any(|n| &*n.address == "/sub/osc"));
+
+        const BAD_CHILD: &str = r#"{"format_version":3,"instrument":"c",
+            "nodes":[{"type":"oscillator","address":"/o sc"}]}"#;
+        let outcome = match load_instrument(host, &reg(), &PatchResolver(BAD_CHILD)) {
+            Ok(l) => format!("{:?}", l.warnings),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            outcome.contains("/o sc"),
+            "a child's bad authored address is reported: {outcome}"
+        );
     }
 
     #[test]
@@ -4894,16 +5028,16 @@ mod tests {
     // `normalize::tests::from_doc_refuses_v1_forms_under_a_current_stamp`.
 
     #[test]
-    fn post_prefix_address_collision_is_fatal() {
-        // A child address that, after prefixing, collides with an existing parent
-        // address is a DuplicateAddress load error — the uniqueness check runs over the
-        // post-inline address set.
+    fn an_authored_address_cannot_claim_a_spliced_one() {
+        // A parent node authored at the address the splice will give a child node is refused by
+        // the address rule before the splice runs, so the post-inline duplicate check never sees
+        // the collision.
         let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
             {"type":"oscillator","address":"/sub/osc"},
             {"type":"subpatch","address":"/sub","patch":"v"}]}"#;
         assert!(matches!(
             load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE)),
-            Err(LoadError::DuplicateAddress(a)) if a == "/sub/osc"
+            Err(LoadError::InvalidAddress { address, .. }) if address == "/sub/osc"
         ));
     }
 
