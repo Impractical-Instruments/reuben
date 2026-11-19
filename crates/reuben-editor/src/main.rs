@@ -60,11 +60,14 @@ fn main() -> eframe::Result {
         Box::new(|cc| {
             let root = args.instrument_root.clone().resolve();
             let controls = Controls::open(args.path.as_deref(), root.as_deref());
-            let canvas = Canvas::open(args.path.as_deref(), root.as_deref());
             let session = args.path.as_deref().map(|path| {
                 let ctx = cc.egui_ctx.clone();
                 Session::open(path, root.as_deref(), move || ctx.request_repaint())
             });
+            let mut canvas = Canvas::open(None, None);
+            if let Some(session) = &session {
+                canvas.reload(session.top(), session.root(), &session.tree().top().read);
+            }
             let mut audio = AudioSettings::load(ConfigDir::user());
             let engine = start(args, &mut audio, Engine::start);
             Ok(Box::new(Editor::new(
@@ -123,7 +126,8 @@ impl Editor {
         };
         let poll = session.poll(Instant::now(), &|| self.engine.channel());
         if poll.reloaded {
-            self.canvas.reload(session.top(), session.root());
+            self.canvas
+                .reload(session.top(), session.root(), &session.tree().top().read);
         }
         // The files load and nothing plays them: the engine stopped, or never started, on a
         // tree that did not load.
@@ -157,7 +161,7 @@ impl eframe::App for Editor {
         self.controls.show(ui, &self.engine);
         // The root `Ui` paints no background of its own, leaving eframe's clear color; the panel
         // frame paints the theme's fill instead.
-        egui::Frame::central_panel(ui.style()).show(ui, |ui| {
+        let gestures = egui::Frame::central_panel(ui.style()).show(ui, |ui| {
             if self.engine.report().is_empty() {
                 ui.label("No instrument open. Run `reuben-editor <instrument.json>` to play one.");
             }
@@ -169,8 +173,17 @@ impl eframe::App for Editor {
                 };
                 ui.colored_label(color, line.to_string());
             }
-            self.canvas.show(ui);
+            self.canvas.show(ui)
         });
+        for gesture in gestures.inner {
+            let Some(session) = &mut self.session else {
+                break;
+            };
+            let result = gesture.apply(session, &|| self.engine.channel());
+            self.canvas.applied(&gesture, &result);
+            // The write is read back already; the next frame redraws from it.
+            ui.ctx().request_repaint();
+        }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {

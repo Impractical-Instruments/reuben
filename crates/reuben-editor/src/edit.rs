@@ -23,10 +23,6 @@ use crate::session::{Direction, Session, Step};
 /// disk, written or not, and a written change is already on its way to the engine. The next
 /// [`Session::poll`] reports the reload. An `Ok` whose `written` is false is a rejected edit or a
 /// conflict; its report says which, on the node and port at fault.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no gesture edits a document yet")
-)]
 pub fn write(
     session: &mut Session,
     channel: &dyn Fn() -> Option<Channel>,
@@ -39,7 +35,12 @@ pub fn write(
         });
     };
     let expect = document.hash().map(str::to_string);
-    let result = verb(session.history(source), expect.clone()).map(|answer| answer.output);
+    let store: &dyn Resources = session.history(source);
+    #[cfg(test)]
+    let counted = test_support::Counted(store);
+    #[cfg(test)]
+    let store: &dyn Resources = &counted;
+    let result = verb(store, expect.clone()).map(|answer| answer.output);
     // A written edit landed on `expect`: the guard refuses any other.
     if let (Ok(edit), Some(before)) = (&result, expect) {
         if edit.written {
@@ -166,6 +167,56 @@ pub fn restore(
     session.undo_mut().set_note(note);
     session.refresh(channel);
     restored
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::cell::Cell;
+
+    use reuben_api::authoring::{Created, ResolveError, Resources, SampleBuffer};
+
+    thread_local! {
+        static WRITES: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// How many documents [`write`](super::write) has written on this thread: one per verb call
+    /// that lands, so a gesture making two verb calls shows as two.
+    pub fn writes() -> usize {
+        WRITES.with(Cell::get)
+    }
+
+    /// The session's store, counting what is written through it.
+    pub struct Counted<'a>(pub &'a dyn Resources);
+
+    impl Resources for Counted<'_> {
+        fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+            self.0.read_samples(source)
+        }
+
+        fn read_text(&self, source: &str) -> Result<String, ResolveError> {
+            self.0.read_text(source)
+        }
+
+        fn write_text(&self, source: &str, text: &str) -> Result<(), ResolveError> {
+            let written = self.0.write_text(source, text);
+            if written.is_ok() {
+                WRITES.with(|w| w.set(w.get() + 1));
+            }
+            written
+        }
+
+        fn create_text(&self, source: &str, text: &str) -> Result<Created, ResolveError> {
+            let created = self.0.create_text(source, text);
+            if matches!(created, Ok(Created::Written)) {
+                WRITES.with(|w| w.set(w.get() + 1));
+            }
+            created
+        }
+
+        fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
+            self.0.canonical(source, referrer)
+        }
+    }
 }
 
 #[cfg(test)]

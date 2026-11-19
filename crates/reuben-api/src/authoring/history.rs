@@ -18,7 +18,7 @@ use reuben_document::{content_hash, NormalizedDoc};
 use super::args::RestoreInstrument;
 use super::result::EditResult;
 use super::verbs::{edit_summary, expect_conflict, Answer, Refusal};
-use crate::resources::{Adapter, ResolveError, Resources, SampleBuffer};
+use crate::resources::{Adapter, Created, ResolveError, Resources, SampleBuffer};
 
 /// A [`Resources`] that remembers the documents written through it, so
 /// [`restore_instrument`] can put one back.
@@ -157,6 +157,18 @@ impl<R: Resources> Resources for DocumentHistory<R> {
             self.record(&source, hash, written);
         }
         Ok(())
+    }
+
+    // Handed on rather than left to the default, which reads and then writes: the wrapped store's
+    // own create is what refuses a file that appears between the two.
+    fn create_text(&self, source: &str, text: &str) -> Result<Created, ResolveError> {
+        let created = self.inner.create_text(source, text)?;
+        if created == Created::Written {
+            if let Some((hash, written)) = self.mint(text) {
+                self.record(&self.inner.canonical(source, None), hash, written);
+            }
+        }
+        Ok(created)
     }
 
     fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
