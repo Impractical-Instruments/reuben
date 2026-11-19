@@ -63,9 +63,9 @@ impl Diag {
             | LoadError::AmbiguousWire { node, .. }
             | LoadError::UnknownResource { node, .. } => (Some(node.clone()), None),
             // A boundary-named problem: the offending "node" is the interface entry itself.
-            LoadError::InterfaceOverride { name, .. } | LoadError::InterfacePipe { name, .. } => {
-                (None, Some(name.clone()))
-            }
+            LoadError::InterfaceOverride { name, .. }
+            | LoadError::InterfacePipe { name, .. }
+            | LoadError::InvalidPipeName { name, .. } => (None, Some(name.clone())),
             // The wire is held on its input end, `to`, spelled `<address>.<input>`; a port name
             // never holds a `.`, so the last one splits them.
             LoadError::TypeMismatch { to, .. } => match to.rsplit_once('.') {
@@ -105,7 +105,8 @@ impl Diag {
             | LoadWarning::Migration { name, .. }
             | LoadWarning::UnboundInputPipe { name }
             | LoadWarning::InertChannelBinding { name }
-            | LoadWarning::DeprecatedPipePresentation { name, .. } => (None, Some(name.clone())),
+            | LoadWarning::DeprecatedPipePresentation { name, .. }
+            | LoadWarning::RenamedPipe { to: name, .. } => (None, Some(name.clone())),
             LoadWarning::ResolveFailed { .. } => (None, None),
         };
         Diag {
