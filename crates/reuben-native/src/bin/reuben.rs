@@ -59,11 +59,11 @@ enum Command {
         /// Which view of an instrument to cut (instrument paths only). The same views the
         /// `describe_instrument` tool serves, off the same verb, so both doors read a document the
         /// same way. `--json` wraps the rendered view — except `boundary`, whose structured shape
-        /// is what control-surface tooling consumes.
-        #[arg(long, value_enum, default_value_t = InstrumentView::Index)]
-        view: InstrumentView,
+        /// is what control-surface tooling consumes. Defaults to `index`.
+        #[arg(long, value_enum)]
+        view: Option<InstrumentView>,
         /// Narrow `--view nodes`/`pipes` to these node addresses or pipe names. A name matching
-        /// nothing is reported, never silently dropped.
+        /// nothing is reported, never silently dropped; any other view refuses it.
         #[arg(long, value_name = "NAME", num_args = 1..)]
         select: Vec<String>,
         /// Narrow `--view nodes`/`pipes` by declared type instead of by name — mutually exclusive
@@ -328,7 +328,7 @@ fn cmd_describe(
     op: Option<&str>,
     json: bool,
     compact: bool,
-    view: InstrumentView,
+    view: Option<InstrumentView>,
     select: Vec<String>,
     select_type: Option<String>,
     root: Option<PathBuf>,
@@ -344,11 +344,31 @@ fn cmd_describe(
                 );
                 return ExitCode::FAILURE;
             }
-            if view == InstrumentView::Boundary {
+            let view = view.unwrap_or(InstrumentView::Index);
+            // `describe_boundary` takes no terms. Terms on `boundary` are always refused, so they
+            // go to `describe_instrument`, which refuses them in the window's own order — an
+            // unreadable source before the selection.
+            let has_terms = !select.is_empty() || select_type.is_some();
+            if view == InstrumentView::Boundary && !has_terms {
                 return cmd_describe_boundary(arg, json, root);
             }
             return cmd_project(arg, view, select, select_type, json, root);
         }
+    }
+
+    // The instrument flags have no meaning for an operator; printing the operator anyway would
+    // answer a question the caller did not ask.
+    let instrument_only = [
+        ("--view", view.is_some()),
+        ("--select", !select.is_empty()),
+        ("--select-type", select_type.is_some()),
+    ];
+    if let Some((flag, _)) = instrument_only.iter().find(|(_, given)| *given) {
+        eprintln!(
+            "error: {flag} applies only to describing an instrument path, not the operator \
+             set"
+        );
+        return ExitCode::FAILURE;
     }
 
     cmd_describe_operators(op, json, compact)
