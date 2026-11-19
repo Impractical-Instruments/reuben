@@ -308,3 +308,32 @@ fn queued_messages_are_consumed_once() {
     e.fill(&mut out);
     assert_eq!(e.pending_len(), 0, "pending messages not drained");
 }
+
+#[test]
+fn control_that_cannot_land_is_dropped_without_touching_the_render() {
+    // An address no port answers, and a real port sent arguments it cannot take, are both dropped
+    // at `queue_osc` — nothing waits for the next block — and the render is bit-identical to one
+    // that was never sent them.
+    let cfg = AudioConfig::new(48_000.0, 256);
+    let mut sent = engine_with_note();
+    let mut clean = engine_with_note();
+    sent.queue_osc("/nowhere/at/all", &[Arg::F32(1.0)]);
+    sent.queue_osc("/voicer", &[Arg::F32(1.0)]);
+    sent.queue_osc("/voicer/notes", &[Arg::Str("loud".into())]);
+    sent.queue_osc("/voicer/notes", &[]);
+    assert_eq!(sent.pending_len(), clean.pending_len());
+
+    // The typed form: an unknown address and a payload the port's kind cannot hold.
+    sent.queue(reuben_core::Message::float("/nowhere/at/all", 1.0, 0));
+    sent.queue(reuben_core::Message::float("/voicer/notes", 1.0, 0));
+
+    let mut a = vec![0.0f32; 8 * cfg.block_size * sent.channels()];
+    let mut b = a.clone();
+    sent.fill(&mut a);
+    clean.fill(&mut b);
+    assert_eq!(sent.pending_len(), 0);
+    assert!(
+        a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()),
+        "dropped control changed the render"
+    );
+}

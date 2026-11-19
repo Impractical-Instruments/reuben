@@ -187,7 +187,13 @@ impl<E: Executor> Renderer<E> {
         let mut master = core::mem::take(&mut self.master);
         let mut outbound = core::mem::take(&mut self.outbound_sink);
         outbound.clear();
-        self.render_into(plan, messages, &[], &mut master, &mut outbound);
+        self.render_into(
+            plan,
+            Inbound::Addressed(messages),
+            &[],
+            &mut master,
+            &mut outbound,
+        );
         if let Some(ch0) = master.first() {
             out.copy_from_slice(&ch0[..out.len()]);
         } else {
@@ -222,7 +228,19 @@ impl<E: Executor> Renderer<E> {
         out: &mut [Vec<AudioSample>],
         outbound: &mut Vec<Message>,
     ) {
-        self.render_into(plan, messages, inputs, out, outbound);
+        self.render_into(plan, Inbound::Addressed(messages), inputs, out, outbound);
+    }
+
+    /// [`Renderer::render_block_multi`] over control already resolved against `plan`.
+    pub(crate) fn render_block_resolved(
+        &mut self,
+        plan: &mut Plan,
+        messages: &[Resolved],
+        inputs: &[Vec<AudioSample>],
+        out: &mut [Vec<AudioSample>],
+        outbound: &mut Vec<Message>,
+    ) {
+        self.render_into(plan, Inbound::Resolved(messages), inputs, out, outbound);
     }
 
     /// The shared render path: execute every node for the block and sum the master taps into
@@ -232,12 +250,12 @@ impl<E: Executor> Renderer<E> {
     fn render_into(
         &mut self,
         plan: &mut Plan,
-        messages: &[Message],
+        messages: Inbound<'_>,
         inputs: &[Vec<AudioSample>],
         master: &mut [Vec<AudioSample>],
         outbound: &mut Vec<Message>,
     ) {
-        render_plan(
+        render_inbound(
             plan,
             &mut self.arena,
             &mut self.scratch,
@@ -279,6 +297,31 @@ pub fn render_plan<E: Executor>(
     scratch: &mut RenderScratch,
     executor: &E,
     messages: &[Message],
+    frames: usize,
+    inputs: &[Vec<AudioSample>],
+    master: &mut [Vec<AudioSample>],
+    outbound: &mut Vec<Message>,
+) {
+    render_inbound(
+        plan,
+        arena,
+        scratch,
+        executor,
+        Inbound::Addressed(messages),
+        frames,
+        inputs,
+        master,
+        outbound,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_inbound<E: Executor>(
+    plan: &mut Plan,
+    arena: &mut [Vec<AudioSample>],
+    scratch: &mut RenderScratch,
+    executor: &E,
+    messages: Inbound<'_>,
     frames: usize,
     inputs: &[Vec<AudioSample>],
     master: &mut [Vec<AudioSample>],
@@ -468,6 +511,7 @@ impl<E: Executor> Renderer<E> {
             }
             buf.iter_mut().for_each(|s| *s = 0.0);
         }
+        let messages = Inbound::Addressed(messages);
         route_messages(&mut self.scratch.routes, plan, messages);
         self.scratch.emitted.clear();
         let sample_rate = plan.config.sample_rate;
@@ -582,9 +626,68 @@ impl NodeRoute {
     }
 }
 
-/// Match each message to a node by address prefix, then to an input port by name, then classify
-/// by the port's [`PortKind`]. Reuses `routes` (one entry per node); clears and refills.
-fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]) {
+/// Where one inbound control message lands in a [`Plan`]: a node's input port, or a dissolved
+/// interface pipe that delivers to its rewired consumer. An index into the Plan it was resolved
+/// against, so it means nothing to any other Plan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Target {
+    /// Index into [`Plan::input_aliases`].
+    Alias(usize),
+    /// Node index in execution order, and that node's input port index.
+    Port { node: usize, port: usize },
+}
+
+/// An inbound control message already resolved to its [`Target`] — the form the [`Engine`]
+/// queues, so delivering it neither carries nor matches an address.
+///
+/// [`Engine`]: crate::engine::Engine
+#[derive(Debug)]
+pub(crate) struct Resolved {
+    pub(crate) target: Target,
+    pub(crate) frame: usize,
+    pub(crate) arg: Arg,
+}
+
+/// One block's inbound control: addressed [`Message`]s, resolved at routing time, or control the
+/// caller already resolved against this Plan.
+#[derive(Clone, Copy)]
+enum Inbound<'a> {
+    Addressed(&'a [Message]),
+    Resolved(&'a [Resolved]),
+}
+
+impl<'a> Inbound<'a> {
+    fn len(self) -> usize {
+        match self {
+            Inbound::Addressed(m) => m.len(),
+            Inbound::Resolved(m) => m.len(),
+        }
+    }
+
+    /// Message `i`'s payload and block frame.
+    fn get(self, i: usize) -> (&'a Arg, usize) {
+        match self {
+            Inbound::Addressed(m) => (&m[i].arg, m[i].frame),
+            Inbound::Resolved(m) => (&m[i].arg, m[i].frame),
+        }
+    }
+
+    /// Message `i`'s target, payload and block frame; `None` if its address reaches nothing.
+    fn resolve(self, plan: &Plan, i: usize) -> Option<(Target, &'a Arg, usize)> {
+        match self {
+            Inbound::Addressed(m) => {
+                let msg = &m[i];
+                let (target, _) = plan.resolve(&msg.address)?;
+                Some((target, &msg.arg, msg.frame))
+            }
+            Inbound::Resolved(m) => Some((m[i].target, &m[i].arg, m[i].frame)),
+        }
+    }
+}
+
+/// Deliver each message to its [`Target`], classified by the destination port's [`PortKind`].
+/// Reuses `routes` (one entry per node); clears and refills.
+fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: Inbound<'_>) {
     // Steady-state no-op: the Renderer presizes `routes` to the node count.
     if routes.len() != plan.nodes.len() {
         routes.resize_with(plan.nodes.len(), NodeRoute::default);
@@ -595,84 +698,84 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
         r.events.clear();
     }
 
-    for (mi, msg) in messages.iter().enumerate() {
-        // A dissolved interface pipe's minted address: deliver to its rewired
-        // consumer with the pipe's own normalization — the same two hops (pipe port, then
-        // consumer port) the rendered pipe node made. Checked first; alias addresses belonged
-        // to removed nodes, so they can never shadow a live port.
-        if let Some(alias) = plan.input_alias(&msg.address) {
-            let (n, port) = (alias.node, alias.dst_port);
-            match alias.kind {
-                // A signal pipe's message feed was a raw ZOH materialize write (unclamped).
+    for mi in 0..messages.len() {
+        let Some((target, arg, frame)) = messages.resolve(plan, mi) else {
+            continue;
+        };
+        match target {
+            // A dissolved interface pipe: deliver to its rewired consumer with the pipe's own
+            // normalization — the same two hops (pipe port, then consumer port) the rendered pipe
+            // node made.
+            Target::Alias(ai) => {
+                let alias = &plan.input_aliases[ai];
+                let (n, port) = (alias.node, alias.dst_port);
+                match alias.kind {
+                    // A signal pipe's message feed was a raw ZOH materialize write (unclamped).
+                    PortKind::Signal => {
+                        if let Some(v) = arg.as_f32() {
+                            routes[n].push_materialize(frame, port, v);
+                        }
+                    }
+                    // A value pipe latched (pipe-meta clamp), then forwarded; the emission landed
+                    // by the consumer port's kind — Value re-`held_arg`s, Signal materializes.
+                    PortKind::Value => {
+                        let Some(a) = held_arg(&alias.port, arg) else {
+                            continue;
+                        };
+                        match plan.nodes[n].input_kinds[port] {
+                            PortKind::Signal => {
+                                if let Some(v) = a.as_f32() {
+                                    routes[n].push_materialize(frame, port, v);
+                                }
+                            }
+                            PortKind::Value => {
+                                let p = &plan.nodes[n].descriptor.inputs[port];
+                                if let Some(a2) = held_arg(p, &a) {
+                                    routes[n].held.push((frame, port, a2));
+                                }
+                            }
+                            // Never aliased: dissolve keeps a Value pipe feeding an Event input.
+                            PortKind::Event => {}
+                        }
+                    }
+                    // An event pipe re-emitted each routed event verbatim at its frame.
+                    PortKind::Event => {
+                        routes[n].events.push(RoutedEvent {
+                            dst_port: port,
+                            src: EventSrc::External { msg: mi },
+                        });
+                    }
+                }
+            }
+            // Routing is by port, not by operator address-filtering.
+            Target::Port { node: i, port } => match plan.nodes[i].input_kinds[port] {
                 PortKind::Signal => {
-                    if let Some(v) = msg.as_f32() {
-                        routes[n].push_materialize(msg.frame, port, v);
+                    if let Some(v) = arg.as_f32() {
+                        routes[i].push_materialize(frame, port, v);
                     }
                 }
-                // A value pipe latched (pipe-meta clamp), then forwarded; the emission landed
-                // by the consumer port's kind — Value re-`held_arg`s, Signal materializes.
                 PortKind::Value => {
-                    let Some(a) = held_arg(&alias.port, &msg.arg) else {
-                        continue;
-                    };
-                    match plan.nodes[n].input_kinds[port] {
-                        PortKind::Signal => {
-                            if let Some(v) = a.as_f32() {
-                                routes[n].push_materialize(msg.frame, port, v);
-                            }
-                        }
-                        PortKind::Value => {
-                            let p = &plan.nodes[n].descriptor.inputs[port];
-                            if let Some(a2) = held_arg(p, &a) {
-                                routes[n].held.push((msg.frame, port, a2));
-                            }
-                        }
-                        // Never aliased: dissolve keeps a Value pipe feeding an Event input.
-                        PortKind::Event => {}
+                    let p = &plan.nodes[i].descriptor.inputs[port];
+                    if let Some(a) = held_arg(p, arg) {
+                        routes[i].held.push((frame, port, a));
                     }
                 }
-                // An event pipe re-emitted each routed event verbatim at its frame.
                 PortKind::Event => {
-                    routes[n].events.push(RoutedEvent {
+                    routes[i].events.push(RoutedEvent {
                         dst_port: port,
                         src: EventSrc::External { msg: mi },
                     });
                 }
-            }
-            continue;
-        }
-        // Resolve the address to its one destination port ([`resolve_port`], shared with the
-        // boundary's [`Plan::osc_in_message`]); deliver per the port's kind (routing is
-        // by port, not by operator address-filtering).
-        let Some((i, port, p)) = resolve_port(&plan.nodes, &msg.address) else {
-            continue;
-        };
-        match plan.nodes[i].input_kinds[port] {
-            PortKind::Signal => {
-                if let Some(v) = msg.as_f32() {
-                    routes[i].push_materialize(msg.frame, port, v);
-                }
-            }
-            PortKind::Value => {
-                if let Some(a) = held_arg(p, &msg.arg) {
-                    routes[i].held.push((msg.frame, port, a));
-                }
-            }
-            PortKind::Event => {
-                routes[i].events.push(RoutedEvent {
-                    dst_port: port,
-                    src: EventSrc::External { msg: mi },
-                });
-            }
+            },
         }
     }
 }
 
 /// Resolve an inbound address to its destination — `(node index, input port index, port)` —
 /// by matching a node address prefix ([`local_address`]) and then an input port by name. The
-/// **single** "address → node + port" rule: both [`route_messages`] and the boundary's
-/// [`Plan::osc_in_message`] call it, so the two inbound paths cannot diverge — a diverged
-/// copy would silently drop messages to nested nodes.
+/// **single** "address → node + port" rule, reached only through [`Plan::resolve`], so routing
+/// an addressed [`Message`] and queueing inbound OSC cannot diverge — a diverged copy would
+/// silently drop messages to nested nodes.
 ///
 /// A node whose address prefix-matches but has **no** matching port does not decide the
 /// outcome — keep scanning. Node addresses may be ancestors of one another (`/fx` beside an
@@ -723,7 +826,7 @@ fn process_node(
     seg_starts: &mut Vec<usize>,
     route: &mut NodeRoute,
     node: &mut PlanNode,
-    messages: &[Message],
+    messages: Inbound<'_>,
     emitted: &[Emit],
     emit_scratch: &mut Vec<Emit>,
     sample_rate: f32,
@@ -858,10 +961,7 @@ fn process_node(
         seg_starts.resize(n_inputs + 1, 0);
         let in_segment = |re: &RoutedEvent| -> Option<Event<'_>> {
             let (arg, frame): (&Arg, usize) = match re.src {
-                EventSrc::External { msg } => {
-                    let m = &messages[msg];
-                    (&m.arg, m.frame)
-                }
+                EventSrc::External { msg } => messages.get(msg),
                 EventSrc::Emitted(idx) => {
                     let e = &emitted[idx];
                     (&e.arg, e.frame)
@@ -1016,9 +1116,10 @@ mod tests {
         assert_eq!(msg.frame, 0);
     }
 
-    /// Parity guard: the boundary conversion (`osc_in_message`) and the render routing
-    /// (`route_messages`) agree on the destination node. Both call [`resolve_port`]; this
-    /// pins them together behaviorally if either ever re-inlines the rule.
+    /// Parity guard: the boundary conversion (`osc_in_message`), routing an addressed Message, and
+    /// routing control resolved at queue time all agree on the destination node. All three go
+    /// through [`Plan::resolve`]; this pins them together behaviorally if any ever re-inlines the
+    /// rule.
     #[test]
     fn osc_in_message_and_route_messages_agree_on_the_destination() {
         let plan = shadowed_plan();
@@ -1030,20 +1131,39 @@ mod tests {
             ("/fx/verb/delay/mix", "/fx/verb/delay"),
         ];
         let mut routes = Vec::new();
-        for (addr, want) in cases {
-            let msg = plan
-                .osc_in_message(addr, &[Arg::F32(0.25)])
-                .unwrap_or_else(|| panic!("{addr}: the boundary dropped the message"));
-            route_messages(&mut routes, &plan, &[msg]);
-            let delivered: Vec<&str> = routes
+        let delivered = |routes: &[NodeRoute]| -> Vec<alloc::string::String> {
+            routes
                 .iter()
                 .zip(plan.nodes())
                 .filter(|(r, _)| {
                     !r.materialize_writes.is_empty() || !r.held.is_empty() || !r.events.is_empty()
                 })
-                .map(|(_, n)| &*n.address)
-                .collect();
-            assert_eq!(delivered, [want], "{addr}: the two paths disagree");
+                .map(|(_, n)| alloc::string::String::from(&*n.address))
+                .collect()
+        };
+        for (addr, want) in cases {
+            let msg = plan
+                .osc_in_message(addr, &[Arg::F32(0.25)])
+                .unwrap_or_else(|| panic!("{addr}: the boundary dropped the message"));
+            route_messages(&mut routes, &plan, Inbound::Addressed(&[msg]));
+            assert_eq!(
+                delivered(&routes),
+                [want],
+                "{addr}: addressed routing disagrees"
+            );
+
+            let (target, arg) = plan.osc_in(addr, &[Arg::F32(0.25)]).expect("resolves");
+            let resolved = [Resolved {
+                target,
+                frame: 0,
+                arg,
+            }];
+            route_messages(&mut routes, &plan, Inbound::Resolved(&resolved));
+            assert_eq!(
+                delivered(&routes),
+                [want],
+                "{addr}: resolved routing disagrees"
+            );
         }
         // An address no node claims resolves nowhere on either path.
         assert!(plan

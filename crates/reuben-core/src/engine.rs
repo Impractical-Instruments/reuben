@@ -14,19 +14,22 @@
 //! `fill_duplex` → `drain_outbound`. Protocol decode (UDP/OSC datagrams, worklet message
 //! buffers) stays in the shells; the Engine takes the already-flat primitive args.
 //!
-//! RT-safety: the `pending` queue is preallocated and cleared, never replaced, so in steady state
-//! the handoff itself is heap-neutral (a burst past its high-water mark grows it once). The audio
-//! callback is still **not** allocation-free under control traffic: each Message costs one
-//! allocation where it is built ([`Engine::queue_osc`] builds one per call) and one free when it
-//! is dropped after its block — both on the audio thread when the host queues from its callback.
-//! That cost belongs to the Message's owned address; see [`Message::address`].
+//! RT-safety: queueing resolves the address against the Engine's Plan once, so the `pending` queue
+//! holds each message's target index and payload, never its address. Queue + render of flat-arg
+//! control does no heap work: the queue is preallocated and cleared, never replaced (a burst past
+//! its high-water mark grows it once), and nothing in a queued entry owns an allocation unless its
+//! payload does. [`Engine::queue`] takes an already-built [`Message`] and drops its address there.
+//!
+//! The queue belongs to this Engine and indexes this Engine's Plan. An install replaces the whole
+//! Engine, so control still pending at that moment leaves with the retiring Engine and is never
+//! applied — to it or to its successor.
 
 use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::message::{Arg, Message};
 use crate::plan::Plan;
-use crate::render::Renderer;
+use crate::render::{Renderer, Resolved};
 
 /// Preallocated capacity of the inbound queue. Sized well past a block's worth of live control
 /// traffic (a played chord plus a few knob moves), so steady state never grows it on the audio
@@ -40,8 +43,8 @@ const PENDING_CAP: usize = 64;
 pub struct Engine {
     plan: Plan,
     renderer: Renderer,
-    /// Messages to apply at the start of the next rendered block.
-    pending: Vec<Message>,
+    /// Control to apply at the start of the next rendered block, resolved against `plan`.
+    pending: Vec<Resolved>,
     /// Outbound Messages an `osc_out` sink sent, accumulated across the block(s) one
     /// [`Engine::fill`] renders and drained by the caller after fill (native encodes + UDP-sends
     /// them). Cleared at the top of each `fill`.
@@ -116,21 +119,34 @@ impl Engine {
         self.plan.config.sample_rate
     }
 
-    /// Queue a Message to apply at the start of the next rendered block.
+    /// Queue a Message to apply at the start of the next rendered block. Its address is resolved
+    /// here and the Message's address dropped; an address that reaches no port is dropped whole,
+    /// as [`Engine::queue_osc`] drops one. The payload is not checked against the port until the
+    /// block routes it.
     pub fn queue(&mut self, msg: Message) {
-        self.pending.push(msg);
+        if let Some((target, _)) = self.plan.resolve(&msg.address) {
+            self.pending.push(Resolved {
+                target,
+                frame: msg.frame,
+                arg: msg.arg,
+            });
+        }
     }
 
     /// Queue an inbound external message in **flat primitive form**: an address plus
     /// the flat `F32`/`I32`/`Str` args, however the shell decoded them (a UDP/OSC datagram, a
-    /// worklet control buffer). Converts them into the single typed [`Message`] the destination
-    /// port carries (driven by the port's Arg type), then queues it. Dropped silently if the
-    /// address routes to no node/port or the args don't fit — an authoring error the boundary
-    /// already tolerates. The conversion needs the Plan, which the engine owns, so it lives here
-    /// rather than in the address-blind decode layers.
+    /// worklet control buffer). Resolves the address to its destination port once and converts
+    /// the args into the single typed [`Arg`] that port carries, then queues the pair. Dropped
+    /// silently if the address routes to no node/port or the args don't fit — an authoring error
+    /// the boundary already tolerates. The conversion needs the Plan, which the engine owns, so it
+    /// lives here rather than in the address-blind decode layers.
     pub fn queue_osc(&mut self, address: &str, args: &[Arg]) {
-        if let Some(msg) = self.plan.osc_in_message(address, args) {
-            self.pending.push(msg);
+        if let Some((target, arg)) = self.plan.osc_in(address, args) {
+            self.pending.push(Resolved {
+                target,
+                frame: 0,
+                arg,
+            });
         }
     }
 
@@ -233,7 +249,7 @@ impl Engine {
     /// silent device stream). Once a stream exists, staged zeros are honest device silence.
     fn render_next(&mut self) {
         let inputs: &[Vec<f32>] = if self.in_dirty { &self.in_scratch } else { &[] };
-        self.renderer.render_block_multi(
+        self.renderer.render_block_resolved(
             &mut self.plan,
             &self.pending,
             inputs,
