@@ -278,8 +278,8 @@ pub struct NativeHost {
 }
 
 /// What decides whether a client's by-path swap is held for the host's user rather than
-/// installed: [`EngineHost::hold_swap`], as a value an [`EngineConfig`](crate::engine::EngineConfig)
-/// can carry. Called with the path as the client spelled it, which the engine reads against the
+/// installed: [`EngineHost::hold_swap`], as a value an
+/// [`EngineConfig`](crate::engine::EngineConfig) can carry. Called with the path as the client spelled it, which the engine reads against the
 /// working directory; `true` holds it. Runs under the Coordinator lock, so it must not wait on
 /// the user.
 #[derive(Clone)]

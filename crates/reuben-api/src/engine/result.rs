@@ -64,9 +64,9 @@ pub struct EngineStatus {
 /// the diff summary) plus, on an `expect`-guard miss, `conflict`, or, when the editor's user was
 /// asked first, `held`.
 ///
-// One `outputSchema` spans the install, validation-failure, guard-miss and held cases; both the flattened
-// `SwapReport` and the `Conflict` are the same types the structure channel serializes, so the tool
-// shape and the wire shape cannot drift.
+// One `outputSchema` spans the install, validation-failure, guard-miss and held cases; the
+// flattened `SwapReport`, the `Conflict` and the `HeldSwap` are the same types the structure channel
+// serializes, so the tool shape and the wire shape cannot drift.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SwapResult {
     /// The install report: `ok`, `errors`, `warnings`, the installed (or still-playing) content

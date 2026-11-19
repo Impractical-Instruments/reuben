@@ -142,6 +142,8 @@ impl Editor {
     /// Open the instrument at `path` in place of whatever is open. The canvas and the inspector
     /// start over from the new session's read, and its undo history is its own.
     fn open(&mut self, path: &std::path::Path, ctx: &egui::Context) {
+        // Before the Swap starts, so a client asking for the file being opened is not held.
+        self.held.opened(path);
         let root = self.launch.root.as_deref();
         let ctx = ctx.clone();
         let session = start::open(
@@ -161,7 +163,6 @@ impl Editor {
         }
         self.session = Some(session);
         self.start.opened(path);
-        self.held.opened(path);
     }
 
     /// Take in what the session saw change on disk, and rebuild what is drawn from the files.
@@ -212,8 +213,7 @@ impl eframe::App for Editor {
                 ui.vertical(|ui| self.audio.ui(ui, &mut self.engine));
             });
         });
-        let open = self.session.as_ref().map(Session::top);
-        if let Some(path) = held_swap::show(ui, &self.held, open) {
+        if let Some(path) = held_swap::show(ui.ctx(), &self.held) {
             self.open(&path, ui.ctx());
         }
         if let Some(session) = &mut self.session {
@@ -292,6 +292,24 @@ mod tests {
         start(args, &mut audio, &launch, |_| {
             panic!("these arguments describe no engine to start")
         })
+    }
+
+    #[test]
+    fn the_engine_started_at_launch_holds_what_the_launch_says() {
+        let temp = TempConfig::new();
+        let mut audio = AudioSettings::load_with(temp.dir(), two_devices);
+        let args = Args::parse_from(["reuben-editor", "instrument.json"]);
+        let launch = Launch {
+            root: None,
+            flags: args.engine.clone(),
+            swap_hold: Some(reuben_native::structure::SwapHold::new(|_| true)),
+        };
+        let mut held = None;
+        start(args, &mut audio, &launch, |config| {
+            held = config.swap_hold;
+            Engine::idle()
+        });
+        assert!(held.is_some());
     }
 
     #[test]

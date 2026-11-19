@@ -138,9 +138,10 @@ pub fn swap_instrument(
                 .unwrap_or_else(|| format!("content_hash {}", held.content_hash));
             let summary = format!(
                 "not installed yet: the engine is embedded in reuben-editor, whose user has been \
-                 asked whether to open {}; {playing} keeps playing. Not a failure and not worth \
-                 retrying — check get_current_instrument later to see whether they accepted",
-                held.requested
+                 asked whether to open {requested}; {playing} keeps playing. Not a failure and not \
+                 worth retrying — check get_current_instrument later: its source becomes \
+                 {requested} if they accept",
+                requested = held.requested
             );
             Ok(Answer {
                 output: SwapResult::held(held),

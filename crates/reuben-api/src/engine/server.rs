@@ -64,9 +64,10 @@ pub trait EngineHost: Send + Sync {
     }
 
     /// Whether to hold, rather than install, a by-path swap of `path` that a client sent through
-    /// [`dispatch`], so the host's user can be asked first. Called under the Coordinator lock after
-    /// the document read and the `expect` guard passed; `true` answers [`Response::Held`] and
-    /// installs nothing. Whatever asking the user means is the host's, and must not wait on them.
+    /// [`dispatch`], so the host's user can be asked first. Called under the Coordinator lock once
+    /// the `expect` guard passed and the document loaded and planned, so only a swap that would
+    /// install is ever held; `true` answers [`Response::Held`] and installs nothing. Whatever
+    /// asking the user means is the host's, and must not wait on them.
     ///
     /// Never consulted for a swap made through [`InProcess`], which is the host's own, nor for one
     /// by value, which names no source to ask about. Defaults to never holding.
@@ -274,8 +275,8 @@ fn get_document(state: &StructureState) -> Result<Response, Poisoned> {
 }
 
 /// The structure channel with no socket under it: a [`Transport`] that hands each request line to
-/// the same dispatch a socket client reaches, on the caller's thread, so a host embedding the engine drives the same verbs over
-/// the same [`StructureState`] its loopback server serves.
+/// the same dispatch a socket client reaches, on the caller's thread, so a host embedding the
+/// engine drives the same verbs over the same [`StructureState`] its loopback server serves.
 ///
 /// The request still crosses the NDJSON envelope. That is the point, not an overhead to optimize
 /// away: the framing and the response classification are then the ones a socket client gets, so an
@@ -377,15 +378,15 @@ fn handle_send(state: &StructureState, messages: Vec<ControlMessage>) -> Respons
 /// 2. **Arbitrate**: a stale `expect` rejects with the real installed hash as [`Response::Conflict`]
 ///    and does **not** swap. Absent `expect` is last-write-wins. Done here rather than inside the
 ///    Coordinator's swap, which owns no guard at all, by design.
-/// 3. **Hold**: a client's by-path swap the host holds answers [`Response::Held`] and installs
-///    nothing.
-/// 4. **Swap**: the Coordinator validates + builds a whole new Engine off-thread, fills the install
+/// 3. **Swap**: the Coordinator validates + builds a whole new Engine off-thread, fills the install
 ///    mailbox, and returns the real report. A load/plan error aborts with `ok: false` and the prior
-///    hash — the old engine keeps playing (retain-prior).
-/// 5. **Publish** the render config for the new engine's geometry and fold any warning into the
+///    hash — the old engine keeps playing (retain-prior). A client's by-path swap that validated
+///    is offered to [`EngineHost::hold_swap`] between the build and the install; a held one is
+///    dropped and answers [`Response::Held`].
+/// 4. **Publish** the render config for the new engine's geometry and fold any warning into the
 ///    report — BEFORE the reclaim, so the map is in flight before the callback installs the new
 ///    engine and the two mailboxes stay in lockstep.
-/// 6. **Reclaim** the retired Engine off-thread, clearing the mailbox for the next swap.
+/// 5. **Reclaim** the retired Engine off-thread, clearing the mailbox for the next swap.
 fn handle_swap(
     state: &StructureState,
     source: DocSource,
@@ -423,28 +424,40 @@ fn handle_swap(
         }
     }
 
-    if caller == Caller::Client {
-        if let Some(path) = &installed_from {
-            if state.host.hold_swap(path) {
-                let playing = match state.installed_source() {
-                    Ok(source) => source.clone(),
-                    Err(poisoned) => return poisoned.into(),
-                };
-                return Response::Held(HeldSwap {
-                    requested: path.clone(),
-                    playing,
-                    content_hash: coordinator.installed_hash(),
-                });
+    // Unguarded by construction: arbitration was settled above.
+    let core_report = match &origin {
+        Some(origin) => {
+            // The one-call swap's own first step, kept so a build here peaks at live + new.
+            drop(coordinator.try_reclaim());
+            match coordinator.prepare_document_from(&json, origin) {
+                // A document that does not load is rejected with its errors, never held: the
+                // user is only asked about something that would install.
+                Err(rejected) => rejected,
+                Ok(prepared) => {
+                    let holds = caller == Caller::Client
+                        && installed_from
+                            .as_deref()
+                            .is_some_and(|path| state.host.hold_swap(path));
+                    if holds {
+                        drop(prepared);
+                        let playing = match state.installed_source() {
+                            Ok(source) => source.clone(),
+                            Err(poisoned) => return poisoned.into(),
+                        };
+                        return Response::Held(HeldSwap {
+                            requested: installed_from.unwrap_or_default(),
+                            playing,
+                            content_hash: coordinator.installed_hash(),
+                        });
+                    }
+                    coordinator.commit_swap(prepared)
+                }
             }
         }
-    }
-
-    // Unguarded by construction: arbitration was settled above.
-    let mut report = SwapReport::from_core(match &origin {
-        Some(origin) => coordinator.swap_document_from(&json, origin),
         // By value there is nowhere the document came from: the session's anchor stands.
         None => coordinator.swap_document(&json),
-    });
+    };
+    let mut report = SwapReport::from_core(core_report);
     if report.report.ok {
         // The installed document advanced, so the source that named it does too — under the
         // Coordinator lock, so the two never disagree about which install a reader is looking at.

@@ -206,10 +206,10 @@ pub struct Conflict {
     pub actual: String,
 }
 
-/// The swap was held, not installed: the engine is embedded in reuben-editor, whose user has
-/// another instrument open, and they have been asked whether to open this one. Nothing changed and
+/// The swap was held, not installed: the engine is embedded in reuben-editor, whose user has a
+/// different file open, and they have been asked whether to open this one instead. Nothing changed and
 /// `playing` keeps playing. Not a failure: retrying asks them again. Check
-/// `get_current_instrument` later to see whether they accepted.
+/// `get_current_instrument` later: its `source` becomes `requested` if they accept.
 ///
 // Everything above ships to models as the `$defs.HeldSwap` description in the `swap` tool's
 // advertised outputSchema. Notes for humans go below this line.

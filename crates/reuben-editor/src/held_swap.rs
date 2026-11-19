@@ -8,9 +8,14 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 use reuben_native::structure::SwapHold;
+
+/// How long the prompt's buttons ignore clicks after the source it asks about appears or
+/// changes, so a click the user aimed at what was there before does not answer it.
+const ARMING: Duration = Duration::from_millis(600);
 
 /// The open instrument and the one Swap waiting on the user, shared between the engine's
 /// structure server, which holds a Swap, and the UI thread, which asks about it.
@@ -20,11 +25,28 @@ pub struct HeldSwaps {
 }
 
 struct Inner {
-    /// The open top-level file, canonical. `None` while nothing is open, when nothing is held.
-    open: Mutex<Option<PathBuf>>,
-    /// The source the user is being asked about. A later held Swap replaces it.
-    pending: Mutex<Option<PathBuf>>,
+    /// One lock for both, so a Swap judged against one open file cannot leave a question about
+    /// the file opened meanwhile.
+    state: Mutex<State>,
     wake: Box<dyn Fn() + Send + Sync>,
+}
+
+#[derive(Default)]
+struct State {
+    /// The open top-level file, canonical. `None` while nothing is open, when nothing is held.
+    open: Option<PathBuf>,
+    /// A later held Swap replaces it.
+    pending: Option<Asked>,
+}
+
+/// A held Swap the user is being asked about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Asked {
+    /// As the client spelled it, which is how the engine names it once it is opened, so the
+    /// agent sees the source it asked for.
+    pub path: PathBuf,
+    canonical: PathBuf,
+    at: Instant,
 }
 
 impl HeldSwaps {
@@ -33,8 +55,7 @@ impl HeldSwaps {
     pub fn new(wake: impl Fn() + Send + Sync + 'static) -> Self {
         Self {
             inner: Arc::new(Inner {
-                open: Mutex::new(None),
-                pending: Mutex::new(None),
+                state: Mutex::new(State::default()),
                 wake: Box::new(wake),
             }),
         }
@@ -49,26 +70,35 @@ impl HeldSwaps {
     /// `top` is the open instrument now. A prompt for that same file has nothing left to ask.
     pub fn opened(&self, top: &Path) {
         let top = canonical(top);
-        let mut pending = lock(&self.inner.pending);
-        if pending.as_ref() == Some(&top) {
-            *pending = None;
+        let mut state = self.state();
+        if state.pending.as_ref().is_some_and(|p| p.canonical == top) {
+            state.pending = None;
         }
-        *lock(&self.inner.open) = Some(top);
+        state.open = Some(top);
     }
 
-    /// The source the user is being asked to open, if any.
-    pub fn pending(&self) -> Option<PathBuf> {
-        lock(&self.inner.pending).clone()
+    /// The Swap the user is being asked about, if any.
+    pub fn pending(&self) -> Option<Asked> {
+        self.state().pending.clone()
     }
 
-    /// The user opened the source asked about; returns it to open.
-    pub fn accept(&self) -> Option<PathBuf> {
-        lock(&self.inner.pending).take()
+    /// The user chose to open `shown`. Returns the path to open, unless another held Swap has
+    /// replaced the one they were shown.
+    pub fn accept(&self, shown: &Asked) -> Option<PathBuf> {
+        let mut state = self.state();
+        if state.pending.as_ref() != Some(shown) {
+            return None;
+        }
+        state.pending.take().map(|asked| asked.path)
     }
 
-    /// The user kept what is open: nothing changes.
-    pub fn decline(&self) {
-        *lock(&self.inner.pending) = None;
+    /// The user kept what is open rather than `shown`: nothing changes. A Swap held since they
+    /// were shown it is still asked about.
+    pub fn decline(&self, shown: &Asked) {
+        let mut state = self.state();
+        if state.pending.as_ref() == Some(shown) {
+            state.pending = None;
+        }
     }
 
     /// Runs under the engine's Coordinator lock, so it records the question and returns; the
@@ -76,15 +106,27 @@ impl HeldSwaps {
     fn hold(&self, path: &Path) -> bool {
         let asked = canonical(path);
         {
-            let open = lock(&self.inner.open);
-            match open.as_ref() {
+            let mut state = self.state();
+            match &state.open {
                 Some(open) if *open != asked => {}
                 _ => return false,
             }
+            state.pending = Some(Asked {
+                path: path.to_path_buf(),
+                canonical: asked,
+                at: Instant::now(),
+            });
         }
-        *lock(&self.inner.pending) = Some(asked);
         (self.inner.wake)();
         true
+    }
+
+    /// The cell holds plain values that a panic cannot leave half-written.
+    fn state(&self) -> MutexGuard<'_, State> {
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -97,35 +139,43 @@ fn canonical(path: &Path) -> PathBuf {
         .unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// The two cells hold plain values that a panic cannot leave half-written.
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-/// Draw the prompt as a bar across the top of `ui` while a Swap is held. It takes no focus, so a
-/// gesture under way on the canvas carries on until the user turns to it. Returns the source the
-/// user chose to open.
-pub fn show(ui: &mut egui::Ui, held: &HeldSwaps, open: Option<&Path>) -> Option<PathBuf> {
+/// Draw the prompt while a Swap is held, floating over the bottom-right corner so nothing under
+/// it moves when it appears. It takes no focus, and its buttons ignore clicks for [`ARMING`]
+/// after what it asks about changes, so a gesture under way carries on until the user turns to
+/// it. Returns the source the user chose to open.
+pub fn show(ctx: &egui::Context, held: &HeldSwaps) -> Option<PathBuf> {
     let asked = held.pending()?;
+    let armed = asked.at.elapsed() >= ARMING;
+    if !armed {
+        ctx.request_repaint_after(ARMING.saturating_sub(asked.at.elapsed()));
+    }
     let mut answer = None;
-    egui::Panel::top("held_swap").show(ui, |ui| {
-        ui.horizontal_wrapped(|ui| {
-            ui.colored_label(
-                ui.visuals().warn_fg_color,
-                format!("reuben-mcp asked to play {}.", name(&asked)),
-            )
-            .on_hover_text(asked.display().to_string());
-            if let Some(open) = open {
-                ui.label(format!("{} keeps playing until you choose.", name(open)));
-            }
-            if ui.button(format!("Open {}", name(&asked))).clicked() {
-                answer = held.accept();
-            }
-            if ui.button("Keep what is open").clicked() {
-                held.decline();
-            }
+    egui::Area::new(egui::Id::new("held_swap"))
+        .anchor(egui::Align2::RIGHT_BOTTOM, [-16.0, -16.0])
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_max_width(360.0);
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    format!("An agent asked to play {}.", name(&asked.path)),
+                )
+                .on_hover_text(asked.path.display().to_string());
+                ui.label("What is playing keeps playing until you choose.");
+                ui.horizontal(|ui| {
+                    let open = egui::Button::new(format!("Open {}", name(&asked.path)));
+                    if ui.add_enabled(armed, open).clicked() {
+                        answer = held.accept(&asked);
+                    }
+                    if ui
+                        .add_enabled(armed, egui::Button::new("Keep what is open"))
+                        .clicked()
+                    {
+                        held.decline(&asked);
+                    }
+                });
+            });
         });
-    });
     answer
 }
 
@@ -179,7 +229,7 @@ mod tests {
     impl Editor {
         fn open(test: &str, instrument: &str) -> Self {
             let temp = TempConfig::new();
-            let mut audio = AudioSettings::load_with(temp.dir(), two_devices);
+            let audio = AudioSettings::load_with(temp.dir(), two_devices);
             let scratch = Scratch::new(test);
             let lib = scratch.library();
             let wakes = Arc::new(AtomicUsize::new(0));
@@ -194,33 +244,63 @@ mod tests {
                 flags: Default::default(),
                 swap_hold: Some(held.swap_hold()),
             };
-            let mut engine = Engine::idle();
             let top = lib.join(instrument);
-            let session = start::open(&top, &launch, &mut audio, &mut engine, || {}, headless);
-            held.opened(&top);
-            let structure = engine
-                .running()
-                .and_then(RunningEngine::structure_addr)
-                .expect("the structure server bound");
-            Self {
+            let mut editor = Self {
                 lib,
                 held,
                 wakes,
                 launch,
                 audio,
-                engine,
-                session,
-                link: EngineLink::new(structure.to_string()),
+                engine: Engine::idle(),
+                session: Session::open(&top, None, || {}),
+                link: EngineLink::new(String::new()),
                 _temp: temp,
                 _scratch: scratch,
+            };
+            editor.open_file(&top, headless);
+            let structure = editor
+                .engine
+                .running()
+                .and_then(RunningEngine::structure_addr)
+                .expect("the structure server bound");
+            editor.link = EngineLink::new(structure.to_string());
+            editor
+        }
+
+        /// What the editor does to open a file, from the start screen or from the prompt, in the
+        /// order it does it, then waits for the Swap to land.
+        fn open_file(
+            &mut self,
+            path: &Path,
+            start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
+        ) {
+            self.held.opened(path);
+            self.session = start::open(
+                path,
+                &self.launch,
+                &mut self.audio,
+                &mut self.engine,
+                || {},
+                start,
+            );
+            let deadline = Instant::now() + Duration::from_secs(HANG_SECS);
+            while self.session.status() != &Status::Current {
+                assert!(Instant::now() < deadline, "{:?}", self.session.status());
+                self.session.poll(Instant::now(), &|| self.engine.channel());
+                std::thread::sleep(Duration::from_millis(5));
             }
         }
 
-        /// `reuben-mcp`'s `swap_instrument` of `relative` in the library.
-        fn mcp_swaps(&self, relative: &str) -> SwapResult {
+        fn accept(&mut self, shown: &Asked) {
+            let path = self.held.accept(shown).expect("the prompt still asks this");
+            self.open_file(&path, |_| panic!("a running engine is not started again"));
+        }
+
+        /// `reuben-mcp`'s `swap_instrument` of `path`.
+        fn mcp_swaps(&self, path: &str) -> SwapResult {
             swap_instrument(
                 &SwapInstrument {
-                    path: self.lib.join(relative).display().to_string(),
+                    path: path.to_string(),
                     expect: None,
                 },
                 self.link.structure(),
@@ -240,33 +320,6 @@ mod tests {
             .expect("installed from a file")
         }
 
-        /// What the editor does with the source the user chose to open: open it as the start
-        /// screen does.
-        fn answer(&mut self, answer: Option<PathBuf>) {
-            let Some(path) = answer else {
-                return;
-            };
-            self.session = start::open(
-                &path,
-                &self.launch,
-                &mut self.audio,
-                &mut self.engine,
-                || {},
-                |_| panic!("a running engine is not started again"),
-            );
-            self.held.opened(&path);
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(HANG_SECS);
-            while self.session.status() != &Status::Current {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "the Swap never landed"
-                );
-                self.session
-                    .poll(std::time::Instant::now(), &|| self.engine.channel());
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-        }
-
         fn spelled(&self, relative: &str) -> String {
             self.lib.join(relative).display().to_string()
         }
@@ -276,7 +329,7 @@ mod tests {
     fn a_swap_of_the_open_file_installs_with_no_prompt() {
         within(HANG_SECS, || {
             let mut editor = Editor::open("held_same", "acid-techno.json");
-            let swapped = editor.mcp_swaps("acid-techno.json");
+            let swapped = editor.mcp_swaps(&editor.spelled("acid-techno.json"));
             assert!(swapped.report.report.ok, "{:?}", swapped.report.report);
             assert_eq!(swapped.held, None);
             assert_eq!(editor.held.pending(), None);
@@ -289,7 +342,7 @@ mod tests {
     fn another_spelling_of_the_open_file_is_the_open_file() {
         within(HANG_SECS, || {
             let mut editor = Editor::open("held_spelling", "acid-techno.json");
-            let swapped = editor.mcp_swaps("voices/../acid-techno.json");
+            let swapped = editor.mcp_swaps(&editor.spelled("voices/../acid-techno.json"));
             assert_eq!(swapped.held, None);
             assert!(swapped.report.report.ok, "{:?}", swapped.report.report);
             editor.engine.shutdown();
@@ -301,34 +354,34 @@ mod tests {
         within(HANG_SECS, || {
             let mut editor = Editor::open("held_accept", "acid-techno.json");
             let acid = editor.spelled("acid-techno.json");
-            let groovebox = editor.lib.join("groovebox.json");
+            let groovebox = editor.spelled("groovebox.json");
 
-            let asked_at = std::time::Instant::now();
-            let swapped = editor.mcp_swaps("groovebox.json");
+            let asked_at = Instant::now();
+            let swapped = editor.mcp_swaps(&groovebox);
             assert!(
-                asked_at.elapsed() < std::time::Duration::from_secs(1),
+                asked_at.elapsed() < Duration::from_secs(1),
                 "a held swap answers at once, not after the user does"
             );
             let held = swapped.held.expect("the swap is held");
             assert!(!swapped.report.report.ok);
+            assert_eq!(held.requested, groovebox);
             assert_eq!(held.playing.as_deref(), Some(acid.as_str()));
             assert_eq!(editor.playing(), acid);
             assert_eq!(editor.wakes.load(Ordering::SeqCst), 1);
             let asked = editor.held.pending().expect("the user is asked");
-            assert_eq!(asked, canonical(&groovebox));
+            assert_eq!(asked.path, Path::new(&groovebox));
 
-            let answer = editor.held.accept();
-            editor.answer(answer);
+            editor.accept(&asked);
             assert_eq!(editor.held.pending(), None);
-            assert_eq!(canonical(editor.session.top()), canonical(&groovebox));
+            assert_eq!(editor.session.top(), Path::new(&groovebox));
             assert_eq!(
-                canonical(Path::new(&editor.playing())),
-                canonical(&groovebox)
+                editor.playing(),
+                groovebox,
+                "the source the agent asked for"
             );
 
             // Open now, so the agent's next swap of it is not held.
-            let again = editor.mcp_swaps("groovebox.json");
-            assert_eq!(again.held, None);
+            assert_eq!(editor.mcp_swaps(&groovebox).held, None);
             editor.engine.shutdown();
         });
     }
@@ -338,9 +391,13 @@ mod tests {
         within(HANG_SECS, || {
             let mut editor = Editor::open("held_decline", "acid-techno.json");
             let acid = editor.spelled("acid-techno.json");
-            assert!(editor.mcp_swaps("groovebox.json").held.is_some());
+            assert!(editor
+                .mcp_swaps(&editor.spelled("groovebox.json"))
+                .held
+                .is_some());
 
-            editor.held.decline();
+            let asked = editor.held.pending().expect("the user is asked");
+            editor.held.decline(&asked);
             assert_eq!(editor.held.pending(), None);
             assert_eq!(editor.session.top(), Path::new(&acid));
             assert_eq!(editor.playing(), acid);
@@ -353,7 +410,7 @@ mod tests {
         within(HANG_SECS, || {
             let mut editor = Editor::open("held_voice", "acid-techno.json");
             let acid = editor.spelled("acid-techno.json");
-            let swapped = editor.mcp_swaps("voices/kick-voice.json");
+            let swapped = editor.mcp_swaps(&editor.spelled("voices/kick-voice.json"));
             assert!(swapped.held.is_some(), "{:?}", swapped.report);
             assert_eq!(editor.playing(), acid);
             editor.engine.shutdown();
@@ -361,15 +418,33 @@ mod tests {
     }
 
     #[test]
-    fn a_second_held_swap_replaces_the_first() {
+    fn another_file_spelled_through_dot_dot_is_still_held() {
+        within(HANG_SECS, || {
+            let mut editor = Editor::open("held_other_spelling", "acid-techno.json");
+            let swapped = editor.mcp_swaps(&editor.spelled("voices/../groovebox.json"));
+            assert!(swapped.held.is_some(), "{:?}", swapped.report);
+            editor.engine.shutdown();
+        });
+    }
+
+    #[test]
+    fn a_second_held_swap_replaces_the_first_and_an_answer_to_the_first_does_nothing() {
         within(HANG_SECS, || {
             let mut editor = Editor::open("held_twice", "acid-techno.json");
-            assert!(editor.mcp_swaps("groovebox.json").held.is_some());
-            assert!(editor.mcp_swaps("default.json").held.is_some());
-            assert_eq!(
-                editor.held.pending(),
-                Some(canonical(&editor.lib.join("default.json")))
-            );
+            assert!(editor
+                .mcp_swaps(&editor.spelled("groovebox.json"))
+                .held
+                .is_some());
+            let first = editor.held.pending().expect("the user is asked");
+            let default = editor.spelled("default.json");
+            assert!(editor.mcp_swaps(&default).held.is_some());
+            assert_eq!(editor.wakes.load(Ordering::SeqCst), 2);
+            let second = editor.held.pending().expect("the user is asked");
+            assert_eq!(second.path, Path::new(&default));
+
+            assert_eq!(editor.held.accept(&first), None);
+            editor.held.decline(&first);
+            assert_eq!(editor.held.pending(), Some(second));
             editor.engine.shutdown();
         });
     }
@@ -395,16 +470,34 @@ mod tests {
     }
 
     #[test]
-    fn the_editors_own_swap_of_another_file_is_not_held() {
+    fn a_document_that_does_not_load_is_rejected_with_its_errors_and_asks_nothing() {
         within(HANG_SECS, || {
-            let mut editor = Editor::open("held_own", "acid-techno.json");
-            let groovebox = editor.lib.join("groovebox.json");
-            editor.answer(Some(groovebox.clone()));
+            let mut editor = Editor::open("held_broken", "acid-techno.json");
+            let broken = editor.spelled("broken.json");
+            std::fs::write(
+                &broken,
+                r#"{"format_version":3,"instrument":"t","nodes":[{"#,
+            )
+            .expect("write a broken document");
+            let swapped = editor.mcp_swaps(&broken);
+            assert_eq!(swapped.held, None);
+            assert!(!swapped.report.report.errors.is_empty(), "{swapped:?}");
             assert_eq!(editor.held.pending(), None);
-            assert_eq!(
-                canonical(Path::new(&editor.playing())),
-                canonical(&groovebox)
-            );
+            editor.engine.shutdown();
+        });
+    }
+
+    #[test]
+    fn opening_the_file_asked_about_clears_the_prompt() {
+        within(HANG_SECS, || {
+            let mut editor = Editor::open("held_opened", "acid-techno.json");
+            let groovebox = editor.spelled("groovebox.json");
+            assert!(editor.mcp_swaps(&groovebox).held.is_some());
+            editor.open_file(Path::new(&groovebox), |_| {
+                panic!("a running engine is not started again")
+            });
+            assert_eq!(editor.held.pending(), None);
+            assert_eq!(editor.playing(), groovebox);
             editor.engine.shutdown();
         });
     }
