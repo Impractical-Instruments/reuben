@@ -1,5 +1,5 @@
 //! "Make a local copy": give the document being viewed a file of its own for this instrument, so
-//! an edit to it stops reaching every other instrument that plays the original.
+//! an edit to it stops reaching every other document that references the original.
 //!
 //! Two writes, each a `reuben-api` verb: `copy_instrument` lays the copy beside the original, and
 //! `set_instrument_resource` repoints the referencing document's `resources` entry at it. Only the
@@ -33,9 +33,15 @@ pub fn make(session: &mut Session, channel: &dyn Fn() -> Option<Channel>) -> Opt
         0 => Some(session.tree().top()),
         _ => session.tree().document(&session.trail()[depth - 1].source),
     };
-    let Some((parent, entry)) =
-        parent.and_then(|parent| Some((parent, parent.reference(&crumb.address)?.clone())))
-    else {
+    let Some(parent) = parent.filter(|parent| parent.read.is_ok()) else {
+        refuse(
+            session,
+            &crumb.source,
+            "the document above it does not read",
+        );
+        return None;
+    };
+    let Some(entry) = parent.reference(&crumb.address).cloned() else {
         let why = format!("{} no longer references it", crumb.address);
         refuse(session, &crumb.source, &why);
         return None;
@@ -137,7 +143,7 @@ fn free_name<T>(
 /// `reference` with its last path segment replaced by `name`, every other segment kept as the
 /// document spells it.
 fn renamed(reference: &str, name: &str) -> String {
-    match reference.rfind(['/', '\\']) {
+    match reference.rfind(std::path::is_separator) {
         Some(at) => format!("{}{name}", &reference[..=at]),
         None => name.to_string(),
     }
@@ -275,6 +281,10 @@ mod tests {
 
             restore(&mut rig.session, &channel, Direction::Redo);
             assert_eq!(kick_entry(&rig, &top), "voices/kick-voice-acid-techno.json");
+            assert!(
+                rig.session.trail().is_empty(),
+                "redo leaves the view where it is"
+            );
         });
     }
 
@@ -302,6 +312,78 @@ mod tests {
                 kick_entry(&rig, &rig.top.clone()),
                 "voices/kick-voice-acid-techno-2.json"
             );
+        });
+    }
+
+    /// Two steps down, the document one step up is itself a voice: the repoint is written there,
+    /// and the copy is named for it.
+    #[test]
+    fn a_copy_two_steps_down_repoints_the_voice_above_it() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("local_copy_deep", "acid-techno.json");
+            rig.session
+                .enter("/kick_v")
+                .expect("/kick_v voices kick-voice");
+            rig.session.enter("/vca").expect("/vca patches shaped-vca");
+            let voices = rig.lib.join("voices");
+            let original = voices.join("shaped-vca.json");
+            let original_hash = hash_on_disk(&original);
+            let top_hash = hash_on_disk(&rig.top.clone());
+
+            let channel = rig.channel_source();
+            let copy = make(&mut rig.session, &channel).expect("the copy is made");
+            let copy_path = voices.join("shaped-vca-kick-voice.json");
+            assert_eq!(copy, copy_path.display().to_string());
+            assert_eq!(rig.session.viewed().path, copy_path);
+            assert_eq!(rig.session.trail().len(), 2);
+            let kick = (rig.session.tree().documents().iter())
+                .find(|d| d.path == voices.join("kick-voice.json"))
+                .expect("the kick voice is in the tree");
+            let entry = kick.reference("/vca").expect("/vca references a patch");
+            assert_eq!(entry.source, "shaped-vca-kick-voice.json");
+            assert_eq!(hash_on_disk(&original), original_hash);
+            assert_eq!(hash_on_disk(&rig.top.clone()), top_hash);
+        });
+    }
+
+    /// A copy whose repoint loses to a write made since the session read the document above is
+    /// left on disk, unreferenced; the conflict is the session's feedback, the view stays on the
+    /// original, and there is nothing to undo.
+    #[test]
+    fn a_repoint_that_conflicts_leaves_the_copy_unreferenced_and_no_undo_step() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("local_copy_conflict", "acid-techno.json");
+            rig.session
+                .enter("/kick_v")
+                .expect("/kick_v voices kick-voice");
+            let top = rig.top.display().to_string();
+            let elsewhere = set_instrument_description(
+                &SetInstrumentDescription {
+                    source: top.clone(),
+                    description: Some("written by someone else".to_string()),
+                    expect: None,
+                },
+                &reuben_api::FsResolver::for_document(&top).stat_only(),
+            )
+            .expect("the verb ran")
+            .output;
+            assert!(elsewhere.written, "{:?}", elsewhere.report);
+
+            let channel = rig.channel_source();
+            assert_eq!(make(&mut rig.session, &channel), None);
+            assert!(
+                matches!(rig.session.feedback(), Some(Feedback::Conflict { .. })),
+                "{:?}",
+                rig.session.feedback()
+            );
+            let copy_path = rig.lib.join("voices").join("kick-voice-acid-techno.json");
+            assert!(copy_path.exists(), "the copy is left on disk");
+            assert_eq!(kick_entry(&rig, &rig.top.clone()), "voices/kick-voice.json");
+            assert_eq!(
+                rig.session.viewed().path,
+                rig.lib.join("voices").join("kick-voice.json")
+            );
+            assert_eq!(rig.session.undo().next(Direction::Undo), None);
         });
     }
 

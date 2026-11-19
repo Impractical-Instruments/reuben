@@ -71,10 +71,13 @@ pub fn trail(ui: &mut egui::Ui, session: &mut Session) -> Option<TrailAsk> {
                 asked = Some(TrailAsk::Leave(depth));
             }
         }
-        let copy = ui.button("Make a local copy").on_hover_text(
-            "Copy this file beside itself and point the document above at the copy, so edits \
-             here change this instrument only. Undo points it back; the copy stays on disk.",
-        );
+        let above = names[last - 1].clone();
+        let copy = ui.button("Make a local copy").on_hover_text(format!(
+            "Copy this file beside itself and point {above}'s resources entry for it at the copy. \
+             Every node of {above} using that entry, and every instrument that plays {above}, \
+             follows it; the original is left as it is. Undo points the entry back; the copy \
+             stays on disk."
+        ));
         if copy.clicked() {
             asked = Some(TrailAsk::LocalCopy);
         }
