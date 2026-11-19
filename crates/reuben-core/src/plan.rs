@@ -348,8 +348,8 @@ pub enum PlanError {
     },
 }
 
-/// Which end of a wiring call named an out-of-range port ([`PlanError::PortOutOfRange`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Where a graph named an out-of-range port ([`PlanError::PortOutOfRange`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PortPosition {
     /// A wire's source: an index into the node's outputs.
     Source,
@@ -357,6 +357,12 @@ pub enum PortPosition {
     Destination,
     /// A master output tap: an index into the node's outputs.
     Tap,
+    /// The [`Interface::inputs`](crate::graph::Interface::inputs) entry with this name: an index
+    /// into the pipe node's inputs.
+    InterfaceInput(String),
+    /// The [`Interface::outputs`](crate::graph::Interface::outputs) entry with this name: an
+    /// index into the feeding node's outputs.
+    InterfaceOutput(String),
 }
 
 impl Plan {
@@ -1145,37 +1151,51 @@ impl Wires {
     }
 }
 
-/// Refuse any wire endpoint or master tap whose port index is past what its node declares, in
-/// `connections` order and then `outputs` order, so the first refusal is deterministic. Every later
-/// pass indexes per-node port lists by these numbers, so this runs before all of them.
+/// Refuse any wire endpoint, master tap or `interface` entry whose port index is past what its
+/// node declares. Checked in a fixed order — `connections`, then `outputs`, then the interface
+/// inputs and outputs in name order — so the first refusal is deterministic. Every later pass
+/// indexes per-node port lists by these numbers, so this runs before all of them.
+///
+/// A key naming no node is skipped, not refused: that is a different defect, and later passes
+/// still index it.
 fn check_port_ranges(graph: &Graph) -> Result<(), PlanError> {
-    let refuse = |key: NodeKey, position: PortPosition, port: usize| {
-        let node = graph.nodes.get(key)?;
-        let declared = match position {
-            PortPosition::Destination => node.descriptor.inputs.len(),
-            PortPosition::Source | PortPosition::Tap => node.descriptor.outputs.len(),
+    let check = |key: NodeKey, port: usize, position: &dyn Fn() -> PortPosition| {
+        let Some(node) = graph.nodes.get(key) else {
+            return Ok(());
         };
-        (port >= declared).then(|| PlanError::PortOutOfRange {
+        let position = position();
+        let declared = match position {
+            PortPosition::Destination | PortPosition::InterfaceInput(_) => {
+                node.descriptor.inputs.len()
+            }
+            PortPosition::Source | PortPosition::Tap | PortPosition::InterfaceOutput(_) => {
+                node.descriptor.outputs.len()
+            }
+        };
+        if port < declared {
+            return Ok(());
+        }
+        Err(PlanError::PortOutOfRange {
             node: node.address.to_string(),
             position,
             port,
             declared,
         })
     };
-    let wires = graph.connections.iter().flat_map(|c| {
-        [
-            (c.src, PortPosition::Source, c.src_port),
-            (c.dst, PortPosition::Destination, c.dst_port),
-        ]
-    });
-    let taps = graph
-        .outputs
-        .iter()
-        .map(|&(key, port, _)| (key, PortPosition::Tap, port));
-    match wires.chain(taps).find_map(|(k, pos, p)| refuse(k, pos, p)) {
-        Some(e) => Err(e),
-        None => Ok(()),
+    for c in &graph.connections {
+        check(c.src, c.src_port, &|| PortPosition::Source)?;
+        check(c.dst, c.dst_port, &|| PortPosition::Destination)?;
     }
+    for &(key, port, _) in &graph.outputs {
+        check(key, port, &|| PortPosition::Tap)?;
+    }
+    for (name, &(key, port)) in &graph.interface.inputs {
+        check(key, port, &|| PortPosition::InterfaceInput(name.clone()))?;
+    }
+    for (name, &(key, port)) in &graph.interface.outputs {
+        check(key, port, &|| PortPosition::InterfaceOutput(name.clone()))?;
+    }
+    Ok(())
 }
 
 /// Local per-wire form check.
@@ -1275,10 +1295,11 @@ impl Adjacency {
         let mut in_edges: SecondaryMap<NodeKey, Vec<(usize, NodeKey, usize)>> =
             graph.nodes.keys().map(|k| (k, Vec::new())).collect();
         for c in &graph.connections {
-            // A wire naming a node the graph no longer holds, or a port its node does not
-            // declare, carries nothing, so it is not an edge either: indexing it would panic in
-            // `SecondaryMap`, or hand the node loop an out-of-range port, and would let a dead
-            // wire close a cycle or order its endpoints.
+            // A wire whose endpoint port its node does not declare carries nothing, so it is not
+            // an edge either: indexing it would hand the node loop an out-of-range port, and
+            // would let a dead wire close a cycle or order its endpoints. A key naming no node is
+            // skipped too, so the indexing below never panics on one; Instantiate does not reach
+            // here with one, since `check_wire_forms` indexes it first.
             let declared = |key: NodeKey, port: usize, outputs: bool| {
                 graph.nodes.get(key).is_some_and(|n| {
                     let ports = if outputs {
@@ -2091,6 +2112,74 @@ mod port_range {
         assert_eq!(
             r.err(),
             Some(refusal("/out", PortPosition::Destination, 99, 1))
+        );
+    }
+
+    /// An interface output feeds a host's read of this plan by name; an undeclared port there
+    /// used to index the node's outputs and the arena directly.
+    #[test]
+    fn an_out_of_range_interface_output_port_is_refused() {
+        let r = planned(|g, osc, out| {
+            g.connect(osc, oscillator::OUT_AUDIO, out, output::IN_AUDIO);
+            g.tap_output(out, output::OUT_AUDIO);
+            g.interface.outputs.insert("audio".into(), (out, 7));
+        });
+        assert_eq!(
+            r.err(),
+            Some(refusal(
+                "/out",
+                PortPosition::InterfaceOutput("audio".into()),
+                7,
+                1
+            ))
+        );
+    }
+
+    #[test]
+    fn an_out_of_range_interface_input_port_is_refused() {
+        let r = planned(|g, osc, out| {
+            g.connect(osc, oscillator::OUT_AUDIO, out, output::IN_AUDIO);
+            g.tap_output(out, output::OUT_AUDIO);
+            g.interface.inputs.insert("freq".into(), (osc, 4));
+        });
+        assert_eq!(
+            r.err(),
+            Some(refusal(
+                "/osc",
+                PortPosition::InterfaceInput("freq".into()),
+                4,
+                2
+            ))
+        );
+    }
+
+    /// Several refusals at once: wires before taps before interface entries, and interface
+    /// entries in name order, whatever order they were inserted in.
+    #[test]
+    fn the_first_refusal_follows_a_fixed_order() {
+        let r = planned(|g, osc, out| {
+            g.interface.outputs.insert("b".into(), (out, 9));
+            g.interface.outputs.insert("a".into(), (out, 8));
+            g.connect(osc, oscillator::OUT_AUDIO, out, output::IN_AUDIO);
+        });
+        assert_eq!(
+            r.err(),
+            Some(refusal(
+                "/out",
+                PortPosition::InterfaceOutput("a".into()),
+                8,
+                1
+            ))
+        );
+
+        let r = planned(|g, osc, out| {
+            g.interface.outputs.insert("a".into(), (out, 8));
+            g.tap_output(out, 5usize);
+            g.connect(osc, oscillator::OUT_AUDIO, out, 6usize);
+        });
+        assert_eq!(
+            r.err(),
+            Some(refusal("/out", PortPosition::Destination, 6, 1))
         );
     }
 

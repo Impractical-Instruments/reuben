@@ -621,10 +621,16 @@ fn report_of(
             port,
             declared,
         }) => {
-            let (role, side) = match position {
-                PortPosition::Source => ("wire source", "outputs"),
-                PortPosition::Destination => ("wire destination", "inputs"),
-                PortPosition::Tap => ("master tap", "outputs"),
+            let (role, side) = match &position {
+                PortPosition::Source => ("wire source".to_string(), "outputs"),
+                PortPosition::Destination => ("wire destination".to_string(), "inputs"),
+                PortPosition::Tap => ("master tap".to_string(), "outputs"),
+                PortPosition::InterfaceInput(name) => {
+                    (format!("interface input {name:?}"), "inputs")
+                }
+                PortPosition::InterfaceOutput(name) => {
+                    (format!("interface output {name:?}"), "outputs")
+                }
             };
             Report {
                 ok: false,

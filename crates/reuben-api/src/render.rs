@@ -47,7 +47,8 @@ pub use reuben_core::operator::{InPort, OutPort};
 /// The operator set: constructors and port-index consts, for a host with no document to name a
 /// type by string.
 pub use reuben_core::operators;
-/// Why [`install_graph`] refused a graph, and which end of a wire named an undeclared port.
+/// Why [`install_graph`] refused a graph, and where it named an undeclared port. Not the whole
+/// failure surface — see [`install_graph`].
 pub use reuben_core::plan::{PlanError, PortPosition};
 /// The sample rate and block size a Plan is instantiated against — a host's device geometry,
 /// which is why it is a parameter rather than a policy.
@@ -68,9 +69,11 @@ pub use reuben_core::boundary::osc_out_args;
 /// life of the slot, so [`RenderSlot::fill`] never ramps and never transplants, and nothing on this
 /// feature can fill it (`InstallBundle` is not re-exported). Swapping is the document door's.
 ///
-/// A bare `usize` port past what its node declares — in a wire's source or destination, or a
-/// master tap — is refused as [`PlanError::PortOutOfRange`]; a typed handle in the wrong
-/// position does not compile.
+/// A bare `usize` port past what its node declares — in a wire's source or destination, a master
+/// tap, or an `interface` entry — is refused as [`PlanError::PortOutOfRange`]; a typed handle in
+/// the wrong position does not compile. [`PlanError`] is still not the whole failure surface: a
+/// wire, tap or `interface` entry naming a [`NodeKey`] the graph does not hold (removed, or minted
+/// by another `Graph`) panics inside Instantiate.
 ///
 /// Allocates; the Instantiate phase, not the audio thread.
 pub fn install_graph(graph: Graph, config: AudioConfig) -> Result<RenderSide, PlanError> {
@@ -220,6 +223,30 @@ mod tests {
                 ),
                 Ok(_) => panic!("an out-of-range destination port instantiated"),
             }
+        }
+    }
+
+    /// `Graph::interface` is public, so its ports are an embedder's to get wrong as well.
+    #[test]
+    fn an_out_of_range_interface_output_port_is_refused_as_a_plan_error() {
+        let refusal = patched(|g, osc, out| {
+            g.connect(osc, oscillator::OUT_AUDIO, out, output::IN_AUDIO);
+            g.tap_output(out, output::OUT_AUDIO);
+            g.interface.outputs.insert("audio".into(), (out, 7));
+        });
+        match refusal {
+            Err(e) => assert!(
+                matches!(
+                    &e,
+                    PlanError::PortOutOfRange {
+                        position: PortPosition::InterfaceOutput(name),
+                        port: 7,
+                        ..
+                    } if name == "audio"
+                ),
+                "{e:?}"
+            ),
+            Ok(_) => panic!("an out-of-range interface output port instantiated"),
         }
     }
 }
