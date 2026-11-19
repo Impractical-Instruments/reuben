@@ -1,5 +1,6 @@
 //! The editor's one write path: every change to a document is a `reuben-api` authoring verb called
-//! through [`write`](fn@write), and every return to an earlier state is a restore through [`restore`].
+//! through [`write`](fn@write), and every return to an earlier state is a restore through
+//! [`restore`].
 
 pub mod local_copy;
 
@@ -149,8 +150,8 @@ fn file_name(source: &str) -> String {
 /// Undo or redo the editor's next step in `direction`: return its file to the state on the far
 /// side of it, guarded by the hash on this side.
 ///
-/// The session reads the files again before this returns, as after [`write`](fn@write), and holds the
-/// outcome's [`note`](Restored::note) for the window to show.
+/// The session reads the files again before this returns, as after [`write`](fn@write), and holds
+/// the outcome's [`note`](Restored::note) for the window to show.
 pub fn restore(
     session: &mut Session,
     channel: &dyn Fn() -> Option<Channel>,
@@ -193,9 +194,9 @@ pub fn restore(
     restored
 }
 
-/// [`write`](fn@write), guarded by `expect` rather than by the session's hash of `source` now: for an edit
-/// the user began against an earlier read of the document, such as a value held while the file
-/// changed under it. A document changed since `expect` is answered as a conflict.
+/// [`write`](fn@write), guarded by `expect` rather than by the session's hash of `source` now: for
+/// an edit the user began against an earlier read of the document, such as a value held while the
+/// file changed under it. A document changed since `expect` is answered as a conflict.
 pub fn write_against(
     session: &mut Session,
     channel: &dyn Fn() -> Option<Channel>,

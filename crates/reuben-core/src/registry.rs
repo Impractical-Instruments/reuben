@@ -124,9 +124,9 @@ impl Registry {
         Self::default()
     }
 
-    /// The built-in operator set, built from the `operator_census!` array in
-    /// [`crate::operators`]. Iteration is in census (source) order; the `BTreeMap` re-keys by
-    /// `type_name`, so the census order never reaches an output.
+    /// The built-in operator set, built from the `operator_census!` array in [`crate::operators`].
+    /// Iteration is in census (source) order; the `BTreeMap` re-keys by `type_name`, so the census
+    /// order never reaches an output.
     pub fn builtin() -> Self {
         Self::from_census(crate::operators::CENSUS.iter().copied().flatten())
     }

@@ -16,11 +16,10 @@
 //! is by construction / by omission.
 //!
 //! **The converter registry** (`OscForm`): the struct vocab converters are an ordinary array,
-//! `OSC_FORMS`, declared where those types live — the same census
-//! pattern as the operator registry. `osc_form_by_name` serves the inbound decode; `has_form`
-//! serves [`has_osc_form`]'s capability key. Only those two sides are registry-backed:
-//! outbound ([`osc_out_args`]) stays a **closed exhaustive match** over [`Arg`] — see
-//! `OscForm`'s docs for why — with the
+//! `OSC_FORMS`, declared where those types live — the same census pattern as the operator registry.
+//! `osc_form_by_name` serves the inbound decode; `has_form` serves [`has_osc_form`]'s capability
+//! key. Only those two sides are registry-backed: outbound ([`osc_out_args`]) stays a **closed
+//! exhaustive match** over [`Arg`] — see `OscForm`'s docs for why — with the
 //! `has_osc_form_matches_what_the_drain_can_send` test pinning the name-keyed registry to the
 //! variant-keyed drain.
 

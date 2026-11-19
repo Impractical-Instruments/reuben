@@ -49,8 +49,8 @@ pub enum PortType {
     /// `is_event` makes [event-ness](crate::plan::PortKind::Event) explicit on the type rather than
     /// inferred from `name`: `true` for an unlatched stream (`Note`), `false` for a latched
     /// [`Value`](crate::plan::PortKind::Value) (`Harmony`, and every enum). Carrying the flag here
-    /// keeps `port_kind` data-driven, so a second held struct vocab is not
-    /// silently classified as an Event by a name check.
+    /// keeps `port_kind` data-driven, so a second held struct vocab is not silently classified as
+    /// an Event by a name check.
     Vocab {
         name: &'static str,
         is_event: bool,
@@ -299,10 +299,11 @@ impl Port {
         }
     }
 
-    /// A bounded scalar **integer** port carrying its range + default in [`I32Meta`].
-    /// Today the form a plan-time [`Constant`](Descriptor::constants) count takes (the voicer's
-    /// `voices` pool size); a settable integer whose value rides the wire as [`Arg::I32`](crate::message::Arg::I32).
-    /// Parallel to [`f32`](Self::f32): the port owns its name, the meta is nameless.
+    /// A bounded scalar **integer** port carrying its range + default in [`I32Meta`]. Today the
+    /// form a plan-time [`Constant`](Descriptor::constants) count takes (the voicer's `voices` pool
+    /// size); a settable integer whose value rides the wire as
+    /// [`Arg::I32`](crate::message::Arg::I32). Parallel to [`f32`](Self::f32): the port owns its
+    /// name, the meta is nameless.
     pub fn i32(name: &'static str, meta: I32Meta) -> Self {
         Self {
             name,

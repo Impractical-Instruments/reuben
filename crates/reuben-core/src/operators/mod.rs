@@ -4,9 +4,9 @@
 //! A) and is filled in test-first in Stage B. Port/param indices are part of the contract
 //! the rig builder wires against — see each module's descriptor.
 //!
-//! The `operator_census!` block below **is** the built-in
-//! operator set: one line per module, declaring the module, re-exporting its types, and
-//! registering them. Adding an operator is that one line.
+//! The `operator_census!` block below **is** the built-in operator set: one line per module,
+//! declaring the module, re-exporting its types, and registering them. Adding an operator is that
+//! one line.
 
 // Modules that contribute no built-in operator, so they sit outside the census.
 // `pipe` is an operator but deliberately unregistered: pipes are loader-built from

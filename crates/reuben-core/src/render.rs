@@ -1,12 +1,13 @@
 //! Render — executing a [`Plan`] per block.
 //!
-//! The serial executor walks the topologically-ordered nodes. For each node, incoming
-//! Messages are routed to its input ports by the port's [`PortKind`]:
-//! a **Value** control (scalar / enum / `Harmony`) drives **block-slicing** (the block is split
-//! at its change frames so [`Operator::process`](crate::operator::Operator::process) always sees a constant held value, read via
-//! `io.read` on a `Held<T>` handle); an **Event** (`Note`) is delivered as a zero-copy [`Event`]
-//! on its port (read via an `Event<Note>` handle); a **Signal** `Buffer` input fed by a scalar
-//! is **materialized** ZOH into its arena buffer (read via a `SignalF32` handle).
+//! The serial executor walks the topologically-ordered nodes. For each node, incoming Messages are
+//! routed to its input ports by the port's [`PortKind`]: a **Value** control (scalar / enum /
+//! `Harmony`) drives **block-slicing** (the block is split at its change frames so
+//! [`Operator::process`](crate::operator::Operator::process) always sees a constant held value,
+//! read via `io.read` on a `Held<T>` handle); an **Event** (`Note`) is delivered as a zero-copy
+//! [`Event`] on its port (read via an `Event<Note>` handle); a **Signal**
+//! [`Buffer`](crate::descriptor::PortType::F32Buffer) input fed by a scalar is **materialized** ZOH
+//! into its arena buffer (read via a `SignalF32` handle).
 //!
 //! Polyphony is hosted inside the Voicer (N voice sub-plans summed), not fanned out across the
 //! engine — the retired Lane model.

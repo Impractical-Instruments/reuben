@@ -1,11 +1,11 @@
 //! reuben-document — authoring instrument documents, and turning them into an engine Plan.
 //!
-//! The instrument format and its loader ([`format`](mod@format)), the edit verbs ([`edit`]), the agent's view of
-//! a document ([`projection`], [`introspect`], [`describe`]), the report shapes those produce
-//! ([`contract`]), a document as data for a program to draw ([`structure`]), the serde-shaped
-//! intent vocabulary ([`vocabulary`]), the resource seam every one of them resolves through
-//! ([`resources`]), and the off-thread [`coordinator`] that installs a loaded document into a
-//! running render side.
+//! The instrument format and its loader ([`format`](mod@format)), the edit verbs ([`edit`]), the
+//! agent's view of a document ([`projection`], [`introspect`], [`describe`]), the report shapes
+//! those produce ([`contract`]), a document as data for a program to draw ([`structure`]), the
+//! serde-shaped intent vocabulary ([`vocabulary`]), the resource seam every one of them resolves
+//! through ([`resources`]), and the off-thread [`coordinator`] that installs a loaded document into
+//! a running render side.
 //!
 //! **Everything here sits above `reuben-core` and imports upward.** `reuben-core` is the render
 //! half — it holds the mechanics of rendering audio and names nothing in this crate, which is what

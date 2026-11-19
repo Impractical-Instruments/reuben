@@ -25,10 +25,10 @@
 //! roster.
 //!
 //! Everywhere the door names a contract as a *value* rather than as a route key it writes
-//! [`reuben_api::tools::names`](mod@reuben_api::tools::names) instead, so the window dropping that contract is a compile error
-//! here. Today that is all test code, because the route key is the only place non-test source
-//! names a verb at all: the door reaches every one of them by calling the window function that
-//! serves it, and a function is not a string.
+//! [`reuben_api::tools::names`](mod@reuben_api::tools::names) instead, so the window dropping that
+//! contract is a compile error here. Today that is all test code, because the route key is the only
+//! place non-test source names a verb at all: the door reaches every one of them by calling the
+//! window function that serves it, and a function is not a string.
 //!
 //! The one thing left that is genuinely this door's is the socket: `reuben-mcp` reaches a
 //! *separate process*, so it supplies a loopback TCP transport where an in-process host supplies

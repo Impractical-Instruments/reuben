@@ -1,31 +1,32 @@
 //! OpDriver — drive a single operator through the **real engine** for tests and benches.
 //!
 //! It builds a one-node [`Graph`], instantiates a real [`Plan`], and steps it with a real
-//! [`Renderer`] via [`Renderer::step_node`] — purely an **injection + observation** harness over
+//! [`Renderer`] via `Renderer::step_node` — purely an **injection + observation** harness over
 //! the production substrate, never a second wiring path beside
 //! [`Plan::instantiate`](crate::plan::Plan::instantiate) and [`process_node`](crate::render).
 //! Ports are addressed by the operator's generated `IN_*` / `OUT_*` consts.
 //!
 //! Surface (all by-const port addressing):
-//! - [`set`](OpDriver::set) — a held control (scalar / enum / `Harmony`) **or** a constant audio-in;
-//!   sticky (ZOH) across blocks.
-//! - [`push`](OpDriver::push) — a transient event (`Note`) at a global frame.
-//! - [`drive`](OpDriver::drive) — a time-varying audio-in buffer (repoints the input's scratch).
-//! - [`bind`](OpDriver::bind) — a decoded [`SampleBuffer`] for a resource slot.
-//! - [`render`](OpDriver::render) — run `n` frames as ⌈n/128⌉ real production-size blocks, threading
-//!   operator state + latch across them.
-//! - [`output`](OpDriver::output) / [`emits`](OpDriver::emits) — read a Buffer output / the emitted
-//!   Messages.
-//! - [`spawn`](OpDriver::spawn) — a driver over a fresh [`Operator::spawn`] copy (carries resource
-//!   bindings, resets playback state).
+//! - [`set`](crate::op_driver::OpDriver::set) — a held control (scalar / enum / `Harmony`) **or**
+//!   a constant audio-in; sticky (ZOH) across blocks.
+//! - [`push`](crate::op_driver::OpDriver::push) — a transient event (`Note`) at a global frame.
+//! - [`drive`](crate::op_driver::OpDriver::drive) — a time-varying audio-in buffer (repoints the
+//!   input's scratch).
+//! - [`bind`](crate::op_driver::OpDriver::bind) — a decoded [`SampleBuffer`] for a resource slot.
+//! - [`render`](crate::op_driver::OpDriver::render) — run `n` frames as ⌈n/128⌉ real
+//!   production-size blocks, threading operator state + latch across them.
+//! - [`output`](crate::op_driver::OpDriver::output) / [`emits`](crate::op_driver::OpDriver::emits)
+//!   — read a Buffer output / the emitted Messages.
+//! - [`spawn`](crate::op_driver::OpDriver::spawn) — a driver over a fresh [`Operator::spawn`] copy
+//!   (carries resource bindings, resets playback state).
 //!
 //! Gated to test/bench builds: it reaches `Renderer`'s `pub(crate)` `step_node` seam, which is not
 //! part of the public render API.
 //!
-//! **Input injection**: [`drive`](OpDriver::drive) is the single-node known-buffer seam — it is
-//! how a loader-built signal `Pipe` (an interface input pipe's runtime node) is driven with
-//! deterministic audio in tests, the same carve-out as [`Renderer::render_block_multi`]'s `inputs`
-//! parameter at the graph level.
+//! **Input injection**: [`drive`](crate::op_driver::OpDriver::drive) is the single-node
+//! known-buffer seam — it is how a loader-built signal `Pipe` (an interface input pipe's runtime
+//! node) is driven with deterministic audio in tests, the same carve-out as
+//! [`Renderer::render_block_multi`]'s `inputs` parameter at the graph level.
 
 use alloc::boxed::Box;
 use alloc::format;

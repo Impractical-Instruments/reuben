@@ -17,6 +17,8 @@ cargo test                                             # every member but reuben
 cargo fmt --all --check                                # CI format gate
 cargo clippy --all-targets -- -D warnings              # CI lint gate
 cargo clippy -p reuben-editor --all-targets -- -D warnings  # the editor's own gate
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --features reuben-document/bench,reuben-document/schemars  # CI doc gate
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p reuben-editor  # the editor's doc gate
 cargo run -p reuben-native --example gen_library_index # after ANY instrument change
 cargo run -p reuben-document --example gen_vocabulary      # after editing docs/agents/vocabulary.json
 cargo run -p reuben-native --bin reuben -- describe    # list operators/ports/params

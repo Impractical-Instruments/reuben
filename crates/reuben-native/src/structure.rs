@@ -10,9 +10,9 @@
 //! What is here is what only a native host can supply — the listener and its threads, the device
 //! output map, the render callback's liveness, the counters, and the control ingress:
 //!
-//! - the control ingress is a producer on the same [`ControlBatch`]
-//!   channel the UDP decode thread feeds, so a `send` and an external datagram are
-//!   indistinguishable downstream and OSC-the-binary-protocol stays at `play`'s foreign edge;
+//! - the control ingress is a producer on the same [`ControlBatch`] channel the UDP decode thread
+//!   feeds, so a `send` and an external datagram are indistinguishable downstream and
+//!   OSC-the-binary-protocol stays at `play`'s foreign edge;
 //! - [`NativeHost::publish_render_config`] rebuilds the device output map off-thread against the
 //!   *retained* device channel count (streams are fixed at `play` start) and ships it across the
 //!   render mailbox, so the callback installs Engine + map together. A swapped-in engine binding

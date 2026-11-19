@@ -205,9 +205,11 @@ jobs:
       # A broken intra-doc link — a link to a private item, an unresolved path, an ambiguous name
       # — is a rustdoc lint, not a compiler one, so neither the job's RUSTFLAGS nor clippy sees it.
       # RUSTDOCFLAGS is the variable rustdoc reads. Default members only: no `--workspace`, which
-      # would pull the editor in; the `editor` job documents that crate itself.
+      # would pull the editor in; the `editor` job documents that crate itself. Clippy's and
+      # Test's feature set, so the feature-gated modules (`bench_support`, `op_driver`) are
+      # documented too.
       - name: Rustdoc
-        run: cargo doc --no-deps
+        run: cargo doc --no-deps --features reuben-document/bench,reuben-document/schemars
         env:
           RUSTDOCFLAGS: -D warnings
 
