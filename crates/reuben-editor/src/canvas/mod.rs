@@ -35,7 +35,8 @@ use reuben_api::FsResolver;
 
 use self::camera::Camera;
 pub use self::gesture::Gesture;
-use self::graph::{Graph, Item, PortRef};
+pub use self::graph::Item;
+use self::graph::{Graph, PortRef};
 use self::palette::Palette;
 
 /// How near a port's dot a press or drop must be to take it, in canvas units: half a port row,
@@ -205,6 +206,11 @@ impl Canvas {
             self.drag = Some(Drag::Dropped);
         }
         self.menu = None;
+    }
+
+    /// The box selected first: the one the inspector shows.
+    pub fn selection(&self) -> Option<&Item> {
+        self.selection.as_ref()
     }
 
     fn doc(&self) -> Option<&Document> {
@@ -1022,6 +1028,19 @@ mod tests {
         assert_eq!(canvas.selection, Some(item));
         canvas.click(outside, 1.0, false);
         assert_eq!(canvas.selection, None);
+    }
+
+    #[test]
+    fn the_selection_shown_is_the_box_selected_first() {
+        let mut canvas = Canvas::open(None, None);
+        let (first, second) = (Item::Node("/a".into()), Item::Node("/b".into()));
+        canvas.select(Some(first.clone()));
+        canvas.toggle(second.clone());
+        assert_eq!(canvas.selection(), Some(&first));
+        canvas.toggle(first);
+        assert_eq!(canvas.selection(), Some(&second));
+        canvas.select(None);
+        assert_eq!(canvas.selection(), None);
     }
 
     #[test]

@@ -169,6 +169,26 @@ pub fn restore(
     restored
 }
 
+/// [`write`], guarded by `expect` rather than by the session's hash of `source` now: for an edit
+/// the user began against an earlier read of the document, such as a value held while the file
+/// changed under it. A document changed since `expect` is answered as a conflict.
+pub fn write_against(
+    session: &mut Session,
+    channel: &dyn Fn() -> Option<Channel>,
+    source: &str,
+    expect: String,
+    verb: impl FnOnce(&dyn Resources, Option<String>) -> Result<Answer<EditResult>, Refusal>,
+) -> Result<EditResult, Refusal> {
+    if session.tree().document(source).is_none() {
+        return Err(Refusal {
+            message: format!("{source} is not a file of the open instrument"),
+        });
+    }
+    let result = verb(&session.store(source), Some(expect));
+    session.refresh(channel);
+    result.map(|answer| answer.output)
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::cell::Cell;

@@ -567,6 +567,12 @@ pub(crate) mod test_support {
             );
         }
 
+        /// Wait for `n` live control messages to reach the render side, and return every one
+        /// that has, in order.
+        pub fn live_received(&self, n: usize) -> Vec<reuben_native::osc::OscIn> {
+            self._callback.await_queued(n)
+        }
+
         /// How many times touched files came due and were read.
         pub fn touches(&self) -> usize {
             self.session.touches

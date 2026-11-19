@@ -6,6 +6,7 @@ mod config;
 mod controls;
 mod edit;
 mod engine;
+mod inspector;
 mod session;
 
 use std::path::PathBuf;
@@ -21,6 +22,7 @@ use crate::canvas::Canvas;
 use crate::config::ConfigDir;
 use crate::controls::Controls;
 use crate::engine::{Engine, Level};
+use crate::inspector::Inspector;
 use crate::session::{Session, Status};
 
 #[derive(Parser)]
@@ -99,6 +101,7 @@ struct Editor {
     audio: AudioSettings,
     controls: Controls,
     canvas: Canvas,
+    inspector: Inspector,
     session: Option<Session>,
 }
 
@@ -115,6 +118,7 @@ impl Editor {
             audio,
             controls,
             canvas,
+            inspector: Inspector::default(),
             session,
         }
     }
@@ -159,6 +163,16 @@ impl eframe::App for Editor {
         }
         // Before the central panel, which takes whatever space is left.
         self.controls.show(ui, &self.engine);
+        if let Some(session) = &mut self.session {
+            let channel = || self.engine.channel();
+            inspector::show(
+                ui,
+                &mut self.inspector,
+                session,
+                &channel,
+                self.canvas.selection(),
+            );
+        }
         // The root `Ui` paints no background of its own, leaving eframe's clear color; the panel
         // frame paints the theme's fill instead.
         let gestures = egui::Frame::central_panel(ui.style()).show(ui, |ui| {
