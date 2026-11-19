@@ -254,6 +254,13 @@ never hand-writes symbol/index handling.
    passes its own tests, it just never exists to `describe` or any document — so
    `census_accounts_for_every_operator` (in `operators/mod.rs`) derives both sides from source and
    fails if any operator here is unaccounted for.
+   Then run `cargo run -p reuben-core --example gen_bench_census`. It regenerates the micro-bench
+   census from the registry: the kinds file the CI perf gate reads
+   (`crates/reuben-document/benches/micro_kinds.txt`) and the `micro_bench_ops!` block in
+   `benches/micro_iai.rs`. `cargo test` reds until you do, and the failure names the command. The
+   new operator is benched with `Recipe::Default`; add a `WORKLOADS` line in
+   `crates/reuben-core/src/bench_support.rs` only when it needs a different recipe to leave its idle
+   path.
 3. **Test** in the operator module, test-first, with
    [`OpDriver`](../../crates/reuben-core/src/op_driver.rs) — it drives your operator through the
    **real** engine (`Plan::instantiate` + `Renderer::step_node`), so a test can never drift from how

@@ -70,20 +70,23 @@ Run all `reuben`/`cargo` commands from the repo root.
       `cargo test` (import from `alloc`, as every existing operator does); and the target is
       32-bit with no 64-bit atomics, so an `AtomicU64` or a `1 << 40` in a `usize` passes every
       host build.
-   2. **Register a micro-bench workload** (#30) — a forcing function in
-      [`bench_support.rs`](../../../crates/reuben-core/src/bench_support.rs) (`#[cfg(feature = "bench")]`,
-      so plain `cargo test` **won't** catch it — only CI's `check` job does) requires every registered
-      operator to have one. Add, **alphabetically**, in two places: a `w("<op>", Recipe::<R>)` entry in
-      `WORKLOADS`, and a `<bench id> => "<op>",` line in the `micro_bench_ops!` census in
-      [`benches/micro_iai.rs`](../../../crates/reuben-document/benches/micro_iai.rs). The bench id is
-      **permanent** — CI's perf gate matches HEAD against the baseline by it, so renaming one later
-      silently drops that operator from the gate. Pick the `Recipe` that
-      exercises your real per-sample path, not an idle early-out: `Default` (held defaults — most
-      oscillators/filters/math), `Gate` (a `gate` input), `Clocked` (a `clock`-driven stepper, e.g.
-      `sequencer`/`euclid`), `Notes`/`ChordSet` (note-event sinks), `Value` (a driven `in`),
-      `Sample`/`Position` (the sampler/strummer). If none fit, add a new `Recipe` variant + its
-      `apply_recipe` arm. Then prove it: `cargo test -p reuben-core --features bench`
-      (`every_operator_has_a_micro_bench_workload`, `iai_list_covers_every_workload`, and
+   2. **Regenerate the micro-bench census** — `cargo run -p reuben-core --example gen_bench_census`.
+      It writes the kinds file the CI perf gate reads
+      ([`benches/micro_kinds.txt`](../../../crates/reuben-document/benches/micro_kinds.txt)) and the
+      `micro_bench_ops!` block in
+      [`benches/micro_iai.rs`](../../../crates/reuben-document/benches/micro_iai.rs); never edit
+      either by hand. Plain `cargo test -p reuben-document` reds until you run it
+      (`kinds_file_is_in_sync_with_the_registry`), and the failure names the command. A new kind is
+      benched under its own name as its bench id. The id is **permanent**: CI's perf gate matches
+      HEAD against the baseline by it, so renaming an operator later drops its history from the
+      gate. Your op is benched with `Recipe::Default` (every `Float` input held at its default) with
+      no further edit. Only if that idles your real per-sample path, add a
+      `w("<op>", Recipe::<R>)` line, **alphabetically**, to `WORKLOADS` in
+      [`bench_support.rs`](../../../crates/reuben-core/src/bench_support.rs): `Gate` (a `gate`
+      input), `Clocked` (a `clock`-driven stepper, e.g. `sequencer`/`euclid`), `Notes`/`ChordSet`
+      (note-event sinks), `Value` (a driven `in`), `Sample`/`Position` (the sampler/strummer). If
+      none fit, add a new `Recipe` variant + its `apply_recipe` arm. Then prove it:
+      `cargo test -p reuben-core --features bench` (`every_workload_override_is_live` and
       `every_workload_renders` must pass).
    3. `cargo clippy -p reuben-core --all-targets` — clean.
    4. `cargo fmt` — the CI `fmt` gate fails on any unformatted line; run it before you commit.
@@ -137,7 +140,7 @@ Run all `reuben`/`cargo` commands from the repo root.
 | Thing | Action |
 |---|---|
 | New Operator: Rust impl + descriptor + tests + registration | **author** (TDD `process`, close the gate) |
-| Micro-bench workload (`bench_support.rs` + `micro_iai.rs`) | **register** the new op's `WORKLOADS` entry + its `micro_bench_ops!` census line (part of the gate; CI's `check` job reds without it) |
+| Micro-bench census (`micro_kinds.txt` + `micro_iai.rs`) | **regenerate** with `cargo run -p reuben-core --example gen_bench_census`; add a `WORKLOADS` line in `bench_support.rs` only for a non-`Default` recipe |
 | Instrument/Rig graphs | **never** — that is the `patcher` skill |
 | Surface docs (`surfaces/*.json`) | **never** — that is the `control-surface` skill |
 

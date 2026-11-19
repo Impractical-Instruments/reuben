@@ -62,6 +62,10 @@ pub mod __float {
 #[cfg(feature = "bench")]
 pub mod bench_support;
 
+#[cfg(not(target_os = "none"))]
+#[doc(hidden)]
+pub mod bench_census;
+
 /// In-crate harness that drives a single operator through the real engine (`Plan` + `Renderer`) for
 /// unit tests and benches — the one implementation of "descriptor → wired `Io`", so a test can't
 /// drift from production seeding/stepping. Gated to test/bench builds: it reaches `Renderer`'s
