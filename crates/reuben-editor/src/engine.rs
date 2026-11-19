@@ -201,6 +201,25 @@ impl Engine {
         }
     }
 
+    /// Start the engine as it was last asked to start, when none is running. Does nothing when
+    /// one is, or when no start was ever attempted.
+    pub fn resume(&mut self) {
+        self.resume_with(engine::start);
+    }
+
+    /// [`resume`](Self::resume) through `start`, the seam a test puts the headless engine in.
+    pub(crate) fn resume_with(
+        &mut self,
+        start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
+    ) {
+        if self.running.is_some() {
+            return;
+        }
+        if let Some(config) = self.config.clone() {
+            *self = Self::start_with(config, start);
+        }
+    }
+
     fn push(&mut self, line: Line) {
         match line.level {
             Level::Info => println!("{line}"),
@@ -560,6 +579,32 @@ mod tests {
             assert_eq!(after.content_hash, before.content_hash);
             engine.shutdown();
         });
+    }
+
+    #[test]
+    fn an_engine_that_did_not_start_is_started_once_its_file_loads() {
+        let path = seed(
+            "resume",
+            r#"{"format_version":3,"instrument":"t","nodes":[{"#,
+        );
+        within(HANG_SECS, {
+            let path = path.clone();
+            move || {
+                let mut engine = Engine::start_with(config(path.clone()), start_headless);
+                assert!(engine.running().is_none());
+                engine.resume_with(start_headless);
+                assert!(engine.running().is_none(), "the file still does not load");
+
+                std::fs::copy(library("default.json"), &path).unwrap();
+                engine.resume_with(start_headless);
+                assert!(engine.running().is_some());
+                assert_eq!(errors(&engine), Vec::<&str>::new());
+
+                engine.resume_with(|_| panic!("a running engine is not started again"));
+                engine.shutdown();
+            }
+        });
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

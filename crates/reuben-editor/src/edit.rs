@@ -12,10 +12,13 @@ use crate::session::Session;
 /// the session last read for it, so a write made against a view that `reuben-mcp` has since
 /// changed is answered as a conflict instead of landing on a document the user was not looking at.
 ///
-/// The session reads the files again before this returns, so what the editor shows next is what
-/// the verb left on disk, written or not, and a written change is already on its way to the
-/// engine. An `Ok` whose `written` is false is a rejected edit or a conflict; its report says
-/// which, on the node and port at fault.
+/// `source` is a document's `source` as the session's tree spells it; any other is refused
+/// without running `verb`, there being no hash to guard the write with.
+///
+/// The session reads the files again before this returns, so its tree is what the verb left on
+/// disk, written or not, and a written change is already on its way to the engine. The next
+/// [`Session::poll`] reports the reload. An `Ok` whose `written` is false is a rejected edit or a
+/// conflict; its report says which, on the node and port at fault.
 #[cfg_attr(
     not(test),
     expect(dead_code, reason = "no gesture edits a document yet")
@@ -26,11 +29,12 @@ pub fn write(
     source: &str,
     verb: impl FnOnce(&dyn Resources, Option<String>) -> Result<Answer<EditResult>, Refusal>,
 ) -> Result<EditResult, Refusal> {
-    let expect = session
-        .tree()
-        .document(source)
-        .and_then(|document| document.hash())
-        .map(str::to_string);
+    let Some(document) = session.tree().document(source) else {
+        return Err(Refusal {
+            message: format!("{source} is not a file of the open instrument"),
+        });
+    };
+    let expect = document.hash().map(str::to_string);
     let result = verb(&session.store(source), expect);
     session.refresh(channel);
     result.map(|answer| answer.output)
@@ -127,6 +131,21 @@ mod tests {
             assert!(again.written, "{:?}", again.report);
             rig.settle();
             assert_eq!(rig.status(), &Status::Current);
+        });
+    }
+
+    #[test]
+    fn a_source_the_tree_does_not_hold_is_refused_without_running_the_verb() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("edit_unknown", "default.json");
+            let voice = voice_source(&rig);
+            let respelled = voice.replace("default-voice.json", "../voices/default-voice.json");
+            assert_ne!(respelled, voice);
+            let channel = rig.channel_source();
+            let edit = write(&mut rig.session, &channel, &respelled, |_, _| {
+                panic!("the verb ran with nothing to guard it")
+            });
+            assert!(edit.is_err(), "{edit:?}");
         });
     }
 

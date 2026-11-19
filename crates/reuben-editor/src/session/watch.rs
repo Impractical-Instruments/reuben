@@ -11,12 +11,16 @@ use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 ///
 /// It watches each file's directory rather than the file. A document verb replaces a document by
 /// renaming a temp file over it, which leaves a watch on the file itself attached to the file that
-/// is gone; and a file that is not there yet has only a directory to watch.
+/// is gone; and a file that is not there yet has only a directory to watch. Where the directory is
+/// not there either, the nearest one above it that is gets the watch, and the directory appearing
+/// is the touch.
 pub struct Watch {
     watcher: RecommendedWatcher,
     touched: Receiver<()>,
     files: Arc<Mutex<BTreeSet<PathBuf>>>,
     directories: BTreeSet<PathBuf>,
+    /// The directories the last [`set`](Self::set) could not watch, and why.
+    unwatched: Vec<String>,
 }
 
 impl Watch {
@@ -30,12 +34,14 @@ impl Watch {
                 // Reading a file is an event too on Linux, and every reload reads every file: a
                 // read that counted as a touch would reload forever.
                 Ok(event) if matches!(event.kind, EventKind::Access(_)) => false,
+                // Events were lost or the watch broke: what changed is unknown, so look.
+                Ok(event) if event.need_rescan() => true,
+                Err(_) => true,
                 Ok(event) => {
                     let files = watched.lock().unwrap_or_else(|e| e.into_inner());
-                    event.paths.iter().any(|path| files.contains(path))
+                    // The file itself, or a directory above it that appeared, moved or went.
+                    (event.paths.iter()).any(|path| files.iter().any(|file| file.starts_with(path)))
                 }
-                // Events were lost or the watch broke: what changed is unknown, so look.
-                Err(_) => true,
             };
             if ours && tx.send(()).is_ok() {
                 wake();
@@ -47,6 +53,7 @@ impl Watch {
             touched,
             files,
             directories: BTreeSet::new(),
+            unwatched: Vec::new(),
         })
     }
 
@@ -64,7 +71,9 @@ impl Watch {
             if let (Ok(real), Some(name)) = (directory.canonicalize(), path.file_name()) {
                 files.insert(real.join(name));
             }
-            directories.insert(directory.to_path_buf());
+            if let Some(there) = directory.ancestors().find(|above| above.is_dir()) {
+                directories.insert(there.to_path_buf());
+            }
         }
         *self.files.lock().unwrap_or_else(|e| e.into_inner()) = files;
 
@@ -72,19 +81,23 @@ impl Watch {
             let _ = self.watcher.unwatch(gone);
         }
         let mut watching = BTreeSet::new();
+        self.unwatched.clear();
         for directory in directories {
-            // A directory that does not exist cannot be watched; it is tried again at the next
-            // `set`, which every change to the tree makes.
-            if self.directories.contains(&directory)
-                || self
-                    .watcher
-                    .watch(&directory, RecursiveMode::NonRecursive)
-                    .is_ok()
-            {
-                watching.insert(directory);
+            // Asked for again even when it was watched before: a directory removed and made again
+            // is a new directory, and the watch on the old one went with it.
+            match self.watcher.watch(&directory, RecursiveMode::NonRecursive) {
+                Ok(()) => {
+                    watching.insert(directory);
+                }
+                Err(e) => self.unwatched.push(format!("{}: {e}", directory.display())),
             }
         }
         self.directories = watching;
+    }
+
+    /// The directories that are not being watched, each with why.
+    pub fn unwatched(&self) -> &[String] {
+        &self.unwatched
     }
 
     /// Whether a watched file was touched since the last call.
@@ -135,6 +148,31 @@ mod tests {
 
         std::fs::write(&later, "new").unwrap();
         assert!(touched_within(&watch, SEEN), "a file that was not there");
+    }
+
+    #[test]
+    fn a_directory_removed_and_made_again_is_a_touch_and_so_is_a_file_in_the_new_one() {
+        let scratch = Scratch::new("watch_recreate");
+        let dir = scratch.path("voices");
+        let file = dir.join("a.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "one").unwrap();
+        let mut watch = Watch::new(|| {}).expect("a watcher");
+        watch.set([file.as_path()]);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(touched_within(&watch, SEEN), "the directory going");
+        watch.set([file.as_path()]);
+        while touched_within(&watch, QUIET) {}
+
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(touched_within(&watch, SEEN), "the directory coming back");
+        watch.set([file.as_path()]);
+        while touched_within(&watch, QUIET) {}
+
+        std::fs::write(&file, "two").unwrap();
+        assert!(touched_within(&watch, SEEN), "a file in the new directory");
+        assert!(watch.unwatched().is_empty());
     }
 
     #[test]
