@@ -48,6 +48,7 @@ crate::operator_census! {
     map::*,
     max::*,
     min::*,
+    mix::{Mix},
     modulo::*,
     mul::*,
     negate::*,

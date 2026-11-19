@@ -74,6 +74,11 @@ pub enum Recipe {
     /// transformers (m2s, map, integrate, differentiate), or a `Note` event for the operators whose
     /// `in` is a `Note` port (the `osc_out` sink; `unpack_note`, whose event drives its latch).
     Value,
+    /// `Default`, plus every numbered source input (`in1`, `in2`, …) held at a constant 0.5 — for
+    /// the `mix` bus, which skips a silent source, so a default-held bench would sum nothing — and
+    /// the first half of its numbered `gain` inputs driven per sample, so the bench pays for both
+    /// the held-gain and the per-sample-gain paths.
+    Sources,
 }
 
 /// One micro-bench workload: its kind and how to drive it.
@@ -99,6 +104,7 @@ pub const WORKLOADS: &[Workload] = &[
     w("granulator", Recipe::Grains),
     w("integrate_f32_signal", Recipe::Value),
     w("m2s", Recipe::Value),
+    w("mix", Recipe::Sources),
     w("osc_out", Recipe::Value),
     w("plucked_string", Recipe::Gate),
     w("resonator", Recipe::Gate),
@@ -280,6 +286,29 @@ fn apply_recipe(driver: &mut OpDriver, desc: &Descriptor, recipe: Recipe) {
                 set_const(driver, desc, "in", 0.5);
             } else {
                 push_note(driver, desc, "in", Note::new(Pitch::Absolute(60.0), 1.0));
+            }
+        }
+        Recipe::Sources => {
+            for (i, p) in desc.inputs.iter().enumerate() {
+                let numbered = p
+                    .name
+                    .strip_prefix("in")
+                    .is_some_and(|k| !k.is_empty() && k.bytes().all(|b| b.is_ascii_digit()));
+                if numbered {
+                    driver.set(i, 0.5);
+                }
+            }
+            let frames = BLOCKS * BLOCK_SIZE;
+            let swept: Vec<f32> = (0..frames).map(|f| 0.5 + (f % 64) as f32 / 64.0).collect();
+            for (i, p) in desc.inputs.iter().enumerate() {
+                let first_half = p
+                    .name
+                    .strip_prefix("gain")
+                    .and_then(|k| k.parse::<usize>().ok())
+                    .is_some_and(|k| (1..=8).contains(&k));
+                if first_half {
+                    driver.drive(i, &swept);
+                }
             }
         }
     }

@@ -100,6 +100,7 @@ micro_bench_ops! {
     min => "min_f32_signal",
     min_value => "min_f32_value",
     min_i32_value => "min_i32_value",
+    mix => "mix",
     modulo => "modulo_f32_signal",
     modulo_value => "modulo_f32_value",
     modulo_i32_value => "modulo_i32_value",
