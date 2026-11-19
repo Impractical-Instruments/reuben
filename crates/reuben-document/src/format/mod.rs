@@ -1479,9 +1479,18 @@ fn with_cycle_guard<T>(
 }
 
 impl InstrumentDoc {
-    /// Serialize to pretty JSON (the canonical on-disk form).
+    /// Serialize to pretty JSON: the canonical form, which [`crate::content_hash`] is taken over.
     pub fn to_json_pretty(&self) -> String {
         serde_json::to_string_pretty(self).expect("InstrumentDoc serializes")
+    }
+
+    /// The text a verb writes to disk: [`to_json_pretty`](Self::to_json_pretty) and one trailing
+    /// newline, so a file an editor saves and a file a verb saves end the same way. The newline is
+    /// outside the hashed bytes, so it never moves a content hash.
+    pub fn to_document_text(&self) -> String {
+        let mut text = self.to_json_pretty();
+        text.push('\n');
+        text
     }
 
     /// [`to_json_pretty`](Self::to_json_pretty) with every `layout` dropped: the bytes a Swap
