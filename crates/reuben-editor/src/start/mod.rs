@@ -31,7 +31,7 @@ pub struct Launch {
 }
 
 /// Open the instrument at `path`: a session on its files, and `engine` playing it. A running
-/// engine has the instrument Swapped in, which the session reports as for any other Swap, and
+/// engine, or an attached one, has the instrument Swapped in, which the session reports as for any other Swap, and
 /// [`follow`] then names in the engine's report; with none running, one is started through
 /// `start`, on the stored audio choice. A start that fails leaves the session saying nothing
 /// plays, so the next load of the files starts the engine again.
@@ -47,7 +47,8 @@ pub fn open(
 ) -> Session {
     let root = launch.root.as_deref();
     let mut session = Session::open(path, root, wake);
-    if engine.channel().is_some() {
+    // An attached engine that is not answering is waited for, never replaced by one started here.
+    if engine.channel().is_some() || engine.link().is_some() {
         session.reinstall(&|| engine.channel());
         return session;
     }

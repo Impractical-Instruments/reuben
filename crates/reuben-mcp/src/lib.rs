@@ -52,7 +52,8 @@ use reuben_api::FsResolver;
 use serde::Serialize;
 
 mod engine_link;
-pub use engine_link::{EngineLink, TcpTransport, DEFAULT_CONNECT_TIMEOUT};
+pub use engine_link::EngineLink;
+pub use reuben_api::engine::{TcpTransport, DEFAULT_CONNECT_TIMEOUT};
 
 /// The window's engine-half surface, re-exported for a test or a caller driving this door: the
 /// channel a fake transport plugs into, and the payloads it carries.

@@ -14,6 +14,7 @@ mod engine;
 mod feedback;
 mod held_swap;
 mod inspector;
+mod link;
 mod pick;
 mod session;
 mod start;
@@ -44,6 +45,11 @@ use crate::start::{Launch, Start};
 struct Args {
     /// Instrument JSON to open and play; omit to choose one on the start screen.
     path: Option<PathBuf>,
+    /// Attach to a `reuben play` already running instead of starting an engine, at its structure
+    /// channel's address: open the instrument it plays and play it live. The engine flags do not
+    /// apply, and the audio device stays the one `reuben play` chose.
+    #[arg(long, value_name = "HOST:PORT", conflicts_with = "path")]
+    attach: Option<String>,
     #[command(flatten)]
     instrument_root: InstrumentRoot,
     #[command(flatten)]
@@ -98,7 +104,13 @@ fn main() -> eframe::Result {
                 swap_hold: Some(held.swap_hold()),
             };
             let mut audio = AudioSettings::load(ConfigDir::user());
-            let engine = start(args, &mut audio, &launch, Engine::start);
+            let engine = match args.attach.clone() {
+                Some(addr) => Engine::attach(addr, {
+                    let ctx = cc.egui_ctx.clone();
+                    move || ctx.request_repaint()
+                }),
+                None => start(args, &mut audio, &launch, Engine::start),
+            };
             Ok(Box::new(Editor {
                 engine,
                 audio,
@@ -165,7 +177,6 @@ impl Editor {
     fn open(&mut self, path: &std::path::Path, ctx: &egui::Context) {
         // Before the Swap starts, so a client asking for the file being opened is not held.
         self.held.opened(path);
-        let root = self.launch.root.as_deref();
         let ctx = ctx.clone();
         let session = start::open(
             path,
@@ -175,18 +186,51 @@ impl Editor {
             move || ctx.request_repaint(),
             reuben_native::engine::start,
         );
+        let panel = start::panel_follows(&session, &self.engine);
+        self.show(session, path, panel);
+    }
+
+    /// Show `session`, open on `path`, in place of whatever is shown; `panel` is whether the
+    /// controls panel is rebuilt for it too.
+    fn show(&mut self, session: Session, path: &std::path::Path, panel: bool) {
         self.canvas = Canvas::open(None, None);
         self.inspector = Inspector::default();
         view(&mut self.canvas, &mut self.inspector, &session);
-        if start::panel_follows(&session, &self.engine) {
-            self.controls = Controls::open(Some(path), root);
+        if panel {
+            self.controls = Controls::open(Some(path), self.launch.root.as_deref());
         }
         self.session = Some(session);
         self.start.opened(path);
     }
 
+    /// Follow what the attached engine plays, as it answers again: open the file it names, with
+    /// no Swap, since it plays it already. A session whose files the engine has not been given —
+    /// they changed while it was not answering — offers them again instead, as the last write.
+    fn follow_attached(&mut self, ctx: &egui::Context) {
+        let Some(playing) = self.engine.follow_link() else {
+            return;
+        };
+        let playing = PathBuf::from(playing);
+        if let Some(session) = &mut self.session {
+            if !matches!(session.status(), Status::Current | Status::Swapping) {
+                session.reinstall(&|| self.engine.channel());
+                return;
+            }
+            if session.top() == playing {
+                return;
+            }
+        }
+        let wake = {
+            let ctx = ctx.clone();
+            move || ctx.request_repaint()
+        };
+        let session = Session::open(&playing, self.launch.root.as_deref(), wake);
+        self.show(session, &playing, true);
+    }
+
     /// Take in what the session saw change on disk, and rebuild what is drawn from the files.
     fn follow_files(&mut self, ui: &egui::Ui) {
+        self.follow_attached(ui.ctx());
         let Some(session) = &mut self.session else {
             return;
         };
@@ -229,7 +273,10 @@ impl eframe::App for Editor {
             ui.horizontal(|ui| {
                 theme::logo(ui, 22.0);
                 // Vertical, so the device warnings stack under the device row rather than beside it.
-                ui.vertical(|ui| self.audio.ui(ui, &mut self.engine));
+                ui.vertical(|ui| match self.engine.link() {
+                    Some(link) => link::show(ui, link),
+                    None => self.audio.ui(ui, &mut self.engine),
+                });
             });
         });
         if let Some(session) = &mut self.session {

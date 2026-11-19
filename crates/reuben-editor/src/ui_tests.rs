@@ -183,3 +183,120 @@ fn the_edit_banner_leaves_the_inspector_uncovered() {
         );
     }
 }
+
+/// Write an instrument at `lib/attached.json`, `level` resting at `level`, whose `level` input
+/// comes back out on OSC-out.
+fn echoing(scratch: &Scratch, level: f64) -> PathBuf {
+    let lib = scratch.path("lib");
+    std::fs::create_dir_all(&lib).expect("create the library directory");
+    let top = lib.join("attached.json");
+    let text = json!({
+        "format_version": 3,
+        "instrument": "attached",
+        "interface": {
+            "inputs": {"level": {"type": "f32", "default": level, "min": 0.0, "max": 1.0}},
+            "outputs": {"out": {"from": "/osc.audio"}}
+        },
+        "nodes": [
+            {"type": "oscillator", "address": "/osc"},
+            {"type": "osc_out", "address": "/level_echo", "inputs": {"in": {"from": "/level"}}}
+        ]
+    })
+    .to_string();
+    std::fs::write(&top, text).expect("write the instrument");
+    top
+}
+
+/// Step the harness until `done`, sleeping between steps so the link's thread and the session's
+/// Swap get to run.
+fn step_until(harness: &mut Harness<'_, Editor>, what: &str, done: impl Fn(&Editor) -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !done(harness.state()) {
+        assert!(std::time::Instant::now() < deadline, "never {what}");
+        harness.run_steps(1);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn an_editor_attached_to_a_running_engine_plays_it_and_swaps_its_saves() {
+    use egui::accesskit::Role;
+    use reuben_api::render::Arg;
+    use reuben_native::engine::EngineConfig;
+    use reuben_native::osc;
+    use reuben_native::test_support::{start_headless, within};
+
+    let scratch = Scratch::new("ui_attached");
+    let config = TempConfig::new();
+    let top = echoing(&scratch, 0.2);
+    let sink = std::net::UdpSocket::bind("127.0.0.1:0").expect("an OSC-out sink");
+    sink.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .expect("a read timeout");
+    let target = sink.local_addr().expect("bound").to_string();
+
+    within(crate::engine::test_support::HANG_SECS, move || {
+        // `reuben play`, started by someone else.
+        let played = start_headless(EngineConfig {
+            osc_out: Some(target),
+            ..crate::engine::test_support::config(top.clone())
+        })
+        .expect("the engine starts");
+        let addr = played.structure_addr().expect("bound").to_string();
+
+        let args = Args::parse_from(["reuben-editor", "--attach", &addr]);
+        let mut harness = harness(Editor {
+            engine: Engine::attach(addr, || {}),
+            audio: AudioSettings::load_with(config.dir(), two_devices),
+            controls: Controls::open(None, None),
+            canvas: Canvas::open(None, None),
+            inspector: Inspector::default(),
+            session: None,
+            start: Start::new(config.dir(), None),
+            launch: Launch {
+                root: None,
+                flags: args.engine,
+                swap_hold: None,
+            },
+            held: HeldSwaps::new(|| {}),
+        });
+
+        step_until(&mut harness, "opened what the engine plays", |editor| {
+            editor.session.is_some()
+        });
+        assert_eq!(harness.state().session.as_ref().unwrap().top(), top);
+        assert_eq!(harness.state().controls.binds(), vec!["level"]);
+        harness.get_by_label(&format!(
+            "Attached to the engine on {}",
+            played.structure_addr().unwrap()
+        ));
+
+        // Moving the fader reaches the engine it is attached to.
+        harness.get_by_role(Role::Slider).focus();
+        harness.run_steps(1);
+        harness.key_press(egui::Key::ArrowRight);
+        harness.run_steps(2);
+        let mut buf = [0u8; 1024];
+        loop {
+            let n = sink.recv(&mut buf).expect("the level came back");
+            let echoed = osc::decode(&buf[..n]).expect("decode");
+            if echoed.iter().any(|m| m.args != vec![Arg::F32(0.2)]) {
+                break;
+            }
+        }
+
+        // Saving the file Swaps it in. The engine holds the document as it migrated it, so the
+        // saved value is what is compared.
+        echoing(&scratch, 0.7);
+        step_until(&mut harness, "swapped the save in", |_| {
+            let installed = played.channel().get_document().unwrap().document;
+            installed["interface"]["inputs"]["level"]["default"] == json!(0.7)
+        });
+
+        harness.state_mut().engine.shutdown();
+        played
+            .channel()
+            .ping()
+            .expect("closing the editor stopped nothing");
+        reuben_native::diagnostics::log_snapshot(&played.shutdown());
+    });
+}

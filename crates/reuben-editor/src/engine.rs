@@ -1,5 +1,7 @@
-//! The embedded engine: everything `reuben play` starts — audio out, OSC-in, the loopback structure
-//! channel `reuben-mcp` dials — owned by the editor for as long as its window is open.
+//! The engine the editor plays through. Either embedded — everything `reuben play` starts, audio
+//! out, OSC-in, the loopback structure channel `reuben-mcp` dials, owned by the editor for as long
+//! as its window is open — or [attached](Engine::attach) to a `reuben play` already running, which
+//! the editor reaches over that channel and owns nothing of.
 //!
 //! Starting never panics. Whatever [`reuben_native::engine::start`] reports becomes a [`Line`] the
 //! window shows, printed to the terminal as well.
@@ -18,6 +20,8 @@ use reuben_api::FsResolver;
 use reuben_native::engine::{self, EngineConfig, Instrument, RunningEngine, StartError};
 use reuben_native::profile::DeviceProfile;
 use reuben_native::structure::input_stream_fits;
+
+use crate::link::{Change, Link};
 
 /// How serious a [`Line`] is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,11 +57,15 @@ impl fmt::Display for Line {
     }
 }
 
-/// The embedded engine, when one is running, and what starting it reported.
+/// The embedded engine, when one is running, and what starting it reported; or the link to an
+/// attached one.
 ///
 /// Not `Send`, because [`RunningEngine`] is not: it lives on the UI thread that started it.
 pub struct Engine {
     running: Option<RunningEngine>,
+    /// Set only by [`attach`](Self::attach), and then `running` and `config` stay `None` for good:
+    /// what restarts, refits or resumes an embedded engine finds nothing to act on.
+    attached: Option<Link>,
     /// What the last start was asked for, kept whether or not it succeeded, so a restart can try
     /// again with another profile. `None` when no start was ever attempted.
     config: Option<EngineConfig>,
@@ -73,10 +81,77 @@ impl Engine {
     pub fn idle() -> Self {
         Self {
             running: None,
+            attached: None,
             config: None,
             report: Vec::new(),
             refit_tried: None,
         }
+    }
+
+    /// Attach to the `reuben play` whose structure channel is at `addr`, starting nothing. `wake`
+    /// is called from another thread whenever [`follow_link`](Self::follow_link) has news.
+    pub fn attach(addr: impl Into<String>, wake: impl Fn() + Send + 'static) -> Self {
+        let link = Link::dial(addr, wake);
+        let line = Line::new(
+            Level::Info,
+            format!("attached to the engine on {}", link.addr()),
+        );
+        Self {
+            attached: Some(link),
+            ..Self::reported(None, None, vec![line])
+        }
+    }
+
+    /// The link to the engine, when this one is attached rather than embedded.
+    pub fn link(&self) -> Option<&Link> {
+        self.attached.as_ref()
+    }
+
+    /// Take in what the attached engine's link found since the last call. Returns the file the
+    /// engine plays each time it answers again — on the first probe too — and names one; the
+    /// report names it, or says why there is none. Never waits; does nothing when not attached.
+    pub fn follow_link(&mut self) -> Option<String> {
+        let link = self.attached.as_ref()?;
+        let addr = link.addr().to_string();
+        let mut playing = None;
+        for change in link.changes() {
+            match change {
+                Change::Up {
+                    playing: Ok(Some(source)),
+                } if Path::new(&source).is_relative() && !Path::new(&source).is_file() => {
+                    self.push(Line::new(
+                        Level::Warning,
+                        format!(
+                            "the engine on {addr} plays {source}, which is relative to the \
+                             directory `reuben play` started in and is not a file from here: start \
+                             it on an absolute path to open it"
+                        ),
+                    ));
+                }
+                Change::Up {
+                    playing: Ok(Some(source)),
+                } => {
+                    self.name_instrument(&source);
+                    playing = Some(source);
+                }
+                Change::Up { playing: Ok(None) } => self.push(Line::new(
+                    Level::Warning,
+                    format!(
+                        "the engine on {addr} plays a document installed without a file, so \
+                         there is no file to open"
+                    ),
+                )),
+                Change::Up { playing: Err(e) } => self.push(Line::new(
+                    Level::Warning,
+                    format!("the engine on {addr} did not say what it plays: {e}"),
+                )),
+                Change::Down(e) => {
+                    eprintln!("warning: lost the engine on {addr}; trying again: {e}");
+                    playing = None;
+                }
+            }
+        }
+        playing
     }
 
     /// Nothing runs because the engine could not even be configured.
@@ -272,6 +347,11 @@ impl Engine {
             return;
         }
         config.instrument = instrument;
+        self.name_instrument(&source);
+    }
+
+    /// Name `source` as the instrument in the report, in place of the one it named.
+    fn name_instrument(&mut self, source: &str) {
         let named = Line::new(Level::Info, format!("instrument: {source}"));
         println!("{named}");
         match self
@@ -389,6 +469,7 @@ impl Engine {
         }
         Self {
             running,
+            attached: None,
             config,
             report,
             refit_tried: None,
@@ -400,11 +481,15 @@ impl Engine {
         self.running.as_ref()
     }
 
-    /// A channel to the running engine, or `None` when none is running.
+    /// A channel to the running engine, or `None` when none is running — for an attached engine,
+    /// when the last probe went unanswered.
     ///
     /// For control traffic only on the UI thread: a send is handed to the render side without
     /// waiting, where a swap made through the same channel builds the new Engine before returning.
     pub fn channel(&self) -> Option<Channel> {
+        if let Some(link) = &self.attached {
+            return (link.up() != Some(false)).then(|| link.channel());
+        }
         self.running.as_ref().map(RunningEngine::channel)
     }
 
@@ -414,8 +499,9 @@ impl Engine {
     }
 
     /// Stop the engine and free every port it bound, logging its final counters as `reuben play`
-    /// does. Does nothing when none is running.
+    /// does. Does nothing when none is running. An attached engine is let go, not stopped.
     pub fn shutdown(&mut self) {
+        self.attached = None;
         if let Some(running) = self.running.take() {
             reuben_native::diagnostics::log_snapshot(&running.shutdown());
         }
@@ -497,6 +583,7 @@ mod tests {
     use reuben_api::render::Arg;
     use reuben_api::FsResolver;
     use reuben_mcp::EngineLink;
+    use reuben_native::engine::EngineConfig;
     use reuben_native::osc;
     use reuben_native::test_support::{start_headless, within};
 
@@ -816,5 +903,114 @@ mod tests {
             panic!("a start that was never configured has nothing to restart")
         });
         assert_eq!(misconfigured.report().len(), 1);
+    }
+
+    /// Calls [`Engine::follow_link`] until it names what the attached engine plays.
+    fn await_playing(engine: &mut Engine) -> String {
+        loop {
+            if let Some(playing) = engine.follow_link() {
+                return playing;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn await_link(engine: &Engine, up: bool) {
+        while engine.link().and_then(crate::link::Link::up) != Some(up) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn an_attached_engine_is_played_through_and_let_go_never_stopped() {
+        let path = seed(
+            "attach_echo",
+            r#"{"format_version":3,"instrument":"echo",
+                "interface":{"outputs":{"out":{"from":"/osc.audio"}}},
+                "nodes":[{"type":"oscillator","address":"/osc"},
+                         {"type":"osc_out","address":"/echo"}]}"#,
+        );
+        let sink = UdpSocket::bind("127.0.0.1:0").expect("an OSC-out sink");
+        sink.set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("a read timeout");
+        let target = sink.local_addr().expect("bound").to_string();
+        let instrument = path.clone();
+        within(HANG_SECS, move || {
+            // What `reuben play` runs, started by someone other than the editor.
+            let played = start_headless(EngineConfig {
+                osc_out: Some(target),
+                ..config(instrument.clone())
+            })
+            .expect("the engine starts");
+            let addr = played.structure_addr().expect("the structure server bound");
+
+            let mut engine = Engine::attach(addr.to_string(), || {});
+            assert_eq!(await_playing(&mut engine), instrument.display().to_string());
+            assert!(engine
+                .report()
+                .iter()
+                .any(|l| l.text == format!("instrument: {}", instrument.display())));
+
+            let channel = engine.channel().expect("the attached engine answers");
+            channel
+                .send(vec![reuben_api::engine::ControlMessage {
+                    address: "/echo/in".to_string(),
+                    args: vec![reuben_api::engine::ControlArg::F32(0.5)],
+                }])
+                .expect("sent");
+            let mut buf = [0u8; 1024];
+            let n = sink.recv(&mut buf).expect("the echo came back");
+            let echoed = osc::decode(&buf[..n]).expect("decode");
+            assert_eq!(echoed[0].args, vec![Arg::F32(0.5)]);
+
+            // Nothing here owns the device, so nothing here restarts or resumes it.
+            assert_eq!(engine.profile(), None);
+            engine.restart_with(DeviceProfile::default(), |_| {
+                panic!("an attached engine is not restarted")
+            });
+            engine.resume_with(|_| panic!("an attached engine is not started"));
+            assert!(!engine.fit_input(|_| panic!("an attached engine is not refit")));
+
+            engine.shutdown();
+            assert!(engine.channel().is_none());
+            played.channel().ping().expect("letting go stopped nothing");
+
+            // Losing the engine closes the channel until it answers again.
+            let mut engine = Engine::attach(addr.to_string(), || {});
+            await_link(&engine, true);
+            reuben_native::diagnostics::log_snapshot(&played.shutdown());
+            await_link(&engine, false);
+            assert!(engine.channel().is_none());
+            assert_eq!(engine.follow_link(), None);
+        });
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn an_attached_engine_playing_a_relative_path_that_is_not_a_file_here_is_not_opened() {
+        // Relative to the test's directory, the crate's own; the target directory may live
+        // elsewhere, so the file is made beside the sources and removed once the engine read it.
+        let relative = PathBuf::from(format!("attach_relative_{}.json", std::process::id()));
+        std::fs::copy(library("default.json"), &relative).expect("a relative instrument");
+        within(HANG_SECS, {
+            let relative = relative.clone();
+            move || {
+                let played = start_headless(config(relative.clone())).expect("the engine starts");
+                std::fs::remove_file(&relative).expect("remove it");
+                let addr = played.structure_addr().expect("bound");
+                let mut engine = Engine::attach(addr.to_string(), || {});
+                let warned = loop {
+                    assert_eq!(engine.follow_link(), None);
+                    if let Some(line) = engine.report().iter().find(|l| l.level == Level::Warning) {
+                        break line.text.clone();
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                };
+                assert!(warned.contains("absolute path"), "{warned}");
+                engine.shutdown();
+                reuben_native::diagnostics::log_snapshot(&played.shutdown());
+            }
+        });
+        let _ = std::fs::remove_file(&relative);
     }
 }
