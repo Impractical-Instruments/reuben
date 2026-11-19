@@ -152,7 +152,7 @@ impl eframe::App for Editor {
         self.controls.show(ui, &self.engine);
         // The root `Ui` paints no background of its own, leaving eframe's clear color; the panel
         // frame paints the theme's fill instead.
-        egui::Frame::central_panel(ui.style()).show(ui, |ui| {
+        let gesture = egui::Frame::central_panel(ui.style()).show(ui, |ui| {
             if self.engine.report().is_empty() {
                 ui.label("No instrument open. Run `reuben-editor <instrument.json>` to play one.");
             }
@@ -164,8 +164,14 @@ impl eframe::App for Editor {
                 };
                 ui.colored_label(color, line.to_string());
             }
-            self.canvas.show(ui);
+            self.canvas.show(ui)
         });
+        if let (Some(gesture), Some(session)) = (gesture.inner, &mut self.session) {
+            let result = gesture.apply(session, &|| self.engine.channel());
+            self.canvas.applied(&gesture, &result);
+            // The write is read back already; the next frame redraws from it.
+            ui.ctx().request_repaint();
+        }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
