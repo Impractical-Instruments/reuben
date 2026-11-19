@@ -231,7 +231,7 @@ fn finish_at(
     // already-normalized document, but it is what keeps the written bytes canonical.
     let normalized = NormalizedDoc::from_doc(doc, registry, Some(resolver))
         .map_err(|e| EditError::Parse(e.to_string()))?;
-    let new_json = normalized.to_json_pretty();
+    let new_json = normalized.to_document_text();
     let report = validate(&new_json, registry, resolver);
     let (written, hash) = if report.ok {
         match place {

@@ -7,19 +7,6 @@
   },
   "interface": {
     "inputs": {
-      "gate": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "tone": {
-        "type": "f32",
-        "default": 185.0,
-        "min": 20.0,
-        "max": 2000.0,
-        "unit": "Hz"
-      },
       "attack": {
         "type": "f32",
         "default": 0.001,
@@ -34,7 +21,7 @@
         "max": 5.0,
         "unit": "s"
       },
-      "sustain": {
+      "gate": {
         "type": "f32",
         "default": 0.0,
         "min": 0.0,
@@ -46,6 +33,19 @@
         "min": 0.001,
         "max": 5.0,
         "unit": "s"
+      },
+      "sustain": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "tone": {
+        "type": "f32",
+        "default": 185.0,
+        "min": 20.0,
+        "max": 2000.0,
+        "unit": "Hz"
       }
     },
     "outputs": {

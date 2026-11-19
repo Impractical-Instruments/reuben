@@ -1428,7 +1428,7 @@ fn restore_writes_the_prior_text_canonically_and_reports_its_hash() {
         on_disk,
         NormalizedDoc::from_json(&prior, &registry, Some(&resolver))
             .expect("the seed loads")
-            .to_json_pretty(),
+            .to_document_text(),
         "the canonical form is written, not the text handed in"
     );
 }
@@ -1521,4 +1521,65 @@ fn restore_of_a_prior_that_is_not_the_document_asked_for_is_a_rejected_edit() {
     assert!(!result.written && !result.report.ok, "{result:?}");
     assert_eq!(result.hash, edited.hash);
     assert_eq!(resolver.resolve_text(SRC).expect("still there"), after);
+}
+
+// --- written text --------------------------------------------------------------------------------
+
+fn ends_in_one_newline(text: &str) -> bool {
+    text.ends_with('\n') && !text.ends_with("\n\n")
+}
+
+#[test]
+fn every_verb_written_document_ends_in_exactly_one_newline() {
+    let registry = Registry::builtin();
+
+    let resolver = resolver_with(&seed());
+    let edited = set_instrument_input(SRC, "/osc", "freq", json!(880.0), &registry, &resolver)
+        .expect("edit");
+    assert!(edited.written, "{edited:?}");
+    let text = resolver.resolve_text(SRC).expect("edited");
+    assert!(ends_in_one_newline(&text), "an edit: {text:?}");
+
+    let restored = restore_instrument(
+        SRC,
+        &seed(),
+        &content_hash(&NormalizedDoc::from_json(&seed(), &registry, Some(&resolver)).unwrap()),
+        &edited.hash,
+        &registry,
+        &resolver,
+    )
+    .expect("restore")
+    .expect("the source is as expected");
+    assert!(restored.written, "{restored:?}");
+    let text = resolver.resolve_text(SRC).expect("restored");
+    assert!(ends_in_one_newline(&text), "a restore: {text:?}");
+
+    let fresh = MemoryResolver::new();
+    new_instrument(SRC, "fresh", &registry, &fresh).expect("new");
+    let text = fresh.resolve_text(SRC).expect("created");
+    assert!(ends_in_one_newline(&text), "a new document: {text:?}");
+
+    let foldered = Foldered::voices();
+    let copied =
+        copy_instrument(KICK, "voices/kick-copy.json", &registry, &foldered).expect("copy");
+    assert!(copied.written, "{copied:?}");
+    let text = foldered
+        .resolve_text("voices/kick-copy.json")
+        .expect("copied");
+    assert!(ends_in_one_newline(&text), "a copy: {text:?}");
+}
+
+#[test]
+fn the_trailing_newline_is_not_part_of_the_content_hash() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed());
+    let edited = set_instrument_input(SRC, "/osc", "freq", json!(880.0), &registry, &resolver)
+        .expect("edit");
+    let text = resolver.resolve_text(SRC).expect("edited");
+    let bare = text.trim_end_matches('\n');
+    assert_eq!(edited.hash, hash_at(&resolver, SRC));
+    let mint = |t: &str| {
+        content_hash(&NormalizedDoc::from_json(t, &registry, Some(&resolver)).expect("mint"))
+    };
+    assert_eq!(mint(&text), mint(bare));
 }

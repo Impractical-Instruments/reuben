@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use crate::format::{LoadError, LoadWarning, NormalizedDoc};
 
 /// The content identity of a normalized document: a hash over the canonical
-/// [`to_json_pretty`](crate::format::InstrumentDoc::to_json_pretty) bytes — the exact bytes
-/// a save writes — so two equal [`NormalizedDoc`]s hash equal regardless of how their source
+/// [`to_json_pretty`](crate::format::InstrumentDoc::to_json_pretty) bytes — the bytes a save
+/// writes, less its trailing newline — so two equal [`NormalizedDoc`]s hash equal regardless of how their source
 /// text was formatted. A door's `expect` guard compares it.
 ///
 /// The string is an **opaque token**: compare it for equality, never parse it. It carries no
