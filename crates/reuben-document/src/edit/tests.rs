@@ -726,6 +726,25 @@ fn resource_add_then_remove() {
     assert!(readback(&resolver)["resources"].get("kick").is_none());
 }
 
+#[test]
+fn resource_repoint_keeps_the_id_and_refuses_one_that_is_not_there() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed());
+
+    add_instrument_resource(SRC, "kick", "kick.wav", &registry, &resolver).expect("add res");
+    set_instrument_resource(SRC, "kick", "kick-2.wav", &registry, &resolver).expect("repoint");
+    assert_eq!(
+        readback(&resolver)["resources"]["kick"],
+        json!("kick-2.wav")
+    );
+
+    let before = readback(&resolver);
+    let refused = set_instrument_resource(SRC, "snare", "snare.wav", &registry, &resolver)
+        .expect_err("no such resource");
+    assert!(refused.to_string().contains("snare"), "{refused}");
+    assert_eq!(readback(&resolver), before);
+}
+
 // --- the intent verb -----------------------------------------------------------------------------
 
 /// A document with everything the intent verb has to navigate: two nodes of one type (broadcast),

@@ -29,7 +29,7 @@ use crate::controls::Controls;
 use crate::engine::{Engine, Level};
 use crate::held_swap::HeldSwaps;
 use crate::inspector::Inspector;
-use crate::session::{Session, Status};
+use crate::session::{Session, Status, TrailAsk};
 use crate::start::{Launch, Start};
 
 #[derive(Parser)]
@@ -259,8 +259,13 @@ impl eframe::App for Editor {
                 self.start.show_again();
             }
             if let Some(session) = &mut self.session {
-                if let Some(depth) = session::trail(ui, session) {
-                    session.leave(depth);
+                if let Some(asked) = session::trail(ui, session) {
+                    match asked {
+                        TrailAsk::Leave(depth) => session.leave(depth),
+                        TrailAsk::LocalCopy => {
+                            edit::local_copy::make(session, &|| self.engine.channel());
+                        }
+                    }
                     view(&mut self.canvas, &mut self.inspector, session);
                 }
                 feedback::show(ui, session.feedback_mut());

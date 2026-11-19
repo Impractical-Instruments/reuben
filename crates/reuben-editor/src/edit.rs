@@ -1,6 +1,8 @@
 //! The editor's one write path: every change to a document is a `reuben-api` authoring verb called
 //! through [`write`], and every return to an earlier state is a restore through [`restore`].
 
+pub mod local_copy;
+
 use std::path::Path;
 
 use reuben_api::authoring::{restore_instrument, Answer, EditResult, Refusal, Resources};
