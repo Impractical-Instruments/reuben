@@ -1113,12 +1113,12 @@ mod tests {
         addresses_doc(version, "/a/osc", "/my.tone", "/")
     }
 
-    fn render(doc: &NormalizedDoc) -> Vec<f32> {
-        use reuben_core::{plan::Plan, render::Renderer, AudioConfig};
+    fn render(doc: &NormalizedDoc) -> Vec<reuben_core::signal::AudioSample> {
+        use reuben_core::{plan::Plan, render::Renderer, signal::AudioSample, AudioConfig};
         let cfg = AudioConfig::new(48_000.0, 64);
         let mut plan = Plan::instantiate(doc.build(&reg()).expect("builds"), cfg).expect("plans");
         let mut renderer = Renderer::new(&plan);
-        let mut block = vec![0.0f32; cfg.block_size];
+        let mut block = vec![AudioSample::default(); cfg.block_size];
         let mut all = Vec::new();
         for _ in 0..8 {
             renderer.render_block(&mut plan, &[], &mut block);
