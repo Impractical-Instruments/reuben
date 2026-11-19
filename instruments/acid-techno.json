@@ -3,466 +3,66 @@
   "instrument": "acid-techno",
   "doc": "Acid techno rig: a four-on-the-floor 16-step drum machine (kick, snare, closed + open hi-hat), a TB-303-style monophonic acid bass synth sequencer, and a detuned three-saw pad playing sustained whole-note chords. The bass is a single inline mono synth (saw -> resonant lowpass -> env, note line unpacked to freq/gate at rig level rather than voiced) so its 303 controls are live: /glide/in slides the pitch between notes (portamento), /squelch/in is the filter resonance (the whistling acid tone), /filter_env/in is the filter-envelope amount (how far the cutoff sweep opens), and /filter_decay/in is the envelope decay (the length of the squelch tail). Drums and bass share a 16th-note clock; the pad triggers one chord per bar. The `key` pipe (/key/in) sets the absolute tonic of a shared natural-minor harmony (bass at the root, pad one octave up). The `mode` pipe (/mode/in, 0-6) is the modal chord/scale selector: it transposes both the bass line and the pad chord by that many scale degrees, so one knob re-roots them together within the key -- the modal, chord-player-style move. Each instrument has its own volume pipe (/drums_vol/in, /bass_vol/in, /pad_vol/in); ride tempo 60-180 BPM with /tempo/in. Program the lanes with /kick_step1..16 /snare_step* /chh_step* /ohh_step* (boolean) and the bass with /bass_step1..16 (scale degrees, -1 = rest). The pad is sidechain-pumped by the kick (a `compressor` at /pad_pump keyed off the raw kick voice), so the chords breathe with the four-on-the-floor -- the signature acid-techno pump.",
   "resources": {
-    "kick-voice": "voices/kick-voice.json",
-    "snare-voice": "voices/snare-voice.json",
+    "acid-pad-voice": "voices/acid-pad-voice.json",
     "hat-voice": "voices/hat-voice.json",
+    "kick-voice": "voices/kick-voice.json",
     "openhat-voice": "voices/openhat-voice.json",
-    "acid-pad-voice": "voices/acid-pad-voice.json"
+    "snare-voice": "voices/snare-voice.json"
   },
   "interface": {
     "inputs": {
-      "tempo": {
-        "type": "f32",
-        "default": 130.0,
-        "min": 60.0,
-        "max": 180.0,
-        "unit": "BPM"
-      },
-      "key": {
-        "type": "i32",
-        "default": 45,
-        "min": 24,
-        "max": 72,
-        "unit": "MIDI"
-      },
-      "mode": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 6.0,
-        "unit": "degree"
-      },
-      "drums_vol": {
-        "type": "f32",
-        "default": 0.8,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "bass_vol": {
-        "type": "f32",
-        "default": 0.8,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "glide": {
-        "type": "f32",
-        "default": 0.06,
-        "min": 0.0,
-        "max": 0.5,
-        "unit": "s"
-      },
-      "squelch": {
-        "type": "f32",
-        "default": 0.72,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "filter_env": {
-        "type": "f32",
-        "default": 1.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "filter_decay": {
-        "type": "f32",
-        "default": 0.16,
-        "min": 0.01,
-        "max": 1.0,
-        "unit": "s"
-      },
-      "pad_vol": {
-        "type": "f32",
-        "default": 0.5,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "kick_step1": {
-        "type": "f32",
-        "default": 1.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "kick_step2": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "kick_step3": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "kick_step4": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "kick_step5": {
-        "type": "f32",
-        "default": 1.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "kick_step6": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "kick_step7": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "kick_step8": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "kick_step9": {
-        "type": "f32",
-        "default": 1.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "kick_step10": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "kick_step11": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "kick_step12": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "kick_step13": {
-        "type": "f32",
-        "default": 1.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "kick_step14": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "kick_step15": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "kick_step16": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "snare_step1": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "snare_step2": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "snare_step3": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "snare_step4": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "snare_step5": {
-        "type": "f32",
-        "default": 1.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "snare_step6": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "snare_step7": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "snare_step8": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "snare_step9": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "snare_step10": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "snare_step11": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "snare_step12": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "snare_step13": {
-        "type": "f32",
-        "default": 1.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "snare_step14": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "snare_step15": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "snare_step16": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "chh_step1": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "chh_step2": {
-        "type": "f32",
-        "default": 1.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "chh_step3": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "chh_step4": {
-        "type": "f32",
-        "default": 1.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "chh_step5": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "chh_step6": {
-        "type": "f32",
-        "default": 1.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "chh_step7": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "chh_step8": {
-        "type": "f32",
-        "default": 1.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "chh_step9": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "chh_step10": {
-        "type": "f32",
-        "default": 1.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "chh_step11": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "chh_step12": {
-        "type": "f32",
-        "default": 1.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "chh_step13": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "chh_step14": {
-        "type": "f32",
-        "default": 1.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "chh_step15": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "chh_step16": {
-        "type": "f32",
-        "default": 1.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "ohh_step1": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "ohh_step2": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "ohh_step3": {
-        "type": "f32",
-        "default": 1.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "ohh_step4": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "ohh_step5": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "ohh_step6": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "ohh_step7": {
-        "type": "f32",
-        "default": 1.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "ohh_step8": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "ohh_step9": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "ohh_step10": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "ohh_step11": {
-        "type": "f32",
-        "default": 1.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "ohh_step12": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "ohh_step13": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "ohh_step14": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "ohh_step15": {
-        "type": "f32",
-        "default": 1.0,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "ohh_step16": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 1.0
-      },
       "bass_step1": {
         "type": "f32",
         "default": 0.0,
+        "min": -1.0,
+        "max": 24.0,
+        "unit": "degree"
+      },
+      "bass_step10": {
+        "type": "f32",
+        "default": 7.0,
+        "min": -1.0,
+        "max": 24.0,
+        "unit": "degree"
+      },
+      "bass_step11": {
+        "type": "f32",
+        "default": -1.0,
+        "min": -1.0,
+        "max": 24.0,
+        "unit": "degree"
+      },
+      "bass_step12": {
+        "type": "f32",
+        "default": 5.0,
+        "min": -1.0,
+        "max": 24.0,
+        "unit": "degree"
+      },
+      "bass_step13": {
+        "type": "f32",
+        "default": 0.0,
+        "min": -1.0,
+        "max": 24.0,
+        "unit": "degree"
+      },
+      "bass_step14": {
+        "type": "f32",
+        "default": -1.0,
+        "min": -1.0,
+        "max": 24.0,
+        "unit": "degree"
+      },
+      "bass_step15": {
+        "type": "f32",
+        "default": 3.0,
+        "min": -1.0,
+        "max": 24.0,
+        "unit": "degree"
+      },
+      "bass_step16": {
+        "type": "f32",
+        "default": 7.0,
         "min": -1.0,
         "max": 24.0,
         "unit": "degree"
@@ -523,54 +123,454 @@
         "max": 24.0,
         "unit": "degree"
       },
-      "bass_step10": {
+      "bass_vol": {
         "type": "f32",
-        "default": 7.0,
-        "min": -1.0,
-        "max": 24.0,
-        "unit": "degree"
+        "default": 0.8,
+        "min": 0.0,
+        "max": 1.0
       },
-      "bass_step11": {
-        "type": "f32",
-        "default": -1.0,
-        "min": -1.0,
-        "max": 24.0,
-        "unit": "degree"
-      },
-      "bass_step12": {
-        "type": "f32",
-        "default": 5.0,
-        "min": -1.0,
-        "max": 24.0,
-        "unit": "degree"
-      },
-      "bass_step13": {
+      "chh_step1": {
         "type": "f32",
         "default": 0.0,
-        "min": -1.0,
-        "max": 24.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step10": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step11": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step12": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step13": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step14": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step15": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step16": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step2": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step3": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step4": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step5": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step6": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step7": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step8": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step9": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "drums_vol": {
+        "type": "f32",
+        "default": 0.8,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "filter_decay": {
+        "type": "f32",
+        "default": 0.16,
+        "min": 0.01,
+        "max": 1.0,
+        "unit": "s"
+      },
+      "filter_env": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "glide": {
+        "type": "f32",
+        "default": 0.06,
+        "min": 0.0,
+        "max": 0.5,
+        "unit": "s"
+      },
+      "key": {
+        "type": "i32",
+        "default": 45.0,
+        "min": 24.0,
+        "max": 72.0,
+        "unit": "MIDI"
+      },
+      "kick_step1": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step10": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step11": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step12": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step13": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step14": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step15": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step16": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step2": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step3": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step4": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step5": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step6": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step7": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step8": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step9": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "mode": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 6.0,
         "unit": "degree"
       },
-      "bass_step14": {
+      "ohh_step1": {
         "type": "f32",
-        "default": -1.0,
-        "min": -1.0,
-        "max": 24.0,
-        "unit": "degree"
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
       },
-      "bass_step15": {
+      "ohh_step10": {
         "type": "f32",
-        "default": 3.0,
-        "min": -1.0,
-        "max": 24.0,
-        "unit": "degree"
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
       },
-      "bass_step16": {
+      "ohh_step11": {
         "type": "f32",
-        "default": 7.0,
-        "min": -1.0,
-        "max": 24.0,
-        "unit": "degree"
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "ohh_step12": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "ohh_step13": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "ohh_step14": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "ohh_step15": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "ohh_step16": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "ohh_step2": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "ohh_step3": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "ohh_step4": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "ohh_step5": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "ohh_step6": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "ohh_step7": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "ohh_step8": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "ohh_step9": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "pad_vol": {
+        "type": "f32",
+        "default": 0.5,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step1": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step10": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step11": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step12": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step13": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step14": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step15": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step16": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step2": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step3": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step4": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step5": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step6": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step7": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step8": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step9": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "squelch": {
+        "type": "f32",
+        "default": 0.72,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "tempo": {
+        "type": "f32",
+        "default": 130.0,
+        "min": 60.0,
+        "max": 180.0,
+        "unit": "BPM"
       }
     },
     "outputs": {
@@ -616,6 +616,27 @@
         "step1": {
           "from": "/kick_step1"
         },
+        "step10": {
+          "from": "/kick_step10"
+        },
+        "step11": {
+          "from": "/kick_step11"
+        },
+        "step12": {
+          "from": "/kick_step12"
+        },
+        "step13": {
+          "from": "/kick_step13"
+        },
+        "step14": {
+          "from": "/kick_step14"
+        },
+        "step15": {
+          "from": "/kick_step15"
+        },
+        "step16": {
+          "from": "/kick_step16"
+        },
         "step2": {
           "from": "/kick_step2"
         },
@@ -639,27 +660,6 @@
         },
         "step9": {
           "from": "/kick_step9"
-        },
-        "step10": {
-          "from": "/kick_step10"
-        },
-        "step11": {
-          "from": "/kick_step11"
-        },
-        "step12": {
-          "from": "/kick_step12"
-        },
-        "step13": {
-          "from": "/kick_step13"
-        },
-        "step14": {
-          "from": "/kick_step14"
-        },
-        "step15": {
-          "from": "/kick_step15"
-        },
-        "step16": {
-          "from": "/kick_step16"
         }
       }
     },
@@ -714,6 +714,27 @@
         "step1": {
           "from": "/snare_step1"
         },
+        "step10": {
+          "from": "/snare_step10"
+        },
+        "step11": {
+          "from": "/snare_step11"
+        },
+        "step12": {
+          "from": "/snare_step12"
+        },
+        "step13": {
+          "from": "/snare_step13"
+        },
+        "step14": {
+          "from": "/snare_step14"
+        },
+        "step15": {
+          "from": "/snare_step15"
+        },
+        "step16": {
+          "from": "/snare_step16"
+        },
         "step2": {
           "from": "/snare_step2"
         },
@@ -737,27 +758,6 @@
         },
         "step9": {
           "from": "/snare_step9"
-        },
-        "step10": {
-          "from": "/snare_step10"
-        },
-        "step11": {
-          "from": "/snare_step11"
-        },
-        "step12": {
-          "from": "/snare_step12"
-        },
-        "step13": {
-          "from": "/snare_step13"
-        },
-        "step14": {
-          "from": "/snare_step14"
-        },
-        "step15": {
-          "from": "/snare_step15"
-        },
-        "step16": {
-          "from": "/snare_step16"
         }
       }
     },
@@ -812,6 +812,27 @@
         "step1": {
           "from": "/chh_step1"
         },
+        "step10": {
+          "from": "/chh_step10"
+        },
+        "step11": {
+          "from": "/chh_step11"
+        },
+        "step12": {
+          "from": "/chh_step12"
+        },
+        "step13": {
+          "from": "/chh_step13"
+        },
+        "step14": {
+          "from": "/chh_step14"
+        },
+        "step15": {
+          "from": "/chh_step15"
+        },
+        "step16": {
+          "from": "/chh_step16"
+        },
         "step2": {
           "from": "/chh_step2"
         },
@@ -835,27 +856,6 @@
         },
         "step9": {
           "from": "/chh_step9"
-        },
-        "step10": {
-          "from": "/chh_step10"
-        },
-        "step11": {
-          "from": "/chh_step11"
-        },
-        "step12": {
-          "from": "/chh_step12"
-        },
-        "step13": {
-          "from": "/chh_step13"
-        },
-        "step14": {
-          "from": "/chh_step14"
-        },
-        "step15": {
-          "from": "/chh_step15"
-        },
-        "step16": {
-          "from": "/chh_step16"
         }
       }
     },
@@ -910,6 +910,27 @@
         "step1": {
           "from": "/ohh_step1"
         },
+        "step10": {
+          "from": "/ohh_step10"
+        },
+        "step11": {
+          "from": "/ohh_step11"
+        },
+        "step12": {
+          "from": "/ohh_step12"
+        },
+        "step13": {
+          "from": "/ohh_step13"
+        },
+        "step14": {
+          "from": "/ohh_step14"
+        },
+        "step15": {
+          "from": "/ohh_step15"
+        },
+        "step16": {
+          "from": "/ohh_step16"
+        },
         "step2": {
           "from": "/ohh_step2"
         },
@@ -933,27 +954,6 @@
         },
         "step9": {
           "from": "/ohh_step9"
-        },
-        "step10": {
-          "from": "/ohh_step10"
-        },
-        "step11": {
-          "from": "/ohh_step11"
-        },
-        "step12": {
-          "from": "/ohh_step12"
-        },
-        "step13": {
-          "from": "/ohh_step13"
-        },
-        "step14": {
-          "from": "/ohh_step14"
-        },
-        "step15": {
-          "from": "/ohh_step15"
-        },
-        "step16": {
-          "from": "/ohh_step16"
         }
       }
     },
@@ -1075,10 +1075,10 @@
       "address": "/bass_harmony",
       "doc": "Tonal context for the bass (natural minor). KEY/CHORD SELECTOR: the `key` pipe (/key/in) sets `root`; the whole bass line and the pad re-spell live when it changes.",
       "inputs": {
+        "degrees": 7.0,
         "root": {
           "from": "/key"
         },
-        "degrees": 7.0,
         "s0": 0.0,
         "s1": 2.0,
         "s2": 3.0,
@@ -1104,10 +1104,10 @@
       "address": "/pad_harmony",
       "doc": "Tonal context for the pad (same natural minor, one octave up). Re-spells with /key.",
       "inputs": {
+        "degrees": 7.0,
         "root": {
           "from": "/key_up"
         },
-        "degrees": 7.0,
         "s0": 0.0,
         "s1": 2.0,
         "s2": 3.0,
@@ -1129,6 +1129,27 @@
         "length": 16.0,
         "step1": {
           "from": "/bass_step1"
+        },
+        "step10": {
+          "from": "/bass_step10"
+        },
+        "step11": {
+          "from": "/bass_step11"
+        },
+        "step12": {
+          "from": "/bass_step12"
+        },
+        "step13": {
+          "from": "/bass_step13"
+        },
+        "step14": {
+          "from": "/bass_step14"
+        },
+        "step15": {
+          "from": "/bass_step15"
+        },
+        "step16": {
+          "from": "/bass_step16"
         },
         "step2": {
           "from": "/bass_step2"
@@ -1153,27 +1174,6 @@
         },
         "step9": {
           "from": "/bass_step9"
-        },
-        "step10": {
-          "from": "/bass_step10"
-        },
-        "step11": {
-          "from": "/bass_step11"
-        },
-        "step12": {
-          "from": "/bass_step12"
-        },
-        "step13": {
-          "from": "/bass_step13"
-        },
-        "step14": {
-          "from": "/bass_step14"
-        },
-        "step15": {
-          "from": "/bass_step15"
-        },
-        "step16": {
-          "from": "/bass_step16"
         }
       }
     },
@@ -1182,11 +1182,11 @@
       "address": "/bass_mode",
       "doc": "MODE SELECTOR (bass): shift every bass degree by the `mode` pipe (/mode/in, 0-6 scale steps), re-centering the whole line on that degree -- modal, staying in the current key's collection. amount=0 leaves the line on the tonic.",
       "inputs": {
-        "notes": {
-          "from": "/bass_seq"
-        },
         "amount": {
           "from": "/mode"
+        },
+        "notes": {
+          "from": "/bass_seq"
         }
       }
     },
@@ -1205,11 +1205,11 @@
       "address": "/bass_freq",
       "doc": "Resolve the mode-shifted degree to Hz against /bass_harmony (natural minor) -- the note→freq step the voicer used to do internally.",
       "inputs": {
-        "pitch": {
-          "from": "/bass_unpack.pitch"
-        },
         "harmony": {
           "from": "/bass_harmony"
+        },
+        "pitch": {
+          "from": "/bass_unpack.pitch"
         }
       }
     },
@@ -1243,15 +1243,15 @@
       "address": "/bass_env",
       "doc": "Snappy 303 contour: fast attack, low sustain. Gate is the unpacked note velocity; `decay` is the /filter_decay pipe (/filter_decay/in) -- longer decay = longer squelch tail. Drives BOTH the filter sweep and the VCA.",
       "inputs": {
-        "gate": {
-          "from": "/bass_unpack.velocity"
-        },
         "attack": 0.005,
         "decay": {
           "from": "/filter_decay"
         },
-        "sustain": 0.25,
-        "release": 0.09
+        "gate": {
+          "from": "/bass_unpack.velocity"
+        },
+        "release": 0.09,
+        "sustain": 0.25
       }
     },
     {
@@ -1272,12 +1272,12 @@
       "address": "/bass_cutoff",
       "doc": "Amount-scaled env CV [0,1] -> filter cutoff [160,2800] Hz (exponential). The acid squelch: the filter opens on the attack and closes as the note decays; env amount sets how far it opens.",
       "inputs": {
+        "curve": "Exponential",
         "in": {
           "from": "/bass_env_amt"
         },
-        "out_min": 160.0,
         "out_max": 2800.0,
-        "curve": "Exponential"
+        "out_min": 160.0
       }
     },
     {
@@ -1366,11 +1366,11 @@
       "address": "/pad_mode",
       "doc": "MODE SELECTOR (pad): shift the whole-note trigger degree by the SAME `mode` pipe (/mode/in) so the pad chord roots on the selected degree, moving in lockstep with the bass -- one knob re-roots both.",
       "inputs": {
-        "notes": {
-          "from": "/pad_seq"
-        },
         "amount": {
           "from": "/mode"
+        },
+        "notes": {
+          "from": "/pad_seq"
         }
       }
     },
@@ -1393,11 +1393,11 @@
         "voices": 8.0
       },
       "inputs": {
-        "notes": {
-          "from": "/pad_chord"
-        },
         "harmony": {
           "from": "/pad_harmony"
+        },
+        "notes": {
+          "from": "/pad_chord"
         }
       },
       "voice": "acid-pad-voice"
@@ -1432,18 +1432,18 @@
       "address": "/pad_pump",
       "doc": "Sidechain pump: ducks the pad (`audio` <- /pad_out) in time with the kick (`sidechain` <- /kick_v.audio, the raw kick voicer before the drum trim). Every four-on-the-floor kick shoves the pad down and it ramps back over the release — the classic acid-techno breathing pad. Low threshold + fast attack so each kick fully triggers a snappy duck; ~200 ms release recovers before the next quarter-note kick. key_hp stays open (20 Hz) so the kick's low end drives the detector rather than being filtered out; makeup 0 so the duck reads as a real level drop.",
       "inputs": {
+        "attack": 1.0,
         "audio": {
           "from": "/pad_out"
         },
+        "key_hp": 20.0,
+        "makeup": 0.0,
+        "ratio": 5.0,
+        "release": 200.0,
         "sidechain": {
           "from": "/kick_v.audio"
         },
-        "threshold": -30.0,
-        "ratio": 5.0,
-        "attack": 1.0,
-        "release": 200.0,
-        "makeup": 0.0,
-        "key_hp": 20.0
+        "threshold": -30.0
       }
     },
     {
@@ -1480,9 +1480,9 @@
         "audio": {
           "from": "/mix2"
         },
-        "room": 0.9,
         "damp": 0.5,
-        "mix": 0.15
+        "mix": 0.15,
+        "room": 0.9
       }
     },
     {

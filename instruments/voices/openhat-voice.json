@@ -29,11 +29,11 @@
       "address": "/hat",
       "doc": "The closed hat-voice, opened up: longer decay/release and a slightly lower highpass so it sizzles instead of ticking.",
       "inputs": {
+        "cutoff": 5500.0,
+        "decay": 0.32,
         "gate": {
           "from": "/gate"
         },
-        "cutoff": 5500.0,
-        "decay": 0.32,
         "release": 0.28,
         "sustain": 0.0
       },
