@@ -366,6 +366,10 @@ fn run_every_verb(r: &dyn Resources) -> Vec<String> {
         |a| set_instrument_interface_input_meta(a, r),
     ));
     out.push(call(
+        json!({ "source": s, "name": "cutoff", "direction": "input", "fields": ["unit"] }),
+        |a| clear_instrument_interface_meta(a, r),
+    ));
+    out.push(call(
         json!({ "source": s, "address": "/osc", "input": "freq" }),
         |a| unwire_instrument_input(a, r),
     ));
@@ -394,6 +398,10 @@ fn run_every_verb(r: &dyn Resources) -> Vec<String> {
     out.push(call(
         json!({ "source": s, "address": "/voicer", "name": "voices", "value": 4 }),
         |a| set_instrument_constant(a, r),
+    ));
+    out.push(call(
+        json!({ "source": s, "address": "/voicer", "name": "voices" }),
+        |a| remove_instrument_constant(a, r),
     ));
     out.push(call(
         json!({ "source": s, "id": "kick", "resource_source": "kick.wav" }),

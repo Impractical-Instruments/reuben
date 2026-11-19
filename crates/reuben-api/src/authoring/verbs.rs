@@ -444,6 +444,16 @@ pub fn set_instrument_constant(
     })
 }
 
+/// Remove an instantiate-time constant from a node, reverting it to the operator's default.
+pub fn remove_instrument_constant(
+    args: &RemoveInstrumentConstant,
+    resources: &dyn Resources,
+) -> Result<Answer<EditResult>, Refusal> {
+    run_edit(&args.source, &args.expect, resources, |src, reg, res| {
+        core_edit::remove_instrument_constant(src, &args.address, &args.name, reg, res)
+    })
+}
+
 /// Add an interface input pipe.
 pub fn add_instrument_interface_input(
     args: &AddInstrumentInterfaceInput,
@@ -542,6 +552,29 @@ pub fn set_instrument_interface_output_meta(
             reg,
             res,
         )
+    })
+}
+
+/// Remove metadata fields from an interface pipe of either direction.
+pub fn clear_instrument_interface_meta(
+    args: &ClearInstrumentInterfaceMeta,
+    resources: &dyn Resources,
+) -> Result<Answer<EditResult>, Refusal> {
+    let direction = match args.direction {
+        PipeDirection::Input => core_edit::PipeDirection::Input,
+        PipeDirection::Output => core_edit::PipeDirection::Output,
+    };
+    let fields: Vec<core_edit::MetaField> = (args.fields.iter())
+        .map(|field| match field {
+            MetaField::Channel => core_edit::MetaField::Channel,
+            MetaField::Min => core_edit::MetaField::Min,
+            MetaField::Max => core_edit::MetaField::Max,
+            MetaField::Curve => core_edit::MetaField::Curve,
+            MetaField::Unit => core_edit::MetaField::Unit,
+        })
+        .collect();
+    run_edit(&args.source, &args.expect, resources, |src, reg, res| {
+        core_edit::clear_instrument_interface_meta(src, &args.name, direction, &fields, reg, res)
     })
 }
 
@@ -1067,6 +1100,110 @@ mod tests {
         args.address = "/ghost".to_string();
 
         let refusal = set_instrument_input(&args, &store).expect_err("no such node");
+        assert!(refusal.message.contains("/ghost"), "{refusal}");
+    }
+
+    const PIPED: &str = r#"{
+        "format_version": 3,
+        "instrument": "pipe-test",
+        "nodes": [ { "type": "oscillator", "address": "/osc",
+                     "inputs": { "freq": { "from": "/cutoff" } } },
+                   { "type": "voicer", "address": "/voices", "config": { "voices": 4 } } ],
+        "interface": {
+            "inputs": { "cutoff": { "type": "f32", "min": 20, "max": 20000, "curve": "exp",
+                                    "unit": "Hz", "default": 440 } },
+            "outputs": { "main": { "from": "/osc", "unit": "V" } }
+        }
+    }"#;
+
+    /// The wire spelling of both new arguments, taken as a model would send it.
+    fn clear_meta(args: serde_json::Value) -> Result<Answer<EditResult>, Refusal> {
+        let store = MemoryStore::with("inst.json", PIPED);
+        let args: ClearInstrumentInterfaceMeta =
+            serde_json::from_value(args).expect("the arguments parse");
+        clear_instrument_interface_meta(&args, &store)
+    }
+
+    #[test]
+    fn clearing_meta_writes_through_the_store_and_notes_an_absent_field() {
+        let store = MemoryStore::with("inst.json", PIPED);
+        let args: ClearInstrumentInterfaceMeta = serde_json::from_value(serde_json::json!({
+            "source": "inst.json", "name": "main", "direction": "output",
+            "fields": ["unit", "channel"]
+        }))
+        .expect("the arguments parse");
+        let answer = clear_instrument_interface_meta(&args, &store).expect("the pipe exists");
+        assert!(answer.output.written, "{:?}", answer.output);
+        assert_eq!(
+            answer.output.notes,
+            ["`channel` was not set on output pipe `main`; nothing to clear"]
+        );
+        assert!(
+            !store.read("inst.json").contains("\"V\""),
+            "{}",
+            store.read("inst.json")
+        );
+    }
+
+    #[test]
+    fn clearing_meta_refuses_a_field_its_direction_cannot_carry_and_a_field_it_does_not_know() {
+        let refusal = clear_meta(serde_json::json!({
+            "source": "inst.json", "name": "main", "direction": "output", "fields": ["curve"]
+        }))
+        .expect_err("an output pipe has no curve");
+        assert!(refusal.message.contains("`curve`"), "{refusal}");
+
+        let missing = clear_meta(serde_json::json!({
+            "source": "inst.json", "name": "ghost", "direction": "input", "fields": ["unit"]
+        }))
+        .expect_err("no such pipe");
+        assert!(missing.message.contains("ghost"), "{missing}");
+
+        for bad in [
+            serde_json::json!({ "source": "i", "name": "main", "direction": "output",
+                                "fields": ["label"] }),
+            serde_json::json!({ "source": "i", "name": "main", "direction": "both",
+                                "fields": ["unit"] }),
+            serde_json::json!({ "source": "i", "name": "main", "fields": ["unit"] }),
+        ] {
+            assert!(
+                serde_json::from_value::<ClearInstrumentInterfaceMeta>(bad.clone()).is_err(),
+                "{bad} is not a clear"
+            );
+        }
+    }
+
+    #[test]
+    fn removing_a_constant_writes_and_a_missing_node_is_a_refusal() {
+        let store = MemoryStore::with("inst.json", PIPED);
+        let remove = |address: &str| {
+            remove_instrument_constant(
+                &RemoveInstrumentConstant {
+                    source: "inst.json".to_string(),
+                    address: address.to_string(),
+                    name: "voices".to_string(),
+                    expect: None,
+                },
+                &store,
+            )
+        };
+        let answer = remove("/voices").expect("the node exists");
+        assert!(
+            answer.output.written && answer.output.notes.is_empty(),
+            "{:?}",
+            answer.output
+        );
+        assert!(
+            !store.read("inst.json").contains("config"),
+            "{}",
+            store.read("inst.json")
+        );
+
+        let again = remove("/voices").expect("an unset constant is noted");
+        assert_eq!(again.output.hash, answer.output.hash);
+        assert_eq!(again.output.notes.len(), 1, "{:?}", again.output);
+
+        let refusal = remove("/ghost").expect_err("no such node");
         assert!(refusal.message.contains("/ghost"), "{refusal}");
     }
 

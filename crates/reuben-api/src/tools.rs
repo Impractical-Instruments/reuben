@@ -137,6 +137,8 @@ roster! {
 
     SET_INSTRUMENT_CONSTANT = "set_instrument_constant", Document,
         authoring_prose::SET_INSTRUMENT_CONSTANT;
+    REMOVE_INSTRUMENT_CONSTANT = "remove_instrument_constant", Document,
+        authoring_prose::REMOVE_INSTRUMENT_CONSTANT;
 
     ADD_INSTRUMENT_INTERFACE_INPUT = "add_instrument_interface_input", Document,
         authoring_prose::ADD_INSTRUMENT_INTERFACE_INPUT;
@@ -150,6 +152,8 @@ roster! {
         authoring_prose::SET_INSTRUMENT_INTERFACE_INPUT_META;
     SET_INSTRUMENT_INTERFACE_OUTPUT_META = "set_instrument_interface_output_meta", Document,
         authoring_prose::SET_INSTRUMENT_INTERFACE_OUTPUT_META;
+    CLEAR_INSTRUMENT_INTERFACE_META = "clear_instrument_interface_meta", Document,
+        authoring_prose::CLEAR_INSTRUMENT_INTERFACE_META;
 
     ADD_INSTRUMENT_RESOURCE = "add_instrument_resource", Document,
         authoring_prose::ADD_INSTRUMENT_RESOURCE;
@@ -173,12 +177,13 @@ pub fn names() -> Vec<&'static str> {
 /// instrument. What makes a token in prose *read* as a tool a model can call.
 ///
 /// Parity: this cannot be derived from [`CONTRACTS`], and deriving it would be worse than useless.
-/// Seven of these twelve are carried by exactly one contract, so a derived list would lose the
+/// Eight of these thirteen are carried by exactly one contract, so a derived list would lose the
 /// opening at the moment that contract left the roster — un-shaping the very token left dangling in
 /// a sibling's sentence, and passing the check whose whole job is to fail there. The list has to
 /// outlive the entry to catch its removal.
 const VERB_PREFIXES: &[&str] = &[
     "add_",
+    "clear_",
     "describe_",
     "get_",
     "new_",

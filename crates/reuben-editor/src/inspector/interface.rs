@@ -2,18 +2,21 @@
 //! nothing selected, and the metadata of the pipe selected on the canvas.
 //!
 //! Each change is one authoring verb. A pipe's type is chosen when it is added: no verb changes it.
-//! A metadata field can be set and not cleared, as `set_instrument_interface_input_meta` and
-//! `set_instrument_interface_output_meta` write only the fields they are given.
+//! A metadata row emptied clears that field through `clear_instrument_interface_meta`, since the
+//! set-meta verbs write only the fields they are given. The curve has no clear: a pipe declaring
+//! none reads back, and sweeps, as `lin`, so picking `lin` is all a clear would show.
 
 use eframe::egui;
 use reuben_api::authoring::{
     add_instrument_interface_input, add_instrument_interface_output,
-    remove_instrument_interface_input, remove_instrument_interface_output,
-    set_instrument_interface_input_meta, set_instrument_interface_output_meta,
-    wire_instrument_interface_output, AddInstrumentInterfaceInput, AddInstrumentInterfaceOutput,
-    Answer, EditResult, InstrumentStructure, InterfaceInput, InterfaceOutput, Refusal,
-    RemoveInstrumentInterfacePipe, Resources, SetInstrumentInterfaceInputMeta,
-    SetInstrumentInterfaceOutputMeta, WireInstrumentInterfaceOutput,
+    clear_instrument_interface_meta, remove_instrument_interface_input,
+    remove_instrument_interface_output, set_instrument_interface_input_meta,
+    set_instrument_interface_output_meta, wire_instrument_interface_output,
+    AddInstrumentInterfaceInput, AddInstrumentInterfaceOutput, Answer,
+    ClearInstrumentInterfaceMeta, EditResult, InstrumentStructure, InterfaceInput, InterfaceOutput,
+    MetaField, PipeDirection, Refusal, RemoveInstrumentInterfacePipe, Resources,
+    SetInstrumentInterfaceInputMeta, SetInstrumentInterfaceOutputMeta,
+    WireInstrumentInterfaceOutput,
 };
 use serde_json::Value;
 
@@ -45,6 +48,12 @@ pub enum PipeEdit {
     OutputMeta {
         name: String,
         meta: Meta,
+    },
+    /// `fields` removed from the pipe `name`, so the pipe holds no value for them.
+    ClearMeta {
+        name: String,
+        direction: PipeDirection,
+        fields: Vec<MetaField>,
     },
     /// The output pipe `name`, fed from the wire-ref `from` in place of what fed it.
     Feed {
@@ -134,6 +143,20 @@ impl PipeEdit {
                     min: meta.min,
                     max: meta.max,
                     unit: meta.unit,
+                    expect,
+                },
+                store,
+            ),
+            PipeEdit::ClearMeta {
+                name,
+                direction,
+                fields,
+            } => clear_instrument_interface_meta(
+                &ClearInstrumentInterfaceMeta {
+                    source,
+                    name,
+                    direction,
+                    fields,
                     expect,
                 },
                 store,
@@ -430,10 +453,10 @@ pub fn input(
                     });
                 ui.end_row();
                 if curve != was {
-                    let curve = Meta {
+                    let curve = Change::Set(Meta {
                         curve: Some(curve),
                         ..Meta::default()
-                    };
+                    });
                     meta = meta.or(Some(Ok((curve, top.hash.clone()))));
                 }
             }
@@ -457,10 +480,7 @@ pub fn input(
             meta
         })
         .inner;
-    asks.extend(typed(meta, |meta| PipeEdit::InputMeta {
-        name: name.to_string(),
-        meta,
-    }));
+    asks.extend(typed(meta, name, PipeDirection::Input));
     ui.separator();
     if ui.button("Remove input").clicked() {
         let edit = PipeEdit::RemoveInput(name.to_string());
@@ -555,10 +575,7 @@ pub fn output(
             meta
         })
         .inner;
-    asks.extend(typed(meta, |meta| PipeEdit::OutputMeta {
-        name: name.to_string(),
-        meta,
-    }));
+    asks.extend(typed(meta, name, PipeDirection::Output));
     ui.separator();
     if ui.button("Remove output").clicked() {
         let edit = PipeEdit::RemoveOutput(name.to_string());
@@ -566,8 +583,15 @@ pub fn output(
     }
 }
 
-/// Metadata typed into a row, and the hash to write it against; or why what was typed is none.
-type Typed = Result<(Meta, String), String>;
+/// What a metadata row asks of its pipe: a field written, or a field removed.
+#[derive(Debug, Clone, PartialEq)]
+enum Change {
+    Set(Meta),
+    Clear(MetaField),
+}
+
+/// The change typed into a row, and the hash to write it against; or why what was typed is none.
+type Typed = Result<(Change, String), String>;
 
 /// One metadata row: a label and a text box. Returns what was typed once a change is typed in and
 /// the box let go of.
@@ -576,7 +600,7 @@ fn field(
     inspector: &mut Inspector,
     (owner, name): (&str, &'static str),
     current: Current<'_>,
-    parse: fn(&str, &str) -> Result<Meta, String>,
+    parse: fn(&str, &str) -> Result<Change, String>,
 ) -> Option<Typed> {
     let typed = text(ui, inspector, name, (owner, name), current, false);
     ui.end_row();
@@ -584,31 +608,42 @@ fn field(
     Some(parse(name, typed.trim()).map(|meta| (meta, hash)))
 }
 
-/// The ask a typed metadata row makes of the pipe that `edit` builds the change for.
-fn typed(typed: Option<Typed>, edit: impl FnOnce(Meta) -> PipeEdit) -> Option<Ask> {
-    Some(match typed? {
-        Ok((meta, hash)) => Ask::Edit(Edit::Pipe(edit(meta)), Some(hash)),
-        Err(why) => Ask::Refuse(why),
-    })
+/// The ask a typed metadata row makes of the pipe `name`.
+fn typed(typed: Option<Typed>, name: &str, direction: PipeDirection) -> Option<Ask> {
+    let (change, hash) = match typed? {
+        Ok(typed) => typed,
+        Err(why) => return Some(Ask::Refuse(why)),
+    };
+    let name = name.to_string();
+    let edit = match (change, direction) {
+        (Change::Set(meta), PipeDirection::Input) => PipeEdit::InputMeta { name, meta },
+        (Change::Set(meta), PipeDirection::Output) => PipeEdit::OutputMeta { name, meta },
+        (Change::Clear(field), direction) => PipeEdit::ClearMeta {
+            name,
+            direction,
+            fields: vec![field],
+        },
+    };
+    Some(Ask::Edit(Edit::Pipe(edit), Some(hash)))
 }
 
 fn number_text(value: Option<f64>) -> String {
     value.map(|v| v.to_string()).unwrap_or_default()
 }
 
-fn cleared(name: &str) -> String {
-    format!("A pipe's {name} can be changed, not cleared.")
-}
-
-fn parse_number(name: &str, text: &str) -> Result<Meta, String> {
+fn parse_number(name: &str, text: &str) -> Result<Change, String> {
+    let field = match name {
+        "min" => MetaField::Min,
+        _ => MetaField::Max,
+    };
     if text.is_empty() {
-        return Err(cleared(name));
+        return Ok(Change::Clear(field));
     }
     let number = (text.parse::<f64>().ok())
         .filter(|n| n.is_finite())
         .ok_or_else(|| format!("{name}: `{text}` is not a number"))?;
-    Ok(match name {
-        "min" => Meta {
+    Ok(Change::Set(match field {
+        MetaField::Min => Meta {
             min: Some(number),
             ..Meta::default()
         },
@@ -616,29 +651,29 @@ fn parse_number(name: &str, text: &str) -> Result<Meta, String> {
             max: Some(number),
             ..Meta::default()
         },
-    })
+    }))
 }
 
-fn parse_unit(name: &str, text: &str) -> Result<Meta, String> {
+fn parse_unit(_: &str, text: &str) -> Result<Change, String> {
     if text.is_empty() {
-        return Err(cleared(name));
+        return Ok(Change::Clear(MetaField::Unit));
     }
-    Ok(Meta {
+    Ok(Change::Set(Meta {
         unit: Some(text.to_string()),
         ..Meta::default()
-    })
+    }))
 }
 
-fn parse_channel(name: &str, text: &str) -> Result<Meta, String> {
+fn parse_channel(name: &str, text: &str) -> Result<Change, String> {
     if text.is_empty() {
-        return Err(cleared(name));
+        return Ok(Change::Clear(MetaField::Channel));
     }
     let channel =
         (text.parse::<usize>()).map_err(|_| format!("{name}: `{text}` is not a channel number"))?;
-    Ok(Meta {
+    Ok(Change::Set(Meta {
         channel: Some(channel),
         ..Meta::default()
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -758,32 +793,59 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn metadata_is_set_one_field_at_a_time_and_never_cleared() {
+    fn metadata_is_set_one_field_at_a_time_and_an_emptied_row_clears_its_field() {
         assert_eq!(
             parse_number("min", "20"),
-            Ok(Meta {
+            Ok(Change::Set(Meta {
                 min: Some(20.0),
                 ..Meta::default()
-            })
+            }))
         );
         assert_eq!(
             parse_number("max", "2e4"),
-            Ok(Meta {
+            Ok(Change::Set(Meta {
                 max: Some(20000.0),
                 ..Meta::default()
-            })
+            }))
         );
-        assert!(parse_number("min", "").is_err());
         assert!(parse_number("min", "loud").is_err());
         assert!(parse_number("max", "inf").is_err());
-        assert!(parse_unit("unit", "").is_err());
         assert!(parse_channel("channel", "-1").is_err());
         assert_eq!(
             parse_channel("channel", "1"),
-            Ok(Meta {
+            Ok(Change::Set(Meta {
                 channel: Some(1),
                 ..Meta::default()
-            })
+            }))
         );
+        assert_eq!(parse_number("min", ""), Ok(Change::Clear(MetaField::Min)));
+        assert_eq!(parse_number("max", ""), Ok(Change::Clear(MetaField::Max)));
+        assert_eq!(parse_unit("unit", ""), Ok(Change::Clear(MetaField::Unit)));
+        assert_eq!(
+            parse_channel("channel", ""),
+            Ok(Change::Clear(MetaField::Channel))
+        );
+    }
+
+    #[test]
+    fn a_cleared_row_asks_its_own_pipe_direction_to_clear_the_field() {
+        let cleared = |direction| match typed(
+            Some(Ok((Change::Clear(MetaField::Unit), "h".into()))),
+            "main",
+            direction,
+        ) {
+            Some(Ask::Edit(Edit::Pipe(edit), Some(hash))) if hash == "h" => edit,
+            _ => panic!("a clear is an edit against the hash it was typed over"),
+        };
+        for direction in [PipeDirection::Input, PipeDirection::Output] {
+            assert_eq!(
+                cleared(direction),
+                PipeEdit::ClearMeta {
+                    name: "main".into(),
+                    direction,
+                    fields: vec![MetaField::Unit],
+                }
+            );
+        }
     }
 }

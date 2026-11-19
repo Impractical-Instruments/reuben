@@ -1085,6 +1085,39 @@ pub fn set_instrument_constant(
     })
 }
 
+/// Remove an instantiate-time constant from a node, so the operator's declared default for it
+/// applies again. A constant that was not set is reported, not an error, as
+/// [`unwire_instrument_input`] reports an input with nothing on it.
+///
+/// This document's own interface input pipes are addressable here and **refuse**, as
+/// [`set_instrument_constant`] refuses them.
+pub fn remove_instrument_constant(
+    source: &str,
+    address: &str,
+    name: &str,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+) -> Result<EditResult, EditError> {
+    edit_existing(source, registry, resolver, |doc| {
+        let idx = node_index_for(doc, address, |_| {
+            "It is a loader-built pass-through with no `config` block, so it has no plan-time \
+             constant to remove."
+                .to_string()
+        })?;
+        let notes = if doc.nodes[idx].config.remove(name).is_some() {
+            Vec::new()
+        } else {
+            vec![format!(
+                "`{name}` was not set on `{address}`; nothing to remove"
+            )]
+        };
+        Ok(Applied {
+            echo: Echo::Nodes(Selection::names([address])),
+            notes,
+        })
+    })
+}
+
 // --- interface pipe verbs ------------------------------------------------------------------------
 
 /// Add an interface **input** pipe: a declared-type boundary input that mints an address internal
@@ -1294,6 +1327,121 @@ pub fn set_instrument_interface_output_meta(
             Some(_) => Err(EditError::Target(format!("`{name}` is not an output pipe"))),
             None => Err(EditError::Target(format!("no interface output `{name}`"))),
         }
+    })
+}
+
+/// Which half of the interface a pipe is declared in. The two are separate namespaces, so a name
+/// alone does not say which pipe is meant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipeDirection {
+    Input,
+    Output,
+}
+
+impl fmt::Display for PipeDirection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            PipeDirection::Input => "input",
+            PipeDirection::Output => "output",
+        })
+    }
+}
+
+/// A pipe metadata field that [`set_instrument_interface_input_meta`] or
+/// [`set_instrument_interface_output_meta`] writes, and so one [`clear_instrument_interface_meta`]
+/// can remove. `Curve` is an input pipe's only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MetaField {
+    Channel,
+    Min,
+    Max,
+    Curve,
+    Unit,
+}
+
+impl fmt::Display for MetaField {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            MetaField::Channel => "channel",
+            MetaField::Min => "min",
+            MetaField::Max => "max",
+            MetaField::Curve => "curve",
+            MetaField::Unit => "unit",
+        })
+    }
+}
+
+/// Remove metadata fields from an existing interface pipe, the inverse of the set-meta verbs: a
+/// field the set-meta verbs leave alone when omitted can only be dropped here.
+///
+/// A field the pipe does not hold is reported in `notes`, not refused: the pipe already ends in the
+/// state asked for. A field its direction cannot carry (`curve` on an output pipe) and an empty
+/// `fields` are refused, since no document could satisfy them.
+pub fn clear_instrument_interface_meta(
+    source: &str,
+    name: &str,
+    direction: PipeDirection,
+    fields: &[MetaField],
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+) -> Result<EditResult, EditError> {
+    if fields.is_empty() {
+        return Err(EditError::Target(
+            "name at least one metadata field to clear".to_string(),
+        ));
+    }
+    if direction == PipeDirection::Output && fields.contains(&MetaField::Curve) {
+        return Err(EditError::Target(
+            "an output pipe has no `curve` to clear: a curve is an input pipe's sweep. An output \
+             pipe's metadata is `channel`, `min`, `max` and `unit`."
+                .to_string(),
+        ));
+    }
+    let fields: std::collections::BTreeSet<MetaField> = fields.iter().copied().collect();
+    edit_existing(source, registry, resolver, |doc| {
+        let iface = interface_mut(doc);
+        let mut held = |field: MetaField| -> Result<bool, EditError> {
+            Ok(match direction {
+                PipeDirection::Input => match iface.inputs.get_mut(name) {
+                    Some(InterfaceEntry::Pipe(pipe)) => match field {
+                        MetaField::Channel => pipe.channel.take().is_some(),
+                        MetaField::Min => pipe.min.take().is_some(),
+                        MetaField::Max => pipe.max.take().is_some(),
+                        MetaField::Curve => pipe.curve.take().is_some(),
+                        MetaField::Unit => pipe.unit.take().is_some(),
+                    },
+                    Some(_) => {
+                        return Err(EditError::Target(format!("`{name}` is not an input pipe")))
+                    }
+                    None => return Err(EditError::Target(format!("no interface input `{name}`"))),
+                },
+                PipeDirection::Output => match iface.outputs.get_mut(name) {
+                    Some(InterfaceEntry::Feed(pipe)) => match field {
+                        MetaField::Channel => pipe.channel.take().is_some(),
+                        MetaField::Min => pipe.min.take().is_some(),
+                        MetaField::Max => pipe.max.take().is_some(),
+                        MetaField::Unit => pipe.unit.take().is_some(),
+                        MetaField::Curve => unreachable!("refused before the document was read"),
+                    },
+                    Some(_) => {
+                        return Err(EditError::Target(format!("`{name}` is not an output pipe")))
+                    }
+                    None => return Err(EditError::Target(format!("no interface output `{name}`"))),
+                },
+            })
+        };
+        let mut notes = Vec::new();
+        for field in fields {
+            if !held(field)? {
+                notes.push(format!(
+                    "`{field}` was not set on {direction} pipe `{name}`; nothing to clear"
+                ));
+            }
+        }
+        Ok(Applied {
+            echo: Echo::Pipes(Selection::names([name])),
+            notes,
+        })
     })
 }
 

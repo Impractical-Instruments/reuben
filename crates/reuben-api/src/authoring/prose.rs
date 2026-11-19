@@ -50,7 +50,9 @@ pub const ADD_INSTRUMENT_NODE: &str =
 
 pub const REMOVE_INSTRUMENT_NODE: &str =
     "Remove a node. Cascades: auto-unwires every consumer wired from it and drops every \
-     interface output fed from it, reporting exactly what it broke — no unwire-first dance.";
+     interface output fed from it, reporting exactly what it broke — no unwire-first dance. \
+     Changing a node's type or resource is remove-and-re-add: its wires are dropped (consumers \
+     listed in notes) and must be re-made.";
 
 pub const RENAME_INSTRUMENT_NODE: &str =
     "Rename a node from one address to another (which must be free), rewiring every consumer \
@@ -86,6 +88,10 @@ pub const SET_INSTRUMENT_CONSTANT: &str =
     "Set an instantiate-time constant on a node (a plan-time `config` value like a Voicer's \
      `voices`). Echoes the change (from -> to), not the node.";
 
+pub const REMOVE_INSTRUMENT_CONSTANT: &str =
+    "Remove a constant from a node, reverting it to the operator's declared default. A constant \
+     that was not set is noted, not an error.";
+
 pub const ADD_INSTRUMENT_INTERFACE_INPUT: &str =
     "Add a boundary input pipe: a declared-type input that mints an address `/name` internal \
      nodes consume from, with optional channel, value, min/max, curve (lin/exp), and unit.";
@@ -106,6 +112,11 @@ pub const SET_INSTRUMENT_INTERFACE_INPUT_META: &str =
 pub const SET_INSTRUMENT_INTERFACE_OUTPUT_META: &str =
     "Update an output pipe's metadata (channel, min/max, unit); each provided field is \
      written, omitted fields are unchanged.";
+
+pub const CLEAR_INSTRUMENT_INTERFACE_META: &str =
+    "Remove metadata fields from an input or output pipe — what the set-meta verbs cannot do, \
+     since an omitted field is left unchanged. A field the pipe does not hold is noted, not an \
+     error; `curve` exists on input pipes only.";
 
 pub const ADD_INSTRUMENT_RESOURCE: &str =
     "Add a resource entry: a logical `id` (what a node's sample/voice/patch references) mapped \
