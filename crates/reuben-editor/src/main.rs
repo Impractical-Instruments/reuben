@@ -291,6 +291,10 @@ impl Editor {
             return;
         };
         let poll = session.poll(Instant::now(), &|| self.engine.channel());
+        if let Some(content_hash) = session.take_installed() {
+            self.engine
+                .note_installed(session.top().display().to_string(), content_hash);
+        }
         start::follow(
             session,
             &mut self.engine,

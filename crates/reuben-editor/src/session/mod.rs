@@ -120,6 +120,8 @@ pub struct Session {
     users: Option<(PathBuf, Listing)>,
     /// Where a listing under way will arrive. Replaced, and so let go, by the next listing.
     listing: Option<Receiver<Result<Vec<String>, String>>>,
+    /// The content hash the last of this session's Swaps installed, until taken.
+    installed: Option<String>,
     #[cfg(test)]
     touches: usize,
 }
@@ -171,6 +173,7 @@ impl Session {
             states: DocumentHistory::<FsResolver>::DEFAULT_CAPACITY,
             users: None,
             listing: None,
+            installed: None,
             #[cfg(test)]
             touches: 0,
         }
@@ -373,6 +376,13 @@ impl Session {
         }
     }
 
+    /// The content hash of the top-level file one of this session's Swaps installed since the last
+    /// call: known the moment the Swap answers, where asking the engine what it plays waits on its
+    /// next answer.
+    pub fn take_installed(&mut self) -> Option<String> {
+        self.installed.take()
+    }
+
     /// Offer what is on disk to the engine again, as after a start that the files have moved on
     /// from.
     pub fn reinstall(&mut self, channel: &dyn Fn() -> Option<Channel>) {
@@ -467,6 +477,11 @@ impl Session {
 
     fn swapped(&mut self, outcome: SwapOutcome, channel: &dyn Fn() -> Option<Channel>) {
         self.swapping = false;
+        if let Ok(result) = &outcome {
+            if result.report.report.ok && result.conflict.is_none() && result.held.is_none() {
+                self.installed = Some(result.report.content_hash.clone());
+            }
+        }
         if self.swap_again {
             self.swap_again = false;
             self.install(channel);

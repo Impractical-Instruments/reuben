@@ -435,6 +435,15 @@ impl Engine {
         }
     }
 
+    /// Take `source`, installed as `content_hash`, as what the engine plays, as when a Swap of it
+    /// answers that it landed. What the engine is next seen to play replaces it.
+    pub fn note_installed(&mut self, source: String, content_hash: String) {
+        self.plays = Some(Playing {
+            source,
+            content_hash,
+        });
+    }
+
     /// The file the engine plays, as last seen: through [`follow_installed`](Self::follow_installed)
     /// for an embedded engine, [`follow_link`](Self::follow_link) for an attached one.
     pub fn plays(&self) -> Option<&Playing> {
