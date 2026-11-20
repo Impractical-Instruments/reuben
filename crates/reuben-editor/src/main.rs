@@ -15,6 +15,7 @@ mod feedback;
 mod held_swap;
 mod inspector;
 mod link;
+mod meter_strip;
 mod pick;
 mod session;
 mod start;
@@ -37,6 +38,7 @@ use crate::controls::Controls;
 use crate::engine::{Engine, Level};
 use crate::held_swap::HeldSwaps;
 use crate::inspector::Inspector;
+use crate::meter_strip::MeterStrip;
 use crate::session::{Session, Status, TrailAsk};
 use crate::start::{Launch, Start};
 
@@ -125,6 +127,10 @@ fn main() -> eframe::Result {
                 start: start_screen,
                 launch,
                 held,
+                meters: MeterStrip::new({
+                    let ctx = cc.egui_ctx.clone();
+                    move || ctx.request_repaint()
+                }),
             }))
         }),
     )
@@ -173,6 +179,7 @@ struct Editor {
     start: Start,
     launch: Launch,
     held: HeldSwaps,
+    meters: MeterStrip,
 }
 
 impl Editor {
@@ -294,6 +301,11 @@ impl eframe::App for Editor {
                 });
             });
         });
+        // Along the bottom edge, so the levels stay in view whatever the central panel shows.
+        if let Some(wait) = self.meters.poll(Instant::now(), self.engine.channel()) {
+            ui.ctx().request_repaint_after(wait);
+        }
+        egui::Panel::bottom("meters").show(ui, |ui| meter_strip::show(ui, &mut self.meters));
         if let Some(session) = &mut self.session {
             let asked = session::shortcut(ui.ctx()).or(session::show(ui, session));
             if let Some(direction) = asked {

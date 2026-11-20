@@ -202,6 +202,11 @@ fn visuals() -> Visuals {
     v
 }
 
+/// A level meter's RMS bar; its peak bar is the same colour, lighter.
+pub const METER: Color32 = BLUE;
+/// A level meter's clip lamp, once lit.
+pub const CLIP: Color32 = ERROR;
+
 /// How much of its colour a wire keeps while nothing is selected.
 pub const RESTING_WIRE: f32 = 0.8;
 
