@@ -186,6 +186,67 @@ fn the_edit_banner_leaves_the_inspector_uncovered() {
     }
 }
 
+#[test]
+fn undo_in_the_top_bar_steps_the_session_back() {
+    let scratch = Scratch::new("ui_top_bar_undo");
+    let config = TempConfig::new();
+    let top = instrument(&scratch);
+    let mut editor = editor(&top, &config);
+    editor.canvas.select(Some(Item::Input("gain".to_string())));
+    let mut harness = harness(editor);
+
+    harness.get_by_label("min").focus();
+    harness.run_steps(2);
+    replace_text(&mut harness, "min", "0.1");
+    harness.key_press(egui::Key::Enter);
+    harness.run_steps(4);
+    assert_eq!(range(&harness), (Some(0.1), Some(1.0)));
+
+    let undo = harness.get_by_label_contains("Undo");
+    let canvas = harness.get_by_label("Start screen").rect().top();
+    assert!(
+        undo.rect().bottom() <= canvas,
+        "Undo at {:?} is not above the canvas at y = {canvas}",
+        undo.rect()
+    );
+    undo.click();
+    harness.run_steps(4);
+    assert_eq!(range(&harness), (Some(0.0), Some(1.0)));
+}
+
+#[test]
+fn whether_the_instrument_plays_is_said_in_the_top_bar_and_no_files_are_listed() {
+    let scratch = Scratch::new("ui_top_bar_status");
+    let config = TempConfig::new();
+    let top = instrument(&scratch);
+    let harness = harness(editor(&top, &config));
+
+    // A session opens saying its instrument plays; this one's engine is a stand-in.
+    let status = harness.get_by_label("Playing ui.").rect();
+    let canvas = harness.get_by_label("Start screen").rect();
+    assert!(
+        status.bottom() <= canvas.top(),
+        "the status at {status:?} is not above the canvas at {canvas:?}"
+    );
+    assert!(harness.query_by_label("FILES").is_none());
+    assert!(harness.query_by_label_contains("node(s)").is_none());
+    // Nothing stands between the window's left edge and the canvas.
+    assert!(canvas.left() < 40.0, "the canvas starts at {canvas:?}");
+}
+
+#[test]
+fn with_no_instrument_open_there_is_no_undo() {
+    let scratch = Scratch::new("ui_top_bar_no_session");
+    let config = TempConfig::new();
+    let top = instrument(&scratch);
+    let mut editor = editor(&top, &config);
+    editor.session = None;
+    let harness = harness(editor);
+
+    assert!(harness.query_by_label_contains("Undo").is_none());
+    assert!(harness.query_by_label_contains("Redo").is_none());
+}
+
 /// Write an instrument at `lib/attached.json`, `level` resting at `level`, whose `level` input
 /// comes back out on OSC-out.
 fn echoing(scratch: &Scratch, level: f64) -> PathBuf {

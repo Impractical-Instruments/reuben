@@ -1,6 +1,4 @@
-//! The files of the open instrument, whether the engine is playing them, and undo and redo.
-
-use std::path::Path;
+//! Undo and redo, whether the engine is playing the open instrument, and the way down into it.
 
 use eframe::egui;
 
@@ -14,6 +12,10 @@ const REDO: egui::KeyboardShortcut = egui::KeyboardShortcut::new(
 );
 const REDO_ALT: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Y);
+
+/// The most of the top bar the reasons an instrument is held may take, about six lines of them;
+/// the rest scroll.
+const HELD_HEIGHT: f32 = 110.0;
 
 /// The undo or redo the keyboard asked for this frame, unless a text field has the keyboard and
 /// its own undo is the one meant.
@@ -110,33 +112,18 @@ pub fn trail(ui: &mut egui::Ui, session: &mut Session) -> Option<TrailAsk> {
     asked
 }
 
-/// Draw the session down the left of `ui`. Returns the undo or redo clicked.
-pub fn show(ui: &mut egui::Ui, session: &Session) -> Option<Direction> {
-    let mut asked = None;
-    egui::Panel::left("session")
-        .resizable(true)
-        .default_size(260.0)
-        .show(ui, |ui| {
-            egui::ScrollArea::vertical()
-                .auto_shrink(false)
-                .show(ui, |ui| {
-                    asked = undo(ui, session);
-                    ui.separator();
-                    crate::theme::section(ui, "Files");
-                    let beside = session.tree().top().path.parent();
-                    for document in session.tree().documents() {
-                        file(ui, document, beside);
-                    }
-                    ui.separator();
-                    status(ui, session.status());
-                    if let Some(e) = session.watch_error() {
-                        ui.colored_label(
-                            ui.visuals().warn_fg_color,
-                            format!("Not watching these files for changes: {e}"),
-                        );
-                    }
-                });
-        });
+/// Draw the session's rows of the top bar: undo and redo, then whether the engine plays the
+/// instrument. Returns the undo or redo clicked.
+pub fn bar(ui: &mut egui::Ui, session: &Session) -> Option<Direction> {
+    let asked = undo(ui, session);
+    let name = session.tree().top().name();
+    status(ui, session.status(), &name);
+    if let Some(e) = session.watch_error() {
+        ui.colored_label(
+            ui.visuals().warn_fg_color,
+            format!("Not watching {name}'s files for changes: {e}"),
+        );
+    }
     asked
 }
 
@@ -161,34 +148,13 @@ fn undo(ui: &mut egui::Ui, session: &Session) -> Option<Direction> {
     asked
 }
 
-fn file(ui: &mut egui::Ui, document: &Document, beside: Option<&Path>) {
-    let name = label(&document.path, beside);
-    let line = match &document.read {
-        Ok(structure) => ui.label(format!("{name} — {} node(s)", structure.nodes.len())),
-        Err(_) => ui.colored_label(ui.visuals().error_fg_color, format!("{name} — unreadable")),
-    };
-    line.on_hover_text(match &document.read {
-        Ok(_) => document.path.display().to_string(),
-        Err(e) => e.clone(),
-    });
-}
-
-/// `path` as it reads from the top-level file's directory, or whole when it is not under it.
-fn label(path: &Path, beside: Option<&Path>) -> String {
-    beside
-        .and_then(|dir| path.strip_prefix(dir).ok())
-        .unwrap_or(path)
-        .display()
-        .to_string()
-}
-
-fn status(ui: &mut egui::Ui, status: &Status) {
+fn status(ui: &mut egui::Ui, status: &Status, name: &str) {
     match status {
         Status::Current => {
-            ui.label("Playing these files.");
+            ui.label(format!("Playing {name}."));
         }
         Status::NoEngine => {
-            ui.label("No engine is running; these files are not playing.");
+            ui.label(format!("No engine is running; {name} is not playing."));
         }
         Status::Swapping => {
             ui.label("Swapping…");
@@ -198,17 +164,22 @@ fn status(ui: &mut egui::Ui, status: &Status) {
                 ui.visuals().error_fg_color,
                 "Still playing the last instrument that loaded:",
             );
-            for line in why {
-                ui.colored_label(ui.visuals().error_fg_color, line);
-            }
+            // One line per fault in every file of the instrument: unbounded, in a bar that takes
+            // its height from the canvas below.
+            egui::ScrollArea::vertical()
+                .id_salt("held")
+                .max_height(HELD_HEIGHT)
+                .show(ui, |ui| {
+                    for line in why {
+                        ui.colored_label(ui.visuals().error_fg_color, line);
+                    }
+                });
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::*;
 
     /// Press Ctrl+Z with the keyboard focus on the widget `widget` draws, and return what
@@ -252,14 +223,21 @@ mod tests {
     }
 
     #[test]
-    fn a_file_is_named_from_the_top_level_files_directory() {
-        let lib = PathBuf::from("lib");
-        let voice = lib.join("voices").join("kick.json");
-        assert_eq!(
-            Path::new(&label(&voice, Some(&lib))),
-            Path::new("voices").join("kick.json")
+    fn many_reasons_an_instrument_is_held_do_not_grow_the_bar_without_bound() {
+        let held = Status::Held(
+            (0..200)
+                .map(|n| format!("lib/ui.json: fault {n}"))
+                .collect(),
         );
-        let outside = PathBuf::from("shared").join("kick.json");
-        assert_eq!(Path::new(&label(&outside, Some(&lib))), outside);
+        let ctx = egui::Context::default();
+        let mut height = 0.0;
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let top = ui.cursor().top();
+            status(ui, &held, "ui");
+            height = ui.cursor().top() - top;
+        })
+        .drop_without_applying_deltas();
+        assert!(height > HELD_HEIGHT, "the reasons are drawn: {height}");
+        assert!(height < HELD_HEIGHT + 40.0, "200 reasons took {height}");
     }
 }
