@@ -366,6 +366,33 @@ fn render_with_every_probe_on_allocates_nothing() {
             .any(|n| n.ports[0].level.read().0 > 0.0),
         "no probe measured anything, so the window proved nothing"
     );
+
+    // Measuring only reads a node's output before a later node inherits its arena slot, so a
+    // probed render must match an unprobed one bit for bit, recycled slots included.
+    let fresh = || {
+        let graph = load_instrument(DEFAULT_JSON, &Registry::builtin(), &InstrumentsDir)
+            .expect("load default.json")
+            .graph;
+        Plan::instantiate(graph, cfg).expect("instantiate")
+    };
+    let (mut plain, mut probed) = (fresh(), fresh());
+    for node in &probed.probes.nodes {
+        node.set_on(true);
+    }
+    let (mut r_plain, mut r_probed) = (Renderer::new(&plain), Renderer::new(&probed));
+    let (mut a, mut b) = (vec![0.0f32; cfg.block_size], vec![0.0f32; cfg.block_size]);
+    let mut sounded = false;
+    for block in 0..300 {
+        let messages: &[Message] = if block == 0 { &note_on } else { &[] };
+        r_plain.render_block(&mut plain, messages, &mut a);
+        r_probed.render_block(&mut probed, messages, &mut b);
+        sounded |= a.iter().any(|&s| s != 0.0);
+        assert!(
+            a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()),
+            "probed render diverged from unprobed at block {block}"
+        );
+    }
+    assert!(sounded, "a silent comparison proves nothing");
 }
 
 /// Reads a voice patch from the repo `instruments/` tree, so `chord-player.json`'s

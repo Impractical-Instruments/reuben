@@ -2,8 +2,11 @@
 //!
 //! A node's output buffer is readable only right after the node runs — the arena hands it to a
 //! later producer once its last consumer is done — so the fold happens in Render, between one
-//! node's `process` and the next. Each slot is switched on and off by a reader outside Render; an
-//! off slot costs Render one relaxed load per block.
+//! node's `process` and the next. Each slot is switched on and off by a reader outside Render, but
+//! only Render writes a slot's level and pending block: turning a slot on asks Render to reset it
+//! rather than resetting it from the reader's thread, where Render could store a stale value back
+//! over the reset. With every slot of a set off, Render reads one atomic per `render_plan` call and
+//! skips the rest; with any on, it reads one more per probed node it runs.
 //!
 //! Measuring and committing are separate steps so that one node run several times a block (a
 //! node inside a voice, every voice of a Voicer sharing one slot set) folds into one block whose
@@ -40,12 +43,16 @@ pub struct NodeProbe {
     /// The slot set of the voice patch this node hosts, for a Voicer node.
     pub hosted: Option<Arc<ProbeSlots>>,
     on: AtomicBool,
+    /// Set by the reader when the probe turns on; Render clears the levels and the pending block,
+    /// then this, before it next measures the node.
+    reset: AtomicBool,
     on_count: Arc<AtomicU32>,
 }
 
 /// One Signal output port's level, and the block it is accumulating towards the next commit.
 ///
-/// Only the render thread writes the accumulator, so a load-merge-store is not a lost update.
+/// Only the render thread writes the accumulator and the level, so a load-merge-store is not a
+/// lost update.
 #[derive(Debug)]
 pub struct PortProbe {
     pub name: Arc<str>,
@@ -79,28 +86,38 @@ impl PortProbe {
 }
 
 impl NodeProbe {
-    /// Switch measuring on or off. Turning it on starts every port from silence, so a level left
-    /// from an earlier session — or a block accumulated just before it was turned off, which no
-    /// commit cleared — never shows.
+    /// Switch measuring on or off. Turning an off probe on starts every port from silence at the
+    /// next block Render measures, so a level left from an earlier session — or a block accumulated
+    /// just before it was turned off, which no commit cleared — never shows. Turning on a probe
+    /// that is already on changes nothing, so a reader may renew its probes freely.
     pub fn set_on(&self, on: bool) {
         if on {
-            for port in &self.ports {
-                port.level.reset();
-                port.set_pending(Block::default());
+            if self.on.load(Ordering::Relaxed) {
+                return;
             }
-        }
-        // A swap, so two callers setting the same state count it once.
-        if self.on.swap(on, Ordering::Relaxed) != on {
-            if on {
+            // Before the `Release` swap, so Render, seeing the probe on, also sees the request.
+            self.reset.store(true, Ordering::Relaxed);
+            if !self.on.swap(true, Ordering::Release) {
                 self.on_count.fetch_add(1, Ordering::Relaxed);
-            } else {
-                self.on_count.fetch_sub(1, Ordering::Relaxed);
             }
+        } else if self.on.swap(false, Ordering::Relaxed) {
+            self.on_count.fetch_sub(1, Ordering::Relaxed);
         }
     }
 
     pub fn is_on(&self) -> bool {
-        self.on.load(Ordering::Relaxed)
+        self.on.load(Ordering::Acquire)
+    }
+
+    /// Carry out a reset the reader asked for, if any. Render-side.
+    fn take_reset(&self) {
+        if self.reset.load(Ordering::Relaxed) {
+            for port in &self.ports {
+                port.level.reset();
+                port.set_pending(Block::default());
+            }
+            self.reset.store(false, Ordering::Relaxed);
+        }
     }
 }
 
@@ -124,6 +141,7 @@ impl ProbeSlots {
                     ports,
                     hosted: None,
                     on: AtomicBool::new(false),
+                    reset: AtomicBool::new(false),
                     on_count: on_count.clone(),
                 })
             })
@@ -151,21 +169,27 @@ impl ProbeSlots {
             .ok()
     }
 
-    /// Fold `block` into the pending block of `node`'s `port`, as more samples of the same block.
+    /// Fold `block` into the pending block of `node`'s `port`, as more samples of the same block,
+    /// after any reset the node is owed.
     ///
     /// RT-safe: no allocation, lock or syscall.
     pub(crate) fn accumulate(&self, node: usize, port: usize, block: Block) {
-        let port = &self.nodes[node].ports[port];
+        let node = &self.nodes[node];
+        node.take_reset();
+        let port = &node.ports[port];
         let mut pending = port.pending();
         pending.merge(block);
         port.set_pending(pending);
     }
 
-    /// Fold every on node's pending block, `frames` frames long, into its levels, and clear it.
+    /// Fold every on node's pending block, `frames` frames long, into its levels, and clear it. A
+    /// node turned on after Render passed it this block still owes its reset and is left for the
+    /// next block, so its stale pending block is never committed.
     ///
     /// RT-safe: no allocation, lock or syscall.
     pub fn commit(&self, frames: usize) {
-        for node in self.nodes.iter().filter(|n| n.is_on()) {
+        let owed = |n: &NodeProbe| n.reset.load(Ordering::Relaxed);
+        for node in self.nodes.iter().filter(|n| n.is_on() && !owed(n)) {
             for port in &node.ports {
                 port.level.commit(port.pending(), frames, &self.ballistics);
                 port.set_pending(Block::default());
@@ -362,6 +386,36 @@ mod tests {
         out.set_on(false);
         out.set_on(false);
         assert!(!plan.probes.any_on());
+    }
+
+    #[test]
+    fn turning_on_an_already_on_probe_keeps_its_level() {
+        let mut plan = osc_plan();
+        plan.probes.find("/osc").unwrap().set_on(true);
+        render(&mut plan, 0.5);
+        let before = osc_level(&plan);
+        assert!(before.0 > 0.0);
+        plan.probes.find("/osc").unwrap().set_on(true);
+        assert_eq!(osc_level(&plan), before);
+        // Rendering on from there continues the meter rather than restarting it.
+        render(&mut plan, 0.01);
+        assert!((osc_level(&plan).1 - before.1).abs() < before.1 * 0.1);
+    }
+
+    #[test]
+    fn turning_a_probe_back_on_resets_it_at_the_next_block() {
+        let mut plan = osc_plan();
+        plan.probes.find("/osc").unwrap().set_on(true);
+        render(&mut plan, 2.0);
+        let osc = plan.probes.find("/osc").unwrap();
+        osc.set_on(false);
+        osc.set_on(true);
+        // The reader only asks; the old level stands until Render resets it.
+        let settled = osc_level(&plan);
+        assert!(settled.1 > 0.4);
+        render(&mut plan, BLOCK as f32 / RATE);
+        // One block of a sine from silence: well under the settled average.
+        assert!(osc_level(&plan).1 < settled.1 * 0.1);
     }
 
     #[test]
