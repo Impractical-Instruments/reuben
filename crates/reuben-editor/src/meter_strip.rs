@@ -249,6 +249,10 @@ impl MeterStrip {
             self.moved = Some(now);
         }
         self.stopped = self.moved.is_some_and(|moved| now - moved >= STALL);
+        if restarted {
+            // The new engine holds no set of ours.
+            self.sent = None;
+        }
         self.frames = Some(report.frames);
         self.reading = Reading::Levels;
         self.probes = report.probes;
@@ -710,6 +714,26 @@ mod tests {
         assert!(sent()[3].is_empty());
         exchange(&mut strip, at(6000), &engine, &[]);
         assert_eq!(sent().len(), 4, "an empty set is not renewed");
+    }
+
+    #[test]
+    fn a_restarted_engine_is_sent_the_probe_set_again() {
+        let engine = Canned::new(vec![level(-6.0, -9.0)], Vec::new());
+        let sent = || engine.probed.lock().expect("unpoisoned").len();
+        let one = vec![vec!["/osc".to_string()]];
+        let start = Instant::now() - Duration::from_secs(60);
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut strip = MeterStrip::new(|| {});
+
+        exchange(&mut strip, at(0), &engine, &one);
+        exchange(&mut strip, at(100), &engine, &one);
+        assert_eq!(sent(), 1, "held by the engine, so not re-sent");
+        // A new engine: its frame count starts over, and it holds no set of ours. The channel
+        // never went away, so only the count says so.
+        engine.report.lock().expect("unpoisoned").frames = 0;
+        exchange(&mut strip, at(200), &engine, &one);
+        exchange(&mut strip, at(300), &engine, &one);
+        assert_eq!(sent(), 2, "re-sent on the poll after the restart is seen");
     }
 
     #[test]

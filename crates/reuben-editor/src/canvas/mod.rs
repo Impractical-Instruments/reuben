@@ -852,8 +852,9 @@ impl Canvas {
         let (Some(doc), Some(camera)) = (self.doc(), self.camera) else {
             return;
         };
+        let reported = meters::Reported::new(levels);
         let meters: Vec<_> = (self.taps.iter())
-            .map(|taps| meters::read(taps, levels))
+            .map(|taps| meters::read(taps, &reported))
             .collect();
         let mut rects = doc.rects.clone();
         if let Some(Drag::Move { boxes, by }) = &self.drag {

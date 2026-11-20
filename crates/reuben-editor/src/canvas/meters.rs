@@ -1,13 +1,13 @@
 //! The level meter on a node's box: which engine node and port each bar reads, and painting the
 //! bars. The levels themselves come from the meter strip's poll.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use eframe::egui::{self, accesskit, Painter, Rect, Stroke, Visuals};
 use reuben_api::authoring::WireSource;
 use reuben_api::engine::{PortLevel, ProbeLevels, MAX_PROBES};
 
-use super::graph::{Graph, Item, PortKind};
+use super::graph::{Graph, Item, Port, PortKind};
 use crate::meter_strip::{self, fraction, SCALE_FLOOR_DBFS};
 use crate::session::{Session, Tree};
 use crate::theme;
@@ -103,17 +103,35 @@ pub fn probe_set(taps: &[Vec<Tap>]) -> Vec<Vec<String>> {
         .collect()
 }
 
-/// The level of each of `taps` that `probes` reports, named by the box's output it stands for.
-pub fn read(taps: &[Tap], probes: &[ProbeLevels]) -> Vec<PortLevel> {
+/// A probe reply indexed by node path, so each lookup is one hash rather than a scan of the reply.
+pub struct Reported<'a>(HashMap<&'a [String], &'a ProbeLevels>);
+
+impl<'a> Reported<'a> {
+    pub fn new(probes: &'a [ProbeLevels]) -> Self {
+        Self(probes.iter().map(|p| (p.path.as_slice(), p)).collect())
+    }
+}
+
+/// The level of each of `taps` that `reported` has, named by the box's output it stands for.
+pub fn read(taps: &[Tap], reported: &Reported) -> Vec<PortLevel> {
     (taps.iter())
         .filter_map(|tap| {
-            let node = probes.iter().find(|p| p.path == tap.path)?;
+            let node = reported.0.get(tap.path.as_slice())?;
             let port = node.ports.iter().find(|p| p.port == tap.port)?;
             Some(PortLevel {
                 port: tap.output.clone(),
                 level: port.level,
             })
         })
+        .collect()
+}
+
+/// One slot per Signal output of a box, in output order: the level read for it, or `None` when
+/// none was, so a bar stays in its own output's column.
+pub fn slots<'a>(outputs: &[Port], levels: &'a [PortLevel]) -> Vec<Option<&'a PortLevel>> {
+    (outputs.iter())
+        .filter(|output| output.kind == PortKind::Signal)
+        .map(|output| levels.iter().find(|level| level.port == output.name))
         .collect()
 }
 
@@ -128,12 +146,15 @@ pub fn place(rect: Rect, ports: usize, pad: f32, height: f32) -> Rect {
     )
 }
 
-/// Paint one upright bar per port across `rect`, on screen: the RMS level filled over the peak
+/// Paint one upright bar per slot across `rect`, on screen: the RMS level filled over the peak
 /// level faded, on the meter strip's scale.
-pub fn paint(painter: &Painter, rect: Rect, ports: &[PortLevel], visuals: &Visuals) {
+pub fn paint(painter: &Painter, rect: Rect, ports: &[Option<&PortLevel>], visuals: &Visuals) {
     let tick = Stroke::new(1.0, visuals.strong_text_color());
     for (column, port) in columns(rect, ports.len()).zip(ports) {
         painter.rect_filled(column, 0.0, visuals.extreme_bg_color);
+        let Some(port) = port else {
+            continue;
+        };
         let up_to = |dbfs: f32| {
             let mut filled = column;
             filled.set_top(column.bottom() - column.height() * fraction(dbfs));
@@ -155,8 +176,17 @@ pub fn paint(painter: &Painter, rect: Rect, ports: &[PortLevel], visuals: &Visua
 /// Tell AccessKit about each bar of the box of the node at `address`, painted across `rect`: a
 /// progress indicator labelled `"<address> level"`, or `"<address>.<output> level"` when `named`
 /// (the box has more than one Signal output), whose value is its RMS level in dBFS.
-pub fn describe(ctx: &egui::Context, rect: Rect, address: &str, ports: &[PortLevel], named: bool) {
+pub fn describe(
+    ctx: &egui::Context,
+    rect: Rect,
+    address: &str,
+    ports: &[Option<&PortLevel>],
+    named: bool,
+) {
     for (column, port) in columns(rect, ports.len()).zip(ports) {
+        let Some(port) = port else {
+            continue;
+        };
         let label = match named {
             false => format!("{address} level"),
             true => format!("{address}.{} level", port.port),
@@ -315,7 +345,7 @@ mod tests {
                 let probes = channel.get_meters().expect("meters").probes;
                 let quiet: Vec<String> = (taps.iter())
                     .filter(|(_, taps)| {
-                        let levels = read(taps, &probes);
+                        let levels = read(taps, &Reported::new(&probes));
                         levels.len() != taps.len()
                             || levels.iter().any(|l| l.level.rms_dbfs <= SCALE_FLOOR_DBFS)
                     })
@@ -329,6 +359,28 @@ mod tests {
             reuben_native::diagnostics::log_snapshot(&played.shutdown());
             assert!(quiet.is_empty(), "no level on the bars of {quiet:?}");
         });
+    }
+
+    #[test]
+    fn an_unreported_output_keeps_its_column_empty() {
+        let port = |name: &str| Port {
+            name: name.to_string(),
+            kind: PortKind::Signal,
+        };
+        let reported = |name: &str| PortLevel {
+            port: name.to_string(),
+            level: ChannelLevel {
+                peak_dbfs: -6.0,
+                rms_dbfs: -9.0,
+            },
+        };
+        let outputs = [port("left"), port("through"), port("right")];
+        let levels = [reported("left"), reported("right")];
+        let slots = slots(&outputs, &levels);
+        assert_eq!(slots.len(), 3, "a column per Signal output");
+        assert_eq!(slots[0], Some(&levels[0]));
+        assert_eq!(slots[1], None, "the unreported output's column is empty");
+        assert_eq!(slots[2], Some(&levels[1]), "right stays in its own column");
     }
 
     #[test]
@@ -357,12 +409,12 @@ mod tests {
             }],
         }];
         assert_eq!(
-            read(&taps, &probes),
+            read(&taps, &Reported::new(&probes)),
             [PortLevel {
                 port: "out".to_string(),
                 level: level(-6.0),
             }]
         );
-        assert!(read(&taps, &[]).is_empty());
+        assert!(read(&taps, &Reported::new(&[])).is_empty());
     }
 }
