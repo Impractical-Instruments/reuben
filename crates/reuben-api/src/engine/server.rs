@@ -97,6 +97,16 @@ pub trait EngineHost: Send + Sync {
         Vec::new()
     }
 
+    /// Whether a client may name `name`, a source as the store reads it, in `open` or in a `call`
+    /// that reads or creates it. `open` is the source of the instrument now playing, when there is
+    /// one. A document in the open instrument's own tree is always nameable; this decides the rest.
+    ///
+    /// Defaults to `true`: a store that is not a filesystem has nothing to confine. A host over a
+    /// filesystem overrides it to keep a client to what [`offered`](Self::offered) lists.
+    fn within(&self, _name: &str, _open: Option<&str>) -> bool {
+        true
+    }
+
     /// Hand a control batch to the engine's ingress **as one unit**, so a gesture cannot straddle
     /// a rendered block. `Err` means the ingress is gone (audio torn down) and nothing was queued.
     fn deliver_control(&self, messages: Vec<ControlMessage>) -> Result<(), IngressClosed>;
@@ -607,6 +617,13 @@ fn handle_open(
     };
     state.store.inner().discard();
     let origin = state.host.document_origin(&name);
+    let open = match state.installed_source() {
+        Ok(source) => source.clone(),
+        Err(poisoned) => return poisoned.into(),
+    };
+    if !state.host.within(&origin, open.as_deref()) {
+        return rejected_report(coordinator.installed_hash(), not_offered(&name));
+    }
     let json = match state.store.read_text(&origin) {
         Ok(json) => json,
         Err(e) => {
@@ -614,6 +631,12 @@ fn handle_open(
         }
     };
     install_from(state, &mut coordinator, &json, Some(name), expect, caller)
+}
+
+/// The refusal for a name outside what the host offers: the client's own spelling and a fixed
+/// reason, so it says nothing of the server's paths or whether the file exists.
+fn not_offered(name: &str) -> String {
+    format!("`{name}` is not offered by this server")
 }
 
 /// What the host offers under `what`, each name one [`Request::Open`] (or, for a sample, a

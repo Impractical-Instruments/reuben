@@ -347,6 +347,19 @@ impl NativeHost {
         self
     }
 
+    /// The directories a client may name: the library root and the open instrument's directory,
+    /// absolute and normalized.
+    fn offered_dirs(&self, open: Option<&str>) -> Vec<PathBuf> {
+        let open_dir = open
+            .and_then(|source| lexical_absolute(Path::new(source)))
+            .and_then(|source| source.parent().map(Path::to_path_buf));
+        self.library_root
+            .iter()
+            .filter_map(|root| lexical_absolute(root))
+            .chain(open_dir)
+            .collect()
+    }
+
     /// The library root [`offered`](EngineHost::offered) lists from, besides the open instrument's
     /// own directory: the one the session's resolver falls back to.
     pub fn with_library_root(mut self, root: Option<PathBuf>) -> Self {
@@ -373,6 +386,23 @@ impl NativeHost {
         self.render_config = render_config;
         self
     }
+}
+
+/// `path` made absolute against the working directory with `.` and `..` resolved by text alone, so
+/// a name cannot climb out of a directory it starts under. `None` when it cannot be made absolute.
+fn lexical_absolute(path: &Path) -> Option<PathBuf> {
+    let absolute = std::path::absolute(path).ok()?;
+    let mut normal = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                normal.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => normal.push(other),
+        }
+    }
+    Some(normal)
 }
 
 /// Add every `*.{extension}` file under `dir` to `found`, descending into subdirectories. An
@@ -426,19 +456,22 @@ impl EngineHost for NativeHost {
             ListWhat::Instruments => "json",
             ListWhat::Samples => "wav",
         };
-        let open_dir = open.and_then(|source| Path::new(source).parent());
         let mut found = std::collections::BTreeSet::new();
-        for dir in self
-            .library_root
-            .iter()
-            .map(PathBuf::as_path)
-            .chain(open_dir)
-        {
-            if let Ok(dir) = std::path::absolute(dir) {
-                collect_with_extension(&dir, extension, &mut found);
-            }
+        for dir in self.offered_dirs(open) {
+            collect_with_extension(&dir, extension, &mut found);
         }
         found.into_iter().collect()
+    }
+
+    /// True iff `name`, made absolute and lexically normalized (`..` resolved), lies under the
+    /// library root or the open instrument's directory. The file need not exist.
+    fn within(&self, name: &str, open: Option<&str>) -> bool {
+        let Some(path) = lexical_absolute(Path::new(name)) else {
+            return false;
+        };
+        self.offered_dirs(open)
+            .iter()
+            .any(|dir| path.starts_with(dir))
     }
 
     /// **One `send` on the channel, not one per message.** That single push is what makes the
@@ -850,6 +883,43 @@ mod tests {
             [abs("lib/a.json"), abs("lib/nested/n.json")]
         );
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn within_is_the_library_root_and_the_open_dir_by_normalized_path() {
+        let base = std::env::temp_dir().join("reuben-within-test");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let host =
+            NativeHost::new(Diagnostics::new(), tx).with_library_root(Some(base.join("lib")));
+        let abs = |relative: &str| base.join(relative).display().to_string();
+        let open = abs("open/b.json");
+        let open = Some(open.as_str());
+
+        assert!(host.within(&abs("lib/a.json"), open));
+        assert!(host.within(&abs("lib/not/yet/there.json"), open));
+        assert!(host.within(&abs("open/new.json"), open));
+        assert!(host.within(&abs("lib/x/../a.json"), open));
+        assert!(!host.within(&abs("lib/../elsewhere/c.json"), open));
+        assert!(!host.within(&abs("open/../../escape.json"), open));
+        assert!(!host.within("/etc/passwd.json", open));
+        assert!(!host.within(&abs("lib2/a.json"), open));
+        assert!(!host.within(&abs("open/new.json"), None));
+    }
+
+    #[test]
+    fn a_bare_relative_open_source_still_offers_its_directory() {
+        let dir = std::env::current_dir().unwrap();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let host = NativeHost::new(Diagnostics::new(), tx);
+        assert!(host.within(
+            &dir.join("sibling.json").display().to_string(),
+            Some("pad.json")
+        ));
+        assert!(!host.within(
+            &dir.join("..").join("up.json").display().to_string(),
+            Some("pad.json")
+        ));
+        assert!(host.offered_dirs(Some("pad.json")).contains(&dir));
     }
 
     #[test]

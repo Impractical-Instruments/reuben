@@ -76,6 +76,11 @@ pub(super) fn handle_call(state: &StructureState, tool: &str, args: Value) -> Re
         Ok(coordinator) => coordinator,
         Err(poisoned) => return poisoned.into(),
     };
+    if let Some(name) = unoffered_name(state, &args) {
+        return Response::Refused {
+            message: super::not_offered(&name),
+        };
+    }
     let staged = state.store.inner();
     let Called {
         output,
@@ -103,6 +108,23 @@ pub(super) fn handle_call(state: &StructureState, tool: &str, args: Value) -> Re
             edit_or_refuse(state, &mut coordinator, output, summary, &source)
         }
     }
+}
+
+/// The first source `args` names, as `source`, `from` or `to`, that the host does not offer and
+/// the open instrument's tree does not already reach. An edit's own source is checked against the
+/// tree again in [`edit_or_refuse`]; this keeps a read or a create from naming what the client
+/// may not.
+fn unoffered_name(state: &StructureState, args: &Value) -> Option<String> {
+    let open = state.installed_source().ok()?.clone();
+    let tree = state.tree();
+    ["source", "from", "to"]
+        .into_iter()
+        .filter_map(|key| args.get(key)?.as_str())
+        .find(|name| {
+            let canonical = state.store.canonical(name, None);
+            !tree.contains(&canonical) && !state.host.within(&canonical, open.as_deref())
+        })
+        .map(str::to_string)
 }
 
 /// An edit the verb has staged: write it and swap the new Plan in only if the open instrument,
@@ -312,6 +334,8 @@ mod tests {
     /// in flight until a later reclaim finds it. Holds every client swap when `hold` is set.
     struct Host {
         hold: bool,
+        /// When set, only names starting with it are within what the host offers.
+        only: Option<&'static str>,
     }
 
     impl EngineHost for Host {
@@ -320,6 +344,13 @@ mod tests {
         }
         fn hold_swap(&self, _path: &str) -> bool {
             self.hold
+        }
+        fn within(&self, name: &str, _open: Option<&str>) -> bool {
+            self.only.is_none_or(|prefix| name.starts_with(prefix))
+        }
+        /// Echoes the open source it was given, so a test sees what the server passed.
+        fn offered(&self, _what: crate::engine::ListWhat, open: Option<&str>) -> Vec<String> {
+            vec![open.unwrap_or("<none>").to_string()]
         }
         fn deliver_control(&self, _: Vec<ControlMessage>) -> Result<(), IngressClosed> {
             Ok(())
@@ -401,7 +432,10 @@ mod tests {
     const BLOCKS_BETWEEN_CALLS: usize = 64;
 
     fn serving() -> Served {
-        serving_with(Host { hold: false })
+        serving_with(Host {
+            hold: false,
+            only: None,
+        })
     }
 
     fn serving_with(host: Host) -> Served {
@@ -499,13 +533,75 @@ mod tests {
 
     #[test]
     fn open_is_held_for_a_holding_host() {
-        let s = serving_with(Host { hold: true });
+        let s = serving_with(Host {
+            hold: true,
+            only: None,
+        });
         let before = installed_hash(&s.state);
         match dispatch(&s.state, &open_line("other.json", None)) {
             Response::Held(held) => assert_eq!(held.requested, "other.json"),
             other => panic!("expected a held open, got {other:?}"),
         }
         assert_eq!(installed_hash(&s.state), before);
+    }
+
+    fn confined() -> Served {
+        serving_with(Host {
+            hold: false,
+            only: Some("nowhere/"),
+        })
+    }
+
+    #[test]
+    fn open_of_a_name_the_server_does_not_offer_is_refused() {
+        let s = confined();
+        let before = installed_hash(&s.state);
+        match dispatch(&s.state, &open_line("other.json", None)) {
+            Response::SwapReport(report) => {
+                assert!(!report.report.ok);
+                assert_eq!(report.content_hash, before);
+                assert_eq!(
+                    report.report.errors[0].message,
+                    "`other.json` is not offered by this server"
+                );
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert_eq!(installed_hash(&s.state), before);
+    }
+
+    #[test]
+    fn a_call_read_of_a_name_the_server_does_not_offer_is_refused() {
+        let s = confined();
+        let line = Request::Call {
+            tool: "describe_instrument".to_string(),
+            args: json!({"source": "other.json"}),
+        }
+        .to_ndjson();
+        match dispatch(&s.state, &line) {
+            Response::Refused { message } => {
+                assert_eq!(message, "`other.json` is not offered by this server")
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        // The open instrument's own tree stays nameable.
+        let (output, _) = call(&s, "describe_instrument", json!({"source": "top.json"}));
+        assert!(!output.is_null());
+    }
+
+    #[test]
+    fn a_create_outside_what_the_server_offers_is_refused_and_writes_nothing() {
+        let s = confined();
+        let line = Request::Call {
+            tool: "new_instrument".to_string(),
+            args: json!({"source": "fresh.json", "name": "fresh"}),
+        }
+        .to_ndjson();
+        assert!(matches!(
+            dispatch(&s.state, &line),
+            Response::Refused { .. }
+        ));
+        assert_eq!(s.files.get("fresh.json"), None);
     }
 
     #[test]
@@ -526,12 +622,10 @@ mod tests {
         .to_ndjson();
         assert_eq!(
             dispatch(&s.state, &line),
-            Response::Listed { names: Vec::new() }
+            Response::Listed {
+                names: vec!["top.json".to_string()]
+            }
         );
-        assert!(matches!(
-            Response::from_ndjson(r#"{"reply":"listed","names":["a"]}"#),
-            Ok(Response::Listed { .. })
-        ));
         assert!(Request::from_ndjson(r#"{"verb":"list","what":"nonsense"}"#).is_err());
     }
 
