@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use reuben_api::engine::{
     Conflict, ControlArg, ControlMessage, DiagnosticsReport, DocSource, DocumentSnapshot,
-    MetersReport, Request, Response, StructureState, METER_FLOOR_DBFS,
+    MetersReport, Request, Response, StructureState, MAX_LINE_BYTES, METER_FLOOR_DBFS,
 };
 use reuben_api::render::{Arg, AudioConfig};
 use reuben_native::diagnostics::Diagnostics;
@@ -702,5 +702,40 @@ fn shuts_down_cleanly_with_an_idle_client_still_connected() {
         // The final exit-time snapshot flush `play` performs.
         reuben_native::diagnostics::log_snapshot(&diagnostics.snapshot());
     });
+    cb.stop();
+}
+
+#[test]
+fn a_request_line_past_the_cap_is_answered_with_an_error_and_the_connection_closed() {
+    let (state, cb, _) = wired(BASE_DOC, 0);
+    let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
+    let client = TcpStream::connect(server.local_addr()).expect("connect");
+    let mut writer = client.try_clone().unwrap();
+    let mut reader = BufReader::new(client);
+
+    // Every byte the cap allows, and no newline: the server can tell it is too long without
+    // reading further, so this write is never left waiting on it.
+    within(10, move || {
+        writer
+            .write_all(&vec![b'x'; MAX_LINE_BYTES])
+            .expect("the server reads up to the cap");
+    });
+    match read_response(&mut reader) {
+        Response::Error { message } => {
+            assert!(
+                message.contains(&format!("longer than {MAX_LINE_BYTES} bytes")),
+                "{message}"
+            );
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
+    let mut rest = String::new();
+    assert_eq!(
+        reader.read_line(&mut rest).expect("read after the error"),
+        0,
+        "the server closes a connection whose line boundary it lost"
+    );
+
+    server.shutdown();
     cb.stop();
 }

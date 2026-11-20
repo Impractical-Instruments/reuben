@@ -25,7 +25,7 @@
 //! reuben-native stays **tokio-free** (the async runtime is fenced to reuben-mcp): the server is a
 //! dedicated std thread doing blocking line I/O, never an async runtime.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
@@ -35,8 +35,8 @@ use std::time::{Duration, Instant};
 
 use reuben_api::authoring::Diag;
 use reuben_api::engine::{
-    dispatch, ControlMessage, DiagnosticsReport, EngineHost, IngressClosed, MetersReport,
-    StructureState,
+    dispatch, read_ndjson_line, ControlMessage, DiagnosticsReport, EngineHost, IngressClosed,
+    MetersReport, Response, StructureState,
 };
 
 use crate::diagnostics::{Diagnostics, Snapshot};
@@ -564,9 +564,8 @@ fn accept_loop(listener: TcpListener, state: StructureState, shutdown: Arc<Atomi
 fn handle_connection(stream: TcpStream, state: StructureState, shutdown: Arc<AtomicBool>) {
     // Time-bound each read so the handler wakes to observe `shutdown` itself, rather than
     // depending on the accept thread's `shutdown(Shutdown::Both)` to unblock it — a wake that
-    // does not reach a blocked recv on Windows (see [`READ_POLL`]). A timeout on a stream socket
-    // fires only when no bytes are waiting, so it never truncates a request mid-line; a request
-    // that spans reads accumulates in `line` across the loop until its terminating newline.
+    // does not reach a blocked recv on Windows (see [`READ_POLL`]). A request that spans reads
+    // accumulates in `line` across the loop until its terminating newline.
     let _ = stream.set_read_timeout(Some(READ_POLL));
     let mut writer = match stream.try_clone() {
         Ok(w) => w,
@@ -579,7 +578,7 @@ fn handle_connection(stream: TcpStream, state: StructureState, shutdown: Arc<Ato
         if shutdown.load(Ordering::SeqCst) {
             break;
         }
-        match reader.read_line(&mut line) {
+        match read_ndjson_line(&mut reader, &mut line) {
             // EOF: client closed, or a shutdown `Shutdown::Both` woke us.
             Ok(0) => break,
             // A complete line (`read_line` returns on the newline). Dispatch, then reset the buffer.
@@ -598,14 +597,29 @@ fn handle_connection(stream: TcpStream, state: StructureState, shutdown: Arc<Ato
                 }
                 line.clear();
             }
-            // The read timeout fired with no full line yet: loop to re-check `shutdown`, keeping
-            // any partial bytes already read in `line` (`read_line` leaves them on error) so the
-            // next read resumes the same request. This is the poll that makes shutdown prompt.
+            // The read timeout fired with no full line yet: loop to re-check `shutdown`. The
+            // partial bytes stay in `line` and the next read resumes the request, unless they end
+            // inside a UTF-8 character: `read_line` drops those, and the orphaned rest of the
+            // character fails the next read as InvalidData, below. This is the poll that makes
+            // shutdown prompt.
             Err(ref e)
                 if e.kind() == std::io::ErrorKind::WouldBlock
                     || e.kind() == std::io::ErrorKind::TimedOut =>
             {
                 continue;
+            }
+            // A line over the cap leaves the rest of it unread, and a line that is not UTF-8 may
+            // be one whose start a timeout dropped; either way the stream is no longer known to be
+            // at a line boundary, so say why, then close rather than guess where the next request
+            // starts. The reply is best-effort: closing with bytes still unread resets the
+            // connection, which can discard the reply before a client still writing reads it.
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                let response = Response::Error {
+                    message: format!("unreadable request: {e}"),
+                };
+                let _ = writer.write_all(response.to_ndjson().as_bytes());
+                let _ = writer.flush();
+                break;
             }
             // A real read error ends the connection.
             Err(_) => break,
