@@ -313,6 +313,144 @@ fn an_editor_attached_to_a_running_engine_plays_it_and_swaps_its_saves() {
     });
 }
 
+/// A proxy in front of the structure channel at `engine` that forwards every exchange, except that
+/// it holds each `Send` while `stalled` is set, as a stopped `reuben play` would. Counts the sends
+/// that reached it.
+struct Stalling {
+    addr: String,
+    stalled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    sends: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Stalling {
+    fn before(engine: String) -> Self {
+        use std::io::{BufRead, BufReader, Write};
+        use std::sync::atomic::Ordering;
+        use std::sync::Arc;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a proxy port");
+        let addr = listener.local_addr().expect("bound").to_string();
+        let stalled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let sends = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        std::thread::spawn({
+            let (stalled, sends) = (Arc::clone(&stalled), Arc::clone(&sends));
+            move || {
+                for client in listener.incoming() {
+                    let Ok(client) = client else { return };
+                    let (stalled, sends, engine) =
+                        (Arc::clone(&stalled), Arc::clone(&sends), engine.clone());
+                    std::thread::spawn(move || {
+                        let mut line = String::new();
+                        if BufReader::new(&client).read_line(&mut line).is_err() {
+                            return;
+                        }
+                        let request = serde_json::from_str(&line);
+                        if let Ok(reuben_api::engine::Request::Send { .. }) = request {
+                            sends.fetch_add(1, Ordering::AcqRel);
+                            while stalled.load(Ordering::Acquire) {
+                                std::thread::sleep(std::time::Duration::from_millis(1));
+                            }
+                        }
+                        let Ok(upstream) = std::net::TcpStream::connect(&engine) else {
+                            return;
+                        };
+                        let _ = (&upstream).write_all(line.as_bytes());
+                        let mut reply = String::new();
+                        let _ = BufReader::new(&upstream).read_line(&mut reply);
+                        let _ = (&client).write_all(reply.as_bytes());
+                    });
+                }
+            }
+        });
+        Self {
+            addr,
+            stalled,
+            sends,
+        }
+    }
+}
+
+#[test]
+fn a_fader_moved_while_the_attached_engine_stalls_never_holds_the_window() {
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+
+    use egui::accesskit::Role;
+    use reuben_api::render::Arg;
+    use reuben_native::engine::EngineConfig;
+    use reuben_native::osc;
+    use reuben_native::test_support::{start_headless, within};
+
+    let scratch = Scratch::new("ui_attached_stall");
+    let config = TempConfig::new();
+    let top = echoing(&scratch, 0.2);
+    let sink = std::net::UdpSocket::bind("127.0.0.1:0").expect("an OSC-out sink");
+    sink.set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("a read timeout");
+    let target = sink.local_addr().expect("bound").to_string();
+
+    within(crate::engine::test_support::HANG_SECS, move || {
+        let played = start_headless(EngineConfig {
+            osc_out: Some(target),
+            ..crate::engine::test_support::config(top.clone())
+        })
+        .expect("the engine starts");
+        let proxy = Stalling::before(played.structure_addr().expect("bound").to_string());
+        let mut harness = harness(attached(proxy.addr.clone(), &config, None));
+        step_until(&mut harness, "opened what the engine plays", |editor| {
+            editor.session.is_some()
+        });
+
+        proxy.stalled.store(true, Ordering::Release);
+        for press in 0..5 {
+            harness.get_by_role(Role::Slider).focus();
+            harness.run_steps(1);
+            let started = Instant::now();
+            harness.key_press(egui::Key::ArrowRight);
+            harness.run_steps(1);
+            assert!(
+                started.elapsed() < Duration::from_millis(500),
+                "a frame waited {:?} on the stalled engine",
+                started.elapsed()
+            );
+            if press == 0 {
+                // The rest of the drag queues behind the first send, held at the engine.
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while proxy.sends.load(Ordering::Acquire) == 0 {
+                    assert!(Instant::now() < deadline, "the first send never left");
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        }
+        let newest = harness.state().controls.value("level").expect("a value");
+        assert!(newest > 0.24, "the fader moved on each press, to {newest}");
+        proxy.stalled.store(false, Ordering::Release);
+
+        // The newest value arrives.
+        let mut buf = [0u8; 1024];
+        loop {
+            let n = sink.recv(&mut buf).expect("the newest level came back");
+            let echoed = osc::decode(&buf[..n]).expect("decode");
+            if echoed
+                .iter()
+                .any(|m| m.args == vec![Arg::F32(newest as f32)])
+            {
+                break;
+            }
+        }
+
+        // One send was held; the four values dragged past behind it went as one more. A slow
+        // machine can time the held one out, and a ping then lets one more through.
+        let sends = proxy.sends.load(Ordering::Acquire);
+        assert!(
+            (2..=3).contains(&sends),
+            "{sends} sends for a five-value drag"
+        );
+        harness.state_mut().engine.shutdown();
+        reuben_native::diagnostics::log_snapshot(&played.shutdown());
+    });
+}
+
 #[test]
 fn attaching_swaps_in_a_file_changed_since_the_engine_read_it() {
     use reuben_native::test_support::{start_headless, within};

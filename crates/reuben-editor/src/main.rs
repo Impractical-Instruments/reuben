@@ -17,6 +17,7 @@ mod inspector;
 mod link;
 mod meter_strip;
 mod pick;
+mod sends;
 mod session;
 mod start;
 mod theme;
@@ -321,11 +322,13 @@ impl eframe::App for Editor {
         }
         if let Some(session) = &mut self.session {
             let channel = || self.engine.channel();
+            let live = || self.engine.live();
             inspector::show(
                 ui,
                 &mut self.inspector,
                 session,
                 &channel,
+                &live,
                 self.canvas.selection(),
             );
         }

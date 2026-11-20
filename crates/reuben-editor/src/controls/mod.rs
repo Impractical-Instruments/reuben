@@ -16,13 +16,11 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui;
 use reuben_api::authoring::{describe_boundary, DescribeBoundary};
-use reuben_api::engine::{
-    send_live_controls, Channel, ControlSendMessage, SendLiveControls, MAX_SEND_BATCH,
-};
 use reuben_api::FsResolver;
 
 use self::model::{Control, Kind, Panel};
 use crate::engine::Engine;
+use crate::sends::Replies;
 
 /// The lowest key the on-screen keyboard starts on: C3.
 const DEFAULT_LOW_KEY: u8 = 48;
@@ -78,20 +76,6 @@ fn load(instrument: &Path, root: Option<&Path>) -> Result<Loaded, String> {
     }
 }
 
-/// Send `messages` to the engine as live control values, in order.
-fn send(channel: &Channel, messages: Vec<ControlSendMessage>) -> Result<(), String> {
-    for batch in messages.chunks(MAX_SEND_BATCH) {
-        send_live_controls(
-            &SendLiveControls {
-                messages: batch.to_vec(),
-            },
-            channel,
-        )
-        .map_err(|refusal| refusal.message)?;
-    }
-    Ok(())
-}
-
 /// What one control is currently set to. Lives in the window only: the engine is told each change
 /// and the document is never written.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -122,6 +106,7 @@ pub struct Controls {
     low_key: u8,
     /// Why the last send failed, until one succeeds.
     send_error: Option<String>,
+    replies: Replies,
 }
 
 impl Controls {
@@ -137,6 +122,7 @@ impl Controls {
             settings,
             low_key: DEFAULT_LOW_KEY,
             send_error: None,
+            replies: Replies::default(),
         }
     }
 
@@ -151,6 +137,19 @@ impl Controls {
         }
     }
 
+    /// What the control driving `bind` is set to, when it is set to a value.
+    #[cfg(test)]
+    pub fn value(&self, bind: &str) -> Option<f64> {
+        let Some(Ok(loaded)) = &self.loaded else {
+            return None;
+        };
+        let at = (loaded.panel.controls.iter()).position(|c| c.bind == bind)?;
+        match self.settings.get(at)? {
+            Setting::Value(value) => Some(*value),
+            _ => None,
+        }
+    }
+
     /// Draw the panel along the bottom of `ui`, with `beside` down its right edge, and send what
     /// the player did to `engine`. Draws nothing when no instrument is open, and returns whether it
     /// drew.
@@ -160,10 +159,11 @@ impl Controls {
         engine: &Engine,
         beside: impl FnOnce(&mut egui::Ui),
     ) -> bool {
+        self.heard();
         let Some(loaded) = &self.loaded else {
             return false;
         };
-        let channel = engine.channel();
+        let live = engine.live();
         egui::Panel::bottom("controls")
             .resizable(true)
             .default_size(320.0)
@@ -182,7 +182,7 @@ impl Controls {
                         return;
                     }
                 };
-                view::header(ui, loaded.surface.as_deref(), channel.is_some());
+                view::header(ui, loaded.surface.as_deref(), live.is_some());
                 if let Some(e) = &self.send_error {
                     ui.colored_label(ui.visuals().error_fg_color, format!("send failed: {e}"));
                 }
@@ -190,17 +190,25 @@ impl Controls {
                     .auto_shrink(false)
                     .show(ui, |ui| {
                         view::warnings(ui, &loaded.panel.warnings);
-                        ui.add_enabled_ui(channel.is_some(), |ui| {
+                        ui.add_enabled_ui(live.is_some(), |ui| {
                             view::panel(ui, &loaded.panel, &mut self.settings, &mut self.low_key)
                         })
                         .inner
                     })
                     .inner;
-                if let (Some(channel), false) = (&channel, messages.is_empty()) {
-                    self.send_error = send(channel, messages).err();
+                if let Some(live) = &live {
+                    live.send(messages, &self.replies);
                 }
             });
+        // A send made now is answered here; one queued for an attached engine on a later frame.
+        self.heard();
         true
+    }
+
+    fn heard(&mut self) {
+        if let Some(result) = self.replies.latest() {
+            self.send_error = result.err();
+        }
     }
 }
 
@@ -216,6 +224,9 @@ mod tests {
 
     use super::model::Gesture;
     use super::*;
+    use reuben_api::engine::{ControlSendMessage, MAX_SEND_BATCH};
+
+    use crate::sends::send;
 
     const HANG_SECS: u64 = 20;
 
