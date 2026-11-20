@@ -914,7 +914,18 @@ mod tests {
         assert!(Arc::ptr_eq(&first, &coord.installed_probes()));
 
         assert!(coord.swap_document(&envelope_doc("/env2")).report.ok);
-        assert!(!Arc::ptr_eq(&first, &coord.installed_probes()));
+        let second = coord.installed_probes();
+        assert!(!Arc::ptr_eq(&first, &second));
+
+        // The render side never drains `_side`, so the next swap is refused as still in flight,
+        // after the point a build would have started.
+        let refused = coord.swap_document(&envelope_doc("/env3"));
+        assert!(!refused.report.ok);
+        assert!(refused.report.errors[0].message.contains("in flight"));
+        assert!(
+            Arc::ptr_eq(&second, &coord.installed_probes()),
+            "a refused swap keeps the probes of the last commit"
+        );
     }
 
     #[test]

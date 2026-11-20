@@ -596,6 +596,8 @@ mod tests {
         probed: std::sync::atomic::AtomicUsize,
         /// Counts `install_probes` calls.
         installed: std::sync::atomic::AtomicUsize,
+        /// The slots `install_probes` was last given.
+        last_installed: Mutex<Option<Arc<ProbeSlots>>>,
         /// Whether `set_probes` is the node-metering host's, answering every path as resolved.
         meters_nodes: bool,
     }
@@ -625,7 +627,8 @@ mod tests {
                 Err("this engine does not meter nodes".to_string())
             }
         }
-        fn install_probes(&self, _: Arc<ProbeSlots>) {
+        fn install_probes(&self, slots: Arc<ProbeSlots>) {
+            *self.last_installed.lock().unwrap() = Some(slots);
             self.installed.fetch_add(1, Ordering::SeqCst);
         }
         fn diagnostics(&self) -> DiagnosticsReport {
@@ -647,6 +650,7 @@ mod tests {
             offered: Default::default(),
             probed: Default::default(),
             installed: Default::default(),
+            last_installed: Default::default(),
             meters_nodes: false,
         })
         .0
@@ -669,6 +673,7 @@ mod tests {
             offered: Default::default(),
             probed: Default::default(),
             installed: Default::default(),
+            last_installed: Default::default(),
             meters_nodes: false,
         })
     }
@@ -688,6 +693,7 @@ mod tests {
             offered: Default::default(),
             probed: Default::default(),
             installed: Default::default(),
+            last_installed: Default::default(),
             meters_nodes: true,
         });
         match dispatch(&state, &set_probes_line(MAX_PROBES + 1)) {
@@ -716,9 +722,12 @@ mod tests {
     fn the_host_is_given_the_installed_probes_at_the_start_and_after_each_swap() {
         let (state, host) = holding();
         assert_eq!(host.installed.load(Ordering::SeqCst), 1);
-        let channel = Channel::new(InProcess::new(state));
+        let channel = Channel::new(InProcess::new(state.clone()));
         swap_by_value(&channel).expect("swap");
         assert_eq!(host.installed.load(Ordering::SeqCst), 2);
+        let given = host.last_installed.lock().unwrap().clone().expect("given");
+        let coordinator = state.coordinator.lock().unwrap();
+        assert!(Arc::ptr_eq(&given, &coordinator.installed_probes()));
     }
 
     fn swap_by_path(expect: Option<String>) -> String {

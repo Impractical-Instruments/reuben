@@ -68,13 +68,17 @@ impl Probes {
         }
         let paths = unique;
         let mut resolved = Vec::new();
+        // `held` is assigned before any flag flips, so a panic partway leaves no flag on that
+        // `held` does not name.
+        let old_held = std::mem::replace(&mut self.held, paths.clone());
+        self.leased_at = Some(now);
         if let Some(slots) = &self.slots {
             resolved = paths
                 .iter()
                 .filter(|p| resolve(slots, p).is_some())
                 .cloned()
                 .collect();
-            for old in self.held.iter().filter(|p| !paths.contains(p)) {
+            for old in old_held.iter().filter(|p| !paths.contains(p)) {
                 if let Some(node) = resolve(slots, old) {
                     node.set_on(false);
                 }
@@ -86,8 +90,6 @@ impl Probes {
                 }
             }
         }
-        self.held = paths;
-        self.leased_at = Some(now);
         resolved
     }
 
@@ -275,14 +277,19 @@ mod tests {
 
     #[test]
     // Only Render writes a level, so clearing a loud level on re-enable is pinned in reuben-core's
-    // probe tests; this pins that the host's off-then-on still reports the node, at the floor.
+    // probe tests; this pins the host's side: the flag goes off and on with the set, and the
+    // re-enabled node reports at the floor once Render commits a block.
     fn re_enabling_a_probe_starts_from_silence() {
         let slots = hosting(true);
         let mut p = probes_on(&slots);
         let now = Instant::now();
+        let osc = || slots.find("/osc").unwrap();
         p.set(vec![names(&["/osc"])], now);
+        assert!(osc().is_on());
         p.set(vec![], now);
+        assert!(!osc().is_on());
         p.set(vec![names(&["/osc"])], now);
+        assert!(osc().is_on());
         // The next block Render commits applies the reset the re-enable asked for.
         slots.commit(BLOCK);
         let report = p.report(now);

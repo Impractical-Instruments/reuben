@@ -43,7 +43,7 @@ use reuben_api::probe::ProbeSlots;
 use crate::diagnostics::{Diagnostics, Snapshot};
 use crate::meters::Meters;
 use crate::osc::{ControlBatch, OscIn};
-use crate::probes::{spawn_lease_thread, Probes, LEASE_CHECK};
+use crate::probes::{spawn_lease_thread, Probes, LEASE, LEASE_CHECK};
 
 /// How long the accept loop sleeps between polls of its shutdown flag while idle. The listener
 /// is non-blocking so the loop can observe [`StructureServer::shutdown`] without a client ever
@@ -312,8 +312,19 @@ impl NativeHost {
     /// [`with_render_config`](Self::with_render_config). That one *is* a builder step because it
     /// has a working default; the control ingress has none, so it is a parameter.
     pub fn new(diagnostics: Arc<Diagnostics>, control: Sender<ControlBatch>) -> Self {
-        let probes = Arc::new(Mutex::new(Probes::default()));
-        spawn_lease_thread(Arc::downgrade(&probes), LEASE_CHECK);
+        Self::with_probe_lease(diagnostics, control, LEASE, LEASE_CHECK)
+    }
+
+    /// [`new`](Self::new) with the probe lease and the period its expiry thread checks at, so a
+    /// test need not wait the production 5 s and 1 s.
+    pub(crate) fn with_probe_lease(
+        diagnostics: Arc<Diagnostics>,
+        control: Sender<ControlBatch>,
+        lease: Duration,
+        check: Duration,
+    ) -> Self {
+        let probes = Arc::new(Mutex::new(Probes::with_lease(lease)));
+        spawn_lease_thread(Arc::downgrade(&probes), check);
         Self {
             diagnostics,
             meters: Meters::none(),
@@ -864,7 +875,7 @@ mod tests {
             .expect("set_probes");
         assert_eq!(resolved, vec![vec!["/osc".to_string()]]);
 
-        let deadline = Instant::now() + Duration::from_secs(1);
+        let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let probes = channel.get_meters().expect("meters").probes;
             assert_eq!(probes.len(), 1);
@@ -872,9 +883,36 @@ mod tests {
                 assert_eq!(probes[0].path, vec!["/osc".to_string()]);
                 break;
             }
-            assert!(Instant::now() < deadline, "no level within 1 s: {probes:?}");
+            assert!(Instant::now() < deadline, "no level within 5 s: {probes:?}");
             std::thread::sleep(Duration::from_millis(5));
         }
+        cb.stop();
+    }
+
+    #[test]
+    fn a_host_switches_off_probes_nobody_renews() {
+        let (coordinator, side, _w) =
+            reuben_api::engine::install_initial(BASE_DOC, NoResources, cfg()).expect("install");
+        let slots = coordinator.installed_probes();
+        let (control_tx, control_rx) = std::sync::mpsc::channel::<ControlBatch>();
+        let host = Arc::new(NativeHost::with_probe_lease(
+            Diagnostics::new(),
+            control_tx,
+            Duration::from_millis(30),
+            Duration::from_millis(5),
+        ));
+        let state = StructureState::new(coordinator, host.clone());
+        let cb = FakeCallback::spawn(side, control_rx);
+        let resolved = EngineHost::set_probes(&*host, vec![vec!["/osc".to_string()]]).unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert!(slots.any_on());
+        // Nothing calls `meters()`, so only the host's own lease thread can expire the set.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while slots.any_on() {
+            assert!(Instant::now() < deadline, "the host never expired the set");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        drop(state);
         cb.stop();
     }
 

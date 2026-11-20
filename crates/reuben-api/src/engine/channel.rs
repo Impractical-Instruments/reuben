@@ -44,8 +44,9 @@ pub enum ChannelError {
     /// The engine could not be reached (connect refused, address unresolved, or a read/write
     /// timeout on a wedged server). Carries the "start `reuben play`" guidance.
     Unreachable(String),
-    /// The server framed a [`Response::Error`] — the request was understood as a channel message
-    /// but produced no domain answer (e.g. an unreadable request, or a not-yet-wired verb).
+    /// The request produced no domain answer: the server framed a [`Response::Error`] (e.g. an
+    /// unreadable request, or a not-yet-wired verb), or the client refused it before sending
+    /// (e.g. a probe set over [`MAX_PROBES`]).
     Channel(String),
     /// The response could not be parsed, or was a variant this verb never expects.
     Protocol(String),

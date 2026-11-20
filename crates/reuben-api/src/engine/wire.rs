@@ -31,8 +31,9 @@ use crate::authoring::Report;
 /// address. A taken port is non-fatal on the server side (see `play`).
 pub const DEFAULT_STRUCTURE_ADDR: &str = "127.0.0.1:9124";
 
-/// The most paths one [`Request::SetProbes`] may name. Render folds every probed node's output once
-/// per block it runs, so the choice is bounded for the same reason a `send` batch is.
+/// The most paths one [`Request::SetProbes`] may name. It bounds paths, not per-block work: Render
+/// folds a probed node's output once per block, and a path inside a voice once per voice per
+/// block, so the choice is bounded for the same reason a `send` batch is.
 pub const MAX_PROBES: usize = 512;
 
 /// Where a swap's document comes from (accepted **by value or by path**, both
@@ -166,7 +167,8 @@ pub enum Request {
     GetMeters,
     /// Choose which nodes' output levels [`GetMeters`](Self::GetMeters) reports, replacing the
     /// previous choice. Each path is a node's address from the root: one name per nesting level,
-    /// so `["voice", "osc"]` is the node `osc` inside the node `voice`.
+    /// so `["/voice", "/osc"]` is `/osc` inside the voice patch the node `/voice` hosts. A subpatch's
+    /// spliced child is one element: `"/bass/filter"`.
     ///
     /// The engine measures only the chosen nodes, so an empty list turns node metering off. A path
     /// naming no node, or a node with no Signal output, is left out of the answer; the others are
