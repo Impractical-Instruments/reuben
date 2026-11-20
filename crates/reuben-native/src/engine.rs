@@ -3,7 +3,7 @@
 //! [`start`] loads the instrument, opens the audio device (and the input device when the
 //! instrument binds input channels) per the [`DeviceProfile`], binds the OSC-in UDP listener and
 //! the optional OSC-out sender, serves the loopback structure channel the MCP sidecar dials, and
-//! follows outside edits to the instrument's files.
+//! (unless [`EngineConfig::follow_files`] is off) follows outside edits to the instrument's files.
 //! The [`RunningEngine`] it returns is the whole session: it reaches the engine in-process through
 //! the window's own [`Channel`], and dropping it stops every thread and frees every port.
 //!
@@ -91,6 +91,10 @@ pub struct EngineConfig {
     /// Which swaps arriving over the structure socket are held for the host's user rather than
     /// installed. `None` holds none, which is `reuben play`.
     pub swap_hold: Option<SwapHold>,
+    /// Reload the open instrument when something outside the engine writes its files. On for
+    /// `reuben play`; off for a host whose user decides what plays, since a reload installs without
+    /// asking [`swap_hold`](Self::swap_hold).
+    pub follow_files: bool,
 }
 
 impl EngineConfig {
@@ -107,6 +111,7 @@ impl EngineConfig {
             structure: Some(DEFAULT_STRUCTURE_ADDR.to_string()),
             log_osc: false,
             swap_hold: None,
+            follow_files: true,
         }
     }
 }
@@ -345,6 +350,7 @@ pub(crate) fn start_with(
         structure,
         log_osc,
         swap_hold,
+        follow_files,
     } = config;
 
     let structure = match structure {
@@ -456,11 +462,11 @@ pub(crate) fn start_with(
         Some(Err(e)) => (None, Some(e)),
         None => (None, None),
     };
-    let tree_watch = tree_watch::spawn(state.clone());
+    let tree_watch = follow_files.then(|| tree_watch::spawn(state.clone()));
 
     Ok(RunningEngine {
         state: Some(state),
-        tree_watch: Some(tree_watch),
+        tree_watch,
         structure,
         structure_error,
         osc_in,

@@ -331,3 +331,30 @@ fn a_read_that_fails_names_the_file_as_the_client_spelled_it() {
     });
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn an_engine_that_does_not_follow_files_publishes_nothing_for_an_outside_write() {
+    let dir = scratch("server_calls_not_following");
+    let open = dir.join("first.json");
+    write(&open, DOC);
+    let config = EngineConfig {
+        osc_in: Some("127.0.0.1:0".to_string()),
+        structure: Some("127.0.0.1:0".to_string()),
+        follow_files: false,
+        ..EngineConfig::new(Instrument::Path(open.clone()))
+    };
+    within(HANG_SECS, move || {
+        let engine = start_headless(config).expect("the engine starts");
+        let addr = engine.structure_addr().expect("a structure socket");
+        let events = follow(&TcpTransport::new(
+            addr.to_string(),
+            DEFAULT_CONNECT_TIMEOUT,
+        ));
+        write(&open, &DOC.replace(r#""first""#, r#""renamed""#));
+        if let Ok(event) = events.recv_timeout(Duration::from_millis(1000)) {
+            panic!("an outside write was followed: {event:?}");
+        }
+        timed_teardown(engine, false);
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}

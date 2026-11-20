@@ -210,6 +210,12 @@ impl Engine {
         config: EngineConfig,
         start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
     ) -> Self {
+        // The editor's user decides what plays: a reload after an outside write would install
+        // without the held-swap prompt.
+        let config = EngineConfig {
+            follow_files: false,
+            ..config
+        };
         let kept = Some(config.clone());
         let structure = config.structure.clone();
         let mut report = vec![Line::new(
@@ -697,6 +703,16 @@ mod tests {
         ));
         std::fs::write(&path, body).expect("seed a document");
         path
+    }
+
+    #[test]
+    fn the_embedded_engine_does_not_follow_outside_writes() {
+        let mut asked = None;
+        let _ = Engine::start_with(config(library("acid-techno.json")), |config| {
+            asked = Some(config.follow_files);
+            Err(StartError::StructureNotLoopback(String::new()))
+        });
+        assert_eq!(asked, Some(false));
     }
 
     #[test]
