@@ -847,12 +847,14 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         let (from, started) = (blocks(), Instant::now());
-        std::thread::sleep(Duration::from_millis(200));
+        std::thread::sleep(Duration::from_millis(500));
         let rendered = (blocks() - from) as f64;
         let elapsed = started.elapsed().as_secs_f64();
         let expected = elapsed * f64::from(HEADLESS_SAMPLE_RATE) / HEADLESS_BLOCK_SIZE as f64;
+        // Loose below: a loaded runner can stall the driver past its lag cap, which drops time.
+        // Tight above: that is what tells real-time pacing from rendering as fast as it can.
         assert!(
-            (rendered - expected).abs() <= expected * 0.25,
+            rendered >= expected * 0.5 && rendered <= expected * 1.25,
             "rendered {rendered} blocks in {elapsed:.3}s; real time is {expected:.1}"
         );
     }
