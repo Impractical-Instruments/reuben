@@ -358,3 +358,55 @@ fn an_engine_that_does_not_follow_files_publishes_nothing_for_an_outside_write()
     });
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// What a client that edits the file and then swaps it in by path, quoting the hash it saw before
+/// its edit, gets once the server has already followed that edit.
+#[test]
+fn a_swap_of_what_the_server_already_followed_is_ok_and_announces_nothing() {
+    let dir = scratch("server_calls_swap_followed");
+    let library = dir.join("lib");
+    std::fs::create_dir_all(&library).unwrap();
+    let open = dir.join("first.json");
+    write(&open, DOC);
+    let open_s = open.display().to_string();
+    serving(&open, &library, move |t| {
+        let before = match ask(t, &Request::GetDocument) {
+            Response::Document(snapshot) => snapshot.content_hash,
+            other => panic!("expected the document, got {other:?}"),
+        };
+        let events = follow(t);
+        write(
+            Path::new(&open_s),
+            &DOC.replace(r#""first""#, r#""renamed""#),
+        );
+        let followed = loop {
+            match events
+                .recv_timeout(REPLY)
+                .expect("the outside write followed")
+            {
+                Event::Changed { hash, by } => {
+                    assert_eq!(by, ChangedBy::Outside);
+                    break hash;
+                }
+                _ => continue,
+            }
+        };
+        match ask(
+            t,
+            &Request::Swap {
+                source: reuben_api::engine::DocSource::Path(open_s.clone()),
+                expect: Some(before),
+            },
+        ) {
+            Response::SwapReport(report) => {
+                assert!(report.report.ok, "{:?}", report.report.errors);
+                assert_eq!(report.content_hash, followed);
+            }
+            other => panic!("expected an ok swap report, got {other:?}"),
+        }
+        if let Ok(extra) = events.recv_timeout(Duration::from_millis(1000)) {
+            panic!("a swap that installed nothing announced {extra:?}");
+        }
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}

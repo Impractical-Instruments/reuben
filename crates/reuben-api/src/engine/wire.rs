@@ -358,7 +358,7 @@ pub struct SwapReport {
     pub report: Report,
     pub content_hash: String,
     /// Present on a successful install; a rejected swap (`ok: false`) has no old-vs-new to
-    /// summarize.
+    /// summarize, and neither has an ok swap of what already plays, which installs nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff: Option<DiffSummary>,
 }

@@ -158,6 +158,9 @@ fn headless(launch: &Path, root: Option<&Path>) -> EngineConfig {
         instrument_root: root.map(Path::to_path_buf),
         osc_in: None,
         structure: None,
+        // A followed write would install before the swap these tests make, leaving it nothing
+        // to install and no diff to read.
+        follow_files: false,
         ..EngineConfig::new(Instrument::Path(launch.to_path_buf()))
     }
 }
@@ -268,24 +271,18 @@ fn swapping_the_launch_file_keeps_every_survivor() {
         let engine = start_headless(headless(&launch, None)).expect("start");
         let channel = engine.channel();
 
-        // Three spellings of the launch file, none of them the one the engine started on.
+        // Three spellings of the launch file. Each reads as exactly what plays, the documents it
+        // reaches included, so none installs anything: a spelling that resolved a voice from
+        // elsewhere would install, and carry a diff.
         let spellings = [
             launch.clone(),
             lib.join(".").join("euclidean-drums.json"),
             lib.join("voices").join("..").join("euclidean-drums.json"),
         ];
-        let mut nodes = None;
         for path in &spellings {
             let report = swap_path(&channel, path);
             assert_clean(&report, "the launch file");
-            let diff = report.diff.expect("an installed swap carries a diff");
-            assert!(
-                diff.state_reset.is_empty() && diff.added.is_empty() && diff.removed.is_empty(),
-                "{}: {diff:?}",
-                path.display()
-            );
-            assert!(diff.survived > 0);
-            assert_eq!(*nodes.get_or_insert(diff.survived), diff.survived);
+            assert_eq!(report.diff, None, "{}", path.display());
         }
 
         // An edit to a runtime input, then the Swap an author makes after it.

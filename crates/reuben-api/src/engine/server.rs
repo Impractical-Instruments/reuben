@@ -674,6 +674,11 @@ fn handle_swap(
 /// Steps 2 to 5 of [`handle_swap`], for a document already read: the `expect` guard, the build, the
 /// hold, the install and everything after it. `installed_from` is the path the document was read
 /// from, `None` for one by value.
+///
+/// A by-path `swap` (not an `open`) of the file that plays, whose document and the documents it reaches read
+/// exactly as what plays, installs nothing and answers ok with no diff, whatever `expect` says:
+/// there is nothing for it to clobber. That is the swap of a client that edited the files itself,
+/// after the engine already followed the edit.
 fn install_from(
     state: &StructureState,
     coordinator: &mut Coordinator,
@@ -683,9 +688,36 @@ fn install_from(
     caller: Caller,
     went: Went,
 ) -> Response {
-    let origin = installed_from
+    // Built before the `expect` guard, which it may make moot.
+    let by_path = match installed_from
         .as_deref()
-        .map(|path| state.host.document_origin(path));
+        .map(|path| state.host.document_origin(path))
+    {
+        Some(origin) => {
+            // The one-call swap's own first step, kept so a build here peaks at live + new.
+            drop(coordinator.try_reclaim());
+            let (prepared, tree) = prepare_recording(state, coordinator, json, &origin);
+            if let (Ok(prepared), Went::Swapped) = (&prepared, went) {
+                match plays_already(state, coordinator, &origin, prepared, &tree) {
+                    Ok(false) => {}
+                    Ok(true) => {
+                        return Response::SwapReport(SwapReport {
+                            report: Report {
+                                ok: true,
+                                errors: Vec::new(),
+                                warnings: Vec::new(),
+                            },
+                            content_hash: coordinator.installed_hash(),
+                            diff: None,
+                        })
+                    }
+                    Err(poisoned) => return poisoned.into(),
+                }
+            }
+            Some((prepared, tree))
+        }
+        None => None,
+    };
 
     if let Some(expected) = &expect {
         let actual = coordinator.installed_hash();
@@ -698,35 +730,28 @@ fn install_from(
     }
 
     // Unguarded by construction: arbitration was settled above.
-    let (core_report, tree) = match &origin {
-        Some(origin) => {
-            // The one-call swap's own first step, kept so a build here peaks at live + new.
-            drop(coordinator.try_reclaim());
-            let (prepared, tree) = prepare_recording(state, coordinator, json, origin);
-            match prepared {
-                // A document that does not load is rejected with its errors, never held: the
-                // user is only asked about something that would install.
-                Err(rejected) => (rejected, tree),
-                Ok(prepared) => {
-                    let holds = caller == Caller::Client
-                        && installed_from
-                            .as_deref()
-                            .is_some_and(|path| state.host.hold_swap(path));
-                    if holds {
-                        drop(prepared);
-                        let playing = match state.installed_source() {
-                            Ok(source) => source.clone(),
-                            Err(poisoned) => return poisoned.into(),
-                        };
-                        return Response::Held(HeldSwap {
-                            requested: installed_from.unwrap_or_default(),
-                            playing,
-                            content_hash: coordinator.installed_hash(),
-                        });
-                    }
-                    (coordinator.commit_swap(prepared), tree)
-                }
+    let (core_report, tree) = match by_path {
+        // A document that does not load is rejected with its errors, never held: the user is
+        // only asked about something that would install.
+        Some((Err(rejected), tree)) => (rejected, tree),
+        Some((Ok(prepared), tree)) => {
+            let holds = caller == Caller::Client
+                && installed_from
+                    .as_deref()
+                    .is_some_and(|path| state.host.hold_swap(path));
+            if holds {
+                drop(prepared);
+                let playing = match state.installed_source() {
+                    Ok(source) => source.clone(),
+                    Err(poisoned) => return poisoned.into(),
+                };
+                return Response::Held(HeldSwap {
+                    requested: installed_from.unwrap_or_default(),
+                    playing,
+                    content_hash: coordinator.installed_hash(),
+                });
             }
+            (coordinator.commit_swap(prepared), tree)
         }
         // By value there is nowhere the document came from: the session's anchor stands, and no
         // document is open to edit.
@@ -740,6 +765,24 @@ fn install_from(
         }
     }
     Response::SwapReport(report)
+}
+
+/// Whether `prepared`, read from `origin` with `tree`, is what plays: the same file however
+/// spelled, the same content hash, and the same texts for every document it reaches.
+fn plays_already(
+    state: &StructureState,
+    coordinator: &Coordinator,
+    origin: &str,
+    prepared: &reuben_document::PreparedSwap,
+    tree: &Tree,
+) -> Result<bool, Poisoned> {
+    let same_file = state.installed_source()?.as_deref().is_some_and(|playing| {
+        let playing = state.host.document_origin(playing);
+        state.store.canonical(&playing, None) == state.store.canonical(origin, None)
+    });
+    Ok(same_file
+        && prepared.content_hash() == coordinator.installed_hash()
+        && state.tree_cell()?.texts == tree.texts)
 }
 
 /// Unload the open instrument and load, and play, the one `name` names: [`handle_swap`] by path,
