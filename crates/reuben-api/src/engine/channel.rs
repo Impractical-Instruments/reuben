@@ -22,8 +22,8 @@ use std::time::Duration;
 
 use super::prose::ENGINE_UNREACHABLE_GUIDANCE;
 use super::wire::{
-    Conflict, ControlMessage, DiagnosticsReport, DocSource, DocumentSnapshot, HeldSwap, Request,
-    Response, SwapReport,
+    Conflict, ControlMessage, DiagnosticsReport, DocSource, DocumentSnapshot, HeldSwap,
+    MetersReport, Request, Response, SwapReport,
 };
 
 /// How long to wait for the one response line before giving up on a *wedged* server (connected but
@@ -194,6 +194,15 @@ impl Channel {
             Response::Diagnostics(report) => Ok(report),
             Response::Error { message } => Err(ChannelError::Channel(message)),
             other => Err(unexpected("get_diagnostics", "diagnostics", &other)),
+        }
+    }
+
+    /// Read the engine's levels at the device.
+    pub fn get_meters(&self) -> Result<MetersReport, ChannelError> {
+        match self.exchange(&Request::GetMeters)? {
+            Response::Meters(report) => Ok(report),
+            Response::Error { message } => Err(ChannelError::Channel(message)),
+            other => Err(unexpected("get_meters", "meters", &other)),
         }
     }
 

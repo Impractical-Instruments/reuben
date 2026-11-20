@@ -29,7 +29,7 @@ pub enum ContractKind {
     Pure,
     /// An engine contract that reaches a running engine over the door's channel
     /// (`send_live_controls`/`get_engine_status`/`swap_instrument`/`get_current_instrument`/
-    /// `get_engine_diagnostics`).
+    /// `get_engine_diagnostics`/`get_engine_meters`).
     Engine,
     /// A **document-manipulation** contract: a pure, engine-free *mutator* over an
     /// instrument document through the resolver seam — read, apply one surgical edit, re-validate
@@ -110,6 +110,7 @@ roster! {
     SWAP_INSTRUMENT = "swap_instrument", Engine, engine_prose::SWAP_INSTRUMENT;
     GET_CURRENT_INSTRUMENT = "get_current_instrument", Engine, engine_prose::GET_CURRENT_INSTRUMENT;
     GET_ENGINE_DIAGNOSTICS = "get_engine_diagnostics", Engine, engine_prose::GET_ENGINE_DIAGNOSTICS;
+    GET_ENGINE_METERS = "get_engine_meters", Engine, engine_prose::GET_ENGINE_METERS;
 
     // The document-manipulation vocabulary: the closed set of engine-free mutators an agent
     // authors a document through, grouped document · nodes · inputs · config · interface ·

@@ -46,3 +46,10 @@ pub const GET_CURRENT_INSTRUMENT: &str =
 pub const GET_ENGINE_DIAGNOSTICS: &str =
     "Return the engine's running diagnostics counters since start: output_xruns (events) plus \
      input_ring underruns/overruns/producer_drops (frames). Fails fast if no engine is reachable.";
+
+pub const GET_ENGINE_METERS: &str =
+    "Return the engine's levels at the audio device, one entry per output and input channel, as \
+     peak_dbfs and rms_dbfs. Use it to check that an instrument makes sound (an output above the \
+     -120 floor), is clipping (peak at or above 0), or hears its input. Peaks fall back at 12 dB \
+     a second and RMS averages over 0.3 s, so call it while the sound plays, not after. Fails \
+     fast if no engine is reachable.";

@@ -65,9 +65,10 @@ pub use reuben_document::FromDocumentError;
 pub use tcp::{TcpTransport, DEFAULT_CONNECT_TIMEOUT};
 pub use verbs::*;
 pub use wire::{
-    Conflict, ControlArg, ControlMessage, DiagnosticsReport, DiffSummary, DocSource,
-    DocumentSnapshot, HeldSwap, Request, Response, SwapReport, DEFAULT_STRUCTURE_ADDR,
-    MAX_SEND_BATCH,
+    ChannelLevel, Conflict, ControlArg, ControlMessage, DiagnosticsReport, DiffSummary, DocSource,
+    DocumentSnapshot, HeldSwap, MetersReport, Request, Response, SwapReport,
+    DEFAULT_STRUCTURE_ADDR, MAX_SEND_BATCH, METER_CEILING_DBFS, METER_FLOOR_DBFS,
+    PEAK_FALL_DB_PER_SEC, RMS_WINDOW_SECS,
 };
 
 /// Build the [`Coordinator`] + [`RenderSide`](crate::render::RenderSide) pair for `doc_json`, at

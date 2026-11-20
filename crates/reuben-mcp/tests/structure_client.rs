@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 
 use reuben_api::authoring::{Diag, Report};
 use reuben_api::engine::{
-    Conflict, DiagnosticsReport, DiffSummary, DocSource, DocumentSnapshot, Request, Response,
-    SwapReport,
+    ChannelLevel, Conflict, DiagnosticsReport, DiffSummary, DocSource, DocumentSnapshot,
+    MetersReport, Request, Response, SwapReport,
 };
 
 use reuben_mcp::{Channel, EngineLink, SwapOutcome, TcpTransport, DEFAULT_CONNECT_TIMEOUT};
@@ -264,6 +264,28 @@ fn get_diagnostics_round_trips_the_four_counters() {
     let client = channel(stub.addr.to_string());
     let got = within(Duration::from_secs(5), "get_diagnostics", move || {
         client.get_diagnostics().expect("get_diagnostics resolves")
+    });
+    assert_eq!(got, report);
+}
+
+#[test]
+fn get_meters_round_trips_a_level_per_channel() {
+    let report = MetersReport {
+        outputs: vec![ChannelLevel {
+            peak_dbfs: -0.5,
+            rms_dbfs: -3.5,
+        }],
+        inputs: vec![ChannelLevel {
+            peak_dbfs: -120.0,
+            rms_dbfs: -120.0,
+        }],
+        frames: 4_800,
+    };
+    let served = report.clone();
+    let stub = spawn_stub(move |_req| Response::Meters(served.clone()));
+    let client = channel(stub.addr.to_string());
+    let got = within(Duration::from_secs(5), "get_meters", move || {
+        client.get_meters().expect("get_meters resolves")
     });
     assert_eq!(got, report);
 }

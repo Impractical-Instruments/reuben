@@ -4,7 +4,7 @@
 //! `queue_osc`, `fill`/`fill_duplex`, `drain_outbound`) with OS-specific I/O: [`osc`] decodes
 //! external OSC/UDP into flat control args, [`audio`] drives a cpal output stream, [`input`] is the
 //! cpal input ring feeding it, [`devices`] lists the output devices a profile can name,
-//! [`diagnostics`] is the shared xrun/ring counter surface,
+//! [`diagnostics`] is the shared xrun/ring counter surface, [`meters`] the levels at the device,
 //! [`structure`] is the loopback structure channel the MCP sidecar talks to, [`rigs`] holds the
 //! default playable rig, and [`profile`] is the device profile (`--io-map`). Sample data resolves
 //! through [`reuben_api::FsResolver`].
@@ -23,6 +23,7 @@ pub mod diagnostics;
 pub mod engine;
 pub mod input;
 pub mod library;
+pub mod meters;
 pub mod osc;
 pub mod profile;
 pub mod rigs;

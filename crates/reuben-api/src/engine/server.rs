@@ -4,11 +4,12 @@
 //! the listener, the framing loop and the shutdown; this is the part that would otherwise be
 //! rewritten per host, and rewritten differently.
 //!
-//! The five verbs:
+//! The six verbs:
 //! - [`Request::Ping`] → [`Response::Pong`] — liveness of the channel itself.
 //! - [`Request::GetDocument`] → the Coordinator's canonical document + its content hash. It changes
 //!   only when a [`Request::Swap`] installs a new one.
 //! - [`Request::GetDiagnostics`] → the host's counters, snapshotted off-thread.
+//! - [`Request::GetMeters`] → the host's levels at the device, read the same way.
 //! - [`Request::Swap`] → a **mailbox swap**: the Coordinator validates and builds a whole new
 //!   Engine off-thread, fills the install mailbox, and returns a real report with survivor/reset
 //!   stats. The `expect` guard is applied here, inside the Coordinator lock, so the compare and the
@@ -37,7 +38,8 @@ use super::channel::Transport;
 
 use super::wire::{
     over_long_batch_refusal, Conflict, ControlMessage, DiagnosticsReport, DocSource,
-    DocumentSnapshot, HeldSwap, Request, Response, SwapReport, EMPTY_BATCH_REFUSAL, MAX_SEND_BATCH,
+    DocumentSnapshot, HeldSwap, MetersReport, Request, Response, SwapReport, EMPTY_BATCH_REFUSAL,
+    MAX_SEND_BATCH,
 };
 
 /// What a host must provide for the window to serve the engine verbs — the device, the clock and
@@ -81,6 +83,12 @@ pub trait EngineHost: Send + Sync {
 
     /// The running counters, as an owned copy taken off the audio thread.
     fn diagnostics(&self) -> DiagnosticsReport;
+
+    /// The levels at the device, read off the audio thread without making it wait. Defaults to
+    /// empty arrays, which is the answer of a host with no device.
+    fn meters(&self) -> MetersReport {
+        MetersReport::default()
+    }
 
     /// Publish the render config for the just-installed engine with `logical` output channels and
     /// `input_channels` input channels, and return any warnings to fold into the swap report.
@@ -251,6 +259,7 @@ fn serve(state: &StructureState, line: &str, caller: Caller) -> Response {
         Ok(Request::Ping) => Response::Pong,
         Ok(Request::GetDocument) => get_document(state).unwrap_or_else(Response::from),
         Ok(Request::GetDiagnostics) => Response::Diagnostics(state.host.diagnostics()),
+        Ok(Request::GetMeters) => Response::Meters(state.host.meters()),
         Ok(Request::Swap { source, expect }) => handle_swap(state, source, expect, caller),
         Ok(Request::Send { messages }) => handle_send(state, messages),
         Err(e) => Response::Error {

@@ -26,8 +26,8 @@ use super::result::{
     CurrentInstrument, EngineStatus, SendOutput, SidecarInfo, StatusEndpoints, SwapResult,
 };
 use super::wire::{
-    over_long_batch_refusal, ControlArg, ControlMessage, DiagnosticsReport, DocSource,
-    DocumentSnapshot, SwapReport, EMPTY_BATCH_REFUSAL, MAX_SEND_BATCH,
+    over_long_batch_refusal, ChannelLevel, ControlArg, ControlMessage, DiagnosticsReport,
+    DocSource, DocumentSnapshot, MetersReport, SwapReport, EMPTY_BATCH_REFUSAL, MAX_SEND_BATCH,
 };
 
 /// Audition a batch of control values on the running engine.
@@ -203,6 +203,34 @@ pub fn get_engine_diagnostics(channel: &Channel) -> Result<Answer<DiagnosticsRep
     })
 }
 
+/// Read the engine's levels at the device.
+pub fn get_engine_meters(channel: &Channel) -> Result<Answer<MetersReport>, Refusal> {
+    let report = channel
+        .get_meters()
+        .map_err(|why| refuse("could not read the engine meters", why))?;
+    let summary = format!(
+        "peak/rms dBFS per channel; outputs: {}; inputs: {}",
+        levels(&report.outputs),
+        levels(&report.inputs)
+    );
+    Ok(Answer {
+        output: report,
+        summary,
+    })
+}
+
+/// `-0.5/-3.5, -120/-120`, or `none` for a direction with no channels.
+fn levels(channels: &[ChannelLevel]) -> String {
+    if channels.is_empty() {
+        return "none".to_string();
+    }
+    channels
+        .iter()
+        .map(|level| format!("{:.1}/{:.1}", level.peak_dbfs, level.rms_dbfs))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// The one place a failed exchange becomes a refusal, so no two verbs classify it differently:
 /// unreachable answers with the shared guidance, anything else names *which* call died.
 fn refuse(context: &str, why: ChannelError) -> Refusal {
@@ -355,6 +383,7 @@ mod tests {
             .expect_err("no engine to install into"),
             get_current_instrument(&channel, |_| NoStore).expect_err("nothing is playing"),
             get_engine_diagnostics(&channel).expect_err("no counters to read"),
+            get_engine_meters(&channel).expect_err("no levels to read"),
         ];
         for refusal in refusals {
             assert_eq!(refusal.message, ENGINE_UNREACHABLE_GUIDANCE);

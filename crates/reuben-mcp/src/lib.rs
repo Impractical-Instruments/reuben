@@ -416,6 +416,15 @@ impl ReubenServer {
         answered(engine::get_engine_diagnostics(self.engine.structure()))
     }
 
+    #[tool(
+        name = "get_engine_meters",
+        output_schema = rmcp::handler::server::tool::schema_for_output::<engine::MetersReport>()
+            .expect("MetersReport is an object schema")
+    )]
+    async fn get_engine_meters(&self) -> Result<CallToolResult, McpError> {
+        answered(engine::get_engine_meters(self.engine.structure()))
+    }
+
     // --- Document tools: engine-free mutators over an instrument document -------------------------
     //
     // One roster entry per window verb, and nothing else. There is deliberately nothing else here:
@@ -872,8 +881,8 @@ mod tests {
 
     use reuben_api::authoring::{Diag, Report};
     use reuben_api::engine::{
-        ControlArg, ControlMessage, DiagnosticsReport, DiffSummary, HeldSwap, Request, Response,
-        SwapReport, DEFAULT_STRUCTURE_ADDR,
+        ChannelLevel, ControlArg, ControlMessage, DiagnosticsReport, DiffSummary, HeldSwap,
+        MetersReport, Request, Response, SwapReport, DEFAULT_STRUCTURE_ADDR,
     };
     use reuben_api::tools::names;
     use std::io;
@@ -891,6 +900,7 @@ mod tests {
         swap: Option<Response>,
         document: Option<Response>,
         diagnostics: Option<Response>,
+        meters: Option<Response>,
         /// Whether the engine serves `send`. Not an `Option<Response>` like the others because the
         /// ack is derived from the batch that arrives, not canned.
         serves_send: bool,
@@ -930,6 +940,11 @@ mod tests {
             self
         }
 
+        fn with_meters(mut self, report: MetersReport) -> Self {
+            self.meters = Some(Response::Meters(report));
+            self
+        }
+
         /// A reachable engine that acks whatever batch it is handed, plus the shared log of what
         /// crossed the wire — so a `send` test asserts on the *serialized* batch, not on the tool's
         /// own inputs.
@@ -964,6 +979,7 @@ mod tests {
                 Request::Swap { .. } => &self.swap,
                 Request::GetDocument => &self.document,
                 Request::GetDiagnostics => &self.diagnostics,
+                Request::GetMeters => &self.meters,
                 Request::Send { .. } => unreachable!("handled above"),
             };
             match configured {
@@ -2035,6 +2051,50 @@ mod tests {
     #[test]
     fn get_engine_diagnostics_unreachable_is_iserror() {
         let result = block_on(server_with(FakeTransport::unreachable()).get_engine_diagnostics())
+            .expect("result");
+        assert_eq!(result.is_error, Some(true));
+        assert!(first_text(&result).contains("reuben play"));
+    }
+
+    #[test]
+    fn get_engine_meters_returns_a_level_per_channel_and_summarizes_them() {
+        let report = MetersReport {
+            outputs: vec![
+                ChannelLevel {
+                    peak_dbfs: -0.5,
+                    rms_dbfs: -3.5,
+                },
+                ChannelLevel {
+                    peak_dbfs: -120.0,
+                    rms_dbfs: -120.0,
+                },
+            ],
+            inputs: vec![],
+            frames: 48_000,
+        };
+        let result = block_on(
+            server_with(FakeTransport::reachable().with_meters(report)).get_engine_meters(),
+        )
+        .expect("result");
+        assert_ne!(result.is_error, Some(true));
+        let s = result
+            .structured_content
+            .as_ref()
+            .expect("structured payload");
+        assert_eq!(s["outputs"][0]["peak_dbfs"], serde_json::json!(-0.5));
+        assert_eq!(s["outputs"][1]["rms_dbfs"], serde_json::json!(-120.0));
+        assert_eq!(s["inputs"], serde_json::json!([]));
+        assert_eq!(s["frames"], serde_json::json!(48_000));
+        let text = first_text(&result);
+        assert!(
+            text.contains("outputs: -0.5/-3.5, -120.0/-120.0; inputs: none"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn get_engine_meters_unreachable_is_iserror() {
+        let result = block_on(server_with(FakeTransport::unreachable()).get_engine_meters())
             .expect("result");
         assert_eq!(result.is_error, Some(true));
         assert!(first_text(&result).contains("reuben play"));

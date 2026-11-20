@@ -35,10 +35,12 @@ use std::time::{Duration, Instant};
 
 use reuben_api::authoring::Diag;
 use reuben_api::engine::{
-    dispatch, ControlMessage, DiagnosticsReport, EngineHost, IngressClosed, StructureState,
+    dispatch, ControlMessage, DiagnosticsReport, EngineHost, IngressClosed, MetersReport,
+    StructureState,
 };
 
 use crate::diagnostics::{Diagnostics, Snapshot};
+use crate::meters::Meters;
 use crate::osc::{ControlBatch, OscIn};
 
 /// How long the accept loop sleeps between polls of its shutdown flag while idle. The listener
@@ -272,6 +274,7 @@ pub(crate) fn dark_degrade_warning(
 /// with external OSC at the callback's `queue_osc`.
 pub struct NativeHost {
     diagnostics: Arc<Diagnostics>,
+    meters: Meters,
     control: Sender<ControlBatch>,
     render_config: Arc<dyn RenderConfigPublisher>,
     hold: Option<SwapHold>,
@@ -308,12 +311,20 @@ impl NativeHost {
     pub fn new(diagnostics: Arc<Diagnostics>, control: Sender<ControlBatch>) -> Self {
         Self {
             diagnostics,
+            meters: Meters::none(),
             control,
             render_config: Arc::new(HeadlessRenderConfig {
                 opened_input_channels: 0,
             }),
             hold: None,
         }
+    }
+
+    /// Answer `GetMeters` from the banks the audio callbacks meter. Without it the host has no
+    /// device, and answers empty arrays.
+    pub fn with_meters(mut self, meters: Meters) -> Self {
+        self.meters = meters;
+        self
     }
 
     /// Hold the client swaps `hold` says to. Without it none is held, as `reuben play` wants.
@@ -371,6 +382,11 @@ impl EngineHost for NativeHost {
     /// this query thread never forces the audio callback to synchronize.
     fn diagnostics(&self) -> DiagnosticsReport {
         diagnostics_report(&self.diagnostics.snapshot())
+    }
+
+    /// Relaxed loads into an owned report, like [`diagnostics`](Self::diagnostics).
+    fn meters(&self) -> MetersReport {
+        self.meters.report()
     }
 
     fn publish_render_config(&self, logical: usize, input_channels: usize) -> Vec<Diag> {
