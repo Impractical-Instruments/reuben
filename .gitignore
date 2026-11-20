@@ -42,3 +42,6 @@
 # does not catch.
 __pycache__/
 *.py[cod]
+
+# Local Claude Code settings and the temp files an atomic write of them leaves behind
+/.claude/settings.local.json*

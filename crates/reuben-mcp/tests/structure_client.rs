@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use reuben_api::authoring::{Diag, Report};
 use reuben_api::engine::{
     ChannelLevel, Conflict, DiagnosticsReport, DiffSummary, DocSource, DocumentSnapshot,
-    MetersReport, Request, Response, SwapReport,
+    MetersReport, Request, Response, SwapReport, MAX_LINE_BYTES,
 };
 
 use reuben_mcp::{Channel, EngineLink, SwapOutcome, TcpTransport, DEFAULT_CONNECT_TIMEOUT};
@@ -288,6 +288,35 @@ fn get_meters_round_trips_a_level_per_channel() {
         client.get_meters().expect("get_meters resolves")
     });
     assert_eq!(got, report);
+}
+
+#[test]
+fn a_reply_line_past_the_cap_fails_instead_of_buffering_without_end() {
+    // A peer that answers with an endless line, never a newline. Read whole, it would grow the
+    // client's buffer for as long as it kept sending.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback peer");
+    let addr = listener.local_addr().expect("peer addr");
+    thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("accept");
+        let mut request = String::new();
+        let _ = BufReader::new(&stream).read_line(&mut request);
+        let chunk = vec![b'x'; 64 * 1024];
+        // Until the client hangs up, which it does once it has read the cap.
+        while (&stream).write_all(&chunk).is_ok() {}
+    });
+    let client = channel(addr.to_string());
+    let err = within(Duration::from_secs(10), "over-long reply", move || {
+        client
+            .get_document()
+            .expect_err("an endless line must fail, not resolve")
+    });
+    // The engine answered, so the refusal must not tell the caller to start one.
+    assert!(!err.is_unreachable(), "{err}");
+    let message = err.to_string();
+    assert!(
+        message.contains(&format!("longer than {MAX_LINE_BYTES} bytes")),
+        "{message}"
+    );
 }
 
 #[test]

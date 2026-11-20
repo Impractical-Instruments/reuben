@@ -18,6 +18,8 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use std::io::{self, BufRead, Read};
+
 use serde::{Deserialize, Serialize};
 
 use reuben_core::message::Arg;
@@ -474,6 +476,38 @@ pub const PEAK_FALL_DB_PER_SEC: f32 = 12.0;
 /// The time constant of [`ChannelLevel::rms_dbfs`]'s average, in seconds.
 pub const RMS_WINDOW_SECS: f32 = 0.3;
 
+/// The longest line either end of the structure channel reads, newline included. A line is one
+/// request or one response, and the largest is a whole document, inline in a `swap` or read back by
+/// `get_document`: tens of kilobytes for the largest instruments in the library, so this leaves two
+/// orders of magnitude of headroom while bounding what a peer that never sends a newline can make
+/// the reader buffer.
+pub const MAX_LINE_BYTES: usize = 4 << 20;
+
+/// Read one NDJSON line into `line`, appending to whatever a read interrupted by a timeout left
+/// there, as [`BufRead::read_line`] does, but never letting `line` grow past [`MAX_LINE_BYTES`].
+///
+/// A line that reaches the cap without its newline is [`io::ErrorKind::InvalidData`]. The rest of
+/// it is still unread, so the stream is no longer at a line boundary and the caller should close
+/// it.
+pub fn read_ndjson_line(reader: &mut impl BufRead, line: &mut String) -> io::Result<usize> {
+    read_line_within(reader, line, MAX_LINE_BYTES)
+}
+
+fn read_line_within(reader: &mut impl BufRead, line: &mut String, max: usize) -> io::Result<usize> {
+    let room = max.saturating_sub(line.len());
+    let mut limited = reader.take(room as u64);
+    let read = limited.read_line(line);
+    // Checked before `read`'s own error: a cap that falls inside a multibyte character fails
+    // `read_line`'s UTF-8 check, and the line is still over-long, not merely malformed.
+    if limited.limit() == 0 && !line.ends_with('\n') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("a structure channel line is longer than {max} bytes"),
+        ));
+    }
+    read
+}
+
 /// The one statement of the framing: compact JSON (serde_json never emits raw newlines —
 /// string contents escape to `\n`) plus the line terminator.
 fn to_ndjson_line<T: Serialize>(value: &T) -> String {
@@ -527,6 +561,57 @@ mod tests {
             input_ring_overruns: 0,
             input_ring_producer_drops: 96,
         }
+    }
+
+    #[test]
+    fn a_line_within_the_cap_reads_whole_and_one_past_it_is_refused() {
+        let mut line = String::new();
+        let mut reader = io::Cursor::new("1234567\nnext\n");
+        assert_eq!(
+            read_line_within(&mut reader, &mut line, 8).expect("fits"),
+            8
+        );
+        assert_eq!(line, "1234567\n");
+
+        let mut line = String::new();
+        let mut reader = io::Cursor::new("12345678\n");
+        let err = read_line_within(&mut reader, &mut line, 8).expect_err("one byte over");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("longer than 8 bytes"), "{err}");
+    }
+
+    #[test]
+    fn bytes_left_by_an_interrupted_read_count_toward_the_cap() {
+        let mut line = "12345".to_string();
+        let mut reader = io::Cursor::new("67\n");
+        assert_eq!(
+            read_line_within(&mut reader, &mut line, 8).expect("fits"),
+            3
+        );
+        assert_eq!(line, "1234567\n");
+
+        let mut line = "123456".to_string();
+        let mut reader = io::Cursor::new("78\n");
+        let err = read_line_within(&mut reader, &mut line, 8).expect_err("over with the rest");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn a_stream_that_ends_mid_line_is_a_short_read_not_a_refusal() {
+        let mut line = String::new();
+        let mut reader = io::Cursor::new("123");
+        assert_eq!(read_line_within(&mut reader, &mut line, 8).expect("eof"), 3);
+        assert_eq!(line, "123");
+        assert_eq!(read_line_within(&mut reader, &mut line, 8).expect("eof"), 0);
+    }
+
+    #[test]
+    fn a_cap_inside_a_multibyte_character_is_refused_as_over_long() {
+        // 'é' is two bytes; the cap at 8 falls between them.
+        let mut line = String::new();
+        let mut reader = io::Cursor::new("1234567é\n");
+        let err = read_line_within(&mut reader, &mut line, 8).expect_err("over the cap");
+        assert!(err.to_string().contains("longer than 8 bytes"), "{err}");
     }
 
     fn meters_report() -> MetersReport {

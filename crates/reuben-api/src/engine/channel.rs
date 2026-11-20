@@ -223,7 +223,12 @@ impl Channel {
         let line = self
             .transport
             .round_trip(&request.to_ndjson(), read_timeout)
-            .map_err(ChannelError::unreachable)?;
+            .map_err(|e| match e.kind() {
+                // The bytes moved but no line could be framed from them: an over-long or
+                // non-UTF-8 line, from an engine that is plainly reachable.
+                io::ErrorKind::InvalidData => ChannelError::Protocol(e.to_string()),
+                _ => ChannelError::unreachable(e),
+            })?;
         Response::from_ndjson(&line).map_err(|e| ChannelError::Protocol(e.to_string()))
     }
 }
