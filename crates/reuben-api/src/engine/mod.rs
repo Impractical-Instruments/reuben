@@ -40,7 +40,7 @@ pub mod wire;
 
 pub use args::*;
 pub use channel::{Channel, ChannelError, SwapOutcome, Transport};
-pub use events::Bus;
+pub use events::{Bus, Subscription};
 pub use prose::ENGINE_UNREACHABLE_GUIDANCE;
 pub use result::{
     CurrentInstrument, EngineStatus, SendOutput, SidecarInfo, StatusEndpoints, SwapResult,

@@ -29,7 +29,7 @@ use std::io::{BufReader, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 use reuben_api::authoring::Diag;
 use reuben_api::engine::{
     dispatch, dispatch_request, read_ndjson_line, ControlMessage, DiagnosticsReport, EngineHost,
-    Event, IngressClosed, ListWhat, MetersReport, Request, Response, StructureState,
+    IngressClosed, ListWhat, MetersReport, Request, Response, StructureState, Subscription,
 };
 use reuben_api::probe::ProbeSlots;
 
@@ -713,9 +713,9 @@ fn handle_connection(stream: TcpStream, state: StructureState, shutdown: Arc<Ato
                         Ok(Request::Subscribe) => {
                             // Subscribed before the reply, so no change made after the client
                             // reads it is missed.
-                            let events = state.subscribe();
+                            let events = state.subscription();
                             if write_line(&mut writer, &Response::Subscribed.to_ndjson()) {
-                                stream_events(&mut writer, &events, &shutdown);
+                                stream_events(&mut writer, &reader, &events, &shutdown);
                             }
                             break;
                         }
@@ -763,9 +763,40 @@ fn write_line(writer: &mut TcpStream, line: &str) -> bool {
     writer.write_all(line.as_bytes()).is_ok() && writer.flush().is_ok()
 }
 
+/// How long one event write may block before the subscriber is dropped. An event line is a few
+/// hundred bytes and the kernel's send buffer holds many of them, so a write only blocks once a
+/// subscriber has stopped reading for a whole buffer's worth; ten seconds is far past any stall a
+/// LAN or tunnelled link recovers from, and short enough that a dead peer does not hold its
+/// handler for the OS's own keepalive timeout.
+const EVENT_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long each check for the subscriber having closed waits on the socket. Short, because it is
+/// paid once per [`ACCEPT_POLL`] and only ever ends early when the peer sent something.
+const PEER_CHECK: Duration = Duration::from_millis(1);
+
 /// Write each event as it is published until the client goes away or the server shuts down. The
 /// wait is bounded so the shutdown flag is seen within [`ACCEPT_POLL`] even when nothing changes.
-fn stream_events(writer: &mut TcpStream, events: &Receiver<Event>, shutdown: &AtomicBool) {
+///
+/// Between waits the read half is checked: end of stream means the subscriber is gone, and any
+/// byte at all is a request on a connection that answers none, so either ends the stream. Ending
+/// drops `events`, which unsubscribes it at once rather than at the next publish.
+fn stream_events(
+    writer: &mut TcpStream,
+    reader: &BufReader<TcpStream>,
+    events: &Subscription,
+    shutdown: &AtomicBool,
+) {
+    // Bytes the client sent after `subscribe` and the line reader already buffered.
+    if !reader.buffer().is_empty() {
+        return;
+    }
+    let peer = reader.get_ref();
+    if writer.set_write_timeout(Some(EVENT_WRITE_TIMEOUT)).is_err()
+        || peer.set_read_timeout(Some(PEER_CHECK)).is_err()
+    {
+        return;
+    }
+    let mut probe = [0u8; 1];
     while !shutdown.load(Ordering::SeqCst) {
         match events.recv_timeout(ACCEPT_POLL) {
             Ok(event) => {
@@ -775,6 +806,13 @@ fn stream_events(writer: &mut TcpStream, events: &Receiver<Event>, shutdown: &At
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
+        }
+        match peer.peek(&mut probe) {
+            Err(ref e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut => {}
+            // Closed, sent a request, or failed.
+            Ok(_) | Err(_) => return,
         }
     }
 }
@@ -955,7 +993,9 @@ mod tests {
 
     #[test]
     fn tcp_subscriber_receives_events() {
-        use reuben_api::engine::{ChangedBy, TcpTransport, Transport, DEFAULT_CONNECT_TIMEOUT};
+        use reuben_api::engine::{
+            ChangedBy, Event, TcpTransport, Transport, DEFAULT_CONNECT_TIMEOUT,
+        };
         use reuben_api::resources::Resources;
         use reuben_api::staged::Staged;
         use reuben_api::FsResolver;
@@ -1024,6 +1064,70 @@ mod tests {
         assert!(reader.join().expect("reader").is_none());
         cb.stop();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Poll `done` until it holds, failing the test past a deadline rather than hanging it.
+    fn within_deadline(what: &str, done: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !done() {
+            assert!(Instant::now() < deadline, "{what} within the deadline");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn a_subscriber_that_disconnects_while_idle_is_dropped() {
+        use reuben_api::engine::{TcpTransport, DEFAULT_CONNECT_TIMEOUT};
+
+        let (state, cb, _) = swap_fixture(BASE_DOC, 0);
+        let server = StructureServer::bind("127.0.0.1:0", state.clone()).expect("bind");
+        let transport = TcpTransport::new(server.local_addr().to_string(), DEFAULT_CONNECT_TIMEOUT);
+
+        let events = transport.subscribe().expect("subscribed");
+        assert_eq!(state.subscribers(), 1);
+        drop(events);
+        // Nothing is published: the handler has to notice the close itself.
+        within_deadline("the subscription is dropped", || state.subscribers() == 0);
+
+        server.shutdown();
+        cb.stop();
+    }
+
+    #[test]
+    fn a_request_after_subscribe_ends_the_stream() {
+        use std::io::{BufRead, Read};
+
+        let (state, cb, _) = swap_fixture(BASE_DOC, 0);
+        let server = StructureServer::bind("127.0.0.1:0", state.clone()).expect("bind");
+        let stream = TcpStream::connect(server.local_addr()).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("timeout");
+        let mut reader = BufReader::new(&stream);
+        (&stream)
+            .write_all(Request::Subscribe.to_ndjson().as_bytes())
+            .expect("subscribe");
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("reply");
+        assert_eq!(
+            Response::from_ndjson(&line).expect("a response"),
+            Response::Subscribed
+        );
+
+        (&stream)
+            .write_all(Request::Ping.to_ndjson().as_bytes())
+            .expect("ping");
+        // The server closes with the ping unread, which may reset the connection rather than end
+        // it cleanly; either way nothing answers it.
+        let mut rest = Vec::new();
+        match reader.read_to_end(&mut rest) {
+            Ok(_) => assert!(rest.is_empty(), "no answer to a request on a stream"),
+            Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::ConnectionReset, "{e}"),
+        }
+        within_deadline("the subscription is dropped", || state.subscribers() == 0);
+
+        server.shutdown();
+        cb.stop();
     }
 
     #[test]

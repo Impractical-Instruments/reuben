@@ -51,7 +51,7 @@ use crate::resources::Resources;
 use crate::staged::Staged;
 
 use super::channel::Transport;
-use super::events::Bus;
+use super::events::{Bus, Subscription};
 
 mod call;
 use call::{handle_call, read_tree};
@@ -224,9 +224,21 @@ impl StructureState {
         }
     }
 
-    /// A receiver of one [`Event`] per install that goes live from now on, in install order.
+    /// A receiver of one [`Event`] per install that goes live from now on, in install order. It
+    /// disconnects when the state is [closed](Self::close).
     pub fn subscribe(&self) -> Receiver<Event> {
         self.events.subscribe()
+    }
+
+    /// [`subscribe`](Self::subscribe) for a connection the host streams events over: dropping it
+    /// unsubscribes at once, so a client that leaves while nothing changes is not kept.
+    pub fn subscription(&self) -> Subscription {
+        self.events.subscription()
+    }
+
+    /// How many subscribers events are being sent to.
+    pub fn subscribers(&self) -> usize {
+        self.events.subscribers()
     }
 
     /// The canonical sources the last successful install read, the top document's included. An
@@ -240,9 +252,11 @@ impl StructureState {
 
     /// Mark the engine torn down, for every clone of this state: an [`InProcess`] transport over
     /// it then fails each exchange as a dead socket would, instead of answering from a Coordinator
-    /// whose render side is gone. A host calls it before it stops its server.
+    /// whose render side is gone, and every subscriber's stream disconnects. A host calls it before
+    /// it stops its server.
     pub fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
+        self.events.close();
     }
 
     /// Whether [`close`](Self::close) has been called on any clone.
@@ -1106,6 +1120,18 @@ mod tests {
             Response::Error { message } => assert_eq!(message, COORDINATOR_POISONED),
             other => panic!("expected the poisoned refusal, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn close_disconnects_in_process_subscribers() {
+        let state = state(false);
+        let events = InProcess::new(state.clone()).subscribe();
+        state.close();
+        assert_eq!(
+            events.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        );
+        assert_eq!(state.subscribers(), 0);
     }
 
     #[test]
