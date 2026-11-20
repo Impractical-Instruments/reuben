@@ -439,6 +439,13 @@ fn a_fader_moved_while_the_attached_engine_stalls_never_holds_the_window() {
             }
         }
 
+        // One send was held; the four values dragged past behind it went as one more. A slow
+        // machine can time the held one out, and a ping then lets one more through.
+        let sends = proxy.sends.load(Ordering::Acquire);
+        assert!(
+            (2..=3).contains(&sends),
+            "{sends} sends for a five-value drag"
+        );
         harness.state_mut().engine.shutdown();
         reuben_native::diagnostics::log_snapshot(&played.shutdown());
     });

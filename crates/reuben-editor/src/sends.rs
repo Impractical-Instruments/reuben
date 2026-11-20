@@ -181,8 +181,9 @@ fn work(channel: &Channel, shared: &Shared, wake: impl Fn()) {
     let mut failed = false;
     loop {
         // A send that timed out is still in the engine's socket buffer, and is applied when the
-        // engine runs again. Its connection is handled on its own thread, so another send made
-        // before then could land first: nothing more is sent until the engine answers.
+        // engine runs again, on its own connection thread. Waiting for the engine to answer a ping
+        // first gives that thread a head start over the next send; the server does not order
+        // connections, so it is not a guarantee.
         while failed && channel.ping().is_err() {
             if shared.closed_within(RETRY_EVERY) {
                 return;
@@ -265,6 +266,7 @@ mod tests {
         held: AtomicBool,
         down: AtomicBool,
         fail: AtomicU64,
+        attempts: AtomicU64,
         taken: Mutex<Vec<(String, Vec<Value>)>>,
         exchanges: AtomicU64,
     }
@@ -277,10 +279,14 @@ mod tests {
             while self.0.held.load(Ordering::Acquire) {
                 std::thread::sleep(Duration::from_millis(1));
             }
+            let request = serde_json::from_str(line);
+            if let Ok(Request::Send { .. }) = request {
+                self.0.attempts.fetch_add(1, Ordering::AcqRel);
+            }
             if self.0.down.load(Ordering::Acquire) {
                 return Err(std::io::ErrorKind::TimedOut.into());
             }
-            let messages = match serde_json::from_str(line) {
+            let messages = match request {
                 Ok(Request::Send { messages }) => messages,
                 Ok(Request::Ping) => return Ok(Response::Pong.to_ndjson()),
                 _ => panic!("not a send: {line}"),
@@ -444,7 +450,11 @@ mod tests {
         live.send(vec![note("/keys/in", 60.0, 0.0)], &replies);
         live.send(vec![set("/level/in", 0.5)], &replies);
         std::thread::sleep(RETRY_EVERY * 2);
-        assert_eq!(engine.exchanges.load(Ordering::Acquire), 0);
+        assert_eq!(
+            engine.attempts.load(Ordering::Acquire),
+            1,
+            "only pings while the engine does not answer"
+        );
 
         engine.down.store(false, Ordering::Release);
         wait_for("the rest", || engine.exchanges.load(Ordering::Acquire) == 1);
