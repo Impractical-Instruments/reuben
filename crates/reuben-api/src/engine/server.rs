@@ -224,9 +224,11 @@ pub struct StructureState {
     silent: Arc<AtomicBool>,
 }
 
-/// What plays while the open instrument does not load: one output channel that is always zero.
-/// Installed by value through the ordinary swap, so the render side sees nothing new.
-const SILENCE: &str = r#"{"format_version":3,"instrument":"silence",
+/// What plays while the open instrument does not load, or while nothing is open: one output
+/// channel that is always zero. Installed by value through the ordinary swap, so the render side
+/// sees nothing new. A host starting with nothing open builds its Coordinator from it and marks the
+/// state [`with_nothing_open`](StructureState::with_nothing_open).
+pub const SILENCE: &str = r#"{"format_version":3,"instrument":"silence",
     "interface":{"outputs":{"out":{"from":"/silence.audio"}}},
     "nodes":[{"type":"output","address":"/silence"}]}"#;
 
@@ -488,6 +490,19 @@ impl StructureState {
         };
         self.tree = Arc::new(Mutex::new(tree));
         self.installed_source = Arc::new(Mutex::new(source));
+        self
+    }
+
+    /// Start with nothing open and nothing playing, the Coordinator having been built from
+    /// [`SILENCE`]: every answer reports the empty content hash, `get_document` a `null` document
+    /// and no source, and an edit is refused until an `open` names an instrument.
+    ///
+    /// A builder step, like [`with_installed_source`](Self::with_installed_source), so the
+    /// "only ever written under the Coordinator lock" invariant on the flag has no exception.
+    pub fn with_nothing_open(mut self) -> Self {
+        self.silent = Arc::new(AtomicBool::new(true));
+        self.installed_source = Arc::new(Mutex::new(None));
+        self.tree = Arc::new(Mutex::new(Tree::default()));
         self
     }
 }

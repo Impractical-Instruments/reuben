@@ -283,7 +283,12 @@ pub struct NativeHost {
     render_config: Arc<dyn RenderConfigPublisher>,
     hold: Option<SwapHold>,
     library_root: Option<PathBuf>,
+    /// The directories [`offer_dir`](Self::offer_dir) added, absolute and normalized, each once.
+    extra_dirs: Mutex<Vec<PathBuf>>,
 }
+
+/// How many directories, starting at an instrument's own, are searched for its surface document.
+const SURFACE_SEARCH_DEPTH: usize = 3;
 
 /// What decides whether a client's by-path swap is held for the host's user rather than
 /// installed: [`EngineHost::hold_swap`], as a value an
@@ -337,6 +342,7 @@ impl NativeHost {
             }),
             hold: None,
             library_root: None,
+            extra_dirs: Mutex::new(Vec::new()),
         }
     }
 
@@ -347,17 +353,46 @@ impl NativeHost {
         self
     }
 
-    /// The directories a client may name: the library root and the open instrument's directory,
-    /// absolute and normalized.
+    /// The directories a client may name: the library root, every [offered](Self::offer_dir)
+    /// directory and the open instrument's directory, absolute and normalized, each once.
     fn offered_dirs(&self, open: Option<&str>) -> Vec<PathBuf> {
         let open_dir = open
             .and_then(|source| lexical_absolute(Path::new(source)))
             .and_then(|source| source.parent().map(Path::to_path_buf));
-        self.library_root
+        let extra = self.extra_dirs().clone();
+        let mut dirs = Vec::new();
+        for dir in self
+            .library_root
             .iter()
             .filter_map(|root| lexical_absolute(root))
+            .chain(extra)
             .chain(open_dir)
-            .collect()
+        {
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+        dirs
+    }
+
+    /// Offer `dir` from now on, beside the library root and the open instrument's directory, in
+    /// [`offered`](EngineHost::offered), [`within`](EngineHost::within),
+    /// [`library`](EngineHost::library) and [`creatable`](EngineHost::creatable). A directory that
+    /// cannot be made absolute is not offered.
+    pub fn offer_dir(&self, dir: &Path) {
+        let Some(dir) = lexical_absolute(dir) else {
+            return;
+        };
+        let mut extra = self.extra_dirs();
+        if !extra.contains(&dir) {
+            extra.push(dir);
+        }
+    }
+
+    /// The offered directories. Every write leaves the list whole, so a panic while it was held
+    /// leaves it fit to keep serving.
+    fn extra_dirs(&self) -> std::sync::MutexGuard<'_, Vec<PathBuf>> {
+        self.extra_dirs.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// The library root [`offered`](EngineHost::offered) lists from, besides the open instrument's
@@ -428,6 +463,22 @@ fn collect_with_extension(
     }
 }
 
+/// The surface document of the instrument at `instrument`: `surfaces/<stem>.json` in the first of
+/// [`SURFACE_SEARCH_DEPTH`] directories, the instrument's own and then its ancestors, that has one.
+fn locate_surface(instrument: &Path) -> Option<PathBuf> {
+    // Appended, not `with_extension`: a stem with a dot in it (`my.synth`) would lose its last
+    // segment and name another instrument's doc.
+    let name = format!("{}.json", instrument.file_stem()?.to_str()?);
+    // Absolute so the ancestors are real directories, and `..` folded so each one is not counted
+    // as a directory searched.
+    lexical_absolute(instrument)?
+        .ancestors()
+        .skip(1)
+        .take(SURFACE_SEARCH_DEPTH)
+        .map(|dir| dir.join("surfaces").join(&name))
+        .find(|candidate| candidate.is_file())
+}
+
 impl EngineHost for NativeHost {
     /// A by-path swap reads the file as spelled, against the working directory. Resource paths
     /// *inside* the document resolve from the file's own directory, then the library root
@@ -472,6 +523,43 @@ impl EngineHost for NativeHost {
         self.offered_dirs(open)
             .iter()
             .any(|dir| path.starts_with(dir))
+    }
+
+    /// Every `.json` file directly in an offered directory, not in its subdirectories: absolute,
+    /// sorted, each once.
+    fn library(&self, open: Option<&str>) -> Vec<String> {
+        let mut found = std::collections::BTreeSet::new();
+        for dir in self.offered_dirs(open) {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if entry.file_type().is_ok_and(|kind| kind.is_file())
+                    && path.extension().is_some_and(|e| e == "json")
+                {
+                    found.insert(path.display().to_string());
+                }
+            }
+        }
+        found.into_iter().collect()
+    }
+
+    /// The offered directories, absolute.
+    fn creatable(&self, open: Option<&str>) -> Vec<String> {
+        self.offered_dirs(open)
+            .iter()
+            .map(|dir| dir.display().to_string())
+            .collect()
+    }
+
+    fn surface(&self, open: &str) -> Result<Option<String>, String> {
+        let Some(path) = locate_surface(Path::new(open)) else {
+            return Ok(None);
+        };
+        std::fs::read_to_string(&path)
+            .map(Some)
+            .map_err(|e| format!("read {}: {e}", path.display()))
     }
 
     /// **One `send` on the channel, not one per message.** That single push is what makes the
@@ -985,6 +1073,111 @@ mod tests {
         assert!(!host.within("/etc/passwd.json", open));
         assert!(!host.within(&abs("lib2/a.json"), open));
         assert!(!host.within(&abs("open/new.json"), None));
+    }
+
+    /// A fresh, process-unique directory for `case`, and a joiner that spells a path under it the
+    /// way the host does: absolute, `/`-separated parts joined one by one.
+    fn scratch_dir(case: &str) -> (PathBuf, impl Fn(&str) -> String) {
+        let base = std::env::temp_dir().join(format!("reuben-{case}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.clone();
+        let abs = move |relative: &str| {
+            relative
+                .split('/')
+                .fold(root.clone(), |path, part| path.join(part))
+                .display()
+                .to_string()
+        };
+        (base, abs)
+    }
+
+    #[test]
+    fn library_lists_only_documents_directly_in_an_offered_dir() {
+        let (base, abs) = scratch_dir("library-test");
+        for dir in ["lib/voices", "open", "offered/deeper", "elsewhere"] {
+            std::fs::create_dir_all(base.join(dir)).unwrap();
+        }
+        for file in [
+            "lib/a.json",
+            "lib/s.wav",
+            "lib/voices/v.json",
+            "open/b.json",
+            "offered/c.json",
+            "offered/deeper/d.json",
+            "elsewhere/e.json",
+        ] {
+            std::fs::write(abs(file), "").unwrap();
+        }
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let host =
+            NativeHost::new(Diagnostics::new(), tx).with_library_root(Some(base.join("lib")));
+        host.offer_dir(&base.join("offered"));
+        // Offered twice, once through the library root: still listed once.
+        host.offer_dir(&base.join("lib/../lib"));
+        let open = abs("open/b.json");
+
+        assert_eq!(
+            host.library(Some(&open)),
+            [abs("lib/a.json"), abs("offered/c.json"), abs("open/b.json")]
+        );
+        assert_eq!(
+            host.library(None),
+            [abs("lib/a.json"), abs("offered/c.json")]
+        );
+        assert_eq!(
+            host.creatable(Some(&open)),
+            [abs("lib"), abs("offered"), abs("open")]
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn an_offered_dir_is_listed_and_within() {
+        let (base, abs) = scratch_dir("offer-dir-test");
+        std::fs::create_dir_all(base.join("offered/nested")).unwrap();
+        std::fs::write(abs("offered/nested/n.json"), "").unwrap();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let host = NativeHost::new(Diagnostics::new(), tx);
+        assert!(!host.within(&abs("offered/new.json"), None));
+        assert!(host.offered(ListWhat::Instruments, None).is_empty());
+
+        host.offer_dir(&base.join("offered"));
+
+        assert!(host.within(&abs("offered/new.json"), None));
+        assert!(host.within(&abs("offered/nested/n.json"), None));
+        assert!(!host.within(&abs("offered/../escape.json"), None));
+        assert_eq!(
+            host.offered(ListWhat::Instruments, None),
+            [abs("offered/nested/n.json")]
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn surface_is_found_up_to_three_ancestors_up() {
+        let (base, abs) = scratch_dir("surface-test");
+        std::fs::create_dir_all(base.join("a/b/c/d")).unwrap();
+        std::fs::create_dir_all(base.join("a/surfaces")).unwrap();
+        std::fs::write(abs("a/surfaces/pad.json"), "the pad surface").unwrap();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let host = NativeHost::new(Diagnostics::new(), tx);
+
+        // The instrument's own directory is the first of the three searched.
+        assert_eq!(
+            host.surface(&abs("a/pad.json")),
+            Ok(Some("the pad surface".to_string()))
+        );
+        assert_eq!(
+            host.surface(&abs("a/b/c/pad.json")),
+            Ok(Some("the pad surface".to_string()))
+        );
+        assert_eq!(host.surface(&abs("a/b/c/d/pad.json")), Ok(None));
+        assert_eq!(
+            host.surface(&abs("a/b/c/d/../pad.json")),
+            Ok(Some("the pad surface".to_string()))
+        );
+        assert_eq!(host.surface(&abs("a/other.json")), Ok(None));
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

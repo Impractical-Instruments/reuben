@@ -223,6 +223,7 @@ impl Engine {
             match &config.instrument {
                 Instrument::Path(path) => format!("instrument: {}", path.display()),
                 Instrument::Default => "instrument: <default>".to_string(),
+                Instrument::Silent => "instrument: none".to_string(),
             },
         )];
         let running = match start(config) {

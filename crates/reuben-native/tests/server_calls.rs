@@ -10,7 +10,8 @@ use std::sync::mpsc::{channel, Receiver};
 use std::time::Duration;
 
 use reuben_api::engine::{
-    ChangedBy, Event, ListWhat, Request, Response, TcpTransport, Transport, DEFAULT_CONNECT_TIMEOUT,
+    ChangedBy, Event, ListWhat, Request, Response, TcpTransport, Transport,
+    DEFAULT_CONNECT_TIMEOUT, METER_FLOOR_DBFS,
 };
 use reuben_native::engine::{EngineConfig, Instrument};
 use reuben_native::test_support::{start_headless, timed_teardown, within};
@@ -644,6 +645,79 @@ fn a_channel_subscription_over_tcp_sees_an_edit() {
                 ..
             })
         ));
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The peak, in dBFS, of the probe on `node`'s first output port, read `settle` after the probe is
+/// set. A headless engine has no device meters, so a probe is what tells silence from sound.
+fn probe_peak(channel: &reuben_api::engine::Channel, node: &str, settle: Duration) -> f32 {
+    let resolved = channel
+        .set_probes(vec![vec![node.to_string()]])
+        .expect("set_probes");
+    assert_eq!(resolved, vec![vec![node.to_string()]], "{node} resolves");
+    std::thread::sleep(settle);
+    let probes = channel.get_meters().expect("meters").probes;
+    probes[0].ports[0].level.peak_dbfs
+}
+
+#[test]
+fn a_silent_start_plays_nothing_then_opens_by_name() {
+    let dir = scratch("server_calls_silent_start");
+    let library = dir.join("lib");
+    let first = library.join("first.json");
+    write(&first, DOC);
+    let first_s = first.display().to_string();
+    let config = EngineConfig {
+        osc_in: None,
+        structure: Some("127.0.0.1:0".to_string()),
+        instrument_root: Some(library.clone()),
+        ..EngineConfig::new(Instrument::Silent)
+    };
+    within(HANG_SECS, move || {
+        let engine = start_headless(config).expect("the engine starts");
+        let addr = engine.structure_addr().expect("a structure socket");
+        let t = TcpTransport::new(addr.to_string(), DEFAULT_CONNECT_TIMEOUT);
+        let channel = engine.channel();
+
+        let nothing = snapshot(&t);
+        assert_eq!(nothing.content_hash, "");
+        assert_eq!(nothing.source, None);
+        assert_eq!(nothing.document, serde_json::Value::Null);
+        // What plays is reuben-api's silence document, whose one node is its output.
+        let silent = probe_peak(&channel, "/silence", Duration::from_millis(200));
+        assert_eq!(silent, METER_FLOOR_DBFS, "nothing plays");
+
+        let refused = output(call(
+            &t,
+            "set_instrument_name",
+            serde_json::json!({"source": first_s, "name": "renamed"}),
+        ));
+        assert_eq!(refused["written"], false, "nothing is open: {refused}");
+        assert_eq!(std::fs::read_to_string(&first_s).unwrap(), DOC);
+
+        match ask(
+            &t,
+            &Request::Open {
+                name: first_s.clone(),
+                expect: None,
+            },
+        ) {
+            Response::SwapReport(report) => assert!(report.report.ok, "{report:?}"),
+            other => panic!("expected a swap report, got {other:?}"),
+        }
+        let opened = snapshot(&t);
+        assert_eq!(opened.source.as_deref(), Some(first_s.as_str()));
+        assert_ne!(opened.content_hash, "");
+        let deadline = std::time::Instant::now() + REPLY;
+        while probe_peak(&channel, "/osc", Duration::from_millis(20)) <= METER_FLOOR_DBFS {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the opened instrument never sounded"
+            );
+        }
+        drop(channel);
+        timed_teardown(engine, false);
     });
     let _ = std::fs::remove_dir_all(&dir);
 }
