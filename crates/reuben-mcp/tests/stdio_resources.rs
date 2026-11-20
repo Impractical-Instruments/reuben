@@ -33,6 +33,7 @@ const RETIRED_SCHEMA_RESOURCE_URI: &str = concat!("reuben://", "schema/instrumen
 /// of them. A watchdog thread bounds the read so a protocol regression fails loudly.
 fn drive(requests: &[&str]) -> String {
     let mut child = Command::new(env!("CARGO_BIN_EXE_reuben-mcp"))
+        .env_remove(reuben_mcp::STRUCTURE_ADDR_ENV)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

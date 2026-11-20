@@ -235,6 +235,7 @@ fn there_is_no_inline_document_arm() {
 /// Drive initialize → initialized → tools/list and return the raw stdout, watchdog-bounded.
 fn drive_tools_list() -> String {
     let mut child = Command::new(env!("CARGO_BIN_EXE_reuben-mcp"))
+        .env_remove(STRUCTURE_ADDR_ENV)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

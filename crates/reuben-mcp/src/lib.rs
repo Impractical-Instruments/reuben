@@ -973,6 +973,7 @@ mod tests {
         document: Option<Response>,
         diagnostics: Option<Response>,
         meters: Option<Response>,
+        open: Option<Response>,
         /// The answer to a `call` of each scripted tool.
         calls: Vec<(String, Response)>,
         /// Every request that crossed the wire, in order, parsed back off it.
@@ -999,6 +1000,11 @@ mod tests {
         /// A down engine: every verb, `ping` included, fails the way a refused connect does.
         fn unreachable() -> Self {
             Self::default()
+        }
+
+        fn with_open(mut self, response: Response) -> Self {
+            self.open = Some(response);
+            self
         }
 
         fn with_call(mut self, tool: &str, response: Response) -> Self {
@@ -1065,6 +1071,7 @@ mod tests {
                 Request::GetDocument => self.document.as_ref(),
                 Request::GetDiagnostics => self.diagnostics.as_ref(),
                 Request::GetMeters => self.meters.as_ref(),
+                Request::Open { .. } => self.open.as_ref(),
                 Request::Call { tool, .. } => self
                     .calls
                     .iter()
@@ -1072,7 +1079,6 @@ mod tests {
                     .map(|(_, response)| response),
                 Request::SetProbes { .. }
                 | Request::Swap { .. }
-                | Request::Open { .. }
                 | Request::List { .. }
                 | Request::Subscribe => {
                     unreachable!("no tool sends it")
@@ -1371,9 +1377,10 @@ mod tests {
     #[test]
     fn engine_tool_payloads_conform_to_their_advertised_output_schemas() {
         // Every engine tool that returns a structured payload, in every shape it can return one.
-        // `open_instrument` is the route that advertises SwapResult. Its branches are checked separately because `flatten` +
-        // `skip_serializing_if` make them structurally different objects, and `engine_status` is
-        // checked both ways because `guidance` is its skip_serializing_if field.
+        // `open_instrument` is the route that advertises SwapResult. Its branches are checked
+        // separately because `flatten` + `skip_serializing_if` make them structurally different
+        // objects, and `engine_status` is checked both ways because `guidance` is its
+        // skip_serializing_if field.
         assert_payload_conforms(
             names::OPEN_INSTRUMENT,
             "clean install",
@@ -2150,6 +2157,84 @@ mod tests {
         }
     }
 
+    fn open_pad(expect: Option<&str>) -> engine::OpenInstrument {
+        engine::OpenInstrument {
+            name: "pad.json".to_string(),
+            expect: expect.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn open_instrument_expect_mismatch_returns_conflict_no_install() {
+        // An expect-guard miss is an ordinary result (the guard guarding, not the tool failing):
+        // nothing is installed, and the conflict names both hashes so the model reconciles.
+        let fake = FakeTransport::reachable().with_open(Response::Conflict(Conflict {
+            expected: "0badc0de".to_string(),
+            actual: "00c0ffee".to_string(),
+        }));
+        let result =
+            block_on(server_with(fake).open_instrument(Parameters(open_pad(Some("0badc0de")))))
+                .expect("open returns a result");
+        assert_ne!(
+            result.is_error,
+            Some(true),
+            "a conflict is a reconcilable outcome, not isError: {result:?}"
+        );
+        let s = result
+            .structured_content
+            .as_ref()
+            .expect("structured payload");
+        assert_eq!(s["ok"], serde_json::json!(false), "nothing installed: {s}");
+        assert!(
+            s.as_object().is_some_and(|o| !o.contains_key("diff")),
+            "a rejected open has no diff to report: {s}"
+        );
+        assert_eq!(s["conflict"]["expected"], serde_json::json!("0badc0de"));
+        assert_eq!(s["conflict"]["actual"], serde_json::json!("00c0ffee"));
+        // content_hash names what keeps playing, never the `expected` the client asked for, or the
+        // model's next guarded open conflicts again.
+        assert_eq!(
+            s["content_hash"],
+            serde_json::json!("00c0ffee"),
+            "a rejected open reports the hash still playing: {s}"
+        );
+    }
+
+    #[test]
+    fn open_instrument_held_reads_as_not_yet_installed_rather_than_failed() {
+        let fake = FakeTransport::reachable().with_open(Response::Held(HeldSwap {
+            requested: "instruments/groovebox.json".to_string(),
+            playing: Some("instruments/acid-techno.json".to_string()),
+            content_hash: "00c0ffee".to_string(),
+        }));
+        let result = block_on(server_with(fake).open_instrument(Parameters(open_pad(None))))
+            .expect("open returns a result");
+        assert_ne!(result.is_error, Some(true), "{result:?}");
+        let s = result
+            .structured_content
+            .as_ref()
+            .expect("structured payload");
+        assert_eq!(s["ok"], serde_json::json!(false), "nothing installed: {s}");
+        assert_eq!(s["content_hash"], serde_json::json!("00c0ffee"));
+        assert_eq!(
+            s["held"]["requested"],
+            serde_json::json!("instruments/groovebox.json")
+        );
+        assert_eq!(
+            s["held"]["playing"],
+            serde_json::json!("instruments/acid-techno.json")
+        );
+        let text = first_text(&result);
+        for expected in [
+            "not installed yet",
+            "instruments/acid-techno.json keeps playing",
+            "get_current_instrument",
+            "retrying",
+        ] {
+            assert!(text.contains(expected), "{expected:?} missing from {text}");
+        }
+    }
+
     /// The arguments `set_instrument_name` carries in the tests below.
     fn rename_args() -> authoring::SetInstrumentName {
         authoring::SetInstrumentName {
@@ -2216,7 +2301,7 @@ mod tests {
 
     #[test]
     fn document_verb_refused_by_the_server_is_iserror_with_its_message() {
-        let message = "pad.json is not part of the open instrument; open it to edit it";
+        let message = "`pad` does not end in .json; nothing was written";
         let fake = FakeTransport::reachable().with_call(
             names::SET_INSTRUMENT_NAME,
             Response::Refused {
