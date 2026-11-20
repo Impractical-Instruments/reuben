@@ -248,7 +248,7 @@ pub fn call_tool<A: serde::Serialize>(
 }
 
 /// What is the engine playing? As [`get_current_instrument`], except that the projection is the
-/// server's `describe_instrument` of the installed `source`, so the caller needs no store of its
+/// server's `describe_instrument` of the open `source` file, so the caller needs no store of its
 /// own. A projection that cannot be had is a note in its place, never an error: the hash is the
 /// load-bearing half.
 pub fn current_instrument(channel: &Channel) -> Result<Answer<CurrentInstrument>, Refusal> {
@@ -258,6 +258,9 @@ pub fn current_instrument(channel: &Channel) -> Result<Answer<CurrentInstrument>
     let summary = playing_summary(&snapshot);
     let projection = match &snapshot.source {
         None => "(projection unavailable: no source to describe)".to_string(),
+        Some(source) if snapshot.content_hash.is_empty() => {
+            format!("(nothing plays: {source} does not load)")
+        }
         Some(source) => {
             let args = serde_json::json!({ "source": source, "view": "index" });
             match call_tool("describe_instrument", &args, channel) {
@@ -728,9 +731,8 @@ mod tests {
 
     #[test]
     fn current_instrument_says_an_open_instrument_that_does_not_load_plays_nothing() {
-        let (channel, _) = scripted(&[
+        let (channel, asked) = scripted(&[
             r#"{"reply":"document","document":null,"content_hash":"","source":"b.json"}"#,
-            r#"{"reply":"refused","message":"nope"}"#,
         ]);
         let answer = current_instrument(&channel).expect("an answer");
         assert_eq!(
@@ -738,6 +740,15 @@ mod tests {
             "b.json is open but does not load, so nothing plays until an edit makes it load"
         );
         assert_eq!(answer.output.content_hash, "");
+        assert_eq!(
+            answer.output.projection,
+            "(nothing plays: b.json does not load)"
+        );
+        assert_eq!(
+            asked.lock().unwrap().len(),
+            1,
+            "no describe while nothing plays"
+        );
     }
 
     #[test]

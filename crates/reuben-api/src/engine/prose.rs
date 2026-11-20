@@ -38,10 +38,10 @@ pub const SWAP_INSTRUMENT: &str =
      get_current_instrument later.";
 
 pub const GET_CURRENT_INSTRUMENT: &str =
-    "Report what the engine is playing: the source it was installed from, the installed content \
-     hash, and the node index of the live graph. Compare the hash against the one a document \
-     verb returns for that source to see whether your edits have been swapped in yet. Fails \
-     fast if no engine is reachable.";
+    "Report what the engine is playing: the source of the open instrument, its content hash, \
+     and the node index of that instrument. An empty content hash means the open instrument does \
+     not load and nothing plays until an edit makes it load. Fails fast if no engine is \
+     reachable.";
 
 pub const GET_ENGINE_DIAGNOSTICS: &str =
     "Return the engine's running diagnostics counters since start: output_xruns (events) plus \
