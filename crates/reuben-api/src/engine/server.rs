@@ -32,7 +32,7 @@
 //! connections serialize on it.
 
 use alloc::boxed::Box;
-use alloc::collections::BTreeSet;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -48,7 +48,7 @@ use reuben_document::coordinator::Coordinator;
 
 use crate::authoring::{Diag, DocumentHistory, Report};
 use crate::resources::Resources;
-use crate::staged::Staged;
+use crate::staged::{Reads, Staged};
 
 use super::channel::Transport;
 use super::events::{Bus, Subscription};
@@ -185,14 +185,14 @@ pub struct StructureState {
     /// together) and read beside it — no path takes this lock first, so the ordering cannot invert.
     installed_source: Arc<Mutex<Option<String>>>,
     store: Arc<ServerStore>,
-    /// The canonical sources the last successful install read: the documents an edit may touch.
-    /// Written only under the Coordinator lock, as `installed_source` is.
-    tree: Arc<Mutex<BTreeSet<String>>>,
+    /// What the last successful install read: the documents an edit may touch. Written only under
+    /// the Coordinator lock, as `installed_source` is.
+    tree: Arc<Mutex<Tree>>,
     /// Set by [`close`](StructureState::close) when the host tears the engine down.
     closed: Arc<AtomicBool>,
     events: Arc<Bus>,
     /// The errors of the last [`Event::Invalid`] a [`reload`](StructureState::reload) published,
-    /// until something installs or the files load as what plays. Written only under the
+    /// until something installs or a reload finds the files plan again. Written only under the
     /// Coordinator lock.
     reported_invalid: Arc<Mutex<Option<Vec<Diag>>>>,
 }
@@ -222,7 +222,7 @@ impl StructureState {
             host,
             installed_source: Arc::new(Mutex::new(None)),
             store,
-            tree: Arc::new(Mutex::new(BTreeSet::new())),
+            tree: Arc::new(Mutex::new(Tree::default())),
             closed: Arc::new(AtomicBool::new(false)),
             events: Arc::new(Bus::default()),
             reported_invalid: Arc::new(Mutex::new(None)),
@@ -232,10 +232,16 @@ impl StructureState {
     /// Load the open instrument again from its files, after something outside the engine may have
     /// written them, and play it if it plans and differs from what plays.
     ///
+    /// It differs when the top document's content hash does, or the text of any document it
+    /// reaches does: the hash covers only the top one.
+    ///
     /// - It plans and differs: it goes live and [`Event::Changed`] by [`ChangedBy::Outside`] is
     ///   published and returned.
     /// - It does not load or plan: what played keeps playing, and [`Event::Invalid`] is published
     ///   and returned, once per distinct set of errors.
+    /// - It plans and is what plays, after an [`Event::Invalid`]: [`Event::Changed`] by
+    ///   [`ChangedBy::Outside`] with the installed hash is published and returned, so a subscriber
+    ///   hears the failure is over.
     /// - Otherwise `None`, and nothing is published: the files are what plays (the engine's own
     ///   write reads back this way), nothing is open from a source, the Coordinator is poisoned, or
     ///   an earlier swap is still in flight. That last is left for the next touch of the files to
@@ -259,9 +265,20 @@ impl StructureState {
             Ok(prepared) => prepared,
             Err(rejected) => return self.invalid(SwapReport::from_core(rejected).report.errors),
         };
-        if prepared.content_hash() == coordinator.installed_hash() {
-            *self.reported_invalid.lock().ok()? = None;
-            return None;
+        let unchanged = prepared.content_hash() == coordinator.installed_hash()
+            && self.tree_cell().ok()?.texts == tree.texts;
+        if unchanged {
+            // Valid again with nothing to swap: a subscriber told of the failure hears it ended.
+            let was_invalid = self.reported_invalid.lock().ok()?.take().is_some();
+            if !was_invalid {
+                return None;
+            }
+            let event = Event::Changed {
+                hash: coordinator.installed_hash(),
+                by: ChangedBy::Outside,
+            };
+            self.events.publish(event.clone());
+            return Some(event);
         }
         if coordinator.swap_in_flight() {
             return None;
@@ -313,6 +330,7 @@ impl StructureState {
         self.tree
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .sources
             .clone()
     }
 
@@ -356,7 +374,7 @@ impl StructureState {
         self.installed_source.lock().map_err(|_| Poisoned)
     }
 
-    fn tree_cell(&self) -> Result<MutexGuard<'_, BTreeSet<String>>, Poisoned> {
+    fn tree_cell(&self) -> Result<MutexGuard<'_, Tree>, Poisoned> {
         self.tree.lock().map_err(|_| Poisoned)
     }
 
@@ -373,7 +391,7 @@ impl StructureState {
     pub fn with_installed_source(mut self, source: Option<String>) -> Self {
         let tree = match &source {
             Some(source) => read_tree(&self.store, &self.host.document_origin(source)),
-            None => BTreeSet::new(),
+            None => Tree::default(),
         };
         self.tree = Arc::new(Mutex::new(tree));
         self.installed_source = Arc::new(Mutex::new(source));
@@ -712,7 +730,7 @@ fn install_from(
         }
         // By value there is nowhere the document came from: the session's anchor stands, and no
         // document is open to edit.
-        None => (coordinator.swap_document(json), BTreeSet::new()),
+        None => (coordinator.swap_document(json), Tree::default()),
     };
     let mut report = SwapReport::from_core(core_report);
     if report.report.ok {
@@ -783,8 +801,31 @@ fn handle_list(state: &StructureState, what: ListWhat) -> Response {
     }
 }
 
-/// Prepare `json`, read from `origin`, and the canonical sources the load read, `origin`'s own
-/// included.
+/// The documents an install read.
+#[derive(Default)]
+struct Tree {
+    /// Every canonical source the load read, the top document's included.
+    sources: BTreeSet<String>,
+    /// The texts of the documents the top one reaches, without the top one's: the installed
+    /// content hash already says whether that one changed, and leaving it out keeps a top document
+    /// reformatted without a change from swapping.
+    texts: BTreeMap<String, u64>,
+}
+
+impl Tree {
+    /// `reads` from a load of the document at canonical source `top`.
+    fn new(mut reads: Reads, top: String) -> Self {
+        reads.remove(&top);
+        let mut sources: BTreeSet<String> = reads.keys().cloned().collect();
+        sources.insert(top);
+        Self {
+            sources,
+            texts: reads,
+        }
+    }
+}
+
+/// Prepare `json`, read from `origin`, and what the load read.
 fn prepare_recording(
     state: &StructureState,
     coordinator: &Coordinator,
@@ -792,12 +833,11 @@ fn prepare_recording(
     origin: &str,
 ) -> (
     Result<reuben_document::PreparedSwap, reuben_document::SwapReport>,
-    BTreeSet<String>,
+    Tree,
 ) {
     let log = state.store.inner().record_reads();
     let prepared = coordinator.prepare_document_from(json, origin);
-    let mut tree = log.finish();
-    tree.insert(state.store.canonical(origin, None));
+    let tree = Tree::new(log.finish(), state.store.canonical(origin, None));
     (prepared, tree)
 }
 
@@ -829,7 +869,7 @@ fn went_live(
     state: &StructureState,
     coordinator: &mut Coordinator,
     source: Option<String>,
-    tree: BTreeSet<String>,
+    tree: Tree,
     went: Went,
 ) -> Result<Vec<Diag>, Poisoned> {
     let previous = core::mem::replace(&mut *state.installed_source()?, source.clone());

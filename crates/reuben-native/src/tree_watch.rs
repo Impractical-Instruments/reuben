@@ -225,6 +225,16 @@ mod tests {
         "interface":{"outputs":{"out":{"from":"/osc.audio"}}},
         "nodes":[{"type":"oscillator","address":"/osc"}]}"#;
 
+    /// Nests `voices/v.json`, so the voice sits in a directory of its own.
+    const NESTING: &str = r#"{"format_version":3,"instrument":"top",
+        "resources":{"v":"voices/v.json"},
+        "interface":{"outputs":{"out":{"from":"/voice.out"}}},
+        "nodes":[{"type":"subpatch","address":"/voice","patch":"v"}]}"#;
+
+    const VOICE: &str = r#"{"format_version":3,"instrument":"v",
+        "interface":{"outputs":{"out":{"from":"/osc.audio"}}},
+        "nodes":[{"type":"oscillator","address":"/osc"}]}"#;
+
     /// The first [`Event::Changed`] within `limit`, skipping any other event.
     fn changed_within(events: &Receiver<Event>, limit: Duration) -> Option<(String, ChangedBy)> {
         let deadline = Instant::now() + limit;
@@ -238,20 +248,24 @@ mod tests {
         }
     }
 
-    #[test]
-    fn watcher_follows_a_file_edit() {
+    /// Serve `top` from a fresh directory holding `files`, watch it, save `edited` over the file
+    /// at `edit` the way a text editor does, and expect the engine to follow within 2 s.
+    fn follows(case: &str, top: &str, files: &[(&str, &str)], edit: &str, edited: &str) {
         // Process-unique: a fixed name collides between concurrent checkouts, and this test
         // deletes the directory it is about to use.
-        let dir = std::env::temp_dir().join(format!("reuben_tree_watch_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("reuben_{case}_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("case dir");
-        let top = dir.join("top.json");
-        std::fs::write(&top, TOP).expect("seed the open instrument");
+        for (name, text) in [("top.json", top)].iter().chain(files) {
+            let path = dir.join(name);
+            std::fs::create_dir_all(path.parent().expect("a directory")).expect("case dir");
+            std::fs::write(&path, text).expect("seed the open instrument");
+        }
+        let top_path = dir.join("top.json");
 
         let staged: Staged<Box<dyn Resources + Send + Sync>> =
-            Staged::new(Box::new(FsResolver::for_instrument(&top)));
+            Staged::new(Box::new(FsResolver::for_instrument(&top_path)));
         let (coordinator, side, _warnings) = reuben_api::engine::install_initial(
-            TOP,
+            top,
             staged.clone(),
             AudioConfig::new(48_000.0, 128),
         )
@@ -267,15 +281,16 @@ mod tests {
             Arc::new(host),
             Arc::new(DocumentHistory::new(staged)),
         )
-        .with_installed_source(Some(top.display().to_string()));
+        .with_installed_source(Some(top_path.display().to_string()));
         let cb = FakeCallback::spawn(side, control_rx);
         let events = InProcess::new(state.clone()).subscribe();
         let watch = spawn(state.clone());
 
         // A text editor's save: a temp file renamed over the document.
-        let temp = dir.join(".top.json.tmp");
-        std::fs::write(&temp, TOP.replace(r#""top""#, r#""renamed""#)).expect("write");
-        std::fs::rename(&temp, &top).expect("rename over");
+        let target = dir.join(edit);
+        let temp = target.with_extension("json.tmp");
+        std::fs::write(&temp, edited).expect("write");
+        std::fs::rename(&temp, &target).expect("rename over");
 
         let (hash, by) =
             changed_within(&events, Duration::from_secs(2)).expect("a change within 2 s");
@@ -291,5 +306,23 @@ mod tests {
         state.close();
         cb.stop();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn watcher_follows_a_file_edit() {
+        let renamed = TOP.replace(r#""top""#, r#""renamed""#);
+        follows("tree_watch_top", TOP, &[], "top.json", &renamed);
+    }
+
+    #[test]
+    fn watcher_follows_an_edit_to_a_nested_file() {
+        let moved = VOICE.replace("/osc", "/osc2");
+        follows(
+            "tree_watch_nested",
+            NESTING,
+            &[("voices/v.json", VOICE)],
+            "voices/v.json",
+            &moved,
+        );
     }
 }

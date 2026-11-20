@@ -2,7 +2,6 @@
 //! A read answers directly; an edit is written and swapped in only if the whole open instrument
 //! still loads and plans with it.
 
-use alloc::collections::BTreeSet;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -19,11 +18,11 @@ use crate::authoring::{
 use crate::resources::{Adapter, ResolveError, Resources, SampleBuffer};
 
 use super::super::wire::{Response, SwapReport};
-use super::{prepare_recording, went_live, Poisoned, ServerStore, StructureState, Went};
+use super::{prepare_recording, went_live, Poisoned, ServerStore, StructureState, Tree, Went};
 
-/// The canonical sources the document at `origin` reaches, itself included: one load through
-/// `store`, building no Plan. A document that does not load still names the sources it read.
-pub(super) fn read_tree(store: &ServerStore, origin: &str) -> BTreeSet<String> {
+/// What the document at `origin` reaches, itself included: one load through `store`, building no
+/// Plan. A document that does not load still names the sources it read.
+pub(super) fn read_tree(store: &ServerStore, origin: &str) -> Tree {
     let log = store.inner().record_reads();
     if let Ok(text) = store.read_text(origin) {
         let anchored = Anchored {
@@ -32,9 +31,7 @@ pub(super) fn read_tree(store: &ServerStore, origin: &str) -> BTreeSet<String> {
         };
         let _ = load_instrument(&text, &Registry::builtin(), &Adapter(&anchored));
     }
-    let mut tree = log.finish();
-    tree.insert(store.canonical(origin, None));
-    tree
+    Tree::new(log.finish(), store.canonical(origin, None))
 }
 
 /// `store` with the top document's references resolved from `referrer`, as the Coordinator's
@@ -193,7 +190,7 @@ fn edit_or_refuse(
         );
     };
     let in_tree = match state.tree_cell() {
-        Ok(tree) => tree.contains(&state.store.canonical(source, None)),
+        Ok(tree) => tree.sources.contains(&state.store.canonical(source, None)),
         Err(poisoned) => {
             staged.discard();
             return poisoned.into();
@@ -335,7 +332,7 @@ pub(super) fn diag(message: String) -> Diag {
 #[cfg(all(test, feature = "render"))]
 mod tests {
     use alloc::boxed::Box;
-    use alloc::collections::BTreeMap;
+    use alloc::collections::{BTreeMap, BTreeSet};
     use alloc::sync::Arc;
     use core::cell::RefCell;
     use std::sync::Mutex;
@@ -1119,7 +1116,7 @@ mod tests {
 
         // Put back as it plays, then broken the same way again: a new failure to report.
         s.files.write_text("v.json", V).unwrap();
-        assert_eq!(s.state.reload(), None);
+        assert!(matches!(s.state.reload(), Some(Event::Changed { .. })));
         s.files.write_text("v.json", "{ not json").unwrap();
         assert!(matches!(s.state.reload(), Some(Event::Invalid { .. })));
     }
@@ -1170,5 +1167,57 @@ mod tests {
         s.state = s.state.clone().with_installed_source(None);
         s.files.write_text("top.json", "{ not json").unwrap();
         assert_eq!(s.state.reload(), None);
+    }
+
+    #[test]
+    fn reload_of_untouched_files_reports_nothing() {
+        let s = serving();
+        let events = s.state.subscribe();
+        assert_eq!(s.state.reload(), None);
+        assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn reload_follows_an_outside_edit_to_a_nested_document() {
+        let s = serving();
+        let events = s.state.subscribe();
+        let before = installed_hash(&s.state);
+        s.files
+            .write_text("v.json", &V.replace("/osc", "/osc2"))
+            .unwrap();
+        let reloaded = s.state.reload();
+        s.render();
+        assert_eq!(
+            reloaded,
+            Some(Event::Changed {
+                hash: before,
+                by: ChangedBy::Outside,
+            }),
+            "the top document is unchanged, so its hash is too"
+        );
+        assert_eq!(events.try_recv().expect("an event"), reloaded.unwrap());
+        // What plays now is what is on disk: reading it again changes nothing.
+        assert_eq!(s.state.reload(), None);
+    }
+
+    #[test]
+    fn a_tree_that_plans_again_after_invalid_reports_changed() {
+        let s = serving();
+        let events = s.state.subscribe();
+        let playing = installed_hash(&s.state);
+        s.files.write_text("v.json", "{ not json").unwrap();
+        assert!(matches!(s.state.reload(), Some(Event::Invalid { .. })));
+        s.files.write_text("v.json", V).unwrap();
+        let recovered = Event::Changed {
+            hash: playing.clone(),
+            by: ChangedBy::Outside,
+        };
+        assert_eq!(s.state.reload(), Some(recovered.clone()));
+        assert_eq!(installed_hash(&s.state), playing);
+        assert!(matches!(events.try_recv(), Ok(Event::Invalid { .. })));
+        assert_eq!(events.try_recv(), Ok(recovered));
+        // Recovered once: the next read of the same files is quiet.
+        assert_eq!(s.state.reload(), None);
+        assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
     }
 }

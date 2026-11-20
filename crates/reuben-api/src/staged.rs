@@ -4,7 +4,7 @@
 //! [`Staged::commit`] write to the inner store. Until then every read through the wrapper sees the
 //! pending text and the inner store sees nothing.
 
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -20,7 +20,21 @@ struct Shared<S> {
     reads: Arc<ReadSlot>,
 }
 
-type ReadSlot = Mutex<Option<BTreeSet<String>>>;
+type ReadSlot = Mutex<Option<Reads>>;
+
+/// Every canonical source a [`ReadLog`] saw served, each with a fingerprint of the text it was
+/// served: two loads read the same texts exactly when their `Reads` are equal.
+///
+/// The fingerprint is std's `DefaultHasher`, whose output may change between Rust releases: it
+/// compares reads within one process and must not be persisted.
+pub type Reads = BTreeMap<String, u64>;
+
+fn fingerprint(text: &str) -> u64 {
+    use core::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
 
 /// A [`Resources`] store that holds [`write_text`](Resources::write_text) in memory until
 /// [`commit`](Self::commit). Clones share one pending set.
@@ -38,15 +52,15 @@ impl<S> Clone for Staged<S> {
     }
 }
 
-/// Recording of every canonical source [`Staged::read_text`](Resources::read_text) served since
-/// [`Staged::record_reads`]. Dropping it without [`finish`](Self::finish) stops the recording.
+/// Recording of every canonical source, and the text, [`Staged::read_text`](Resources::read_text)
+/// served since [`Staged::record_reads`]. Dropping it without [`finish`](Self::finish) stops the recording.
 pub struct ReadLog {
     reads: Arc<ReadSlot>,
 }
 
 impl ReadLog {
-    /// Stop recording and return the canonical sources read.
-    pub fn finish(self) -> BTreeSet<String> {
+    /// Stop recording and return what was read.
+    pub fn finish(self) -> Reads {
         lock(&self.reads).take().unwrap_or_default()
     }
 }
@@ -95,7 +109,7 @@ impl<S: Resources> Staged<S> {
     /// Start recording the canonical source of every text read served, to learn which documents
     /// a load reached.
     pub fn record_reads(&self) -> ReadLog {
-        *lock(&self.shared.reads) = Some(BTreeSet::new());
+        *lock(&self.shared.reads) = Some(Reads::new());
         ReadLog {
             reads: Arc::clone(&self.shared.reads),
         }
@@ -119,7 +133,7 @@ impl<S: Resources> Resources for Staged<S> {
             None => self.shared.inner.read_text(source)?,
         };
         if let Some(log) = lock(&self.shared.reads).as_mut() {
-            log.insert(key);
+            log.insert(key, fingerprint(&text));
         }
         Ok(text)
     }
@@ -220,7 +234,13 @@ mod tests {
         staged.read_text("a").unwrap();
         staged.read_text("b").unwrap();
         let seen = log.finish();
-        assert_eq!(seen, BTreeSet::from(["a".to_string(), "b".to_string()]));
+        assert_eq!(
+            seen.keys()
+                .cloned()
+                .collect::<alloc::collections::BTreeSet<_>>(),
+            alloc::collections::BTreeSet::from(["a".to_string(), "b".to_string()])
+        );
+        assert_ne!(seen["a"], seen["b"]);
         staged.read_text("a").unwrap();
         assert!(lock(&staged.shared.reads).is_none());
     }
