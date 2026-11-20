@@ -587,10 +587,18 @@ fn an_outside_repair_of_the_open_broken_document_starts_it_playing() {
         let events = follow(t);
         open_broken(t, &events, &broken_s);
 
-        // The watcher turns to a newly opened instrument's files on its next idle wake.
-        std::thread::sleep(Duration::from_millis(500));
-        write(Path::new(&broken_s), OTHER);
-        match events.recv_timeout(REPLY).expect("a changed event") {
+        // The watcher turns to a newly opened instrument's files on its next idle wake, so a
+        // write before then goes unseen: write until one is followed.
+        let deadline = std::time::Instant::now() + REPLY;
+        let changed = loop {
+            write(Path::new(&broken_s), OTHER);
+            match events.recv_timeout(Duration::from_millis(200)) {
+                Ok(event) => break event,
+                Err(_) if std::time::Instant::now() < deadline => continue,
+                Err(e) => panic!("the outside repair was never followed: {e}"),
+            }
+        };
+        match changed {
             Event::Changed { hash, by } => {
                 assert_eq!(by, ChangedBy::Outside);
                 assert_eq!(snapshot(t).content_hash, hash);

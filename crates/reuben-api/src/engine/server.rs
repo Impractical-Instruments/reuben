@@ -854,7 +854,7 @@ fn install_from(
             Err(poisoned) => return poisoned.into(),
         }
     } else {
-        report.content_hash = state.playing_hash(coordinator);
+        installed_nothing(state, coordinator, &mut report);
     }
     Response::SwapReport(report)
 }
@@ -890,7 +890,7 @@ fn open_silent(
     if !silenced.report.ok {
         // Only a swap still in flight refuses a document this fixed.
         let mut report = SwapReport::from_core(silenced);
-        report.content_hash = state.playing_hash(coordinator);
+        installed_nothing(state, coordinator, &mut report);
         return Response::SwapReport(report);
     }
     let mut warnings = match went_live(
@@ -964,16 +964,11 @@ fn handle_open(
         Err(poisoned) => return poisoned.into(),
     };
     if !state.host.within(&origin, open.as_deref()) {
-        return rejected_report(state.playing_hash(&coordinator), not_offered(&name));
+        return rejected_report(state, &coordinator, not_offered(&name));
     }
     let json = match state.store.read_text(&origin) {
         Ok(json) => json,
-        Err(e) => {
-            return rejected_report(
-                state.playing_hash(&coordinator),
-                format!("open {name}: {e}"),
-            )
-        }
+        Err(e) => return rejected_report(state, &coordinator, format!("open {name}: {e}")),
     };
     install_from(
         state,
@@ -1078,6 +1073,11 @@ fn went_live(
     tree: Tree,
     went: Went,
 ) -> Result<Vec<Diag>, Poisoned> {
+    // First, before anything that can fail: the install is already committed, so a poisoned lock
+    // below must not leave the hash reported for silence once something else plays.
+    state
+        .silent
+        .store(went == Went::OpenedSilent, Ordering::SeqCst);
     let previous = core::mem::replace(&mut *state.installed_source()?, source.clone());
     *state.tree_cell()? = tree;
 
@@ -1091,9 +1091,6 @@ fn went_live(
 
     // What plays changed, so a failure reported against what played before is news again.
     *state.reported_invalid.lock().map_err(|_| Poisoned)? = None;
-    state
-        .silent
-        .store(went == Went::OpenedSilent, Ordering::SeqCst);
 
     let hash = state.playing_hash(coordinator);
     let opened = match went {
@@ -1135,13 +1132,14 @@ fn reclaim_retired(coordinator: &mut Coordinator, host: &dyn EngineHost) {
 /// (retain-prior).
 fn rejected_swap(state: &StructureState, message: String) -> Response {
     match state.coordinator() {
-        Ok(coordinator) => rejected_report(state.playing_hash(&coordinator), message),
+        Ok(coordinator) => rejected_report(state, &coordinator, message),
         Err(poisoned) => poisoned.into(),
     }
 }
 
-fn rejected_report(content_hash: String, message: String) -> Response {
-    Response::SwapReport(SwapReport {
+/// A report that installed nothing, for `message`. Called under the Coordinator lock.
+fn rejected_report(state: &StructureState, coordinator: &Coordinator, message: String) -> Response {
+    let mut report = SwapReport {
         report: Report {
             ok: false,
             errors: vec![Diag {
@@ -1151,9 +1149,33 @@ fn rejected_report(content_hash: String, message: String) -> Response {
             }],
             warnings: Vec::new(),
         },
-        content_hash,
+        content_hash: String::new(),
         diff: None,
-    })
+    };
+    installed_nothing(state, coordinator, &mut report);
+    Response::SwapReport(report)
+}
+
+/// Make `report`, which installed nothing, name what plays: the playing hash and, while nothing
+/// plays, a warning naming the instrument still open, so a reader does not take the empty hash
+/// for the refused request's own load failing. Called under the Coordinator lock.
+fn installed_nothing(state: &StructureState, coordinator: &Coordinator, report: &mut SwapReport) {
+    report.content_hash = state.playing_hash(coordinator);
+    if !state.is_silent() {
+        return;
+    }
+    let open = state
+        .installed_source()
+        .ok()
+        .and_then(|open| open.clone())
+        .unwrap_or_default();
+    report.report.warnings.push(Diag {
+        node: None,
+        port: None,
+        message: format!(
+            "nothing was opened; {open} is still open but does not load, so nothing plays"
+        ),
+    });
 }
 
 /// Resolve a swap's source to its JSON text: inline JSON re-serialized, or a read through the host.

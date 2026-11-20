@@ -285,7 +285,8 @@ fn edit_or_refuse(
                     .to_string(),
             )],
             vec![format!(
-                "nothing was written and {top} keeps playing; try the edit again"
+                "nothing was written and {}; try the edit again",
+                still_playing(state, &top)
             )],
         );
     }
@@ -296,7 +297,8 @@ fn edit_or_refuse(
             source,
             vec![diag(e.to_string())],
             vec![format!(
-                "{source} could not be written; nothing was written and {top} keeps playing"
+                "{source} could not be written; nothing was written and {}",
+                still_playing(state, &top)
             )],
         );
     }
@@ -323,6 +325,15 @@ fn edit_or_refuse(
             }
         }
         Err(poisoned) => poisoned.into(),
+    }
+}
+
+/// What an edit that wrote nothing leaves sounding: `top`, or nothing while it does not load.
+fn still_playing(state: &StructureState, top: &str) -> String {
+    if state.is_silent() {
+        format!("nothing plays, since {top} does not load")
+    } else {
+        format!("{top} keeps playing")
     }
 }
 
@@ -1257,6 +1268,47 @@ mod tests {
         assert_eq!(s.state.try_installed(), before);
         assert!(s.peak() > 0.0);
         assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn a_refused_open_while_nothing_plays_names_what_is_still_open() {
+        let s = serving();
+        open_report(&s, "bt.json", None);
+        let report = open_report(&s, "missing.json", None);
+        assert!(!report.report.ok);
+        assert_eq!(report.content_hash, "");
+        assert!(
+            report.report.errors[0].message.contains("missing.json"),
+            "{report:?}"
+        );
+        assert_eq!(
+            report.report.warnings[0].message,
+            "nothing was opened; bt.json is still open but does not load, so nothing plays"
+        );
+        assert_eq!(s.state.tree(), BTreeSet::from(["bt.json".to_string()]));
+    }
+
+    #[test]
+    fn an_edit_while_the_silence_swap_is_in_flight_says_nothing_plays() {
+        let s = serving();
+        // Nothing is rendered after the open, so its swap to silence stays in flight.
+        assert!(matches!(
+            dispatch(&s.state, &open_line("bt.json", None)),
+            Response::SwapReport(_)
+        ));
+        let (output, _) = call_undrained(
+            &s.state,
+            "add_instrument_node",
+            json!({"source": "bt.json", "type": "oscillator", "address": "/osc"}),
+        );
+        assert_eq!(output["written"], false, "{output}");
+        let note = output["notes"][0].as_str().unwrap();
+        assert!(
+            note.contains("nothing plays, since bt.json does not load"),
+            "{output}"
+        );
+        assert!(!note.contains("keeps playing"), "{output}");
+        assert_eq!(s.files.get("bt.json").unwrap(), BROKEN_TOP);
     }
 
     #[test]

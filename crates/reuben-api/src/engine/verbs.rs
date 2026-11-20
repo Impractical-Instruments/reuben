@@ -448,12 +448,29 @@ fn swap_summary(report: &SwapReport, verb: Verb) -> String {
             None => format!("{} (content_hash {})", verb.past(), report.content_hash),
         }
     } else if report.content_hash.is_empty() {
+        // Nothing plays. The server's warnings say which instrument is open and whether this
+        // request opened it; the first error says what was refused.
+        let first = report
+            .report
+            .errors
+            .first()
+            .map_or("", |error| error.message.as_str());
+        let open = report
+            .report
+            .warnings
+            .iter()
+            .map(|warning| warning.message.as_str())
+            .collect::<Vec<_>>()
+            .join("; ");
+        let open = if open.is_empty() {
+            "nothing plays".to_string()
+        } else {
+            open
+        };
         format!(
-            "{} did not load: {} error(s), {} warning(s) — nothing plays; the open instrument \
-             does not load, and an edit that makes it load starts it playing",
+            "{} did not install: {} error(s), the first: {first} — {open}",
             verb.noun(),
             report.report.errors.len(),
-            report.report.warnings.len()
         )
     } else {
         format!(
@@ -660,7 +677,7 @@ mod tests {
     #[test]
     fn an_open_that_does_not_load_says_nothing_plays() {
         let (channel, _) = scripted(&[
-            r#"{"reply":"swap_report","ok":false,"errors":[{"message":"bad"}],"warnings":[{"message":"b.json is open"}],"content_hash":""}"#,
+            r#"{"reply":"swap_report","ok":false,"errors":[{"message":"bad"}],"warnings":[{"message":"b.json is open but does not load, so nothing plays until an edit makes it load"}],"content_hash":""}"#,
         ]);
         let answer = open_instrument(
             &OpenInstrument {
@@ -671,8 +688,9 @@ mod tests {
         )
         .expect("an answer, not a refusal");
         assert!(
-            answer.summary.contains("nothing plays")
-                && answer.summary.contains("an edit that makes it load"),
+            answer
+                .summary
+                .contains("b.json is open but does not load, so nothing plays until an edit"),
             "{}",
             answer.summary
         );
@@ -681,6 +699,31 @@ mod tests {
             "{}",
             answer.summary
         );
+    }
+
+    #[test]
+    fn a_refused_open_while_nothing_plays_names_the_refused_name_and_what_is_open() {
+        let (channel, _) = scripted(&[
+            r#"{"reply":"swap_report","ok":false,"errors":[{"message":"open missing.json: not found"}],"warnings":[{"message":"nothing was opened; b.json is still open but does not load, so nothing plays"}],"content_hash":""}"#,
+        ]);
+        let answer = open_instrument(
+            &OpenInstrument {
+                name: "missing.json".to_string(),
+                expect: None,
+            },
+            &channel,
+        )
+        .expect("an answer");
+        for expected in [
+            "open missing.json: not found",
+            "nothing was opened; b.json is still open",
+        ] {
+            assert!(
+                answer.summary.contains(expected),
+                "{expected:?} missing from {}",
+                answer.summary
+            );
+        }
     }
 
     #[test]
