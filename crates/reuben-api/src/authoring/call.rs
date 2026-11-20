@@ -4,6 +4,7 @@
 
 use alloc::format;
 use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -52,6 +53,76 @@ where
         output,
         summary: answer.summary,
         kind,
+    })
+}
+
+/// A file a call's arguments make the server read or write, and how its name is spelled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Named {
+    /// A document, spelled as the store spells one (`canonical(name, None)`).
+    Document(String),
+    /// A resource or nested reference written into `document`, spelled relative to it
+    /// (`canonical(name, Some(canonical(document, None)))`).
+    Reference { document: String, name: String },
+}
+
+/// The files the non-engine roster verb `tool` would touch given `args`, or `None` when `tool` is
+/// not one. Arguments that are not file names (node addresses, port paths, resource ids, a
+/// restore's content hash) are never listed, and an argument that is missing or not a string is
+/// left for [`call`] to refuse.
+///
+/// Beside [`call`] because the two lists of verbs must agree: a test holds every non-engine
+/// roster verb to an arm here.
+pub fn named_sources(tool: &str, args: &Value) -> Option<Vec<Named>> {
+    let text = |key: &str| args.get(key).and_then(Value::as_str).map(str::to_string);
+    let document = || text("source").map(Named::Document).into_iter().collect();
+    let with_reference = |key: &str| {
+        let mut named: Vec<Named> = document();
+        if let (Some(document), Some(name)) = (text("source"), text(key)) {
+            named.push(Named::Reference { document, name });
+        }
+        named
+    };
+    Some(match tool {
+        names::DESCRIBE_OPERATORS => Vec::new(),
+        names::COPY_INSTRUMENT => ["from", "to"]
+            .into_iter()
+            .filter_map(|key| text(key).map(Named::Document))
+            .collect(),
+        names::ADD_INSTRUMENT_RESOURCE | names::SET_INSTRUMENT_RESOURCE => {
+            with_reference("resource_source")
+        }
+        names::DESCRIBE_INSTRUMENT
+        | names::VALIDATE_INSTRUMENT
+        | names::DESCRIBE_BOUNDARY
+        | names::WIRE_COMPATIBILITY
+        | names::READ_INSTRUMENT
+        | names::NEW_INSTRUMENT
+        | names::RESTORE_INSTRUMENT
+        | names::SET_INSTRUMENT_NAME
+        | names::SET_INSTRUMENT_DESCRIPTION
+        | names::ADD_INSTRUMENT_NODE
+        | names::REMOVE_INSTRUMENT_NODE
+        | names::RENAME_INSTRUMENT_NODE
+        | names::SET_INSTRUMENT_NODE_DESCRIPTION
+        | names::SET_INSTRUMENT_INPUT
+        | names::SET_INSTRUMENT_INPUTS_BY_INTENT
+        | names::WIRE_INSTRUMENT_INPUT
+        | names::UNWIRE_INSTRUMENT_INPUT
+        | names::SET_INSTRUMENT_CONSTANT
+        | names::REMOVE_INSTRUMENT_CONSTANT
+        | names::ADD_INSTRUMENT_INTERFACE_INPUT
+        | names::ADD_INSTRUMENT_INTERFACE_OUTPUT
+        | names::REMOVE_INSTRUMENT_INTERFACE_INPUT
+        | names::REMOVE_INSTRUMENT_INTERFACE_OUTPUT
+        | names::SET_INSTRUMENT_INTERFACE_INPUT_META
+        | names::SET_INSTRUMENT_INTERFACE_OUTPUT_META
+        | names::CLEAR_INSTRUMENT_INTERFACE_META
+        | names::WIRE_INSTRUMENT_INTERFACE_OUTPUT
+        | names::REMOVE_INSTRUMENT_RESOURCE
+        | names::SET_INSTRUMENT_NODE_RESOURCE
+        | names::SET_INSTRUMENT_LAYOUT => document(),
+        _ => return None,
     })
 }
 
@@ -214,6 +285,7 @@ pub fn call<R: Resources>(
 mod tests {
     use alloc::collections::BTreeMap;
     use alloc::string::ToString;
+    use alloc::vec;
     use core::cell::RefCell;
 
     use serde_json::json;
@@ -275,6 +347,52 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn every_non_engine_contract_has_a_named_sources_arm() {
+        for contract in CONTRACTS.iter().filter(|c| c.kind != ContractKind::Engine) {
+            assert!(
+                named_sources(contract.name, &json!({})).is_some(),
+                "`{}` has no named_sources arm",
+                contract.name
+            );
+        }
+        assert_eq!(named_sources(names::SWAP_INSTRUMENT, &json!({})), None);
+    }
+
+    #[test]
+    fn named_sources_lists_files_and_not_addresses_ports_or_hashes() {
+        let doc = |s: &str| Named::Document(s.to_string());
+        let args = json!({"source": "a.json", "from": "/osc", "to": "/osc2"});
+        assert_eq!(
+            named_sources(names::RENAME_INSTRUMENT_NODE, &args),
+            Some(vec![doc("a.json")])
+        );
+        assert_eq!(
+            named_sources(
+                names::RESTORE_INSTRUMENT,
+                &json!({"source": "a.json", "to": "00c0ffee"})
+            ),
+            Some(vec![doc("a.json")])
+        );
+        assert_eq!(
+            named_sources(names::COPY_INSTRUMENT, &json!({"from": "a", "to": "b"})),
+            Some(vec![doc("a"), doc("b")])
+        );
+        assert_eq!(
+            named_sources(
+                names::ADD_INSTRUMENT_RESOURCE,
+                &json!({"source": "a.json", "id": "k", "resource_source": "k.wav"})
+            ),
+            Some(vec![
+                doc("a.json"),
+                Named::Reference {
+                    document: "a.json".into(),
+                    name: "k.wav".into()
+                }
+            ])
+        );
     }
 
     #[test]

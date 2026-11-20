@@ -14,12 +14,12 @@ use reuben_document::format::load_instrument;
 use serde_json::Value;
 
 use crate::authoring::{
-    self, edit_summary, hash_instrument, CallKind, Called, Diag, EditResult, Report,
+    self, edit_summary, hash_instrument, CallKind, Called, Diag, EditResult, Named, Report,
 };
 use crate::resources::{Adapter, ResolveError, Resources, SampleBuffer};
 
 use super::super::wire::{Response, SwapReport};
-use super::{prepare_recording, went_live, ServerStore, StructureState};
+use super::{prepare_recording, went_live, Poisoned, ServerStore, StructureState};
 
 /// The canonical sources the document at `origin` reaches, itself included: one load through
 /// `store`, building no Plan. A document that does not load still names the sources it read.
@@ -76,10 +76,14 @@ pub(super) fn handle_call(state: &StructureState, tool: &str, args: Value) -> Re
         Ok(coordinator) => coordinator,
         Err(poisoned) => return poisoned.into(),
     };
-    if let Some(name) = unoffered_name(state, &args) {
-        return Response::Refused {
-            message: super::not_offered(&name),
-        };
+    match unoffered_name(state, tool, &args) {
+        Ok(None) => {}
+        Ok(Some(name)) => {
+            return Response::Refused {
+                message: super::not_offered(&name),
+            }
+        }
+        Err(poisoned) => return poisoned.into(),
     }
     let staged = state.store.inner();
     let Called {
@@ -110,21 +114,36 @@ pub(super) fn handle_call(state: &StructureState, tool: &str, args: Value) -> Re
     }
 }
 
-/// The first source `args` names, as `source`, `from` or `to`, that the host does not offer and
-/// the open instrument's tree does not already reach. An edit's own source is checked against the
-/// tree again in [`edit_or_refuse`]; this keeps a read or a create from naming what the client
-/// may not.
-fn unoffered_name(state: &StructureState, args: &Value) -> Option<String> {
-    let open = state.installed_source().ok()?.clone();
+/// The first file `tool`'s `args` name that the host does not offer and the open instrument's tree
+/// does not already reach, as the client spelled it. An edit's own target is checked against the
+/// tree again in [`edit_or_refuse`]; this keeps a read, a create, or a reference an edit writes
+/// from naming what the client may not.
+fn unoffered_name(
+    state: &StructureState,
+    tool: &str,
+    args: &Value,
+) -> Result<Option<String>, Poisoned> {
+    let open = state.installed_source()?.clone();
     let tree = state.tree();
-    ["source", "from", "to"]
-        .into_iter()
-        .filter_map(|key| args.get(key)?.as_str())
-        .find(|name| {
-            let canonical = state.store.canonical(name, None);
-            !tree.contains(&canonical) && !state.host.within(&canonical, open.as_deref())
-        })
-        .map(str::to_string)
+    let canonical = |name: &str, referrer: Option<&str>| state.store.canonical(name, referrer);
+    let offered =
+        |canonical: &str| tree.contains(canonical) || state.host.within(canonical, open.as_deref());
+    for named in authoring::named_sources(tool, args).unwrap_or_default() {
+        let (name, resolved) = match named {
+            Named::Document(name) => {
+                let resolved = canonical(&name, None);
+                (name, resolved)
+            }
+            Named::Reference { document, name } => {
+                let resolved = canonical(&name, Some(&canonical(&document, None)));
+                (name, resolved)
+            }
+        };
+        if !offered(&resolved) {
+            return Ok(Some(name));
+        }
+    }
+    Ok(None)
 }
 
 /// An edit the verb has staged: write it and swap the new Plan in only if the open instrument,
@@ -602,6 +621,84 @@ mod tests {
             Response::Refused { .. }
         ));
         assert_eq!(s.files.get("fresh.json"), None);
+    }
+
+    /// Offers only names starting with `k`, besides the open tree.
+    fn offering_only_k() -> Served {
+        serving_with(Host {
+            hold: false,
+            only: Some("k"),
+        })
+    }
+
+    fn call_line(tool: &str, args: Value) -> String {
+        Request::Call {
+            tool: tool.to_string(),
+            args,
+        }
+        .to_ndjson()
+    }
+
+    #[test]
+    fn arguments_that_are_not_file_names_are_not_confined() {
+        let s = offering_only_k();
+        let before = installed_hash(&s.state);
+        let (renamed, _) = call(
+            &s,
+            "rename_instrument_node",
+            json!({"source": "top.json", "from": "/voice", "to": "/voice2"}),
+        );
+        assert_eq!(renamed["written"], true, "{renamed}");
+        let after = installed_hash(&s.state);
+
+        let line = call_line(
+            "wire_instrument_input",
+            json!({"source": "top.json", "address": "/voice2", "input": "x", "from": "/voice2.out"}),
+        );
+        assert!(
+            matches!(dispatch(&s.state, &line), Response::Called { .. }),
+            "a port path is not a file name"
+        );
+        s.render();
+        let now = installed_hash(&s.state);
+
+        let line = call_line(
+            "restore_instrument",
+            json!({"source": "top.json", "to": before, "expect": now}),
+        );
+        match dispatch(&s.state, &line) {
+            Response::Called { output, .. } => assert_eq!(output["written"], true, "{output}"),
+            other => panic!("expected a called answer, got {other:?}"),
+        }
+        let _ = after;
+    }
+
+    #[test]
+    fn a_resource_outside_what_the_server_offers_is_refused_and_writes_nothing() {
+        let s = offering_only_k();
+        let before = s.files.get("top.json");
+        let line = call_line(
+            "add_instrument_resource",
+            json!({"source": "top.json", "id": "k", "resource_source": "outside/k.wav"}),
+        );
+        match dispatch(&s.state, &line) {
+            Response::Refused { message } => {
+                assert_eq!(message, "`outside/k.wav` is not offered by this server")
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert_eq!(s.files.get("top.json"), before);
+    }
+
+    #[test]
+    fn a_resource_inside_what_the_server_offers_is_written() {
+        let s = offering_only_k();
+        let (output, _) = call(
+            &s,
+            "add_instrument_resource",
+            json!({"source": "top.json", "id": "k", "resource_source": "k.wav"}),
+        );
+        assert_eq!(output["written"], true, "{output}");
     }
 
     #[test]
