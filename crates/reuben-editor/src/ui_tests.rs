@@ -631,3 +631,62 @@ fn the_meters_ride_the_right_edge_of_the_controls_panel() {
         "in the controls panel's band: {meters:?} {controls:?}"
     );
 }
+
+/// Write an instrument at `lib/metered.json`: an oscillator `/osc` into an output `/out`, and an
+/// `osc_out` `/echo` of its `level` input, which has no Signal output.
+fn metered(scratch: &Scratch) -> PathBuf {
+    let lib = scratch.path("lib");
+    std::fs::create_dir_all(&lib).expect("create the library directory");
+    let top = lib.join("metered.json");
+    let text = json!({
+        "format_version": 3,
+        "instrument": "metered",
+        "interface": {
+            "inputs": {"level": {"type": "f32", "default": 0.5, "min": 0.0, "max": 1.0}},
+            "outputs": {"out": {"from": "/out.audio"}}
+        },
+        "nodes": [
+            {"type": "oscillator", "address": "/osc"},
+            {"type": "output", "address": "/out", "inputs": {"audio": {"from": "/osc"}}},
+            {"type": "osc_out", "address": "/echo", "inputs": {"in": {"from": "/level"}}}
+        ]
+    })
+    .to_string();
+    std::fs::write(&top, text).expect("write the instrument");
+    top
+}
+
+#[test]
+fn a_playing_node_shows_its_level_on_the_canvas() {
+    use egui_kittest::kittest::NodeT;
+    use reuben_native::test_support::{start_headless, within};
+
+    let scratch = Scratch::new("ui_node_meters");
+    let config = TempConfig::new();
+    let top = metered(&scratch);
+    within(crate::engine::test_support::HANG_SECS, move || {
+        let mut editor = editor(&top, &config);
+        editor.engine = Engine::start_with(
+            crate::engine::test_support::config(top.clone()),
+            start_headless,
+        );
+        let mut harness = harness(editor);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let floor = f64::from(meter_strip::SCALE_FLOOR_DBFS);
+        loop {
+            let level = (harness.query_by_label("/osc level"))
+                .and_then(|node| node.accesskit_node().numeric_value());
+            if level.is_some_and(|level| level > floor) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "/osc never showed a level: {level:?}"
+            );
+            harness.run_steps(1);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(harness.query_by_label("/echo level").is_none());
+        harness.state_mut().engine.shutdown();
+    });
+}

@@ -168,6 +168,7 @@ fn view(canvas: &mut Canvas, inspector: &mut Inspector, session: &Session) {
         *inspector = Inspector::default();
     }
     canvas.reload(source, session.root(), &viewed.read);
+    canvas.tap(session);
 }
 
 struct Editor {
@@ -302,7 +303,9 @@ impl eframe::App for Editor {
                 });
             });
         });
-        self.meters.poll(Instant::now(), self.engine.channel());
+        let probes = self.canvas.probe_paths();
+        self.meters
+            .poll(Instant::now(), self.engine.channel(), &probes);
         if let Some(session) = &mut self.session {
             let asked = session::shortcut(ui.ctx()).or(session::show(ui, session));
             if let Some(direction) = asked {
@@ -371,7 +374,7 @@ impl eframe::App for Editor {
                     session.feedback().map(|feedback| feedback.rejected(viewed))
                 })
                 .unwrap_or_default();
-            self.canvas.show(ui, rejected)
+            self.canvas.show(ui, rejected, self.meters.node_levels())
         });
         for gesture in gestures.inner {
             let Some(session) = &mut self.session else {

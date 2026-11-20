@@ -89,6 +89,17 @@ impl Document {
         reference(structure, node)
     }
 
+    /// Whether the node at `address` runs the document it references as a voice, a Plan of its
+    /// own, rather than splicing it in as a patch.
+    pub fn hosts(&self, address: &str) -> bool {
+        let Ok(structure) = &self.read else {
+            return false;
+        };
+        (structure.nodes.iter())
+            .find(|node| node.address == address)
+            .is_some_and(|node| node.resources.iter().any(|r| r.slot == "voice"))
+    }
+
     /// The document's `instrument` name, or its file name when it does not read.
     pub fn name(&self) -> String {
         match &self.read {
