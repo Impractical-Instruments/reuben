@@ -6,6 +6,12 @@
 //! the structure channel, the MCP sidecar dials it — which is why the envelope, the verbs and the
 //! guards are the window's rather than either door's.
 //!
+//! The engine also runs authoring for its clients: a client sends `call` to read or edit the open
+//! instrument (the engine validates, writes the file and swaps the new Plan in), `open` to play
+//! another instrument, `list` to learn which instruments and samples it may name, and `subscribe`
+//! to be told when the instrument changes, whoever changed it. The engine holds the files, so a
+//! client never reads or writes document text itself.
+//!
 //! The three pieces, and which side of the channel each serves:
 //!
 //! - [`wire`] — what both ends serialize. Neither door owns it, so neither can move it alone.

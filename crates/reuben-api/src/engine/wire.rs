@@ -143,8 +143,12 @@ pub struct ControlMessage {
     pub args: Vec<ControlArg>,
 }
 
-/// One structure-channel request (its verbs), serialized as a single JSON
+/// One structure-channel request (its eleven verbs), serialized as a single JSON
 /// object tagged by `verb`: `{"verb": "ping"}`, `{"verb": "swap", "source": …}`, ….
+///
+/// Four of them make the engine the server of a client's authoring: [`Call`](Self::Call) edits
+/// and reads the open instrument, [`Open`](Self::Open) plays another, [`List`](Self::List) says
+/// what can be named, and [`Subscribe`](Self::Subscribe) follows what changes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "verb", rename_all = "snake_case")]
 pub enum Request {
