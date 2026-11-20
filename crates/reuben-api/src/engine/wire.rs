@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use reuben_core::message::Arg;
 
-use crate::authoring::Report;
+use crate::authoring::{Diag, Report};
 
 /// The structure channel's default loopback bind/target: `127.0.0.1` only, shared here so the
 /// reuben-native server (`reuben play`) and the reuben-mcp client bind and dial the *same*
@@ -223,6 +223,10 @@ pub enum Request {
         /// Which kind of name to list.
         what: ListWhat,
     },
+    /// Turn this connection into a stream of [`Event`]s: answered with [`Response::Subscribed`],
+    /// then one event per line, one per change, for as long as the connection stays open. The
+    /// connection answers no further requests.
+    Subscribe,
 }
 
 /// What a [`Request::List`] asks for.
@@ -451,6 +455,8 @@ pub enum Response {
     /// `Call`'s answer when the verb refused to run: an unknown name, an engine verb, or arguments
     /// that do not fit it.
     Refused { message: String },
+    /// `Subscribe`'s answer: every line after this one on the connection is an [`Event`].
+    Subscribed,
 }
 
 impl Response {
@@ -461,6 +467,43 @@ impl Response {
 
     /// Parse one NDJSON line (trailing newline tolerated, as `serde_json` skips trailing
     /// whitespace). Errors are the caller's to wrap — the envelope does not police I/O.
+    pub fn from_ndjson(line: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(line)
+    }
+}
+
+/// One change to what the engine plays, pushed to each subscriber as a single JSON object tagged
+/// by `event`, one per line.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum Event {
+    /// The open instrument changed and the new Plan is playing; `hash` is its content hash.
+    Changed { hash: String, by: ChangedBy },
+    /// Another instrument was opened and is playing. `name` is the name it was opened by; empty
+    /// for one installed by value.
+    Opened { name: String, hash: String },
+    /// The open instrument's documents no longer load; what played before keeps playing.
+    Invalid { errors: Vec<Diag> },
+}
+
+/// Who made a [`Event::Changed`] change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangedBy {
+    /// A client of the engine, through the channel.
+    Client,
+    /// Something outside the engine wrote a document of the open instrument.
+    Outside,
+}
+
+impl Event {
+    /// Serialize as one newline-terminated JSON line — the NDJSON framing both ends write.
+    pub fn to_ndjson(&self) -> String {
+        to_ndjson_line(self)
+    }
+
+    /// Parse one NDJSON line (trailing newline tolerated, as `serde_json` skips trailing
+    /// whitespace).
     pub fn from_ndjson(line: &str) -> Result<Self, serde_json::Error> {
         serde_json::from_str(line)
     }
@@ -815,6 +858,7 @@ mod tests {
                 tool: "describe_instrument".to_string(),
                 args: serde_json::json!({ "source": "a.json" }),
             },
+            Request::Subscribe,
         ];
         for req in &requests {
             assert_one_line_round_trip(req);
@@ -966,6 +1010,7 @@ mod tests {
             }),
             "error"
         );
+        assert_eq!(tag(&Response::Subscribed), "subscribed");
     }
 
     /// Same framing contract as [`assert_one_line_round_trip`], response side.
@@ -1020,9 +1065,55 @@ mod tests {
             Response::Refused {
                 message: "unknown tool `x`".to_string(),
             },
+            Response::Subscribed,
         ];
         for resp in &responses {
             assert_one_line_response_round_trip(resp);
+        }
+    }
+
+    #[test]
+    fn events_speak_their_tags_and_round_trip_as_one_ndjson_line() {
+        let events = [
+            (
+                Event::Changed {
+                    hash: "00c0ffee00c0ffee".to_string(),
+                    by: ChangedBy::Client,
+                },
+                serde_json::json!({"event": "changed", "hash": "00c0ffee00c0ffee", "by": "client"}),
+            ),
+            (
+                Event::Changed {
+                    hash: "00c0ffee00c0ffee".to_string(),
+                    by: ChangedBy::Outside,
+                },
+                serde_json::json!({"event": "changed", "hash": "00c0ffee00c0ffee", "by": "outside"}),
+            ),
+            (
+                Event::Opened {
+                    name: "pad.json".to_string(),
+                    hash: "00c0ffee00c0ffee".to_string(),
+                },
+                serde_json::json!({"event": "opened", "name": "pad.json", "hash": "00c0ffee00c0ffee"}),
+            ),
+            (
+                Event::Invalid {
+                    errors: vec![Diag {
+                        node: None,
+                        port: None,
+                        message: "unknown operator".to_string(),
+                    }],
+                },
+                serde_json::json!({"event": "invalid", "errors": [{"message": "unknown operator"}]}),
+            ),
+        ];
+        for (event, wire) in &events {
+            let line = event.to_ndjson();
+            assert_eq!(line.matches('\n').count(), 1, "{line:?}");
+            assert!(line.ends_with('\n'), "{line:?}");
+            let value: serde_json::Value = serde_json::from_str(&line).expect("event as value");
+            assert_eq!(&value, wire);
+            assert_eq!(&Event::from_ndjson(&line).expect("parses back"), event);
         }
     }
 

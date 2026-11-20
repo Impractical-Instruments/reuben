@@ -29,15 +29,15 @@ use std::io::{BufReader, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use reuben_api::authoring::Diag;
 use reuben_api::engine::{
-    dispatch, read_ndjson_line, ControlMessage, DiagnosticsReport, EngineHost, IngressClosed,
-    ListWhat, MetersReport, Response, StructureState,
+    dispatch, dispatch_request, read_ndjson_line, ControlMessage, DiagnosticsReport, EngineHost,
+    Event, IngressClosed, ListWhat, MetersReport, Request, Response, StructureState,
 };
 use reuben_api::probe::ProbeSlots;
 
@@ -681,7 +681,8 @@ fn accept_loop(listener: TcpListener, state: StructureState, shutdown: Arc<Atomi
 /// Serve one connection: read one [`Request`] per line, write one [`Response`] per line, in
 /// order, until the client closes or shutdown wakes the blocked read. Blocking
 /// reads keep the framing exact; a blank line is framing noise, not a request, so it draws no
-/// response.
+/// response. A [`Request::Subscribe`] turns the connection into an event stream for the rest of
+/// its life.
 fn handle_connection(stream: TcpStream, state: StructureState, shutdown: Arc<AtomicBool>) {
     // Time-bound each read so the handler wakes to observe `shutdown` itself, rather than
     // depending on the accept thread's `shutdown(Shutdown::Both)` to unblock it — a wake that
@@ -708,11 +709,20 @@ fn handle_connection(stream: TcpStream, state: StructureState, shutdown: Arc<Ato
                     break;
                 }
                 if !line.trim().is_empty() {
-                    let response = dispatch(&state, &line);
-                    if writer.write_all(response.to_ndjson().as_bytes()).is_err() {
-                        break;
-                    }
-                    if writer.flush().is_err() {
+                    let response = match Request::from_ndjson(&line) {
+                        Ok(Request::Subscribe) => {
+                            // Subscribed before the reply, so no change made after the client
+                            // reads it is missed.
+                            let events = state.subscribe();
+                            if write_line(&mut writer, &Response::Subscribed.to_ndjson()) {
+                                stream_events(&mut writer, &events, &shutdown);
+                            }
+                            break;
+                        }
+                        Ok(request) => dispatch_request(&state, request),
+                        Err(_) => dispatch(&state, &line),
+                    };
+                    if !write_line(&mut writer, &response.to_ndjson()) {
                         break;
                     }
                 }
@@ -744,6 +754,27 @@ fn handle_connection(stream: TcpStream, state: StructureState, shutdown: Arc<Ato
             }
             // A real read error ends the connection.
             Err(_) => break,
+        }
+    }
+}
+
+/// Write and flush one line; `false` when the connection is gone.
+fn write_line(writer: &mut TcpStream, line: &str) -> bool {
+    writer.write_all(line.as_bytes()).is_ok() && writer.flush().is_ok()
+}
+
+/// Write each event as it is published until the client goes away or the server shuts down. The
+/// wait is bounded so the shutdown flag is seen within [`ACCEPT_POLL`] even when nothing changes.
+fn stream_events(writer: &mut TcpStream, events: &Receiver<Event>, shutdown: &AtomicBool) {
+    while !shutdown.load(Ordering::SeqCst) {
+        match events.recv_timeout(ACCEPT_POLL) {
+            Ok(event) => {
+                if !write_line(writer, &event.to_ndjson()) {
+                    return;
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return,
         }
     }
 }
@@ -920,6 +951,79 @@ mod tests {
             Some("pad.json")
         ));
         assert!(host.offered_dirs(Some("pad.json")).contains(&dir));
+    }
+
+    #[test]
+    fn tcp_subscriber_receives_events() {
+        use reuben_api::engine::{ChangedBy, TcpTransport, Transport, DEFAULT_CONNECT_TIMEOUT};
+        use reuben_api::resources::Resources;
+        use reuben_api::staged::Staged;
+        use reuben_api::FsResolver;
+
+        // Process-unique: a fixed name collides between concurrent checkouts, and this test
+        // deletes the directory it is about to use.
+        let dir =
+            std::env::temp_dir().join(format!("reuben_subscribe_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("case dir");
+        let top = dir.join("top.json");
+        std::fs::write(&top, BASE_DOC).expect("seed the open instrument");
+        let source = top.display().to_string();
+
+        let staged: Staged<Box<dyn Resources + Send + Sync>> =
+            Staged::new(Box::new(FsResolver::for_instrument(&top)));
+        let (coordinator, side, _warnings) =
+            reuben_api::engine::install_initial(BASE_DOC, staged.clone(), cfg())
+                .expect("initial install");
+        let (control_tx, control_rx) = std::sync::mpsc::channel::<ControlBatch>();
+        let host = NativeHost::new(Diagnostics::new(), control_tx).with_render_config(Arc::new(
+            HeadlessRenderConfig {
+                opened_input_channels: 0,
+            },
+        ));
+        let state = StructureState::new(coordinator, Arc::new(host), served(staged))
+            .with_installed_source(Some(source.clone()));
+        let cb = FakeCallback::spawn(side, control_rx);
+        let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
+        let transport = TcpTransport::new(server.local_addr().to_string(), DEFAULT_CONNECT_TIMEOUT);
+
+        // Read on a thread of its own: a stream with no event blocks for good, and a regression
+        // should fail the test, not hang it.
+        let mut events = transport.subscribe().expect("subscribed");
+        let (first_tx, first_rx) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let _ = first_tx.send(events.next());
+            events.next()
+        });
+        let edit = Request::Call {
+            tool: "set_instrument_name".to_string(),
+            args: serde_json::json!({"source": source, "name": "renamed"}),
+        };
+        let reply = transport
+            .round_trip(&edit.to_ndjson(), Duration::from_secs(10))
+            .expect("answered");
+        let output = match Response::from_ndjson(&reply).expect("a response") {
+            Response::Called { output, .. } => output,
+            other => panic!("expected a called answer, got {other:?}"),
+        };
+        assert_eq!(output["written"], true, "{output}");
+
+        match first_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("an event within the deadline")
+        {
+            Some(Ok(Event::Changed { hash, by })) => {
+                assert_eq!(by, ChangedBy::Client);
+                assert_eq!(serde_json::json!(hash), output["hash"]);
+            }
+            other => panic!("expected a changed event, got {other:?}"),
+        }
+
+        // Shutdown joins the subscriber's handler too, which closes the stream.
+        server.shutdown();
+        assert!(reader.join().expect("reader").is_none());
+        cb.stop();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

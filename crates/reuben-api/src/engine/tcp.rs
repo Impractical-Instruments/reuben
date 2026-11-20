@@ -2,7 +2,8 @@
 //! structure channel with — the MCP sidecar, and the editor attached to an engine it did not start.
 //!
 //! A fresh, bounded, blocking connection per exchange, retaining nothing between calls, so a
-//! client survives the engine restarting under it.
+//! client survives the engine restarting under it. A subscription is the one connection kept open:
+//! [`TcpTransport::subscribe`] dials its own and reads events from it until either end closes.
 
 use alloc::format;
 use alloc::string::String;
@@ -13,7 +14,7 @@ use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use super::channel::Transport;
-use super::wire::{read_ndjson_line, MAX_LINE_BYTES};
+use super::wire::{read_ndjson_line, Event, Request, Response, MAX_LINE_BYTES};
 
 /// How long to wait for the loopback connect before declaring the engine unreachable. Loopback
 /// connects resolve in well under a millisecond when a server is up; this ceiling only bounds the
@@ -50,6 +51,103 @@ impl TcpTransport {
             connect_timeout,
         })
     }
+
+    /// Subscribe to the engine's changes on a connection of its own: one [`Event`] per change, in
+    /// the order the engine made them, for as long as the connection stays open.
+    ///
+    /// The connect and the engine's acknowledgement are bounded by the connect budget; after that
+    /// a read waits as long as the next change takes. The iterator ends when the engine closes the
+    /// connection, and after the first read error.
+    pub fn subscribe(&self) -> io::Result<impl Iterator<Item = io::Result<Event>>> {
+        let stream = self.connect()?;
+        stream.set_read_timeout(Some(self.connect_timeout))?;
+        stream.set_write_timeout(Some(self.connect_timeout))?;
+        (&stream).write_all(Request::Subscribe.to_ndjson().as_bytes())?;
+        (&stream).flush()?;
+
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        if read_ndjson_line(&mut reader, &mut line)? == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "the structure channel closed before answering",
+            ));
+        }
+        match Response::from_ndjson(&line) {
+            Ok(Response::Subscribed) => {}
+            Ok(Response::Error { message }) => return Err(io::Error::other(message)),
+            Ok(other) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("expected a subscription, the engine answered {other:?}"),
+                ))
+            }
+            Err(e) => return Err(io::Error::new(io::ErrorKind::InvalidData, e)),
+        }
+        reader.get_ref().set_read_timeout(None)?;
+        Ok(Events {
+            reader: Some(reader),
+            line: String::new(),
+        })
+    }
+
+    /// Dial the engine within the connect budget.
+    fn connect(&self) -> io::Result<TcpStream> {
+        // `connect_timeout` takes one resolved address, and is what bounds the connect: a plain
+        // `connect` could block far longer than the budget. Each address a name resolves to is
+        // tried in turn, as `localhost` may resolve to `::1` before the `127.0.0.1` a server binds.
+        let mut last = None;
+        let looked_up;
+        let addrs = match &self.resolved {
+            Some(resolved) => resolved,
+            None => {
+                looked_up = self.addr.to_socket_addrs()?.collect::<Vec<_>>();
+                &looked_up
+            }
+        };
+        for addr in addrs {
+            match TcpStream::connect_timeout(addr, self.connect_timeout) {
+                Ok(stream) => {
+                    let _ = stream.set_nodelay(true);
+                    return Ok(stream);
+                }
+                Err(e) => last = Some(e),
+            }
+        }
+        Err(last.unwrap_or_else(|| {
+            io::Error::other(format!("no socket address resolved for {}", self.addr))
+        }))
+    }
+}
+
+/// The events of one subscription, read a line at a time. `reader` is `None` once the stream has
+/// ended or failed: a failed read may have left it mid-line, so nothing after it is trusted.
+struct Events {
+    reader: Option<BufReader<TcpStream>>,
+    line: String,
+}
+
+impl Iterator for Events {
+    type Item = io::Result<Event>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let reader = self.reader.as_mut()?;
+        self.line.clear();
+        match read_ndjson_line(reader, &mut self.line) {
+            Ok(0) => {
+                self.reader = None;
+                None
+            }
+            Ok(_) => Some(
+                Event::from_ndjson(&self.line)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)),
+            ),
+            Err(e) => {
+                self.reader = None;
+                Some(Err(e))
+            }
+        }
+    }
 }
 
 impl Transport for TcpTransport {
@@ -62,41 +160,9 @@ impl Transport for TcpTransport {
                 format!("a structure channel request is longer than {MAX_LINE_BYTES} bytes"),
             ));
         }
-        // `connect_timeout` takes one resolved address, and is what bounds the connect: a plain
-        // `connect` could block far longer than the budget. Each address a name resolves to is
-        // tried in turn, as `localhost` may resolve to `::1` before the `127.0.0.1` a server binds.
-        let mut last = None;
-        let mut connected = None;
-        let looked_up;
-        let addrs = match &self.resolved {
-            Some(resolved) => resolved,
-            None => {
-                looked_up = self.addr.to_socket_addrs()?.collect::<Vec<_>>();
-                &looked_up
-            }
-        };
-        for addr in addrs {
-            match TcpStream::connect_timeout(addr, self.connect_timeout) {
-                Ok(stream) => {
-                    connected = Some(stream);
-                    break;
-                }
-                Err(e) => last = Some(e),
-            }
-        }
-        let stream = match (connected, last) {
-            (Some(stream), _) => stream,
-            (None, Some(e)) => return Err(e),
-            (None, None) => {
-                return Err(io::Error::other(format!(
-                    "no socket address resolved for {}",
-                    self.addr
-                )))
-            }
-        };
+        let stream = self.connect()?;
         stream.set_read_timeout(Some(read_timeout))?;
         stream.set_write_timeout(Some(read_timeout))?;
-        let _ = stream.set_nodelay(true);
 
         // Write the one request line. `&TcpStream: Write`, so no try_clone is needed to split the
         // socket — the reader below borrows the same stream.

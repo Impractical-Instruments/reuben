@@ -31,6 +31,8 @@ libc.workspace = true
 
 [dev-dependencies]
 approx.workspace = true
+# The client transport, to dial the structure server the tests bind.
+reuben-api = { path = "../reuben-api", features = ["fs-resolver", "tcp"] }
 
 [[bin]]
 name = "reuben"

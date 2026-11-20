@@ -21,6 +21,12 @@
 //!   directly. An edit waits in memory while the whole open instrument loads and plans with it;
 //!   only then is it written and the new Plan swapped in, and otherwise nothing is written and the
 //!   answer says why.
+//! - [`Request::Subscribe`] is not a request [`dispatch`] answers: it turns a connection into a
+//!   stream of [`Event`]s, which only the host's connection can carry. [`StructureState::subscribe`]
+//!   is what that connection streams from, and what [`InProcess::subscribe`] hands back.
+//!
+//! Each install that goes live publishes one [`Event`], under the Coordinator lock, so subscribers
+//! hear them in install order.
 //!
 //! The Coordinator is single-writer, so it sits behind one [`Mutex`] here and concurrent
 //! connections serialize on it.
@@ -33,6 +39,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::Duration;
 
@@ -44,14 +51,15 @@ use crate::resources::Resources;
 use crate::staged::Staged;
 
 use super::channel::Transport;
+use super::events::Bus;
 
 mod call;
 use call::{handle_call, read_tree};
 
 use super::wire::{
-    over_long_batch_refusal, over_long_probe_set_refusal, Conflict, ControlMessage,
-    DiagnosticsReport, DocSource, DocumentSnapshot, HeldSwap, ListWhat, MetersReport, Request,
-    Response, SwapReport, EMPTY_BATCH_REFUSAL, MAX_PROBES, MAX_SEND_BATCH,
+    over_long_batch_refusal, over_long_probe_set_refusal, ChangedBy, Conflict, ControlMessage,
+    DiagnosticsReport, DocSource, DocumentSnapshot, Event, HeldSwap, ListWhat, MetersReport,
+    Request, Response, SwapReport, EMPTY_BATCH_REFUSAL, MAX_PROBES, MAX_SEND_BATCH,
 };
 
 /// What a host must provide for the window to serve the engine verbs — the device, the clock and
@@ -182,6 +190,7 @@ pub struct StructureState {
     tree: Arc<Mutex<BTreeSet<String>>>,
     /// Set by [`close`](StructureState::close) when the host tears the engine down.
     closed: Arc<AtomicBool>,
+    events: Arc<Bus>,
 }
 
 /// What every structure verb answers once a panic has poisoned the Coordinator lock.
@@ -211,7 +220,13 @@ impl StructureState {
             store,
             tree: Arc::new(Mutex::new(BTreeSet::new())),
             closed: Arc::new(AtomicBool::new(false)),
+            events: Arc::new(Bus::default()),
         }
+    }
+
+    /// A receiver of one [`Event`] per install that goes live from now on, in install order.
+    pub fn subscribe(&self) -> Receiver<Event> {
+        self.events.subscribe()
     }
 
     /// The canonical sources the last successful install read, the top document's included. An
@@ -326,7 +341,22 @@ impl From<Poisoned> for Response {
 /// This is a client's entry, so a by-path swap is offered to [`EngineHost::hold_swap`] first.
 /// [`InProcess`], the host's own transport, never is.
 pub fn dispatch(state: &StructureState, line: &str) -> Response {
-    serve(state, line, Caller::Client)
+    match Request::from_ndjson(line) {
+        Ok(request) => dispatch_request(state, request),
+        Err(e) => unreadable(e),
+    }
+}
+
+/// [`dispatch`] for a request the host has already parsed — to see whether it is a
+/// [`Request::Subscribe`] its connection must stream for — so it is not parsed twice.
+pub fn dispatch_request(state: &StructureState, request: Request) -> Response {
+    serve(state, request, Caller::Client)
+}
+
+fn unreadable(e: serde_json::Error) -> Response {
+    Response::Error {
+        message: format!("unreadable request: {e}"),
+    }
 }
 
 /// Who sent a request: a client of the host's server, whose swap the host may hold, or the host
@@ -337,23 +367,27 @@ enum Caller {
     Host,
 }
 
-fn serve(state: &StructureState, line: &str, caller: Caller) -> Response {
-    match Request::from_ndjson(line) {
-        Ok(Request::Ping) => Response::Pong,
-        Ok(Request::GetDocument) => get_document(state).unwrap_or_else(Response::from),
-        Ok(Request::GetDiagnostics) => Response::Diagnostics(state.host.diagnostics()),
-        Ok(Request::GetMeters) => Response::Meters(state.host.meters()),
-        Ok(Request::SetProbes { paths }) => handle_set_probes(state, paths),
-        Ok(Request::Swap { source, expect }) => handle_swap(state, source, expect, caller),
-        Ok(Request::Send { messages }) => handle_send(state, messages),
-        Ok(Request::Call { tool, args }) => handle_call(state, &tool, args),
-        Ok(Request::Open { name, expect }) => handle_open(state, name, expect, caller),
-        Ok(Request::List { what }) => handle_list(state, what),
-        Err(e) => Response::Error {
-            message: format!("unreadable request: {e}"),
+fn serve(state: &StructureState, request: Request, caller: Caller) -> Response {
+    match request {
+        Request::Ping => Response::Pong,
+        Request::GetDocument => get_document(state).unwrap_or_else(Response::from),
+        Request::GetDiagnostics => Response::Diagnostics(state.host.diagnostics()),
+        Request::GetMeters => Response::Meters(state.host.meters()),
+        Request::SetProbes { paths } => handle_set_probes(state, paths),
+        Request::Swap { source, expect } => handle_swap(state, source, expect, caller),
+        Request::Send { messages } => handle_send(state, messages),
+        Request::Call { tool, args } => handle_call(state, &tool, args),
+        Request::Open { name, expect } => handle_open(state, name, expect, caller),
+        Request::List { what } => handle_list(state, what),
+        Request::Subscribe => Response::Error {
+            message: UNSTREAMED_SUBSCRIBE.to_string(),
         },
     }
 }
+
+/// What a `subscribe` answers when it reaches [`dispatch`] rather than a connection that streams.
+const UNSTREAMED_SUBSCRIBE: &str = "subscribe needs a connection that streams events; this one \
+     answers one response per request";
 
 /// The Coordinator owns the canonical document; serialize it + its hash under the lock so
 /// `get_document` never sees a half-installed pair.
@@ -396,6 +430,11 @@ impl InProcess {
     pub fn new(state: StructureState) -> Self {
         Self { state }
     }
+
+    /// A receiver of one [`Event`] per install that goes live from now on, in install order.
+    pub fn subscribe(&self) -> Receiver<Event> {
+        self.state.subscribe()
+    }
 }
 
 impl core::fmt::Debug for InProcess {
@@ -414,9 +453,12 @@ impl Transport for InProcess {
         }
         // Unwind-safe in the sense that matters: the only state a panic can leave half-written
         // is behind the Coordinator lock, which the panic poisons and `dispatch` then refuses.
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            serve(&self.state, line, Caller::Host)
-        }))
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            || match Request::from_ndjson(line) {
+                Ok(request) => serve(&self.state, request, Caller::Host),
+                Err(e) => unreadable(e),
+            },
+        ))
         .map(|response| response.to_ndjson())
         .map_err(|_| std::io::Error::other("the engine panicked answering the request"))
     }
@@ -527,6 +569,7 @@ fn handle_swap(
         installed_from,
         expect,
         caller,
+        Went::Swapped,
     )
 }
 
@@ -540,6 +583,7 @@ fn install_from(
     installed_from: Option<String>,
     expect: Option<String>,
     caller: Caller,
+    went: Went,
 ) -> Response {
     let origin = installed_from
         .as_deref()
@@ -592,7 +636,7 @@ fn install_from(
     };
     let mut report = SwapReport::from_core(core_report);
     if report.report.ok {
-        match went_live(state, coordinator, installed_from, tree) {
+        match went_live(state, coordinator, installed_from, tree, went) {
             Ok(warnings) => report.report.warnings.extend(warnings),
             Err(poisoned) => return poisoned.into(),
         }
@@ -630,7 +674,15 @@ fn handle_open(
             return rejected_report(coordinator.installed_hash(), format!("open {name}: {e}"))
         }
     };
-    install_from(state, &mut coordinator, &json, Some(name), expect, caller)
+    install_from(
+        state,
+        &mut coordinator,
+        &json,
+        Some(name),
+        expect,
+        caller,
+        Went::Opened,
+    )
 }
 
 /// The refusal for a name outside what the host offers: the client's own spelling and a fixed
@@ -669,21 +721,35 @@ fn prepare_recording(
     (prepared, tree)
 }
 
-/// Everything after a committed install, shared by `swap` and an edit made through `call`: the
-/// source and tree that name what plays advance, the host gets the new geometry and probes, and
-/// the retiree is reclaimed. Returns the host's render-config warnings for the report.
+/// Which verb made an install that went live, which decides the [`Event`] it publishes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Went {
+    /// `open`: always [`Event::Opened`].
+    Opened,
+    /// `swap`: [`Event::Opened`] when it names a source other than the one playing before, by
+    /// value counting as a source of its own, and [`Event::Changed`] when it names the same one.
+    Swapped,
+    /// An edit through `call`: always [`Event::Changed`].
+    Edited,
+}
+
+/// Everything after a committed install, shared by `swap`, `open` and an edit made through `call`:
+/// the source and tree that name what plays advance, the host gets the new geometry and probes,
+/// the retiree is reclaimed, and subscribers hear of it. Returns the host's render-config warnings
+/// for the report.
 ///
 /// Under the Coordinator lock, so the source, the tree and the installed hash never disagree
-/// about which install a reader is looking at. The render config is published BEFORE the reclaim,
-/// so the map is in flight before the callback installs the new engine and the two mailboxes stay
-/// in lockstep.
+/// about which install a reader is looking at, and events publish in install order. The render
+/// config is published BEFORE the reclaim, so the map is in flight before the callback installs
+/// the new engine and the two mailboxes stay in lockstep.
 fn went_live(
     state: &StructureState,
     coordinator: &mut Coordinator,
     source: Option<String>,
     tree: BTreeSet<String>,
+    went: Went,
 ) -> Result<Vec<Diag>, Poisoned> {
-    *state.installed_source()? = source;
+    let previous = core::mem::replace(&mut *state.installed_source()?, source.clone());
     *state.tree_cell()? = tree;
 
     let warnings = state.host.publish_render_config(
@@ -693,6 +759,24 @@ fn went_live(
     state.host.install_probes(coordinator.installed_probes());
 
     reclaim_retired(coordinator, state.host.as_ref());
+
+    let hash = coordinator.installed_hash();
+    let opened = match went {
+        Went::Opened => true,
+        Went::Swapped => source != previous,
+        Went::Edited => false,
+    };
+    state.events.publish(if opened {
+        Event::Opened {
+            name: source.unwrap_or_default(),
+            hash,
+        }
+    } else {
+        Event::Changed {
+            hash,
+            by: ChangedBy::Client,
+        }
+    });
     Ok(warnings)
 }
 
@@ -1021,6 +1105,15 @@ mod tests {
         match dispatch(&state, &Request::GetDocument.to_ndjson()) {
             Response::Error { message } => assert_eq!(message, COORDINATOR_POISONED),
             other => panic!("expected the poisoned refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn subscribe_through_dispatch_is_a_channel_error() {
+        let state = state(false);
+        match dispatch(&state, &Request::Subscribe.to_ndjson()) {
+            Response::Error { message } => assert_eq!(message, UNSTREAMED_SUBSCRIBE),
+            other => panic!("expected a channel error, got {other:?}"),
         }
     }
 

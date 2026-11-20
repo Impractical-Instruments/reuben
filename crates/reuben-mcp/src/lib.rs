@@ -990,7 +990,8 @@ mod tests {
                 Request::SetProbes { .. }
                 | Request::Call { .. }
                 | Request::Open { .. }
-                | Request::List { .. } => {
+                | Request::List { .. }
+                | Request::Subscribe => {
                     unreachable!("no tool sends it")
                 }
                 Request::Send { .. } => unreachable!("handled above"),

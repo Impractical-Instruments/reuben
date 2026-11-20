@@ -19,7 +19,7 @@ use crate::authoring::{
 use crate::resources::{Adapter, ResolveError, Resources, SampleBuffer};
 
 use super::super::wire::{Response, SwapReport};
-use super::{prepare_recording, went_live, Poisoned, ServerStore, StructureState};
+use super::{prepare_recording, went_live, Poisoned, ServerStore, StructureState, Went};
 
 /// The canonical sources the document at `origin` reaches, itself included: one load through
 /// `store`, building no Plan. A document that does not load still names the sources it read.
@@ -272,7 +272,7 @@ fn edit_or_refuse(
         "commit_swap refused with no swap in flight: {:?}",
         swapped.report.errors
     );
-    match went_live(state, coordinator, Some(top), tree) {
+    match went_live(state, coordinator, Some(top), tree, Went::Edited) {
         Ok(warnings) if warnings.is_empty() => Response::Called {
             output: edit_output(&result),
             summary,
@@ -344,8 +344,10 @@ mod tests {
 
     use super::*;
     use crate::authoring::DocumentHistory;
-    use crate::engine::server::{dispatch, EngineHost, IngressClosed, Installed};
-    use crate::engine::wire::{ControlMessage, DiagnosticsReport, Request};
+    use std::sync::mpsc::TryRecvError;
+
+    use crate::engine::server::{dispatch, EngineHost, InProcess, IngressClosed, Installed};
+    use crate::engine::wire::{ChangedBy, ControlMessage, DiagnosticsReport, Event, Request};
     use crate::render::RenderSlot;
     use crate::staged::Staged;
 
@@ -957,5 +959,118 @@ mod tests {
                 .contains("no instrument document is open"),
             "{output}"
         );
+    }
+
+    #[test]
+    fn edit_publishes_changed_by_client() {
+        let s = serving();
+        let events = InProcess::new(s.state.clone()).subscribe();
+        let (output, _) = call(
+            &s,
+            "set_instrument_name",
+            json!({"source": "top.json", "name": "renamed"}),
+        );
+        assert_eq!(output["written"], true, "{output}");
+        assert_eq!(
+            events.try_recv().expect("an event"),
+            Event::Changed {
+                hash: output["hash"].as_str().expect("hash").to_string(),
+                by: ChangedBy::Client,
+            }
+        );
+        assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn refused_edit_publishes_nothing() {
+        let s = serving();
+        let events = s.state.subscribe();
+        let (output, _) = call(
+            &s,
+            "set_instrument_name",
+            json!({"source": "other.json", "name": "renamed"}),
+        );
+        assert_eq!(output["written"], false, "{output}");
+        assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn open_publishes_opened() {
+        let s = serving();
+        let events = s.state.subscribe();
+        match dispatch(&s.state, &open_line("other.json", None)) {
+            Response::SwapReport(report) => assert!(report.report.ok, "{:?}", report.report.errors),
+            other => panic!("expected a swap report, got {other:?}"),
+        }
+        s.render();
+        assert_eq!(
+            events.try_recv().expect("an event"),
+            Event::Opened {
+                name: "other.json".to_string(),
+                hash: installed_hash(&s.state),
+            }
+        );
+        // Opening what is already open is still an open.
+        match dispatch(&s.state, &open_line("other.json", None)) {
+            Response::SwapReport(report) => assert!(report.report.ok, "{:?}", report.report.errors),
+            other => panic!("expected a swap report, got {other:?}"),
+        }
+        s.render();
+        assert!(matches!(
+            events.try_recv().expect("an event"),
+            Event::Opened { .. }
+        ));
+    }
+
+    #[test]
+    fn a_swap_publishes_opened_for_a_new_source_and_changed_for_the_same_one() {
+        let s = serving();
+        let events = s.state.subscribe();
+        let by_value = Request::Swap {
+            source: crate::engine::DocSource::Document(serde_json::from_str(OTHER).unwrap()),
+            expect: None,
+        }
+        .to_ndjson();
+        for _ in 0..2 {
+            match dispatch(&s.state, &by_value) {
+                Response::SwapReport(report) => assert!(report.report.ok, "{report:?}"),
+                other => panic!("expected a swap report, got {other:?}"),
+            }
+            s.render();
+        }
+        let hash = installed_hash(&s.state);
+        // From `top.json` to by value is a new source; by value again is the same one.
+        assert_eq!(
+            events.try_recv().expect("first"),
+            Event::Opened {
+                name: String::new(),
+                hash: hash.clone(),
+            }
+        );
+        assert_eq!(
+            events.try_recv().expect("second"),
+            Event::Changed {
+                hash,
+                by: ChangedBy::Client,
+            }
+        );
+    }
+
+    #[test]
+    fn a_held_or_rejected_swap_publishes_nothing() {
+        let s = serving_with(Host {
+            hold: true,
+            only: None,
+        });
+        let events = s.state.subscribe();
+        assert!(matches!(
+            dispatch(&s.state, &open_line("other.json", None)),
+            Response::Held(_)
+        ));
+        match dispatch(&s.state, &open_line("missing.json", None)) {
+            Response::SwapReport(report) => assert!(!report.report.ok),
+            other => panic!("expected a swap report, got {other:?}"),
+        }
+        assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
     }
 }
