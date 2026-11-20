@@ -472,5 +472,5 @@ fn with_no_engine_the_meter_strip_says_so() {
     let config = TempConfig::new();
     let top = instrument(&scratch);
     let harness = harness(editor(&top, &config));
-    harness.get_by_label("Meters: no engine running");
+    harness.get_by_label("Meters: no engine to read");
 }

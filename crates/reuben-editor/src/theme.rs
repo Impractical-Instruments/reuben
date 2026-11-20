@@ -202,7 +202,7 @@ fn visuals() -> Visuals {
     v
 }
 
-/// A level meter's RMS bar; its peak bar is the same colour, lighter.
+/// A level meter's RMS bar; its peak bar is the same colour, fainter.
 pub const METER: Color32 = BLUE;
 /// A level meter's clip lamp, once lit.
 pub const CLIP: Color32 = ERROR;

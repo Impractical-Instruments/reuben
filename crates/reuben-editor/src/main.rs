@@ -302,9 +302,7 @@ impl eframe::App for Editor {
             });
         });
         // Along the bottom edge, so the levels stay in view whatever the central panel shows.
-        if let Some(wait) = self.meters.poll(Instant::now(), self.engine.channel()) {
-            ui.ctx().request_repaint_after(wait);
-        }
+        self.meters.poll(Instant::now(), self.engine.channel());
         egui::Panel::bottom("meters").show(ui, |ui| meter_strip::show(ui, &mut self.meters));
         if let Some(session) = &mut self.session {
             let asked = session::shortcut(ui.ctx()).or(session::show(ui, session));
