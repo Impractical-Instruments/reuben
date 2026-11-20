@@ -247,6 +247,20 @@ impl Canvas {
         &self.probes
     }
 
+    /// Whether the drawn document has a box for `item`.
+    #[cfg(test)]
+    pub(crate) fn draws(&self, item: &Item) -> bool {
+        self.doc()
+            .is_some_and(|doc| doc.graph.index_of(item).is_some())
+    }
+
+    /// Ask for the voice or patch of the node at `address` to be opened, as a double-click on it
+    /// does.
+    #[cfg(test)]
+    pub(crate) fn open_nested(&mut self, address: &str) {
+        self.entered = Some(address.to_string());
+    }
+
     /// The file drawn, while one is.
     pub fn instrument(&self) -> Option<&Path> {
         self.instrument.as_ref().map(|(path, _)| path.as_path())

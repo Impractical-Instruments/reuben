@@ -85,6 +85,9 @@ pub struct Engine {
     /// for, on this run of the engine. A restart that could not happen is not tried again every
     /// frame.
     refit_tried: Option<(Option<String>, String)>,
+    /// The file the engine was last seen to have installed: kept through a Swap that holds it, and
+    /// `None` while that is not known or the document has no file.
+    plays: Option<String>,
 }
 
 impl Engine {
@@ -97,6 +100,7 @@ impl Engine {
             config: None,
             report: Vec::new(),
             refit_tried: None,
+            plays: None,
         }
     }
 
@@ -131,6 +135,10 @@ impl Engine {
         let addr = link.addr().to_string();
         for change in link.changes() {
             self.unfollowed = None;
+            self.plays = match &change {
+                Change::Up { source, .. } => source.clone(),
+                Change::Down(_) => None,
+            };
             let unopenable = match change {
                 Change::Up {
                     source: Some(source),
@@ -358,6 +366,13 @@ impl Engine {
     /// Swap — the editor's or `reuben-mcp`'s — may have changed since it started: the report names
     /// it, and a [`resume`](Self::resume) after a stop starts on it. Never waits.
     pub fn follow_installed(&mut self) {
+        if self.attached.is_none() {
+            match self.installed() {
+                Some(Installed::Known { source, .. }) => self.plays = source,
+                Some(Installed::Busy) => {}
+                Some(Installed::Poisoned) | None => self.plays = None,
+            }
+        }
         let Some(Installed::Known {
             source: Some(source),
             ..
@@ -402,6 +417,12 @@ impl Engine {
             )),
             Installed::Busy | Installed::Poisoned => None,
         }
+    }
+
+    /// The file the engine plays, as last seen: through [`follow_installed`](Self::follow_installed)
+    /// for an embedded engine, [`follow_link`](Self::follow_link) for an attached one.
+    pub fn plays(&self) -> Option<&str> {
+        self.plays.as_deref()
     }
 
     /// Whether a Swap holds the running engine, so what it has installed is not known yet.
@@ -500,6 +521,7 @@ impl Engine {
             config,
             report,
             refit_tried: None,
+            plays: None,
         }
     }
 

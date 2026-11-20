@@ -185,6 +185,19 @@ struct Editor {
 }
 
 impl Editor {
+    /// Whether the engine plays the open session's top-level file, so a node path the canvas
+    /// resolves names a node of what is drawn. Another file's Plan can have the same addresses —
+    /// while a Swap onto this one runs or was refused, or before an attached editor opens what the
+    /// engine plays — and its levels must not show on these boxes.
+    fn metered(&self) -> bool {
+        let (Some(session), Some(plays)) = (&self.session, self.engine.plays()) else {
+            return false;
+        };
+        let (plays, top) = (std::path::Path::new(plays), session.top());
+        let absolute = |path| std::path::absolute(path).ok();
+        plays == top || absolute(plays).is_some_and(|plays| absolute(top) == Some(plays))
+    }
+
     /// Open the instrument at `path` in place of whatever is open. The canvas and the inspector
     /// start over from the new session's read, and its undo history is its own.
     fn open(&mut self, path: &std::path::Path, ctx: &egui::Context) {
@@ -303,11 +316,12 @@ impl eframe::App for Editor {
                 });
             });
         });
-        self.meters.poll(
-            Instant::now(),
-            self.engine.channel(),
-            self.canvas.probe_paths(),
-        );
+        let probes = match self.metered() && !self.start.shown() {
+            true => self.canvas.probe_paths(),
+            false => &[],
+        };
+        self.meters
+            .poll(Instant::now(), self.engine.channel(), probes);
         if let Some(session) = &mut self.session {
             let asked = session::shortcut(ui.ctx()).or(session::show(ui, session));
             if let Some(direction) = asked {
@@ -376,7 +390,11 @@ impl eframe::App for Editor {
                     session.feedback().map(|feedback| feedback.rejected(viewed))
                 })
                 .unwrap_or_default();
-            self.canvas.show(ui, rejected, self.meters.node_levels())
+            let levels = match self.metered() {
+                true => self.meters.node_levels(),
+                false => &[],
+            };
+            self.canvas.show(ui, rejected, levels)
         });
         for gesture in gestures.inner {
             let Some(session) = &mut self.session else {

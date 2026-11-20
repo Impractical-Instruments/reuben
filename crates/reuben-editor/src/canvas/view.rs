@@ -45,8 +45,8 @@ pub struct Scene<'a> {
     pub wiring: Option<Wiring<'a>>,
     /// Problems besides the load report's, by the index of the box they are on.
     pub extra: &'a [(usize, Problem)],
-    /// Each box's metered outputs and their levels, indexed as `graph.boxes`; a box past its end
-    /// has none.
+    /// The levels read for each box's Signal outputs, indexed as `graph.boxes`; a box past its end
+    /// has none read.
     pub meters: &'a [Vec<PortLevel>],
 }
 
@@ -178,9 +178,9 @@ impl Scene<'_> {
                 visuals.weak_text_color(),
             );
             let rule = subtitle.y + LINE / 2.0 + PAD / 2.0;
-            let levels = self.meters.get(i).filter(|levels| !levels.is_empty());
-            if let (Item::Node(address), Some(levels)) = (&b.item, levels) {
-                let slots = meters::slots(&b.outputs, levels);
+            let levels = self.meters.get(i).map_or(&[][..], Vec::as_slice);
+            let slots = meters::slots(&b.outputs, levels);
+            if let (Item::Node(address), false) = (&b.item, slots.is_empty()) {
                 let bars = meters::place(rect, slots.len(), PAD, 2.0 * LINE);
                 let bars = self.camera.rect_to_screen(self.origin, bars);
                 meters::paint(painter, bars, &slots, visuals);

@@ -116,10 +116,17 @@ struct Ask {
     probes: Option<Vec<Vec<String>>>,
 }
 
+/// What the asking thread brings back from one [`Ask`].
+struct Reply {
+    /// Whether the engine took the probe set the ask carried; `None` when it carried none.
+    probed: Option<bool>,
+    meters: Result<MetersReport, String>,
+}
+
 /// The strip's state, and the thread that asks the engine for its levels.
 pub struct MeterStrip {
     asks: Sender<Ask>,
-    replies: Receiver<Result<MetersReport, String>>,
+    replies: Receiver<Reply>,
     asked: Option<Instant>,
     in_flight: bool,
     reading: Reading,
@@ -149,12 +156,12 @@ impl MeterStrip {
             } in asked
             {
                 std::thread::sleep(at.saturating_duration_since(Instant::now()));
-                // A refused set leaves the levels to read: the probes report nothing, and the
-                // next renewal tries again.
-                if let Some(probes) = probes {
-                    let _ = channel.set_probes(probes);
-                }
-                let reply = channel.get_meters().map_err(|e| e.to_string());
+                // A refused set still leaves the device levels to read.
+                let probed = probes.map(|probes| channel.set_probes(probes).is_ok());
+                let reply = Reply {
+                    probed,
+                    meters: channel.get_meters().map_err(|e| e.to_string()),
+                };
                 if replied.send(reply).is_err() {
                     return;
                 }
@@ -226,7 +233,11 @@ impl MeterStrip {
     fn receive(&mut self, now: Instant) {
         for reply in self.replies.try_iter().collect::<Vec<_>>() {
             self.in_flight = false;
-            match reply {
+            if reply.probed == Some(false) {
+                // The engine holds no set of ours, so the next poll sends it again.
+                self.sent = None;
+            }
+            match reply.meters {
                 Ok(report) => self.take(report, now),
                 Err(why) => {
                     self.reading = Reading::Failed(why);
@@ -517,6 +528,8 @@ mod tests {
         stopped: Arc<AtomicBool>,
         /// Every `SetProbes` it was sent, in order.
         probed: Arc<Mutex<Vec<Vec<Vec<String>>>>>,
+        /// Whether it refuses a `SetProbes`.
+        refuses: Arc<AtomicBool>,
     }
 
     impl Canned {
@@ -546,6 +559,10 @@ mod tests {
         fn round_trip(&self, line: &str, _read_timeout: Duration) -> std::io::Result<String> {
             if let Ok(Request::SetProbes { paths }) = Request::from_ndjson(line) {
                 self.probed.lock().expect("unpoisoned").push(paths.clone());
+                if self.refuses.load(Ordering::SeqCst) {
+                    let message = "refused".to_string();
+                    return Ok(Response::Error { message }.to_ndjson());
+                }
                 return Ok(Response::Probes { resolved: paths }.to_ndjson());
             }
             let mut report = self.report.lock().expect("unpoisoned");
@@ -714,6 +731,30 @@ mod tests {
         assert!(sent()[3].is_empty());
         exchange(&mut strip, at(6000), &engine, &[]);
         assert_eq!(sent().len(), 4, "an empty set is not renewed");
+    }
+
+    #[test]
+    fn a_refused_probe_set_is_sent_again_on_the_next_poll() {
+        let engine = Canned::new(vec![level(-6.0, -9.0)], Vec::new());
+        let sent = || engine.probed.lock().expect("unpoisoned").len();
+        let one = vec![vec!["/osc".to_string()]];
+        let start = Instant::now() - Duration::from_secs(60);
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut strip = MeterStrip::new(|| {});
+
+        engine.refuses.store(true, Ordering::SeqCst);
+        exchange(&mut strip, at(0), &engine, &one);
+        exchange(&mut strip, at(100), &engine, &one);
+        assert_eq!(sent(), 2, "refused, so sent again");
+        assert_eq!(
+            strip.reading,
+            Reading::Levels,
+            "the device levels are still read"
+        );
+        engine.refuses.store(false, Ordering::SeqCst);
+        exchange(&mut strip, at(200), &engine, &one);
+        exchange(&mut strip, at(300), &engine, &one);
+        assert_eq!(sent(), 3, "taken, so held until the renewal");
     }
 
     #[test]

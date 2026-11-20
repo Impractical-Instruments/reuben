@@ -15,8 +15,8 @@ use crate::theme;
 const BAR_WIDTH: f32 = 4.0;
 const BAR_GAP: f32 = 2.0;
 
-/// How many patches deep a subpatch's output is followed to the node feeding it. A document tree
-/// that nests deeper does not load, so this only stops a malformed one.
+/// How many patches deep a subpatch's output is followed to the node feeding it: an arbitrary bound
+/// against a pathological tree, past which the output gets no bar.
 const DEEPEST: usize = 16;
 
 /// What one bar of a box reads: the engine node at `path`, its output `port`.
@@ -126,12 +126,24 @@ pub fn read(taps: &[Tap], reported: &Reported) -> Vec<PortLevel> {
         .collect()
 }
 
-/// One slot per Signal output of a box, in output order: the level read for it, or `None` when
-/// none was, so a bar stays in its own output's column.
-pub fn slots<'a>(outputs: &[Port], levels: &'a [PortLevel]) -> Vec<Option<&'a PortLevel>> {
+/// One column of a box's meter.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Slot<'a> {
+    /// The box's Signal output the column stands for.
+    pub output: &'a str,
+    /// The level read for it; `None` while none is, and the column shows an empty track.
+    pub level: Option<&'a PortLevel>,
+}
+
+/// One slot per Signal output of a box, in output order, so a bar stays in its own output's
+/// column whether or not the others are read.
+pub fn slots<'a>(outputs: &'a [Port], levels: &'a [PortLevel]) -> Vec<Slot<'a>> {
     (outputs.iter())
         .filter(|output| output.kind == PortKind::Signal)
-        .map(|output| levels.iter().find(|level| level.port == output.name))
+        .map(|output| Slot {
+            output: &output.name,
+            level: levels.iter().find(|level| level.port == output.name),
+        })
         .collect()
 }
 
@@ -146,13 +158,13 @@ pub fn place(rect: Rect, ports: usize, pad: f32, height: f32) -> Rect {
     )
 }
 
-/// Paint one upright bar per slot across `rect`, on screen: the RMS level filled over the peak
-/// level faded, on the meter strip's scale.
-pub fn paint(painter: &Painter, rect: Rect, ports: &[Option<&PortLevel>], visuals: &Visuals) {
+/// Paint one upright bar per slot across `rect`, on screen: the track, and over it the RMS level
+/// filled over the peak level faded, on the meter strip's scale.
+pub fn paint(painter: &Painter, rect: Rect, slots: &[Slot], visuals: &Visuals) {
     let tick = Stroke::new(1.0, visuals.strong_text_color());
-    for (column, port) in columns(rect, ports.len()).zip(ports) {
+    for (column, slot) in columns(rect, slots.len()).zip(slots) {
         painter.rect_filled(column, 0.0, visuals.extreme_bg_color);
-        let Some(port) = port else {
+        let Some(port) = slot.level else {
             continue;
         };
         let up_to = |dbfs: f32| {
@@ -175,32 +187,29 @@ pub fn paint(painter: &Painter, rect: Rect, ports: &[Option<&PortLevel>], visual
 
 /// Tell AccessKit about each bar of the box of the node at `address`, painted across `rect`: a
 /// progress indicator labelled `"<address> level"`, or `"<address>.<output> level"` when `named`
-/// (the box has more than one Signal output), whose value is its RMS level in dBFS.
-pub fn describe(
-    ctx: &egui::Context,
-    rect: Rect,
-    address: &str,
-    ports: &[Option<&PortLevel>],
-    named: bool,
-) {
-    for (column, port) in columns(rect, ports.len()).zip(ports) {
-        let Some(port) = port else {
-            continue;
-        };
+/// (the box has more than one Signal output), whose value is its RMS level in dBFS. A column with
+/// no level read says so, and has no numeric value.
+pub fn describe(ctx: &egui::Context, rect: Rect, address: &str, slots: &[Slot], named: bool) {
+    for (column, slot) in columns(rect, slots.len()).zip(slots) {
         let label = match named {
             false => format!("{address} level"),
-            true => format!("{address}.{} level", port.port),
+            true => format!("{address}.{} level", slot.output),
         };
-        let id = egui::Id::new(("node meter", address, &port.port));
+        let id = egui::Id::new(("node meter", address, slot.output));
         ctx.accesskit_node_builder(id, |node| {
             node.set_role(accesskit::Role::ProgressIndicator);
             node.set_label(label);
-            node.set_value(format!(
-                "peak {}, RMS {}",
-                meter_strip::db(port.level.peak_dbfs),
-                meter_strip::db(port.level.rms_dbfs)
-            ));
-            node.set_numeric_value(f64::from(port.level.rms_dbfs));
+            match slot.level {
+                Some(port) => {
+                    node.set_value(format!(
+                        "peak {}, RMS {}",
+                        meter_strip::db(port.level.peak_dbfs),
+                        meter_strip::db(port.level.rms_dbfs)
+                    ));
+                    node.set_numeric_value(f64::from(port.level.rms_dbfs));
+                }
+                None => node.set_value("no level"),
+            }
             node.set_min_numeric_value(f64::from(SCALE_FLOOR_DBFS));
             node.set_max_numeric_value(0.0);
             node.set_bounds(accesskit::Rect {
@@ -376,11 +385,21 @@ mod tests {
         };
         let outputs = [port("left"), port("through"), port("right")];
         let levels = [reported("left"), reported("right")];
-        let slots = slots(&outputs, &levels);
+        let slots: Vec<_> = (slots(&outputs, &levels).into_iter())
+            .map(|slot| (slot.output, slot.level))
+            .collect();
         assert_eq!(slots.len(), 3, "a column per Signal output");
-        assert_eq!(slots[0], Some(&levels[0]));
-        assert_eq!(slots[1], None, "the unreported output's column is empty");
-        assert_eq!(slots[2], Some(&levels[1]), "right stays in its own column");
+        assert_eq!(slots[0], ("left", Some(&levels[0])));
+        assert_eq!(
+            slots[1],
+            ("through", None),
+            "the unreported output's column is empty"
+        );
+        assert_eq!(
+            slots[2],
+            ("right", Some(&levels[1])),
+            "right stays in its own column"
+        );
     }
 
     #[test]

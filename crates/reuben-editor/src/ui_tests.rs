@@ -686,7 +686,74 @@ fn a_playing_node_shows_its_level_on_the_canvas() {
             harness.run_steps(1);
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+        let echo = Item::Node("/echo".to_string());
+        assert!(
+            harness.state().canvas.draws(&echo),
+            "the /echo box is drawn"
+        );
         assert!(harness.query_by_label("/echo level").is_none());
         harness.state_mut().engine.shutdown();
     });
+}
+
+#[test]
+fn a_node_of_a_file_the_engine_does_not_play_shows_no_level() {
+    use egui_kittest::kittest::NodeT;
+    use reuben_native::test_support::{start_headless, within};
+
+    let scratch = Scratch::new("ui_node_meters_other");
+    let config = TempConfig::new();
+    let played = metered(&scratch);
+    // The same nodes in another file: the engine's `/osc` is not this file's.
+    let shown = played.with_file_name("shown.json");
+    std::fs::copy(&played, &shown).expect("copy the instrument");
+    within(crate::engine::test_support::HANG_SECS, move || {
+        let mut editor = editor(&shown, &config);
+        editor.engine =
+            Engine::start_with(crate::engine::test_support::config(played), start_headless);
+        let mut harness = harness(editor);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while (harness.query_by_label("Meters: the engine has no audio device")).is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the strip never read the engine"
+            );
+            harness.run_steps(1);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // Long enough for several more polls, any of which would carry a probe set.
+        for _ in 0..20 {
+            harness.run_steps(1);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let osc = harness.get_by_label("/osc level");
+        assert_eq!(osc.accesskit_node().numeric_value(), None, "an empty track");
+        assert_eq!(osc.value().as_deref(), Some("no level"));
+        let channel = harness.state().engine.channel().expect("the engine runs");
+        let probed = channel.get_meters().expect("meters").probes;
+        assert!(
+            probed.is_empty(),
+            "the engine was asked to meter {probed:?}"
+        );
+        harness.state_mut().engine.shutdown();
+    });
+}
+
+#[test]
+fn opening_a_subpatch_on_the_canvas_probes_its_nodes_instead() {
+    let scratch = Scratch::new("ui_node_meters_enter");
+    let config = TempConfig::new();
+    let top = crate::session::test_support::probed(&scratch);
+    let mut harness = harness(editor(&top, &config));
+    let path = |p: &str| vec![p.to_string()];
+    let before = harness.state().canvas.probe_paths().to_vec();
+    assert!(before.contains(&path("/bass/filter")), "{before:?}");
+    assert!(!before.contains(&path("/bass/osc")), "{before:?}");
+
+    harness.state_mut().canvas.open_nested("/bass");
+    harness.run_steps(2);
+    assert_eq!(
+        harness.state().canvas.probe_paths(),
+        [path("/bass/osc"), path("/bass/filter")]
+    );
 }
