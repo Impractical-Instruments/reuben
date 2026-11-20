@@ -115,6 +115,14 @@ It watches its own instrument tree's files. An outside change (a text editor) ca
 so it is the one exception: it is read and validated; an invalid tree is reported as `invalid`
 and not swapped, and the engine keeps playing the last good one until the files load again.
 
+**Opening a broken document.** A broken document can exist only through a hand edit, or a serious
+bug in the edit verbs, but the server must still let a client repair one. Opening a document that
+does not load or plan still opens it: the current instrument is unloaded and **nothing plays**.
+Clients are told `opened` and `invalid`. While the open instrument is in that state, an edit the
+verb itself accepts is written even though the whole tree does not yet plan. The edit that makes
+the tree load and plan swaps it in, and it starts playing. From then on the strict rule above
+applies again.
+
 ### Requests added to the structure channel
 
 - `call { tool, args }` → the tool's result. Covers the document verbs, describe/introspection

@@ -211,6 +211,38 @@ Note for the PR: reuben-web's roster tests may need these two names marked as no
 - [ ] **Step 4:** Run `cd eval && python3 -m unittest discover tests`, then `cargo build -p reuben-mcp -p reuben-native && python3 -m reuben_eval.gate`. Expected: every reference solution passes. Grounding metrics move; record the before and after numbers in the report for the PR.
 - [ ] **Step 5:** Commit: `Agent guidance: every edit is live; eval sessions run their own headless engine`.
 
+### Task 6: Open and repair a broken document
+
+Added during execution, because Task 5's `repair` references proved that a broken document could
+not be repaired through the server. The decision is in the spec's "Opening a broken document".
+Task 5 is finished after this task.
+
+**Files:**
+- Modify: `crates/reuben-api/src/engine/server.rs` (`handle_open` / `install_from`, the open-and-not-playing state)
+- Modify: `crates/reuben-api/src/engine/server/call.rs` (`edit_or_refuse`)
+- Modify: `crates/reuben-api/src/engine/prose.rs` (`send_live_controls` description)
+- Test: `crates/reuben-api/src/engine/server/call.rs` tests and `crates/reuben-native/tests/server_calls.rs`
+
+**Behaviour:**
+- **`open` of a broken document.** If the named document does not load or plan, `open` still records it as the open instrument, with whatever tree it read. It installs silence: the current instrument is unloaded and nothing plays. It publishes `Opened{name, hash}`, then `Invalid{errors}`. The answer is not a refusal: it says the document is open, lists the errors, and says nothing plays until it loads.
+- **Edits while not playing.** An edit the verb writes (`written: true`, under the verb's own rules) is committed even when the tree does not plan.
+  - If the tree now loads and plans, it is swapped in, playing starts, and `Changed{by: client}` is published.
+  - If not, nothing is swapped, `Invalid` is published with the remaining errors, and the edit result's `notes` say it was written but nothing plays until the instrument loads.
+- **Once playing,** the strict rule applies as before.
+- **What plays is visible.** `get_document` / `current_instrument` while not playing name the open source, and make clear nothing is playing; do not report the silent Plan's hash as the document's.
+- **Unchanged:** an outside edit that breaks a playing instrument keeps playing the last good one, as the spec says. A held open is unchanged.
+- **Refusal text.** "no instrument document is open; swap one in by path to edit it" becomes "no instrument document is open; open one with `open_instrument` to edit it".
+- **`send_live_controls`.** Its description stops saying "swap": auditions are reset by the next edit.
+
+**Tests (written first):**
+- `open_of_a_broken_document_opens_it_silently`: after `open`, the installed source is the name, nothing plays (the silent Plan), and `Opened` then `Invalid` are published.
+- `an_edit_that_fixes_the_open_broken_document_starts_playing`: `Changed{by: client}` is published, and the installed hash equals the edit's hash.
+- `an_edit_that_leaves_it_broken_is_written_but_nothing_plays`: `written: true`, the note is present, and `Invalid` is published.
+- `once_playing_the_strict_rule_is_back`: a breaking edit is refused, with `written: false`.
+- In `server_calls.rs`, end to end over TCP: open a broken file, repair it with one `call`, and assert the engine plays it.
+
+**Commit:** `A broken document opens silent and plays once an edit makes it load`.
+
 ## Calls made in this plan (beyond the spec)
 
 - **`describe_operators` stays in-process.** It reads no file, and an agent can ground itself before an engine runs.
