@@ -70,6 +70,14 @@ fn write(path: &Path, body: &str) {
     std::fs::write(path, body).expect("seed a file");
 }
 
+/// Write `body` over `path` in one step: to a sibling temp file, then renamed over it, so a file
+/// watcher reading `path` never sees it half-written.
+fn replace(path: &Path, body: &str) {
+    let staged = path.with_extension("json.tmp");
+    std::fs::write(&staged, body).expect("stage a file");
+    std::fs::rename(&staged, path).expect("rename over the file");
+}
+
 #[test]
 fn a_client_lists_edits_and_opens_over_tcp() {
     let dir = std::env::temp_dir().join(format!("reuben_server_calls_{}", std::process::id()));
@@ -591,7 +599,7 @@ fn an_outside_repair_of_the_open_broken_document_starts_it_playing() {
         // write before then goes unseen: write until one is followed.
         let deadline = std::time::Instant::now() + REPLY;
         let changed = loop {
-            write(Path::new(&broken_s), OTHER);
+            replace(Path::new(&broken_s), OTHER);
             match events.recv_timeout(Duration::from_millis(200)) {
                 Ok(event) => break event,
                 Err(_) if std::time::Instant::now() < deadline => continue,

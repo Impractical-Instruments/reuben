@@ -524,10 +524,11 @@ TASKS: list[Task] = [
             "there now."
         ),
         seed={DOCUMENT: BROKEN},
-        # Validate is the diagnosis — it names the dangling reference `/env_curv` but not the node
-        # that was meant, so the index projection is the read that supplies `/env_curve`. Then one
-        # `wire_instrument_input` re-points the edge; a verb reaches a document that does not load,
-        # which is what makes repair expressible without touching its bytes.
+        # The open succeeds on a document that does not load: it opens with nothing playing, and an
+        # edit the document accepts is written. Validate is the diagnosis — it names the dangling
+        # reference `/env_curv` but not the node that was meant, so the index projection is the
+        # read that supplies `/env_curve`. Then one `wire_instrument_input` re-points the edge, the
+        # instrument loads, and it starts playing — a repair without touching the document's bytes.
         reference=[
             _open(DOCUMENT),
             Step("mcp", "validate_instrument", {"source": DOCUMENT}),

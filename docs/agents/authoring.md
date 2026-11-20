@@ -70,6 +70,9 @@ Why the steps are what they are:
   `pre_existing` errors first. An error left in `report.errors` is not proof your edit made it:
   validation reports one error at a time, so an error can sit unseen behind the one reported. When
   the error the load used to stop at is not the one reported now, a note names it.
+- **A broken document still opens, silent.** Opening a document that does not load opens it with
+  nothing playing. An edit that document accepts is written, and the edit that makes it load
+  starts it playing.
 - **Sending is ephemeral audition.** A live control message (`/filt/cutoff 1500`) changes
   render state only — sweep a cutoff, try a tempo. The next edit re-reads inputs from the
   document, so an un-folded tweak is **reset by design**. (The MCP tool is
