@@ -1,16 +1,17 @@
 //! The level meter on a node's box: which engine node and port each bar reads, and painting the
 //! bars. The levels themselves come from the meter strip's poll.
 
+use std::collections::HashSet;
+
 use eframe::egui::{self, accesskit, Painter, Rect, Stroke, Visuals};
 use reuben_api::authoring::WireSource;
-use reuben_api::engine::{PortLevel, ProbeLevels};
+use reuben_api::engine::{PortLevel, ProbeLevels, MAX_PROBES};
 
 use super::graph::{Graph, Item, PortKind};
 use crate::meter_strip::{self, fraction, SCALE_FLOOR_DBFS};
 use crate::session::{Session, Tree};
 use crate::theme;
 
-/// A bar's width, in canvas units.
 const BAR_WIDTH: f32 = 4.0;
 const BAR_GAP: f32 = 2.0;
 
@@ -91,6 +92,17 @@ fn through(
     }
 }
 
+/// The paths `taps` read, each once, in box order. Cut at [`MAX_PROBES`], since the engine refuses
+/// a larger set whole: the boxes past the cut show no meter rather than every box showing none.
+pub fn probe_set(taps: &[Vec<Tap>]) -> Vec<Vec<String>> {
+    let mut seen = HashSet::new();
+    (taps.iter().flatten())
+        .filter(|tap| seen.insert(&tap.path))
+        .map(|tap| tap.path.clone())
+        .take(MAX_PROBES)
+        .collect()
+}
+
 /// The level of each of `taps` that `probes` reports, named by the box's output it stands for.
 pub fn read(taps: &[Tap], probes: &[ProbeLevels]) -> Vec<PortLevel> {
     (taps.iter())
@@ -119,14 +131,8 @@ pub fn place(rect: Rect, ports: usize, pad: f32, height: f32) -> Rect {
 /// Paint one upright bar per port across `rect`, on screen: the RMS level filled over the peak
 /// level faded, on the meter strip's scale.
 pub fn paint(painter: &Painter, rect: Rect, ports: &[PortLevel], visuals: &Visuals) {
-    let Some(bar) = bar_width(rect, ports.len()) else {
-        return;
-    };
-    let gap = (rect.width() - bar * ports.len() as f32) / (ports.len() - 1).max(1) as f32;
     let tick = Stroke::new(1.0, visuals.strong_text_color());
-    for (i, port) in ports.iter().enumerate() {
-        let left = rect.left() + i as f32 * (bar + gap);
-        let column = Rect::from_x_y_ranges(left..=left + bar, rect.y_range());
+    for (column, port) in columns(rect, ports.len()).zip(ports) {
         painter.rect_filled(column, 0.0, visuals.extreme_bg_color);
         let up_to = |dbfs: f32| {
             let mut filled = column;
@@ -147,19 +153,14 @@ pub fn paint(painter: &Painter, rect: Rect, ports: &[PortLevel], visuals: &Visua
 }
 
 /// Tell AccessKit about each bar of the box of the node at `address`, painted across `rect`: a
-/// progress indicator labelled `"<address> level"`, or `"<address>.<output> level"` when the box
-/// has more than one, whose value is its RMS level in dBFS.
-pub fn describe(ctx: &egui::Context, rect: Rect, address: &str, ports: &[PortLevel]) {
-    let Some(bar) = bar_width(rect, ports.len()) else {
-        return;
-    };
-    let gap = (rect.width() - bar * ports.len() as f32) / (ports.len() - 1).max(1) as f32;
-    for (i, port) in ports.iter().enumerate() {
-        let label = match ports.len() {
-            1 => format!("{address} level"),
-            _ => format!("{address}.{} level", port.port),
+/// progress indicator labelled `"<address> level"`, or `"<address>.<output> level"` when `named`
+/// (the box has more than one Signal output), whose value is its RMS level in dBFS.
+pub fn describe(ctx: &egui::Context, rect: Rect, address: &str, ports: &[PortLevel], named: bool) {
+    for (column, port) in columns(rect, ports.len()).zip(ports) {
+        let label = match named {
+            false => format!("{address} level"),
+            true => format!("{address}.{} level", port.port),
         };
-        let left = rect.left() + i as f32 * (bar + gap);
         let id = egui::Id::new(("node meter", address, &port.port));
         ctx.accesskit_node_builder(id, |node| {
             node.set_role(accesskit::Role::ProgressIndicator);
@@ -173,19 +174,23 @@ pub fn describe(ctx: &egui::Context, rect: Rect, address: &str, ports: &[PortLev
             node.set_min_numeric_value(f64::from(SCALE_FLOOR_DBFS));
             node.set_max_numeric_value(0.0);
             node.set_bounds(accesskit::Rect {
-                x0: left.into(),
-                y0: rect.top().into(),
-                x1: (left + bar).into(),
-                y1: rect.bottom().into(),
+                x0: column.left().into(),
+                y0: column.top().into(),
+                x1: column.right().into(),
+                y1: column.bottom().into(),
             });
         });
     }
 }
 
-/// The on-screen width of each of `bars` bars across `rect`, keeping the canvas's proportion of
-/// bar to gap; `None` when there are none to draw.
-fn bar_width(rect: Rect, bars: usize) -> Option<f32> {
-    (bars > 0).then(|| rect.width() * BAR_WIDTH / width(bars))
+/// The on-screen column of each of `bars` bars across `rect`, left to right, keeping the canvas's
+/// proportion of bar to gap.
+fn columns(rect: Rect, bars: usize) -> impl Iterator<Item = Rect> {
+    let scale = rect.width() / width(bars).max(f32::EPSILON);
+    (0..bars).map(move |i| {
+        let left = rect.left() + i as f32 * (BAR_WIDTH + BAR_GAP) * scale;
+        Rect::from_x_y_ranges(left..=left + BAR_WIDTH * scale, rect.y_range())
+    })
 }
 
 #[cfg(test)]
@@ -261,6 +266,68 @@ mod tests {
             let resolved = played.channel().set_probes(paths.clone());
             reuben_native::diagnostics::log_snapshot(&played.shutdown());
             assert_eq!(resolved.expect("set_probes"), paths);
+        });
+    }
+
+    #[test]
+    fn a_level_with_more_nodes_than_the_engine_takes_still_sends_a_set_it_takes() {
+        let tap = |n: usize| Tap {
+            path: path(&[&format!("/n{n}")]),
+            port: "audio".to_string(),
+            output: "audio".to_string(),
+        };
+        // Two outputs of one node read one path, which is sent once.
+        let taps: Vec<Vec<Tap>> = (0..MAX_PROBES + 10).map(|n| vec![tap(n), tap(n)]).collect();
+        let set = probe_set(&taps);
+        assert_eq!(set.len(), MAX_PROBES);
+        assert_eq!(set[0], path(&["/n0"]), "the first boxes keep theirs");
+        assert_eq!(
+            set[MAX_PROBES - 1],
+            path(&[&format!("/n{}", MAX_PROBES - 1)])
+        );
+        within(crate::engine::test_support::HANG_SECS, move || {
+            let scratch = Scratch::new("node_taps_cap");
+            let played = start_headless(crate::engine::test_support::config(probed(&scratch)))
+                .expect("the engine starts");
+            let answer = played.channel().set_probes(set);
+            reuben_native::diagnostics::log_snapshot(&played.shutdown());
+            assert!(answer.is_ok(), "{answer:?}");
+        });
+    }
+
+    #[test]
+    fn a_playing_voicer_and_subpatch_report_a_level_on_the_port_their_bar_reads() {
+        let scratch = Scratch::new("node_taps_levels");
+        let top = probed(&scratch);
+        let session = Session::open(&top, None, || {});
+        let taps: Vec<(String, Vec<Tap>)> = (tapped(&session).into_iter())
+            .filter(|(title, _)| ["/kick_v", "/bass", "/wrap"].contains(&title.as_str()))
+            .collect();
+        assert_eq!(taps.len(), 3);
+        within(crate::engine::test_support::HANG_SECS, move || {
+            let played = start_headless(crate::engine::test_support::config(top))
+                .expect("the engine starts");
+            let channel = played.channel();
+            let all: Vec<Vec<Tap>> = taps.iter().map(|(_, taps)| taps.clone()).collect();
+            channel.set_probes(probe_set(&all)).expect("set_probes");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let quiet = loop {
+                let probes = channel.get_meters().expect("meters").probes;
+                let quiet: Vec<String> = (taps.iter())
+                    .filter(|(_, taps)| {
+                        let levels = read(taps, &probes);
+                        levels.len() != taps.len()
+                            || levels.iter().any(|l| l.level.rms_dbfs <= SCALE_FLOOR_DBFS)
+                    })
+                    .map(|(title, _)| title.clone())
+                    .collect();
+                if quiet.is_empty() || std::time::Instant::now() >= deadline {
+                    break quiet;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            };
+            reuben_native::diagnostics::log_snapshot(&played.shutdown());
+            assert!(quiet.is_empty(), "no level on the bars of {quiet:?}");
         });
     }
 

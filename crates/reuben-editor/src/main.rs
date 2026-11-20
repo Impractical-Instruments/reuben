@@ -303,9 +303,11 @@ impl eframe::App for Editor {
                 });
             });
         });
-        let probes = self.canvas.probe_paths();
-        self.meters
-            .poll(Instant::now(), self.engine.channel(), &probes);
+        self.meters.poll(
+            Instant::now(),
+            self.engine.channel(),
+            self.canvas.probe_paths(),
+        );
         if let Some(session) = &mut self.session {
             let asked = session::shortcut(ui.ctx()).or(session::show(ui, session));
             if let Some(direction) = asked {

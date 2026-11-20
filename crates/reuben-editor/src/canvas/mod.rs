@@ -173,6 +173,8 @@ pub struct Canvas {
     /// What each box's meter reads, indexed as the drawn document's boxes; empty until
     /// [`tap`](Self::tap) is called on what was last drawn.
     taps: Vec<Vec<Tap>>,
+    /// The paths `taps` read, each once, as [`probe_paths`](Self::probe_paths) answers them.
+    probes: Vec<Vec<String>>,
 }
 
 impl Canvas {
@@ -192,6 +194,7 @@ impl Canvas {
             notice: None,
             entered: None,
             taps: Vec::new(),
+            probes: Vec::new(),
         }
     }
 
@@ -220,6 +223,7 @@ impl Canvas {
         self.instrument = Some((instrument.to_path_buf(), root.map(Path::to_path_buf)));
         self.loaded = Some(loaded);
         self.taps.clear();
+        self.probes.clear();
         self.wire = None;
         if matches!(self.drag, Some(Drag::Move { .. } | Drag::Wire { .. })) {
             self.drag = Some(Drag::Dropped);
@@ -234,17 +238,13 @@ impl Canvas {
             Some(doc) => meters::taps(&doc.graph, session),
             None => Vec::new(),
         };
+        self.probes = meters::probe_set(&self.taps);
     }
 
-    /// The engine paths of the nodes the drawn boxes meter, each once.
-    pub fn probe_paths(&self) -> Vec<Vec<String>> {
-        let mut paths: Vec<Vec<String>> = Vec::new();
-        for tap in self.taps.iter().flatten() {
-            if !paths.contains(&tap.path) {
-                paths.push(tap.path.clone());
-            }
-        }
-        paths
+    /// The engine paths of the nodes the drawn boxes meter, each once, in box order and no more
+    /// than the engine takes in one set.
+    pub fn probe_paths(&self) -> &[Vec<String>] {
+        &self.probes
     }
 
     /// The file drawn, while one is.

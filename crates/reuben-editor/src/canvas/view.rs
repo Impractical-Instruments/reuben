@@ -13,7 +13,7 @@ use super::camera::Camera;
 use super::geometry::{
     curve, header_text, input_pos, output_pos, wire_curve, LINE, PAD, PORT_RADIUS, TEXT_SIZE,
 };
-use super::graph::{Graph, Item, NodeBox, PortRef, Problem};
+use super::graph::{Graph, Item, NodeBox, PortKind, PortRef, Problem};
 use super::meters;
 use crate::theme::{self, kind_color};
 
@@ -183,7 +183,11 @@ impl Scene<'_> {
                 let bars = meters::place(rect, levels.len(), PAD, 2.0 * LINE);
                 let bars = self.camera.rect_to_screen(self.origin, bars);
                 meters::paint(painter, bars, levels, visuals);
-                meters::describe(painter.ctx(), bars, address, levels);
+                let named = (b.outputs.iter())
+                    .filter(|output| output.kind == PortKind::Signal)
+                    .nth(1)
+                    .is_some();
+                meters::describe(painter.ctx(), bars, address, levels, named);
             }
             painter.line_segment(
                 [
