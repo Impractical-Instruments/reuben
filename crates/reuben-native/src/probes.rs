@@ -30,7 +30,8 @@ fn resolve<'a>(slots: &'a ProbeSlots, path: &[String]) -> Option<&'a NodeProbe> 
 #[derive(Default)]
 pub(crate) struct Probes {
     slots: Option<Arc<ProbeSlots>>,
-    /// The paths that are on, in request order: all of them resolve in `slots`.
+    /// The paths last requested, in request order. Those that do not resolve in `slots` stay held,
+    /// so a Plan that has them again turns them on.
     held: Vec<Vec<String>>,
     leased_at: Option<Instant>,
 }
@@ -39,15 +40,14 @@ impl Probes {
     /// Replace the set with `paths`, renew the lease, and return the paths that resolved, in
     /// request order. Every node the old set had on that the new one does not is turned off.
     pub(crate) fn set(&mut self, paths: Vec<Vec<String>>, now: Instant) -> Vec<Vec<String>> {
-        let resolved: Vec<Vec<String>> = match &self.slots {
-            Some(slots) => paths
-                .into_iter()
-                .filter(|p| resolve(slots, p).is_some())
-                .collect(),
-            None => Vec::new(),
-        };
+        let mut resolved = Vec::new();
         if let Some(slots) = &self.slots {
-            for old in self.held.iter().filter(|p| !resolved.contains(p)) {
+            resolved = paths
+                .iter()
+                .filter(|p| resolve(slots, p).is_some())
+                .cloned()
+                .collect();
+            for old in self.held.iter().filter(|p| !paths.contains(p)) {
                 if let Some(node) = resolve(slots, old) {
                     node.set_on(false);
                 }
@@ -59,21 +59,17 @@ impl Probes {
                 }
             }
         }
-        self.held = resolved.clone();
+        self.held = paths;
         self.leased_at = Some(now);
         resolved
     }
 
-    /// Carry the held paths over to a new Plan's `slots`: those still resolving are turned on, the
-    /// rest dropped. The old slots go with the old Plan, so nothing is turned off in them.
+    /// Map the held paths onto a new Plan's `slots`: those resolving are turned on, the rest stay
+    /// held but unreported. The old slots go with the old Plan, so nothing is turned off in them.
     pub(crate) fn install(&mut self, slots: Arc<ProbeSlots>) {
-        self.held.retain(|p| match resolve(&slots, p) {
-            Some(node) => {
-                node.set_on(true);
-                true
-            }
-            None => false,
-        });
+        for node in self.held.iter().filter_map(|p| resolve(&slots, p)) {
+            node.set_on(true);
+        }
         self.slots = Some(slots);
     }
 
@@ -269,11 +265,14 @@ mod tests {
         assert_eq!(reported_paths(&mut p), vec![names(&["/out"])]);
         assert_eq!(on_addresses(&second), vec!["/out"]);
 
-        // Dropped, not parked: a later Plan with `/osc` again does not bring it back.
+        // Held while absent: a later Plan with `/osc` again brings it back.
         let third = hosting(true);
         p.install(third.clone());
-        assert_eq!(reported_paths(&mut p), vec![names(&["/out"])]);
-        assert_eq!(on_addresses(&third), vec!["/out"]);
+        assert_eq!(
+            reported_paths(&mut p),
+            vec![names(&["/osc"]), names(&["/out"])]
+        );
+        assert_eq!(on_addresses(&third), vec!["/osc", "/out"]);
     }
 
     #[test]
@@ -285,6 +284,17 @@ mod tests {
         assert_eq!(p.report(now + Duration::from_secs(4)).len(), 1);
         assert!(p.report(now + LEASE).is_empty());
         assert!(!slots.any_on());
+    }
+
+    #[test]
+    fn a_set_turns_off_a_held_node_when_an_unresolved_path_sits_beside_it() {
+        let first = hosting(false);
+        let mut p = probes_on(&first);
+        let now = Instant::now();
+        p.set(vec![names(&["/osc"]), names(&["/out"])], now);
+        assert_eq!(on_addresses(&first), vec!["/out"]);
+        p.set(vec![names(&["/osc"])], now);
+        assert!(on_addresses(&first).is_empty());
     }
 
     #[test]
