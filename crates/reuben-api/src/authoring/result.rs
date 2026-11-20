@@ -59,7 +59,8 @@ pub struct EditResult {
     pub written: bool,
     /// The content hash of what is **now persisted** at the source: the new document on a
     /// successful write, the unchanged prior document on a rejected one. The token a later
-    /// `expect`-guarded write compares — opaque, compare-only.
+    /// `expect`-guarded write compares — opaque, compare-only. It is the hash of the edited
+    /// source alone, which is the playing instrument's only when that source is its top document.
     pub hash: String,
     /// What the edit broke, degraded, or qualified on the way — the cascade a removal unwired, the
     /// refs a rename rewrote, a caveat on where a written value applies. Empty for a clean

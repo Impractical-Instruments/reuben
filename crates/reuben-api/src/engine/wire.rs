@@ -450,6 +450,10 @@ pub enum Response {
     Error { message: String },
     /// `Call`'s answer when the verb ran: its output and one-line summary. An edit the engine
     /// refused is still this, with `written: false` in the output.
+    ///
+    /// An edit's output `hash` is the content hash of the file the edit named, not of what plays:
+    /// for an edit to a document the open instrument nests, it differs from the
+    /// [`Event::Changed`] hash the same edit publishes.
     Called {
         output: serde_json::Value,
         summary: String,
@@ -481,7 +485,9 @@ impl Response {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
-    /// The open instrument changed and the new Plan is playing; `hash` is its content hash.
+    /// The open instrument changed and the new Plan is playing. `hash` is the installed top
+    /// document's content hash, whichever of its files changed: after an edit to a nested
+    /// document it is not the hash that edit's own result carries.
     Changed { hash: String, by: ChangedBy },
     /// Another instrument was opened and is playing. `name` is the name it was opened by; empty
     /// for one installed by value.

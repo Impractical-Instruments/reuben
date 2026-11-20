@@ -180,13 +180,15 @@ roster! {
     WIRE_COMPATIBILITY = "wire_compatibility", Host, authoring_prose::WIRE_COMPATIBILITY;
 }
 
-/// The roster's contract names, in [`CONTRACTS`] order — the ordered name-set a door advertises.
-/// A door builds its wire surface from this rather than a hand-typed list.
+/// Every contract name in the roster, in [`CONTRACTS`] order — the [`ContractKind::Host`] entries
+/// included. A host dispatches by these; a door advertises only the ones that are not `Host`, so a
+/// door building its wire surface filters those out rather than hand-typing a list.
 ///
-/// A door is held to it at **construction**, not by a test observing the wire afterwards: the MCP
-/// door stamps each contract's sentence onto its built router and refuses to start unless the two
-/// name-sets match exactly, which is what keeps this derivation from needing a duplicate to check
-/// it against. A door that cannot make the same refusal owes itself the equivalent check.
+/// A door is held to its advertised set at **construction**, not by a test observing the wire
+/// afterwards: the MCP door stamps each contract's sentence onto its built router and refuses to
+/// start unless the two name-sets match exactly, which is what keeps that derivation from needing a
+/// duplicate to check it against. A door that cannot make the same refusal owes itself the
+/// equivalent check.
 pub fn names() -> Vec<&'static str> {
     CONTRACTS.iter().map(|c| c.name).collect()
 }
