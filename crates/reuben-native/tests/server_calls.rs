@@ -465,3 +465,34 @@ fn a_reference_written_into_a_nested_document_resolves_from_that_document() {
     });
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_create_whose_name_does_not_end_in_json_is_refused_and_writes_nothing() {
+    let dir = scratch("server_calls_create_extension");
+    let library = dir.join("lib");
+    std::fs::create_dir_all(&library).unwrap();
+    let open = dir.join("open").join("first.json");
+    write(&open, DOC);
+    let open_s = open.display().to_string();
+    serving(&open, &library, move |t| {
+        let fresh = call(
+            t,
+            "new_instrument",
+            serde_json::json!({"source": "pad.wav", "name": "fresh"}),
+        );
+        assert!(matches!(fresh, Response::Refused { .. }), "{fresh:?}");
+        let copied = call(
+            t,
+            "copy_instrument",
+            serde_json::json!({"from": open_s, "to": "copy"}),
+        );
+        assert!(matches!(copied, Response::Refused { .. }), "{copied:?}");
+    });
+    let mut left: Vec<_> = std::fs::read_dir(dir.join("open"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    left.sort();
+    assert_eq!(left, ["first.json"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}

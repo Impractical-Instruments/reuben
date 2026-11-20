@@ -62,7 +62,7 @@ impl Resources for Anchored<'_> {
 ///
 /// - A read answers directly.
 /// - A create writes at once: it never overwrites, so it cannot break what plays, and nothing
-///   is swapped.
+///   is swapped. Its name must end in `.json`.
 /// - An edit goes live or is refused whole: see [`edit_or_refuse`].
 /// - A verb that refuses to run answers [`Response::Refused`].
 ///
@@ -101,6 +101,14 @@ pub(super) fn handle_call(state: &StructureState, tool: &str, args: Value) -> Re
         CallKind::Read => {
             staged.discard();
             Response::Called { output, summary }
+        }
+        // Only an instrument file is made here: a create named otherwise would leave a document
+        // where `list` offers nothing, or under a sample's name.
+        CallKind::Create { source } if !source.ends_with(".json") => {
+            staged.discard();
+            Response::Refused {
+                message: format!("`{source}` does not end in .json; nothing was written"),
+            }
         }
         CallKind::Create { source } => match staged.commit() {
             Ok(()) => Response::Called { output, summary },
