@@ -24,8 +24,8 @@ use std::time::Duration;
 use super::prose::ENGINE_UNREACHABLE_GUIDANCE;
 use super::wire::{
     over_long_probe_set_refusal, Conflict, ControlMessage, DiagnosticsReport, DocSource,
-    DocumentSnapshot, Event, HeldSwap, ListWhat, MetersReport, Request, Response, SwapReport,
-    MAX_PROBES,
+    DocumentSnapshot, Event, HeldSwap, Library, ListWhat, MetersReport, Request, Response,
+    SwapReport, MAX_PROBES,
 };
 
 /// How long to wait for the one response line before giving up on a *wedged* server (connected but
@@ -312,6 +312,24 @@ impl Channel {
             Response::Listed { names } => Ok(names),
             Response::Error { message } => Err(ChannelError::Channel(message)),
             other => Err(unexpected("list", "listed", &other)),
+        }
+    }
+
+    /// Every instrument the server offers, read, and where a new one may be created.
+    pub fn library(&self) -> Result<Library, ChannelError> {
+        match self.exchange_with(&Request::Library, self.work_read_timeout)? {
+            Response::Library(library) => Ok(library),
+            Response::Error { message } => Err(ChannelError::Channel(message)),
+            other => Err(unexpected("library", "library", &other)),
+        }
+    }
+
+    /// The open instrument's surface document text, if it has one.
+    pub fn surface(&self) -> Result<Option<String>, ChannelError> {
+        match self.exchange_with(&Request::Surface, self.work_read_timeout)? {
+            Response::Surface { text } => Ok(text),
+            Response::Error { message } => Err(ChannelError::Channel(message)),
+            other => Err(unexpected("surface", "surface", &other)),
         }
     }
 
@@ -630,5 +648,26 @@ mod tests {
         }
         .to_ndjson();
         assert_eq!(asked.lock().unwrap().as_slice(), [expected]);
+    }
+
+    #[test]
+    fn library_and_surface_decode_their_answers() {
+        let (channel, asked) = answering(
+            r#"{"reply":"library","instruments":[{"name":"a.json","reads":["a.json"]}],"dirs":["x/"]}"#,
+        );
+        let library = channel.library().unwrap();
+        assert_eq!(library.instruments[0].name, "a.json");
+        assert_eq!(library.dirs, ["x/"]);
+        assert_eq!(
+            asked.lock().unwrap().as_slice(),
+            [Request::Library.to_ndjson()]
+        );
+
+        let (channel, asked) = answering(r#"{"reply":"surface","text":"{}"}"#);
+        assert_eq!(channel.surface().unwrap().as_deref(), Some("{}"));
+        assert_eq!(
+            asked.lock().unwrap().as_slice(),
+            [Request::Surface.to_ndjson()]
+        );
     }
 }

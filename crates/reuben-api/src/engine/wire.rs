@@ -143,7 +143,7 @@ pub struct ControlMessage {
     pub args: Vec<ControlArg>,
 }
 
-/// One structure-channel request (its eleven verbs), serialized as a single JSON
+/// One structure-channel request (its thirteen verbs), serialized as a single JSON
 /// object tagged by `verb`: `{"verb": "ping"}`, `{"verb": "swap", "source": …}`, ….
 ///
 /// Four of them make the engine the server of a client's authoring: [`Call`](Self::Call) edits
@@ -227,6 +227,12 @@ pub enum Request {
         /// Which kind of name to list.
         what: ListWhat,
     },
+    /// Ask for the start screen's whole view of the library: every instrument the engine offers,
+    /// read, and the directories a new one may be created in.
+    Library,
+    /// Ask for the open instrument's surface document: the text of a JSON file beside the
+    /// instrument that is not itself an instrument document.
+    Surface,
     /// Turn this connection into a stream of [`Event`]s: answered with [`Response::Subscribed`],
     /// then one event per line, one per change, for as long as the connection stays open. The
     /// connection answers no further requests.
@@ -243,6 +249,34 @@ pub enum ListWhat {
     Instruments,
     /// The samples a sample resource may reference.
     Samples,
+}
+
+/// `Library`'s answer: what a start screen draws.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Library {
+    /// One entry per instrument the engine offers, in the order it offers them.
+    pub instruments: Vec<LibraryEntry>,
+    /// The directories a new instrument may be created in, each a prefix a name can be joined to.
+    pub dirs: Vec<String>,
+}
+
+/// One instrument of the [`Library`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LibraryEntry {
+    /// The name to [`Open`](Request::Open) it by.
+    pub name: String,
+    /// The document's `instrument` name; absent when it could not be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Why the document could not be read, when it could not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Every canonical source the document's tree reads, itself included: what a client matches to
+    /// say which instruments use a document.
+    #[serde(default)]
+    pub reads: Vec<String>,
 }
 
 impl Request {
@@ -467,6 +501,11 @@ pub enum Response {
     },
     /// `List`'s answer: the names offered, sorted.
     Listed { names: Vec<String> },
+    /// `Library`'s answer.
+    Library(Library),
+    /// `Surface`'s answer: the open instrument's surface text, or `None` when nothing is open or
+    /// it has no surface.
+    Surface { text: Option<String> },
     /// `Call`'s answer when the verb refused to run: an unknown name, an engine verb, or arguments
     /// that do not fit it.
     Refused { message: String },
@@ -1073,6 +1112,17 @@ mod tests {
             Response::Listed {
                 names: vec!["a.json".to_string()],
             },
+            Response::Library(Library {
+                instruments: vec![LibraryEntry {
+                    name: "a.json".to_string(),
+                    title: Some("A".to_string()),
+                    description: None,
+                    error: None,
+                    reads: vec!["a.json".to_string()],
+                }],
+                dirs: vec!["".to_string()],
+            }),
+            Response::Surface { text: None },
             Response::Error {
                 message: "unreadable request".to_string(),
             },

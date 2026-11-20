@@ -57,7 +57,7 @@ use super::channel::Transport;
 use super::events::{Bus, Subscription};
 
 mod call;
-use call::{diag, handle_call, read_tree};
+use call::{diag, handle_call, handle_library, read_tree};
 
 use super::wire::{
     over_long_batch_refusal, over_long_probe_set_refusal, ChangedBy, Conflict, ControlMessage,
@@ -107,6 +107,26 @@ pub trait EngineHost: Send + Sync {
     /// Defaults to nothing.
     fn offered(&self, _what: ListWhat, _open: Option<&str>) -> Vec<String> {
         Vec::new()
+    }
+
+    /// The instruments a start screen offers, for [`Request::Library`]: names a [`Request::Open`]
+    /// accepts. `open` is the source of the instrument now playing, when there is one. Defaults to
+    /// nothing.
+    fn library(&self, _open: Option<&str>) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// The directories [`Library::dirs`](super::wire::Library::dirs) reports, where a client may create an instrument. `open`
+    /// is as for [`library`](Self::library). Defaults to nothing.
+    fn creatable(&self, _open: Option<&str>) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// The text of the surface document of `open`, the source of the instrument now playing, or
+    /// `None` when it has none. `Err` is a surface that exists and cannot be read. Defaults to
+    /// `Ok(None)`.
+    fn surface(&self, _open: &str) -> Result<Option<String>, String> {
+        Ok(None)
     }
 
     /// Whether a client may name `name`, a source as the store reads it, in `open` or in a `call`
@@ -555,6 +575,8 @@ fn serve(state: &StructureState, request: Request, caller: Caller) -> Response {
         Request::Call { tool, args } => handle_call(state, &tool, args),
         Request::Open { name, expect } => handle_open(state, name, expect, caller),
         Request::List { what } => handle_list(state, what),
+        Request::Library => handle_library(state),
+        Request::Surface => handle_surface(state),
         Request::Subscribe => Response::Error {
             message: UNSTREAMED_SUBSCRIBE.to_string(),
         },
@@ -1012,6 +1034,21 @@ fn handle_list(state: &StructureState, what: ListWhat) -> Response {
     };
     Response::Listed {
         names: state.host.offered(what, open.as_deref()),
+    }
+}
+
+/// The open instrument's surface document, as the host reads it.
+fn handle_surface(state: &StructureState) -> Response {
+    let open = match state.installed_source() {
+        Ok(source) => source.clone(),
+        Err(poisoned) => return poisoned.into(),
+    };
+    let Some(open) = open else {
+        return Response::Surface { text: None };
+    };
+    match state.host.surface(&open) {
+        Ok(text) => Response::Surface { text },
+        Err(message) => Response::Error { message },
     }
 }
 

@@ -17,7 +17,7 @@ use crate::authoring::{
 };
 use crate::resources::{Adapter, Anchored, Resources};
 
-use super::super::wire::{ChangedBy, Event, Response, SwapReport};
+use super::super::wire::{ChangedBy, Event, Library, LibraryEntry, Response, SwapReport};
 use super::{prepare_recording, went_live, Poisoned, ServerStore, StructureState, Tree, Went};
 
 /// What the document at `origin` reaches, itself included: one load through `store`, building no
@@ -32,6 +32,56 @@ pub(super) fn read_tree(store: &ServerStore, origin: &str) -> Tree {
         let _ = load_instrument(&text, &Registry::builtin(), &Adapter(&anchored));
     }
     Tree::new(log.finish(), store.canonical(origin, None))
+}
+
+/// The instruments the host offers, each read through the store, and the directories it lets a
+/// client create in. Run under the Coordinator lock, as [`handle_call`] reads, and leaves nothing
+/// staged. A document that does not read is an entry with `error` set.
+pub(super) fn handle_library(state: &StructureState) -> Response {
+    let _coordinator = match state.coordinator() {
+        Ok(coordinator) => coordinator,
+        Err(poisoned) => return poisoned.into(),
+    };
+    let open = match state.installed_source() {
+        Ok(source) => source.clone(),
+        Err(poisoned) => return poisoned.into(),
+    };
+    let open = open.as_deref();
+    let staged = state.store.inner();
+    let instruments = state
+        .host
+        .library(open)
+        .into_iter()
+        .map(|name| {
+            let reads = read_tree(&state.store, &name).sources.into_iter().collect();
+            let read = authoring::read_instrument(
+                &authoring::ReadInstrument {
+                    source: name.clone(),
+                },
+                &*state.store,
+            );
+            staged.discard();
+            let (title, description, error) = match read {
+                Ok(answer) => (
+                    Some(answer.output.instrument),
+                    answer.output.description,
+                    None,
+                ),
+                Err(refusal) => (None, None, Some(refusal.message)),
+            };
+            LibraryEntry {
+                name,
+                title,
+                description,
+                error,
+                reads,
+            }
+        })
+        .collect();
+    Response::Library(Library {
+        instruments,
+        dirs: state.host.creatable(open),
+    })
 }
 
 /// One roster verb, under the Coordinator lock for its whole run — reads included, so no read
@@ -447,6 +497,15 @@ mod tests {
         fn offered(&self, _what: crate::engine::ListWhat, open: Option<&str>) -> Vec<String> {
             vec![open.unwrap_or("<none>").to_string()]
         }
+        fn library(&self, _open: Option<&str>) -> Vec<String> {
+            vec!["top.json".to_string(), "missing.json".to_string()]
+        }
+        fn creatable(&self, _open: Option<&str>) -> Vec<String> {
+            vec!["lib/".to_string()]
+        }
+        fn surface(&self, open: &str) -> Result<Option<String>, String> {
+            Ok(Some(format!("surface of {open}")))
+        }
         fn deliver_control(&self, _: Vec<ControlMessage>) -> Result<(), IngressClosed> {
             Ok(())
         }
@@ -831,6 +890,80 @@ mod tests {
             }
         );
         assert!(Request::from_ndjson(r#"{"verb":"list","what":"nonsense"}"#).is_err());
+    }
+
+    #[test]
+    fn library_reads_each_offered_instrument() {
+        let s = serving();
+        let Response::Library(library) = dispatch(&s.state, &Request::Library.to_ndjson()) else {
+            panic!("expected a library");
+        };
+        assert_eq!(library.instruments.len(), 2);
+        let good = &library.instruments[0];
+        assert_eq!(good.name, "top.json");
+        assert!(good.title.is_some() && good.error.is_none(), "{good:?}");
+        assert!(good.reads.iter().any(|r| r.ends_with("v.json")), "{good:?}");
+        assert!(good.reads.iter().any(|r| r == "top.json"), "{good:?}");
+        let broken = &library.instruments[1];
+        assert_eq!(broken.name, "missing.json");
+        assert!(
+            broken.error.is_some() && broken.title.is_none(),
+            "{broken:?}"
+        );
+    }
+
+    #[test]
+    fn library_reports_the_hosts_dirs() {
+        let s = serving();
+        let Response::Library(library) = dispatch(&s.state, &Request::Library.to_ndjson()) else {
+            panic!("expected a library");
+        };
+        assert_eq!(library.dirs, ["lib/"]);
+    }
+
+    #[test]
+    fn surface_with_nothing_open_is_none() {
+        let s = serving();
+        let state = s.state.clone().with_installed_source(None);
+        assert_eq!(
+            dispatch(&state, &Request::Surface.to_ndjson()),
+            Response::Surface { text: None }
+        );
+    }
+
+    #[test]
+    fn surface_answers_the_hosts_text() {
+        let s = serving();
+        assert_eq!(
+            dispatch(&s.state, &Request::Surface.to_ndjson()),
+            Response::Surface {
+                text: Some("surface of top.json".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn library_and_surface_round_trip_ndjson() {
+        assert_eq!(Request::Library.to_ndjson(), "{\"verb\":\"library\"}\n");
+        assert_eq!(Request::Surface.to_ndjson(), "{\"verb\":\"surface\"}\n");
+        let line = serde_json::to_string(&Response::Surface { text: None }).unwrap();
+        assert_eq!(line, r#"{"reply":"surface","text":null}"#);
+        let library = Response::Library(crate::engine::Library {
+            instruments: vec![crate::engine::LibraryEntry {
+                name: "a.json".to_string(),
+                title: Some("A".to_string()),
+                description: None,
+                error: None,
+                reads: vec!["a.json".to_string()],
+            }],
+            dirs: vec!["lib/".to_string()],
+        });
+        let line = serde_json::to_string(&library).unwrap();
+        assert_eq!(
+            line,
+            r#"{"reply":"library","instruments":[{"name":"a.json","title":"A","reads":["a.json"]}],"dirs":["lib/"]}"#
+        );
+        assert_eq!(serde_json::from_str::<Response>(&line).unwrap(), library);
     }
 
     #[test]
