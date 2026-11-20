@@ -3,12 +3,13 @@
 //! A client names node paths with `SetProbes`; the host switches those nodes' probes on in the
 //! installed Plan's [`ProbeSlots`] and answers `GetMeters` from them. Each `set` renews a lease: a
 //! client that goes away without clearing its choice would otherwise leave Render measuring for
-//! ever, so a set that is not renewed within [`LEASE`] is switched off the next time it is read.
+//! ever, so a set that is not renewed within [`LEASE`] is switched off. A thread from
+//! [`spawn_lease_thread`] checks once a second, so this holds when no client is left to poll.
 //!
-//! Only structure-channel threads touch this, behind a `Mutex` in the host. Render reads the
-//! flags through the slots and never takes that lock.
+//! Only structure-channel threads and the lease thread touch this, behind a `Mutex` in the host.
+//! Render reads the flags through the slots and never takes that lock.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use reuben_api::engine::{ChannelLevel, PortLevel, ProbeLevels};
@@ -27,8 +28,11 @@ fn resolve<'a>(slots: &'a ProbeSlots, path: &[String]) -> Option<&'a NodeProbe> 
     Some(node)
 }
 
-#[derive(Default)]
+/// How often the lease thread checks for a lapsed lease.
+pub(crate) const LEASE_CHECK: Duration = Duration::from_secs(1);
+
 pub(crate) struct Probes {
+    lease: Duration,
     slots: Option<Arc<ProbeSlots>>,
     /// The paths last requested, in request order. Those that do not resolve in `slots` stay held,
     /// so a Plan that has them again turns them on.
@@ -36,10 +40,33 @@ pub(crate) struct Probes {
     leased_at: Option<Instant>,
 }
 
+impl Default for Probes {
+    fn default() -> Self {
+        Self::with_lease(LEASE)
+    }
+}
+
 impl Probes {
+    pub(crate) fn with_lease(lease: Duration) -> Self {
+        Self {
+            lease,
+            slots: None,
+            held: Vec::new(),
+            leased_at: None,
+        }
+    }
+
     /// Replace the set with `paths`, renew the lease, and return the paths that resolved, in
     /// request order. Every node the old set had on that the new one does not is turned off.
+    /// The count is capped at the structure server, before the host is asked.
     pub(crate) fn set(&mut self, paths: Vec<Vec<String>>, now: Instant) -> Vec<Vec<String>> {
+        let mut unique: Vec<Vec<String>> = Vec::with_capacity(paths.len());
+        for path in paths {
+            if !unique.contains(&path) {
+                unique.push(path);
+            }
+        }
+        let paths = unique;
         let mut resolved = Vec::new();
         if let Some(slots) = &self.slots {
             resolved = paths
@@ -66,21 +93,28 @@ impl Probes {
 
     /// Map the held paths onto a new Plan's `slots`: those resolving are turned on, the rest stay
     /// held but unreported. The old slots go with the old Plan, so nothing is turned off in them.
-    pub(crate) fn install(&mut self, slots: Arc<ProbeSlots>) {
+    /// A lease that lapsed before `now` is expired first, so a swap after it turns nothing on.
+    pub(crate) fn install(&mut self, slots: Arc<ProbeSlots>, now: Instant) {
+        self.expire_if_due(now);
         for node in self.held.iter().filter_map(|p| resolve(&slots, p)) {
             node.set_on(true);
         }
         self.slots = Some(slots);
     }
 
-    /// The held nodes' levels, after expiring the set if `now` is a [`LEASE`] past the last `set`.
-    pub(crate) fn report(&mut self, now: Instant) -> Vec<ProbeLevels> {
+    /// Turn the set off if `now` is a lease past the last `set`.
+    pub(crate) fn expire_if_due(&mut self, now: Instant) {
         if self
             .leased_at
-            .is_some_and(|at| now.saturating_duration_since(at) >= LEASE)
+            .is_some_and(|at| now.saturating_duration_since(at) >= self.lease)
         {
             self.expire();
         }
+    }
+
+    /// The held nodes' levels, after [`expire_if_due`](Self::expire_if_due).
+    pub(crate) fn report(&mut self, now: Instant) -> Vec<ProbeLevels> {
+        self.expire_if_due(now);
         let Some(slots) = &self.slots else {
             return Vec::new();
         };
@@ -117,6 +151,21 @@ impl Probes {
         self.held.clear();
         self.leased_at = None;
     }
+}
+
+/// Expire `probes` every `period` until its last strong owner is dropped. Detached: it holds only
+/// a `Weak`, so it ends within one period of the host going away.
+pub(crate) fn spawn_lease_thread(probes: Weak<Mutex<Probes>>, period: Duration) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(period);
+        let Some(probes) = probes.upgrade() else {
+            return;
+        };
+        probes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .expire_if_due(Instant::now());
+    });
 }
 
 #[cfg(test)]
@@ -164,7 +213,7 @@ mod tests {
 
     fn probes_on(slots: &Arc<ProbeSlots>) -> Probes {
         let mut p = Probes::default();
-        p.install(slots.clone());
+        p.install(slots.clone(), Instant::now());
         p
     }
 
@@ -261,13 +310,13 @@ mod tests {
         p.set(vec![names(&["/osc"]), names(&["/out"])], Instant::now());
 
         let second = hosting(false);
-        p.install(second.clone());
+        p.install(second.clone(), Instant::now());
         assert_eq!(reported_paths(&mut p), vec![names(&["/out"])]);
         assert_eq!(on_addresses(&second), vec!["/out"]);
 
         // Held while absent: a later Plan with `/osc` again brings it back.
         let third = hosting(true);
-        p.install(third.clone());
+        p.install(third.clone(), Instant::now());
         assert_eq!(
             reported_paths(&mut p),
             vec![names(&["/osc"]), names(&["/out"])]
@@ -295,6 +344,64 @@ mod tests {
         assert_eq!(on_addresses(&first), vec!["/out"]);
         p.set(vec![names(&["/osc"])], now);
         assert!(on_addresses(&first).is_empty());
+    }
+
+    #[test]
+    fn a_set_names_each_path_once() {
+        let slots = hosting(true);
+        let mut p = probes_on(&slots);
+        let resolved = p.set(
+            vec![names(&["/out"]), names(&["/osc"]), names(&["/out"])],
+            Instant::now(),
+        );
+        assert_eq!(resolved, vec![names(&["/out"]), names(&["/osc"])]);
+    }
+
+    #[test]
+    fn a_swap_after_the_lease_lapsed_turns_nothing_on() {
+        let first = hosting(true);
+        let mut p = probes_on(&first);
+        let now = Instant::now();
+        p.set(vec![names(&["/osc"])], now);
+        let second = hosting(true);
+        p.install(second.clone(), now + LEASE);
+        assert!(!first.any_on());
+        assert!(!second.any_on());
+        assert!(p.report(now + LEASE).is_empty());
+    }
+
+    #[test]
+    fn a_set_before_any_install_answers_empty_and_the_install_turns_it_on() {
+        let mut p = Probes::default();
+        let now = Instant::now();
+        assert!(p.set(vec![names(&["/osc"])], now).is_empty());
+        let slots = hosting(true);
+        p.install(slots.clone(), now);
+        assert_eq!(on_addresses(&slots), vec!["/osc"]);
+    }
+
+    #[test]
+    fn the_lease_thread_expires_a_set_nobody_reads() {
+        let slots = hosting(true);
+        let probes = Arc::new(Mutex::new(Probes::with_lease(Duration::from_millis(30))));
+        probes
+            .lock()
+            .unwrap()
+            .install(slots.clone(), Instant::now());
+        probes
+            .lock()
+            .unwrap()
+            .set(vec![names(&["/osc"])], Instant::now());
+        assert!(slots.any_on());
+        spawn_lease_thread(Arc::downgrade(&probes), Duration::from_millis(5));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while slots.any_on() {
+            assert!(
+                Instant::now() < deadline,
+                "the lease thread never expired it"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     #[test]

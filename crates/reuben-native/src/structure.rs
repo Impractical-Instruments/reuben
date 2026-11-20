@@ -43,7 +43,7 @@ use reuben_api::probe::ProbeSlots;
 use crate::diagnostics::{Diagnostics, Snapshot};
 use crate::meters::Meters;
 use crate::osc::{ControlBatch, OscIn};
-use crate::probes::Probes;
+use crate::probes::{spawn_lease_thread, Probes, LEASE_CHECK};
 
 /// How long the accept loop sleeps between polls of its shutdown flag while idle. The listener
 /// is non-blocking so the loop can observe [`StructureServer::shutdown`] without a client ever
@@ -277,7 +277,7 @@ pub(crate) fn dark_degrade_warning(
 pub struct NativeHost {
     diagnostics: Arc<Diagnostics>,
     meters: Meters,
-    probes: Mutex<Probes>,
+    probes: Arc<Mutex<Probes>>,
     control: Sender<ControlBatch>,
     render_config: Arc<dyn RenderConfigPublisher>,
     hold: Option<SwapHold>,
@@ -312,10 +312,12 @@ impl NativeHost {
     /// [`with_render_config`](Self::with_render_config). That one *is* a builder step because it
     /// has a working default; the control ingress has none, so it is a parameter.
     pub fn new(diagnostics: Arc<Diagnostics>, control: Sender<ControlBatch>) -> Self {
+        let probes = Arc::new(Mutex::new(Probes::default()));
+        spawn_lease_thread(Arc::downgrade(&probes), LEASE_CHECK);
         Self {
             diagnostics,
             meters: Meters::none(),
-            probes: Mutex::new(Probes::default()),
+            probes,
             control,
             render_config: Arc::new(HeadlessRenderConfig {
                 opened_input_channels: 0,
@@ -406,7 +408,7 @@ impl EngineHost for NativeHost {
     }
 
     fn install_probes(&self, slots: Arc<ProbeSlots>) {
-        self.probes().install(slots);
+        self.probes().install(slots, Instant::now());
     }
 
     fn publish_render_config(&self, logical: usize, input_channels: usize) -> Vec<Diag> {
