@@ -51,7 +51,11 @@ door's business, advertised where you call it and never restated here.
 7. **Audition.** `send_live_controls` explores a value without committing it; fold a keeper back
    into the document with `set_instrument_input`, which makes it live.
 
-Every step needs a running `reuben play`; only `describe_operators` answers without one.
+Every step needs a running `reuben play`; only `describe_operators` answers without one. The
+names `list_instruments` gives, and the only places `new_instrument` may create, are the
+directories that engine offers: its library (`reuben play --instrument-root <dir>`, else
+`instruments/` where it starts) and the directory of the instrument it plays
+(`reuben play <file>`).
 
 Why the steps are what they are:
 
@@ -64,8 +68,9 @@ Why the steps are what they are:
   single validation authority — and **writes only if it still loads and plans**, except while
   nothing plays (below); a rejected edit leaves every file exactly as it was and the instrument
   playing as it was.
-- **A broken document refuses every edit until it is fixed.** Write-iff-valid holds for every
-  verb, so an edit to a document that was already invalid is refused however unrelated it is. A
+- **A broken document refuses every edit until it is fixed**, except while nothing plays (below).
+  Write-iff-valid holds for every verb, so an edit to a document that was already invalid is
+  refused however unrelated it is. A
   rejection moves to `pre_existing` each error it can show the document already had — the same
   kind of error at the same node, port or field — and leaves the rest in `report.errors`. Fix the
   `pre_existing` errors first. An error left in `report.errors` is not proof your edit made it:
@@ -136,7 +141,7 @@ not serve the same steps. A tab holds one door, so this disambiguation is checko
 | | The sidecar (`reuben-mcp`) | The CLI (`cargo run -p reuben-native --bin reuben`) |
 |---|---|---|
 | Serves | the document verbs, the reads, and the engine verbs, `open_instrument` among them | reads, plus `play` and `scaffold-operator` |
-| Over documents | **reads and writes** | **read-only**, except `new-instrument`, which writes a seed |
+| Over documents | asks `reuben play` to **read and write** them; the engine owns the files | **read-only**, except `new-instrument`, which writes a seed |
 | Needs | the sidecar reachable, and a live `reuben play` behind it for every tool but `describe_operators` | a build of `reuben-native` |
 
 **The document verbs are the sidecar's, and only the sidecar's.** If it is not reachable, the

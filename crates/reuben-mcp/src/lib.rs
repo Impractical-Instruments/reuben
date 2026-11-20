@@ -113,8 +113,11 @@ const INSTRUCTIONS: &str = "reuben authoring sidecar. The instrument document is
      truth, and what it says is what plays. **Never read or write an instrument file \
      yourself** — name it and let these tools do it: `describe_instrument` reads its structure, \
      and the `*_instrument_*` verbs edit it one change at a time. Start `reuben play` in another \
-     terminal first: every instrument tool asks it, and fails fast until it is reachable. The \
-     loop: `list_instruments` gives the names there are (or `new_instrument` lands a \
+     terminal first: every instrument tool asks it, and fails fast until it is reachable. It \
+     offers the instruments in its library directory (`reuben play --instrument-root <dir>`, \
+     else `instruments/` where it starts) and beside the one it plays (`reuben play <file>`), \
+     and `new_instrument` creates only there. The loop: `list_instruments` gives the names it \
+     offers (or `new_instrument` lands a \
      guaranteed-valid seed at a new one); `open_instrument` opens one, and you must open an \
      instrument before editing it; then each accepted edit is live at once — there is no separate \
      step to make it heard. Every edit re-validates the whole instrument and is refused, with \
