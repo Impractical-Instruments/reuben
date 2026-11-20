@@ -47,6 +47,7 @@ ALLOWLIST = (
     # --- Device layer: OS/cpal-native interleaved frames, not the engine's logical audio buffer.
     "crates/reuben-native/src/audio.rs",   # output callback + device/output-map staging
     "crates/reuben-native/src/input.rs",   # capture ring buffer + resampler; device frames
+    "crates/reuben-native/src/meters.rs",  # level meters folding both callbacks' device frames
     # --- Resource decode: audio files decode to planar per-channel `Vec<Vec<f32>>` before they
     #     ever become engine buffers.
     "crates/reuben-api/src/fs_resolver.rs",  # WAV decode -> planar channels
