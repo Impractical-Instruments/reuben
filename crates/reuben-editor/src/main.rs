@@ -132,6 +132,7 @@ fn main() -> eframe::Result {
                     let ctx = cc.egui_ctx.clone();
                     move || ctx.request_repaint()
                 }),
+                same_file: None,
             }))
         }),
     )
@@ -182,20 +183,36 @@ struct Editor {
     launch: Launch,
     held: HeldSwaps,
     meters: MeterStrip,
+    /// The file the engine plays and the session's top-level file, as spelled when they were last
+    /// compared, and whether they are one file: resolving them stats the disk, so it is done again
+    /// only when a spelling changes.
+    same_file: Option<(String, PathBuf, bool)>,
 }
 
 impl Editor {
-    /// Whether the engine plays the open session's top-level file, so a node path the canvas
-    /// resolves names a node of what is drawn. Another file's Plan can have the same addresses —
-    /// while a Swap onto this one runs or was refused, or before an attached editor opens what the
-    /// engine plays — and its levels must not show on these boxes.
-    fn metered(&self) -> bool {
+    /// Whether the engine plays the open session's top-level file as it is on disk now, so a node
+    /// path the canvas resolves names a node of what is drawn. Another file's Plan, or an older
+    /// state of this one, can have the same addresses — while a Swap onto this one runs or was
+    /// refused, or before an attached editor opens what the engine plays — and its levels must not
+    /// show on these boxes.
+    fn metered(&mut self) -> bool {
         let (Some(session), Some(plays)) = (&self.session, self.engine.plays()) else {
             return false;
         };
-        let (plays, top) = (std::path::Path::new(plays), session.top());
-        let absolute = |path| std::path::absolute(path).ok();
-        plays == top || absolute(plays).is_some_and(|plays| absolute(top) == Some(plays))
+        let on_disk = session.tree().documents().first().and_then(|d| d.hash());
+        if on_disk != Some(plays.content_hash.as_str()) {
+            return false;
+        }
+        let top = session.top();
+        match &self.same_file {
+            Some((source, file, same)) if *source == plays.source && file == top => *same,
+            _ => {
+                let same = held_swap::canonical(std::path::Path::new(&plays.source))
+                    == held_swap::canonical(top);
+                self.same_file = Some((plays.source.clone(), top.to_path_buf(), same));
+                same
+            }
+        }
     }
 
     /// Open the instrument at `path` in place of whatever is open. The canvas and the inspector
@@ -384,13 +401,14 @@ impl eframe::App for Editor {
                 };
                 ui.colored_label(color, line.to_string());
             }
+            let metered = self.metered();
             let rejected = (self.session.as_ref())
                 .and_then(|session| {
                     let viewed = &session.viewed().source;
                     session.feedback().map(|feedback| feedback.rejected(viewed))
                 })
                 .unwrap_or_default();
-            let levels = match self.metered() {
+            let levels = match metered {
                 true => self.meters.node_levels(),
                 false => &[],
             };

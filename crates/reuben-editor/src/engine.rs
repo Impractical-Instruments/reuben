@@ -85,9 +85,10 @@ pub struct Engine {
     /// for, on this run of the engine. A restart that could not happen is not tried again every
     /// frame.
     refit_tried: Option<(Option<String>, String)>,
-    /// The file the engine was last seen to have installed: kept through a Swap that holds it, and
-    /// `None` while that is not known or the document has no file.
-    plays: Option<String>,
+    /// The file the engine was last seen to have installed, and the hash of what it installed from
+    /// it: kept through a Swap that holds it, and `None` while that is not known or the document
+    /// has no file.
+    plays: Option<Playing>,
 }
 
 impl Engine {
@@ -136,7 +137,13 @@ impl Engine {
         for change in link.changes() {
             self.unfollowed = None;
             self.plays = match &change {
-                Change::Up { source, .. } => source.clone(),
+                Change::Up {
+                    source,
+                    content_hash,
+                } => source.clone().map(|source| Playing {
+                    source,
+                    content_hash: content_hash.clone(),
+                }),
                 Change::Down(_) => None,
             };
             let unopenable = match change {
@@ -368,7 +375,16 @@ impl Engine {
     pub fn follow_installed(&mut self) {
         if self.attached.is_none() {
             match self.installed() {
-                Some(Installed::Known { source, .. }) => self.plays = source,
+                Some(Installed::Known {
+                    source,
+                    content_hash,
+                    ..
+                }) => {
+                    self.plays = source.map(|source| Playing {
+                        source,
+                        content_hash,
+                    });
+                }
                 Some(Installed::Busy) => {}
                 Some(Installed::Poisoned) | None => self.plays = None,
             }
@@ -421,8 +437,8 @@ impl Engine {
 
     /// The file the engine plays, as last seen: through [`follow_installed`](Self::follow_installed)
     /// for an embedded engine, [`follow_link`](Self::follow_link) for an attached one.
-    pub fn plays(&self) -> Option<&str> {
-        self.plays.as_deref()
+    pub fn plays(&self) -> Option<&Playing> {
+        self.plays.as_ref()
     }
 
     /// Whether a Swap holds the running engine, so what it has installed is not known yet.

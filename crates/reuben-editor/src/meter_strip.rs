@@ -139,6 +139,10 @@ pub struct MeterStrip {
     inputs: Vec<Bar>,
     /// The probe set last handed to the asking thread, and the moment it was to be sent at.
     sent: Option<(Vec<Vec<String>>, Instant)>,
+    /// The probe set the last poll asked for.
+    wanted: Vec<Vec<String>>,
+    /// The probe set the engine held for the ask in flight; its reply's levels are of these paths.
+    measuring: Vec<Vec<String>>,
     probes: Vec<ProbeLevels>,
 }
 
@@ -180,6 +184,8 @@ impl MeterStrip {
             outputs: Vec::new(),
             inputs: Vec::new(),
             sent: None,
+            wanted: Vec::new(),
+            measuring: Vec::new(),
             probes: Vec::new(),
         }
     }
@@ -190,6 +196,11 @@ impl MeterStrip {
     /// `probes` is the set of node paths to meter. The ask carries it to the engine first when it
     /// differs from the set last sent, or when that was [`RENEW`] ago and the set is not empty.
     pub fn poll(&mut self, now: Instant, channel: Option<Channel>, probes: &[Vec<String>]) {
+        // Levels of another set's paths would land on whatever boxes now have those paths.
+        if self.wanted != probes {
+            self.wanted = probes.to_vec();
+            self.probes.clear();
+        }
         self.receive(now);
         let Some(channel) = channel else {
             self.reading = Reading::NoEngine;
@@ -224,6 +235,10 @@ impl MeterStrip {
         }
         if send {
             self.sent = Some((probes.to_vec(), at));
+        }
+        let measuring = (self.sent.as_ref()).map_or(&[][..], |(sent, _)| sent.as_slice());
+        if self.measuring != measuring {
+            self.measuring = measuring.to_vec();
         }
         self.in_flight = true;
         self.asked = Some(at);
@@ -266,7 +281,10 @@ impl MeterStrip {
         }
         self.frames = Some(report.frames);
         self.reading = Reading::Levels;
-        self.probes = report.probes;
+        self.probes = match self.measuring == self.wanted {
+            true => report.probes,
+            false => Vec::new(),
+        };
         for (bars, levels) in [
             (&mut self.outputs, report.outputs),
             (&mut self.inputs, report.inputs),
@@ -755,6 +773,43 @@ mod tests {
         exchange(&mut strip, at(200), &engine, &one);
         exchange(&mut strip, at(300), &engine, &one);
         assert_eq!(sent(), 3, "taken, so held until the renewal");
+    }
+
+    #[test]
+    fn a_reply_for_the_set_before_a_change_paints_no_levels() {
+        let engine = Canned::new(vec![level(-6.0, -9.0)], Vec::new());
+        let one = vec![vec!["/osc".to_string()]];
+        let other = vec![vec!["/kick_v".to_string(), "/osc".to_string()]];
+        engine.report.lock().expect("unpoisoned").probes = vec![ProbeLevels {
+            path: one[0].clone(),
+            ports: Vec::new(),
+        }];
+        let start = Instant::now() - Duration::from_secs(60);
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut strip = MeterStrip::new(|| {});
+
+        exchange(&mut strip, at(0), &engine, &one);
+        assert_eq!(strip.node_levels().len(), 1);
+        // An ask measuring `one` goes out, and the set changes before its reply is taken.
+        strip.poll(at(100), Some(engine.channel()), &one);
+        strip.poll(at(100), Some(engine.channel()), &other);
+        assert!(strip.node_levels().is_empty(), "cleared with the change");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while strip.in_flight {
+            assert!(Instant::now() < deadline, "no reply");
+            std::thread::sleep(Duration::from_millis(1));
+            strip.receive(at(100));
+        }
+        assert!(
+            strip.node_levels().is_empty(),
+            "the reply measured the old set"
+        );
+        exchange(&mut strip, at(200), &engine, &other);
+        assert_eq!(
+            strip.node_levels().len(),
+            1,
+            "a reply for the new set is taken"
+        );
     }
 
     #[test]

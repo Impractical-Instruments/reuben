@@ -77,6 +77,7 @@ fn editor(top: &Path, config: &TempConfig) -> Editor {
         },
         held: HeldSwaps::new(|| {}),
         meters: MeterStrip::new(|| {}),
+        same_file: None,
     }
 }
 
@@ -226,6 +227,7 @@ fn attached(addr: String, config: &TempConfig, session: Option<Session>) -> Edit
         },
         held: HeldSwaps::new(|| {}),
         meters: MeterStrip::new(|| {}),
+        same_file: None,
     }
 }
 
@@ -656,36 +658,75 @@ fn metered(scratch: &Scratch) -> PathBuf {
     top
 }
 
+/// The editor showing `shown`, with an embedded headless engine started on `played`.
+fn playing(shown: &Path, played: PathBuf, config: &TempConfig) -> Harness<'static, Editor> {
+    let mut editor = editor(shown, config);
+    editor.engine = Engine::start_with(
+        crate::engine::test_support::config(played),
+        reuben_native::test_support::start_headless,
+    );
+    harness(editor)
+}
+
+/// Step until the canvas shows `/osc` playing, failing after a few seconds.
+fn until_osc_level(harness: &mut Harness<'_, Editor>) {
+    use egui_kittest::kittest::NodeT;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let floor = f64::from(meter_strip::SCALE_FLOOR_DBFS);
+    loop {
+        let level = (harness.query_by_label("/osc level"))
+            .and_then(|node| node.accesskit_node().numeric_value());
+        if level.is_some_and(|level| level > floor) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "/osc never showed a level: {level:?}"
+        );
+        harness.run_steps(1);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// Step while the strip reads the engine, then check `/osc` shows an empty track and the engine
+/// was asked to meter nothing.
+fn assert_no_osc_level(harness: &mut Harness<'_, Editor>) {
+    use egui_kittest::kittest::NodeT;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while (harness.query_by_label("Meters: the engine has no audio device")).is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the strip never read the engine"
+        );
+        harness.run_steps(1);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    // Long enough for several more polls, any of which would carry a probe set.
+    for _ in 0..20 {
+        harness.run_steps(1);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let osc = harness.get_by_label("/osc level");
+    assert_eq!(osc.accesskit_node().numeric_value(), None, "an empty track");
+    assert_eq!(osc.value().as_deref(), Some("no level"));
+    let channel = harness.state().engine.channel().expect("the engine runs");
+    let probed = channel.get_meters().expect("meters").probes;
+    assert!(
+        probed.is_empty(),
+        "the engine was asked to meter {probed:?}"
+    );
+}
+
 #[test]
 fn a_playing_node_shows_its_level_on_the_canvas() {
-    use egui_kittest::kittest::NodeT;
-    use reuben_native::test_support::{start_headless, within};
-
     let scratch = Scratch::new("ui_node_meters");
     let config = TempConfig::new();
     let top = metered(&scratch);
-    within(crate::engine::test_support::HANG_SECS, move || {
-        let mut editor = editor(&top, &config);
-        editor.engine = Engine::start_with(
-            crate::engine::test_support::config(top.clone()),
-            start_headless,
-        );
-        let mut harness = harness(editor);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        let floor = f64::from(meter_strip::SCALE_FLOOR_DBFS);
-        loop {
-            let level = (harness.query_by_label("/osc level"))
-                .and_then(|node| node.accesskit_node().numeric_value());
-            if level.is_some_and(|level| level > floor) {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "/osc never showed a level: {level:?}"
-            );
-            harness.run_steps(1);
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+    reuben_native::test_support::within(crate::engine::test_support::HANG_SECS, move || {
+        let mut harness = playing(&top, top.clone(), &config);
+        until_osc_level(&mut harness);
         let echo = Item::Node("/echo".to_string());
         assert!(
             harness.state().canvas.draws(&echo),
@@ -697,48 +738,56 @@ fn a_playing_node_shows_its_level_on_the_canvas() {
 }
 
 #[test]
-fn a_node_of_a_file_the_engine_does_not_play_shows_no_level() {
-    use egui_kittest::kittest::NodeT;
-    use reuben_native::test_support::{start_headless, within};
+fn the_file_the_engine_plays_by_another_spelling_shows_its_level() {
+    let scratch = Scratch::new("ui_node_meters_spelling");
+    let config = TempConfig::new();
+    let top = metered(&scratch);
+    let lib = top.parent().expect("in lib").to_path_buf();
+    std::fs::create_dir_all(lib.join("sub")).expect("create a sibling directory");
+    let spelled = lib.join("sub").join("..").join("metered.json");
+    reuben_native::test_support::within(crate::engine::test_support::HANG_SECS, move || {
+        let mut harness = playing(&top, spelled, &config);
+        until_osc_level(&mut harness);
+        harness.state_mut().engine.shutdown();
+    });
+}
 
+#[test]
+fn a_node_of_a_file_the_engine_does_not_play_shows_no_level() {
     let scratch = Scratch::new("ui_node_meters_other");
     let config = TempConfig::new();
     let played = metered(&scratch);
     // The same nodes in another file: the engine's `/osc` is not this file's.
     let shown = played.with_file_name("shown.json");
     std::fs::copy(&played, &shown).expect("copy the instrument");
-    within(crate::engine::test_support::HANG_SECS, move || {
-        let mut editor = editor(&shown, &config);
-        editor.engine =
-            Engine::start_with(crate::engine::test_support::config(played), start_headless);
-        let mut harness = harness(editor);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while (harness.query_by_label("Meters: the engine has no audio device")).is_none() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the strip never read the engine"
-            );
-            harness.run_steps(1);
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        // Long enough for several more polls, any of which would carry a probe set.
-        for _ in 0..20 {
-            harness.run_steps(1);
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        let osc = harness.get_by_label("/osc level");
-        assert_eq!(osc.accesskit_node().numeric_value(), None, "an empty track");
-        assert_eq!(osc.value().as_deref(), Some("no level"));
-        let channel = harness.state().engine.channel().expect("the engine runs");
-        let probed = channel.get_meters().expect("meters").probes;
-        assert!(
-            probed.is_empty(),
-            "the engine was asked to meter {probed:?}"
-        );
+    reuben_native::test_support::within(crate::engine::test_support::HANG_SECS, move || {
+        let mut harness = playing(&shown, played, &config);
+        assert_no_osc_level(&mut harness);
         harness.state_mut().engine.shutdown();
     });
 }
 
+#[test]
+fn an_older_state_of_the_shown_file_shows_no_level() {
+    let scratch = Scratch::new("ui_node_meters_older");
+    let config = TempConfig::new();
+    let top = metered(&scratch);
+    reuben_native::test_support::within(crate::engine::test_support::HANG_SECS, move || {
+        let mut editor = editor(&top, &config);
+        editor.engine = Engine::start_with(
+            crate::engine::test_support::config(top.clone()),
+            reuben_native::test_support::start_headless,
+        );
+        // Changed on disk after the engine installed it, and not Swapped in: the engine's Plan is
+        // an older state of the file the session reads.
+        let text = std::fs::read_to_string(&top).expect("read the instrument");
+        std::fs::write(&top, text.replace("0.5", "0.25")).expect("write the instrument");
+        editor.session = Some(Session::open(&top, None, || {}));
+        let mut harness = harness(editor);
+        assert_no_osc_level(&mut harness);
+        harness.state_mut().engine.shutdown();
+    });
+}
 #[test]
 fn opening_a_subpatch_on_the_canvas_probes_its_nodes_instead() {
     let scratch = Scratch::new("ui_node_meters_enter");
