@@ -345,6 +345,7 @@ pub(crate) fn start_with(
         Some(addr) => Some(resolve_structure(&addr)?),
         None => None,
     };
+    let library_root = instrument_root.clone();
     let (instrument_json, resolver, initial_source) = read_instrument(instrument, instrument_root)?;
 
     // The one control ingress into the render callback. Two producers — the UDP listener (the
@@ -437,7 +438,8 @@ pub(crate) fn start_with(
     let host = NativeHost::new(Arc::clone(&diagnostics), osc_tx)
         .with_meters(meters)
         .with_render_config(render_config)
-        .with_swap_hold(swap_hold);
+        .with_swap_hold(swap_hold)
+        .with_library_root(library_root);
     let state = StructureState::new(coordinator, Arc::new(host), store)
         .with_installed_source(initial_source);
     let (structure, structure_error) = match structure {

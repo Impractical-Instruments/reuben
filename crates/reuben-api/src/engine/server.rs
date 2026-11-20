@@ -50,8 +50,8 @@ use call::{handle_call, read_tree};
 
 use super::wire::{
     over_long_batch_refusal, over_long_probe_set_refusal, Conflict, ControlMessage,
-    DiagnosticsReport, DocSource, DocumentSnapshot, HeldSwap, MetersReport, Request, Response,
-    SwapReport, EMPTY_BATCH_REFUSAL, MAX_PROBES, MAX_SEND_BATCH,
+    DiagnosticsReport, DocSource, DocumentSnapshot, HeldSwap, ListWhat, MetersReport, Request,
+    Response, SwapReport, EMPTY_BATCH_REFUSAL, MAX_PROBES, MAX_SEND_BATCH,
 };
 
 /// What a host must provide for the window to serve the engine verbs — the device, the clock and
@@ -87,6 +87,14 @@ pub trait EngineHost: Send + Sync {
     /// by value, which names no source to ask about. Defaults to never holding.
     fn hold_swap(&self, _path: &str) -> bool {
         false
+    }
+
+    /// The names this host offers under `what`, for [`Request::List`]: instruments a
+    /// [`Request::Open`] accepts, or samples a document can reference. `open` is the source of the
+    /// instrument now playing, when there is one, so a host can offer what sits beside it.
+    /// Defaults to nothing.
+    fn offered(&self, _what: ListWhat, _open: Option<&str>) -> Vec<String> {
+        Vec::new()
     }
 
     /// Hand a control batch to the engine's ingress **as one unit**, so a gesture cannot straddle
@@ -329,6 +337,8 @@ fn serve(state: &StructureState, line: &str, caller: Caller) -> Response {
         Ok(Request::Swap { source, expect }) => handle_swap(state, source, expect, caller),
         Ok(Request::Send { messages }) => handle_send(state, messages),
         Ok(Request::Call { tool, args }) => handle_call(state, &tool, args),
+        Ok(Request::Open { name, expect }) => handle_open(state, name, expect, caller),
+        Ok(Request::List { what }) => handle_list(state, what),
         Err(e) => Response::Error {
             message: format!("unreadable request: {e}"),
         },
@@ -490,9 +500,6 @@ fn handle_swap(
         DocSource::Path(path) => Some(path.clone()),
         DocSource::Document(_) => None,
     };
-    let origin = installed_from
-        .as_deref()
-        .map(|path| state.host.document_origin(path));
 
     let json = match resolve_source(source, state.host.as_ref()) {
         Ok(json) => json,
@@ -503,6 +510,30 @@ fn handle_swap(
         Ok(coordinator) => coordinator,
         Err(poisoned) => return poisoned.into(),
     };
+    install_from(
+        state,
+        &mut coordinator,
+        &json,
+        installed_from,
+        expect,
+        caller,
+    )
+}
+
+/// Steps 2 to 5 of [`handle_swap`], for a document already read: the `expect` guard, the build, the
+/// hold, the install and everything after it. `installed_from` is the path the document was read
+/// from, `None` for one by value.
+fn install_from(
+    state: &StructureState,
+    coordinator: &mut Coordinator,
+    json: &str,
+    installed_from: Option<String>,
+    expect: Option<String>,
+    caller: Caller,
+) -> Response {
+    let origin = installed_from
+        .as_deref()
+        .map(|path| state.host.document_origin(path));
 
     if let Some(expected) = &expect {
         let actual = coordinator.installed_hash();
@@ -519,7 +550,7 @@ fn handle_swap(
         Some(origin) => {
             // The one-call swap's own first step, kept so a build here peaks at live + new.
             drop(coordinator.try_reclaim());
-            let (prepared, tree) = prepare_recording(state, &coordinator, &json, origin);
+            let (prepared, tree) = prepare_recording(state, coordinator, json, origin);
             match prepared {
                 // A document that does not load is rejected with its errors, never held: the
                 // user is only asked about something that would install.
@@ -547,16 +578,54 @@ fn handle_swap(
         }
         // By value there is nowhere the document came from: the session's anchor stands, and no
         // document is open to edit.
-        None => (coordinator.swap_document(&json), BTreeSet::new()),
+        None => (coordinator.swap_document(json), BTreeSet::new()),
     };
     let mut report = SwapReport::from_core(core_report);
     if report.report.ok {
-        match went_live(state, &mut coordinator, installed_from, tree) {
+        match went_live(state, coordinator, installed_from, tree) {
             Ok(warnings) => report.report.warnings.extend(warnings),
             Err(poisoned) => return poisoned.into(),
         }
     }
     Response::SwapReport(report)
+}
+
+/// Unload the open instrument and load, and play, the one `name` names: [`handle_swap`] by path,
+/// read through the server's store so the tree and the edits that follow see the same files.
+///
+/// Under the Coordinator lock from the read on, so the `discard` cannot drop another request's
+/// pending write.
+fn handle_open(
+    state: &StructureState,
+    name: String,
+    expect: Option<String>,
+    caller: Caller,
+) -> Response {
+    let mut coordinator = match state.coordinator() {
+        Ok(coordinator) => coordinator,
+        Err(poisoned) => return poisoned.into(),
+    };
+    state.store.inner().discard();
+    let origin = state.host.document_origin(&name);
+    let json = match state.store.read_text(&origin) {
+        Ok(json) => json,
+        Err(e) => {
+            return rejected_report(coordinator.installed_hash(), format!("open {name}: {e}"))
+        }
+    };
+    install_from(state, &mut coordinator, &json, Some(name), expect, caller)
+}
+
+/// What the host offers under `what`, each name one [`Request::Open`] (or, for a sample, a
+/// resource reference) accepts back.
+fn handle_list(state: &StructureState, what: ListWhat) -> Response {
+    let open = match state.installed_source() {
+        Ok(source) => source.clone(),
+        Err(poisoned) => return poisoned.into(),
+    };
+    Response::Listed {
+        names: state.host.offered(what, open.as_deref()),
+    }
 }
 
 /// Prepare `json`, read from `origin`, and the canonical sources the load read, `origin`'s own
@@ -622,10 +691,13 @@ fn reclaim_retired(coordinator: &mut Coordinator, host: &dyn EngineHost) {
 /// message, no diff, and the still-installed hash — the report names what keeps playing
 /// (retain-prior).
 fn rejected_swap(state: &StructureState, message: String) -> Response {
-    let content_hash = match state.coordinator() {
-        Ok(coordinator) => coordinator.installed_hash(),
-        Err(poisoned) => return poisoned.into(),
-    };
+    match state.coordinator() {
+        Ok(coordinator) => rejected_report(coordinator.installed_hash(), message),
+        Err(poisoned) => poisoned.into(),
+    }
+}
+
+fn rejected_report(content_hash: String, message: String) -> Response {
     Response::SwapReport(SwapReport {
         report: Report {
             ok: false,

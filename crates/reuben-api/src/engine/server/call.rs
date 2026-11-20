@@ -309,12 +309,17 @@ mod tests {
     use crate::staged::Staged;
 
     /// Gives up reclaiming at once, so a swap whose retiree the test has not rendered home stays
-    /// in flight until a later reclaim finds it.
-    struct Host;
+    /// in flight until a later reclaim finds it. Holds every client swap when `hold` is set.
+    struct Host {
+        hold: bool,
+    }
 
     impl EngineHost for Host {
         fn read_document(&self, path: &str) -> Result<String, String> {
             Err(format!("no file {path}"))
+        }
+        fn hold_swap(&self, _path: &str) -> bool {
+            self.hold
         }
         fn deliver_control(&self, _: Vec<ControlMessage>) -> Result<(), IngressClosed> {
             Ok(())
@@ -396,6 +401,10 @@ mod tests {
     const BLOCKS_BETWEEN_CALLS: usize = 64;
 
     fn serving() -> Served {
+        serving_with(Host { hold: false })
+    }
+
+    fn serving_with(host: Host) -> Served {
         let files = Arc::new(Files::default());
         for (source, text) in [("top.json", TOP), ("v.json", V), ("other.json", OTHER)] {
             files.write_text(source, text).unwrap();
@@ -410,7 +419,7 @@ mod tests {
         .expect("install");
         let state = StructureState::new(
             coordinator,
-            Arc::new(Host),
+            Arc::new(host),
             Arc::new(DocumentHistory::new(staged)),
         )
         .with_installed_source(Some("top.json".to_string()));
@@ -446,6 +455,84 @@ mod tests {
             Installed::Known { content_hash, .. } => content_hash,
             other => panic!("{other:?}"),
         }
+    }
+
+    fn open_line(name: &str, expect: Option<String>) -> String {
+        Request::Open {
+            name: name.to_string(),
+            expect,
+        }
+        .to_ndjson()
+    }
+
+    #[test]
+    fn open_installs_and_records_tree() {
+        let s = serving();
+        match dispatch(&s.state, &open_line("other.json", None)) {
+            Response::SwapReport(report) => assert!(report.report.ok, "{:?}", report.report.errors),
+            other => panic!("expected a swap report, got {other:?}"),
+        }
+        s.render();
+        assert_eq!(s.state.tree(), BTreeSet::from(["other.json".to_string()]));
+        match s.state.try_installed() {
+            Installed::Known { source, .. } => assert_eq!(source.as_deref(), Some("other.json")),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn open_of_an_unreadable_name_is_rejected_and_keeps_the_tree() {
+        let s = serving();
+        let before = installed_hash(&s.state);
+        match dispatch(&s.state, &open_line("missing.json", None)) {
+            Response::SwapReport(report) => {
+                assert!(!report.report.ok);
+                assert_eq!(report.content_hash, before);
+            }
+            other => panic!("expected a swap report, got {other:?}"),
+        }
+        assert_eq!(
+            s.state.tree(),
+            BTreeSet::from(["top.json".to_string(), "v.json".to_string()])
+        );
+    }
+
+    #[test]
+    fn open_is_held_for_a_holding_host() {
+        let s = serving_with(Host { hold: true });
+        let before = installed_hash(&s.state);
+        match dispatch(&s.state, &open_line("other.json", None)) {
+            Response::Held(held) => assert_eq!(held.requested, "other.json"),
+            other => panic!("expected a held open, got {other:?}"),
+        }
+        assert_eq!(installed_hash(&s.state), before);
+    }
+
+    #[test]
+    fn open_with_stale_expect_conflicts() {
+        let s = serving();
+        match dispatch(&s.state, &open_line("other.json", Some("0badc0de".into()))) {
+            Response::Conflict(conflict) => assert_eq!(conflict.expected, "0badc0de"),
+            other => panic!("expected a conflict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_asks_the_host_with_the_open_source() {
+        let s = serving();
+        let line = Request::List {
+            what: crate::engine::ListWhat::Samples,
+        }
+        .to_ndjson();
+        assert_eq!(
+            dispatch(&s.state, &line),
+            Response::Listed { names: Vec::new() }
+        );
+        assert!(matches!(
+            Response::from_ndjson(r#"{"reply":"listed","names":["a"]}"#),
+            Ok(Response::Listed { .. })
+        ));
+        assert!(Request::from_ndjson(r#"{"verb":"list","what":"nonsense"}"#).is_err());
     }
 
     #[test]

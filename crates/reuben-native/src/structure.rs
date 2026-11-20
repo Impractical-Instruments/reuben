@@ -27,6 +27,7 @@
 
 use std::io::{BufReader, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
@@ -36,7 +37,7 @@ use std::time::{Duration, Instant};
 use reuben_api::authoring::Diag;
 use reuben_api::engine::{
     dispatch, read_ndjson_line, ControlMessage, DiagnosticsReport, EngineHost, IngressClosed,
-    MetersReport, Response, StructureState,
+    ListWhat, MetersReport, Response, StructureState,
 };
 use reuben_api::probe::ProbeSlots;
 
@@ -281,6 +282,7 @@ pub struct NativeHost {
     control: Sender<ControlBatch>,
     render_config: Arc<dyn RenderConfigPublisher>,
     hold: Option<SwapHold>,
+    library_root: Option<PathBuf>,
 }
 
 /// What decides whether a client's by-path swap is held for the host's user rather than
@@ -334,6 +336,7 @@ impl NativeHost {
                 opened_input_channels: 0,
             }),
             hold: None,
+            library_root: None,
         }
     }
 
@@ -341,6 +344,13 @@ impl NativeHost {
     /// device, and answers empty arrays.
     pub fn with_meters(mut self, meters: Meters) -> Self {
         self.meters = meters;
+        self
+    }
+
+    /// The library root [`offered`](EngineHost::offered) lists from, besides the open instrument's
+    /// own directory: the one the session's resolver falls back to.
+    pub fn with_library_root(mut self, root: Option<PathBuf>) -> Self {
+        self.library_root = root;
         self
     }
 
@@ -365,6 +375,29 @@ impl NativeHost {
     }
 }
 
+/// Add every `*.{extension}` file under `dir` to `found`, descending into subdirectories. An
+/// unreadable directory contributes nothing.
+fn collect_with_extension(
+    dir: &Path,
+    extension: &str,
+    found: &mut std::collections::BTreeSet<String>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_dir() {
+            collect_with_extension(&path, extension, found);
+        } else if path.extension().is_some_and(|e| e == extension) {
+            found.insert(path.display().to_string());
+        }
+    }
+}
+
 impl EngineHost for NativeHost {
     /// A by-path swap reads the file as spelled, against the working directory. Resource paths
     /// *inside* the document resolve from the file's own directory, then the library root
@@ -384,6 +417,28 @@ impl EngineHost for NativeHost {
             // fails on both, so the swap is rejected before this value is used.
             Err(_) => path.to_string(),
         }
+    }
+
+    /// Every file with extension `what` names, under the library root and under the directory of
+    /// the open instrument, recursively: absolute, sorted, each once. Nothing outside those two.
+    fn offered(&self, what: ListWhat, open: Option<&str>) -> Vec<String> {
+        let extension = match what {
+            ListWhat::Instruments => "json",
+            ListWhat::Samples => "wav",
+        };
+        let open_dir = open.and_then(|source| Path::new(source).parent());
+        let mut found = std::collections::BTreeSet::new();
+        for dir in self
+            .library_root
+            .iter()
+            .map(PathBuf::as_path)
+            .chain(open_dir)
+        {
+            if let Ok(dir) = std::path::absolute(dir) {
+                collect_with_extension(&dir, extension, &mut found);
+            }
+        }
+        found.into_iter().collect()
     }
 
     /// **One `send` on the channel, not one per message.** That single push is what makes the
@@ -753,6 +808,48 @@ mod tests {
         assert_eq!(report.input_ring_underruns, 11);
         assert_eq!(report.input_ring_overruns, 22);
         assert_eq!(report.input_ring_producer_drops, 33);
+    }
+
+    #[test]
+    fn offered_lists_only_library_and_open_dir() {
+        let base = std::env::temp_dir().join(format!("reuben-offered-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        for dir in ["lib/nested", "open", "elsewhere"] {
+            std::fs::create_dir_all(base.join(dir)).unwrap();
+        }
+        for file in [
+            "lib/a.json",
+            "lib/s.wav",
+            "lib/nested/n.json",
+            "open/b.json",
+            "elsewhere/c.json",
+            "elsewhere/d.wav",
+        ] {
+            std::fs::write(base.join(file), "").unwrap();
+        }
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let host =
+            NativeHost::new(Diagnostics::new(), tx).with_library_root(Some(base.join("lib")));
+        let abs = |relative: &str| base.join(relative).display().to_string();
+        let open = abs("open/b.json");
+
+        assert_eq!(
+            host.offered(ListWhat::Instruments, Some(&open)),
+            [
+                abs("lib/a.json"),
+                abs("lib/nested/n.json"),
+                abs("open/b.json")
+            ]
+        );
+        assert_eq!(
+            host.offered(ListWhat::Samples, Some(&open)),
+            [abs("lib/s.wav")]
+        );
+        assert_eq!(
+            host.offered(ListWhat::Instruments, None),
+            [abs("lib/a.json"), abs("lib/nested/n.json")]
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

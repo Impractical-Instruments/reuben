@@ -143,7 +143,7 @@ pub struct ControlMessage {
     pub args: Vec<ControlArg>,
 }
 
-/// One structure-channel request (its eight verbs), serialized as a single JSON
+/// One structure-channel request (its verbs), serialized as a single JSON
 /// object tagged by `verb`: `{"verb": "ping"}`, `{"verb": "swap", "source": …}`, ….
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "verb", rename_all = "snake_case")]
@@ -208,6 +208,31 @@ pub enum Request {
         /// The verb's arguments, as its argument struct deserializes them.
         args: serde_json::Value,
     },
+    /// Unload the open instrument and load, and play, the one `name` names — a swap by path, read
+    /// through the engine's store. Answers as a swap does: a report, [`Response::Held`] or
+    /// [`Response::Conflict`].
+    Open {
+        /// One of the names [`List`](Self::List) offers.
+        name: String,
+        /// The opt-in concurrency guard, as for [`Swap`](Self::Swap).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expect: Option<String>,
+    },
+    /// Ask what instruments or samples the engine offers.
+    List {
+        /// Which kind of name to list.
+        what: ListWhat,
+    },
+}
+
+/// What a [`Request::List`] asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ListWhat {
+    /// Instruments an [`Open`](Request::Open) accepts.
+    Instruments,
+    /// Samples a document can reference.
+    Samples,
 }
 
 impl Request {
@@ -421,6 +446,8 @@ pub enum Response {
         output: serde_json::Value,
         summary: String,
     },
+    /// `List`'s answer: the names offered, sorted.
+    Listed { names: Vec<String> },
     /// `Call`'s answer when the verb refused to run: an unknown name, an engine verb, or arguments
     /// that do not fit it.
     Refused { message: String },
@@ -749,8 +776,8 @@ mod tests {
 
     #[test]
     fn every_request_variant_round_trips_as_one_ndjson_line() {
-        // The eight verbs: ping, swap (by value or by path, with the optional
-        // expect guard), get_document, get_diagnostics, get_meters, set_probes, send, call.
+        // The verbs: ping, swap (by value or by path, with the optional
+        // expect guard), open, list, get_document, get_diagnostics, get_meters, set_probes, send, call.
         let requests = [
             Request::Ping,
             Request::Swap {
@@ -764,6 +791,16 @@ mod tests {
                     "nodes": []
                 })),
                 expect: Some("00c0ffee00c0ffee".to_string()),
+            },
+            Request::Open {
+                name: "pad.json".to_string(),
+                expect: Some("00c0ffee00c0ffee".to_string()),
+            },
+            Request::List {
+                what: ListWhat::Instruments,
+            },
+            Request::List {
+                what: ListWhat::Samples,
             },
             Request::GetDocument,
             Request::GetDiagnostics,
@@ -970,6 +1007,9 @@ mod tests {
                 actual: "00c0ffee00c0ffee".to_string(),
             }),
             Response::Held(held_swap()),
+            Response::Listed {
+                names: vec!["a.json".to_string()],
+            },
             Response::Error {
                 message: "unreadable request".to_string(),
             },
