@@ -163,8 +163,9 @@ impl Engine {
     /// Engine owns two Plans here (fresh + retiring) but no longer indexes their nodes: it forwards
     /// to the pointer-swap primitive that lives on [`Plan`] (which owns its nodes). See
     /// `Plan::transplant_survivors` for the box-move semantics, the pairing invariant, and the
-    /// RT-safety guarantee (a bounded `mem::swap` loop — no alloc/drop/lock). Runs at the
-    /// render-side install slot's callback top.
+    /// RT-safety guarantee (a bounded `mem::swap` loop plus the hosted-probe exchange — no
+    /// allocation, no drop that frees, no lock). Runs at the render-side install slot's callback
+    /// top.
     pub fn transplant_survivors(&mut self, retiring: &mut Engine, pairs: &[(usize, usize)]) {
         self.plan.transplant_survivors(&mut retiring.plan, pairs);
     }

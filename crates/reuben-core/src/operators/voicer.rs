@@ -712,6 +712,24 @@ mod tests {
         }
 
         #[test]
+        fn a_reenabled_voice_probe_reads_silence_while_the_voicer_is_idle() {
+            let mut plan = plan(&voice_patch(true), &["/v"]);
+            let slots = hosted(&plan, "/v");
+            let osc = slots.find("/osc").unwrap();
+            osc.set_on(true);
+            let mut r = Renderer::new(&plan);
+            render(&mut r, &mut plan, &[note("/v", 1.0)], 0.5);
+            render(&mut r, &mut plan, &[note("/v", 0.0)], 0.1);
+            assert!(osc.ports[0].level.read().0 > 0.5);
+
+            osc.set_on(false);
+            osc.set_on(true);
+            // Every voice idle: no voice renders `/osc`, so only the commit can apply the reset.
+            render(&mut r, &mut plan, &[], BLOCK as f32 / RATE);
+            assert_eq!(osc.ports[0].level.read(), (0.0, 0.0));
+        }
+
+        #[test]
         fn a_silent_voicer_still_decays_its_meters() {
             let mut plan = plan(&voice_patch(true), &["/v"]);
             let slots = hosted(&plan, "/v");

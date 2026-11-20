@@ -44,7 +44,7 @@ pub struct NodeProbe {
     pub hosted: Option<Arc<ProbeSlots>>,
     on: AtomicBool,
     /// Set by the reader when the probe turns on; Render clears the levels and the pending block,
-    /// then this, before it next measures the node.
+    /// then this, when it next measures or commits the node.
     reset: AtomicBool,
     on_count: Arc<AtomicU32>,
 }
@@ -87,9 +87,9 @@ impl PortProbe {
 
 impl NodeProbe {
     /// Switch measuring on or off. Turning an off probe on starts every port from silence at the
-    /// next block Render measures, so a level left from an earlier session — or a block accumulated
-    /// just before it was turned off, which no commit cleared — never shows. Turning on a probe
-    /// that is already on changes nothing, so a reader may renew its probes freely.
+    /// next block Render measures or commits, so a level left from an earlier session — or a block
+    /// accumulated just before it was turned off, which no commit cleared — never shows. Turning
+    /// on a probe that is already on changes nothing, so a reader may renew its probes freely.
     pub fn set_on(&self, on: bool) {
         if on {
             if self.on.load(Ordering::Relaxed) {
@@ -109,15 +109,18 @@ impl NodeProbe {
         self.on.load(Ordering::Acquire)
     }
 
-    /// Carry out a reset the reader asked for, if any. Render-side.
-    fn take_reset(&self) {
-        if self.reset.load(Ordering::Relaxed) {
-            for port in &self.ports {
-                port.level.reset();
-                port.set_pending(Block::default());
-            }
-            self.reset.store(false, Ordering::Relaxed);
+    /// Carry out a reset the reader asked for, if any, and say whether there was one.
+    /// Render-side.
+    fn take_reset(&self) -> bool {
+        if !self.reset.load(Ordering::Relaxed) {
+            return false;
         }
+        for port in &self.ports {
+            port.level.reset();
+            port.set_pending(Block::default());
+        }
+        self.reset.store(false, Ordering::Relaxed);
+        true
     }
 }
 
@@ -183,13 +186,16 @@ impl ProbeSlots {
     }
 
     /// Fold every on node's pending block, `frames` frames long, into its levels, and clear it. A
-    /// node turned on after Render passed it this block still owes its reset and is left for the
-    /// next block, so its stale pending block is never committed.
+    /// node that still owes its reset — turned on after Render passed it this block, or not run at
+    /// all, as a voice node of an idle Voicer — is reset here instead, so it reads silence from
+    /// this block on and its stale pending block is never committed.
     ///
     /// RT-safe: no allocation, lock or syscall.
     pub fn commit(&self, frames: usize) {
-        let owed = |n: &NodeProbe| n.reset.load(Ordering::Relaxed);
-        for node in self.nodes.iter().filter(|n| n.is_on() && !owed(n)) {
+        for node in self.nodes.iter().filter(|n| n.is_on()) {
+            if node.take_reset() {
+                continue;
+            }
             for port in &node.ports {
                 port.level.commit(port.pending(), frames, &self.ballistics);
                 port.set_pending(Block::default());

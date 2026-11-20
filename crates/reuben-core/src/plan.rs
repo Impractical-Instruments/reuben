@@ -892,8 +892,10 @@ impl Plan {
     /// one-way `coordinator → plan/engine` layering); [`crate::engine::Engine`] forwards straight to
     /// here.
     ///
-    /// **RT-safe:** a bounded loop of [`core::mem::swap`] over `Box<dyn Operator>` — pointer
-    /// swaps only, no allocation, no drop, no lock. Runs at the render-callback top.
+    /// **RT-safe:** a bounded loop of [`core::mem::swap`] over `Box<dyn Operator>`, plus the
+    /// hosted-probe exchange ([`Operator::swap_hosted_probes`]), whose `Arc` re-points move
+    /// refcounts while each set stays held by its Plan — no allocation, no drop that frees, no
+    /// lock. Runs at the render-callback top.
     pub(crate) fn transplant_survivors(&mut self, from: &mut Plan, pairs: &[(usize, usize)]) {
         for &(old_index, new_index) in pairs {
             debug_assert!(
