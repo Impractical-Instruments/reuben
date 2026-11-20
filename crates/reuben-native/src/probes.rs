@@ -125,7 +125,7 @@ impl Probes {
                     .ports
                     .iter()
                     .map(|port| {
-                        let (peak, mean_square) = port.level.read();
+                        let (peak, mean_square) = port.read();
                         PortLevel {
                             port: port.name.to_string(),
                             level: ChannelLevel::from_linear(peak, mean_square),
@@ -274,23 +274,13 @@ mod tests {
     }
 
     #[test]
+    // Only Render writes a level, so clearing a loud level on re-enable is pinned in reuben-core's
+    // probe tests; this pins that the host's off-then-on still reports the node, at the floor.
     fn re_enabling_a_probe_starts_from_silence() {
         let slots = hosting(true);
         let mut p = probes_on(&slots);
         let now = Instant::now();
         p.set(vec![names(&["/osc"])], now);
-        let osc = slots.find("/osc").unwrap();
-        // Render's part: fold a loud block and commit it.
-        osc.ports[0].level.commit(
-            reuben_api::meter::Block {
-                peak: 1.0,
-                sum_squares: BLOCK as f32,
-            },
-            BLOCK,
-            &reuben_api::meter::Ballistics::new(48_000.0),
-        );
-        assert!(osc.ports[0].level.read().0 > 0.0);
-
         p.set(vec![], now);
         p.set(vec![names(&["/osc"])], now);
         // The next block Render commits applies the reset the re-enable asked for.
