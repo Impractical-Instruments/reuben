@@ -6,7 +6,8 @@
 //! shared with the unit tests so there is one mirror of the real callback, not two that can
 //! diverge); the audible half — what a swap sounds like on a real device — is not covered here.
 //!
-//! Exercises: the three non-mutating verbs over the wire in order; `swap` installing via the
+//! Exercises: the verbs that read (ping, get_document, get_diagnostics, get_meters) over the wire
+//! in order; `get_meters` reading the levels a callback metered; `swap` installing via the
 //! mailbox with real survivor stats and `expect` arbitration; an input-binding swap onto an
 //! output-only stream dark-degrading to silence with a warning; `send` converging at the engine's
 //! `queue_osc`; and a clean shutdown with an idle client connected.
@@ -143,7 +144,7 @@ fn expected_hash(doc: &str) -> String {
 }
 
 #[test]
-fn serves_the_three_verbs_over_loopback_ndjson_in_order() {
+fn serves_the_read_verbs_over_loopback_ndjson_in_order() {
     let (state, cb, base_hash) = wired(BASE_DOC, 0);
     let server = StructureServer::bind("127.0.0.1:0", state).expect("bind loopback structure port");
     let addr = server.local_addr();

@@ -426,12 +426,13 @@ pub struct MetersReport {
     /// One per input device channel, whether or not the input map routes it anywhere.
     pub inputs: Vec<ChannelLevel>,
     /// Output frames metered since the engine started. Unchanged between two polls means the
-    /// output callback is not running, and the levels are the last ones it measured.
+    /// output callback is not running, and the levels are the last ones it measured. It says
+    /// nothing of the input stream, whose levels hold their last value if it stops.
     pub frames: u64,
 }
 
-/// One channel's level, in dBFS: 0 is a full-scale sample. Clamped to -120..=60, so silence reads
-/// -120 and a channel carrying infinite or NaN samples reads 60.
+/// One channel's level, in dBFS: 0 is a full-scale sample. Always between -120 and 60, so silence
+/// reads -120 and a channel carrying infinite or NaN samples reads 60.
 //
 // The numbers are spelled out because this comment is advertised to a model as schema prose;
 // `the_advertised_levels_name_the_constants` holds them to the constants.
@@ -893,7 +894,9 @@ mod tests {
         };
         let level = described("/description");
         assert!(
-            level.contains(&format!("{METER_FLOOR_DBFS}..={METER_CEILING_DBFS}")),
+            level.contains(&format!(
+                "between {METER_FLOOR_DBFS} and {METER_CEILING_DBFS}"
+            )),
             "{level}"
         );
         let peak = described("/properties/peak_dbfs/description");

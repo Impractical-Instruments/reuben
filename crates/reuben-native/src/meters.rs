@@ -11,15 +11,16 @@ use std::sync::Arc;
 
 use reuben_api::engine::{ChannelLevel, MetersReport, PEAK_FALL_DB_PER_SEC, RMS_WINDOW_SECS};
 
-/// What a block reporting a non-finite level is metered as instead: +60 dBFS peak, +60 dBFS RMS.
-/// Finite, so the held value falls back once the channel recovers rather than sticking at
-/// infinity, and the reader still clamps it to the ceiling.
+/// The most a block is metered at: +60 dBFS peak, +60 dBFS RMS, the reported ceiling. A channel
+/// blowing up passes through huge finite values on its way to infinity or NaN; held at those, its
+/// meter would take a minute to fall back once it recovers, and held at infinity, forever.
 const BLOWN_UP_PEAK: f32 = 1_000.0;
 const BLOWN_UP_MEAN_SQUARE: f32 = BLOWN_UP_PEAK * BLOWN_UP_PEAK;
 
-/// Below this a held value is flushed to zero, so a channel falling silent decays to exactly zero
-/// rather than through denormals, which are slow on some CPUs. About -200 dBFS, far under the
-/// reported floor.
+/// Below this a held value is flushed to zero, so a channel falling silent leaves the held state at
+/// exactly zero rather than decaying through denormals, which are slow on some CPUs. About
+/// -200 dBFS, far under the reported floor. The samples folded in are not flushed: a block of
+/// denormal samples costs the engine that produced it more than the meter.
 const FLUSH_BELOW: f32 = 1e-10;
 
 /// One direction's channels: the output device's, or the input device's.
@@ -88,13 +89,13 @@ impl Bank {
                 sum_squares += sample * sample;
             }
             let mut mean_square = sum_squares / frames as f32;
-            if !peak.is_finite() {
+            // A mean square this large, or NaN, means a sample at least this large, so the peak
+            // goes to the ceiling with it.
+            if mean_square.is_nan() || mean_square > BLOWN_UP_MEAN_SQUARE {
+                mean_square = BLOWN_UP_MEAN_SQUARE;
                 peak = BLOWN_UP_PEAK;
             }
-            if !mean_square.is_finite() {
-                mean_square = BLOWN_UP_MEAN_SQUARE;
-                peak = peak.max(BLOWN_UP_PEAK);
-            }
+            let peak = peak.min(BLOWN_UP_PEAK);
 
             let held = f32::from_bits(level.peak.load(Ordering::Relaxed)) * peak_fall;
             let held = flush(peak.max(held));
@@ -225,9 +226,11 @@ mod tests {
         // One full-scale sample, then a second of silence.
         drive(&bank, 1.0, |frame, _| if frame == 0 { 1.0 } else { 0.0 });
         let level = bank.levels()[0];
-        let elapsed = (RATE as usize / BLOCK * BLOCK - 1) as f32 / RATE;
+        // A block's own peak is stored undecayed, so the fall runs over every block but the first.
+        let blocks = RATE as usize / BLOCK;
+        let elapsed = ((blocks - 1) * BLOCK) as f32 / RATE;
         assert!(
-            close(level.peak_dbfs, -PEAK_FALL_DB_PER_SEC * elapsed, 0.1),
+            close(level.peak_dbfs, -PEAK_FALL_DB_PER_SEC * elapsed, 0.01),
             "{level:?}"
         );
     }
@@ -265,6 +268,20 @@ mod tests {
             assert_eq!(level.peak_dbfs, METER_FLOOR_DBFS, "{level:?}");
             assert_eq!(level.rms_dbfs, METER_FLOOR_DBFS, "{level:?}");
         }
+    }
+
+    #[test]
+    fn a_huge_finite_sample_is_held_at_the_ceiling_so_it_falls_back_in_seconds() {
+        let bank = Bank::new(1, RATE);
+        let mut block = vec![0.0; BLOCK];
+        block[0] = 1e30;
+        bank.meter(&block, BLOCK);
+        assert_eq!(bank.levels()[0].peak_dbfs, METER_CEILING_DBFS);
+        // From the ceiling, 180 dB at 12 dB a second is 15 s to the floor.
+        drive(&bank, 16.0, |_, _| 0.0);
+        let level = bank.levels()[0];
+        assert_eq!(level.peak_dbfs, METER_FLOOR_DBFS, "{level:?}");
+        assert_eq!(level.rms_dbfs, METER_FLOOR_DBFS, "{level:?}");
     }
 
     #[test]
