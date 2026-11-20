@@ -17,7 +17,6 @@ use clap::{Parser, Subcommand};
 use reuben_api::authoring::{
     self, Diag, PortInfo, Refusal, COMPACT_DESCRIBE_LEGEND, SCAFFOLD_DEFAULT_NAME,
 };
-use reuben_api::engine::DEFAULT_STRUCTURE_ADDR;
 use reuben_api::FsResolver;
 use reuben_native::cli::{EngineFlags, InstrumentRoot, LOG_OSC_ENV};
 use reuben_native::engine::{self, Instrument};
@@ -587,7 +586,13 @@ fn play(path: Option<PathBuf>, flags: EngineFlags, root: Option<PathBuf>) -> Exi
     }
 
     let log_osc = config.log_osc;
-    let running = match engine::start(config) {
+    let structure_addr = config.structure.clone().unwrap_or_default();
+    let start = if flags.headless {
+        engine::start_headless
+    } else {
+        engine::start
+    };
+    let running = match start(config) {
         Ok(running) => running,
         Err(e) => {
             eprintln!("error: {e}");
@@ -605,7 +610,12 @@ fn play(path: Option<PathBuf>, flags: EngineFlags, root: Option<PathBuf>) -> Exi
         }
     }
     println!(
-        "audio out @ {} Hz, block {}",
+        "{} @ {} Hz, block {}",
+        if flags.headless {
+            "headless, no audio device,"
+        } else {
+            "audio out"
+        },
         running.sample_rate(),
         running.block_size()
     );
@@ -616,7 +626,7 @@ fn play(path: Option<PathBuf>, flags: EngineFlags, root: Option<PathBuf>) -> Exi
     match (running.structure_addr(), running.structure_error()) {
         (Some(addr), _) => println!("structure channel on {addr}"),
         (None, Some(e)) => eprintln!(
-            "warning: structure channel unavailable on {DEFAULT_STRUCTURE_ADDR} ({e}); MCP \
+            "warning: structure channel unavailable on {structure_addr} ({e}); MCP \
              structure ops (get_document/get_diagnostics/swap) are disabled this run"
         ),
         (None, None) => {}

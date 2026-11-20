@@ -54,7 +54,7 @@ struct Args {
     #[arg(
         long,
         value_name = "HOST:PORT",
-        conflicts_with_all = ["path", "osc_out", "io_map"]
+        conflicts_with_all = ["path", "osc_out", "io_map", "headless", "structure_addr", "osc_in"]
     )]
     attach: Option<String>,
     #[command(flatten)]

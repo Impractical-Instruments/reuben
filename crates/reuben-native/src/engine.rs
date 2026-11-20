@@ -20,7 +20,7 @@ use std::io;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -30,7 +30,7 @@ use reuben_api::engine::{
     Channel, FromDocumentError, InProcess, Installed, LoadWarning, StructureState,
     DEFAULT_STRUCTURE_ADDR,
 };
-use reuben_api::render::{self, AudioConfig, Message};
+use reuben_api::render::{self, AudioConfig, Message, RenderSide, RenderSlot};
 use reuben_api::staged::Staged;
 use reuben_api::FsResolver;
 
@@ -43,11 +43,20 @@ use crate::rigs::DEFAULT_JSON;
 use crate::structure::{
     HeadlessRenderConfig, NativeHost, RenderConfigPublisher, StructureServer, SwapHold,
 };
-use crate::test_support::FakeCallback;
 use crate::tree_watch::{self, TreeWatch};
 
 /// The core render block size `reuben play` runs at.
 pub const DEFAULT_BLOCK_SIZE: usize = 256;
+
+/// The sample rate a headless engine renders at.
+pub const HEADLESS_SAMPLE_RATE: f32 = 48_000.0;
+
+/// The block size a headless engine renders at.
+pub const HEADLESS_BLOCK_SIZE: usize = 128;
+
+/// How long the headless driver sleeps between blocks: short enough that a swap's ramp completes
+/// in a few ms, long enough not to spin a core.
+const HEADLESS_PACE: Duration = Duration::from_millis(1);
 
 /// How often the periodic diagnostics logger wakes to check the counters. It only emits a line when
 /// something changed, so a healthy run stays quiet at this cadence regardless.
@@ -198,7 +207,7 @@ enum Output {
     Device(audio::Streams),
     // Held only to be dropped, which stops and joins it.
     #[allow(dead_code)]
-    Headless(FakeCallback),
+    Headless(HeadlessDriver),
 }
 
 impl RunningEngine {
@@ -322,11 +331,102 @@ pub fn start(config: EngineConfig) -> Result<RunningEngine, StartError> {
     start_with(config, Render::Device)
 }
 
+/// [`start`] with no audio device: a thread renders blocks at
+/// [`HEADLESS_SAMPLE_RATE`] and [`HEADLESS_BLOCK_SIZE`] and discards the output. Everything else —
+/// the instrument load, the OSC sockets, the structure server, the teardown — is [`start`]'s. The
+/// profile and `block_size` are ignored, and no input device opens: bound input pipes read silence.
+pub fn start_headless(config: EngineConfig) -> Result<RunningEngine, StartError> {
+    start_with(
+        config,
+        Render::Headless {
+            config: headless_config(),
+            outbound: None,
+        },
+    )
+}
+
+/// The render configuration [`start_headless`] runs at.
+pub(crate) fn headless_config() -> AudioConfig {
+    AudioConfig::new(HEADLESS_SAMPLE_RATE, HEADLESS_BLOCK_SIZE)
+}
+
+/// The render driver of a headless engine: a thread that owns the [`RenderSlot`] a device callback
+/// would and drives it in a loop, so everything a device exercises runs with no device — the
+/// install mailbox drains, the master-gain ramp runs, survivors are box-transplanted, and retirees
+/// are posted back for the Coordinator's off-thread `reclaim`. It renders the *logical* master; the
+/// device output map needs a device.
+///
+/// It drains the control ingress as `audio.rs` does, batch by batch and each batch whole, and
+/// forwards outbound Messages to the OSC-out sender. Dropping it stops and joins the thread.
+pub(crate) struct HeadlessDriver {
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl HeadlessDriver {
+    /// Start driving `side`. Each control batch is handed to `drained` once it has been queued,
+    /// on the render thread; the engine's own driver passes one that drops it.
+    pub(crate) fn spawn(
+        side: RenderSide,
+        control_rx: Receiver<ControlBatch>,
+        outbound: Option<Sender<Message>>,
+        mut drained: impl FnMut(ControlBatch) + Send + 'static,
+    ) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_thread = Arc::clone(&stop);
+        let handle = std::thread::Builder::new()
+            .name("headless-render".to_string())
+            .spawn(move || {
+                let mut slot = RenderSlot::new(side);
+                let mut buf = vec![0.0f32; HEADLESS_BLOCK_SIZE * slot.channels().max(1)];
+                while !stop_thread.load(Ordering::SeqCst) {
+                    // Each item is a whole batch, applied without splitting, so a gesture reaches
+                    // one block. Flat args in, typed at the slot's Engine where the destination
+                    // port's type is known.
+                    while let Ok(batch) = control_rx.try_recv() {
+                        for m in &batch {
+                            slot.queue_osc(&m.address, &m.args);
+                        }
+                        drained(batch);
+                    }
+                    let ch = slot.channels().max(1);
+                    // A swap can change the channel count; the device callback is handed a buffer
+                    // of the right size instead.
+                    if buf.len() != HEADLESS_BLOCK_SIZE * ch {
+                        buf.resize(HEADLESS_BLOCK_SIZE * ch, 0.0);
+                    }
+                    slot.fill(&mut buf);
+                    for m in slot.drain_outbound() {
+                        if let Some(tx) = &outbound {
+                            let _ = tx.send(m);
+                        }
+                    }
+                    std::thread::sleep(HEADLESS_PACE);
+                }
+                // The slot (and its Engine + mailbox) drops here, off any RT thread.
+            })
+            .expect("spawn headless render thread");
+        Self {
+            stop,
+            handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for HeadlessDriver {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
 /// How the render side is driven.
 pub(crate) enum Render<'a> {
     /// A cpal output stream on the profile's device.
     Device,
-    /// No device: [`FakeCallback`] drives the render side at `config`, feeding no input; the input
+    /// No device: a [`HeadlessDriver`] drives the render side at `config`, feeding no input; the input
     /// stream it reports is as wide as a device start would open it.
     Headless {
         config: AudioConfig,
@@ -429,7 +529,7 @@ pub(crate) fn start_with(
             // same geometry. No input is fed: the bound pipes read silence.
             let opened_input = coordinator.installed_input_channels();
             (
-                Output::Headless(FakeCallback::drive(side, osc_rx, osc_out_tx)),
+                Output::Headless(HeadlessDriver::spawn(side, osc_rx, osc_out_tx, drop)),
                 Diagnostics::new(),
                 Meters::none(),
                 coordinator,

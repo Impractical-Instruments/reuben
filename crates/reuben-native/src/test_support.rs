@@ -1,23 +1,23 @@
 //! Test scaffolding shared by this crate's unit tests and its integration tests.
 //!
 //! `#[doc(hidden)] pub`, not `#[cfg(test)]`: an integration test in `tests/` compiles against the
-//! crate's *public* surface only, so `cfg(test)` scaffolding is invisible to it. This is the one
-//! stand-in for the cpal render callback, so a change to how `audio.rs` drains control lands in
-//! one place instead of drifting between two mirrors.
+//! crate's *public* surface only, so `cfg(test)` scaffolding is invisible to it. Its stand-in for the
+//! cpal render callback is the headless engine's own driver, so tests and `reuben play --headless`
+//! drain control and render through one implementation.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use reuben_api::authoring::DocumentHistory;
 use reuben_api::engine::ServerStore;
-use reuben_api::render::{AudioConfig, Message, RenderSide, RenderSlot};
+use reuben_api::render::{Message, RenderSide};
 use reuben_api::resources::{ResolveError, Resources, SampleBuffer};
 use reuben_api::staged::Staged;
 
-use crate::engine::{start_with, EngineConfig, Render, RunningEngine, StartError};
+use crate::engine::{
+    headless_config, start_with, EngineConfig, HeadlessDriver, Render, RunningEngine, StartError,
+};
 use crate::osc::{ControlBatch, OscIn};
 
 /// A store with nothing in it, for the self-contained documents these tests install: no samples, no
@@ -48,24 +48,15 @@ pub fn served(staged: Staged<Box<dyn Resources + Send + Sync>>) -> Arc<ServerSto
 /// Bounded so a regression fails as a red test rather than hanging CI.
 const QUEUED_DEADLINE: Duration = Duration::from_secs(2);
 
-/// The block size the fake renders, matching the `AudioConfig` the tests build.
-const BLOCK: usize = 128;
-
-/// A background stand-in for the cpal render callback.
+/// A background stand-in for the cpal render callback: the headless engine's own driver, plus a log
+/// of what it fed.
 ///
-/// It owns the [`RenderSlot`] the real callback would and drives it in a loop, so the machinery a
-/// device would exercise runs with no device: the install mailbox drains, the master-gain ramp runs,
-/// survivors are box-transplanted, and retirees are posted back for the Coordinator's off-thread
-/// `reclaim`. That is what makes a swap real end-to-end in a test. Rendering the *logical* master
-/// directly (no device output map — that half needs real hardware) is enough.
-///
-/// It also drains the control ingress exactly as `audio.rs` does — **batch by batch, each batch
-/// whole** — and records what it fed, so a `send` test can assert the door delivered
+/// It records each control batch it drained, so a `send` test can assert the door delivered
 /// `{address, [Arg]}` to the same `queue_osc` call an external OSC datagram reaches, rather than to
 /// a hand-written stand-in for it.
 pub struct FakeCallback {
-    stop: Arc<AtomicBool>,
-    handle: Option<JoinHandle<()>>,
+    // Held only to be dropped, which stops and joins it.
+    _driver: HeadlessDriver,
     queued: Arc<Mutex<Vec<OscIn>>>,
     batches: Arc<Mutex<Vec<usize>>>,
 }
@@ -73,66 +64,15 @@ pub struct FakeCallback {
 impl FakeCallback {
     /// Start driving `side`, draining `control_rx` into the slot's `queue_osc`.
     pub fn spawn(side: RenderSide, control_rx: Receiver<ControlBatch>) -> Self {
-        Self::start(side, control_rx, None, true)
-    }
-
-    /// The headless engine's driver: forwards outbound Messages to `outbound` the way the device
-    /// callback does, and keeps no log of what it fed, since it may run for as long as a session.
-    pub(crate) fn drive(
-        side: RenderSide,
-        control_rx: Receiver<ControlBatch>,
-        outbound: Option<Sender<Message>>,
-    ) -> Self {
-        Self::start(side, control_rx, outbound, false)
-    }
-
-    fn start(
-        side: RenderSide,
-        control_rx: Receiver<ControlBatch>,
-        outbound: Option<Sender<Message>>,
-        record: bool,
-    ) -> Self {
-        let stop = Arc::new(AtomicBool::new(false));
-        let stop_thread = Arc::clone(&stop);
         let queued = Arc::new(Mutex::new(Vec::new()));
-        let queued_thread = Arc::clone(&queued);
         let batches = Arc::new(Mutex::new(Vec::new()));
-        let batches_thread = Arc::clone(&batches);
-        let handle = std::thread::spawn(move || {
-            let mut slot = RenderSlot::new(side);
-            let mut buf = vec![0.0f32; BLOCK * slot.channels().max(1)];
-            while !stop_thread.load(Ordering::SeqCst) {
-                // The real callback's control drain, mirrored: each item is a whole batch and is
-                // applied without splitting, so a gesture reaches one block. Flat args in, typed at
-                // the slot's Engine where the destination port's type is known.
-                while let Ok(batch) = control_rx.try_recv() {
-                    for m in &batch {
-                        slot.queue_osc(&m.address, &m.args);
-                    }
-                    if record {
-                        batches_thread.lock().expect("batch log").push(batch.len());
-                        queued_thread.lock().expect("queued log").extend(batch);
-                    }
-                }
-                let ch = slot.channels().max(1);
-                if buf.len() != BLOCK * ch {
-                    buf.resize(BLOCK * ch, 0.0);
-                }
-                slot.fill(&mut buf);
-                for m in slot.drain_outbound() {
-                    if let Some(tx) = &outbound {
-                        let _ = tx.send(m);
-                    }
-                }
-                // Pace the loop like a device would: fast enough that a swap's ramp completes in a
-                // few ms, slow enough not to spin a core.
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            // The slot (and its Engine + mailbox) drops here, off any RT thread.
+        let (queued_log, batch_log) = (Arc::clone(&queued), Arc::clone(&batches));
+        let driver = HeadlessDriver::spawn(side, control_rx, None, move |batch: ControlBatch| {
+            batch_log.lock().expect("batch log").push(batch.len());
+            queued_log.lock().expect("queued log").extend(batch);
         });
         Self {
-            stop,
-            handle: Some(handle),
+            _driver: driver,
             queued,
             batches,
         }
@@ -160,27 +100,10 @@ impl FakeCallback {
     pub fn stop(self) {}
 }
 
-impl Drop for FakeCallback {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-    }
-}
-
-/// [`engine::start`](crate::engine::start) with a [`FakeCallback`] in place of the audio device, at
-/// 48 kHz and the fake's block size: everything else — the instrument load, the OSC sockets, the
-/// structure server, the teardown — is the real entry point's. The profile and `block_size` are
-/// ignored and the render side is output-only.
+/// [`engine::start_headless`](crate::engine::start_headless), the entry point `reuben play
+/// --headless` runs.
 pub fn start_headless(config: EngineConfig) -> Result<RunningEngine, StartError> {
-    start_with(
-        config,
-        Render::Headless {
-            config: headless_config(),
-            outbound: None,
-        },
-    )
+    crate::engine::start_headless(config)
 }
 
 /// [`start_headless`], plus a clone of the render callback's outbound sender held by the caller —
@@ -200,10 +123,6 @@ pub fn start_headless_holding_outbound(
         },
     )?;
     Ok((engine, held))
-}
-
-fn headless_config() -> AudioConfig {
-    AudioConfig::new(48_000.0, BLOCK)
 }
 
 /// How long a whole engine teardown may take. Its own polls add up to well under this (the structure

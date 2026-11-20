@@ -4,6 +4,7 @@
 //! set of flags and environment variables to one [`EngineConfig`].
 
 use std::fmt;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use crate::engine::{EngineConfig, Instrument};
@@ -51,17 +52,38 @@ pub struct EngineFlags {
     /// bit-identical to today's behavior. See docs/device-profile.md.
     #[arg(long, value_name = "FILE")]
     pub io_map: Option<PathBuf>,
+    /// Open no audio device: a thread renders blocks at 48 kHz and discards the output, so the
+    /// engine serves its structure channel and OSC on a machine with no sound card.
+    #[arg(long)]
+    pub headless: bool,
+    /// Serve the structure channel on this loopback `ip:port` instead of the default. A literal
+    /// address, not a host name: anything that is not a loopback IP is refused.
+    #[arg(long, value_name = "HOST:PORT")]
+    pub structure_addr: Option<String>,
+    /// Listen for OSC on this `host:port` instead of every interface at the default port.
+    #[arg(long, value_name = "HOST:PORT")]
+    pub osc_in: Option<String>,
 }
 
 impl EngineFlags {
     /// [`EngineConfig::new`] with these flags, `instrument_root` and [`log_osc`] applied. A
     /// malformed profile is an error: a structural problem in a document the user named, never
-    /// silently replaced by the default devices.
+    /// silently replaced by the default devices. So is a `--structure-addr` that is not a literal
+    /// loopback IP. `--headless` is not part of the config; the caller picks the entry point.
     pub fn config(
         &self,
         instrument: Instrument,
         instrument_root: Option<PathBuf>,
-    ) -> Result<EngineConfig, IoMapError> {
+    ) -> Result<EngineConfig, FlagsError> {
+        if let Some(addr) = &self.structure_addr {
+            // Parsed, never resolved: a host name could resolve to a routable interface.
+            let loopback = addr
+                .parse::<SocketAddr>()
+                .is_ok_and(|parsed| parsed.ip().is_loopback());
+            if !loopback {
+                return Err(FlagsError::StructureNotLoopback(addr.clone()));
+            }
+        }
         let profile = match &self.io_map {
             Some(path) => DeviceProfile::load(path).map_err(|error| IoMapError {
                 path: path.clone(),
@@ -69,13 +91,55 @@ impl EngineFlags {
             })?,
             None => DeviceProfile::default(),
         };
+        let defaults = EngineConfig::new(instrument);
         Ok(EngineConfig {
             instrument_root,
             profile,
             osc_out: self.osc_out.clone(),
+            osc_in: self.osc_in.clone().or_else(|| defaults.osc_in.clone()),
+            structure: self
+                .structure_addr
+                .clone()
+                .or_else(|| defaults.structure.clone()),
             log_osc: log_osc(),
-            ..EngineConfig::new(instrument)
+            ..defaults
         })
+    }
+}
+
+/// The engine flags would not make an [`EngineConfig`].
+#[derive(Debug)]
+pub enum FlagsError {
+    /// The `--io-map` profile would not load.
+    IoMap(IoMapError),
+    /// `--structure-addr` is not a literal loopback IP and port.
+    StructureNotLoopback(String),
+}
+
+impl From<IoMapError> for FlagsError {
+    fn from(error: IoMapError) -> Self {
+        FlagsError::IoMap(error)
+    }
+}
+
+impl fmt::Display for FlagsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FlagsError::IoMap(e) => write!(f, "{e}"),
+            FlagsError::StructureNotLoopback(_) => write!(
+                f,
+                "--structure-addr must be a loopback address until token authentication exists"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FlagsError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            FlagsError::IoMap(e) => Some(e),
+            FlagsError::StructureNotLoopback(_) => None,
+        }
     }
 }
 
@@ -95,5 +159,65 @@ impl fmt::Display for IoMapError {
 impl std::error::Error for IoMapError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(&self.error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+
+    #[derive(Parser)]
+    struct Probe {
+        #[command(flatten)]
+        flags: EngineFlags,
+    }
+
+    fn parse(args: &[&str]) -> EngineFlags {
+        Probe::try_parse_from(std::iter::once("probe").chain(args.iter().copied()))
+            .expect("the flags parse")
+            .flags
+    }
+
+    #[test]
+    fn structure_addr_flag_reaches_the_config() {
+        let flags = parse(&["--structure-addr", "127.0.0.1:9124"]);
+        let config = flags.config(Instrument::Default, None).expect("a config");
+        assert_eq!(config.structure.as_deref(), Some("127.0.0.1:9124"));
+    }
+
+    #[test]
+    fn a_non_loopback_structure_addr_is_refused() {
+        for addr in ["0.0.0.0:9124", "192.168.1.2:9124", "localhost:9124"] {
+            let flags = parse(&["--structure-addr", addr]);
+            let error = flags
+                .config(Instrument::Default, None)
+                .expect_err("a non-loopback structure address is refused");
+            assert_eq!(
+                error.to_string(),
+                "--structure-addr must be a loopback address until token authentication exists",
+                "{addr}"
+            );
+        }
+    }
+
+    #[test]
+    fn headless_and_osc_in_flags_parse() {
+        let flags = parse(&["--headless", "--osc-in", "127.0.0.1:9000"]);
+        assert!(flags.headless);
+        let config = flags.config(Instrument::Default, None).expect("a config");
+        assert_eq!(config.osc_in.as_deref(), Some("127.0.0.1:9000"));
+
+        let defaults = parse(&[]);
+        assert!(!defaults.headless);
+        let config = defaults
+            .config(Instrument::Default, None)
+            .expect("a config");
+        assert_eq!(config.osc_in, EngineConfig::new(Instrument::Default).osc_in);
+        assert_eq!(
+            config.structure,
+            EngineConfig::new(Instrument::Default).structure
+        );
     }
 }

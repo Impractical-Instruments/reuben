@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use eframe::egui;
 use reuben_native::audio::AudioError;
-use reuben_native::cli::{EngineFlags, IoMapError};
+use reuben_native::cli::{EngineFlags, FlagsError};
 use reuben_native::devices::{self, OutputDevice};
 use reuben_native::engine::{self, EngineConfig, Instrument, RunningEngine, StartError};
 use reuben_native::profile::DeviceProfile;
@@ -100,7 +100,7 @@ impl AudioSettings {
         flags: &EngineFlags,
         instrument: Instrument,
         instrument_root: Option<PathBuf>,
-    ) -> Result<EngineConfig, IoMapError> {
+    ) -> Result<EngineConfig, FlagsError> {
         let mut config = flags.config(instrument, instrument_root)?;
         match &flags.io_map {
             Some(path) => self.io_map = Some(path.clone()),
