@@ -3,7 +3,7 @@
 
 use std::io::{BufRead, BufReader};
 use std::net::{TcpListener, UdpSocket};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -19,13 +19,20 @@ const DOC: &str = r#"{"format_version":3,"instrument":"headless",
 /// How long the binary may take to bind and announce its structure channel.
 const STARTUP: Duration = Duration::from_secs(30);
 
-/// Kills the child however the test ends, so a failed assertion leaves no server holding ports.
-struct Killed(Child);
+/// Kills the child and removes the seeded directory however the test ends, so a failed assertion
+/// leaves no server holding ports and nothing in the temp dir.
+struct Cleanup {
+    child: Option<Child>,
+    dir: PathBuf,
+}
 
-impl Drop for Killed {
+impl Drop for Cleanup {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        if let Some(child) = &mut self.child {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
@@ -53,13 +60,17 @@ fn hash(path: &Path) -> String {
 fn play_headless_serves_the_structure_channel_on_the_chosen_port() {
     let dir = std::env::temp_dir().join(format!("reuben_play_headless_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
+    let mut cleanup = Cleanup {
+        child: None,
+        dir: dir.clone(),
+    };
     std::fs::create_dir_all(&dir).expect("dir");
     let doc = dir.join("headless.json");
     std::fs::write(&doc, DOC).expect("seed the document");
 
     let structure = format!("127.0.0.1:{}", free_tcp_port());
     let osc_in = format!("127.0.0.1:{}", free_udp_port());
-    let mut child = Killed(
+    let child = cleanup.child.insert(
         Command::new(env!("CARGO_BIN_EXE_reuben"))
             .args(["play", "--headless", "--structure-addr", &structure])
             .args(["--osc-in", &osc_in])
@@ -70,7 +81,7 @@ fn play_headless_serves_the_structure_channel_on_the_chosen_port() {
             .expect("spawn reuben play"),
     );
 
-    let stdout = child.0.stdout.take().expect("piped stdout");
+    let stdout = child.stdout.take().expect("piped stdout");
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -94,6 +105,5 @@ fn play_headless_serves_the_structure_channel_on_the_chosen_port() {
     let snapshot = channel.get_document().expect("get_document");
     assert_eq!(snapshot.content_hash, hash(&doc));
 
-    drop(child);
-    let _ = std::fs::remove_dir_all(&dir);
+    drop(cleanup);
 }

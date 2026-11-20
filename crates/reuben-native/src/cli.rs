@@ -54,7 +54,7 @@ pub struct EngineFlags {
     pub io_map: Option<PathBuf>,
     /// Open no audio device: a thread renders blocks at 48 kHz and discards the output, so the
     /// engine serves its structure channel and OSC on a machine with no sound card.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "io_map")]
     pub headless: bool,
     /// Serve the structure channel on this loopback `ip:port` instead of the default. A literal
     /// address, not a host name: anything that is not a loopback IP is refused.
@@ -208,6 +208,11 @@ mod tests {
         assert!(flags.headless);
         let config = flags.config(Instrument::Default, None).expect("a config");
         assert_eq!(config.osc_in.as_deref(), Some("127.0.0.1:9000"));
+
+        let conflict = Probe::try_parse_from(["probe", "--headless", "--io-map", "rig.json"])
+            .err()
+            .expect("--headless with --io-map is refused");
+        assert_eq!(conflict.kind(), clap::error::ErrorKind::ArgumentConflict);
 
         let defaults = parse(&[]);
         assert!(!defaults.headless);

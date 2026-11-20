@@ -19,11 +19,11 @@ use std::fmt;
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use reuben_api::authoring::{DocumentHistory, Resources};
 use reuben_api::engine::{
@@ -54,9 +54,10 @@ pub const HEADLESS_SAMPLE_RATE: f32 = 48_000.0;
 /// The block size a headless engine renders at.
 pub const HEADLESS_BLOCK_SIZE: usize = 128;
 
-/// How long the headless driver sleeps between blocks: short enough that a swap's ramp completes
-/// in a few ms, long enough not to spin a core.
-const HEADLESS_PACE: Duration = Duration::from_millis(1);
+/// How far behind its deadline the real-time headless driver may fall before it gives up catching
+/// up and restarts its clock: a stall (a suspended process, a starved thread) is not paid back as a
+/// burst of blocks rendered back to back.
+const HEADLESS_MAX_LAG_BLOCKS: u32 = 8;
 
 /// How often the periodic diagnostics logger wakes to check the counters. It only emits a line when
 /// something changed, so a healthy run stays quiet at this cadence regardless.
@@ -142,6 +143,8 @@ pub enum StartError {
     /// The structure address names a non-loopback interface. Structure edits are more powerful
     /// than control, so the channel is never network-exposed.
     StructureNotLoopback(String),
+    /// The headless render thread would not start.
+    RenderThread(io::Error),
 }
 
 impl fmt::Display for StartError {
@@ -157,6 +160,7 @@ impl fmt::Display for StartError {
             StartError::StructureNotLoopback(addr) => {
                 write!(f, "structure channel {addr} is not a loopback address")
             }
+            StartError::RenderThread(e) => write!(f, "start the headless render thread: {e}"),
         }
     }
 }
@@ -166,7 +170,8 @@ impl std::error::Error for StartError {
         match self {
             StartError::ReadInstrument { error, .. }
             | StartError::OscIn { error, .. }
-            | StartError::OscOut { error, .. } => Some(error),
+            | StartError::OscOut { error, .. }
+            | StartError::RenderThread(error) => Some(error),
             StartError::Instrument(e) => Some(e),
             StartError::Audio(e) => Some(e),
             StartError::StructureNotLoopback(_) => None,
@@ -340,6 +345,7 @@ pub fn start_headless(config: EngineConfig) -> Result<RunningEngine, StartError>
         config,
         Render::Headless {
             config: headless_config(),
+            pace: Pace::RealTime,
             outbound: None,
         },
     )
@@ -348,6 +354,16 @@ pub fn start_headless(config: EngineConfig) -> Result<RunningEngine, StartError>
 /// The render configuration [`start_headless`] runs at.
 pub(crate) fn headless_config() -> AudioConfig {
     AudioConfig::new(HEADLESS_SAMPLE_RATE, HEADLESS_BLOCK_SIZE)
+}
+
+/// How often the [`HeadlessDriver`] renders a block.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Pace {
+    /// One block's duration per block, against a running deadline so sleep error does not
+    /// accumulate: what a device would ask for.
+    RealTime,
+    /// A fixed sleep after each block, whatever the block's duration.
+    Every(Duration),
 }
 
 /// The render driver of a headless engine: a thread that owns the [`RenderSlot`] a device callback
@@ -360,25 +376,36 @@ pub(crate) fn headless_config() -> AudioConfig {
 /// forwards outbound Messages to the OSC-out sender. Dropping it stops and joins the thread.
 pub(crate) struct HeadlessDriver {
     stop: Arc<AtomicBool>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    blocks: Arc<AtomicU64>,
     handle: Option<JoinHandle<()>>,
 }
 
 impl HeadlessDriver {
-    /// Start driving `side`. Each control batch is handed to `drained` once it has been queued,
-    /// on the render thread; the engine's own driver passes one that drops it.
+    /// Start driving `side` in blocks of `config.block_size`, paced by `pace`. Each control batch is
+    /// handed to `drained` once it has been queued, on the render thread; the engine's own driver
+    /// passes one that drops it.
     pub(crate) fn spawn(
         side: RenderSide,
+        config: AudioConfig,
+        pace: Pace,
         control_rx: Receiver<ControlBatch>,
         outbound: Option<Sender<Message>>,
         mut drained: impl FnMut(ControlBatch) + Send + 'static,
-    ) -> Self {
+    ) -> io::Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = Arc::clone(&stop);
+        let blocks = Arc::new(AtomicU64::new(0));
+        let blocks_thread = Arc::clone(&blocks);
+        let block_size = config.block_size;
+        let block = Duration::from_secs_f64(block_size as f64 / f64::from(config.sample_rate));
+        let max_lag = block * HEADLESS_MAX_LAG_BLOCKS;
         let handle = std::thread::Builder::new()
             .name("headless-render".to_string())
             .spawn(move || {
                 let mut slot = RenderSlot::new(side);
-                let mut buf = vec![0.0f32; HEADLESS_BLOCK_SIZE * slot.channels().max(1)];
+                let mut buf = vec![0.0f32; block_size * slot.channels().max(1)];
+                let mut deadline = Instant::now();
                 while !stop_thread.load(Ordering::SeqCst) {
                     // Each item is a whole batch, applied without splitting, so a gesture reaches
                     // one block. Flat args in, typed at the slot's Engine where the destination
@@ -392,8 +419,8 @@ impl HeadlessDriver {
                     let ch = slot.channels().max(1);
                     // A swap can change the channel count; the device callback is handed a buffer
                     // of the right size instead.
-                    if buf.len() != HEADLESS_BLOCK_SIZE * ch {
-                        buf.resize(HEADLESS_BLOCK_SIZE * ch, 0.0);
+                    if buf.len() != block_size * ch {
+                        buf.resize(block_size * ch, 0.0);
                     }
                     slot.fill(&mut buf);
                     for m in slot.drain_outbound() {
@@ -401,15 +428,33 @@ impl HeadlessDriver {
                             let _ = tx.send(m);
                         }
                     }
-                    std::thread::sleep(HEADLESS_PACE);
+                    blocks_thread.fetch_add(1, Ordering::Relaxed);
+                    match pace {
+                        Pace::RealTime => {
+                            deadline += block;
+                            let now = Instant::now();
+                            if deadline > now {
+                                std::thread::sleep(deadline - now);
+                            } else if now - deadline > max_lag {
+                                deadline = now;
+                            }
+                        }
+                        Pace::Every(wait) => std::thread::sleep(wait),
+                    }
                 }
                 // The slot (and its Engine + mailbox) drops here, off any RT thread.
-            })
-            .expect("spawn headless render thread");
-        Self {
+            })?;
+        Ok(Self {
             stop,
+            blocks,
             handle: Some(handle),
-        }
+        })
+    }
+
+    /// How many blocks the driver has rendered.
+    #[cfg(test)]
+    pub(crate) fn blocks(&self) -> u64 {
+        self.blocks.load(Ordering::Relaxed)
     }
 }
 
@@ -430,6 +475,7 @@ pub(crate) enum Render<'a> {
     /// stream it reports is as wide as a device start would open it.
     Headless {
         config: AudioConfig,
+        pace: Pace,
         /// When `Some`, receives a clone of the render callback's outbound sender — a test's
         /// stand-in for a device callback that outlives its stream's drop.
         outbound: Option<&'a mut Option<Sender<Message>>>,
@@ -519,6 +565,7 @@ pub(crate) fn start_with(
         }
         Render::Headless {
             config: cfg,
+            pace,
             outbound,
         } => {
             let (coordinator, side, warnings) = build(cfg).map_err(StartError::Instrument)?;
@@ -528,8 +575,10 @@ pub(crate) fn start_with(
             // Sized as a device start sizes its input stream, so a swap is judged against the
             // same geometry. No input is fed: the bound pipes read silence.
             let opened_input = coordinator.installed_input_channels();
+            let driver = HeadlessDriver::spawn(side, cfg, pace, osc_rx, osc_out_tx, drop)
+                .map_err(StartError::RenderThread)?;
             (
-                Output::Headless(HeadlessDriver::spawn(side, osc_rx, osc_out_tx, drop)),
+                Output::Headless(driver),
                 Diagnostics::new(),
                 Meters::none(),
                 coordinator,
@@ -771,5 +820,40 @@ impl Drop for OscListener {
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A production headless engine renders at the rate a device would ask for, not as fast as it
+    /// can: over a stretch of wall time, the blocks it rendered are about that time's worth.
+    #[test]
+    fn a_headless_engine_renders_at_real_time() {
+        let config = EngineConfig {
+            osc_in: None,
+            structure: None,
+            follow_files: false,
+            ..EngineConfig::new(Instrument::Default)
+        };
+        let engine = start_headless(config).expect("the engine starts");
+        let blocks = || match &engine.output {
+            Some(Output::Headless(driver)) => driver.blocks(),
+            _ => panic!("a headless engine has a headless driver"),
+        };
+        // Past the first block, so thread start-up is not in the measured stretch.
+        while blocks() == 0 {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let (from, started) = (blocks(), Instant::now());
+        std::thread::sleep(Duration::from_millis(200));
+        let rendered = (blocks() - from) as f64;
+        let elapsed = started.elapsed().as_secs_f64();
+        let expected = elapsed * f64::from(HEADLESS_SAMPLE_RATE) / HEADLESS_BLOCK_SIZE as f64;
+        assert!(
+            (rendered - expected).abs() <= expected * 0.25,
+            "rendered {rendered} blocks in {elapsed:.3}s; real time is {expected:.1}"
+        );
     }
 }

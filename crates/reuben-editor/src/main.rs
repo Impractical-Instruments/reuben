@@ -27,7 +27,7 @@ mod ui_tests;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use eframe::egui;
 use reuben_native::cli::{EngineFlags, InstrumentRoot};
 use reuben_native::engine::{EngineConfig, Instrument};
@@ -63,8 +63,24 @@ struct Args {
     engine: EngineFlags,
 }
 
+impl Args {
+    /// `parsed`, refusing the engine flags this binary cannot honour: the editor always plays on
+    /// an audio device, so `--headless` belongs to `reuben play`.
+    fn checked(parsed: Result<Self, clap::Error>) -> Result<Self, clap::Error> {
+        let args = parsed?;
+        if args.engine.headless {
+            return Err(Args::command().error(
+                clap::error::ErrorKind::ArgumentConflict,
+                "reuben-editor always plays on an audio device; to run headless, start \
+                 `reuben play --headless` and attach to it with --attach",
+            ));
+        }
+        Ok(args)
+    }
+}
+
 fn main() -> eframe::Result {
-    let args = Args::parse();
+    let args = Args::checked(Args::try_parse()).unwrap_or_else(|e| e.exit());
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("reuben-editor")
         .with_app_id("reuben-editor")
@@ -484,6 +500,22 @@ mod tests {
             Engine::idle()
         });
         assert!(held.is_some());
+    }
+
+    #[test]
+    fn headless_is_refused() {
+        let error = Args::checked(Args::try_parse_from([
+            "reuben-editor",
+            "--headless",
+            "instrument.json",
+        ]))
+        .err()
+        .expect("--headless is refused");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        assert!(
+            error.to_string().contains("reuben play --headless"),
+            "{error}"
+        );
     }
 
     #[test]

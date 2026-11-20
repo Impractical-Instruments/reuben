@@ -16,7 +16,8 @@ use reuben_api::resources::{ResolveError, Resources, SampleBuffer};
 use reuben_api::staged::Staged;
 
 use crate::engine::{
-    headless_config, start_with, EngineConfig, HeadlessDriver, Render, RunningEngine, StartError,
+    headless_config, start_with, EngineConfig, HeadlessDriver, Pace, Render, RunningEngine,
+    StartError,
 };
 use crate::osc::{ControlBatch, OscIn};
 
@@ -48,6 +49,10 @@ pub fn served(staged: Staged<Box<dyn Resources + Send + Sync>>) -> Arc<ServerSto
 /// Bounded so a regression fails as a red test rather than hanging CI.
 const QUEUED_DEADLINE: Duration = Duration::from_secs(2);
 
+/// How often [`FakeCallback`] renders: faster than real time, so a swap's ramp completes in a few ms
+/// of a test's wall time.
+const FAKE_PACE: Pace = Pace::Every(Duration::from_millis(1));
+
 /// A background stand-in for the cpal render callback: the headless engine's own driver, plus a log
 /// of what it fed.
 ///
@@ -67,10 +72,13 @@ impl FakeCallback {
         let queued = Arc::new(Mutex::new(Vec::new()));
         let batches = Arc::new(Mutex::new(Vec::new()));
         let (queued_log, batch_log) = (Arc::clone(&queued), Arc::clone(&batches));
-        let driver = HeadlessDriver::spawn(side, control_rx, None, move |batch: ControlBatch| {
+        let record = move |batch: ControlBatch| {
             batch_log.lock().expect("batch log").push(batch.len());
             queued_log.lock().expect("queued log").extend(batch);
-        });
+        };
+        let driver =
+            HeadlessDriver::spawn(side, headless_config(), FAKE_PACE, control_rx, None, record)
+                .expect("spawn the fake render callback");
         Self {
             _driver: driver,
             queued,
@@ -119,6 +127,7 @@ pub fn start_headless_holding_outbound(
         config,
         Render::Headless {
             config: headless_config(),
+            pace: Pace::RealTime,
             outbound: Some(&mut held),
         },
     )?;
