@@ -39,9 +39,9 @@ use crate::authoring::{Diag, Report};
 use super::channel::Transport;
 
 use super::wire::{
-    over_long_batch_refusal, Conflict, ControlMessage, DiagnosticsReport, DocSource,
-    DocumentSnapshot, HeldSwap, MetersReport, Request, Response, SwapReport, EMPTY_BATCH_REFUSAL,
-    MAX_PROBES, MAX_SEND_BATCH,
+    over_long_batch_refusal, over_long_probe_set_refusal, Conflict, ControlMessage,
+    DiagnosticsReport, DocSource, DocumentSnapshot, HeldSwap, MetersReport, Request, Response,
+    SwapReport, EMPTY_BATCH_REFUSAL, MAX_PROBES, MAX_SEND_BATCH,
 };
 
 /// What a host must provide for the window to serve the engine verbs — the device, the clock and
@@ -399,7 +399,7 @@ fn handle_send(state: &StructureState, messages: Vec<ControlMessage>) -> Respons
 fn handle_set_probes(state: &StructureState, paths: Vec<Vec<String>>) -> Response {
     if paths.len() > MAX_PROBES {
         return Response::Error {
-            message: format!("at most {MAX_PROBES} probes"),
+            message: over_long_probe_set_refusal(),
         };
     }
     match state.host.set_probes(paths) {

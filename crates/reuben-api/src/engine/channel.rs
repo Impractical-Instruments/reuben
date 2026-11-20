@@ -22,8 +22,8 @@ use std::time::Duration;
 
 use super::prose::ENGINE_UNREACHABLE_GUIDANCE;
 use super::wire::{
-    Conflict, ControlMessage, DiagnosticsReport, DocSource, DocumentSnapshot, HeldSwap,
-    MetersReport, Request, Response, SwapReport, MAX_PROBES,
+    over_long_probe_set_refusal, Conflict, ControlMessage, DiagnosticsReport, DocSource,
+    DocumentSnapshot, HeldSwap, MetersReport, Request, Response, SwapReport, MAX_PROBES,
 };
 
 /// How long to wait for the one response line before giving up on a *wedged* server (connected but
@@ -212,9 +212,7 @@ impl Channel {
     /// refuses it too.
     pub fn set_probes(&self, paths: Vec<Vec<String>>) -> Result<Vec<Vec<String>>, ChannelError> {
         if paths.len() > MAX_PROBES {
-            return Err(ChannelError::Channel(format!(
-                "at most {MAX_PROBES} probes"
-            )));
+            return Err(ChannelError::Channel(over_long_probe_set_refusal()));
         }
         match self.exchange(&Request::SetProbes { paths })? {
             Response::Probes { resolved } => Ok(resolved),

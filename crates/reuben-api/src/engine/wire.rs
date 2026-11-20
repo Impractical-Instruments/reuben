@@ -82,6 +82,11 @@ pub fn over_long_batch_refusal(len: usize) -> String {
     )
 }
 
+/// Why a probe set over [`MAX_PROBES`] is refused: one sentence for the condition, both ends.
+pub fn over_long_probe_set_refusal() -> String {
+    format!("at most {MAX_PROBES} probes")
+}
+
 /// One control atom on this channel: the **flat primitive form** — a number or a string, and
 /// nothing else.
 ///
@@ -138,7 +143,7 @@ pub struct ControlMessage {
     pub args: Vec<ControlArg>,
 }
 
-/// One structure-channel request (its six verbs), serialized as a single JSON
+/// One structure-channel request (its seven verbs), serialized as a single JSON
 /// object tagged by `verb`: `{"verb": "ping"}`, `{"verb": "swap", "source": …}`, ….
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "verb", rename_all = "snake_case")]
@@ -369,10 +374,12 @@ pub enum Response {
     Document(DocumentSnapshot),
     /// `GetDiagnostics`' answer: the diagnostics counters.
     Diagnostics(DiagnosticsReport),
-    /// `GetMeters`' answer: the levels at the device, one entry per channel.
+    /// `GetMeters`' answer: the levels at the device, one entry per channel, and those of the
+    /// nodes [`SetProbes`](Request::SetProbes) chose.
     Meters(MetersReport),
     /// `SetProbes`' answer: the paths that now measure, each as given, in request order. Fewer
-    /// than were asked means the rest named no node with a Signal output.
+    /// than were asked means the rest named no node with a Signal output, or repeated a path
+    /// already given.
     Probes { resolved: Vec<Vec<String>> },
     /// A `Swap` whose `expect` guard missed: nothing installed — the [`Conflict`] names both
     /// hashes so the client re-reads via `GetDocument` and reconciles. A newtype variant, so both
@@ -460,7 +467,7 @@ pub struct MetersReport {
 }
 
 /// One probed node's levels: a [`PortLevel`] per Signal output port, in port order.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProbeLevels {
     /// The node's path, as given to [`Request::SetProbes`].
     pub path: Vec<String>,
@@ -469,10 +476,11 @@ pub struct ProbeLevels {
 }
 
 /// One output port's level, with the same ballistics as a device channel's.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PortLevel {
     /// The port's name on the node.
     pub port: String,
+    /// The port's peak and RMS, in dBFS.
     pub level: ChannelLevel,
 }
 
@@ -723,8 +731,8 @@ mod tests {
 
     #[test]
     fn every_request_variant_round_trips_as_one_ndjson_line() {
-        // The six verbs: ping, swap (by value or by path, with the optional
-        // expect guard), get_document, get_diagnostics, get_meters, send.
+        // The seven verbs: ping, swap (by value or by path, with the optional
+        // expect guard), get_document, get_diagnostics, get_meters, set_probes, send.
         let requests = [
             Request::Ping,
             Request::Swap {
