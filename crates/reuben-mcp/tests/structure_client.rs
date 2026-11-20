@@ -372,6 +372,35 @@ fn wedged_server_read_times_out_instead_of_hanging() {
 }
 
 #[test]
+fn a_wedged_server_leaves_a_call_unanswered_not_unreachable() {
+    // The request line reached the engine, so it may yet be applied: the caller is told to re-read,
+    // not to start an engine that is already running.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind wedged stub");
+    let addr = listener.local_addr().expect("wedged addr");
+    thread::spawn(move || {
+        let mut held = Vec::new();
+        for stream in listener.incoming() {
+            match stream {
+                Ok(s) => held.push(s),
+                Err(_) => break,
+            }
+        }
+    });
+    let client = channel_with_timeouts(
+        addr.to_string(),
+        Duration::from_millis(500),
+        Duration::from_millis(300),
+    );
+    let err = within(Duration::from_secs(5), "wedged call", move || {
+        client
+            .call("add_instrument_node", serde_json::json!({}))
+            .expect_err("a wedged server must time out, not hang")
+    });
+    assert!(!err.is_unreachable(), "{err}");
+    assert!(err.to_string().contains("may have been applied"), "{err}");
+}
+
+#[test]
 fn ping_fails_fast_even_when_the_general_read_budget_is_generous() {
     // A `ping`'s pong is immediate, so the liveness probe must not inherit the generous read
     // budget a real swap earns. Wedge a server, hand the client a deliberately huge general read

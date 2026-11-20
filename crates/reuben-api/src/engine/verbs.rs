@@ -376,12 +376,15 @@ fn levels(channels: &[ChannelLevel]) -> String {
 }
 
 /// The one place a failed exchange becomes a refusal, so no two verbs classify it differently:
-/// unreachable answers with the shared guidance, anything else names *which* call died.
+/// unreachable answers with the shared guidance, an unanswered request with its re-read guidance
+/// (the request may have run, so `context`'s "could not" would be false), and anything else names
+/// *which* call died.
 fn refuse(context: &str, why: ChannelError) -> Refusal {
-    if why.is_unreachable() {
-        return Refusal::new(ENGINE_UNREACHABLE_GUIDANCE);
+    match why {
+        ChannelError::Unreachable(_) => Refusal::new(ENGINE_UNREACHABLE_GUIDANCE),
+        ChannelError::NoAnswer(guidance) => Refusal::new(guidance),
+        why => Refusal::new(format!("{context}: {why}")),
     }
-    Refusal::new(format!("{context}: {why}"))
 }
 
 /// Convert a `send` message's JSON args into the wire's flat control atoms.
@@ -558,6 +561,55 @@ mod tests {
         ];
         for refusal in refusals {
             assert_eq!(refusal.message, ENGINE_UNREACHABLE_GUIDANCE);
+        }
+    }
+
+    /// A transport whose engine took the request and never answered.
+    #[derive(Debug)]
+    struct SlowEngine;
+
+    impl Transport for SlowEngine {
+        fn round_trip(&self, _line: &str, _read_timeout: Duration) -> io::Result<String> {
+            Err(super::super::channel::unanswered(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "read timed out",
+            )))
+        }
+
+        fn endpoint(&self) -> &str {
+            "127.0.0.1:9124"
+        }
+    }
+
+    /// A slow answer is not a dead engine: telling the caller to start one would send it to retry
+    /// a request the engine may already have applied.
+    #[test]
+    fn an_unanswered_request_says_it_may_have_been_applied() {
+        let channel = Channel::new(SlowEngine);
+        let refusals = [
+            call_tool("add_instrument_node", &serde_json::json!({}), &channel)
+                .expect_err("no answer"),
+            open_instrument(
+                &OpenInstrument {
+                    name: "a.json".to_string(),
+                    expect: None,
+                },
+                &channel,
+            )
+            .expect_err("no answer"),
+        ];
+        for refusal in refusals {
+            assert_ne!(refusal.message, ENGINE_UNREACHABLE_GUIDANCE);
+            assert!(
+                !refusal.message.contains("could not"),
+                "it may have been: {refusal}"
+            );
+            assert!(
+                refusal.message.contains("may have been applied")
+                    && refusal.message.contains("get_current_instrument")
+                    && refusal.message.contains("describe_instrument"),
+                "{refusal}"
+            );
         }
     }
 
