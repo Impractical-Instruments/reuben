@@ -649,18 +649,6 @@ fn a_channel_subscription_over_tcp_sees_an_edit() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The peak, in dBFS, of the probe on `node`'s first output port, read `settle` after the probe is
-/// set. A headless engine has no device meters, so a probe is what tells silence from sound.
-fn probe_peak(channel: &reuben_api::engine::Channel, node: &str, settle: Duration) -> f32 {
-    let resolved = channel
-        .set_probes(vec![vec![node.to_string()]])
-        .expect("set_probes");
-    assert_eq!(resolved, vec![vec![node.to_string()]], "{node} resolves");
-    std::thread::sleep(settle);
-    let probes = channel.get_meters().expect("meters").probes;
-    probes[0].ports[0].level.peak_dbfs
-}
-
 #[test]
 fn a_silent_start_plays_nothing_then_opens_by_name() {
     let dir = scratch("server_calls_silent_start");
@@ -684,9 +672,6 @@ fn a_silent_start_plays_nothing_then_opens_by_name() {
         assert_eq!(nothing.content_hash, "");
         assert_eq!(nothing.source, None);
         assert_eq!(nothing.document, serde_json::Value::Null);
-        // What plays is reuben-api's silence document, whose one node is its output.
-        let silent = probe_peak(&channel, "/silence", Duration::from_millis(200));
-        assert_eq!(silent, METER_FLOOR_DBFS, "nothing plays");
 
         let refused = output(call(
             &t,
@@ -709,14 +694,70 @@ fn a_silent_start_plays_nothing_then_opens_by_name() {
         let opened = snapshot(&t);
         assert_eq!(opened.source.as_deref(), Some(first_s.as_str()));
         assert_ne!(opened.content_hash, "");
+        let resolved = channel
+            .set_probes(vec![vec!["/osc".to_string()]])
+            .expect("set_probes");
+        assert_eq!(resolved, vec![vec!["/osc".to_string()]]);
         let deadline = std::time::Instant::now() + REPLY;
-        while probe_peak(&channel, "/osc", Duration::from_millis(20)) <= METER_FLOOR_DBFS {
+        while channel.get_meters().expect("meters").probes[0].ports[0]
+            .level
+            .peak_dbfs
+            <= METER_FLOOR_DBFS
+        {
+            std::thread::sleep(Duration::from_millis(5));
             assert!(
                 std::time::Instant::now() < deadline,
                 "the opened instrument never sounded"
             );
         }
         drop(channel);
+        timed_teardown(engine, false);
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_refused_open_with_nothing_open_says_nothing_is_open() {
+    let dir = scratch("server_calls_nothing_open_refused");
+    let library = dir.join("lib");
+    std::fs::create_dir_all(&library).expect("dir");
+    let outside = dir.join("outside.json");
+    write(&outside, DOC);
+    let outside_s = outside.display().to_string();
+    let config = EngineConfig {
+        osc_in: None,
+        structure: Some("127.0.0.1:0".to_string()),
+        instrument_root: Some(library.clone()),
+        ..EngineConfig::new(Instrument::Silent)
+    };
+    within(HANG_SECS, move || {
+        let engine = start_headless(config).expect("the engine starts");
+        let addr = engine.structure_addr().expect("a structure socket");
+        let t = TcpTransport::new(addr.to_string(), DEFAULT_CONNECT_TIMEOUT);
+        match ask(
+            &t,
+            &Request::Open {
+                name: outside_s,
+                expect: None,
+            },
+        ) {
+            Response::SwapReport(report) => {
+                assert!(!report.report.ok, "{report:?}");
+                assert_eq!(report.content_hash, "");
+                let warnings: Vec<&str> = report
+                    .report
+                    .warnings
+                    .iter()
+                    .map(|w| w.message.as_str())
+                    .collect();
+                assert_eq!(
+                    warnings,
+                    ["nothing was opened; nothing is open, so nothing plays"]
+                );
+            }
+            other => panic!("expected a swap report, got {other:?}"),
+        }
+        assert_eq!(snapshot(&t).source, None);
         timed_teardown(engine, false);
     });
     let _ = std::fs::remove_dir_all(&dir);

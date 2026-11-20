@@ -1154,7 +1154,7 @@ mod tests {
     }
 
     #[test]
-    fn surface_is_found_up_to_three_ancestors_up() {
+    fn surface_is_found_in_the_own_dir_or_two_ancestors_up() {
         let (base, abs) = scratch_dir("surface-test");
         std::fs::create_dir_all(base.join("a/b/c/d")).unwrap();
         std::fs::create_dir_all(base.join("a/surfaces")).unwrap();

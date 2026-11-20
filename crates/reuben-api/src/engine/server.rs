@@ -1231,7 +1231,7 @@ fn rejected_report(
 }
 
 /// Make `report`, which installed nothing, name what plays: the playing hash and, while nothing
-/// plays, a warning naming the instrument still open, so a reader does not take the empty hash
+/// plays, a warning naming the instrument still open (or saying none is), so a reader does not take the empty hash
 /// for the refused request's own load failing. `went` is the request that installed nothing.
 /// Called under the Coordinator lock.
 fn installed_nothing(
@@ -1244,22 +1244,21 @@ fn installed_nothing(
     if !state.is_silent() {
         return;
     }
-    let open = state
-        .installed_source()
-        .ok()
-        .and_then(|open| open.clone())
-        .unwrap_or_default();
+    let what = match went {
+        Went::Opened | Went::OpenedSilent => "opened",
+        Went::Swapped => "swapped in",
+        Went::Edited | Went::Outside => "installed",
+    };
+    let message = match state.installed_source().ok().and_then(|open| open.clone()) {
+        Some(open) => {
+            format!("nothing was {what}; {open} is still open but does not load, so nothing plays")
+        }
+        None => format!("nothing was {what}; nothing is open, so nothing plays"),
+    };
     report.report.warnings.push(Diag {
         node: None,
         port: None,
-        message: format!(
-            "nothing was {}; {open} is still open but does not load, so nothing plays",
-            match went {
-                Went::Opened | Went::OpenedSilent => "opened",
-                Went::Swapped => "swapped in",
-                Went::Edited | Went::Outside => "installed",
-            }
-        ),
+        message,
     });
 }
 
