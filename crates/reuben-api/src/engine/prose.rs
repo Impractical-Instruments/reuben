@@ -13,8 +13,8 @@ pub const ENGINE_UNREACHABLE_GUIDANCE: &str =
 pub const SEND_LIVE_CONTROLS: &str =
     "Send a batch of control messages to audition a change on the running engine. \
      Ephemeral by design: these values live in render state only and are \
-     CLOBBERED at the next swap — fold any you want to keep into the instrument document \
-     and swap. The ack means the engine received the batch and queued it for the next \
+     RESET by the next edit — fold any you want to keep into the instrument document with an \
+     edit. The ack means the engine received the batch and queued it for the next \
      rendered block — not that it took effect: an address matching no node/port is \
      dropped silently, exactly as it would be arriving from an external controller. \
      Fails fast if no engine is reachable.";
@@ -57,7 +57,8 @@ pub const GET_ENGINE_METERS: &str =
 pub const OPEN_INSTRUMENT: &str =
     "Stop playing the current instrument and load and play the one named `name`, a name \
      `list_instruments` gave. Edits apply only to the open instrument and its nested files, so \
-     open an instrument before editing it.";
+     open an instrument before editing it. One that does not load still opens, with its errors \
+     and an empty content_hash: nothing plays until an edit makes it load.";
 
 pub const LIST_INSTRUMENTS: &str =
     "List the names the engine offers: `what: \"instruments\"` for what `open_instrument` accepts \

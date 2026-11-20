@@ -496,3 +496,108 @@ fn a_create_whose_name_does_not_end_in_json_is_refused_and_writes_nothing() {
     assert_eq!(left, ["first.json"]);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Its output is wired from a node it does not have, so it does not load.
+const BROKEN: &str = r#"{"format_version":3,"instrument":"broken",
+    "interface":{"outputs":{"out":{"from":"/osc.audio"}}},
+    "nodes":[]}"#;
+
+fn snapshot(t: &TcpTransport) -> reuben_api::engine::DocumentSnapshot {
+    match ask(t, &Request::GetDocument) {
+        Response::Document(snapshot) => snapshot,
+        other => panic!("expected the document, got {other:?}"),
+    }
+}
+
+/// Open `broken` and check it opened with nothing playing, past the two events that say so.
+fn open_broken(t: &TcpTransport, events: &Receiver<Event>, broken: &str) {
+    match ask(
+        t,
+        &Request::Open {
+            name: broken.to_string(),
+            expect: None,
+        },
+    ) {
+        Response::SwapReport(report) => {
+            assert!(!report.report.ok, "{report:?}");
+            assert_eq!(report.content_hash, "", "{report:?}");
+        }
+        other => panic!("expected a swap report, got {other:?}"),
+    }
+    assert_eq!(
+        events.recv_timeout(REPLY).expect("an opened event"),
+        Event::Opened {
+            name: broken.to_string(),
+            hash: String::new(),
+        }
+    );
+    assert!(matches!(
+        events.recv_timeout(REPLY).expect("an invalid event"),
+        Event::Invalid { .. }
+    ));
+    let opened = snapshot(t);
+    assert_eq!(opened.source.as_deref(), Some(broken));
+    assert_eq!(opened.content_hash, "");
+}
+
+#[test]
+fn a_broken_document_opens_silent_and_one_call_repairs_it_into_playing() {
+    let dir = scratch("server_calls_repair");
+    let library = dir.join("lib");
+    let open = dir.join("first.json");
+    write(&open, DOC);
+    let broken = library.join("broken.json");
+    write(&broken, BROKEN);
+    let broken_s = broken.display().to_string();
+    serving(&open, &library, move |t| {
+        let events = follow(t);
+        open_broken(t, &events, &broken_s);
+
+        let repaired = output(call(
+            t,
+            "add_instrument_node",
+            serde_json::json!({"source": broken_s, "type": "oscillator", "address": "/osc"}),
+        ));
+        assert_eq!(repaired["written"], true, "{repaired}");
+        match events.recv_timeout(REPLY).expect("a changed event") {
+            Event::Changed { hash, by } => {
+                assert_eq!(by, ChangedBy::Client);
+                assert_eq!(serde_json::json!(hash), repaired["hash"]);
+            }
+            other => panic!("expected a changed event, got {other:?}"),
+        }
+        let playing = snapshot(t);
+        assert_eq!(serde_json::json!(playing.content_hash), repaired["hash"]);
+        assert_eq!(playing.source.as_deref(), Some(broken_s.as_str()));
+        assert_ne!(playing.document, serde_json::Value::Null);
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_outside_repair_of_the_open_broken_document_starts_it_playing() {
+    let dir = scratch("server_calls_outside_repair");
+    let library = dir.join("lib");
+    let open = dir.join("first.json");
+    write(&open, DOC);
+    let broken = library.join("broken.json");
+    write(&broken, BROKEN);
+    let broken_s = broken.display().to_string();
+    serving(&open, &library, move |t| {
+        let events = follow(t);
+        open_broken(t, &events, &broken_s);
+
+        // The watcher turns to a newly opened instrument's files on its next idle wake.
+        std::thread::sleep(Duration::from_millis(500));
+        write(Path::new(&broken_s), OTHER);
+        match events.recv_timeout(REPLY).expect("a changed event") {
+            Event::Changed { hash, by } => {
+                assert_eq!(by, ChangedBy::Outside);
+                assert_eq!(snapshot(t).content_hash, hash);
+                assert_ne!(hash, "");
+            }
+            other => panic!("expected a changed event, got {other:?}"),
+        }
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}

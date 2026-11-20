@@ -190,11 +190,15 @@ fn swap_answer(
             })
         }
         Ok(SwapOutcome::Conflict(conflict)) => {
+            let playing = if conflict.actual.is_empty() {
+                "nothing (the open instrument does not load)".to_string()
+            } else {
+                conflict.actual.clone()
+            };
             let summary = format!(
-                "{} rejected by the expect guard: the engine is playing {}, not the \
+                "{} rejected by the expect guard: the engine is playing {playing}, not the \
                  expected {} — re-read with get_current_instrument and reconcile",
                 verb.noun(),
-                conflict.actual,
                 conflict.expected
             );
             Ok(Answer {
@@ -251,13 +255,7 @@ pub fn current_instrument(channel: &Channel) -> Result<Answer<CurrentInstrument>
     let snapshot = channel
         .get_document()
         .map_err(|why| refuse("could not read the current instrument", why))?;
-    let summary = match &snapshot.source {
-        Some(source) => format!("playing {source} (content_hash {})", snapshot.content_hash),
-        None => format!(
-            "playing an instrument installed by value (content_hash {})",
-            snapshot.content_hash
-        ),
-    };
+    let summary = playing_summary(&snapshot);
     let projection = match &snapshot.source {
         None => "(projection unavailable: no source to describe)".to_string(),
         Some(source) => {
@@ -295,14 +293,11 @@ pub fn get_current_instrument<S: Resources>(
     let snapshot = channel
         .get_document()
         .map_err(|why| refuse("could not read the current instrument", why))?;
-    let summary = match &snapshot.source {
-        Some(source) => format!("playing {source} (content_hash {})", snapshot.content_hash),
-        None => format!(
-            "playing an instrument installed by value (content_hash {})",
-            snapshot.content_hash
-        ),
+    let summary = playing_summary(&snapshot);
+    let projection = match (&snapshot.source, snapshot.content_hash.is_empty()) {
+        (Some(source), true) => format!("(nothing plays: {source} does not load)"),
+        _ => project_installed(&snapshot, &store_for(snapshot.source.as_deref())),
     };
-    let projection = project_installed(&snapshot, &store_for(snapshot.source.as_deref()));
     Ok(Answer {
         output: CurrentInstrument {
             projection,
@@ -311,6 +306,21 @@ pub fn get_current_instrument<S: Resources>(
         },
         summary,
     })
+}
+
+/// What `get_current_instrument` says plays. An empty content hash is the server's word that the
+/// open instrument does not load and nothing plays.
+fn playing_summary(snapshot: &DocumentSnapshot) -> String {
+    match &snapshot.source {
+        Some(source) if snapshot.content_hash.is_empty() => format!(
+            "{source} is open but does not load, so nothing plays until an edit makes it load"
+        ),
+        Some(source) => format!("playing {source} (content_hash {})", snapshot.content_hash),
+        None => format!(
+            "playing an instrument installed by value (content_hash {})",
+            snapshot.content_hash
+        ),
+    }
 }
 
 /// Read the engine's running counters.
@@ -437,6 +447,14 @@ fn swap_summary(report: &SwapReport, verb: Verb) -> String {
             ),
             None => format!("{} (content_hash {})", verb.past(), report.content_hash),
         }
+    } else if report.content_hash.is_empty() {
+        format!(
+            "{} did not load: {} error(s), {} warning(s) — nothing plays; the open instrument \
+             does not load, and an edit that makes it load starts it playing",
+            verb.noun(),
+            report.report.errors.len(),
+            report.report.warnings.len()
+        )
     } else {
         format!(
             "{} rejected: {} error(s), {} warning(s) — nothing installed; {} keeps playing",
@@ -637,6 +655,46 @@ mod tests {
                 args: serde_json::json!({"source": "a.json", "view": "index"}),
             }
         );
+    }
+
+    #[test]
+    fn an_open_that_does_not_load_says_nothing_plays() {
+        let (channel, _) = scripted(&[
+            r#"{"reply":"swap_report","ok":false,"errors":[{"message":"bad"}],"warnings":[{"message":"b.json is open"}],"content_hash":""}"#,
+        ]);
+        let answer = open_instrument(
+            &OpenInstrument {
+                name: "b.json".to_string(),
+                expect: None,
+            },
+            &channel,
+        )
+        .expect("an answer, not a refusal");
+        assert!(
+            answer.summary.contains("nothing plays")
+                && answer.summary.contains("an edit that makes it load"),
+            "{}",
+            answer.summary
+        );
+        assert!(
+            !answer.summary.contains("keeps playing"),
+            "{}",
+            answer.summary
+        );
+    }
+
+    #[test]
+    fn current_instrument_says_an_open_instrument_that_does_not_load_plays_nothing() {
+        let (channel, _) = scripted(&[
+            r#"{"reply":"document","document":null,"content_hash":"","source":"b.json"}"#,
+            r#"{"reply":"refused","message":"nope"}"#,
+        ]);
+        let answer = current_instrument(&channel).expect("an answer");
+        assert_eq!(
+            answer.summary,
+            "b.json is open but does not load, so nothing plays until an edit makes it load"
+        );
+        assert_eq!(answer.output.content_hash, "");
     }
 
     #[test]
