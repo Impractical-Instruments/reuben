@@ -9,7 +9,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use reuben_api::authoring;
-use reuben_api::engine::{Channel, TcpTransport, DEFAULT_CONNECT_TIMEOUT};
+use reuben_api::engine::{Channel, ListWhat, TcpTransport, DEFAULT_CONNECT_TIMEOUT};
 use reuben_api::FsResolver;
 
 const DOC: &str = r#"{"format_version":3,"instrument":"headless",
@@ -56,6 +56,65 @@ fn hash(path: &Path) -> String {
     authoring::hash_instrument(&json, &FsResolver::for_document(&source)).expect("a hash")
 }
 
+/// Collect `child`'s stdout lines on a thread and wait for its structure channel's announcement.
+fn announced_structure(child: &mut Child) -> String {
+    let stdout = child.stdout.take().expect("piped stdout");
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    loop {
+        let line = rx
+            .recv_timeout(STARTUP)
+            .expect("reuben play announced its structure channel");
+        if let Some(addr) = line.strip_prefix("structure channel on ") {
+            return addr.to_string();
+        }
+    }
+}
+
+#[test]
+fn a_bare_play_offers_the_instruments_directory_it_starts_in() {
+    let dir = std::env::temp_dir().join(format!("reuben_play_bare_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut cleanup = Cleanup {
+        child: None,
+        dir: dir.clone(),
+    };
+    std::fs::create_dir_all(dir.join("instruments")).expect("dir");
+    std::fs::write(dir.join("instruments").join("headless.json"), DOC).expect("seed");
+
+    let structure = format!("127.0.0.1:{}", free_tcp_port());
+    let osc_in = format!("127.0.0.1:{}", free_udp_port());
+    let child = cleanup.child.insert(
+        Command::new(env!("CARGO_BIN_EXE_reuben"))
+            .args(["play", "--headless", "--structure-addr", &structure])
+            .args(["--osc-in", &osc_in])
+            .env_remove(reuben_native::cli::INSTRUMENT_ROOT_ENV)
+            .current_dir(&dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn reuben play"),
+    );
+    let announced = announced_structure(child);
+
+    let channel = Channel::new(TcpTransport::new(announced, DEFAULT_CONNECT_TIMEOUT));
+    let names = channel.list(ListWhat::Instruments).expect("list");
+    assert!(
+        names
+            .iter()
+            .any(|name| Path::new(name).ends_with("instruments/headless.json")),
+        "{names:?}"
+    );
+
+    drop(cleanup);
+}
+
 #[test]
 fn play_headless_serves_the_structure_channel_on_the_chosen_port() {
     let dir = std::env::temp_dir().join(format!("reuben_play_headless_{}", std::process::id()));
@@ -81,23 +140,7 @@ fn play_headless_serves_the_structure_channel_on_the_chosen_port() {
             .expect("spawn reuben play"),
     );
 
-    let stdout = child.stdout.take().expect("piped stdout");
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if tx.send(line).is_err() {
-                break;
-            }
-        }
-    });
-    let announced = loop {
-        let line = rx
-            .recv_timeout(STARTUP)
-            .expect("reuben play announced its structure channel");
-        if let Some(addr) = line.strip_prefix("structure channel on ") {
-            break addr.to_string();
-        }
-    };
+    let announced = announced_structure(child);
     assert_eq!(announced, structure);
 
     let channel = Channel::new(TcpTransport::new(announced, DEFAULT_CONNECT_TIMEOUT));

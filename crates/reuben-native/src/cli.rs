@@ -21,7 +21,9 @@ pub const LOG_OSC_ENV: &str = "REUBEN_LOG_OSC";
 pub struct InstrumentRoot {
     /// Instrument library root: a sample or nested-patch reference that does not exist next
     /// to the file referencing it is looked up under this directory instead (sibling-first
-    /// search). Falls back to the `REUBEN_INSTRUMENT_ROOT` env var.
+    /// search). Falls back to the `REUBEN_INSTRUMENT_ROOT` env var; `reuben play` and the
+    /// editor's start screen then look for `instruments/` in the working directory, then beside
+    /// the binary.
     #[arg(long, global = true, value_name = "DIR")]
     pub instrument_root: Option<PathBuf>,
 }
@@ -32,6 +34,32 @@ impl InstrumentRoot {
         self.instrument_root
             .or_else(|| std::env::var_os(INSTRUMENT_ROOT_ENV).map(PathBuf::from))
     }
+
+    /// [`resolve`](Self::resolve), else the [`default_library`].
+    pub fn resolve_or_default(self) -> Option<PathBuf> {
+        self.resolve().or_else(default_library)
+    }
+}
+
+/// Where a library is looked for when no flag or environment variable names one, in order:
+/// `instruments/` in the working directory, then beside the executable. A release archive carries
+/// the library next to the binary, and a launch from a file manager (a double-click in Finder
+/// starts it in the home directory) has no say over the working directory.
+pub fn library_candidates() -> Vec<PathBuf> {
+    let beside_exe = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join("instruments")));
+    std::iter::once(PathBuf::from("instruments"))
+        .chain(beside_exe)
+        .collect()
+}
+
+/// The first of the [`library_candidates`] that is a directory, made absolute.
+pub fn default_library() -> Option<PathBuf> {
+    library_candidates()
+        .into_iter()
+        .find(|dir| dir.is_dir())
+        .map(|dir| std::path::absolute(&dir).unwrap_or(dir))
 }
 
 /// Whether [`LOG_OSC_ENV`] is set.
