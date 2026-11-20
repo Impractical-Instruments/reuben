@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from . import tasks as task_module
-from .mcp import Sidecar
+from .mcp import Engine, Sidecar
 from .tokenizer import cl100k
 from .workspace import (
     FILE_ACCESS,
@@ -89,23 +89,36 @@ class Outcome:
 
 
 class Session:
-    """A sidecar plus a workspace, dispatching one tool namespace across both."""
+    """A sidecar, the engine it calls, and a workspace, dispatching one tool namespace across them.
+
+    The engine is the session's own headless `reuben play`, rooted at the workspace and playing the
+    default rig until a step opens the task's document.
+    """
 
     def __init__(self, task: task_module.Task, root: Path) -> None:
         self.task = task
         self.workspace = Workspace(root, task.seed)
-        self.sidecar = Sidecar(self.workspace.root)
+        self.engine = Engine(self.workspace.root)
+        self.sidecar = Sidecar(self.workspace.root, self.engine.structure_addr)
         self.trace = Trace()
         self.repair_rounds = 0
         self.rounds = 0
         self.file_access_reaches: list[str] = []
 
     def __enter__(self) -> Session:
-        self.sidecar.__enter__()
+        self.engine.__enter__()
+        try:
+            self.sidecar.__enter__()
+        except BaseException:
+            self.engine.__exit__(None, None, None)
+            raise
         return self
 
     def __exit__(self, *exc: object) -> None:
-        self.sidecar.__exit__(*exc)
+        try:
+            self.sidecar.__exit__(*exc)
+        finally:
+            self.engine.__exit__(*exc)
 
     def tool_definitions(self) -> list[dict[str, Any]]:
         """The model's whole namespace: the sidecar's roster plus the host's `read_guide`."""

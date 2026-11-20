@@ -109,19 +109,19 @@ pub const LIBRARY_INDEX_RESOURCE_MIME: &str = "text/markdown";
 /// The server `instructions`: the one-breath authoring gist, pointing at the three guide
 /// resources rather than restating them.
 const INSTRUCTIONS: &str = "reuben authoring sidecar. The instrument document is the durable \
-     truth; keep it in sync with the sound. **Never open, read or write an instrument file \
-     yourself** — name it by `source` and let these tools do it: `describe_instrument` reads its \
-     structure, the `*_instrument_*` verbs edit it one change at a time, and each one re-validates \
-     the whole document and writes only if it is valid — so while a document has errors, every \
-     edit is refused. A rejection lists under `pre_existing` the errors it can show were already \
-     there; fix those first. Validation reports one error at a time, so read a rejection's \
-     `notes` too. Start `reuben play` in another terminal \
-     first — the engine tools (`send_live_controls`, `swap_instrument`, `get_current_instrument`, \
-     `get_engine_diagnostics`) fail fast until it is reachable. The loop: `send_live_controls` to \
-     audition a change (ephemeral — clobbered at the next swap), then edit the document and \
-     `swap_instrument` to make it durable. Creating an instrument from scratch? Call \
-     `new_instrument` to land a guaranteed-valid seed at a source, then add nodes and wire them. \
-     Read `reuben://guide/authoring` \
+     truth, and what it says is what plays. **Never read or write an instrument file \
+     yourself** — name it and let these tools do it: `describe_instrument` reads its structure, \
+     and the `*_instrument_*` verbs edit it one change at a time. Start `reuben play` in another \
+     terminal first: every instrument tool asks it, and fails fast until it is reachable. The \
+     loop: `list_instruments` gives the names there are (or `new_instrument` lands a \
+     guaranteed-valid seed at a new one); `open_instrument` opens one, and you must open an \
+     instrument before editing it; then each accepted edit is live at once — there is no separate \
+     step to make it heard. Every edit re-validates the whole instrument and is refused, with \
+     nothing written, if it would break it — so while a document has errors, every edit is \
+     refused. A rejection lists under `pre_existing` the errors it can show were already there; \
+     fix those first. Validation reports one error at a time, so read a rejection's `notes` too. \
+     `send_live_controls` auditions a value without committing it, and the next edit resets it, \
+     so fold a keeper into the document with an edit. Read `reuben://guide/authoring` \
      for the type system, wiring rules, instrument format, and the authoring loop. Read \
      `reuben://guide/vocabulary` for the word→move table translating intent language (\"warmer\", \
      \"busier\", \"sadder\") into parameter moves. Read `reuben://guide/library-index` for the \
@@ -1566,7 +1566,7 @@ mod tests {
 
     #[test]
     fn the_instructions_send_a_model_only_to_verbs_the_roster_serves() {
-        // The gist names six verbs and is handed to every model that connects, so it is prose with
+        // The gist names verbs and is handed to every model that connects, so it is prose with
         // the same failure mode as an advertised sentence — and `stamp_window_prose`'s refusal
         // cannot see it, because that compares route keys and never reads inside a string. A verb
         // fully retired upstream (contract and route together) leaves the rest of this door
@@ -1576,6 +1576,13 @@ mod tests {
             Vec::<&str>::new(),
             "the server instructions send a model to a verb no contract serves"
         );
+        // `unserved_verbs` reads the whole roster, and this door leaves some of it unserved.
+        for verb in NOT_SERVED {
+            assert!(
+                !INSTRUCTIONS.contains(verb),
+                "the server instructions send a model to `{verb}`, which this door does not serve"
+            );
+        }
     }
 
     #[test]

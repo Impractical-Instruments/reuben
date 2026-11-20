@@ -664,6 +664,10 @@ jobs:
         with:
           fetch-depth: 0 # the gate swaps the measured surface to the baseline commit
 
+      # Each eval session runs its own headless `reuben play`, so the gate builds reuben-native.
+      - name: Install ALSA dev headers (cpal, for reuben-native)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
+
       - name: Setup pinned Rust toolchain
         uses: ./.github/actions/setup-rust
 
