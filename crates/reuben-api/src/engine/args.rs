@@ -63,10 +63,8 @@ pub struct OpenInstrument {
     pub expect: Option<String>,
 }
 
-/// Arguments for `list_instruments`: which kind of name to list.
+/// Arguments for `list_instruments`.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ListInstruments {
-    /// `"instruments"` for the names `open_instrument` accepts and a `source` may name,
-    /// `"samples"` for the names a sample resource may reference.
     pub what: ListWhat,
 }

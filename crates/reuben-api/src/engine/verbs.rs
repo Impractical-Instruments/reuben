@@ -116,7 +116,7 @@ pub fn swap_instrument(
 ) -> Result<Answer<SwapResult>, Refusal> {
     swap_answer(
         channel.swap(DocSource::Path(args.path.clone()), args.expect.clone()),
-        "the swap could not be completed",
+        Verb::Swap,
     )
 }
 
@@ -128,7 +128,7 @@ pub fn open_instrument(
 ) -> Result<Answer<SwapResult>, Refusal> {
     swap_answer(
         channel.open(args.name.clone(), args.expect.clone()),
-        "the open could not be completed",
+        Verb::Open,
     )
 }
 
@@ -140,9 +140,11 @@ pub fn list_instruments(
     let names = channel
         .list(args.what)
         .map_err(|why| refuse("the list could not be completed", why))?;
-    let kind = match args.what {
-        ListWhat::Instruments => "instruments",
-        ListWhat::Samples => "samples",
+    let kind = match (args.what, names.len()) {
+        (ListWhat::Instruments, 1) => "instrument",
+        (ListWhat::Instruments, _) => "instruments",
+        (ListWhat::Samples, 1) => "sample",
+        (ListWhat::Samples, _) => "samples",
     };
     let summary = format!("{} {kind} offered", names.len());
     Ok(Answer {
@@ -151,15 +153,37 @@ pub fn list_instruments(
     })
 }
 
-/// Map a swap-shaped channel outcome to the verb's answer; `failure` heads the refusal when the
-/// channel itself fails.
+/// The two verbs that install a document, so a summary names the one the model called.
+#[derive(Clone, Copy)]
+enum Verb {
+    Swap,
+    Open,
+}
+
+impl Verb {
+    fn noun(self) -> &'static str {
+        match self {
+            Verb::Swap => "swap",
+            Verb::Open => "open",
+        }
+    }
+
+    fn past(self) -> &'static str {
+        match self {
+            Verb::Swap => "swapped",
+            Verb::Open => "opened",
+        }
+    }
+}
+
+/// Map a swap-shaped channel outcome to the verb's answer.
 fn swap_answer(
     outcome: Result<SwapOutcome, ChannelError>,
-    failure: &str,
+    verb: Verb,
 ) -> Result<Answer<SwapResult>, Refusal> {
     match outcome {
         Ok(SwapOutcome::Installed(report)) => {
-            let summary = swap_summary(&report);
+            let summary = swap_summary(&report, verb);
             Ok(Answer {
                 output: SwapResult::installed(report),
                 summary,
@@ -167,9 +191,11 @@ fn swap_answer(
         }
         Ok(SwapOutcome::Conflict(conflict)) => {
             let summary = format!(
-                "swap rejected by the expect guard: the engine is playing {}, not the \
+                "{} rejected by the expect guard: the engine is playing {}, not the \
                  expected {} — re-read with get_current_instrument and reconcile",
-                conflict.actual, conflict.expected
+                verb.noun(),
+                conflict.actual,
+                conflict.expected
             );
             Ok(Answer {
                 output: SwapResult::conflict(conflict),
@@ -194,7 +220,10 @@ fn swap_answer(
             })
         }
         Ok(SwapOutcome::Refused(message)) => Err(Refusal::new(message)),
-        Err(why) => Err(refuse(failure, why)),
+        Err(why) => Err(refuse(
+            &format!("the {} could not be completed", verb.noun()),
+            why,
+        )),
     }
 }
 
@@ -394,22 +423,24 @@ fn project_installed(snapshot: &DocumentSnapshot, store: &dyn Resources) -> Stri
 }
 
 /// One-line gloss of a swap outcome: what installed (with diff counts) or why nothing did.
-fn swap_summary(report: &SwapReport) -> String {
+fn swap_summary(report: &SwapReport, verb: Verb) -> String {
     if report.report.ok {
         match &report.diff {
             Some(diff) => format!(
-                "swapped (content_hash {}): {} survived, {} state-reset, {} added, {} removed",
+                "{} (content_hash {}): {} survived, {} state-reset, {} added, {} removed",
+                verb.past(),
                 report.content_hash,
                 diff.survived,
                 diff.state_reset.len(),
                 diff.added.len(),
                 diff.removed.len()
             ),
-            None => format!("swapped (content_hash {})", report.content_hash),
+            None => format!("{} (content_hash {})", verb.past(), report.content_hash),
         }
     } else {
         format!(
-            "swap rejected: {} error(s), {} warning(s) — nothing installed; {} keeps playing",
+            "{} rejected: {} error(s), {} warning(s) — nothing installed; {} keeps playing",
+            verb.noun(),
             report.report.errors.len(),
             report.report.warnings.len(),
             report.content_hash
@@ -674,6 +705,8 @@ mod tests {
         let (channel, _) = scripted(&[
             r#"{"reply":"listed","names":["a","b"]}"#,
             r#"{"reply":"listed","names":["kick"]}"#,
+            r#"{"reply":"listed","names":["a"]}"#,
+            r#"{"reply":"listed","names":["kick","snare"]}"#,
         ]);
         let instruments = list_instruments(
             &ListInstruments {
@@ -691,6 +724,51 @@ mod tests {
             &channel,
         )
         .expect("an answer");
-        assert_eq!(samples.summary, "1 samples offered");
+        assert_eq!(samples.summary, "1 sample offered");
+        let one = list_instruments(
+            &ListInstruments {
+                what: ListWhat::Instruments,
+            },
+            &channel,
+        )
+        .expect("an answer");
+        assert_eq!(one.summary, "1 instrument offered");
+        let two = list_instruments(
+            &ListInstruments {
+                what: ListWhat::Samples,
+            },
+            &channel,
+        )
+        .expect("an answer");
+        assert_eq!(two.summary, "2 samples offered");
+    }
+
+    fn open_summary(reply: &str) -> String {
+        let (channel, _) = scripted(&[reply]);
+        open_instrument(
+            &OpenInstrument {
+                name: "x".to_string(),
+                expect: Some("e".to_string()),
+            },
+            &channel,
+        )
+        .expect("an answer")
+        .summary
+    }
+
+    #[test]
+    fn open_instrument_conflict_says_open_not_swap() {
+        let summary = open_summary(r#"{"reply":"conflict","expected":"e","actual":"a"}"#);
+        assert!(summary.starts_with("open rejected"), "{summary}");
+        assert!(!summary.contains("swap"), "{summary}");
+    }
+
+    #[test]
+    fn open_instrument_failed_report_says_open_not_swap() {
+        let summary = open_summary(
+            r#"{"reply":"swap_report","ok":false,"errors":[],"warnings":[],"content_hash":"h"}"#,
+        );
+        assert!(summary.starts_with("open rejected"), "{summary}");
+        assert!(!summary.contains("swap"), "{summary}");
     }
 }
