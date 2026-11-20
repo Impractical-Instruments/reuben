@@ -345,13 +345,20 @@ impl Editor {
 impl eframe::App for Editor {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.follow_files(ui);
+        let mut clicked = None;
         egui::Panel::top("audio").show(ui, |ui| {
             ui.horizontal(|ui| {
                 theme::logo(ui, 22.0);
-                // Vertical, so the device warnings stack under the device row rather than beside it.
-                ui.vertical(|ui| match self.engine.link() {
-                    Some(link) => link::show(ui, link),
-                    None => self.audio.ui(ui, &mut self.engine),
+                // Vertical, so the device warnings and the session's rows stack under the device
+                // row rather than beside it.
+                ui.vertical(|ui| {
+                    match self.engine.link() {
+                        Some(link) => link::show(ui, link),
+                        None => self.audio.ui(ui, &mut self.engine),
+                    }
+                    if let Some(session) = &self.session {
+                        clicked = session::bar(ui, session);
+                    }
                 });
             });
         });
@@ -362,7 +369,7 @@ impl eframe::App for Editor {
         self.meters
             .poll(Instant::now(), self.engine.channel(), probes);
         if let Some(session) = &mut self.session {
-            let asked = session::shortcut(ui.ctx()).or(session::show(ui, session));
+            let asked = session::shortcut(ui.ctx()).or(clicked);
             if let Some(direction) = asked {
                 edit::restore(session, &|| self.engine.channel(), direction);
                 // The reload it made is taken in by the next frame's poll.
