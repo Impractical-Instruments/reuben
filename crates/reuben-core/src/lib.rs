@@ -81,6 +81,7 @@ pub mod dsp;
 pub mod engine;
 pub mod graph;
 pub mod message;
+pub mod meter;
 pub mod operator;
 pub mod operators;
 pub mod plan;
