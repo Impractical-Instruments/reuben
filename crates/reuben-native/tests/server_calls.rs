@@ -410,3 +410,58 @@ fn a_swap_of_what_the_server_already_followed_is_ok_and_announces_nothing() {
     });
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Nests `voices/v.json`, so a reference written into the voice resolves from `voices/`.
+const NESTING: &str = r#"{"format_version":3,"instrument":"top",
+    "resources":{"v":"voices/v.json"},
+    "interface":{"outputs":{"out":{"from":"/voice.out"}}},
+    "nodes":[{"type":"subpatch","address":"/voice","patch":"v"}]}"#;
+
+const VOICE: &str = r#"{"format_version":3,"instrument":"v",
+    "interface":{"outputs":{"out":{"from":"/osc.audio"}}},
+    "nodes":[{"type":"oscillator","address":"/osc"}]}"#;
+
+#[test]
+fn a_reference_written_into_a_nested_document_resolves_from_that_document() {
+    let dir = scratch("server_calls_nested_reference");
+    let library = dir.join("lib");
+    std::fs::create_dir_all(&library).unwrap();
+    let open = dir.join("open").join("top.json");
+    let voice = dir.join("open").join("voices").join("v.json");
+    write(&open, NESTING);
+    write(&voice, VOICE);
+    let sample =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instruments/samples/testvox.wav");
+    for at in [
+        dir.join("open").join("sounds").join("beside.wav"),
+        dir.join("outside.wav"),
+    ] {
+        std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+        std::fs::copy(&sample, &at).expect("copy a sample");
+    }
+    let voice_s = voice.display().to_string();
+    serving(&open, &library, move |t| {
+        // `..` from `voices/` is the open directory, which is offered.
+        let inside = output(call(
+            t,
+            "add_instrument_resource",
+            serde_json::json!({
+                "source": voice_s, "id": "beside", "resource_source": "../sounds/beside.wav"
+            }),
+        ));
+        assert_eq!(inside["written"], true, "{inside}");
+
+        // Two levels up is outside every offered directory.
+        let before = std::fs::read(&voice_s).unwrap();
+        let outside = call(
+            t,
+            "add_instrument_resource",
+            serde_json::json!({
+                "source": voice_s, "id": "outside", "resource_source": "../../outside.wav"
+            }),
+        );
+        assert!(matches!(outside, Response::Refused { .. }), "{outside:?}");
+        assert_eq!(std::fs::read(&voice_s).unwrap(), before);
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}
