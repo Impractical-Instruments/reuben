@@ -132,6 +132,7 @@ fn main() -> eframe::Result {
                     let ctx = cc.egui_ctx.clone();
                     move || ctx.request_repaint()
                 }),
+                same_file: None,
             }))
         }),
     )
@@ -168,6 +169,7 @@ fn view(canvas: &mut Canvas, inspector: &mut Inspector, session: &Session) {
         *inspector = Inspector::default();
     }
     canvas.reload(source, session.root(), &viewed.read);
+    canvas.tap(session);
 }
 
 struct Editor {
@@ -181,9 +183,40 @@ struct Editor {
     launch: Launch,
     held: HeldSwaps,
     meters: MeterStrip,
+    /// The file the engine plays and the session's top-level file, as spelled when they were last
+    /// compared, and whether they are one file: resolving them stats the disk, so it is done again
+    /// only when a spelling changes.
+    same_file: Option<(String, PathBuf, bool)>,
 }
 
 impl Editor {
+    /// Whether the engine plays the open session's top-level file, so a node path the canvas
+    /// resolves names a node of what is drawn. Another file's Plan can have the same addresses —
+    /// while a Swap onto this one runs or was refused, or before an attached editor opens what the
+    /// engine plays — and its levels must not show on these boxes.
+    ///
+    /// Of the same file, the Plan installed must be of what the session read, unless a Swap of it
+    /// is running: that Plan is the one about to be replaced, and blanking every meter for each
+    /// edit's Swap would flicker the canvas. A Swap that was refused leaves the older Plan playing
+    /// for good, so it does not meter.
+    fn metered(&mut self) -> bool {
+        let (Some(session), Some(plays)) = (&self.session, self.engine.plays()) else {
+            return false;
+        };
+        let top = session.top();
+        let same = match &self.same_file {
+            Some((source, file, same)) if *source == plays.source && file == top => *same,
+            _ => {
+                let same = held_swap::canonical(std::path::Path::new(&plays.source))
+                    == held_swap::canonical(top);
+                self.same_file = Some((plays.source.clone(), top.to_path_buf(), same));
+                same
+            }
+        };
+        let read = session.tree().documents().first().and_then(|d| d.hash());
+        same && (session.status() == &Status::Swapping || read == Some(plays.content_hash.as_str()))
+    }
+
     /// Open the instrument at `path` in place of whatever is open. The canvas and the inspector
     /// start over from the new session's read, and its undo history is its own.
     fn open(&mut self, path: &std::path::Path, ctx: &egui::Context) {
@@ -258,6 +291,10 @@ impl Editor {
             return;
         };
         let poll = session.poll(Instant::now(), &|| self.engine.channel());
+        if let Some(content_hash) = session.take_installed() {
+            self.engine
+                .note_installed(session.top().display().to_string(), content_hash);
+        }
         start::follow(
             session,
             &mut self.engine,
@@ -302,7 +339,12 @@ impl eframe::App for Editor {
                 });
             });
         });
-        self.meters.poll(Instant::now(), self.engine.channel());
+        let probes = match self.metered() && !self.start.shown() {
+            true => self.canvas.probe_paths(),
+            false => &[],
+        };
+        self.meters
+            .poll(Instant::now(), self.engine.channel(), probes);
         if let Some(session) = &mut self.session {
             let asked = session::shortcut(ui.ctx()).or(session::show(ui, session));
             if let Some(direction) = asked {
@@ -365,13 +407,18 @@ impl eframe::App for Editor {
                 };
                 ui.colored_label(color, line.to_string());
             }
+            let metered = self.metered();
             let rejected = (self.session.as_ref())
                 .and_then(|session| {
                     let viewed = &session.viewed().source;
                     session.feedback().map(|feedback| feedback.rejected(viewed))
                 })
                 .unwrap_or_default();
-            self.canvas.show(ui, rejected)
+            let levels = match metered {
+                true => self.meters.node_levels(),
+                false => &[],
+            };
+            self.canvas.show(ui, rejected, levels)
         });
         for gesture in gestures.inner {
             let Some(session) = &mut self.session else {

@@ -7,12 +7,14 @@ use eframe::egui::epaint::CubicBezierShape;
 use eframe::egui::{
     Align2, Color32, CornerRadius, FontId, Painter, Pos2, Rect, Stroke, StrokeKind, Visuals,
 };
+use reuben_api::engine::PortLevel;
 
 use super::camera::Camera;
 use super::geometry::{
     curve, header_text, input_pos, output_pos, wire_curve, LINE, PAD, PORT_RADIUS, TEXT_SIZE,
 };
-use super::graph::{Graph, NodeBox, PortRef, Problem};
+use super::graph::{Graph, Item, NodeBox, PortRef, Problem};
+use super::meters;
 use crate::theme::{self, kind_color};
 
 /// Below this many points text is a smear, so it is left out and the boxes read as shapes.
@@ -43,6 +45,9 @@ pub struct Scene<'a> {
     pub wiring: Option<Wiring<'a>>,
     /// Problems besides the load report's, by the index of the box they are on.
     pub extra: &'a [(usize, Problem)],
+    /// The levels read for each box's Signal outputs, indexed as `graph.boxes`; a box past its end
+    /// has none read.
+    pub meters: &'a [Vec<PortLevel>],
 }
 
 /// A wire being drawn from an output to the pointer.
@@ -173,6 +178,15 @@ impl Scene<'_> {
                 visuals.weak_text_color(),
             );
             let rule = subtitle.y + LINE / 2.0 + PAD / 2.0;
+            let levels = self.meters.get(i).map_or(&[][..], Vec::as_slice);
+            let slots = meters::slots(&b.outputs, levels);
+            if let (Item::Node(address), false) = (&b.item, slots.is_empty()) {
+                let bars = meters::place(rect, slots.len(), PAD, 2.0 * LINE);
+                let bars = self.camera.rect_to_screen(self.origin, bars);
+                meters::paint(painter, bars, &slots, visuals);
+                let named = slots.len() > 1;
+                meters::describe(painter.ctx(), bars, address, &slots, named);
+            }
             painter.line_segment(
                 [
                     self.at(Pos2::new(rect.left(), rule)),

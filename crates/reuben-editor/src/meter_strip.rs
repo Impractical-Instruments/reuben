@@ -11,12 +11,16 @@
 //! The exchange runs on a thread of its own, so an attached engine that stops answering holds that
 //! thread for a read budget, never the window. The thread waits out the interval before it asks,
 //! and its reply wakes the window, so each poll costs the window one frame.
+//!
+//! The same exchange carries the canvas's probe set: the node paths whose levels the canvas draws
+//! on its boxes are sent ahead of `GetMeters` whenever they change, and again every [`RENEW`] to
+//! keep the engine's lease on them, and their levels come back in the same reply.
 
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, Sense, Stroke, Vec2, WidgetInfo, WidgetType};
-use reuben_api::engine::{Channel, ChannelLevel, MetersReport, METER_FLOOR_DBFS};
+use reuben_api::engine::{Channel, ChannelLevel, MetersReport, ProbeLevels, METER_FLOOR_DBFS};
 
 use crate::theme;
 
@@ -38,6 +42,9 @@ const IDLE_EVERY: Duration = Duration::from_millis(500);
 /// read the same count from an output that is running; this is longer than any period a device
 /// plays at.
 const STALL: Duration = Duration::from_millis(500);
+/// How often an unchanged probe set is sent again: well inside the engine's lease on it, so one
+/// slow exchange does not let the set lapse.
+const RENEW: Duration = Duration::from_secs(2);
 
 const BAR_WIDTH: f32 = 12.0;
 /// The shortest a bar is drawn, however little room its panel leaves.
@@ -100,11 +107,26 @@ impl Bar {
     }
 }
 
+/// One exchange for the asking thread.
+struct Ask {
+    channel: Channel,
+    /// The moment to ask at.
+    at: Instant,
+    /// A probe set to send before the levels are asked for.
+    probes: Option<Vec<Vec<String>>>,
+}
+
+/// What the asking thread brings back from one [`Ask`].
+struct Reply {
+    /// Whether the engine took the probe set the ask carried; `None` when it carried none.
+    probed: Option<bool>,
+    meters: Result<MetersReport, String>,
+}
+
 /// The strip's state, and the thread that asks the engine for its levels.
 pub struct MeterStrip {
-    /// A channel to ask, and the moment to ask it at.
-    asks: Sender<(Channel, Instant)>,
-    replies: Receiver<Result<MetersReport, String>>,
+    asks: Sender<Ask>,
+    replies: Receiver<Reply>,
     asked: Option<Instant>,
     in_flight: bool,
     reading: Reading,
@@ -115,18 +137,35 @@ pub struct MeterStrip {
     stopped: bool,
     outputs: Vec<Bar>,
     inputs: Vec<Bar>,
+    /// The probe set last handed to the asking thread, and the moment it was to be sent at.
+    sent: Option<(Vec<Vec<String>>, Instant)>,
+    /// The probe set the last poll asked for.
+    wanted: Vec<Vec<String>>,
+    /// The probe set the engine held for the ask in flight; its reply's levels are of these paths.
+    measuring: Vec<Vec<String>>,
+    probes: Vec<ProbeLevels>,
 }
 
 impl MeterStrip {
     /// A strip with nothing read yet. `wake` is called from the asking thread on each reply.
     pub fn new(wake: impl Fn() + Send + 'static) -> Self {
-        let (asks, asked) = mpsc::channel::<(Channel, Instant)>();
+        let (asks, asked) = mpsc::channel::<Ask>();
         let (replied, replies) = mpsc::channel();
         // Not joined: it ends once the strip is dropped and its exchange in hand returns.
         std::thread::spawn(move || {
-            for (channel, at) in asked {
+            for Ask {
+                channel,
+                at,
+                probes,
+            } in asked
+            {
                 std::thread::sleep(at.saturating_duration_since(Instant::now()));
-                let reply = channel.get_meters().map_err(|e| e.to_string());
+                // A refused set still leaves the device levels to read.
+                let probed = probes.map(|probes| channel.set_probes(probes).is_ok());
+                let reply = Reply {
+                    probed,
+                    meters: channel.get_meters().map_err(|e| e.to_string()),
+                };
                 if replied.send(reply).is_err() {
                     return;
                 }
@@ -144,21 +183,30 @@ impl MeterStrip {
             stopped: false,
             outputs: Vec::new(),
             inputs: Vec::new(),
+            sent: None,
+            wanted: Vec::new(),
+            measuring: Vec::new(),
+            probes: Vec::new(),
         }
     }
 
     /// Take in any reply, and queue the next ask of the engine behind `channel` when none is
     /// queued. Never waits; the reply wakes the window.
-    pub fn poll(&mut self, now: Instant, channel: Option<Channel>) {
-        for reply in self.replies.try_iter().collect::<Vec<_>>() {
-            self.in_flight = false;
-            match reply {
-                Ok(report) => self.take(report, now),
-                Err(why) => self.reading = Reading::Failed(why),
-            }
+    ///
+    /// `probes` is the set of node paths to meter. The ask carries it to the engine first when it
+    /// differs from the set last sent, or when that was [`RENEW`] ago and the set is not empty.
+    pub fn poll(&mut self, now: Instant, channel: Option<Channel>, probes: &[Vec<String>]) {
+        // Levels of another set's paths would land on whatever boxes now have those paths.
+        if self.wanted != probes {
+            self.wanted = probes.to_vec();
+            self.probes.clear();
         }
+        self.receive(now);
         let Some(channel) = channel else {
             self.reading = Reading::NoEngine;
+            self.probes.clear();
+            // The next engine holds no set of ours, whatever this one did.
+            self.sent = None;
             return;
         };
         if self.reading == Reading::NoEngine {
@@ -169,12 +217,54 @@ impl MeterStrip {
         }
         let every = if self.stopped { IDLE_EVERY } else { EVERY };
         let at = self.asked.map_or(now, |asked| (asked + every).max(now));
-        if self.asks.send((channel, at)).is_err() {
+        let send = match &self.sent {
+            Some((sent, when)) => {
+                sent != probes
+                    || (!probes.is_empty() && at.saturating_duration_since(*when) >= RENEW)
+            }
+            None => !probes.is_empty(),
+        };
+        let ask = Ask {
+            channel,
+            at,
+            probes: send.then(|| probes.to_vec()),
+        };
+        if self.asks.send(ask).is_err() {
             self.reading = Reading::Failed("the meter thread stopped".to_string());
             return;
         }
+        if send {
+            self.sent = Some((probes.to_vec(), at));
+        }
+        let measuring = (self.sent.as_ref()).map_or(&[][..], |(sent, _)| sent.as_slice());
+        if self.measuring != measuring {
+            self.measuring = measuring.to_vec();
+        }
         self.in_flight = true;
         self.asked = Some(at);
+    }
+
+    /// Take in any reply the asking thread has sent.
+    fn receive(&mut self, now: Instant) {
+        for reply in self.replies.try_iter().collect::<Vec<_>>() {
+            self.in_flight = false;
+            if reply.probed == Some(false) {
+                // The engine holds no set of ours, so the next poll sends it again.
+                self.sent = None;
+            }
+            match reply.meters {
+                Ok(report) => self.take(report, now),
+                Err(why) => {
+                    self.reading = Reading::Failed(why);
+                    self.probes.clear();
+                }
+            }
+        }
+    }
+
+    /// The levels of the probed nodes, as of the last reply.
+    pub fn node_levels(&self) -> &[ProbeLevels] {
+        &self.probes
     }
 
     fn take(&mut self, report: MetersReport, now: Instant) {
@@ -185,8 +275,16 @@ impl MeterStrip {
             self.moved = Some(now);
         }
         self.stopped = self.moved.is_some_and(|moved| now - moved >= STALL);
+        if restarted {
+            // The new engine holds no set of ours.
+            self.sent = None;
+        }
         self.frames = Some(report.frames);
         self.reading = Reading::Levels;
+        self.probes = match self.measuring == self.wanted {
+            true => report.probes,
+            false => Vec::new(),
+        };
         for (bars, levels) in [
             (&mut self.outputs, report.outputs),
             (&mut self.inputs, report.inputs),
@@ -202,11 +300,11 @@ impl MeterStrip {
 }
 
 /// Where `dbfs` falls on the drawn scale, 0 at its floor and 1 at full scale.
-fn fraction(dbfs: f32) -> f32 {
+pub(crate) fn fraction(dbfs: f32) -> f32 {
     ((dbfs - SCALE_FLOOR_DBFS) / -SCALE_FLOOR_DBFS).clamp(0.0, 1.0)
 }
 
-fn db(dbfs: f32) -> String {
+pub(crate) fn db(dbfs: f32) -> String {
     if dbfs <= SCALE_FLOOR_DBFS {
         format!("below {SCALE_FLOOR_DBFS} dBFS")
     } else {
@@ -383,7 +481,7 @@ mod tests {
 
     use egui_kittest::kittest::Queryable;
     use egui_kittest::Harness;
-    use reuben_api::engine::{Response, Transport};
+    use reuben_api::engine::{Request, Response, Transport};
 
     use super::*;
 
@@ -446,6 +544,10 @@ mod tests {
         down: Arc<AtomicBool>,
         /// Whether its output frames stand still.
         stopped: Arc<AtomicBool>,
+        /// Every `SetProbes` it was sent, in order.
+        probed: Arc<Mutex<Vec<Vec<Vec<String>>>>>,
+        /// Whether it refuses a `SetProbes`.
+        refuses: Arc<AtomicBool>,
     }
 
     impl Canned {
@@ -472,7 +574,15 @@ mod tests {
     }
 
     impl Transport for Canned {
-        fn round_trip(&self, _line: &str, _read_timeout: Duration) -> std::io::Result<String> {
+        fn round_trip(&self, line: &str, _read_timeout: Duration) -> std::io::Result<String> {
+            if let Ok(Request::SetProbes { paths }) = Request::from_ndjson(line) {
+                self.probed.lock().expect("unpoisoned").push(paths.clone());
+                if self.refuses.load(Ordering::SeqCst) {
+                    let message = "refused".to_string();
+                    return Ok(Response::Error { message }.to_ndjson());
+                }
+                return Ok(Response::Probes { resolved: paths }.to_ndjson());
+            }
             let mut report = self.report.lock().expect("unpoisoned");
             if !self.stopped.load(Ordering::SeqCst) {
                 report.frames += 256;
@@ -489,7 +599,7 @@ mod tests {
         Harness::new_ui_state(
             move |ui, strip: &mut MeterStrip| {
                 let channel = engine.as_ref().filter(|e| e.up()).map(Canned::channel);
-                strip.poll(Instant::now(), channel);
+                strip.poll(Instant::now(), channel, &[]);
                 show(ui, strip);
             },
             MeterStrip::new(|| {}),
@@ -580,6 +690,169 @@ mod tests {
         assert!(strip.stopped, "still for the whole stall");
         strip.take(report(4352), start + EVERY * 3 + STALL);
         assert!(!strip.stopped, "moving again");
+    }
+
+    /// Poll `strip` at `at` with `probes`, then take in the reply.
+    fn exchange(strip: &mut MeterStrip, at: Instant, engine: &Canned, probes: &[Vec<String>]) {
+        strip.poll(at, Some(engine.channel()), probes);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while strip.in_flight {
+            assert!(Instant::now() < deadline, "no reply");
+            std::thread::sleep(Duration::from_millis(1));
+            strip.receive(at);
+        }
+    }
+
+    #[test]
+    fn a_changed_probe_set_is_sent_and_an_unchanged_one_renewed_every_two_seconds() {
+        let engine = Canned::new(vec![level(-6.0, -9.0)], Vec::new());
+        let sent = || engine.probed.lock().expect("unpoisoned").clone();
+        let one = vec![vec!["/osc".to_string()]];
+        let two = vec![
+            vec!["/osc".to_string()],
+            vec!["/kick_v".to_string(), "/osc".to_string()],
+        ];
+        // In the past, so the asking thread never waits for a moment to come.
+        let start = Instant::now() - Duration::from_secs(60);
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut strip = MeterStrip::new(|| {});
+
+        exchange(&mut strip, at(0), &engine, &[]);
+        assert!(
+            sent().is_empty(),
+            "no set, and none held, is nothing to send"
+        );
+        exchange(&mut strip, at(100), &engine, &one);
+        exchange(&mut strip, at(600), &engine, &one);
+        assert_eq!(
+            sent(),
+            std::slice::from_ref(&one),
+            "sent once while unchanged"
+        );
+        exchange(&mut strip, at(1100), &engine, &two);
+        assert_eq!(
+            sent(),
+            [one.clone(), two.clone()],
+            "a change is sent at once"
+        );
+        exchange(&mut strip, at(3000), &engine, &two);
+        assert_eq!(sent().len(), 2, "not yet two seconds since it was sent");
+        exchange(&mut strip, at(3100), &engine, &two);
+        assert_eq!(sent().len(), 3, "renewed two seconds after it was sent");
+        assert_eq!(sent()[2], two);
+        exchange(&mut strip, at(3200), &engine, &[]);
+        assert_eq!(
+            sent().len(),
+            4,
+            "an emptied set is sent, to clear the engine's"
+        );
+        assert!(sent()[3].is_empty());
+        exchange(&mut strip, at(6000), &engine, &[]);
+        assert_eq!(sent().len(), 4, "an empty set is not renewed");
+    }
+
+    #[test]
+    fn a_refused_probe_set_is_sent_again_on_the_next_poll() {
+        let engine = Canned::new(vec![level(-6.0, -9.0)], Vec::new());
+        let sent = || engine.probed.lock().expect("unpoisoned").len();
+        let one = vec![vec!["/osc".to_string()]];
+        let start = Instant::now() - Duration::from_secs(60);
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut strip = MeterStrip::new(|| {});
+
+        engine.refuses.store(true, Ordering::SeqCst);
+        exchange(&mut strip, at(0), &engine, &one);
+        exchange(&mut strip, at(100), &engine, &one);
+        assert_eq!(sent(), 2, "refused, so sent again");
+        assert_eq!(
+            strip.reading,
+            Reading::Levels,
+            "the device levels are still read"
+        );
+        engine.refuses.store(false, Ordering::SeqCst);
+        exchange(&mut strip, at(200), &engine, &one);
+        exchange(&mut strip, at(300), &engine, &one);
+        assert_eq!(sent(), 3, "taken, so held until the renewal");
+    }
+
+    #[test]
+    fn a_reply_for_the_set_before_a_change_paints_no_levels() {
+        let engine = Canned::new(vec![level(-6.0, -9.0)], Vec::new());
+        let one = vec![vec!["/osc".to_string()]];
+        let other = vec![vec!["/kick_v".to_string(), "/osc".to_string()]];
+        engine.report.lock().expect("unpoisoned").probes = vec![ProbeLevels {
+            path: one[0].clone(),
+            ports: Vec::new(),
+        }];
+        let start = Instant::now() - Duration::from_secs(60);
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut strip = MeterStrip::new(|| {});
+
+        exchange(&mut strip, at(0), &engine, &one);
+        assert_eq!(strip.node_levels().len(), 1);
+        // An ask measuring `one` goes out, and the set changes before its reply is taken.
+        strip.poll(at(100), Some(engine.channel()), &one);
+        strip.poll(at(100), Some(engine.channel()), &other);
+        assert!(strip.node_levels().is_empty(), "cleared with the change");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while strip.in_flight {
+            assert!(Instant::now() < deadline, "no reply");
+            std::thread::sleep(Duration::from_millis(1));
+            strip.receive(at(100));
+        }
+        assert!(
+            strip.node_levels().is_empty(),
+            "the reply measured the old set"
+        );
+        exchange(&mut strip, at(200), &engine, &other);
+        assert_eq!(
+            strip.node_levels().len(),
+            1,
+            "a reply for the new set is taken"
+        );
+    }
+
+    #[test]
+    fn a_restarted_engine_is_sent_the_probe_set_again() {
+        let engine = Canned::new(vec![level(-6.0, -9.0)], Vec::new());
+        let sent = || engine.probed.lock().expect("unpoisoned").len();
+        let one = vec![vec!["/osc".to_string()]];
+        let start = Instant::now() - Duration::from_secs(60);
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut strip = MeterStrip::new(|| {});
+
+        exchange(&mut strip, at(0), &engine, &one);
+        exchange(&mut strip, at(100), &engine, &one);
+        assert_eq!(sent(), 1, "held by the engine, so not re-sent");
+        // A new engine: its frame count starts over, and it holds no set of ours. The channel
+        // never went away, so only the count says so.
+        engine.report.lock().expect("unpoisoned").frames = 0;
+        exchange(&mut strip, at(200), &engine, &one);
+        exchange(&mut strip, at(300), &engine, &one);
+        assert_eq!(sent(), 2, "re-sent on the poll after the restart is seen");
+    }
+
+    #[test]
+    fn the_probed_levels_are_read_from_the_same_reply() {
+        let engine = Canned::new(vec![level(-6.0, -9.0)], Vec::new());
+        let probed = ProbeLevels {
+            path: vec!["/osc".to_string()],
+            ports: vec![reuben_api::engine::PortLevel {
+                port: "audio".to_string(),
+                level: level(-3.0, -6.0),
+            }],
+        };
+        engine.report.lock().expect("unpoisoned").probes = vec![probed.clone()];
+        let mut strip = MeterStrip::new(|| {});
+        exchange(
+            &mut strip,
+            Instant::now(),
+            &engine,
+            std::slice::from_ref(&probed.path),
+        );
+        assert_eq!(strip.node_levels(), [probed]);
+        strip.poll(Instant::now(), None, &[]);
+        assert!(strip.node_levels().is_empty(), "no engine, no levels");
     }
 
     /// Step until the strip shows the text `label`, failing after a few seconds.

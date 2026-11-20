@@ -85,6 +85,10 @@ pub struct Engine {
     /// for, on this run of the engine. A restart that could not happen is not tried again every
     /// frame.
     refit_tried: Option<(Option<String>, String)>,
+    /// The file the engine was last seen to have installed, and the hash of what it installed from
+    /// it: kept through a Swap that holds it, and `None` while that is not known or the document
+    /// has no file.
+    plays: Option<Playing>,
 }
 
 impl Engine {
@@ -97,6 +101,7 @@ impl Engine {
             config: None,
             report: Vec::new(),
             refit_tried: None,
+            plays: None,
         }
     }
 
@@ -131,6 +136,16 @@ impl Engine {
         let addr = link.addr().to_string();
         for change in link.changes() {
             self.unfollowed = None;
+            self.plays = match &change {
+                Change::Up {
+                    source,
+                    content_hash,
+                } => source.clone().map(|source| Playing {
+                    source,
+                    content_hash: content_hash.clone(),
+                }),
+                Change::Down(_) => None,
+            };
             let unopenable = match change {
                 Change::Up {
                     source: Some(source),
@@ -358,6 +373,22 @@ impl Engine {
     /// Swap — the editor's or `reuben-mcp`'s — may have changed since it started: the report names
     /// it, and a [`resume`](Self::resume) after a stop starts on it. Never waits.
     pub fn follow_installed(&mut self) {
+        if self.attached.is_none() {
+            match self.installed() {
+                Some(Installed::Known {
+                    source,
+                    content_hash,
+                    ..
+                }) => {
+                    self.plays = source.map(|source| Playing {
+                        source,
+                        content_hash,
+                    });
+                }
+                Some(Installed::Busy) => {}
+                Some(Installed::Poisoned) | None => self.plays = None,
+            }
+        }
         let Some(Installed::Known {
             source: Some(source),
             ..
@@ -402,6 +433,26 @@ impl Engine {
             )),
             Installed::Busy | Installed::Poisoned => None,
         }
+    }
+
+    /// Take `source`, installed as `content_hash`, as what the engine plays, as when a Swap of it
+    /// answers that it landed. What the engine is next seen to play replaces it: an attached
+    /// engine's link reports on its next probe whether or not that differs from its last report,
+    /// since another client may have swapped back to it.
+    pub fn note_installed(&mut self, source: String, content_hash: String) {
+        if let Some(link) = &self.attached {
+            link.forget();
+        }
+        self.plays = Some(Playing {
+            source,
+            content_hash,
+        });
+    }
+
+    /// The file the engine plays, as last seen: through [`follow_installed`](Self::follow_installed)
+    /// for an embedded engine, [`follow_link`](Self::follow_link) for an attached one.
+    pub fn plays(&self) -> Option<&Playing> {
+        self.plays.as_ref()
     }
 
     /// Whether a Swap holds the running engine, so what it has installed is not known yet.
@@ -500,6 +551,7 @@ impl Engine {
             config,
             report,
             refit_tried: None,
+            plays: None,
         }
     }
 

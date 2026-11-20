@@ -120,6 +120,8 @@ pub struct Session {
     users: Option<(PathBuf, Listing)>,
     /// Where a listing under way will arrive. Replaced, and so let go, by the next listing.
     listing: Option<Receiver<Result<Vec<String>, String>>>,
+    /// The content hash the last of this session's Swaps installed, until taken.
+    installed: Option<String>,
     #[cfg(test)]
     touches: usize,
 }
@@ -171,6 +173,7 @@ impl Session {
             states: DocumentHistory::<FsResolver>::DEFAULT_CAPACITY,
             users: None,
             listing: None,
+            installed: None,
             #[cfg(test)]
             touches: 0,
         }
@@ -215,6 +218,28 @@ impl Session {
         });
         self.list_users();
         Ok(())
+    }
+
+    /// The path the engine's probes name the node at `address` of the viewed document by. A patch
+    /// the trail passes through is spliced into the Plan above it, so its node's address prefixes
+    /// the next address; a voice is a Plan of its own, hosted by its node, so that node's address
+    /// ends one segment and the voice's addresses start the next.
+    pub fn probe_path(&self, address: &str) -> Vec<String> {
+        let mut path = Vec::new();
+        let mut prefix = String::new();
+        let mut above = self.tree.top();
+        for crumb in &self.trail {
+            prefix.push_str(&crumb.address);
+            if above.hosts(&crumb.address) {
+                path.push(std::mem::take(&mut prefix));
+            }
+            let Some(below) = self.tree.document(&crumb.source) else {
+                break;
+            };
+            above = below;
+        }
+        path.push(prefix + address);
+        path
     }
 
     /// View the document `depth` steps down the trail: 0 is the top-level document.
@@ -351,6 +376,13 @@ impl Session {
         }
     }
 
+    /// The content hash of the top-level file one of this session's Swaps installed since the last
+    /// call: known the moment the Swap answers, where asking the engine what it plays waits on its
+    /// next answer.
+    pub fn take_installed(&mut self) -> Option<String> {
+        self.installed.take()
+    }
+
     /// Offer what is on disk to the engine again, as after a start that the files have moved on
     /// from.
     pub fn reinstall(&mut self, channel: &dyn Fn() -> Option<Channel>) {
@@ -445,6 +477,11 @@ impl Session {
 
     fn swapped(&mut self, outcome: SwapOutcome, channel: &dyn Fn() -> Option<Channel>) {
         self.swapping = false;
+        if let Ok(result) = &outcome {
+            if result.report.report.ok && result.conflict.is_none() && result.held.is_none() {
+                self.installed = Some(result.report.content_hash.clone());
+            }
+        }
         if self.swap_again {
             self.swap_again = false;
             self.install(channel);
@@ -557,6 +594,74 @@ pub(crate) mod test_support {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// Write `lib/probed.json`: an oscillator `/osc`, a `subpatch` `/bass` whose patch has a filter
+    /// `/filter` feeding its `audio` output, a `subpatch` `/wrap` whose `audio` output comes from
+    /// that same patch nested in it as `/inner`, and a `voicer` `/kick_v` whose voice has an
+    /// oscillator `/osc` feeding its `audio`. Returns the top-level file.
+    pub fn probed(scratch: &Scratch) -> PathBuf {
+        let lib = scratch.path("lib");
+        std::fs::create_dir_all(&lib).expect("create the library directory");
+        let write = |name: &str, doc: serde_json::Value| {
+            let path = lib.join(name);
+            std::fs::write(&path, doc.to_string()).expect("write a document");
+            path
+        };
+        write(
+            "bass.json",
+            serde_json::json!({
+                "format_version": 3,
+                "instrument": "bass",
+                "interface": {"outputs": {"audio": {"from": "/filter.audio"}}},
+                "nodes": [
+                    {"type": "oscillator", "address": "/osc"},
+                    {"type": "filter", "address": "/filter", "inputs": {"audio": {"from": "/osc"}}}
+                ]
+            }),
+        );
+        write(
+            "wrap.json",
+            serde_json::json!({
+                "format_version": 3,
+                "instrument": "wrap",
+                "resources": {"bass": "bass.json"},
+                "interface": {"outputs": {"audio": {"from": "/inner.audio"}}},
+                "nodes": [{"type": "subpatch", "address": "/inner", "patch": "bass"}]
+            }),
+        );
+        write(
+            "kick.json",
+            serde_json::json!({
+                "format_version": 3,
+                "instrument": "kick",
+                "interface": {
+                    "inputs": {"gate": {"type": "f32", "default": 0.0, "min": 0.0, "max": 1.0}},
+                    "outputs": {"audio": {"from": "/osc.audio"}}
+                },
+                "nodes": [{"type": "oscillator", "address": "/osc"}]
+            }),
+        );
+        write(
+            "probed.json",
+            serde_json::json!({
+                "format_version": 3,
+                "instrument": "probed",
+                "resources": {"bass": "bass.json", "kick": "kick.json", "wrap": "wrap.json"},
+                "interface": {"outputs": {"out": {"from": "/mix2.out"}}},
+                "nodes": [
+                    {"type": "oscillator", "address": "/osc"},
+                    {"type": "subpatch", "address": "/bass", "patch": "bass"},
+                    {"type": "voicer", "address": "/kick_v", "voice": "kick",
+                     "config": {"voices": 1}},
+                    {"type": "add_f32_signal", "address": "/mix",
+                     "inputs": {"a": {"from": "/bass.audio"}, "b": {"from": "/kick_v"}}},
+                    {"type": "subpatch", "address": "/wrap", "patch": "wrap"},
+                    {"type": "add_f32_signal", "address": "/mix2",
+                     "inputs": {"a": {"from": "/mix"}, "b": {"from": "/wrap.audio"}}}
+                ]
+            }),
+        )
     }
 
     fn copy_dir(from: &Path, to: &Path) {
@@ -843,6 +948,34 @@ mod tests {
         );
         session.leave(0);
         assert_eq!(session.viewed().path, session.tree().top().path);
+    }
+
+    #[test]
+    fn a_probe_path_carries_the_subpatch_prefix_and_splits_at_a_voicer() {
+        use reuben_native::test_support::start_headless;
+
+        let scratch = test_support::Scratch::new("probe_path");
+        let top = test_support::probed(&scratch);
+        let mut session = Session::open(&top, None, || {});
+        let top_level = session.probe_path("/osc");
+        session.enter("/bass").expect("a subpatch");
+        let in_patch = session.probe_path("/filter");
+        session.leave(0);
+        session.enter("/kick_v").expect("a voicer");
+        let in_voice = session.probe_path("/osc");
+        assert_eq!(top_level, ["/osc"]);
+        assert_eq!(in_patch, ["/bass/filter"]);
+        assert_eq!(in_voice, ["/kick_v", "/osc"]);
+
+        // Each names a node of the Plan the engine built from these files.
+        within(HANG_SECS, move || {
+            let played = start_headless(crate::engine::test_support::config(top))
+                .expect("the engine starts");
+            let paths = vec![top_level, in_patch, in_voice];
+            let resolved = played.channel().set_probes(paths.clone());
+            reuben_native::diagnostics::log_snapshot(&played.shutdown());
+            assert_eq!(resolved.expect("set_probes"), paths);
+        });
     }
 
     #[test]

@@ -17,11 +17,15 @@
 //! place of what fed it. Delete removes the selected node or interface pipe or unwires the
 //! selected wire, F2 renames the selected node, and right-click offers the same, or the operator
 //! palette on empty canvas.
+//!
+//! A node box with a Signal output carries a level meter, a bar per output, read from the engine
+//! through the probe set [`Canvas::probe_paths`] names.
 
 mod camera;
 mod geometry;
 mod gesture;
 mod graph;
+mod meters;
 mod palette;
 mod place;
 mod view;
@@ -34,6 +38,7 @@ use reuben_api::authoring::{
     read_instrument, wire_compatibility, Diag, EditResult, InstrumentStructure, LayoutPosition,
     ReadInstrument, Refusal, WireCompatibility,
 };
+use reuben_api::engine::ProbeLevels;
 use reuben_api::FsResolver;
 
 use self::camera::Camera;
@@ -41,7 +46,9 @@ pub use self::gesture::Gesture;
 pub use self::graph::Item;
 pub(crate) use self::graph::PortKind;
 use self::graph::{Graph, PortRef, Problem};
+use self::meters::Tap;
 use self::palette::Palette;
+use crate::session::Session;
 
 /// How near a port's dot a press or drop must be to take it, in canvas units: half a port row,
 /// so a press never takes the port of the row next to it.
@@ -163,6 +170,11 @@ pub struct Canvas {
     notice: Option<String>,
     /// The node whose voice or patch was asked to be opened, until the caller takes it.
     entered: Option<String>,
+    /// What each box's meter reads, indexed as the drawn document's boxes; empty until
+    /// [`tap`](Self::tap) is called on what was last drawn.
+    taps: Vec<Vec<Tap>>,
+    /// The paths `taps` read, each once, as [`probe_paths`](Self::probe_paths) answers them.
+    probes: Vec<Vec<String>>,
 }
 
 impl Canvas {
@@ -181,6 +193,8 @@ impl Canvas {
             palette: Palette::new(),
             notice: None,
             entered: None,
+            taps: Vec::new(),
+            probes: Vec::new(),
         }
     }
 
@@ -208,11 +222,43 @@ impl Canvas {
         }
         self.instrument = Some((instrument.to_path_buf(), root.map(Path::to_path_buf)));
         self.loaded = Some(loaded);
+        self.taps.clear();
+        self.probes.clear();
         self.wire = None;
         if matches!(self.drag, Some(Drag::Move { .. } | Drag::Wire { .. })) {
             self.drag = Some(Drag::Dropped);
         }
         self.menu = None;
+    }
+
+    /// Resolve what each drawn box meters, `session` viewing the document drawn: where the trail
+    /// puts its nodes in the engine's Plan, and what feeds each output of a `subpatch` node.
+    pub fn tap(&mut self, session: &Session) {
+        self.taps = match self.doc() {
+            Some(doc) => meters::taps(&doc.graph, session),
+            None => Vec::new(),
+        };
+        self.probes = meters::probe_set(&self.taps);
+    }
+
+    /// The engine paths of the nodes the drawn boxes meter, each once, in box order and no more
+    /// than the engine takes in one set.
+    pub fn probe_paths(&self) -> &[Vec<String>] {
+        &self.probes
+    }
+
+    /// Whether the drawn document has a box for `item`.
+    #[cfg(test)]
+    pub(crate) fn draws(&self, item: &Item) -> bool {
+        self.doc()
+            .is_some_and(|doc| doc.graph.index_of(item).is_some())
+    }
+
+    /// Ask for the voice or patch of the node at `address` to be opened, as a double-click on it
+    /// does.
+    #[cfg(test)]
+    pub(crate) fn open_nested(&mut self, address: &str) {
+        self.entered = Some(address.to_string());
     }
 
     /// The file drawn, while one is.
@@ -520,8 +566,14 @@ impl Canvas {
     /// asks for. Draws nothing when no instrument is open.
     ///
     /// `rejected` is what the last edit of the drawn document was turned away with, shown on the
-    /// boxes and ports it names beside what the load report says.
-    pub fn show(&mut self, ui: &mut egui::Ui, rejected: &[Diag]) -> Vec<Gesture> {
+    /// boxes and ports it names beside what the load report says. `levels` is the engine's latest
+    /// reading of the probed nodes, drawn on the boxes that meter them.
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        rejected: &[Diag],
+        levels: &[ProbeLevels],
+    ) -> Vec<Gesture> {
         let doc = match &self.loaded {
             None => {
                 ui.take_available_space();
@@ -653,7 +705,7 @@ impl Canvas {
             .collect();
         // Painted before a released drag is let go, so the frame it ends on still shows where the
         // boxes were dropped rather than where they were.
-        self.paint(&painter, ui.visuals(), area, &extra);
+        self.paint(&painter, ui.visuals(), area, &extra, levels);
         if response.drag_stopped() {
             let at = (response.interact_pointer_pos())
                 .or(pointer)
@@ -809,10 +861,15 @@ impl Canvas {
         visuals: &egui::Visuals,
         area: Rect,
         extra: &[(usize, Problem)],
+        levels: &[ProbeLevels],
     ) {
         let (Some(doc), Some(camera)) = (self.doc(), self.camera) else {
             return;
         };
+        let reported = meters::Reported::new(levels);
+        let meters: Vec<_> = (self.taps.iter())
+            .map(|taps| meters::read(taps, &reported))
+            .collect();
         let mut rects = doc.rects.clone();
         if let Some(Drag::Move { boxes, by }) = &self.drag {
             for &i in boxes {
@@ -839,6 +896,7 @@ impl Canvas {
             wire: self.wire,
             wiring,
             extra,
+            meters: &meters,
         }
         .paint(painter, visuals);
     }

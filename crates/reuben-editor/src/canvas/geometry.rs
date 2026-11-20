@@ -3,7 +3,8 @@
 
 use eframe::egui::{Pos2, Rect, Vec2};
 
-use super::graph::{Graph, NodeBox, Port, PortRef, Wire};
+use super::graph::{Graph, NodeBox, Port, PortKind, PortRef, Wire};
+use super::meters;
 
 /// The size, in canvas units, of the monospace text every label is drawn in.
 pub const TEXT_SIZE: f32 = 12.0;
@@ -62,9 +63,17 @@ pub fn size(b: &NodeBox) -> Vec2 {
     let widest_row = (0..rows)
         .map(|i| label(i, &b.inputs) + LABEL_GAP + label(i, &b.outputs))
         .fold(0.0, f32::max);
-    let text = text_width(&b.title)
-        .max(text_width(&b.subtitle))
-        .max(widest_row);
+    // Room beside the header for a meter bar per Signal output.
+    let bars = b
+        .outputs
+        .iter()
+        .filter(|p| p.kind == PortKind::Signal)
+        .count();
+    let meter = match bars {
+        0 => 0.0,
+        n => meters::width(n) + PAD,
+    };
+    let text = (text_width(&b.title).max(text_width(&b.subtitle)) + meter).max(widest_row);
     let ports = match rows {
         0 => 0.0,
         n => HEADER_GAP + n as f32 * LINE,

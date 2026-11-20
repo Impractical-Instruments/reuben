@@ -9,7 +9,7 @@
 //! Live control values to it go through a [`Sends`] worker, so a stopped engine never holds the
 //! window.
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::Duration;
@@ -51,6 +51,9 @@ pub struct Link {
     sends: Sends,
     state: Arc<AtomicU8>,
     changes: Receiver<Change>,
+    /// Set to have the probe report what the engine plays next time even if it reported the same
+    /// last time.
+    forget: Arc<AtomicBool>,
     /// Dropped with the link, which ends the probe thread at its next wait.
     _stop: Sender<()>,
 }
@@ -75,12 +78,18 @@ impl Link {
         let state = Arc::new(AtomicU8::new(UNKNOWN));
         let (changed, changes) = mpsc::channel();
         let (stop, stopped) = mpsc::channel();
+        let forget = Arc::new(AtomicBool::new(false));
         // Not joined on drop: a probe waiting on a wedged engine would hold the window's close for
         // up to a read budget, and the thread holds nothing that outlives it.
         std::thread::spawn({
             let channel = Channel::new(transport.clone());
             let state = Arc::clone(&state);
-            move || probe(&channel, &state, &changed, &stopped, move || wake())
+            let forget = Arc::clone(&forget);
+            move || {
+                probe(&channel, &state, &forget, &changed, &stopped, move || {
+                    wake()
+                })
+            }
         });
         Self {
             addr,
@@ -88,6 +97,7 @@ impl Link {
             sends,
             state,
             changes,
+            forget,
             _stop: stop,
         }
     }
@@ -114,6 +124,12 @@ impl Link {
     /// Where live control values to the engine go: queued for the link's send worker.
     pub fn live(&self) -> Live {
         self.sends.live()
+    }
+
+    /// Have the next probe report what the engine plays, the same as its last report or not: what
+    /// the editor took the engine to play since may be wrong, and only a report puts it right.
+    pub fn forget(&self) {
+        self.forget.store(true, Ordering::Release);
     }
 
     /// What the probe found changed since the last call, oldest first. Never waits.
@@ -145,12 +161,16 @@ pub fn show(ui: &mut egui::Ui, link: &Link) {
 fn probe(
     channel: &Channel,
     state: &AtomicU8,
+    forget: &AtomicBool,
     changed: &Sender<Change>,
     stopped: &Receiver<()>,
     wake: impl Fn(),
 ) {
     let mut last = None;
     loop {
+        if forget.swap(false, Ordering::AcqRel) {
+            last = None;
+        }
         let change = match channel.ping() {
             Err(e) => {
                 last = None;

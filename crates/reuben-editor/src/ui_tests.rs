@@ -77,6 +77,7 @@ fn editor(top: &Path, config: &TempConfig) -> Editor {
         },
         held: HeldSwaps::new(|| {}),
         meters: MeterStrip::new(|| {}),
+        same_file: None,
     }
 }
 
@@ -226,6 +227,7 @@ fn attached(addr: String, config: &TempConfig, session: Option<Session>) -> Edit
         },
         held: HeldSwaps::new(|| {}),
         meters: MeterStrip::new(|| {}),
+        same_file: None,
     }
 }
 
@@ -630,4 +632,368 @@ fn the_meters_ride_the_right_edge_of_the_controls_panel() {
         (meters.top() - controls.top()).abs() < 24.0,
         "in the controls panel's band: {meters:?} {controls:?}"
     );
+}
+
+/// Write an instrument at `lib/metered.json`: an oscillator `/osc` into an output `/out`, and an
+/// `osc_out` `/echo` of its `level` input, which has no Signal output.
+fn metered(scratch: &Scratch) -> PathBuf {
+    let lib = scratch.path("lib");
+    std::fs::create_dir_all(&lib).expect("create the library directory");
+    let top = lib.join("metered.json");
+    let text = json!({
+        "format_version": 3,
+        "instrument": "metered",
+        "interface": {
+            "inputs": {"level": {"type": "f32", "default": 0.5, "min": 0.0, "max": 1.0}},
+            "outputs": {"out": {"from": "/out.audio"}}
+        },
+        "nodes": [
+            {"type": "oscillator", "address": "/osc"},
+            {"type": "output", "address": "/out", "inputs": {"audio": {"from": "/osc"}}},
+            {"type": "osc_out", "address": "/echo", "inputs": {"in": {"from": "/level"}}}
+        ]
+    })
+    .to_string();
+    std::fs::write(&top, text).expect("write the instrument");
+    top
+}
+
+/// The editor showing `shown`, with an embedded headless engine started on `played`.
+fn playing(shown: &Path, played: PathBuf, config: &TempConfig) -> Harness<'static, Editor> {
+    let mut editor = editor(shown, config);
+    editor.engine = Engine::start_with(
+        crate::engine::test_support::config(played),
+        reuben_native::test_support::start_headless,
+    );
+    harness(editor)
+}
+
+/// Step until the canvas shows `/osc` playing, failing after a few seconds.
+fn until_osc_level(harness: &mut Harness<'_, Editor>) {
+    use egui_kittest::kittest::NodeT;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let floor = f64::from(meter_strip::SCALE_FLOOR_DBFS);
+    loop {
+        let level = (harness.query_by_label("/osc level"))
+            .and_then(|node| node.accesskit_node().numeric_value());
+        if level.is_some_and(|level| level > floor) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "/osc never showed a level: {level:?}"
+        );
+        harness.run_steps(1);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// Step while the strip reads the engine, then check `/osc` shows an empty track and the engine
+/// was asked to meter nothing.
+fn assert_no_osc_level(harness: &mut Harness<'_, Editor>) {
+    use egui_kittest::kittest::NodeT;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while (harness.query_by_label("Meters: the engine has no audio device")).is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the strip never read the engine"
+        );
+        harness.run_steps(1);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    // Long enough for several more polls, any of which would carry a probe set.
+    for _ in 0..20 {
+        harness.run_steps(1);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let osc = harness.get_by_label("/osc level");
+    assert_eq!(osc.accesskit_node().numeric_value(), None, "an empty track");
+    assert_eq!(osc.value().as_deref(), Some("no level"));
+    let channel = harness.state().engine.channel().expect("the engine runs");
+    let probed = channel.get_meters().expect("meters").probes;
+    assert!(
+        probed.is_empty(),
+        "the engine was asked to meter {probed:?}"
+    );
+}
+
+#[test]
+fn a_playing_node_shows_its_level_on_the_canvas() {
+    let scratch = Scratch::new("ui_node_meters");
+    let config = TempConfig::new();
+    let top = metered(&scratch);
+    reuben_native::test_support::within(crate::engine::test_support::HANG_SECS, move || {
+        let mut harness = playing(&top, top.clone(), &config);
+        until_osc_level(&mut harness);
+        let echo = Item::Node("/echo".to_string());
+        assert!(
+            harness.state().canvas.draws(&echo),
+            "the /echo box is drawn"
+        );
+        assert!(harness.query_by_label("/echo level").is_none());
+        harness.state_mut().engine.shutdown();
+    });
+}
+
+#[test]
+fn the_file_the_engine_plays_by_another_spelling_shows_its_level() {
+    let scratch = Scratch::new("ui_node_meters_spelling");
+    let config = TempConfig::new();
+    let top = metered(&scratch);
+    let lib = top.parent().expect("in lib").to_path_buf();
+    std::fs::create_dir_all(lib.join("sub")).expect("create a sibling directory");
+    let spelled = lib.join("sub").join("..").join("metered.json");
+    reuben_native::test_support::within(crate::engine::test_support::HANG_SECS, move || {
+        let mut harness = playing(&top, spelled, &config);
+        until_osc_level(&mut harness);
+        harness.state_mut().engine.shutdown();
+    });
+}
+
+#[test]
+fn a_node_of_a_file_the_engine_does_not_play_shows_no_level() {
+    let scratch = Scratch::new("ui_node_meters_other");
+    let config = TempConfig::new();
+    let played = metered(&scratch);
+    // The same nodes in another file: the engine's `/osc` is not this file's.
+    let shown = played.with_file_name("shown.json");
+    std::fs::copy(&played, &shown).expect("copy the instrument");
+    reuben_native::test_support::within(crate::engine::test_support::HANG_SECS, move || {
+        let mut harness = playing(&shown, played, &config);
+        assert_no_osc_level(&mut harness);
+        harness.state_mut().engine.shutdown();
+    });
+}
+
+/// A transport that refuses every request, as an engine refuses a Swap.
+#[derive(Debug)]
+struct Refusing;
+
+impl reuben_api::engine::Transport for Refusing {
+    fn round_trip(&self, _: &str, _: std::time::Duration) -> std::io::Result<String> {
+        let message = "refused".to_string();
+        Ok(reuben_api::engine::Response::Error { message }.to_ndjson())
+    }
+    fn endpoint(&self) -> &str {
+        "refusing"
+    }
+}
+
+/// The editor showing `lib/metered.json` as edited after the embedded headless engine installed
+/// it, its session's Swap of the edit sent down `swap`.
+fn edited_after_install(
+    scratch: &Scratch,
+    config: &TempConfig,
+    swap: reuben_api::engine::Channel,
+) -> Harness<'static, Editor> {
+    let top = metered(scratch);
+    let mut editor = editor(&top, config);
+    editor.engine = Engine::start_with(
+        crate::engine::test_support::config(top.clone()),
+        reuben_native::test_support::start_headless,
+    );
+    let text = std::fs::read_to_string(&top).expect("read the instrument");
+    std::fs::write(&top, text.replace("0.5", "0.25")).expect("write the instrument");
+    let mut session = Session::open(&top, None, || {});
+    let swap = std::sync::Mutex::new(Some(swap));
+    session.reinstall(&|| swap.lock().unwrap().take());
+    editor.session = Some(session);
+    harness(editor)
+}
+
+#[test]
+fn an_edit_whose_swap_was_refused_shows_no_level() {
+    let scratch = Scratch::new("ui_node_meters_refused");
+    let config = TempConfig::new();
+    reuben_native::test_support::within(crate::engine::test_support::HANG_SECS, move || {
+        let refusing = reuben_api::engine::Channel::new(Refusing);
+        let mut harness = edited_after_install(&scratch, &config, refusing);
+        step_until(&mut harness, "held the refused Swap", |editor| {
+            matches!(editor.session.as_ref().unwrap().status(), Status::Held(_))
+        });
+        // The engine plays the file as it was before the edit, for good.
+        assert_no_osc_level(&mut harness);
+        harness.state_mut().engine.shutdown();
+    });
+}
+
+#[test]
+fn an_edit_whose_swap_is_running_keeps_its_level() {
+    let scratch = Scratch::new("ui_node_meters_swapping");
+    let config = TempConfig::new();
+    reuben_native::test_support::within(crate::engine::test_support::HANG_SECS, move || {
+        let (release, gate) = std::sync::mpsc::channel();
+        let gate = reuben_api::engine::Channel::new(Gate(std::sync::Mutex::new(gate)));
+        let mut harness = edited_after_install(&scratch, &config, gate);
+        let swapping = |harness: &Harness<'_, Editor>| {
+            harness.state().session.as_ref().unwrap().status() == &Status::Swapping
+        };
+        assert!(swapping(&harness));
+        until_osc_level(&mut harness);
+        assert!(swapping(&harness), "metered while the Swap runs");
+        release.send(()).unwrap();
+        harness.state_mut().engine.shutdown();
+    });
+}
+#[test]
+fn opening_a_subpatch_on_the_canvas_probes_its_nodes_instead() {
+    let scratch = Scratch::new("ui_node_meters_enter");
+    let config = TempConfig::new();
+    let top = crate::session::test_support::probed(&scratch);
+    let mut harness = harness(editor(&top, &config));
+    let path = |p: &str| vec![p.to_string()];
+    let before = harness.state().canvas.probe_paths().to_vec();
+    assert!(before.contains(&path("/bass/filter")), "{before:?}");
+    assert!(!before.contains(&path("/bass/osc")), "{before:?}");
+
+    harness.state_mut().canvas.open_nested("/bass");
+    harness.run_steps(2);
+    assert_eq!(
+        harness.state().canvas.probe_paths(),
+        [path("/bass/osc"), path("/bass/filter")]
+    );
+}
+#[test]
+fn an_attached_edit_keeps_its_level_once_its_swap_lands() {
+    use reuben_native::test_support::{start_headless, within};
+
+    let scratch = Scratch::new("ui_node_meters_attached_edit");
+    let config = TempConfig::new();
+    let top = metered(&scratch);
+    within(crate::engine::test_support::HANG_SECS, move || {
+        let played = start_headless(crate::engine::test_support::config(top.clone()))
+            .expect("the engine starts");
+        let addr = played.structure_addr().expect("bound").to_string();
+        let session = Session::open(&top, None, || {});
+        let mut editor = attached(addr, &config, None);
+        view(&mut editor.canvas, &mut editor.inspector, &session);
+        editor.session = Some(session);
+        editor.start.opened(&top);
+        let mut harness = harness(editor);
+        until_osc_level(&mut harness);
+
+        let before = installed_hash(&played);
+        let text = std::fs::read_to_string(&top).expect("read the instrument");
+        std::fs::write(&top, text.replace("0.5", "0.25")).expect("write the instrument");
+        // The link asks the engine what it plays once a second; the Swap lands well inside that,
+        // so the frame it lands on knows what it installed from the Swap's own answer.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let editor = harness.state_mut();
+            let session = editor.session.as_ref().expect("a session");
+            let read = session.tree().documents()[0].hash().map(str::to_string);
+            let landed = session.status() == &Status::Current
+                && read != before
+                && read == installed_hash(&played);
+            if landed {
+                assert!(editor.metered(), "metered on the frame the Swap lands");
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the Swap never landed"
+            );
+            harness.run_steps(1);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        until_osc_level(&mut harness);
+
+        // Another client's Swap onto another file: the link's report of it replaces what the
+        // editor's own Swap noted.
+        let other = top.with_file_name("other.json");
+        std::fs::copy(&top, &other).expect("copy the instrument");
+        let swapped = reuben_api::engine::swap_instrument(
+            &reuben_api::engine::SwapInstrument {
+                path: other.display().to_string(),
+                expect: None,
+            },
+            &played.channel(),
+        )
+        .expect("the Swap ran");
+        assert!(swapped.output.report.report.ok, "{:?}", swapped.output);
+        let other_source = other.display().to_string();
+        step_until(&mut harness, "saw the other client's Swap", |editor| {
+            editor.engine.plays().map(|p| p.source.as_str()) == Some(other_source.as_str())
+        });
+        harness.state_mut().engine.shutdown();
+        reuben_native::diagnostics::log_snapshot(&played.shutdown());
+    });
+}
+
+/// The content hash of what `played` has installed.
+fn installed_hash(played: &reuben_native::engine::RunningEngine) -> Option<String> {
+    Some(played.channel().get_document().ok()?.content_hash)
+}
+#[test]
+fn a_swap_back_to_what_the_link_last_reported_is_still_followed() {
+    use reuben_native::test_support::{start_headless, within};
+
+    let scratch = Scratch::new("ui_node_meters_swap_back");
+    let config = TempConfig::new();
+    let shown = metered(&scratch);
+    // The same nodes in another file, which the engine plays first.
+    let first = shown.with_file_name("first.json");
+    std::fs::copy(&shown, &first).expect("copy the instrument");
+    within(crate::engine::test_support::HANG_SECS, move || {
+        let played = start_headless(crate::engine::test_support::config(first.clone()))
+            .expect("the engine starts");
+        let addr = played.structure_addr().expect("bound").to_string();
+        let mut harness = harness(attached(addr, &config, None));
+        step_until(&mut harness, "opened what the engine plays", |editor| {
+            editor.session.as_ref().is_some_and(|s| s.top() == first)
+        });
+
+        // The user opens another file; its Swap lands.
+        let ctx = harness.ctx.clone();
+        harness.state_mut().open(&shown, &ctx);
+        let shown_source = shown.display().to_string();
+        step_until(&mut harness, "noted the Swap it made", |editor| {
+            let session = editor.session.as_ref().expect("a session");
+            session.status() == &Status::Current
+                && editor.engine.plays().map(|p| p.source.as_str()) == Some(shown_source.as_str())
+        });
+        // Another client swaps the first file back in at once, before the link's next probe: the
+        // same file and content the link last reported.
+        let swapped = reuben_api::engine::swap_instrument(
+            &reuben_api::engine::SwapInstrument {
+                path: first.display().to_string(),
+                expect: None,
+            },
+            &played.channel(),
+        )
+        .expect("the Swap ran");
+        assert!(swapped.output.report.report.ok, "{:?}", swapped.output);
+
+        // Until the editor follows it, the shown file's boxes must not take its levels.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let editor = harness.state_mut();
+            let top = editor
+                .session
+                .as_ref()
+                .expect("a session")
+                .top()
+                .to_path_buf();
+            if top == first {
+                break;
+            }
+            let plays = editor.engine.plays().map(|p| p.source.clone());
+            if plays.as_deref() == Some(first.display().to_string().as_str()) {
+                assert!(
+                    !editor.metered(),
+                    "the shown file metered while the first plays"
+                );
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "never saw the engine play the first file again"
+            );
+            harness.run_steps(1);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        harness.state_mut().engine.shutdown();
+        reuben_native::diagnostics::log_snapshot(&played.shutdown());
+    });
 }

@@ -133,7 +133,7 @@ impl HeldSwaps {
 /// `path` with links and `..` resolved, so two spellings of one file compare equal. A path that
 /// does not resolve is compared made absolute against the working directory, which is where the
 /// engine reads a Swap's path from.
-fn canonical(path: &Path) -> PathBuf {
+pub fn canonical(path: &Path) -> PathBuf {
     std::fs::canonicalize(path)
         .or_else(|_| std::path::absolute(path))
         .unwrap_or_else(|_| path.to_path_buf())

@@ -9,8 +9,11 @@ use reuben_api::authoring::{
 };
 use reuben_api::FsResolver;
 
+/// The node slot whose document runs as a voice: a Plan of its own, hosted by the node.
+const VOICE_SLOT: &str = "voice";
+
 /// The node slots whose resource is a document rather than a sample.
-const DOCUMENT_SLOTS: [&str; 2] = ["voice", "patch"];
+const DOCUMENT_SLOTS: [&str; 2] = [VOICE_SLOT, "patch"];
 
 /// The store one document is read and edited through: scoped to that document, because a
 /// document's references resolve from its store's top level. Samples are checked for presence
@@ -87,6 +90,17 @@ impl Document {
         let structure = self.read.as_ref().ok()?;
         let node = structure.nodes.iter().find(|n| n.address == address)?;
         reference(structure, node)
+    }
+
+    /// Whether the node at `address` runs the document it references as a voice, a Plan of its
+    /// own, rather than splicing it in as a patch.
+    pub fn hosts(&self, address: &str) -> bool {
+        let Ok(structure) = &self.read else {
+            return false;
+        };
+        (structure.nodes.iter())
+            .find(|node| node.address == address)
+            .is_some_and(|node| node.resources.iter().any(|r| r.slot == VOICE_SLOT))
     }
 
     /// The document's `instrument` name, or its file name when it does not read.
