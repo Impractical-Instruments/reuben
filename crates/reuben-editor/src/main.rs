@@ -301,9 +301,7 @@ impl eframe::App for Editor {
                 });
             });
         });
-        // Along the bottom edge, so the levels stay in view whatever the central panel shows.
         self.meters.poll(Instant::now(), self.engine.channel());
-        egui::Panel::bottom("meters").show(ui, |ui| meter_strip::show(ui, &mut self.meters));
         if let Some(session) = &mut self.session {
             let asked = session::shortcut(ui.ctx()).or(session::show(ui, session));
             if let Some(direction) = asked {
@@ -312,8 +310,15 @@ impl eframe::App for Editor {
                 ui.ctx().request_repaint();
             }
         }
-        // Before the central panel, which takes whatever space is left.
-        self.controls.show(ui, &self.engine);
+        // Before the central panel, which takes whatever space is left. The meters ride the
+        // controls' right edge, or have the bottom edge to themselves while no instrument is open.
+        let meters = &mut self.meters;
+        if !self
+            .controls
+            .show(ui, &self.engine, |ui| meter_strip::show(ui, meters))
+        {
+            egui::Panel::bottom("meters").show(ui, |ui| meter_strip::show(ui, meters));
+        }
         if let Some(session) = &mut self.session {
             let channel = || self.engine.channel();
             inspector::show(

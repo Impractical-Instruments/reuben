@@ -151,15 +151,27 @@ impl Controls {
         }
     }
 
-    /// Draw the panel along the bottom of `ui` and send what the player did to `engine`. Draws
-    /// nothing when no instrument is open.
-    pub fn show(&mut self, ui: &mut egui::Ui, engine: &Engine) {
-        let Some(loaded) = &self.loaded else { return };
+    /// Draw the panel along the bottom of `ui`, with `beside` down its right edge, and send what
+    /// the player did to `engine`. Draws nothing when no instrument is open, and returns whether it
+    /// drew.
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        engine: &Engine,
+        beside: impl FnOnce(&mut egui::Ui),
+    ) -> bool {
+        let Some(loaded) = &self.loaded else {
+            return false;
+        };
         let channel = engine.channel();
         egui::Panel::bottom("controls")
             .resizable(true)
             .default_size(320.0)
             .show(ui, |ui| {
+                // First, so the controls take what is left of the panel's width.
+                egui::Panel::right("beside_controls")
+                    .resizable(false)
+                    .show(ui, beside);
                 let loaded = match loaded {
                     Ok(loaded) => loaded,
                     Err(e) => {
@@ -188,6 +200,7 @@ impl Controls {
                     self.send_error = send(channel, messages).err();
                 }
             });
+        true
     }
 }
 

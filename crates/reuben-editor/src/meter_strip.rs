@@ -39,8 +39,16 @@ const IDLE_EVERY: Duration = Duration::from_millis(500);
 /// plays at.
 const STALL: Duration = Duration::from_millis(500);
 
-const BAR: Vec2 = Vec2::new(140.0, 10.0);
-const LAMP: Vec2 = Vec2::new(10.0, 10.0);
+const BAR_WIDTH: f32 = 12.0;
+/// The shortest a bar is drawn, however little room its panel leaves.
+const MIN_BAR_HEIGHT: f32 = 60.0;
+const LAMP: Vec2 = Vec2::new(12.0, 8.0);
+const SCALE_WIDTH: f32 = 24.0;
+const SPACING: f32 = 2.0;
+/// Wide enough that a message beside the controls wraps instead of widening the meters' panel.
+const MESSAGE_WIDTH: f32 = 140.0;
+/// Where the scale is marked, and each bar ticked.
+const MARKS: [f32; 6] = [0.0, -12.0, -24.0, -36.0, -48.0, -60.0];
 
 /// What the strip knows of the engine.
 #[derive(Debug, Clone, PartialEq)]
@@ -206,85 +214,142 @@ fn db(dbfs: f32) -> String {
     }
 }
 
-/// Draw the strip, its channels wrapping onto further rows when the window is too narrow.
+/// Draw the strip: a vertical bar per channel, side by side, outputs then inputs, filling the
+/// height of `ui`.
 pub fn show(ui: &mut egui::Ui, strip: &mut MeterStrip) {
-    let stopped = strip.stopped;
-    ui.horizontal_wrapped(|ui| match &strip.reading {
-        Reading::NoEngine => {
-            ui.weak("Meters: no engine to read");
-        }
-        Reading::Waiting => {
-            ui.weak("Meters: reading the engine…");
-        }
-        Reading::Failed(why) => {
-            ui.weak("Meters: unavailable").on_hover_text(why);
-        }
+    let message = match &strip.reading {
+        Reading::NoEngine => Some(("Meters: no engine to read", None)),
+        Reading::Waiting => Some(("Meters: reading the engine…", None)),
+        Reading::Failed(why) => Some(("Meters: unavailable", Some(why.as_str()))),
         Reading::Levels if strip.outputs.is_empty() && strip.inputs.is_empty() => {
-            ui.weak("Meters: the engine has no audio device");
+            Some(("Meters: the engine has no audio device", None))
         }
-        Reading::Levels => {
-            let color = if stopped {
-                ui.visuals().weak_text_color()
-            } else {
-                theme::METER
-            };
-            if stopped {
-                ui.weak("Output stopped:");
-            }
-            for (i, bar) in strip.outputs.iter_mut().enumerate() {
-                channel(ui, &format!("Out {}", i + 1), bar, color);
-            }
-            if !strip.inputs.is_empty() {
-                ui.separator();
-            }
-            for (i, bar) in strip.inputs.iter_mut().enumerate() {
-                channel(ui, &format!("In {}", i + 1), bar, color);
-            }
+        Reading::Levels => None,
+    };
+    if let Some((text, why)) = message {
+        ui.set_max_width(MESSAGE_WIDTH);
+        let shown = ui.weak(text);
+        if let Some(why) = why {
+            shown.on_hover_text(why);
+        }
+        return;
+    }
+    let stopped = strip.stopped;
+    let color = if stopped {
+        ui.visuals().weak_text_color()
+    } else {
+        theme::METER
+    };
+    // What a column draws above and below its bar: the clip lamp, and the channel's number.
+    let chrome = LAMP.y + ui.text_style_height(&egui::TextStyle::Small) + 3.0 * SPACING;
+    // The group titles above, and the stopped note below.
+    let reserved = 2.0 * (ui.text_style_height(&egui::TextStyle::Body) + SPACING);
+    let height = (ui.available_height() - chrome - reserved).max(MIN_BAR_HEIGHT);
+    ui.horizontal_top(|ui| {
+        scale(ui, height);
+        group(ui, "Out", &mut strip.outputs, height, color);
+        if !strip.inputs.is_empty() {
+            ui.separator();
+            group(ui, "In", &mut strip.inputs, height, color);
+        }
+    });
+    if stopped {
+        ui.weak("Output stopped");
+    }
+}
+
+/// The dB marks beside the bars, lined up with them.
+fn scale(ui: &mut egui::Ui, height: f32) {
+    ui.vertical(|ui| {
+        ui.label("");
+        ui.add_space(LAMP.y + SPACING);
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(SCALE_WIDTH, height), Sense::hover());
+        let font = egui::TextStyle::Small.resolve(ui.style());
+        let color = ui.visuals().weak_text_color();
+        for dbfs in MARKS {
+            let y = rect.bottom() - rect.height() * fraction(dbfs);
+            ui.painter().text(
+                egui::pos2(rect.right(), y),
+                egui::Align2::RIGHT_CENTER,
+                format!("{dbfs}"),
+                font.clone(),
+                color,
+            );
         }
     });
 }
 
-/// One channel: its name, its bar, and its clip lamp, which a click puts out.
-fn channel(ui: &mut egui::Ui, name: &str, bar: &mut Bar, color: Color32) {
-    ui.label(name);
-    let described = format!(
-        "peak {}, RMS {}",
-        db(bar.level.peak_dbfs),
-        db(bar.level.rms_dbfs)
-    );
-    let (rect, response) = ui.allocate_exact_size(BAR, Sense::hover());
-    response.widget_info(|| WidgetInfo {
-        current_text_value: Some(described.clone()),
-        ..WidgetInfo::labeled(WidgetType::ProgressIndicator, true, format!("{name} level"))
+/// A titled run of channels, side by side.
+fn group(ui: &mut egui::Ui, title: &str, bars: &mut [Bar], height: f32, color: Color32) {
+    ui.vertical(|ui| {
+        ui.label(title);
+        ui.horizontal_top(|ui| {
+            for (i, bar) in bars.iter_mut().enumerate() {
+                channel(ui, title, i + 1, bar, height, color);
+            }
+        });
     });
-    response.on_hover_text(&described);
-    if ui.is_rect_visible(rect) {
-        let painter = ui.painter();
-        painter.rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
-        let up_to = |dbfs: f32| {
-            let mut filled = rect;
-            filled.set_right(rect.left() + rect.width() * fraction(dbfs));
-            filled
-        };
-        painter.rect_filled(up_to(bar.level.peak_dbfs), 0.0, color.gamma_multiply(0.4));
-        painter.rect_filled(up_to(bar.level.rms_dbfs), 0.0, color);
-        if bar.held > SCALE_FLOOR_DBFS {
-            let x = rect.left() + rect.width() * fraction(bar.held);
-            painter.vline(
-                x,
-                rect.y_range(),
-                Stroke::new(2.0, ui.visuals().strong_text_color()),
-            );
+}
+
+/// One channel: its clip lamp, which a click puts out, its bar, and its number.
+fn channel(
+    ui: &mut egui::Ui,
+    title: &str,
+    number: usize,
+    bar: &mut Bar,
+    height: f32,
+    color: Color32,
+) {
+    let name = format!("{title} {number}");
+    ui.vertical_centered(|ui| {
+        ui.set_width(BAR_WIDTH + 2.0 * SPACING);
+        lamp(ui, &name, bar);
+        let described = format!(
+            "peak {}, RMS {}",
+            db(bar.level.peak_dbfs),
+            db(bar.level.rms_dbfs)
+        );
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(BAR_WIDTH, height), Sense::hover());
+        response.widget_info(|| WidgetInfo {
+            current_text_value: Some(described.clone()),
+            ..WidgetInfo::labeled(WidgetType::ProgressIndicator, true, format!("{name} level"))
+        });
+        response.on_hover_text(format!("{name}: {described}"));
+        if ui.is_rect_visible(rect) {
+            paint(ui, rect, bar, color);
         }
-        painter.rect_stroke(
-            rect,
-            0.0,
-            ui.visuals().widgets.noninteractive.bg_stroke,
-            egui::StrokeKind::Inside,
+        ui.small(number.to_string());
+    });
+}
+
+fn paint(ui: &egui::Ui, rect: egui::Rect, bar: &Bar, color: Color32) {
+    let painter = ui.painter();
+    painter.rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
+    let up_to = |dbfs: f32| {
+        let mut filled = rect;
+        filled.set_top(rect.bottom() - rect.height() * fraction(dbfs));
+        filled
+    };
+    painter.rect_filled(up_to(bar.level.peak_dbfs), 0.0, color.gamma_multiply(0.4));
+    painter.rect_filled(up_to(bar.level.rms_dbfs), 0.0, color);
+    let tick = ui.visuals().widgets.noninteractive.bg_stroke;
+    for dbfs in MARKS {
+        let y = rect.bottom() - rect.height() * fraction(dbfs);
+        painter.hline(rect.x_range(), y, tick);
+    }
+    if bar.held > SCALE_FLOOR_DBFS {
+        let y = rect.bottom() - rect.height() * fraction(bar.held);
+        painter.hline(
+            rect.x_range(),
+            y,
+            Stroke::new(2.0, ui.visuals().strong_text_color()),
         );
     }
+    painter.rect_stroke(rect, 0.0, tick, egui::StrokeKind::Inside);
+}
 
-    let (lamp, clicked) = ui.allocate_exact_size(LAMP, Sense::click());
+fn lamp(ui: &mut egui::Ui, name: &str, bar: &mut Bar) {
+    let (rect, clicked) = ui.allocate_exact_size(LAMP, Sense::click());
     let clipped = bar.clipped;
     clicked.widget_info(|| {
         WidgetInfo::selected(WidgetType::Button, true, clipped, format!("{name} clip"))
@@ -302,14 +367,13 @@ fn channel(ui: &mut egui::Ui, name: &str, bar: &mut Bar, color: Color32) {
     } else {
         Color32::TRANSPARENT
     };
-    ui.painter().rect_filled(lamp, 1.0, fill);
+    ui.painter().rect_filled(rect, 1.0, fill);
     ui.painter().rect_stroke(
-        lamp,
+        rect,
         1.0,
         ui.visuals().widgets.noninteractive.fg_stroke,
         egui::StrokeKind::Inside,
     );
-    ui.add_space(8.0);
 }
 
 #[cfg(test)]
@@ -463,6 +527,16 @@ mod tests {
             harness.get_by_label("In 1 level").value().as_deref(),
             Some("peak -18.0 dBFS, RMS -24.0 dBFS")
         );
+
+        // Upright, and side by side: outputs first, then inputs.
+        let out_1 = harness.get_by_label("Out 1 level").rect();
+        let out_2 = harness.get_by_label("Out 2 level").rect();
+        let in_1 = harness.get_by_label("In 1 level").rect();
+        assert!(out_1.height() > 4.0 * out_1.width(), "{out_1:?}");
+        assert_eq!(out_1.top(), out_2.top());
+        assert_eq!(out_1.top(), in_1.top());
+        assert!(out_1.right() < out_2.left(), "{out_1:?} {out_2:?}");
+        assert!(out_2.right() < in_1.left(), "{out_2:?} {in_1:?}");
     }
 
     #[test]
@@ -534,12 +608,12 @@ mod tests {
         let engine = Canned::new(vec![level(-6.0, -9.0)], Vec::new());
         let mut harness = harness(Some(engine.clone()));
         until_value(&mut harness, "Out 1 level", "peak -6.0 dBFS, RMS -9.0 dBFS");
-        assert!(harness.query_by_label("Output stopped:").is_none());
+        assert!(harness.query_by_label("Output stopped").is_none());
         engine.stopped.store(true, Ordering::SeqCst);
-        until_shown(&mut harness, "Output stopped:");
+        until_shown(&mut harness, "Output stopped");
         engine.stopped.store(false, Ordering::SeqCst);
         let deadline = Instant::now() + Duration::from_secs(5);
-        while harness.query_by_label("Output stopped:").is_some() {
+        while harness.query_by_label("Output stopped").is_some() {
             assert!(Instant::now() < deadline, "never read live again");
             harness.step();
             std::thread::sleep(Duration::from_millis(5));

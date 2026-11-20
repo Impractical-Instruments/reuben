@@ -474,3 +474,22 @@ fn with_no_engine_the_meter_strip_says_so() {
     let harness = harness(editor(&top, &config));
     harness.get_by_label("Meters: no engine to read");
 }
+
+#[test]
+fn the_meters_ride_the_right_edge_of_the_controls_panel() {
+    let scratch = Scratch::new("ui_meters_beside_controls");
+    let config = TempConfig::new();
+    let top = instrument(&scratch);
+    let harness = harness(editor(&top, &config));
+    let controls = harness.get_by_label("CONTROLS").rect();
+    let meters = harness.get_by_label("Meters: no engine to read").rect();
+    assert!(meters.left() > controls.right(), "{meters:?} {controls:?}");
+    assert!(
+        meters.right() > 1280.0 - 200.0,
+        "against the window's right edge: {meters:?}"
+    );
+    assert!(
+        (meters.top() - controls.top()).abs() < 24.0,
+        "in the controls panel's band: {meters:?} {controls:?}"
+    );
+}
