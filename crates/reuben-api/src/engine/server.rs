@@ -988,10 +988,13 @@ fn handle_open(
     )
 }
 
-/// The refusal for a name outside what the host offers: the client's own spelling and a fixed
-/// reason, so it says nothing of the server's paths or whether the file exists.
+/// The refusal for a name outside what the host offers: the client's own spelling, a fixed reason
+/// and where the offered names are, so it says nothing of the server's paths or whether the file
+/// exists.
 fn not_offered(name: &str) -> String {
-    format!("`{name}` is not offered by this server")
+    format!(
+        "`{name}` is not offered by this server; call `list_instruments` to see the names it offers"
+    )
 }
 
 /// What the host offers under `what`, each name one [`Request::Open`] (or, for a sample, a

@@ -705,7 +705,7 @@ mod tests {
                 assert_eq!(report.content_hash, before);
                 assert_eq!(
                     report.report.errors[0].message,
-                    "`other.json` is not offered by this server"
+                    "`other.json` is not offered by this server; call `list_instruments` to see the names it offers"
                 );
             }
             other => panic!("expected a refusal, got {other:?}"),
@@ -723,7 +723,7 @@ mod tests {
         .to_ndjson();
         match dispatch(&s.state, &line) {
             Response::Refused { message } => {
-                assert_eq!(message, "`other.json` is not offered by this server")
+                assert_eq!(message, "`other.json` is not offered by this server; call `list_instruments` to see the names it offers")
             }
             other => panic!("expected a refusal, got {other:?}"),
         }
@@ -807,7 +807,7 @@ mod tests {
         );
         match dispatch(&s.state, &line) {
             Response::Refused { message } => {
-                assert_eq!(message, "`outside/k.wav` is not offered by this server")
+                assert_eq!(message, "`outside/k.wav` is not offered by this server; call `list_instruments` to see the names it offers")
             }
             other => panic!("expected a refusal, got {other:?}"),
         }
