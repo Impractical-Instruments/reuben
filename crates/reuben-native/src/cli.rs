@@ -126,9 +126,10 @@ impl fmt::Display for FlagsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             FlagsError::IoMap(e) => write!(f, "{e}"),
-            FlagsError::StructureNotLoopback(_) => write!(
+            FlagsError::StructureNotLoopback(addr) => write!(
                 f,
-                "--structure-addr must be a loopback address until token authentication exists"
+                "--structure-addr must be a loopback address until token authentication exists: \
+                 {addr}"
             ),
         }
     }
@@ -196,8 +197,10 @@ mod tests {
                 .expect_err("a non-loopback structure address is refused");
             assert_eq!(
                 error.to_string(),
-                "--structure-addr must be a loopback address until token authentication exists",
-                "{addr}"
+                format!(
+                    "--structure-addr must be a loopback address until token authentication \
+                     exists: {addr}"
+                ),
             );
         }
     }
