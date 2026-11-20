@@ -29,7 +29,7 @@ use std::io::{BufReader, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -38,10 +38,12 @@ use reuben_api::engine::{
     dispatch, read_ndjson_line, ControlMessage, DiagnosticsReport, EngineHost, IngressClosed,
     MetersReport, Response, StructureState,
 };
+use reuben_api::probe::ProbeSlots;
 
 use crate::diagnostics::{Diagnostics, Snapshot};
 use crate::meters::Meters;
 use crate::osc::{ControlBatch, OscIn};
+use crate::probes::Probes;
 
 /// How long the accept loop sleeps between polls of its shutdown flag while idle. The listener
 /// is non-blocking so the loop can observe [`StructureServer::shutdown`] without a client ever
@@ -275,6 +277,7 @@ pub(crate) fn dark_degrade_warning(
 pub struct NativeHost {
     diagnostics: Arc<Diagnostics>,
     meters: Meters,
+    probes: Mutex<Probes>,
     control: Sender<ControlBatch>,
     render_config: Arc<dyn RenderConfigPublisher>,
     hold: Option<SwapHold>,
@@ -312,6 +315,7 @@ impl NativeHost {
         Self {
             diagnostics,
             meters: Meters::none(),
+            probes: Mutex::new(Probes::default()),
             control,
             render_config: Arc::new(HeadlessRenderConfig {
                 opened_input_channels: 0,
@@ -325,6 +329,12 @@ impl NativeHost {
     pub fn with_meters(mut self, meters: Meters) -> Self {
         self.meters = meters;
         self
+    }
+
+    /// The probe set, which only structure-channel threads lock. A panic while it was held leaves
+    /// it consistent enough to keep serving.
+    fn probes(&self) -> std::sync::MutexGuard<'_, Probes> {
+        self.probes.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Hold the client swaps `hold` says to. Without it none is held, as `reuben play` wants.
@@ -386,7 +396,17 @@ impl EngineHost for NativeHost {
 
     /// Relaxed loads into an owned report, like [`diagnostics`](Self::diagnostics).
     fn meters(&self) -> MetersReport {
-        self.meters.report()
+        let mut report = self.meters.report();
+        report.probes = self.probes().report(Instant::now());
+        report
+    }
+
+    fn set_probes(&self, paths: Vec<Vec<String>>) -> Result<Vec<Vec<String>>, String> {
+        Ok(self.probes().set(paths, Instant::now()))
+    }
+
+    fn install_probes(&self, slots: Arc<ProbeSlots>) {
+        self.probes().install(slots);
     }
 
     fn publish_render_config(&self, logical: usize, input_channels: usize) -> Vec<Diag> {
@@ -829,6 +849,31 @@ mod tests {
 
         cb.stop();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_probed_node_is_metered_through_the_real_channel() {
+        use reuben_api::engine::{Channel, InProcess};
+        let (state, cb, _) = swap_fixture(BASE_DOC, 0);
+        let channel = Channel::new(InProcess::new(state));
+        assert!(channel.get_meters().expect("meters").probes.is_empty());
+        let resolved = channel
+            .set_probes(vec![vec!["/osc".to_string()], vec!["/nope".to_string()]])
+            .expect("set_probes");
+        assert_eq!(resolved, vec![vec!["/osc".to_string()]]);
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let probes = channel.get_meters().expect("meters").probes;
+            assert_eq!(probes.len(), 1);
+            if probes[0].ports[0].level.peak_dbfs > -120.0 {
+                assert_eq!(probes[0].path, vec!["/osc".to_string()]);
+                break;
+            }
+            assert!(Instant::now() < deadline, "no level within 1 s: {probes:?}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        cb.stop();
     }
 
     #[test]
