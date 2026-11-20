@@ -33,6 +33,11 @@ const EVERY: Duration = Duration::from_millis(33);
 /// How often it is asked while no output frames move, as on an engine with no audio device:
 /// nothing changes until they do, so this only bounds how late the strip notices them start.
 const IDLE_EVERY: Duration = Duration::from_millis(500);
+/// How long the output frame count must stand still before the output counts as stopped. A device
+/// runs the callback once a period, which can be longer than [`EVERY`], so two polls in one period
+/// read the same count from an output that is running; this is longer than any period a device
+/// plays at.
+const STALL: Duration = Duration::from_millis(500);
 
 const BAR: Vec2 = Vec2::new(140.0, 10.0);
 const LAMP: Vec2 = Vec2::new(10.0, 10.0);
@@ -96,8 +101,10 @@ pub struct MeterStrip {
     in_flight: bool,
     reading: Reading,
     frames: Option<u64>,
-    /// Whether the output frame count moved between the last two replies; `None` after one.
-    moving: Option<bool>,
+    /// When a reply last found the output frame count changed, the first reply included.
+    moved: Option<Instant>,
+    /// Whether the count has stood still for [`STALL`], as of the last reply.
+    stopped: bool,
     outputs: Vec<Bar>,
     inputs: Vec<Bar>,
 }
@@ -125,7 +132,8 @@ impl MeterStrip {
             in_flight: false,
             reading: Reading::NoEngine,
             frames: None,
-            moving: None,
+            moved: None,
+            stopped: false,
             outputs: Vec::new(),
             inputs: Vec::new(),
         }
@@ -151,11 +159,7 @@ impl MeterStrip {
         if self.in_flight {
             return;
         }
-        let every = if self.moving == Some(false) {
-            IDLE_EVERY
-        } else {
-            EVERY
-        };
+        let every = if self.stopped { IDLE_EVERY } else { EVERY };
         let at = self.asked.map_or(now, |asked| (asked + every).max(now));
         if self.asks.send((channel, at)).is_err() {
             self.reading = Reading::Failed("the meter thread stopped".to_string());
@@ -169,7 +173,10 @@ impl MeterStrip {
         // A count that went back is a restarted engine: what was held and lit belonged to the
         // last run, whatever its device.
         let restarted = self.frames.is_some_and(|frames| report.frames < frames);
-        self.moving = self.frames.map(|frames| frames != report.frames);
+        if self.frames != Some(report.frames) {
+            self.moved = Some(now);
+        }
+        self.stopped = self.moved.is_some_and(|moved| now - moved >= STALL);
         self.frames = Some(report.frames);
         self.reading = Reading::Levels;
         for (bars, levels) in [
@@ -183,12 +190,6 @@ impl MeterStrip {
                 bar.take(level, now);
             }
         }
-    }
-
-    /// Whether the output stopped: its frame count held still between the last two replies, so
-    /// the levels are the last it measured.
-    fn stopped(&self) -> bool {
-        self.moving == Some(false)
     }
 }
 
@@ -207,7 +208,7 @@ fn db(dbfs: f32) -> String {
 
 /// Draw the strip, its channels wrapping onto further rows when the window is too narrow.
 pub fn show(ui: &mut egui::Ui, strip: &mut MeterStrip) {
-    let stopped = strip.stopped();
+    let stopped = strip.stopped;
     ui.horizontal_wrapped(|ui| match &strip.reading {
         Reading::NoEngine => {
             ui.weak("Meters: no engine to read");
@@ -482,6 +483,28 @@ mod tests {
         harness.get_by_label("Out 1 clip").click();
         harness.step();
         assert!(!harness.state().outputs[0].clipped, "the click put it out");
+    }
+
+    #[test]
+    fn an_output_counts_as_stopped_only_once_its_frames_stand_still_for_the_stall() {
+        let start = Instant::now();
+        let report = |frames| MetersReport {
+            outputs: vec![level(-6.0, -9.0)],
+            inputs: Vec::new(),
+            frames,
+        };
+        let mut strip = MeterStrip::new(|| {});
+        strip.take(report(256), start);
+        // Two polls inside one long device period read the same count.
+        strip.take(report(256), start + EVERY);
+        assert!(!strip.stopped, "one period is not a stop");
+        strip.take(report(4096), start + EVERY * 2);
+        strip.take(report(4096), start + EVERY * 2 + STALL / 2);
+        assert!(!strip.stopped);
+        strip.take(report(4096), start + EVERY * 2 + STALL);
+        assert!(strip.stopped, "still for the whole stall");
+        strip.take(report(4352), start + EVERY * 3 + STALL);
+        assert!(!strip.stopped, "moving again");
     }
 
     /// Step until the strip shows the text `label`, failing after a few seconds.
