@@ -132,10 +132,14 @@ impl<S: Resources> Resources for Staged<S> {
 
     fn create_text(&self, source: &str, text: &str) -> Result<Created, ResolveError> {
         let key = self.key(source);
-        if lock(&self.shared.pending).contains_key(&key)
-            || self.shared.inner.read_text(source).is_ok()
-        {
+        let pending = lock(&self.shared.pending).contains_key(&key);
+        if pending {
             return Ok(Created::Taken);
+        }
+        match self.shared.inner.read_text(source) {
+            Ok(_) => return Ok(Created::Taken),
+            Err(ResolveError::NotFound(_)) => {}
+            Err(other) => return Err(other),
         }
         self.write_text(source, text).map(|()| Created::Written)
     }
@@ -228,6 +232,77 @@ mod tests {
         assert_eq!(staged.create_text("a", "y").unwrap(), Created::Taken);
         assert_eq!(staged.create_text("b", "y").unwrap(), Created::Written);
         assert_eq!(staged.read_text("b").unwrap(), "y");
+    }
+
+    /// Fails every write to `bad`, and runs `on_read` inside every read.
+    #[derive(Default)]
+    struct Probe {
+        map: Map,
+        bad: &'static str,
+        unreadable: &'static str,
+        on_read: Mutex<Option<alloc::boxed::Box<dyn Fn() + Send>>>,
+    }
+
+    impl Resources for Probe {
+        fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+            self.map.read_samples(source)
+        }
+        fn read_text(&self, source: &str) -> Result<String, ResolveError> {
+            if let Some(f) = lock(&self.on_read).as_ref() {
+                f();
+            }
+            if source == self.unreadable {
+                return Err(ResolveError::Decode(source.to_string()));
+            }
+            self.map.read_text(source)
+        }
+        fn write_text(&self, source: &str, text: &str) -> Result<(), ResolveError> {
+            if source == self.bad {
+                return Err(ResolveError::Write(source.to_string()));
+            }
+            self.map.write_text(source, text)
+        }
+    }
+
+    #[test]
+    fn create_does_not_hold_pending_across_inner_read() {
+        let inner = Arc::new(Probe::default());
+        let staged = Staged::new(Arc::clone(&inner));
+        let reentrant = staged.clone();
+        *lock(&inner.on_read) = Some(alloc::boxed::Box::new(move || {
+            reentrant.pending();
+        }));
+        assert_eq!(staged.create_text("a", "x").unwrap(), Created::Written);
+        *lock(&inner.on_read) = None;
+    }
+
+    #[test]
+    fn create_over_an_unreadable_source_is_an_error_not_free() {
+        let staged = Staged::new(Probe {
+            unreadable: "a",
+            ..Probe::default()
+        });
+        assert!(matches!(
+            staged.create_text("a", "x"),
+            Err(ResolveError::Decode(_))
+        ));
+        assert!(staged.pending().is_empty());
+    }
+
+    #[test]
+    fn commit_stops_at_first_failure_and_clears_pending() {
+        let inner = Arc::new(Probe {
+            bad: "b",
+            ..Probe::default()
+        });
+        let staged = Staged::new(Arc::clone(&inner));
+        for s in ["a", "b", "c"] {
+            staged.write_text(s, "new").unwrap();
+        }
+        assert!(matches!(staged.commit(), Err(ResolveError::Write(_))));
+        assert!(staged.pending().is_empty());
+        assert_eq!(inner.map.read_text("a").unwrap(), "new");
+        assert!(inner.map.read_text("c").is_err());
     }
 
     #[test]
