@@ -73,7 +73,8 @@ pub(super) fn handle_call(state: &StructureState, tool: &str, args: Value) -> Re
         Ok(coordinator) => coordinator,
         Err(poisoned) => return poisoned.into(),
     };
-    match unoffered_name(state, tool, &args) {
+    let named = resolved_names(state, tool, &args);
+    match unoffered_name(state, &named) {
         Ok(None) => {}
         Ok(Some(name)) => {
             return Response::Refused {
@@ -92,7 +93,7 @@ pub(super) fn handle_call(state: &StructureState, tool: &str, args: Value) -> Re
         Err(refusal) => {
             staged.discard();
             return Response::Refused {
-                message: refusal.message,
+                message: in_client_terms(refusal.message, &named),
             };
         }
     };
@@ -103,7 +104,12 @@ pub(super) fn handle_call(state: &StructureState, tool: &str, args: Value) -> Re
         }
         CallKind::Create { source } => match staged.commit() {
             Ok(()) => Response::Called { output, summary },
-            Err(e) => not_written(state, &source, vec![diag(e.to_string())], Vec::new()),
+            Err(e) => not_written(
+                state,
+                &source,
+                vec![diag(in_client_terms(e.to_string(), &named))],
+                Vec::new(),
+            ),
         },
         CallKind::Edit { source } => {
             edit_or_refuse(state, &mut coordinator, output, summary, &source)
@@ -111,22 +117,13 @@ pub(super) fn handle_call(state: &StructureState, tool: &str, args: Value) -> Re
     }
 }
 
-/// The first file `tool`'s `args` name that the host does not offer and the open instrument's tree
-/// does not already reach, as the client spelled it. An edit's own target is checked against the
-/// tree again in [`edit_or_refuse`]; this keeps a read, a create, or a reference an edit writes
-/// from naming what the client may not.
-fn unoffered_name(
-    state: &StructureState,
-    tool: &str,
-    args: &Value,
-) -> Result<Option<String>, Poisoned> {
-    let open = state.installed_source()?.clone();
-    let tree = state.tree();
+/// Each file `tool`'s `args` name, as the client spelled it and as the store resolves it.
+fn resolved_names(state: &StructureState, tool: &str, args: &Value) -> Vec<(String, String)> {
     let canonical = |name: &str, referrer: Option<&str>| state.store.canonical(name, referrer);
-    let offered =
-        |canonical: &str| tree.contains(canonical) || state.host.within(canonical, open.as_deref());
-    for named in authoring::named_sources(tool, args).unwrap_or_default() {
-        let (name, resolved) = match named {
+    authoring::named_sources(tool, args)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|named| match named {
             Named::Document(name) => {
                 let resolved = canonical(&name, None);
                 (name, resolved)
@@ -135,12 +132,38 @@ fn unoffered_name(
                 let resolved = canonical(&name, Some(&canonical(&document, None)));
                 (name, resolved)
             }
-        };
-        if !offered(&resolved) {
-            return Ok(Some(name));
-        }
+        })
+        .collect()
+}
+
+/// The first of `named` that the host does not offer and the open instrument's tree does not
+/// already reach, as the client spelled it. An edit's own target is checked against the tree again
+/// in [`edit_or_refuse`]; this keeps a read, a create, or a reference an edit writes from naming
+/// what the client may not.
+fn unoffered_name(
+    state: &StructureState,
+    named: &[(String, String)],
+) -> Result<Option<String>, Poisoned> {
+    let open = state.installed_source()?.clone();
+    let tree = state.tree();
+    let offered =
+        |canonical: &str| tree.contains(canonical) || state.host.within(canonical, open.as_deref());
+    Ok(named
+        .iter()
+        .find(|(_, resolved)| !offered(resolved))
+        .map(|(name, _)| name.clone()))
+}
+
+/// `message` with each server path in `named` put back as the client spelled it, so an answer
+/// names files only in the client's own terms.
+fn in_client_terms(mut message: String, named: &[(String, String)]) -> String {
+    let mut by_length: Vec<&(String, String)> = named.iter().collect();
+    // Longest first, so a path that begins another is not replaced inside it.
+    by_length.sort_by_key(|(_, resolved)| core::cmp::Reverse(resolved.len()));
+    for (name, resolved) in by_length {
+        message = message.replace(resolved.as_str(), name);
     }
-    Ok(None)
+    message
 }
 
 /// An edit the verb has staged: write it and swap the new Plan in only if the open instrument,

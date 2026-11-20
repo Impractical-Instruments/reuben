@@ -275,3 +275,59 @@ fn a_create_named_like_a_library_file_leaves_the_library_file_alone() {
     assert!(!dir.join("open").join("pad.json").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The answer to reading `../lib/a.json` from an instrument open in `proj/open/`, with the library
+/// root at `lib/` holding `a.json`, and `proj/lib/a.json` outside every offered directory present
+/// or not.
+fn read_climbing_out(case: &str, outside_exists: bool) -> Response {
+    let dir = scratch(case);
+    let library = dir.join("lib");
+    let open = dir.join("proj").join("open").join("first.json");
+    write(&open, DOC);
+    write(&library.join("a.json"), OTHER);
+    if outside_exists {
+        write(&dir.join("proj").join("lib").join("a.json"), OTHER);
+    }
+    let (tx, rx) = channel();
+    serving(&open, &library, move |t| {
+        let _ = tx.send(call(
+            t,
+            "describe_instrument",
+            serde_json::json!({"source": "../lib/a.json"}),
+        ));
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+    rx.recv().expect("an answer")
+}
+
+#[test]
+fn a_name_that_climbs_out_of_the_open_directory_answers_the_same_whatever_is_there() {
+    let absent = read_climbing_out("server_calls_climb_absent", false);
+    let present = read_climbing_out("server_calls_climb_present", true);
+    assert_eq!(absent, present);
+    assert!(matches!(present, Response::Refused { .. }), "{present:?}");
+}
+
+#[test]
+fn a_read_that_fails_names_the_file_as_the_client_spelled_it() {
+    let dir = scratch("server_calls_read_spelling");
+    let library = dir.join("lib");
+    let open = dir.join("open").join("first.json");
+    write(&open, DOC);
+    std::fs::create_dir_all(&library).unwrap();
+    let server_path = dir.display().to_string();
+    serving(&open, &library, move |t| {
+        match call(
+            t,
+            "describe_instrument",
+            serde_json::json!({"source": "missing.json"}),
+        ) {
+            Response::Refused { message } => {
+                assert!(message.contains("missing.json"), "{message}");
+                assert!(!message.contains(&server_path), "{message}");
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}
