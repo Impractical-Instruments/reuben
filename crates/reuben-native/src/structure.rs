@@ -932,7 +932,13 @@ mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let host =
             NativeHost::new(Diagnostics::new(), tx).with_library_root(Some(base.join("lib")));
-        let abs = |relative: &str| base.join(relative).display().to_string();
+        let abs = |relative: &str| {
+            relative
+                .split('/')
+                .fold(base.clone(), |path, part| path.join(part))
+                .display()
+                .to_string()
+        };
         let open = abs("open/b.json");
 
         assert_eq!(
@@ -960,7 +966,13 @@ mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let host =
             NativeHost::new(Diagnostics::new(), tx).with_library_root(Some(base.join("lib")));
-        let abs = |relative: &str| base.join(relative).display().to_string();
+        let abs = |relative: &str| {
+            relative
+                .split('/')
+                .fold(base.clone(), |path, part| path.join(part))
+                .display()
+                .to_string()
+        };
         let open = abs("open/b.json");
         let open = Some(open.as_str());
 
