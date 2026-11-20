@@ -436,8 +436,13 @@ impl Engine {
     }
 
     /// Take `source`, installed as `content_hash`, as what the engine plays, as when a Swap of it
-    /// answers that it landed. What the engine is next seen to play replaces it.
+    /// answers that it landed. What the engine is next seen to play replaces it: an attached
+    /// engine's link reports on its next probe whether or not that differs from its last report,
+    /// since another client may have swapped back to it.
     pub fn note_installed(&mut self, source: String, content_hash: String) {
+        if let Some(link) = &self.attached {
+            link.forget();
+        }
         self.plays = Some(Playing {
             source,
             content_hash,

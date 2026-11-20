@@ -926,3 +926,74 @@ fn an_attached_edit_keeps_its_level_once_its_swap_lands() {
 fn installed_hash(played: &reuben_native::engine::RunningEngine) -> Option<String> {
     Some(played.channel().get_document().ok()?.content_hash)
 }
+#[test]
+fn a_swap_back_to_what_the_link_last_reported_is_still_followed() {
+    use reuben_native::test_support::{start_headless, within};
+
+    let scratch = Scratch::new("ui_node_meters_swap_back");
+    let config = TempConfig::new();
+    let shown = metered(&scratch);
+    // The same nodes in another file, which the engine plays first.
+    let first = shown.with_file_name("first.json");
+    std::fs::copy(&shown, &first).expect("copy the instrument");
+    within(crate::engine::test_support::HANG_SECS, move || {
+        let played = start_headless(crate::engine::test_support::config(first.clone()))
+            .expect("the engine starts");
+        let addr = played.structure_addr().expect("bound").to_string();
+        let mut harness = harness(attached(addr, &config, None));
+        step_until(&mut harness, "opened what the engine plays", |editor| {
+            editor.session.as_ref().is_some_and(|s| s.top() == first)
+        });
+
+        // The user opens another file; its Swap lands.
+        let ctx = harness.ctx.clone();
+        harness.state_mut().open(&shown, &ctx);
+        let shown_source = shown.display().to_string();
+        step_until(&mut harness, "noted the Swap it made", |editor| {
+            let session = editor.session.as_ref().expect("a session");
+            session.status() == &Status::Current
+                && editor.engine.plays().map(|p| p.source.as_str()) == Some(shown_source.as_str())
+        });
+        // Another client swaps the first file back in at once, before the link's next probe: the
+        // same file and content the link last reported.
+        let swapped = reuben_api::engine::swap_instrument(
+            &reuben_api::engine::SwapInstrument {
+                path: first.display().to_string(),
+                expect: None,
+            },
+            &played.channel(),
+        )
+        .expect("the Swap ran");
+        assert!(swapped.output.report.report.ok, "{:?}", swapped.output);
+
+        // Until the editor follows it, the shown file's boxes must not take its levels.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let editor = harness.state_mut();
+            let top = editor
+                .session
+                .as_ref()
+                .expect("a session")
+                .top()
+                .to_path_buf();
+            if top == first {
+                break;
+            }
+            let plays = editor.engine.plays().map(|p| p.source.clone());
+            if plays.as_deref() == Some(first.display().to_string().as_str()) {
+                assert!(
+                    !editor.metered(),
+                    "the shown file metered while the first plays"
+                );
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "never saw the engine play the first file again"
+            );
+            harness.run_steps(1);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        harness.state_mut().engine.shutdown();
+        reuben_native::diagnostics::log_snapshot(&played.shutdown());
+    });
+}
