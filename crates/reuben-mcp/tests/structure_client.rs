@@ -280,6 +280,7 @@ fn get_meters_round_trips_a_level_per_channel() {
             rms_dbfs: -120.0,
         }],
         frames: 4_800,
+        probes: Vec::new(),
     };
     let served = report.clone();
     let stub = spawn_stub(move |_req| Response::Meters(served.clone()));

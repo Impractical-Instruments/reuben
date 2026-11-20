@@ -31,6 +31,10 @@ use crate::authoring::Report;
 /// address. A taken port is non-fatal on the server side (see `play`).
 pub const DEFAULT_STRUCTURE_ADDR: &str = "127.0.0.1:9124";
 
+/// The most paths one [`Request::SetProbes`] may name. Render folds every probed node's output once
+/// per block it runs, so the choice is bounded for the same reason a `send` batch is.
+pub const MAX_PROBES: usize = 512;
+
 /// Where a swap's document comes from (accepted **by value or by path**, both
 /// resolver-loaded engine-side; both branches deliberately stay open, and the
 /// channel keeps both — which to *expose* is the tool surface's call). Field
@@ -160,6 +164,18 @@ pub enum Request {
     GetDiagnostics,
     /// Read the engine's input and output levels, for a client to draw meters from.
     GetMeters,
+    /// Choose which nodes' output levels [`GetMeters`](Self::GetMeters) reports, replacing the
+    /// previous choice. Each path is a node's address from the root: one name per nesting level,
+    /// so `["voice", "osc"]` is the node `osc` inside the node `voice`.
+    ///
+    /// The engine measures only the chosen nodes, so an empty list turns node metering off. A path
+    /// naming no node, or a node with no Signal output, is left out of the answer; the others are
+    /// still metered. At most [`MAX_PROBES`] paths. The choice applies to the installed
+    /// instrument and carries across a swap for every path the new instrument still has.
+    SetProbes {
+        /// The node paths to meter.
+        paths: Vec<Vec<String>>,
+    },
     /// Audition control values on the running engine — control traffic, riding the same channel as
     /// the structure verbs.
     ///
@@ -353,6 +369,9 @@ pub enum Response {
     Diagnostics(DiagnosticsReport),
     /// `GetMeters`' answer: the levels at the device, one entry per channel.
     Meters(MetersReport),
+    /// `SetProbes`' answer: the paths that now measure, each as given, in request order. Fewer
+    /// than were asked means the rest named no node with a Signal output.
+    Probes { resolved: Vec<Vec<String>> },
     /// A `Swap` whose `expect` guard missed: nothing installed — the [`Conflict`] names both
     /// hashes so the client re-reads via `GetDocument` and reconciles. A newtype variant, so both
     /// hashes ride the wire flat next to the `reply` tag under the user-facing field names (the
@@ -431,6 +450,28 @@ pub struct MetersReport {
     /// output callback is not running, and the levels are the last ones it measured. It says
     /// nothing of the input stream, whose levels hold their last value if it stops.
     pub frames: u64,
+    /// The levels of the nodes [`Request::SetProbes`] chose, in the order it resolved them. Empty
+    /// while none is chosen, and then absent from the JSON.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(skip)]
+    pub probes: Vec<ProbeLevels>,
+}
+
+/// One probed node's levels: a [`PortLevel`] per Signal output port, in port order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ProbeLevels {
+    /// The node's path, as given to [`Request::SetProbes`].
+    pub path: Vec<String>,
+    /// One per Signal output port of the node.
+    pub ports: Vec<PortLevel>,
+}
+
+/// One output port's level, with the same ballistics as a device channel's.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PortLevel {
+    /// The port's name on the node.
+    pub port: String,
+    pub level: ChannelLevel,
 }
 
 /// One channel's level, in dBFS: 0 is a full-scale sample. Always between -120 and 60, so silence
@@ -630,6 +671,7 @@ mod tests {
                 rms_dbfs: -24.0,
             }],
             frames: 96_000,
+            probes: Vec::new(),
         }
     }
 
@@ -698,6 +740,9 @@ mod tests {
             Request::GetDocument,
             Request::GetDiagnostics,
             Request::GetMeters,
+            Request::SetProbes {
+                paths: vec![vec!["osc".to_string()]],
+            },
             Request::Send {
                 messages: control_messages(),
             },
@@ -941,6 +986,44 @@ mod tests {
                 "frames": 96000
             })
         );
+    }
+
+    #[test]
+    fn set_probes_round_trips() {
+        assert_one_line_round_trip(&Request::SetProbes {
+            paths: vec![vec!["voice".to_string(), "osc".to_string()], vec![]],
+        });
+        assert_one_line_response_round_trip(&Response::Probes {
+            resolved: vec![vec!["voice".to_string(), "osc".to_string()]],
+        });
+    }
+
+    #[test]
+    fn a_report_without_probes_serializes_as_before() {
+        let v = serde_json::to_value(meters_report()).expect("as value");
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "outputs": [
+                    { "peak_dbfs": -0.5, "rms_dbfs": -3.5 },
+                    { "peak_dbfs": -120.0, "rms_dbfs": -120.0 }
+                ],
+                "inputs": [{ "peak_dbfs": -18.0, "rms_dbfs": -24.0 }],
+                "frames": 96000
+            })
+        );
+        let mut with = meters_report();
+        with.probes = vec![ProbeLevels {
+            path: vec!["osc".to_string()],
+            ports: vec![PortLevel {
+                port: "out".to_string(),
+                level: ChannelLevel {
+                    peak_dbfs: -6.0,
+                    rms_dbfs: -9.0,
+                },
+            }],
+        }];
+        assert_one_line_response_round_trip(&Response::Meters(with));
     }
 
     #[test]

@@ -23,7 +23,7 @@ use std::time::Duration;
 use super::prose::ENGINE_UNREACHABLE_GUIDANCE;
 use super::wire::{
     Conflict, ControlMessage, DiagnosticsReport, DocSource, DocumentSnapshot, HeldSwap,
-    MetersReport, Request, Response, SwapReport,
+    MetersReport, Request, Response, SwapReport, MAX_PROBES,
 };
 
 /// How long to wait for the one response line before giving up on a *wedged* server (connected but
@@ -203,6 +203,22 @@ impl Channel {
             Response::Meters(report) => Ok(report),
             Response::Error { message } => Err(ChannelError::Channel(message)),
             other => Err(unexpected("get_meters", "meters", &other)),
+        }
+    }
+
+    /// Choose which nodes' levels [`get_meters`](Self::get_meters) reports, and read back the paths
+    /// that resolved. Over [`MAX_PROBES`] is refused here, saving the round trip; the server
+    /// refuses it too.
+    pub fn set_probes(&self, paths: Vec<Vec<String>>) -> Result<Vec<Vec<String>>, ChannelError> {
+        if paths.len() > MAX_PROBES {
+            return Err(ChannelError::Channel(format!(
+                "at most {MAX_PROBES} probes"
+            )));
+        }
+        match self.exchange(&Request::SetProbes { paths })? {
+            Response::Probes { resolved } => Ok(resolved),
+            Response::Error { message } => Err(ChannelError::Channel(message)),
+            other => Err(unexpected("set_probes", "probes", &other)),
         }
     }
 

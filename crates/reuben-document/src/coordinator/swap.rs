@@ -19,8 +19,10 @@ use crate::resources::ResourceResolver;
 use reuben_core::config::AudioConfig;
 use reuben_core::coordinator::{InstallBundle, RenderSide};
 use reuben_core::plan::Plan;
+use reuben_core::probe::ProbeSlots;
 use reuben_core::registry::Registry;
 use reuben_core::Engine;
+use std::sync::Arc;
 
 use super::manifest::{build_manifest, Manifest};
 use reuben_core::coordinator::mailbox::{swap_pair, CoordinatorMailbox, ReclaimError};
@@ -60,6 +62,8 @@ pub struct PreparedSwap {
     /// Computed at prepare so the caller can read it before deciding; the commit report carries
     /// this same string.
     content_hash: String,
+    /// The built Plan's probe slots, taken before the Plan moved into the Engine.
+    probes: Arc<ProbeSlots>,
 }
 
 impl PreparedSwap {
@@ -122,6 +126,8 @@ pub struct Coordinator {
     installed_input_channels: usize,
     /// `content_hash(&doc)`, kept beside `doc` so reading it is a copy, not a re-serialization.
     installed_hash: String,
+    /// The installed Plan's probe slots; a rejected swap leaves them alone.
+    installed_probes: Arc<ProbeSlots>,
 }
 
 impl Coordinator {
@@ -138,7 +144,8 @@ impl Coordinator {
     ) -> Result<(Coordinator, RenderSide, Vec<LoadWarning>), FromDocumentError> {
         let doc = NormalizedDoc::from_json(doc_json, &registry, Some(&*resolver))
             .map_err(FromDocumentError::Load)?;
-        let (engine, manifest, warnings) = build_engine(&doc, &registry, &*resolver, config)?;
+        let (engine, manifest, warnings, installed_probes) =
+            build_engine(&doc, &registry, &*resolver, config)?;
         // Record the initial engine's logical geometry before it moves into the RenderSide:
         // the native shell reads it to build the first device output map.
         let installed_channels = engine.channels();
@@ -155,6 +162,7 @@ impl Coordinator {
             mailbox,
             installed_channels,
             installed_input_channels,
+            installed_probes,
         };
         let render_side = RenderSide {
             engine,
@@ -167,6 +175,11 @@ impl Coordinator {
     /// swap's `expect` guard compares, and what every report names as "what is playing".
     pub fn installed_hash(&self) -> String {
         self.installed_hash.clone()
+    }
+
+    /// The installed Plan's probe slots, for the host to switch on and read.
+    pub fn installed_probes(&self) -> Arc<ProbeSlots> {
+        Arc::clone(&self.installed_probes)
     }
 
     /// The canonical installed document: a fresh conversation reads what is playing
@@ -298,7 +311,7 @@ impl Coordinator {
         };
 
         // Build the whole new Engine + its manifest off-thread.
-        let (engine, manifest, warnings) =
+        let (engine, manifest, warnings, probes) =
             match build_engine(&doc, &self.registry, resolver, self.config) {
                 Ok(built) => built,
                 Err(FromDocumentError::Load(e)) => {
@@ -320,6 +333,7 @@ impl Coordinator {
             engine,
             warnings,
             content_hash,
+            probes,
         })
     }
 
@@ -372,6 +386,7 @@ impl Coordinator {
             engine,
             warnings,
             content_hash,
+            probes,
         } = prepared;
 
         // The new engine's logical geometry, captured before it is boxed into the mailbox — the
@@ -407,6 +422,7 @@ impl Coordinator {
         self.installed_channels = new_channels;
         self.installed_input_channels = new_input_channels;
         self.installed_hash = content_hash.clone();
+        self.installed_probes = probes;
 
         SwapReport {
             report: Report {
@@ -459,11 +475,12 @@ fn build_engine(
     registry: &Registry,
     resolver: &dyn ResourceResolver,
     config: AudioConfig,
-) -> Result<(Engine, Manifest, Vec<LoadWarning>), FromDocumentError> {
+) -> Result<(Engine, Manifest, Vec<LoadWarning>, Arc<ProbeSlots>), FromDocumentError> {
     let loaded = load_instrument_doc(doc, registry, resolver).map_err(FromDocumentError::Load)?;
     let plan = Plan::instantiate(loaded.graph, config).map_err(FromDocumentError::Plan)?;
     let manifest = build_manifest(doc, &plan, registry, resolver);
-    Ok((Engine::new(plan), manifest, loaded.warnings))
+    let probes = Arc::clone(&plan.probes);
+    Ok((Engine::new(plan), manifest, loaded.warnings, probes))
 }
 
 #[cfg(test)]
@@ -881,6 +898,24 @@ mod tests {
             "inputs": { "mic": { "type": "f32_buffer", "channel": 0 } },
             "outputs": { "out": { "from": "/mic" } } },
         "nodes": [] }"#;
+
+    #[test]
+    fn installed_probes_follow_a_commit_and_survive_a_rejection() {
+        let (mut coord, _side, _w) = Coordinator::install_initial(
+            &envelope_doc("/env"),
+            Registry::builtin(),
+            Box::new(MemoryResolver::new()),
+            cfg(),
+        )
+        .expect("initial install");
+        let first = coord.installed_probes();
+
+        assert!(!coord.swap_document("{ not json").report.ok);
+        assert!(Arc::ptr_eq(&first, &coord.installed_probes()));
+
+        assert!(coord.swap_document(&envelope_doc("/env2")).report.ok);
+        assert!(!Arc::ptr_eq(&first, &coord.installed_probes()));
+    }
 
     #[test]
     fn installed_channels_reflect_the_installed_engine_geometry() {

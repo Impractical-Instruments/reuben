@@ -67,5 +67,8 @@ pub mod resources;
 /// The level meter's fold and ballistics, for a host that meters its own device buffers.
 pub use reuben_core::meter;
 
+/// The per-node level probes, for a host that switches them on and reads them.
+pub use reuben_core::probe;
+
 #[cfg(feature = "fs-resolver")]
 pub use fs_resolver::FsResolver;
