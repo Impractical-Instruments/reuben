@@ -5,6 +5,9 @@
 //! nothing. A thread pings the engine every [`PROBE_EVERY`] and, while it answers, asks what it
 //! plays. It says when that changes: when the engine stops answering, when it answers again, and
 //! when another client, or a restart between two probes, has it play something else.
+//!
+//! Live control values to it go through a [`Sends`] worker, so a stopped engine never holds the
+//! window.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -14,9 +17,15 @@ use std::time::Duration;
 use eframe::egui;
 use reuben_api::engine::{Channel, TcpTransport, DEFAULT_CONNECT_TIMEOUT};
 
+use crate::sends::{Live, Sends};
+
 /// How often the link is probed: a lost engine is noticed, and a change to what it plays is seen,
 /// within this.
 const PROBE_EVERY: Duration = Duration::from_secs(1);
+
+/// The read budget for a send. The engine answers one as soon as it has queued it, before it is
+/// applied, so a send that takes longer than this is to an engine that is not running.
+const SEND_READ_TIMEOUT: Duration = Duration::from_secs(1);
 
 const UNKNOWN: u8 = 0;
 const UP: u8 = 1;
@@ -38,6 +47,8 @@ pub enum Change {
 /// An attached engine's address, and what the probe thread last found there.
 pub struct Link {
     addr: String,
+    transport: TcpTransport,
+    sends: Sends,
     state: Arc<AtomicU8>,
     changes: Receiver<Change>,
     /// Dropped with the link, which ends the probe thread at its next wait.
@@ -45,22 +56,36 @@ pub struct Link {
 }
 
 impl Link {
-    /// Start probing the engine at `addr`. `wake` is called from the probe thread on each
-    /// [`Change`].
-    pub fn dial(addr: impl Into<String>, wake: impl Fn() + Send + 'static) -> Self {
+    /// Start probing the engine at `addr`. `wake` is called from another thread on each
+    /// [`Change`], and each time a send is answered.
+    pub fn dial(addr: impl Into<String>, wake: impl Fn() + Send + Sync + 'static) -> Self {
         let addr = addr.into();
+        // A name that does not resolve now is looked up again on each exchange, which fails as
+        // the engine not answering until it does.
+        let transport = TcpTransport::resolved(&addr, DEFAULT_CONNECT_TIMEOUT)
+            .unwrap_or_else(|_| TcpTransport::new(&addr, DEFAULT_CONNECT_TIMEOUT));
+        let wake = Arc::new(wake);
+        let sends = Sends::start(
+            Channel::with_read_timeout(transport.clone(), SEND_READ_TIMEOUT),
+            {
+                let wake = Arc::clone(&wake);
+                move || wake()
+            },
+        );
         let state = Arc::new(AtomicU8::new(UNKNOWN));
         let (changed, changes) = mpsc::channel();
         let (stop, stopped) = mpsc::channel();
         // Not joined on drop: a probe waiting on a wedged engine would hold the window's close for
         // up to a read budget, and the thread holds nothing that outlives it.
         std::thread::spawn({
-            let channel = channel(&addr);
+            let channel = Channel::new(transport.clone());
             let state = Arc::clone(&state);
-            move || probe(&channel, &state, &changed, &stopped, wake)
+            move || probe(&channel, &state, &changed, &stopped, move || wake())
         });
         Self {
             addr,
+            transport,
+            sends,
             state,
             changes,
             _stop: stop,
@@ -83,7 +108,12 @@ impl Link {
     /// A channel to the engine. Every exchange dials it afresh, so the channel outlives the
     /// engine restarting.
     pub fn channel(&self) -> Channel {
-        channel(&self.addr)
+        Channel::new(self.transport.clone())
+    }
+
+    /// Where live control values to the engine go: queued for the link's send worker.
+    pub fn live(&self) -> Live {
+        self.sends.live()
     }
 
     /// What the probe found changed since the last call, oldest first. Never waits.
@@ -110,10 +140,6 @@ pub fn show(ui: &mut egui::Ui, link: &Link) {
             );
         }
     }
-}
-
-fn channel(addr: &str) -> Channel {
-    Channel::new(TcpTransport::new(addr, DEFAULT_CONNECT_TIMEOUT))
 }
 
 fn probe(

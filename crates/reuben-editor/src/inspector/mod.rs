@@ -19,13 +19,14 @@ use reuben_api::authoring::{
     Refusal, RemoveInstrumentConstant, Resources, SetInstrumentConstant, SetInstrumentDescription,
     SetInstrumentInput, SetInstrumentName, SetInstrumentNodeDescription,
 };
-use reuben_api::engine::{send_live_controls, Channel, ControlSendMessage, SendLiveControls};
+use reuben_api::engine::{Channel, ControlSendMessage};
 use serde_json::Value;
 
 use self::interface::{Adding, PipeEdit};
 use self::model::{fields, pipe_field, Control, Drafts, Holds, Step, Target};
 use self::resources::ResourceEdit;
 use crate::edit;
+use crate::sends::{Live, Replies};
 use crate::session::Session;
 
 pub use self::view::show;
@@ -132,6 +133,7 @@ pub struct Inspector {
     resource: resources::Draft,
     /// Why the last live send did not reach the engine, until an edit or a send does.
     error: Option<String>,
+    replies: Replies,
     /// How many times a verb has been run to write the document.
     #[cfg(test)]
     writes: usize,
@@ -146,14 +148,20 @@ impl Inspector {
     }
 
     /// Do what a number field asked for this frame.
-    fn step(&mut self, step: Step, session: &mut Session, channel: &dyn Fn() -> Option<Channel>) {
+    fn step(
+        &mut self,
+        step: Step,
+        session: &mut Session,
+        channel: &dyn Fn() -> Option<Channel>,
+        live: &dyn Fn() -> Option<Live>,
+    ) {
         match step {
             Step::Live(target, value) => {
                 if !session.trail().is_empty() {
                     return;
                 }
                 if let Some(message) = target.live(value) {
-                    self.live(message, channel);
+                    self.live(message, live);
                 }
             }
             Step::Commit {
@@ -168,7 +176,7 @@ impl Inspector {
                     value: literal,
                 };
                 if !self.commit(edit, expect, session, channel) && held {
-                    self.restore(&target, session, channel);
+                    self.restore(&target, session, live);
                 }
             }
         }
@@ -177,12 +185,7 @@ impl Inspector {
     /// Set `target` live back to what the file holds for it, after a held value that was sent live
     /// failed to be written: the engine would otherwise go on playing a value the file does not
     /// hold. Sends nothing when the file no longer has the input or feeds it from a wire.
-    fn restore(
-        &mut self,
-        target: &Target,
-        session: &Session,
-        channel: &dyn Fn() -> Option<Channel>,
-    ) {
+    fn restore(&mut self, target: &Target, session: &Session, live: &dyn Fn() -> Option<Live>) {
         if !session.trail().is_empty() {
             return;
         }
@@ -206,20 +209,23 @@ impl Inspector {
             _ => None,
         });
         if let Some(message) = held {
-            self.live(message, channel);
+            self.live(message, live);
         }
     }
 
     /// Send `message` to the running engine, when one is running.
-    fn live(&mut self, message: ControlSendMessage, channel: &dyn Fn() -> Option<Channel>) {
-        let Some(channel) = channel() else { return };
-        let sent = send_live_controls(
-            &SendLiveControls {
-                messages: vec![message],
-            },
-            &channel,
-        );
-        self.error = sent.err().map(|refusal| refusal.message);
+    fn live(&mut self, message: ControlSendMessage, live: &dyn Fn() -> Option<Live>) {
+        let Some(live) = live() else { return };
+        live.send(vec![message], &self.replies);
+        self.heard();
+    }
+
+    /// Take in how the live sends answered since the last call. One queued for an attached engine
+    /// is answered on a later frame.
+    fn heard(&mut self) {
+        if let Some(result) = self.replies.latest() {
+            self.error = result.err();
+        }
     }
 
     /// Write `edit` to the viewed document, against the content hash `expect`, or against the
@@ -339,8 +345,9 @@ mod tests {
             (inspector.holds).number(target, (document, &top.hash), value, holding, holding);
         steps.extend(inspector.holds.end());
         let channel = rig.channel_source();
+        let live = || channel().map(Live::Now);
         for step in steps {
-            inspector.step(step, &mut rig.session, &channel);
+            inspector.step(step, &mut rig.session, &channel, &live);
         }
     }
 
@@ -778,14 +785,14 @@ mod tests {
                 start_headless,
             );
             assert!(engine.channel().is_some(), "{:?}", engine.report());
-            let channel = || engine.channel();
+            let live = || engine.live();
 
             let mut inspector = Inspector::default();
             // Addressed as an operator's input would be, the value reaches nothing.
             let mut stray = level.live(0.25).expect("a runtime input");
             stray.address = format!("{}/{}", level.address, level.name);
-            inspector.live(stray, &channel);
-            inspector.live(level.live(0.75).expect("a runtime input"), &channel);
+            inspector.live(stray, &live);
+            inspector.live(level.live(0.75).expect("a runtime input"), &live);
             assert_eq!(inspector.error, None);
 
             let mut buf = [0u8; 1024];
@@ -988,8 +995,9 @@ mod tests {
                     (inspector.holds).number(&held, (220.0, &top.hash), value, holding, holding);
                 steps.extend(inspector.holds.end());
                 let channel = rig.channel_source();
+                let live = || channel().map(Live::Now);
                 for step in steps {
-                    inspector.step(step, &mut rig.session, &channel);
+                    inspector.step(step, &mut rig.session, &channel, &live);
                 }
             };
             frame(&mut rig, 330.0, true);

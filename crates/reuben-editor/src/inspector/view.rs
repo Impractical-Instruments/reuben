@@ -9,6 +9,7 @@ use super::model::{drag_speed, fields, widget, Control, Field, Step, Typing, Wid
 use super::{interface, resources, Edit, Inspector};
 use crate::canvas::Item;
 use crate::feedback::Feedback;
+use crate::sends::Live;
 use crate::session::Session;
 
 const SLIDER_WIDTH: f32 = 180.0;
@@ -30,8 +31,10 @@ pub fn show(
     inspector: &mut Inspector,
     session: &mut Session,
     channel: &dyn Fn() -> Option<Channel>,
+    live: &dyn Fn() -> Option<Live>,
     selection: Option<&Item>,
 ) {
+    inspector.heard();
     let mut asks = Vec::new();
     egui::Panel::right("inspector")
         .resizable(true)
@@ -96,7 +99,7 @@ pub fn show(
         });
     for ask in asks {
         match ask {
-            Ask::Step(step) => inspector.step(step, session, channel),
+            Ask::Step(step) => inspector.step(step, session, channel, live),
             Ask::Edit(edit, expect) => {
                 inspector.commit(edit, expect, session, channel);
             }

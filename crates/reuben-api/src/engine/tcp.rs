@@ -6,9 +6,10 @@
 
 use alloc::format;
 use alloc::string::String;
+use alloc::vec::Vec;
 
 use std::io::{self, BufReader, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use super::channel::Transport;
@@ -23,6 +24,8 @@ pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 #[derive(Debug, Clone)]
 pub struct TcpTransport {
     addr: String,
+    /// What `addr` resolved to once, up front; `None` resolves it afresh on every exchange.
+    resolved: Option<Vec<SocketAddr>>,
     connect_timeout: Duration,
 }
 
@@ -31,8 +34,21 @@ impl TcpTransport {
     pub fn new(addr: impl Into<String>, connect_timeout: Duration) -> Self {
         Self {
             addr: addr.into(),
+            resolved: None,
             connect_timeout,
         }
+    }
+
+    /// A transport dialing what `addr` resolves to now, for every exchange after: a name lookup
+    /// that blocks is paid here rather than on each exchange. `Err` when it does not resolve.
+    pub fn resolved(addr: impl Into<String>, connect_timeout: Duration) -> io::Result<Self> {
+        let addr = addr.into();
+        let resolved = addr.to_socket_addrs()?.collect();
+        Ok(Self {
+            addr,
+            resolved: Some(resolved),
+            connect_timeout,
+        })
     }
 }
 
@@ -51,8 +67,16 @@ impl Transport for TcpTransport {
         // tried in turn, as `localhost` may resolve to `::1` before the `127.0.0.1` a server binds.
         let mut last = None;
         let mut connected = None;
-        for addr in self.addr.to_socket_addrs()? {
-            match TcpStream::connect_timeout(&addr, self.connect_timeout) {
+        let looked_up;
+        let addrs = match &self.resolved {
+            Some(resolved) => resolved,
+            None => {
+                looked_up = self.addr.to_socket_addrs()?.collect::<Vec<_>>();
+                &looked_up
+            }
+        };
+        for addr in addrs {
+            match TcpStream::connect_timeout(addr, self.connect_timeout) {
                 Ok(stream) => {
                     connected = Some(stream);
                     break;
@@ -98,6 +122,8 @@ impl Transport for TcpTransport {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use super::*;
 
     #[test]
@@ -109,5 +135,29 @@ mod tests {
             .round_trip(&line, Duration::from_secs(1))
             .expect_err("over the cap");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+    }
+
+    #[test]
+    fn a_transport_resolved_up_front_dials_what_the_name_resolved_to() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr").to_string();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            let mut line = String::new();
+            std::io::BufRead::read_line(&mut BufReader::new(&stream), &mut line).expect("read");
+            (&stream).write_all(line.as_bytes()).expect("echo");
+        });
+        let transport = TcpTransport::resolved(&addr, DEFAULT_CONNECT_TIMEOUT).expect("resolves");
+        let reply = transport
+            .round_trip("{\"ping\":1}\n", Duration::from_secs(1))
+            .expect("answered");
+        assert_eq!(reply.trim_end(), "{\"ping\":1}");
+        assert_eq!(transport.endpoint(), addr);
+        server.join().expect("server");
+    }
+
+    #[test]
+    fn a_name_that_does_not_resolve_is_refused_up_front() {
+        assert!(TcpTransport::resolved("not an address", DEFAULT_CONNECT_TIMEOUT).is_err());
     }
 }

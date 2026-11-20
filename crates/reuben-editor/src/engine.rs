@@ -22,6 +22,7 @@ use reuben_native::profile::DeviceProfile;
 use reuben_native::structure::input_stream_fits;
 
 use crate::link::{Change, Link};
+use crate::sends::Live;
 
 /// How serious a [`Line`] is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,8 +101,9 @@ impl Engine {
     }
 
     /// Attach to the `reuben play` whose structure channel is at `addr`, starting nothing. `wake`
-    /// is called from another thread whenever [`follow_link`](Self::follow_link) has news.
-    pub fn attach(addr: impl Into<String>, wake: impl Fn() + Send + 'static) -> Self {
+    /// is called from another thread whenever [`follow_link`](Self::follow_link) has news, and when
+    /// a live send to it is answered.
+    pub fn attach(addr: impl Into<String>, wake: impl Fn() + Send + Sync + 'static) -> Self {
         let link = Link::dial(addr, wake);
         let line = Line::new(
             Level::Info,
@@ -509,15 +511,25 @@ impl Engine {
     /// A channel to the running engine, or `None` when none is running — for an attached engine,
     /// when the last probe went unanswered.
     ///
-    /// For control traffic only on the UI thread: a send is handed to the render side without
-    /// waiting, where a swap made through the same channel builds the new Engine before returning.
-    /// To an attached engine every exchange is a loopback round trip, which a stopped `reuben play`
-    /// holds for up to the channel's read budget.
+    /// Live control values go through [`live`](Self::live) instead: to an attached engine every
+    /// exchange is a loopback round trip, which a stopped `reuben play` holds for up to the
+    /// channel's read budget.
     pub fn channel(&self) -> Option<Channel> {
         if let Some(link) = &self.attached {
             return (link.up() != Some(false)).then(|| link.channel());
         }
         self.running.as_ref().map(RunningEngine::channel)
+    }
+
+    /// Where live control values go, or `None` when no engine is running — for an attached engine,
+    /// when the last probe went unanswered.
+    pub fn live(&self) -> Option<Live> {
+        if let Some(link) = &self.attached {
+            return (link.up() != Some(false)).then(|| link.live());
+        }
+        self.running
+            .as_ref()
+            .map(|running| Live::Now(running.channel()))
     }
 
     /// Everything starting the engine reported, in order.
