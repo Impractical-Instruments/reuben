@@ -1334,15 +1334,20 @@ mod tests {
         assert_eq!(store.read("copy.json"), copied);
     }
 
-    /// Reachable by code, advertised to no agent: no roster names the verb.
+    /// Reachable by code, advertised to no agent: the roster names the verb only as a Host contract.
     #[test]
     fn no_roster_names_copy_instrument() {
-        assert!(!crate::tools::names().contains(&"copy_instrument"));
+        assert!(!crate::tools::CONTRACTS
+            .iter()
+            .any(|c| c.name == "copy_instrument" && c.kind != crate::tools::ContractKind::Host));
     }
 
     #[test]
     fn no_roster_names_set_instrument_resource() {
-        assert!(!crate::tools::names().contains(&"set_instrument_resource"));
+        assert!(!crate::tools::CONTRACTS
+            .iter()
+            .any(|c| c.name == "set_instrument_resource"
+                && c.kind != crate::tools::ContractKind::Host));
     }
 
     /// A document with a face to read: one input pipe carrying declared metadata, one output tap.
@@ -2485,7 +2490,9 @@ mod tests {
 
     #[test]
     fn no_roster_names_the_read() {
-        assert!(!crate::tools::names().contains(&"read_instrument"));
+        assert!(!crate::tools::CONTRACTS
+            .iter()
+            .any(|c| c.name == "read_instrument" && c.kind != crate::tools::ContractKind::Host));
     }
 
     #[cfg(feature = "fs-resolver")]

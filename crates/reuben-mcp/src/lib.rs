@@ -65,7 +65,11 @@ pub use reuben_api::engine::{
 /// The tool surface this door advertises, in roster order — the exact spellings on `tools/list`,
 /// so the wire surface can only change by changing the roster.
 pub fn tool_names() -> Vec<&'static str> {
-    reuben_api::tools::names()
+    reuben_api::tools::CONTRACTS
+        .iter()
+        .filter(|c| c.kind != reuben_api::tools::ContractKind::Host)
+        .map(|c| c.name)
+        .collect()
 }
 
 /// The `reuben://guide/authoring` resource URI: the authoring guide, `docs/agents/authoring.md`.
@@ -734,7 +738,10 @@ fn stamp_window_prose(router: &mut ToolRouter<ReubenServer>) {
          {unstamped:?}"
     );
 
-    for contract in reuben_api::tools::CONTRACTS {
+    for contract in reuben_api::tools::CONTRACTS
+        .iter()
+        .filter(|c| c.kind != reuben_api::tools::ContractKind::Host)
+    {
         let route = router.map.get_mut(contract.name).unwrap_or_else(|| {
             panic!(
                 "the window serves `{}`, but no tool advertises it",
