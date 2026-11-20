@@ -404,7 +404,7 @@ fn render_inbound<E: Executor>(
         // Measured now or never: once a later node runs, this node's output slots may be
         // recycled to it.
         if let Some(p) = plan.nodes[i].probe.filter(|_| probing) {
-            if plan.probes.nodes[p].is_on() {
+            if plan.probes.nodes.get(p).is_some_and(|n| n.is_on()) {
                 for (port, &buf) in plan.nodes[i].outputs.iter().enumerate() {
                     let block = Block::measure(arena[buf][..frames].iter().copied());
                     plan.probes.accumulate(p, port, block);

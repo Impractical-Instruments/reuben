@@ -24,6 +24,11 @@
 //! - constant 0: `voices` (`i32`, `1..=32`) — voice-pool size (read by the loader to decide how many
 //!   sub-patches to build).
 //! - resource `voice` — the voice patch (instrument-resource).
+//!
+//! Every voice measures into one probe slot set, exposed by [`Operator::hosted_probes`] and
+//! committed once per `process`. A Voicer inside a voice patch exposes only the inner slot set of
+//! the outer Voicer's voice 0, so its voice meters show that voice alone and freeze while it is
+//! idle.
 
 use alloc::boxed::Box;
 use alloc::format;
@@ -652,7 +657,7 @@ mod tests {
         }
 
         fn peak(slots: &ProbeSlots, address: &str) -> f32 {
-            slots.find(address).expect("a slot").ports[0].level.read().0
+            slots.find(address).expect("a slot").ports[0].read().0
         }
 
         fn note(address: &str, velocity: f32) -> Message {
@@ -704,7 +709,7 @@ mod tests {
                 let mut r = Renderer::new(&plan);
                 // Without `active`, every voice's `/osc` runs from the same phase, note or none.
                 render(&mut r, &mut plan, &[], 2.0);
-                let (_, mean_square) = slots.find("/osc").unwrap().ports[0].level.read();
+                let (_, mean_square) = slots.find("/osc").unwrap().ports[0].read();
                 mean_square
             };
             let (one, two) = (mean_square(1), mean_square(2));
@@ -720,13 +725,13 @@ mod tests {
             let mut r = Renderer::new(&plan);
             render(&mut r, &mut plan, &[note("/v", 1.0)], 0.5);
             render(&mut r, &mut plan, &[note("/v", 0.0)], 0.1);
-            assert!(osc.ports[0].level.read().0 > 0.5);
+            assert!(osc.ports[0].read().0 > 0.5);
 
             osc.set_on(false);
             osc.set_on(true);
             // Every voice idle: no voice renders `/osc`, so only the commit can apply the reset.
             render(&mut r, &mut plan, &[], BLOCK as f32 / RATE);
-            assert_eq!(osc.ports[0].level.read(), (0.0, 0.0));
+            assert_eq!(osc.ports[0].read(), (0.0, 0.0));
         }
 
         #[test]
@@ -757,7 +762,7 @@ mod tests {
 
             render(&mut r, &mut plan, &[note("/a", 1.0)], 0.5);
             assert!(peak(&a, "/osc") > 0.9);
-            assert_eq!(b.find("/osc").unwrap().ports[0].level.read(), (0.0, 0.0));
+            assert_eq!(b.find("/osc").unwrap().ports[0].read(), (0.0, 0.0));
         }
     }
 }

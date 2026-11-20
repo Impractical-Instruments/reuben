@@ -373,10 +373,7 @@ fn render_with_every_probe_on_allocates_nothing() {
     .allocs;
     assert_eq!(probed, 0, "probed render allocated {probed} time(s)");
     assert!(
-        plan.probes
-            .nodes
-            .iter()
-            .any(|n| n.ports[0].level.read().0 > 0.0),
+        plan.probes.nodes.iter().any(|n| n.ports[0].read().0 > 0.0),
         "no probe measured anything, so the window proved nothing"
     );
     assert!(
@@ -385,7 +382,7 @@ fn render_with_every_probe_on_allocates_nothing() {
             .iter()
             .filter_map(|n| n.hosted.as_deref())
             .flat_map(|hosted| &hosted.nodes)
-            .any(|n| n.ports[0].level.read().0 > 0.0),
+            .any(|n| n.ports[0].read().0 > 0.0),
         "no voice probe measured anything, so the window proved nothing for the voices"
     );
 

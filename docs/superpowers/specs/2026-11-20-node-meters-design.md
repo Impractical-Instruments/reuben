@@ -113,6 +113,8 @@ implementation. Chosen by the user over B and C.
   through the chain; *builder's call* how far that needs to go.
 - **Voice levels are in scope:** the user asked for every node on the visible level, and a voice
   patch opened from its Voicer is a level.
+  - A Voicer nested inside a voice patch exposes only outer voice 0's inner slot set, so its voice
+    meters show outer voice 0 alone and freeze while that voice is idle.
 - The engine host keeps the requested address set. After every Swap installs, it maps the set onto
   the new Plan's slots and sets their flags; an address the new Plan does not have is skipped
   silently and reports nothing. Nothing about this touches the render path except the flag stores.

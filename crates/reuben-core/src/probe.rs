@@ -56,12 +56,17 @@ pub struct NodeProbe {
 #[derive(Debug)]
 pub struct PortProbe {
     pub name: Arc<str>,
-    pub level: Level,
+    level: Level,
     peak: AtomicU32,
     sum_squares: AtomicU32,
 }
 
 impl PortProbe {
+    /// The linear held peak and averaged square as of the last commit.
+    pub fn read(&self) -> (f32, f32) {
+        self.level.read()
+    }
+
     fn new(name: &str) -> Self {
         Self {
             name: name.into(),
@@ -112,14 +117,16 @@ impl NodeProbe {
     /// Carry out a reset the reader asked for, if any, and say whether there was one.
     /// Render-side.
     fn take_reset(&self) -> bool {
-        if !self.reset.load(Ordering::Relaxed) {
+        // Claimed before the clear, so a request the reader makes during it survives for the next
+        // pass rather than being wiped by a trailing store. The load keeps the common case, no
+        // request, off a read-modify-write.
+        if !self.reset.load(Ordering::Relaxed) || !self.reset.swap(false, Ordering::Relaxed) {
             return false;
         }
         for port in &self.ports {
             port.level.reset();
             port.set_pending(Block::default());
         }
-        self.reset.store(false, Ordering::Relaxed);
         true
     }
 }
@@ -157,7 +164,6 @@ impl ProbeSlots {
         })
     }
 
-    /// Whether any node is on.
     pub fn any_on(&self) -> bool {
         self.on_count.load(Ordering::Relaxed) != 0
     }
@@ -176,10 +182,16 @@ impl ProbeSlots {
     /// after any reset the node is owed.
     ///
     /// RT-safe: no allocation, lock or syscall.
+    /// An index this set has no slot for — a Plan measuring into a set built from another patch —
+    /// is skipped rather than panicking the render thread.
     pub(crate) fn accumulate(&self, node: usize, port: usize, block: Block) {
-        let node = &self.nodes[node];
+        let slot = self.nodes.get(node);
+        let found = slot.and_then(|n| n.ports.get(port));
+        debug_assert!(found.is_some(), "no probe slot for node {node} port {port}");
+        let (Some(node), Some(port)) = (slot, found) else {
+            return;
+        };
         node.take_reset();
-        let port = &node.ports[port];
         let mut pending = port.pending();
         pending.merge(block);
         port.set_pending(pending);
@@ -212,7 +224,7 @@ mod tests {
     use super::*;
     use crate::descriptor::Descriptor;
     use crate::operator::{Io, Operator};
-    use crate::operators::{oscillator, output, Oscillator, Output};
+    use crate::operators::{oscillator, output, pan, Oscillator, Output, Pan};
     use crate::plan::Plan;
     use crate::render::Renderer;
 
@@ -287,9 +299,7 @@ mod tests {
     }
 
     fn osc_level(plan: &Plan) -> (f32, f32) {
-        plan.probes.find("/osc").expect("/osc has a slot").ports[0]
-            .level
-            .read()
+        plan.probes.find("/osc").expect("/osc has a slot").ports[0].read()
     }
 
     #[test]
@@ -305,6 +315,39 @@ mod tests {
             (mean_square - 0.5).abs() <= 1e-2,
             "mean square {mean_square}"
         );
+    }
+
+    #[test]
+    fn each_signal_output_meters_into_its_own_port() {
+        let mut g = Graph::new();
+        let osc = g.add("/osc", Oscillator::new());
+        let pan = g.add("/pan", Pan);
+        g.set_value(pan, "pan", &crate::message::Arg::F32(-1.0));
+        g.connect(osc, oscillator::OUT_AUDIO, pan, pan::IN_AUDIO);
+        g.tap_output(pan, pan::OUT_LEFT);
+        g.tap_output(pan, pan::OUT_RIGHT);
+        let mut plan = Plan::instantiate(g, config()).expect("instantiate");
+        plan.probes.find("/pan").unwrap().set_on(true);
+        render(&mut plan, 0.5);
+
+        let probe = plan.probes.find("/pan").unwrap();
+        let port = |name: &str| {
+            probe
+                .ports
+                .iter()
+                .find(|p| &*p.name == name)
+                .unwrap()
+                .read()
+        };
+        // Hard left: the sine on `left`, nothing on `right`.
+        assert!(
+            (port("left").0 - 1.0).abs() <= 1e-3,
+            "left {:?}",
+            port("left")
+        );
+        assert!(port("right").0 <= 1e-3, "right {:?}", port("right"));
+        assert_eq!(&*probe.ports[0].name, "left");
+        assert_eq!(&*probe.ports[1].name, "right");
     }
 
     #[test]
@@ -346,7 +389,7 @@ mod tests {
         let mut r = Renderer::new(&plan);
         let mut out = vec![0.0f32; BLOCK];
         r.render_block(&mut plan, &[], &mut out);
-        let level = |plan: &Plan| plan.probes.find("/bad").unwrap().ports[0].level.read();
+        let level = |plan: &Plan| plan.probes.find("/bad").unwrap().ports[0].read();
         assert_eq!(level(&plan).0, 1000.0);
 
         // From the +60 dB ceiling, 12 dB a second takes 11.7 s to reach 1e-4 (-80 dB).
@@ -432,11 +475,8 @@ mod tests {
         render(&mut plan, 0.1);
         let osc = plan.probes.find("/osc").unwrap();
         osc.set_on(false);
-        let held = osc.ports[0].level.read();
+        let held = osc.ports[0].read();
         render(&mut plan, 0.1);
-        assert_eq!(
-            plan.probes.find("/osc").unwrap().ports[0].level.read(),
-            held
-        );
+        assert_eq!(plan.probes.find("/osc").unwrap().ports[0].read(), held);
     }
 }

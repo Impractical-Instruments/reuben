@@ -444,6 +444,8 @@ impl Plan {
     ///
     /// `probes` is shared, so a node in this copy that itself hosts a patch does not get its slots
     /// hung off `probes`: only the copy whose Plan built the set exposes its hosting nodes' slots.
+    /// For a Voicer inside a voice patch, that is outer voice 0's: its inner voice meters show
+    /// outer voice 0 alone, and freeze while that voice is idle.
     pub fn instantiate_hosted(
         graph: Graph,
         config: AudioConfig,
@@ -2406,7 +2408,7 @@ mod hosted_probes {
         for _ in 0..40 {
             r.render_block(&mut b, &[], &mut out);
         }
-        let (peak, _) = hosted.find("/osc").unwrap().ports[0].level.read();
+        let (peak, _) = hosted.find("/osc").unwrap().ports[0].read();
         assert!(
             peak > 0.5,
             "the live Voicer measured elsewhere: peak {peak}"
