@@ -943,7 +943,7 @@ fn validate_summary(report: &Report) -> String {
 }
 
 /// One-line gloss of a document-verb result.
-pub(super) fn edit_summary(result: &EditResult) -> String {
+pub(crate) fn edit_summary(result: &EditResult) -> String {
     if result.written {
         let base = format!("written (content_hash {})", result.hash);
         match result.notes.len() {

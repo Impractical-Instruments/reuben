@@ -663,7 +663,7 @@ fn handle_connection(stream: TcpStream, state: StructureState, shutdown: Arc<Ato
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{FakeCallback, NoResources};
+    use crate::test_support::{no_store, served, FakeCallback};
     use reuben_api::engine::{ControlArg, DocSource, Request, Response, MAX_SEND_BATCH};
     use reuben_api::render::{Arg, AudioConfig};
 
@@ -715,8 +715,10 @@ mod tests {
         base: &str,
         opened_input_channels: usize,
     ) -> (StructureState, FakeCallback, String) {
+        let staged = no_store();
         let (coordinator, side, _warnings) =
-            reuben_api::engine::install_initial(base, NoResources, cfg()).expect("initial install");
+            reuben_api::engine::install_initial(base, staged.clone(), cfg())
+                .expect("initial install");
         let base_hash = coordinator.installed_hash();
         let (control_tx, control_rx) = std::sync::mpsc::channel::<ControlBatch>();
         let host = NativeHost::new(Diagnostics::new(), control_tx).with_render_config(Arc::new(
@@ -724,7 +726,7 @@ mod tests {
                 opened_input_channels,
             },
         ));
-        let state = StructureState::new(coordinator, Arc::new(host));
+        let state = StructureState::new(coordinator, Arc::new(host), served(staged));
         (state, FakeCallback::spawn(side, control_rx), base_hash)
     }
 
@@ -796,8 +798,10 @@ mod tests {
         let good = dir.join("next.json");
         std::fs::write(&good, envelope_doc("/eg")).expect("seed the swap target");
 
+        let staged = no_store();
+
         let (coordinator, side, _warnings) =
-            reuben_api::engine::install_initial(BASE_DOC, NoResources, cfg())
+            reuben_api::engine::install_initial(BASE_DOC, staged.clone(), cfg())
                 .expect("initial install");
         let (control_tx, control_rx) = std::sync::mpsc::channel::<ControlBatch>();
         let host = NativeHost::new(Diagnostics::new(), control_tx).with_render_config(Arc::new(
@@ -805,7 +809,7 @@ mod tests {
                 opened_input_channels: 0,
             },
         ));
-        let state = StructureState::new(coordinator, Arc::new(host))
+        let state = StructureState::new(coordinator, Arc::new(host), served(staged))
             .with_installed_source(Some("initial.json".to_string()));
         let cb = FakeCallback::spawn(side, control_rx);
 
@@ -891,8 +895,9 @@ mod tests {
 
     #[test]
     fn a_host_switches_off_probes_nobody_renews() {
+        let staged = no_store();
         let (coordinator, side, _w) =
-            reuben_api::engine::install_initial(BASE_DOC, NoResources, cfg()).expect("install");
+            reuben_api::engine::install_initial(BASE_DOC, staged.clone(), cfg()).expect("install");
         let slots = coordinator.installed_probes();
         let (control_tx, control_rx) = std::sync::mpsc::channel::<ControlBatch>();
         let host = Arc::new(NativeHost::with_probe_lease(
@@ -901,7 +906,7 @@ mod tests {
             Duration::from_millis(30),
             Duration::from_millis(5),
         ));
-        let state = StructureState::new(coordinator, host.clone());
+        let state = StructureState::new(coordinator, host.clone(), served(staged));
         let cb = FakeCallback::spawn(side, control_rx);
         let resolved = EngineHost::set_probes(&*host, vec![vec!["/osc".to_string()]]).unwrap();
         assert_eq!(resolved.len(), 1);
@@ -918,8 +923,9 @@ mod tests {
 
     #[test]
     fn get_diagnostics_reads_the_live_counters() {
+        let staged = no_store();
         let (coordinator, side, _w) =
-            reuben_api::engine::install_initial(BASE_DOC, NoResources, cfg()).expect("install");
+            reuben_api::engine::install_initial(BASE_DOC, staged.clone(), cfg()).expect("install");
         let diagnostics = Diagnostics::new();
         // This verb never touches control, but the ingress is a constructor parameter now — there
         // is no such thing as a host that cannot serve `send`.
@@ -927,6 +933,7 @@ mod tests {
         let state = StructureState::new(
             coordinator,
             Arc::new(NativeHost::new(Arc::clone(&diagnostics), control_tx)),
+            served(staged),
         );
         let cb = FakeCallback::spawn(side, control_rx);
         // Fresh: zeroed.
@@ -1388,8 +1395,9 @@ mod tests {
         // spin the full SWAP_RECLAIM_TIMEOUT under the Coordinator lock, stalling get_document and
         // the next swap. No FakeCallback here — the render side is dropped, so
         // the retiree never comes home — so the liveness gate must bail at the grace instead.
+        let staged = no_store();
         let (coordinator, _side, _w) =
-            reuben_api::engine::install_initial(BASE_DOC, NoResources, cfg())
+            reuben_api::engine::install_initial(BASE_DOC, staged.clone(), cfg())
                 .expect("initial install");
         let (control_tx, _control_rx) = std::sync::mpsc::channel::<ControlBatch>();
         let host = NativeHost::new(Diagnostics::new(), control_tx).with_render_config(Arc::new(
@@ -1397,7 +1405,7 @@ mod tests {
                 opened_input_channels: 0,
             },
         ));
-        let state = StructureState::new(coordinator, Arc::new(host));
+        let state = StructureState::new(coordinator, Arc::new(host), served(staged));
 
         let start = Instant::now();
         let resp = dispatch(

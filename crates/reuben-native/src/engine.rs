@@ -24,11 +24,13 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use reuben_api::authoring::{DocumentHistory, Resources};
 use reuben_api::engine::{
     Channel, FromDocumentError, InProcess, Installed, LoadWarning, StructureState,
     DEFAULT_STRUCTURE_ADDR,
 };
 use reuben_api::render::{self, AudioConfig, Message};
+use reuben_api::staged::Staged;
 use reuben_api::FsResolver;
 
 use crate::audio::{self, AudioError};
@@ -363,8 +365,13 @@ pub(crate) fn start_with(
         None => None,
     };
 
+    // One store for the session: the Coordinator resolves through a clone of it, and the
+    // structure channel's `call` writes through the same one, so an edit waiting in memory is what
+    // the check before it goes live loads.
+    let staged: Staged<Box<dyn Resources + Send + Sync>> = Staged::new(Box::new(resolver));
+    let store = Arc::new(DocumentHistory::new(staged.clone()));
     let build =
-        |cfg: AudioConfig| reuben_api::engine::install_initial(&instrument_json, resolver, cfg);
+        |cfg: AudioConfig| reuben_api::engine::install_initial(&instrument_json, staged, cfg);
     let (
         output,
         diagnostics,
@@ -431,8 +438,8 @@ pub(crate) fn start_with(
         .with_meters(meters)
         .with_render_config(render_config)
         .with_swap_hold(swap_hold);
-    let state =
-        StructureState::new(coordinator, Arc::new(host)).with_installed_source(initial_source);
+    let state = StructureState::new(coordinator, Arc::new(host), store)
+        .with_installed_source(initial_source);
     let (structure, structure_error) = match structure {
         Some(Ok(addrs)) => match StructureServer::bind(&addrs[..], state.clone()) {
             Ok(server) => (Some(server), None),

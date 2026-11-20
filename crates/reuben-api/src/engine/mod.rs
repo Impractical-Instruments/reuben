@@ -44,7 +44,7 @@ pub use result::{
     CurrentInstrument, EngineStatus, SendOutput, SidecarInfo, StatusEndpoints, SwapResult,
 };
 pub use server::{
-    dispatch, EngineHost, InProcess, IngressClosed, Installed, StructureState,
+    dispatch, EngineHost, InProcess, IngressClosed, Installed, ServerStore, StructureState,
     COORDINATOR_POISONED, IN_PROCESS_ENDPOINT,
 };
 
@@ -78,6 +78,10 @@ pub use wire::{
 /// mailbox — so the first swap is what first fills it. Resource problems are non-fatal and come
 /// back as [`LoadWarning`]s for the host to surface; only a document that will not load or will
 /// not plan is an error.
+///
+/// A host that serves `call` passes a clone of the [`Staged`](crate::staged::Staged) its
+/// [`ServerStore`] wraps: the Coordinator then owns that clone, and an edit waiting in memory is
+/// what a prepare loads.
 ///
 /// It sits on the authoring surface because its *input* is a document, and everything it touches to
 /// get from that string to a built Engine is `reuben-document`'s. What it hands back is the render

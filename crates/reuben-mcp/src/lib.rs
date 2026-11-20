@@ -987,7 +987,9 @@ mod tests {
                 Request::GetDocument => &self.document,
                 Request::GetDiagnostics => &self.diagnostics,
                 Request::GetMeters => &self.meters,
-                Request::SetProbes { .. } => unreachable!("no tool sends it"),
+                Request::SetProbes { .. } | Request::Call { .. } => {
+                    unreachable!("no tool sends it")
+                }
                 Request::Send { .. } => unreachable!("handled above"),
             };
             match configured {

@@ -143,7 +143,7 @@ pub struct ControlMessage {
     pub args: Vec<ControlArg>,
 }
 
-/// One structure-channel request (its seven verbs), serialized as a single JSON
+/// One structure-channel request (its eight verbs), serialized as a single JSON
 /// object tagged by `verb`: `{"verb": "ping"}`, `{"verb": "swap", "source": …}`, ….
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "verb", rename_all = "snake_case")]
@@ -198,6 +198,15 @@ pub enum Request {
     Send {
         /// The messages to apply, in order.
         messages: Vec<ControlMessage>,
+    },
+    /// Run one non-engine roster verb against the engine's store. A read answers directly. An edit
+    /// is written only if the open instrument, with the edit, still loads and plans, and then the
+    /// new Plan is swapped in; otherwise nothing is written and the answer says why.
+    Call {
+        /// The roster verb's name.
+        tool: String,
+        /// The verb's arguments, as its argument struct deserializes them.
+        args: serde_json::Value,
     },
 }
 
@@ -406,6 +415,15 @@ pub enum Response {
     /// produced no domain-shaped answer. Distinct from a `SwapReport` with `ok: false`,
     /// which is the channel *working*.
     Error { message: String },
+    /// `Call`'s answer when the verb ran: its output and one-line summary. An edit the engine
+    /// refused is still this, with `written: false` in the output.
+    Called {
+        output: serde_json::Value,
+        summary: String,
+    },
+    /// `Call`'s answer when the verb refused to run: an unknown name, an engine verb, or arguments
+    /// that do not fit it.
+    Refused { message: String },
 }
 
 impl Response {
@@ -731,8 +749,8 @@ mod tests {
 
     #[test]
     fn every_request_variant_round_trips_as_one_ndjson_line() {
-        // The seven verbs: ping, swap (by value or by path, with the optional
-        // expect guard), get_document, get_diagnostics, get_meters, set_probes, send.
+        // The eight verbs: ping, swap (by value or by path, with the optional
+        // expect guard), get_document, get_diagnostics, get_meters, set_probes, send, call.
         let requests = [
             Request::Ping,
             Request::Swap {
@@ -755,6 +773,10 @@ mod tests {
             },
             Request::Send {
                 messages: control_messages(),
+            },
+            Request::Call {
+                tool: "describe_instrument".to_string(),
+                args: serde_json::json!({ "source": "a.json" }),
             },
         ];
         for req in &requests {
@@ -889,6 +911,19 @@ mod tests {
         );
         assert_eq!(tag(&Response::Held(held_swap())), "held");
         assert_eq!(
+            tag(&Response::Called {
+                output: serde_json::json!({}),
+                summary: String::new(),
+            }),
+            "called"
+        );
+        assert_eq!(
+            tag(&Response::Refused {
+                message: String::new(),
+            }),
+            "refused"
+        );
+        assert_eq!(
             tag(&Response::Error {
                 message: String::new(),
             }),
@@ -937,6 +972,13 @@ mod tests {
             Response::Held(held_swap()),
             Response::Error {
                 message: "unreadable request".to_string(),
+            },
+            Response::Called {
+                output: serde_json::json!({ "written": true }),
+                summary: "a.json: renamed".to_string(),
+            },
+            Response::Refused {
+                message: "unknown tool `x`".to_string(),
             },
         ];
         for resp in &responses {

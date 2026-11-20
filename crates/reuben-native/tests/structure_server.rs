@@ -27,7 +27,7 @@ use reuben_native::diagnostics::Diagnostics;
 use reuben_native::meters::{Bank, Meters};
 use reuben_native::osc::{ControlBatch, OscIn};
 use reuben_native::structure::{HeadlessRenderConfig, NativeHost, StructureServer};
-use reuben_native::test_support::{FakeCallback, NoResources};
+use reuben_native::test_support::{no_store, served, FakeCallback};
 
 fn cfg() -> AudioConfig {
     AudioConfig::new(48_000.0, 128)
@@ -81,8 +81,9 @@ fn wired_watching(
     opened_input_channels: usize,
     diagnostics: Arc<Diagnostics>,
 ) -> (StructureState, FakeCallback, String) {
+    let staged = no_store();
     let (coordinator, side, _warnings) =
-        reuben_api::engine::install_initial(doc, NoResources, cfg()).expect("initial install");
+        reuben_api::engine::install_initial(doc, staged.clone(), cfg()).expect("initial install");
     let base_hash = coordinator.installed_hash();
     let (control_tx, control_rx) = mpsc::channel::<ControlBatch>();
     let host = NativeHost::new(diagnostics, control_tx).with_render_config(Arc::new(
@@ -90,7 +91,7 @@ fn wired_watching(
             opened_input_channels,
         },
     ));
-    let state = StructureState::new(coordinator, Arc::new(host));
+    let state = StructureState::new(coordinator, Arc::new(host), served(staged));
     (state, FakeCallback::spawn(side, control_rx), base_hash)
 }
 
@@ -138,7 +139,7 @@ fn within<F: FnOnce() + Send + 'static>(secs: u64, f: F) {
 /// wrong document's hash consistently.
 fn expected_hash(doc: &str) -> String {
     let (coordinator, _side, _warnings) =
-        reuben_api::engine::install_initial(doc, NoResources, cfg())
+        reuben_api::engine::install_initial(doc, no_store(), cfg())
             .expect("install for the expected hash");
     coordinator.installed_hash()
 }
@@ -201,8 +202,9 @@ fn serves_the_read_verbs_over_loopback_ndjson_in_order() {
 
 #[test]
 fn get_meters_reads_the_levels_the_callbacks_metered() {
+    let staged = no_store();
     let (coordinator, side, _w) =
-        reuben_api::engine::install_initial(BASE_DOC, NoResources, cfg()).expect("install");
+        reuben_api::engine::install_initial(BASE_DOC, staged.clone(), cfg()).expect("install");
     let meters = Meters {
         outputs: Bank::new(2, 48_000.0),
         inputs: Bank::new(1, 48_000.0),
@@ -211,6 +213,7 @@ fn get_meters_reads_the_levels_the_callbacks_metered() {
     let state = StructureState::new(
         coordinator,
         Arc::new(NativeHost::new(Diagnostics::new(), control_tx).with_meters(meters.clone())),
+        served(staged),
     );
     let cb = FakeCallback::spawn(side, control_rx);
     let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
@@ -266,14 +269,16 @@ fn responses_come_back_one_per_request_in_pipelined_order() {
 #[test]
 fn get_diagnostics_reflects_live_counter_bumps() {
     // The endpoint reads the live Arc audio::start owns, not a copy frozen at startup.
+    let staged = no_store();
     let (coordinator, side, _w) =
-        reuben_api::engine::install_initial(BASE_DOC, NoResources, cfg()).expect("install");
+        reuben_api::engine::install_initial(BASE_DOC, staged.clone(), cfg()).expect("install");
     let diagnostics = Diagnostics::new();
     // This verb never touches control, but the ingress is a constructor parameter now.
     let (control_tx, control_rx) = mpsc::channel::<ControlBatch>();
     let state = StructureState::new(
         coordinator,
         Arc::new(NativeHost::new(Arc::clone(&diagnostics), control_tx)),
+        served(staged),
     );
     let cb = FakeCallback::spawn(side, control_rx);
     let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");

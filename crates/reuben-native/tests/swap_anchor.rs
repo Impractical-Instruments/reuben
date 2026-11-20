@@ -12,17 +12,18 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 
-use reuben_api::authoring::{validate_instrument, Report, ValidateInstrument};
+use reuben_api::authoring::{validate_instrument, Report, Resources, ValidateInstrument};
 use reuben_api::engine::{
     install_initial, Channel, DocSource, InProcess, StructureState, SwapOutcome, SwapReport,
 };
 use reuben_api::render::{AudioConfig, RenderSlot};
+use reuben_api::staged::Staged;
 use reuben_api::FsResolver;
 use reuben_native::diagnostics::Diagnostics;
 use reuben_native::engine::{EngineConfig, Instrument};
 use reuben_native::osc::ControlBatch;
 use reuben_native::structure::NativeHost;
-use reuben_native::test_support::{start_headless, within};
+use reuben_native::test_support::{served, start_headless, within};
 
 /// A voice that sounds with no note held: an oscillator straight to `audio`, and no `active`
 /// output, so the voicer can never judge it idle and skip it. The library's `default-voice` is
@@ -416,12 +417,14 @@ impl Played {
             Some(root) => store.with_root(root),
             None => store,
         };
+        let staged: Staged<Box<dyn Resources + Send + Sync>> = Staged::new(Box::new(store));
         let (coordinator, side, warnings) =
-            install_initial(&text, store, AudioConfig::new(48_000.0, BLOCK)).expect("install");
+            install_initial(&text, staged.clone(), AudioConfig::new(48_000.0, BLOCK))
+                .expect("install");
         assert!(warnings.is_empty(), "{warnings:?}");
         let (control, control_rx) = mpsc::channel::<ControlBatch>();
         let host = NativeHost::new(Diagnostics::new(), control);
-        let state = StructureState::new(coordinator, Arc::new(host));
+        let state = StructureState::new(coordinator, Arc::new(host), served(staged));
         Played {
             channel: Channel::new(InProcess::new(state)),
             slot: RenderSlot::new(side),

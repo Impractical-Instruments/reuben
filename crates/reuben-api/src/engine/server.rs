@@ -17,11 +17,16 @@
 //!   swap are one critical section.
 //! - [`Request::Send`] → control traffic, handed to the host's ingress as **one** batch. The one
 //!   verb that does not touch the Coordinator: control is not structure.
+//! - [`Request::Call`] → one non-engine roster verb against the engine's store. A read answers
+//!   directly. An edit waits in memory while the whole open instrument loads and plans with it;
+//!   only then is it written and the new Plan swapped in, and otherwise nothing is written and the
+//!   answer says why.
 //!
 //! The Coordinator is single-writer, so it sits behind one [`Mutex`] here and concurrent
 //! connections serialize on it.
 
 use alloc::boxed::Box;
+use alloc::collections::BTreeSet;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -32,9 +37,17 @@ use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::Duration;
 
 use reuben_core::probe::ProbeSlots;
+use reuben_core::Registry;
 use reuben_document::coordinator::Coordinator;
+use reuben_document::format::load_instrument;
+use serde_json::Value;
 
-use crate::authoring::{Diag, Report};
+use crate::authoring::{
+    self, edit_summary, hash_instrument, CallKind, Called, Diag, DocumentHistory, EditResult,
+    Report,
+};
+use crate::resources::{Adapter, ResolveError, Resources, SampleBuffer};
+use crate::staged::Staged;
 
 use super::channel::Transport;
 
@@ -130,6 +143,10 @@ pub trait EngineHost: Send + Sync {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IngressClosed;
 
+/// The store a [`StructureState`] serves `call` through. Its [`Staged`] is a clone of the one the
+/// Coordinator resolves through, so an edit waiting in memory is what the next prepare loads.
+pub type ServerStore = DocumentHistory<Staged<Box<dyn Resources + Send + Sync>>>;
+
 /// Everything the channel answers with, cheap to clone (`Arc`-backed) so a host can hand one to
 /// every connection it serves.
 #[derive(Clone)]
@@ -144,6 +161,10 @@ pub struct StructureState {
     /// because it is only ever written under the Coordinator lock (so the pair still advances
     /// together) and read beside it — no path takes this lock first, so the ordering cannot invert.
     installed_source: Arc<Mutex<Option<String>>>,
+    store: Arc<ServerStore>,
+    /// The canonical sources the last successful install read: the documents an edit may touch.
+    /// Written only under the Coordinator lock, as `installed_source` is.
+    tree: Arc<Mutex<BTreeSet<String>>>,
     /// Set by [`close`](StructureState::close) when the host tears the engine down.
     closed: Arc<AtomicBool>,
 }
@@ -158,15 +179,33 @@ pub const COORDINATOR_POISONED: &str =
      restart the engine";
 
 impl StructureState {
-    /// Wrap a Coordinator the host built (with `install_initial`) and the seam it serves through.
-    pub fn new(coordinator: Coordinator, host: Arc<dyn EngineHost>) -> Self {
+    /// Wrap a Coordinator the host built (with `install_initial`), the seam it serves through, and
+    /// the store `call` reads and writes. The store's [`Staged`] must be a clone of the one handed
+    /// to `install_initial`: an edit is checked by loading through the Coordinator's resolver, so
+    /// a separate store's pending write would never be seen.
+    pub fn new(
+        coordinator: Coordinator,
+        host: Arc<dyn EngineHost>,
+        store: Arc<ServerStore>,
+    ) -> Self {
         host.install_probes(coordinator.installed_probes());
         Self {
             coordinator: Arc::new(Mutex::new(coordinator)),
             host,
             installed_source: Arc::new(Mutex::new(None)),
+            store,
+            tree: Arc::new(Mutex::new(BTreeSet::new())),
             closed: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// The canonical sources the last successful install read, the top document's included. An
+    /// edit to any other source is refused.
+    pub fn tree(&self) -> BTreeSet<String> {
+        self.tree
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     /// Mark the engine torn down, for every clone of this state: an [`InProcess`] transport over
@@ -207,6 +246,10 @@ impl StructureState {
         self.installed_source.lock().map_err(|_| Poisoned)
     }
 
+    fn tree_cell(&self) -> Result<MutexGuard<'_, BTreeSet<String>>, Poisoned> {
+        self.tree.lock().map_err(|_| Poisoned)
+    }
+
     /// Name the source the *initial* document was installed from. A builder step because it has a
     /// working default (`None`, a built-in rig): every later swap re-points it from the `source` it
     /// installed, so this only ever answers for the run's first document.
@@ -214,9 +257,55 @@ impl StructureState {
     /// **Replaces the cell rather than writing through it**, so the "only ever written under the
     /// Coordinator lock" invariant on that field has no exception to carve out. Taking `self` by
     /// value makes it structurally true: a builder step can only run before there is anyone to race.
+    ///
+    /// Also records the tree the initial document reaches, by loading it through the store, so an
+    /// edit made before the first swap is checked against it.
     pub fn with_installed_source(mut self, source: Option<String>) -> Self {
+        let tree = match &source {
+            Some(source) => read_tree(&self.store, &self.host.document_origin(source)),
+            None => BTreeSet::new(),
+        };
+        self.tree = Arc::new(Mutex::new(tree));
         self.installed_source = Arc::new(Mutex::new(source));
         self
+    }
+}
+
+/// The canonical sources the document at `origin` reaches, itself included: one load through
+/// `store`, building no Plan. A document that does not load still names the sources it read.
+fn read_tree(store: &ServerStore, origin: &str) -> BTreeSet<String> {
+    let log = store.inner().record_reads();
+    if let Ok(text) = store.read_text(origin) {
+        let anchored = Anchored {
+            store,
+            referrer: store.canonical(origin, None),
+        };
+        let _ = load_instrument(&text, &Registry::builtin(), &Adapter(&anchored));
+    }
+    let mut tree = log.finish();
+    tree.insert(store.canonical(origin, None));
+    tree
+}
+
+/// `store` with the top document's references resolved from `referrer`, as the Coordinator's
+/// `prepare_document_from` resolves them, so a read pass and a prepare record the same sources.
+struct Anchored<'a> {
+    store: &'a dyn Resources,
+    referrer: String,
+}
+
+impl Resources for Anchored<'_> {
+    fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+        self.store.read_samples(source)
+    }
+
+    fn read_text(&self, source: &str) -> Result<String, ResolveError> {
+        self.store.read_text(source)
+    }
+
+    fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
+        self.store
+            .canonical(source, referrer.or(Some(&self.referrer)))
     }
 }
 
@@ -280,6 +369,7 @@ fn serve(state: &StructureState, line: &str, caller: Caller) -> Response {
         Ok(Request::SetProbes { paths }) => handle_set_probes(state, paths),
         Ok(Request::Swap { source, expect }) => handle_swap(state, source, expect, caller),
         Ok(Request::Send { messages }) => handle_send(state, messages),
+        Ok(Request::Call { tool, args }) => handle_call(state, &tool, args),
         Err(e) => Response::Error {
             message: format!("unreadable request: {e}"),
         },
@@ -466,14 +556,15 @@ fn handle_swap(
     }
 
     // Unguarded by construction: arbitration was settled above.
-    let core_report = match &origin {
+    let (core_report, tree) = match &origin {
         Some(origin) => {
             // The one-call swap's own first step, kept so a build here peaks at live + new.
             drop(coordinator.try_reclaim());
-            match coordinator.prepare_document_from(&json, origin) {
+            let (prepared, tree) = prepare_recording(state, &coordinator, &json, origin);
+            match prepared {
                 // A document that does not load is rejected with its errors, never held: the
                 // user is only asked about something that would install.
-                Err(rejected) => rejected,
+                Err(rejected) => (rejected, tree),
                 Ok(prepared) => {
                     let holds = caller == Caller::Client
                         && installed_from
@@ -491,33 +582,292 @@ fn handle_swap(
                             content_hash: coordinator.installed_hash(),
                         });
                     }
-                    coordinator.commit_swap(prepared)
+                    (coordinator.commit_swap(prepared), tree)
                 }
             }
         }
-        // By value there is nowhere the document came from: the session's anchor stands.
-        None => coordinator.swap_document(&json),
+        // By value there is nowhere the document came from: the session's anchor stands, and no
+        // document is open to edit.
+        None => (coordinator.swap_document(&json), BTreeSet::new()),
     };
     let mut report = SwapReport::from_core(core_report);
     if report.report.ok {
-        // The installed document advanced, so the source that named it does too — under the
-        // Coordinator lock, so the two never disagree about which install a reader is looking at.
-        match state.installed_source() {
-            Ok(mut source) => *source = installed_from,
+        match went_live(state, &mut coordinator, installed_from, tree) {
+            Ok(warnings) => report.report.warnings.extend(warnings),
             Err(poisoned) => return poisoned.into(),
         }
-
-        let logical = coordinator.installed_channels();
-        let input_channels = coordinator.installed_input_channels();
-        report
-            .report
-            .warnings
-            .extend(state.host.publish_render_config(logical, input_channels));
-        state.host.install_probes(coordinator.installed_probes());
-
-        reclaim_retired(&mut coordinator, state.host.as_ref());
     }
     Response::SwapReport(report)
+}
+
+/// Prepare `json`, read from `origin`, and the canonical sources the load read, `origin`'s own
+/// included.
+fn prepare_recording(
+    state: &StructureState,
+    coordinator: &Coordinator,
+    json: &str,
+    origin: &str,
+) -> (
+    Result<reuben_document::PreparedSwap, reuben_document::SwapReport>,
+    BTreeSet<String>,
+) {
+    let log = state.store.inner().record_reads();
+    let prepared = coordinator.prepare_document_from(json, origin);
+    let mut tree = log.finish();
+    tree.insert(state.store.canonical(origin, None));
+    (prepared, tree)
+}
+
+/// Everything after a committed install, shared by `swap` and an edit made through `call`: the
+/// source and tree that name what plays advance, the host gets the new geometry and probes, and
+/// the retiree is reclaimed. Returns the host's render-config warnings for the report.
+///
+/// Under the Coordinator lock, so the source, the tree and the installed hash never disagree
+/// about which install a reader is looking at. The render config is published BEFORE the reclaim,
+/// so the map is in flight before the callback installs the new engine and the two mailboxes stay
+/// in lockstep.
+fn went_live(
+    state: &StructureState,
+    coordinator: &mut Coordinator,
+    source: Option<String>,
+    tree: BTreeSet<String>,
+) -> Result<Vec<Diag>, Poisoned> {
+    *state.installed_source()? = source;
+    *state.tree_cell()? = tree;
+
+    let warnings = state.host.publish_render_config(
+        coordinator.installed_channels(),
+        coordinator.installed_input_channels(),
+    );
+    state.host.install_probes(coordinator.installed_probes());
+
+    reclaim_retired(coordinator, state.host.as_ref());
+    Ok(warnings)
+}
+
+/// One roster verb, under the Coordinator lock for its whole run — reads included, so no read
+/// sees another call's write still waiting in memory, and every path below leaves nothing
+/// pending.
+///
+/// - A read answers directly.
+/// - A create writes at once: it never overwrites, so it cannot break what plays, and nothing
+///   is swapped.
+/// - An edit goes live or is refused whole: see [`edit_or_refuse`].
+/// - A verb that refuses to run answers [`Response::Refused`].
+///
+/// [`DocumentHistory`] has already recorded an edit refused here as written. That is harmless: a
+/// later restore to its hash passes through this same check.
+fn handle_call(state: &StructureState, tool: &str, args: Value) -> Response {
+    let mut coordinator = match state.coordinator() {
+        Ok(coordinator) => coordinator,
+        Err(poisoned) => return poisoned.into(),
+    };
+    let staged = state.store.inner();
+    let Called {
+        output,
+        summary,
+        kind,
+    } = match authoring::call(tool, args, &*state.store) {
+        Ok(called) => called,
+        Err(refusal) => {
+            staged.discard();
+            return Response::Refused {
+                message: refusal.message,
+            };
+        }
+    };
+    match kind {
+        CallKind::Read => {
+            staged.discard();
+            Response::Called { output, summary }
+        }
+        CallKind::Create { source } => match staged.commit() {
+            Ok(()) => Response::Called { output, summary },
+            Err(e) => not_written(state, &source, vec![diag(e.to_string())], Vec::new()),
+        },
+        CallKind::Edit { source } => {
+            edit_or_refuse(state, &mut coordinator, output, summary, &source)
+        }
+    }
+}
+
+/// An edit the verb has staged: write it and swap the new Plan in only if the open instrument,
+/// with the edit, still loads and plans; otherwise discard it and say why.
+fn edit_or_refuse(
+    state: &StructureState,
+    coordinator: &mut Coordinator,
+    output: Value,
+    summary: String,
+    source: &str,
+) -> Response {
+    let staged = state.store.inner();
+    let top = match state.installed_source() {
+        Ok(top) => top.clone(),
+        Err(poisoned) => {
+            staged.discard();
+            return poisoned.into();
+        }
+    };
+    let Some(top) = top else {
+        return not_written(
+            state,
+            source,
+            vec![diag(
+                "no instrument document is open; swap one in by path to edit it".to_string(),
+            )],
+            Vec::new(),
+        );
+    };
+    let in_tree = match state.tree_cell() {
+        Ok(tree) => tree.contains(&state.store.canonical(source, None)),
+        Err(poisoned) => {
+            staged.discard();
+            return poisoned.into();
+        }
+    };
+    if !in_tree {
+        return not_written(
+            state,
+            source,
+            vec![diag(format!(
+                "{source} is not part of the open instrument; open it to edit it"
+            ))],
+            Vec::new(),
+        );
+    }
+    let mut result: EditResult = match serde_json::from_value(output) {
+        Ok(result) => result,
+        Err(e) => {
+            staged.discard();
+            return Response::Error {
+                message: format!("an edit verb answered something other than an edit: {e}"),
+            };
+        }
+    };
+    if !result.written {
+        // The verb refused the edit itself (its own validation or `expect` guard): nothing staged.
+        staged.discard();
+        return Response::Called {
+            output: edit_output(&result),
+            summary,
+        };
+    }
+
+    let origin = state.host.document_origin(&top);
+    // As a by-path swap does, so the build peaks at live + new.
+    drop(coordinator.try_reclaim());
+    let unloadable =
+        format!("the edit to {source} leaves {top} unable to load; nothing was written");
+    let text = match state.store.read_text(&origin) {
+        Ok(text) => text,
+        Err(e) => {
+            return not_written(
+                state,
+                source,
+                vec![diag(format!("{top} could not be read: {e}"))],
+                vec![unloadable],
+            )
+        }
+    };
+    let (prepared, tree) = prepare_recording(state, coordinator, &text, &origin);
+    let prepared = match prepared {
+        Ok(prepared) => prepared,
+        Err(rejected) => {
+            return not_written(
+                state,
+                source,
+                SwapReport::from_core(rejected).report.errors,
+                vec![unloadable],
+            );
+        }
+    };
+    if let Err(e) = staged.commit() {
+        drop(prepared);
+        return not_written(
+            state,
+            source,
+            vec![diag(e.to_string())],
+            vec![format!(
+                "{source} could not be written; nothing was written and {top} keeps playing"
+            )],
+        );
+    }
+
+    let swapped = SwapReport::from_core(coordinator.commit_swap(prepared));
+    if !swapped.report.ok {
+        // Written, but the engine is still installing an earlier swap: say so rather than claim
+        // the edit is playing.
+        result
+            .notes
+            .extend(swapped.report.errors.into_iter().map(|e| {
+                format!(
+                "{source} was written, but the engine did not take it ({}); swap {top} to hear it",
+                e.message
+            )
+            }));
+        return Response::Called {
+            output: edit_output(&result),
+            summary: edit_summary(&result),
+        };
+    }
+    match went_live(state, coordinator, Some(top), tree) {
+        Ok(warnings) if warnings.is_empty() => Response::Called {
+            output: edit_output(&result),
+            summary,
+        },
+        Ok(warnings) => {
+            result.report.warnings.extend(warnings);
+            Response::Called {
+                output: edit_output(&result),
+                summary: edit_summary(&result),
+            }
+        }
+        Err(poisoned) => poisoned.into(),
+    }
+}
+
+/// An edit that was not written: drop what is pending and answer with what `source` still holds.
+fn not_written(
+    state: &StructureState,
+    source: &str,
+    errors: Vec<Diag>,
+    notes: Vec<String>,
+) -> Response {
+    state.store.inner().discard();
+    let hash = state
+        .store
+        .read_text(source)
+        .ok()
+        .and_then(|text| hash_instrument(&text, &*state.store).ok())
+        .unwrap_or_default();
+    let result = EditResult {
+        report: Report {
+            ok: false,
+            errors,
+            warnings: Vec::new(),
+        },
+        pre_existing: Vec::new(),
+        written: false,
+        hash,
+        notes,
+        zoom: String::new(),
+    };
+    Response::Called {
+        output: edit_output(&result),
+        summary: edit_summary(&result),
+    }
+}
+
+fn edit_output(result: &EditResult) -> Value {
+    serde_json::to_value(result).expect("an edit result serializes to JSON")
+}
+
+fn diag(message: String) -> Diag {
+    Diag {
+        node: None,
+        port: None,
+        message,
+    }
 }
 
 /// Take the retired Engine back from the render side and **drop it here, off the audio thread** —
@@ -570,8 +920,11 @@ fn resolve_source(source: DocSource, host: &dyn EngineHost) -> Result<String, St
 #[cfg(all(test, feature = "render"))]
 mod tests {
     use super::*;
-    use crate::authoring::{ResolveError, Resources, SampleBuffer};
+    use crate::authoring::{DocumentHistory, ResolveError, Resources, SampleBuffer};
     use crate::engine::{get_engine_status, Channel, ChannelError};
+    use crate::staged::Staged;
+    use alloc::collections::BTreeMap;
+    use serde_json::{json, Value};
 
     const DOC: &str = r#"{"format_version":3,"instrument":"t",
         "interface":{"outputs":{"out":{"from":"/osc.audio"}}},
@@ -661,8 +1014,12 @@ mod tests {
             crate::engine::install_initial(DOC, NoStore, reuben_core::AudioConfig::new(48e3, 128))
                 .expect("install");
         let host = Arc::new(host);
-        let state = StructureState::new(coordinator, Arc::clone(&host) as Arc<dyn EngineHost>)
-            .with_installed_source(Some("playing.json".to_string()));
+        let store = Arc::new(DocumentHistory::new(Staged::new(
+            Box::new(NoStore) as Box<dyn Resources + Send + Sync>
+        )));
+        let state =
+            StructureState::new(coordinator, Arc::clone(&host) as Arc<dyn EngineHost>, store)
+                .with_installed_source(Some("playing.json".to_string()));
         (state, host)
     }
 
@@ -850,5 +1207,241 @@ mod tests {
         assert!(swap_by_value(&channel)
             .expect_err("closed")
             .is_unreachable());
+    }
+
+    /// An in-memory store whose texts a test reads back to see what was written.
+    #[derive(Default)]
+    struct Files(Mutex<BTreeMap<String, String>>);
+
+    impl Files {
+        fn get(&self, source: &str) -> Option<String> {
+            self.0.lock().unwrap().get(source).cloned()
+        }
+    }
+
+    impl Resources for Files {
+        fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+            Err(ResolveError::NotFound(source.to_string()))
+        }
+        fn read_text(&self, source: &str) -> Result<String, ResolveError> {
+            self.get(source)
+                .ok_or_else(|| ResolveError::NotFound(source.to_string()))
+        }
+        fn write_text(&self, source: &str, text: &str) -> Result<(), ResolveError> {
+            self.0
+                .lock()
+                .unwrap()
+                .insert(source.to_string(), text.to_string());
+            Ok(())
+        }
+    }
+
+    /// The open instrument: its `/voice` node nests `v.json` and wires out what `v.json` names `out`.
+    const TOP: &str = r#"{"format_version":3,"instrument":"top",
+        "resources":{"v":"v.json"},
+        "interface":{"outputs":{"out":{"from":"/voice.out"}}},
+        "nodes":[{"type":"subpatch","address":"/voice","patch":"v"}]}"#;
+
+    const V: &str = r#"{"format_version":3,"instrument":"v",
+        "interface":{"outputs":{"out":{"from":"/osc.audio"}}},
+        "nodes":[{"type":"oscillator","address":"/osc"}]}"#;
+
+    /// Valid on its own and reached by nothing `top.json` loads.
+    const OTHER: &str = r#"{"format_version":3,"instrument":"other",
+        "interface":{"outputs":{"out":{"from":"/osc.audio"}}},
+        "nodes":[{"type":"oscillator","address":"/osc"}]}"#;
+
+    /// A state serving `top.json` from an in-memory store, through the one `Staged` the Coordinator
+    /// also resolves through.
+    fn serving() -> (StructureState, Arc<Files>) {
+        let files = Arc::new(Files::default());
+        for (source, text) in [("top.json", TOP), ("v.json", V), ("other.json", OTHER)] {
+            files.write_text(source, text).unwrap();
+        }
+        let staged: Staged<Box<dyn Resources + Send + Sync>> =
+            Staged::new(Box::new(Arc::clone(&files)));
+        let (coordinator, _side, _) = crate::engine::install_initial(
+            TOP,
+            staged.clone(),
+            reuben_core::AudioConfig::new(48e3, 128),
+        )
+        .expect("install");
+        let host = Arc::new(Host {
+            panic_on_publish: false,
+            hold: false,
+            offered: Default::default(),
+            probed: Default::default(),
+            installed: Default::default(),
+            last_installed: Default::default(),
+            meters_nodes: false,
+        });
+        let state = StructureState::new(
+            coordinator,
+            host as Arc<dyn EngineHost>,
+            Arc::new(DocumentHistory::new(staged)),
+        )
+        .with_installed_source(Some("top.json".to_string()));
+        (state, files)
+    }
+
+    fn call(state: &StructureState, tool: &str, args: Value) -> (Value, String) {
+        let line = Request::Call {
+            tool: tool.to_string(),
+            args,
+        }
+        .to_ndjson();
+        match dispatch(state, &line) {
+            Response::Called { output, summary } => (output, summary),
+            other => panic!("expected a called answer, got {other:?}"),
+        }
+    }
+
+    fn installed_hash(state: &StructureState) -> String {
+        match state.try_installed() {
+            Installed::Known { content_hash, .. } => content_hash,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_initial_install_records_the_open_tree() {
+        let (state, _files) = serving();
+        assert_eq!(
+            state.tree(),
+            BTreeSet::from(["top.json".to_string(), "v.json".to_string()])
+        );
+    }
+
+    #[test]
+    fn read_call_answers_without_swapping() {
+        let (state, _files) = serving();
+        let before = installed_hash(&state);
+        let (output, _) = call(&state, "describe_instrument", json!({"source": "top.json"}));
+        assert!(!output.is_null());
+        assert_eq!(installed_hash(&state), before);
+    }
+
+    #[test]
+    fn edit_call_goes_live() {
+        let (state, files) = serving();
+        let (output, _) = call(
+            &state,
+            "set_instrument_name",
+            json!({"source": "top.json", "name": "renamed"}),
+        );
+        assert_eq!(output["written"], true, "{output}");
+        assert_eq!(json!(installed_hash(&state)), output["hash"]);
+        assert!(files.get("top.json").unwrap().contains("renamed"));
+        assert_eq!(
+            state.tree(),
+            BTreeSet::from(["top.json".to_string(), "v.json".to_string()])
+        );
+    }
+
+    #[test]
+    fn edit_that_breaks_parent_is_refused_and_writes_nothing() {
+        let (state, files) = serving();
+        let before = installed_hash(&state);
+        let (output, _) = call(
+            &state,
+            "remove_instrument_interface_output",
+            json!({"source": "v.json", "name": "out"}),
+        );
+        assert_eq!(output["written"], false, "{output}");
+        assert!(
+            output["notes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|n| n.as_str().unwrap().contains("nothing was written")),
+            "{output}"
+        );
+        assert_eq!(files.get("v.json").unwrap(), V);
+        assert_eq!(installed_hash(&state), before);
+    }
+
+    #[test]
+    fn edit_outside_tree_is_refused() {
+        let (state, files) = serving();
+        let (output, _) = call(
+            &state,
+            "set_instrument_name",
+            json!({"source": "other.json", "name": "renamed"}),
+        );
+        assert_eq!(output["written"], false, "{output}");
+        assert!(
+            output["report"]["errors"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("not part of the open instrument"),
+            "{output}"
+        );
+        assert_eq!(files.get("other.json").unwrap(), OTHER);
+    }
+
+    #[test]
+    fn stale_expect_on_call_edit_is_refused() {
+        let (state, _files) = serving();
+        let stale = installed_hash(&state);
+        let (first, _) = call(
+            &state,
+            "set_instrument_name",
+            json!({"source": "top.json", "name": "one", "expect": stale}),
+        );
+        assert_eq!(first["written"], true, "{first}");
+        let (second, _) = call(
+            &state,
+            "set_instrument_name",
+            json!({"source": "top.json", "name": "two", "expect": stale}),
+        );
+        assert_eq!(second["written"], false, "{second}");
+        assert_eq!(json!(installed_hash(&state)), first["hash"]);
+    }
+
+    #[test]
+    fn create_call_writes_without_swapping() {
+        let (state, files) = serving();
+        let before = installed_hash(&state);
+        let (output, _) = call(
+            &state,
+            "new_instrument",
+            json!({"source": "n.json", "name": "n"}),
+        );
+        assert_eq!(output["written"], true, "{output}");
+        assert!(files.get("n.json").is_some());
+        assert_eq!(installed_hash(&state), before);
+    }
+
+    #[test]
+    fn a_verb_refusal_is_refused() {
+        let (state, _files) = serving();
+        let line = Request::Call {
+            tool: "no_such_verb".to_string(),
+            args: json!({}),
+        }
+        .to_ndjson();
+        match dispatch(&state, &line) {
+            Response::Refused { message } => assert!(message.contains("unknown tool"), "{message}"),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_edit_with_no_open_document_is_refused() {
+        let (state, _files) = serving();
+        let state = state.with_installed_source(None);
+        let (output, _) = call(
+            &state,
+            "set_instrument_name",
+            json!({"source": "top.json", "name": "x"}),
+        );
+        assert_eq!(output["written"], false, "{output}");
+        assert!(
+            output["report"]["errors"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("no instrument document is open"),
+            "{output}"
+        );
     }
 }
