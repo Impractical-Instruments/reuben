@@ -190,21 +190,21 @@ struct Editor {
 }
 
 impl Editor {
-    /// Whether the engine plays the open session's top-level file as it is on disk now, so a node
-    /// path the canvas resolves names a node of what is drawn. Another file's Plan, or an older
-    /// state of this one, can have the same addresses — while a Swap onto this one runs or was
-    /// refused, or before an attached editor opens what the engine plays — and its levels must not
-    /// show on these boxes.
+    /// Whether the engine plays the open session's top-level file, so a node path the canvas
+    /// resolves names a node of what is drawn. Another file's Plan can have the same addresses —
+    /// while a Swap onto this one runs or was refused, or before an attached editor opens what the
+    /// engine plays — and its levels must not show on these boxes.
+    ///
+    /// Of the same file, the Plan installed must be of what the session read, unless a Swap of it
+    /// is running: that Plan is the one about to be replaced, and blanking every meter for each
+    /// edit's Swap would flicker the canvas. A Swap that was refused leaves the older Plan playing
+    /// for good, so it does not meter.
     fn metered(&mut self) -> bool {
         let (Some(session), Some(plays)) = (&self.session, self.engine.plays()) else {
             return false;
         };
-        let on_disk = session.tree().documents().first().and_then(|d| d.hash());
-        if on_disk != Some(plays.content_hash.as_str()) {
-            return false;
-        }
         let top = session.top();
-        match &self.same_file {
+        let same = match &self.same_file {
             Some((source, file, same)) if *source == plays.source && file == top => *same,
             _ => {
                 let same = held_swap::canonical(std::path::Path::new(&plays.source))
@@ -212,7 +212,9 @@ impl Editor {
                 self.same_file = Some((plays.source.clone(), top.to_path_buf(), same));
                 same
             }
-        }
+        };
+        let read = session.tree().documents().first().and_then(|d| d.hash());
+        same && (session.status() == &Status::Swapping || read == Some(plays.content_hash.as_str()))
     }
 
     /// Open the instrument at `path` in place of whatever is open. The canvas and the inspector

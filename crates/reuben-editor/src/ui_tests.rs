@@ -767,24 +767,73 @@ fn a_node_of_a_file_the_engine_does_not_play_shows_no_level() {
     });
 }
 
+/// A transport that refuses every request, as an engine refuses a Swap.
+#[derive(Debug)]
+struct Refusing;
+
+impl reuben_api::engine::Transport for Refusing {
+    fn round_trip(&self, _: &str, _: std::time::Duration) -> std::io::Result<String> {
+        let message = "refused".to_string();
+        Ok(reuben_api::engine::Response::Error { message }.to_ndjson())
+    }
+    fn endpoint(&self) -> &str {
+        "refusing"
+    }
+}
+
+/// The editor showing `lib/metered.json` as edited after the embedded headless engine installed
+/// it, its session's Swap of the edit sent down `swap`.
+fn edited_after_install(
+    scratch: &Scratch,
+    config: &TempConfig,
+    swap: reuben_api::engine::Channel,
+) -> Harness<'static, Editor> {
+    let top = metered(scratch);
+    let mut editor = editor(&top, config);
+    editor.engine = Engine::start_with(
+        crate::engine::test_support::config(top.clone()),
+        reuben_native::test_support::start_headless,
+    );
+    let text = std::fs::read_to_string(&top).expect("read the instrument");
+    std::fs::write(&top, text.replace("0.5", "0.25")).expect("write the instrument");
+    let mut session = Session::open(&top, None, || {});
+    let swap = std::sync::Mutex::new(Some(swap));
+    session.reinstall(&|| swap.lock().unwrap().take());
+    editor.session = Some(session);
+    harness(editor)
+}
+
 #[test]
-fn an_older_state_of_the_shown_file_shows_no_level() {
-    let scratch = Scratch::new("ui_node_meters_older");
+fn an_edit_whose_swap_was_refused_shows_no_level() {
+    let scratch = Scratch::new("ui_node_meters_refused");
     let config = TempConfig::new();
-    let top = metered(&scratch);
     reuben_native::test_support::within(crate::engine::test_support::HANG_SECS, move || {
-        let mut editor = editor(&top, &config);
-        editor.engine = Engine::start_with(
-            crate::engine::test_support::config(top.clone()),
-            reuben_native::test_support::start_headless,
-        );
-        // Changed on disk after the engine installed it, and not Swapped in: the engine's Plan is
-        // an older state of the file the session reads.
-        let text = std::fs::read_to_string(&top).expect("read the instrument");
-        std::fs::write(&top, text.replace("0.5", "0.25")).expect("write the instrument");
-        editor.session = Some(Session::open(&top, None, || {}));
-        let mut harness = harness(editor);
+        let refusing = reuben_api::engine::Channel::new(Refusing);
+        let mut harness = edited_after_install(&scratch, &config, refusing);
+        step_until(&mut harness, "held the refused Swap", |editor| {
+            matches!(editor.session.as_ref().unwrap().status(), Status::Held(_))
+        });
+        // The engine plays the file as it was before the edit, for good.
         assert_no_osc_level(&mut harness);
+        harness.state_mut().engine.shutdown();
+    });
+}
+
+#[test]
+fn an_edit_whose_swap_is_running_keeps_its_level() {
+    let scratch = Scratch::new("ui_node_meters_swapping");
+    let config = TempConfig::new();
+    reuben_native::test_support::within(crate::engine::test_support::HANG_SECS, move || {
+        let (release, gate) = std::sync::mpsc::channel();
+        let gate = reuben_api::engine::Channel::new(Gate(std::sync::Mutex::new(gate)));
+        let mut harness = edited_after_install(&scratch, &config, gate);
+        let swapping = |harness: &Harness<'_, Editor>| {
+            harness.state().session.as_ref().unwrap().status() == &Status::Swapping
+        };
+        assert!(swapping(&harness));
+        until_osc_level(&mut harness);
+        assert!(swapping(&harness), "metered while the Swap runs");
+        release.send(()).unwrap();
         harness.state_mut().engine.shutdown();
     });
 }
