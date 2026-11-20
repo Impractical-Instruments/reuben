@@ -4,12 +4,13 @@
 //! the listener, the framing loop and the shutdown; this is the part that would otherwise be
 //! rewritten per host, and rewritten differently.
 //!
-//! The six verbs:
+//! The verbs:
 //! - [`Request::Ping`] → [`Response::Pong`] — liveness of the channel itself.
 //! - [`Request::GetDocument`] → the Coordinator's canonical document + its content hash. It changes
 //!   only when a [`Request::Swap`] installs a new one.
 //! - [`Request::GetDiagnostics`] → the host's counters, snapshotted off-thread.
 //! - [`Request::GetMeters`] → the host's levels at the device, read the same way.
+//! - [`Request::SetProbes`] → which nodes `GetMeters` also reports, chosen through the host.
 //! - [`Request::Swap`] → a **mailbox swap**: the Coordinator validates and builds a whole new
 //!   Engine off-thread, fills the install mailbox, and returns a real report with survivor/reset
 //!   stats. The `expect` guard is applied here, inside the Coordinator lock, so the compare and the
@@ -30,6 +31,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::Duration;
 
+use reuben_core::probe::ProbeSlots;
 use reuben_document::coordinator::Coordinator;
 
 use crate::authoring::{Diag, Report};
@@ -37,9 +39,9 @@ use crate::authoring::{Diag, Report};
 use super::channel::Transport;
 
 use super::wire::{
-    over_long_batch_refusal, Conflict, ControlMessage, DiagnosticsReport, DocSource,
-    DocumentSnapshot, HeldSwap, MetersReport, Request, Response, SwapReport, EMPTY_BATCH_REFUSAL,
-    MAX_SEND_BATCH,
+    over_long_batch_refusal, over_long_probe_set_refusal, Conflict, ControlMessage,
+    DiagnosticsReport, DocSource, DocumentSnapshot, HeldSwap, MetersReport, Request, Response,
+    SwapReport, EMPTY_BATCH_REFUSAL, MAX_PROBES, MAX_SEND_BATCH,
 };
 
 /// What a host must provide for the window to serve the engine verbs — the device, the clock and
@@ -89,6 +91,20 @@ pub trait EngineHost: Send + Sync {
     fn meters(&self) -> MetersReport {
         MetersReport::default()
     }
+
+    /// Choose which nodes' levels [`meters`](Self::meters) reports, replacing the previous choice,
+    /// and return the paths that resolved to a probed node. At most [`MAX_PROBES`] paths: the
+    /// window refuses more before calling this.
+    ///
+    /// Defaults to refusing, which is the answer of a host that cannot measure nodes.
+    fn set_probes(&self, _paths: Vec<Vec<String>>) -> Result<Vec<Vec<String>>, String> {
+        Err("this engine does not meter nodes".to_string())
+    }
+
+    /// The installed Plan's probe slots, handed over once for the initial install and again after
+    /// every successful swap. A host that keeps its chosen paths re-resolves them against these, so
+    /// the choice carries across a swap.
+    fn install_probes(&self, _probes: Arc<ProbeSlots>) {}
 
     /// Publish the render config for the just-installed engine with `logical` output channels and
     /// `input_channels` input channels, and return any warnings to fold into the swap report.
@@ -144,6 +160,7 @@ pub const COORDINATOR_POISONED: &str =
 impl StructureState {
     /// Wrap a Coordinator the host built (with `install_initial`) and the seam it serves through.
     pub fn new(coordinator: Coordinator, host: Arc<dyn EngineHost>) -> Self {
+        host.install_probes(coordinator.installed_probes());
         Self {
             coordinator: Arc::new(Mutex::new(coordinator)),
             host,
@@ -260,6 +277,7 @@ fn serve(state: &StructureState, line: &str, caller: Caller) -> Response {
         Ok(Request::GetDocument) => get_document(state).unwrap_or_else(Response::from),
         Ok(Request::GetDiagnostics) => Response::Diagnostics(state.host.diagnostics()),
         Ok(Request::GetMeters) => Response::Meters(state.host.meters()),
+        Ok(Request::SetProbes { paths }) => handle_set_probes(state, paths),
         Ok(Request::Swap { source, expect }) => handle_swap(state, source, expect, caller),
         Ok(Request::Send { messages }) => handle_send(state, messages),
         Err(e) => Response::Error {
@@ -376,6 +394,20 @@ fn handle_send(state: &StructureState, messages: Vec<ControlMessage>) -> Respons
     }
 }
 
+/// Choose the probed nodes. Bounded before the host is asked, so a client cannot make one render
+/// callback fold an unbounded number of nodes.
+fn handle_set_probes(state: &StructureState, paths: Vec<Vec<String>>) -> Response {
+    if paths.len() > MAX_PROBES {
+        return Response::Error {
+            message: over_long_probe_set_refusal(),
+        };
+    }
+    match state.host.set_probes(paths) {
+        Ok(resolved) => Response::Probes { resolved },
+        Err(message) => Response::Error { message },
+    }
+}
+
 /// The mailbox-swap install path. Everything runs under the Coordinator lock so the
 /// `expect`-compare and the swap are one atomic critical section (a compare-and-swap) — concurrent
 /// swaps from multiple connections serialize, and neither `get_document` nor another swap sees a
@@ -481,6 +513,7 @@ fn handle_swap(
             .report
             .warnings
             .extend(state.host.publish_render_config(logical, input_channels));
+        state.host.install_probes(coordinator.installed_probes());
 
         reclaim_retired(&mut coordinator, state.host.as_ref());
     }
@@ -559,6 +592,14 @@ mod tests {
         /// Holds every client swap it is offered, and counts the offers.
         hold: bool,
         offered: std::sync::atomic::AtomicUsize,
+        /// Counts `set_probes` calls.
+        probed: std::sync::atomic::AtomicUsize,
+        /// Counts `install_probes` calls.
+        installed: std::sync::atomic::AtomicUsize,
+        /// The slots `install_probes` was last given.
+        last_installed: Mutex<Option<Arc<ProbeSlots>>>,
+        /// Whether `set_probes` is the node-metering host's, answering every path as resolved.
+        meters_nodes: bool,
     }
 
     /// The one path [`Host`] reads [`DOC`] from.
@@ -578,6 +619,18 @@ mod tests {
         fn deliver_control(&self, _: Vec<ControlMessage>) -> Result<(), IngressClosed> {
             Ok(())
         }
+        fn set_probes(&self, paths: Vec<Vec<String>>) -> Result<Vec<Vec<String>>, String> {
+            self.probed.fetch_add(1, Ordering::SeqCst);
+            if self.meters_nodes {
+                Ok(paths)
+            } else {
+                Err("this engine does not meter nodes".to_string())
+            }
+        }
+        fn install_probes(&self, slots: Arc<ProbeSlots>) {
+            *self.last_installed.lock().unwrap() = Some(slots);
+            self.installed.fetch_add(1, Ordering::SeqCst);
+        }
         fn diagnostics(&self) -> DiagnosticsReport {
             DiagnosticsReport::default()
         }
@@ -595,6 +648,10 @@ mod tests {
             panic_on_publish,
             hold: false,
             offered: Default::default(),
+            probed: Default::default(),
+            installed: Default::default(),
+            last_installed: Default::default(),
+            meters_nodes: false,
         })
         .0
     }
@@ -614,7 +671,63 @@ mod tests {
             panic_on_publish: false,
             hold: true,
             offered: Default::default(),
+            probed: Default::default(),
+            installed: Default::default(),
+            last_installed: Default::default(),
+            meters_nodes: false,
         })
+    }
+
+    fn set_probes_line(count: usize) -> String {
+        Request::SetProbes {
+            paths: (0..count).map(|i| vec![format!("n{i}")]).collect(),
+        }
+        .to_ndjson()
+    }
+
+    #[test]
+    fn set_probes_past_the_cap_is_refused_without_reaching_the_host() {
+        let (state, host) = state_with(Host {
+            panic_on_publish: false,
+            hold: false,
+            offered: Default::default(),
+            probed: Default::default(),
+            installed: Default::default(),
+            last_installed: Default::default(),
+            meters_nodes: true,
+        });
+        match dispatch(&state, &set_probes_line(MAX_PROBES + 1)) {
+            Response::Error { message } => assert_eq!(message, "at most 512 probes"),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert_eq!(host.probed.load(Ordering::SeqCst), 0);
+        match dispatch(&state, &set_probes_line(MAX_PROBES)) {
+            Response::Probes { resolved } => assert_eq!(resolved.len(), MAX_PROBES),
+            other => panic!("expected the resolved paths, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_host_without_node_meters_says_so() {
+        let state = state(false);
+        match dispatch(&state, &set_probes_line(1)) {
+            Response::Error { message } => {
+                assert_eq!(message, "this engine does not meter nodes")
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_host_is_given_the_installed_probes_at_the_start_and_after_each_swap() {
+        let (state, host) = holding();
+        assert_eq!(host.installed.load(Ordering::SeqCst), 1);
+        let channel = Channel::new(InProcess::new(state.clone()));
+        swap_by_value(&channel).expect("swap");
+        assert_eq!(host.installed.load(Ordering::SeqCst), 2);
+        let given = host.last_installed.lock().unwrap().clone().expect("given");
+        let coordinator = state.coordinator.lock().unwrap();
+        assert!(Arc::ptr_eq(&given, &coordinator.installed_probes()));
     }
 
     fn swap_by_path(expect: Option<String>) -> String {

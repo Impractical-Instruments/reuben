@@ -22,8 +22,8 @@ use std::time::Duration;
 
 use super::prose::ENGINE_UNREACHABLE_GUIDANCE;
 use super::wire::{
-    Conflict, ControlMessage, DiagnosticsReport, DocSource, DocumentSnapshot, HeldSwap,
-    MetersReport, Request, Response, SwapReport,
+    over_long_probe_set_refusal, Conflict, ControlMessage, DiagnosticsReport, DocSource,
+    DocumentSnapshot, HeldSwap, MetersReport, Request, Response, SwapReport, MAX_PROBES,
 };
 
 /// How long to wait for the one response line before giving up on a *wedged* server (connected but
@@ -44,8 +44,9 @@ pub enum ChannelError {
     /// The engine could not be reached (connect refused, address unresolved, or a read/write
     /// timeout on a wedged server). Carries the "start `reuben play`" guidance.
     Unreachable(String),
-    /// The server framed a [`Response::Error`] — the request was understood as a channel message
-    /// but produced no domain answer (e.g. an unreadable request, or a not-yet-wired verb).
+    /// The request produced no domain answer: the server framed a [`Response::Error`] (e.g. an
+    /// unreadable request, or a not-yet-wired verb), or the client refused it before sending
+    /// (e.g. a probe set over [`MAX_PROBES`]).
     Channel(String),
     /// The response could not be parsed, or was a variant this verb never expects.
     Protocol(String),
@@ -203,6 +204,20 @@ impl Channel {
             Response::Meters(report) => Ok(report),
             Response::Error { message } => Err(ChannelError::Channel(message)),
             other => Err(unexpected("get_meters", "meters", &other)),
+        }
+    }
+
+    /// Choose which nodes' levels [`get_meters`](Self::get_meters) reports, and read back the paths
+    /// that resolved. Over [`MAX_PROBES`] is refused here, saving the round trip; the server
+    /// refuses it too.
+    pub fn set_probes(&self, paths: Vec<Vec<String>>) -> Result<Vec<Vec<String>>, ChannelError> {
+        if paths.len() > MAX_PROBES {
+            return Err(ChannelError::Channel(over_long_probe_set_refusal()));
+        }
+        match self.exchange(&Request::SetProbes { paths })? {
+            Response::Probes { resolved } => Ok(resolved),
+            Response::Error { message } => Err(ChannelError::Channel(message)),
+            other => Err(unexpected("set_probes", "probes", &other)),
         }
     }
 

@@ -205,9 +205,11 @@ pub fn get_engine_diagnostics(channel: &Channel) -> Result<Answer<DiagnosticsRep
 
 /// Read the engine's levels at the device.
 pub fn get_engine_meters(channel: &Channel) -> Result<Answer<MetersReport>, Refusal> {
-    let report = channel
+    let mut report = channel
         .get_meters()
         .map_err(|why| refuse("could not read the engine meters", why))?;
+    // The tool is device-only; node levels are for a client that chose them with `SetProbes`.
+    report.probes.clear();
     let summary = format!(
         "peak/rms dBFS per channel; outputs: {}; inputs: {}",
         levels(&report.outputs),

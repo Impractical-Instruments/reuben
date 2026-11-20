@@ -566,6 +566,7 @@ mod tests {
             outputs: vec![level(-6.0, -9.0)],
             inputs: Vec::new(),
             frames,
+            probes: Vec::new(),
         };
         let mut strip = MeterStrip::new(|| {});
         strip.take(report(256), start);

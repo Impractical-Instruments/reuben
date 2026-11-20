@@ -980,6 +980,7 @@ mod tests {
                 Request::GetDocument => &self.document,
                 Request::GetDiagnostics => &self.diagnostics,
                 Request::GetMeters => &self.meters,
+                Request::SetProbes { .. } => unreachable!("no tool sends it"),
                 Request::Send { .. } => unreachable!("handled above"),
             };
             match configured {
@@ -2071,6 +2072,7 @@ mod tests {
             ],
             inputs: vec![],
             frames: 48_000,
+            probes: Vec::new(),
         };
         let result = block_on(
             server_with(FakeTransport::reachable().with_meters(report)).get_engine_meters(),
@@ -2090,6 +2092,49 @@ mod tests {
             text.contains("outputs: -0.5/-3.5, -120.0/-120.0; inputs: none"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn get_engine_meters_advertises_the_same_schema() {
+        let schema = advertised_output_schema("get_engine_meters");
+        let text = schema.to_string();
+        assert!(
+            !text.contains("probes") && !text.contains("PortLevel"),
+            "the tool is device-only: {text}"
+        );
+        let mut properties: Vec<_> = schema["properties"]
+            .as_object()
+            .expect("properties")
+            .keys()
+            .cloned()
+            .collect();
+        properties.sort();
+        assert_eq!(properties, ["frames", "inputs", "outputs"]);
+        let mut defs: Vec<_> = schema["$defs"]
+            .as_object()
+            .expect("defs")
+            .keys()
+            .cloned()
+            .collect();
+        defs.sort();
+        assert_eq!(defs, ["ChannelLevel"]);
+    }
+
+    #[test]
+    fn get_engine_meters_never_serializes_node_levels() {
+        let report = MetersReport {
+            probes: vec![engine::ProbeLevels {
+                path: vec!["osc".to_string()],
+                ports: Vec::new(),
+            }],
+            ..MetersReport::default()
+        };
+        let result = block_on(
+            server_with(FakeTransport::reachable().with_meters(report)).get_engine_meters(),
+        )
+        .expect("result");
+        let s = result.structured_content.as_ref().expect("structured");
+        assert!(s.get("probes").is_none(), "{s}");
     }
 
     #[test]

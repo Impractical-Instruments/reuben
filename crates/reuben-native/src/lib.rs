@@ -25,6 +25,7 @@ pub mod input;
 pub mod library;
 pub mod meters;
 pub mod osc;
+mod probes;
 pub mod profile;
 pub mod rigs;
 pub mod scaffold;

@@ -96,6 +96,7 @@ impl Meters {
             outputs: self.outputs.levels(),
             inputs: self.inputs.levels(),
             frames: self.outputs.frames(),
+            probes: Vec::new(),
         }
     }
 }
