@@ -436,7 +436,9 @@ mod tests {
     use crate::engine::server::{
         dispatch, EngineHost, InProcess, IngressClosed, Installed, SwapInFlight,
     };
-    use crate::engine::wire::{ChangedBy, ControlMessage, DiagnosticsReport, Event, Request};
+    use crate::engine::wire::{
+        ChangedBy, ControlMessage, DiagnosticsReport, DocSource, Event, Request,
+    };
     use crate::render::RenderSlot;
     use crate::staged::Staged;
 
@@ -1286,6 +1288,27 @@ mod tests {
             "nothing was opened; bt.json is still open but does not load, so nothing plays"
         );
         assert_eq!(s.state.tree(), BTreeSet::from(["bt.json".to_string()]));
+    }
+
+    #[test]
+    fn a_refused_swap_while_nothing_plays_says_nothing_was_swapped_in() {
+        let s = serving();
+        open_report(&s, "bt.json", None);
+        let line = Request::Swap {
+            source: DocSource::Path("missing.json".to_string()),
+            expect: None,
+        }
+        .to_ndjson();
+        let report = match dispatch(&s.state, &line) {
+            Response::SwapReport(report) => report,
+            other => panic!("expected a swap report, got {other:?}"),
+        };
+        assert!(!report.report.ok);
+        assert_eq!(report.content_hash, "");
+        assert_eq!(
+            report.report.warnings[0].message,
+            "nothing was swapped in; bt.json is still open but does not load, so nothing plays"
+        );
     }
 
     #[test]

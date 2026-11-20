@@ -854,7 +854,7 @@ fn install_from(
             Err(poisoned) => return poisoned.into(),
         }
     } else {
-        installed_nothing(state, coordinator, &mut report);
+        installed_nothing(state, coordinator, &mut report, went);
     }
     Response::SwapReport(report)
 }
@@ -890,7 +890,7 @@ fn open_silent(
     if !silenced.report.ok {
         // Only a swap still in flight refuses a document this fixed.
         let mut report = SwapReport::from_core(silenced);
-        installed_nothing(state, coordinator, &mut report);
+        installed_nothing(state, coordinator, &mut report, Went::OpenedSilent);
         return Response::SwapReport(report);
     }
     let mut warnings = match went_live(
@@ -964,11 +964,18 @@ fn handle_open(
         Err(poisoned) => return poisoned.into(),
     };
     if !state.host.within(&origin, open.as_deref()) {
-        return rejected_report(state, &coordinator, not_offered(&name));
+        return rejected_report(state, &coordinator, not_offered(&name), Went::Opened);
     }
     let json = match state.store.read_text(&origin) {
         Ok(json) => json,
-        Err(e) => return rejected_report(state, &coordinator, format!("open {name}: {e}")),
+        Err(e) => {
+            return rejected_report(
+                state,
+                &coordinator,
+                format!("open {name}: {e}"),
+                Went::Opened,
+            )
+        }
     };
     install_from(
         state,
@@ -1132,13 +1139,19 @@ fn reclaim_retired(coordinator: &mut Coordinator, host: &dyn EngineHost) {
 /// (retain-prior).
 fn rejected_swap(state: &StructureState, message: String) -> Response {
     match state.coordinator() {
-        Ok(coordinator) => rejected_report(state, &coordinator, message),
+        Ok(coordinator) => rejected_report(state, &coordinator, message, Went::Swapped),
         Err(poisoned) => poisoned.into(),
     }
 }
 
-/// A report that installed nothing, for `message`. Called under the Coordinator lock.
-fn rejected_report(state: &StructureState, coordinator: &Coordinator, message: String) -> Response {
+/// A report that installed nothing, for `message`, answering the request `went` names. Called
+/// under the Coordinator lock.
+fn rejected_report(
+    state: &StructureState,
+    coordinator: &Coordinator,
+    message: String,
+    went: Went,
+) -> Response {
     let mut report = SwapReport {
         report: Report {
             ok: false,
@@ -1152,14 +1165,20 @@ fn rejected_report(state: &StructureState, coordinator: &Coordinator, message: S
         content_hash: String::new(),
         diff: None,
     };
-    installed_nothing(state, coordinator, &mut report);
+    installed_nothing(state, coordinator, &mut report, went);
     Response::SwapReport(report)
 }
 
 /// Make `report`, which installed nothing, name what plays: the playing hash and, while nothing
 /// plays, a warning naming the instrument still open, so a reader does not take the empty hash
-/// for the refused request's own load failing. Called under the Coordinator lock.
-fn installed_nothing(state: &StructureState, coordinator: &Coordinator, report: &mut SwapReport) {
+/// for the refused request's own load failing. `went` is the request that installed nothing.
+/// Called under the Coordinator lock.
+fn installed_nothing(
+    state: &StructureState,
+    coordinator: &Coordinator,
+    report: &mut SwapReport,
+    went: Went,
+) {
     report.content_hash = state.playing_hash(coordinator);
     if !state.is_silent() {
         return;
@@ -1173,7 +1192,12 @@ fn installed_nothing(state: &StructureState, coordinator: &Coordinator, report: 
         node: None,
         port: None,
         message: format!(
-            "nothing was opened; {open} is still open but does not load, so nothing plays"
+            "nothing was {}; {open} is still open but does not load, so nothing plays",
+            match went {
+                Went::Opened | Went::OpenedSilent => "opened",
+                Went::Swapped => "swapped in",
+                Went::Edited | Went::Outside => "installed",
+            }
         ),
     });
 }
