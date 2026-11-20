@@ -17,10 +17,10 @@ use alloc::vec::Vec;
 use reuben_core::Registry;
 use reuben_document::projection::Projector;
 
-use crate::authoring::{Answer, Refusal, Resources};
+use crate::authoring::{Answer, DocumentView, Refusal, Resources};
 
 use super::args::{SendLiveControls, SwapInstrument};
-use super::channel::{Channel, ChannelError, SwapOutcome};
+use super::channel::{CallOutcome, Channel, ChannelError, SwapOutcome};
 use super::prose::ENGINE_UNREACHABLE_GUIDANCE;
 use super::result::{
     CurrentInstrument, EngineStatus, SendOutput, SidecarInfo, StatusEndpoints, SwapResult,
@@ -148,8 +148,63 @@ pub fn swap_instrument(
                 summary,
             })
         }
+        Ok(SwapOutcome::Refused(message)) => Err(Refusal::new(message)),
         Err(why) => Err(refuse("the swap could not be completed", why)),
     }
+}
+
+/// Run one non-engine roster verb on the engine's server, which owns the files it reads and writes.
+/// The verb's own output comes back as JSON; a refusal carries the server's message verbatim.
+pub fn call_tool<A: serde::Serialize>(
+    tool: &str,
+    args: &A,
+    channel: &Channel,
+) -> Result<Answer<serde_json::Value>, Refusal> {
+    let args = serde_json::to_value(args)
+        .map_err(|e| Refusal::new(format!("`{tool}` arguments could not be encoded: {e}")))?;
+    match channel.call(tool, args) {
+        Ok(CallOutcome::Called { output, summary }) => Ok(Answer { output, summary }),
+        Ok(CallOutcome::Refused(message)) => Err(Refusal::new(message)),
+        Err(why) => Err(refuse(&format!("`{tool}` could not be run"), why)),
+    }
+}
+
+/// What is the engine playing? As [`get_current_instrument`], except that the projection is the
+/// server's `describe_instrument` of the installed `source`, so the caller needs no store of its
+/// own. A projection that cannot be had is a note in its place, never an error: the hash is the
+/// load-bearing half.
+pub fn current_instrument(channel: &Channel) -> Result<Answer<CurrentInstrument>, Refusal> {
+    let snapshot = channel
+        .get_document()
+        .map_err(|why| refuse("could not read the current instrument", why))?;
+    let summary = match &snapshot.source {
+        Some(source) => format!("playing {source} (content_hash {})", snapshot.content_hash),
+        None => format!(
+            "playing an instrument installed by value (content_hash {})",
+            snapshot.content_hash
+        ),
+    };
+    let projection = match &snapshot.source {
+        None => "(projection unavailable: no source to describe)".to_string(),
+        Some(source) => {
+            let args = serde_json::json!({ "source": source, "view": "index" });
+            match call_tool("describe_instrument", &args, channel) {
+                Ok(answer) => match serde_json::from_value::<DocumentView>(answer.output) {
+                    Ok(view) => view.text,
+                    Err(e) => format!("(projection unavailable: {e})"),
+                },
+                Err(refusal) => format!("(projection unavailable: {})", refusal.message),
+            }
+        }
+    };
+    Ok(Answer {
+        output: CurrentInstrument {
+            projection,
+            source: snapshot.source,
+            content_hash: snapshot.content_hash,
+        },
+        summary,
+    })
 }
 
 /// What is the engine playing? Answered as a projection of the **installed** graph — the snapshot
@@ -430,5 +485,91 @@ mod tests {
             "the refusal names the offending message: {refusal}"
         );
         assert_ne!(refusal.message, ENGINE_UNREACHABLE_GUIDANCE);
+    }
+
+    /// A transport that answers each request with the next scripted line and records what it was
+    /// asked.
+    #[derive(Debug)]
+    struct Scripted {
+        replies: std::sync::Mutex<alloc::collections::VecDeque<String>>,
+        asked: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl Transport for Scripted {
+        fn round_trip(&self, line: &str, _read_timeout: Duration) -> io::Result<String> {
+            self.asked.lock().unwrap().push(line.to_string());
+            Ok(self
+                .replies
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("a scripted reply"))
+        }
+
+        fn endpoint(&self) -> &str {
+            "scripted"
+        }
+    }
+
+    fn scripted(replies: &[&str]) -> (Channel, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let transport = Scripted {
+            replies: std::sync::Mutex::new(replies.iter().map(|r| r.to_string()).collect()),
+            asked: asked.clone(),
+        };
+        (Channel::new(transport), asked)
+    }
+
+    #[test]
+    fn call_tool_unreachable_carries_the_start_reuben_play_guidance() {
+        let refusal = call_tool("describe_instrument", &serde_json::json!({}), &dead())
+            .expect_err("no engine to call");
+        assert!(
+            refusal.message.contains(ENGINE_UNREACHABLE_GUIDANCE),
+            "{refusal}"
+        );
+    }
+
+    #[test]
+    fn current_instrument_with_no_source_answers_unavailable_not_error() {
+        let (channel, asked) =
+            scripted(&[r#"{"reply":"document","document":{},"content_hash":"h"}"#]);
+        let answer = current_instrument(&channel).expect("an answer, not an error");
+        assert_eq!(
+            answer.output.projection,
+            "(projection unavailable: no source to describe)"
+        );
+        assert_eq!(answer.output.content_hash, "h");
+        assert_eq!(asked.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn current_instrument_projects_through_describe() {
+        let (channel, asked) = scripted(&[
+            r#"{"reply":"document","document":{},"content_hash":"h","source":"a.json"}"#,
+            r#"{"reply":"called","output":{"view":"index","text":"/osc sine"},"summary":"s"}"#,
+        ]);
+        let answer = current_instrument(&channel).expect("an answer");
+        assert_eq!(answer.output.projection, "/osc sine");
+        assert_eq!(answer.output.source.as_deref(), Some("a.json"));
+        let asked = asked.lock().unwrap();
+        let second = super::super::wire::Request::from_ndjson(&asked[1]).unwrap();
+        assert_eq!(
+            second,
+            super::super::wire::Request::Call {
+                tool: "describe_instrument".to_string(),
+                args: serde_json::json!({"source": "a.json", "view": "index"}),
+            }
+        );
+    }
+
+    #[test]
+    fn current_instrument_notes_a_refused_describe_in_the_projection() {
+        let (channel, _) = scripted(&[
+            r#"{"reply":"document","document":{},"content_hash":"h","source":"a.json"}"#,
+            r#"{"reply":"refused","message":"nope"}"#,
+        ]);
+        let answer = current_instrument(&channel).expect("an answer");
+        assert_eq!(answer.output.projection, "(projection unavailable: nope)");
     }
 }

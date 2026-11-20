@@ -119,6 +119,7 @@ fn installed(outcome: SwapOutcome) -> SwapReport {
         SwapOutcome::Installed(report) => report,
         SwapOutcome::Conflict(conflict) => panic!("an unguarded swap conflicted: {conflict:?}"),
         SwapOutcome::Held(held) => panic!("reuben play held a swap: {held:?}"),
+        SwapOutcome::Refused(message) => panic!("reuben play refused a swap: {message}"),
     }
 }
 

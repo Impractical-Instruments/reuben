@@ -45,7 +45,7 @@ mod verbs;
 pub mod wire;
 
 pub use args::*;
-pub use channel::{Channel, ChannelError, SwapOutcome, Transport};
+pub use channel::{CallOutcome, Channel, ChannelError, SwapOutcome, Transport};
 pub use events::{Bus, Subscription};
 pub use prose::ENGINE_UNREACHABLE_GUIDANCE;
 pub use result::{

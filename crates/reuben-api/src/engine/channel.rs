@@ -23,7 +23,7 @@ use std::time::Duration;
 use super::prose::ENGINE_UNREACHABLE_GUIDANCE;
 use super::wire::{
     over_long_probe_set_refusal, Conflict, ControlMessage, DiagnosticsReport, DocSource,
-    DocumentSnapshot, HeldSwap, MetersReport, Request, Response, SwapReport, MAX_PROBES,
+    DocumentSnapshot, HeldSwap, ListWhat, MetersReport, Request, Response, SwapReport, MAX_PROBES,
 };
 
 /// How long to wait for the one response line before giving up on a *wedged* server (connected but
@@ -88,6 +88,22 @@ pub enum SwapOutcome {
     /// The host held the swap to ask its user first: nothing installed; the [`HeldSwap`] names
     /// what keeps playing.
     Held(HeldSwap),
+    /// The server would not install it (a name it does not offer, say): nothing installed. The
+    /// message is the server's, verbatim.
+    Refused(String),
+}
+
+/// The outcome of a `call` that reached the engine — a verb that ran, or one the server refused to
+/// run. Transport failures are [`ChannelError`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum CallOutcome {
+    /// The verb ran: its output (the verb's own output type, as JSON) and one-line summary.
+    Called {
+        output: serde_json::Value,
+        summary: String,
+    },
+    /// The server refused to run it, with its reason verbatim.
+    Refused(String),
 }
 
 /// The one thing a structure channel must be able to do: hand a request line to the engine and
@@ -162,8 +178,53 @@ impl Channel {
             Response::SwapReport(report) => Ok(SwapOutcome::Installed(report)),
             Response::Conflict(conflict) => Ok(SwapOutcome::Conflict(conflict)),
             Response::Held(held) => Ok(SwapOutcome::Held(held)),
+            Response::Refused { message } => Ok(SwapOutcome::Refused(message)),
             Response::Error { message } => Err(ChannelError::Channel(message)),
-            other => Err(unexpected("swap", "swap_report/conflict/held", &other)),
+            other => Err(unexpected(
+                "swap",
+                "swap_report/conflict/held/refused",
+                &other,
+            )),
+        }
+    }
+
+    /// Unload the open instrument and play the one `name` names, read through the server's store.
+    /// Answers as [`swap`](Self::swap) does.
+    pub fn open(&self, name: String, expect: Option<String>) -> Result<SwapOutcome, ChannelError> {
+        match self.exchange(&Request::Open { name, expect })? {
+            Response::SwapReport(report) => Ok(SwapOutcome::Installed(report)),
+            Response::Conflict(conflict) => Ok(SwapOutcome::Conflict(conflict)),
+            Response::Held(held) => Ok(SwapOutcome::Held(held)),
+            Response::Refused { message } => Ok(SwapOutcome::Refused(message)),
+            Response::Error { message } => Err(ChannelError::Channel(message)),
+            other => Err(unexpected(
+                "open",
+                "swap_report/conflict/held/refused",
+                &other,
+            )),
+        }
+    }
+
+    /// Run one non-engine roster verb on the server, against its store.
+    pub fn call(&self, tool: &str, args: serde_json::Value) -> Result<CallOutcome, ChannelError> {
+        let request = Request::Call {
+            tool: tool.to_string(),
+            args,
+        };
+        match self.exchange(&request)? {
+            Response::Called { output, summary } => Ok(CallOutcome::Called { output, summary }),
+            Response::Refused { message } => Ok(CallOutcome::Refused(message)),
+            Response::Error { message } => Err(ChannelError::Channel(message)),
+            other => Err(unexpected("call", "called/refused", &other)),
+        }
+    }
+
+    /// The names the server offers of one kind, sorted.
+    pub fn list(&self, what: ListWhat) -> Result<Vec<String>, ChannelError> {
+        match self.exchange(&Request::List { what })? {
+            Response::Listed { names } => Ok(names),
+            Response::Error { message } => Err(ChannelError::Channel(message)),
+            other => Err(unexpected("list", "listed", &other)),
         }
     }
 
@@ -276,5 +337,120 @@ mod tests {
     fn channel_and_protocol_errors_are_not_unreachable() {
         assert!(!ChannelError::Channel("unreadable request".to_string()).is_unreachable());
         assert!(!ChannelError::Protocol("bad json".to_string()).is_unreachable());
+    }
+
+    use serde_json::json;
+
+    #[derive(Debug)]
+    struct Fake {
+        reply: String,
+        asked: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl Transport for Fake {
+        fn round_trip(&self, line: &str, _read_timeout: Duration) -> io::Result<String> {
+            self.asked.lock().unwrap().push(line.to_string());
+            Ok(self.reply.clone())
+        }
+
+        fn endpoint(&self) -> &str {
+            "fake"
+        }
+    }
+
+    fn answering(reply: &str) -> (Channel, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let fake = Fake {
+            reply: reply.to_string(),
+            asked: asked.clone(),
+        };
+        (Channel::new(fake), asked)
+    }
+
+    #[test]
+    fn call_relays_called_output_and_summary() {
+        let (channel, asked) = answering(r#"{"reply":"called","output":{"x":1},"summary":"s"}"#);
+        let args = json!({"source": "a.json"});
+        let outcome = channel.call("describe_instrument", args.clone()).unwrap();
+        assert_eq!(
+            outcome,
+            CallOutcome::Called {
+                output: json!({"x": 1}),
+                summary: "s".to_string()
+            }
+        );
+        let expected = Request::Call {
+            tool: "describe_instrument".to_string(),
+            args,
+        }
+        .to_ndjson();
+        assert_eq!(asked.lock().unwrap().as_slice(), [expected]);
+    }
+
+    #[test]
+    fn call_relays_a_refusal_verbatim() {
+        let (channel, _) = answering(r#"{"reply":"refused","message":"m"}"#);
+        let outcome = channel.call("nope", json!({})).unwrap();
+        assert_eq!(outcome, CallOutcome::Refused("m".to_string()));
+    }
+
+    #[test]
+    fn open_maps_refused_held_conflict_and_report() {
+        let (channel, asked) = answering(r#"{"reply":"refused","message":"not offered"}"#);
+        let outcome = channel.open("a.json".to_string(), Some("h".to_string()));
+        assert_eq!(
+            outcome.unwrap(),
+            SwapOutcome::Refused("not offered".to_string())
+        );
+        let expected = Request::Open {
+            name: "a.json".to_string(),
+            expect: Some("h".to_string()),
+        }
+        .to_ndjson();
+        assert_eq!(asked.lock().unwrap().as_slice(), [expected]);
+
+        let held = HeldSwap {
+            requested: "a.json".to_string(),
+            content_hash: "h".to_string(),
+            playing: None,
+        };
+        let conflict = Conflict {
+            expected: "e".to_string(),
+            actual: "a".to_string(),
+        };
+        let report = SwapReport::rejected("h".to_string());
+        for (response, want) in [
+            (Response::Held(held.clone()), SwapOutcome::Held(held)),
+            (
+                Response::Conflict(conflict.clone()),
+                SwapOutcome::Conflict(conflict),
+            ),
+            (
+                Response::SwapReport(report.clone()),
+                SwapOutcome::Installed(report),
+            ),
+        ] {
+            let (channel, _) = answering(&response.to_ndjson());
+            assert_eq!(channel.open("a.json".to_string(), None).unwrap(), want);
+        }
+    }
+
+    #[test]
+    fn swap_maps_a_refusal_the_same_way() {
+        let (channel, _) = answering(r#"{"reply":"refused","message":"m"}"#);
+        let outcome = channel.swap(DocSource::Path("a.json".to_string()), None);
+        assert_eq!(outcome.unwrap(), SwapOutcome::Refused("m".to_string()));
+    }
+
+    #[test]
+    fn list_returns_the_names_in_order() {
+        let (channel, asked) = answering(r#"{"reply":"listed","names":["a.json","b.json"]}"#);
+        let names = channel.list(ListWhat::Instruments).unwrap();
+        assert_eq!(names, ["a.json", "b.json"]);
+        let expected = Request::List {
+            what: ListWhat::Instruments,
+        }
+        .to_ndjson();
+        assert_eq!(asked.lock().unwrap().as_slice(), [expected]);
     }
 }
