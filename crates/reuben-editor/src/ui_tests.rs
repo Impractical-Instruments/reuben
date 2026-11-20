@@ -76,6 +76,7 @@ fn editor(top: &Path, config: &TempConfig) -> Editor {
             swap_hold: None,
         },
         held: HeldSwaps::new(|| {}),
+        meters: MeterStrip::new(|| {}),
     }
 }
 
@@ -224,6 +225,7 @@ fn attached(addr: String, config: &TempConfig, session: Option<Session>) -> Edit
             swap_hold: None,
         },
         held: HeldSwaps::new(|| {}),
+        meters: MeterStrip::new(|| {}),
     }
 }
 
@@ -432,4 +434,62 @@ fn what_the_engine_plays_while_a_swap_runs_is_followed_once_it_lands() {
         harness.state_mut().engine.shutdown();
         reuben_native::diagnostics::log_snapshot(&played.shutdown());
     });
+}
+
+#[test]
+fn the_meter_strip_reads_the_engine_the_editor_is_attached_to() {
+    use reuben_native::test_support::{start_headless, within};
+
+    let scratch = Scratch::new("ui_meters_attached");
+    let config = TempConfig::new();
+    let top = echoing(&scratch, 0.2);
+    within(crate::engine::test_support::HANG_SECS, move || {
+        let played =
+            start_headless(crate::engine::test_support::config(top)).expect("the engine starts");
+        let addr = played.structure_addr().expect("bound").to_string();
+        let mut harness = harness(attached(addr, &config, None));
+        // A headless engine meters no device, and answers so over the structure channel.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while harness
+            .query_by_label("Meters: the engine has no audio device")
+            .is_none()
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the strip never read the engine"
+            );
+            harness.run_steps(1);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        harness.state_mut().engine.shutdown();
+        reuben_native::diagnostics::log_snapshot(&played.shutdown());
+    });
+}
+
+#[test]
+fn with_no_engine_the_meter_strip_says_so() {
+    let scratch = Scratch::new("ui_meters_idle");
+    let config = TempConfig::new();
+    let top = instrument(&scratch);
+    let harness = harness(editor(&top, &config));
+    harness.get_by_label("Meters: no engine to read");
+}
+
+#[test]
+fn the_meters_ride_the_right_edge_of_the_controls_panel() {
+    let scratch = Scratch::new("ui_meters_beside_controls");
+    let config = TempConfig::new();
+    let top = instrument(&scratch);
+    let harness = harness(editor(&top, &config));
+    let controls = harness.get_by_label("CONTROLS").rect();
+    let meters = harness.get_by_label("Meters: no engine to read").rect();
+    assert!(meters.left() > controls.right(), "{meters:?} {controls:?}");
+    assert!(
+        meters.right() > 1280.0 - 200.0,
+        "against the window's right edge: {meters:?}"
+    );
+    assert!(
+        (meters.top() - controls.top()).abs() < 24.0,
+        "in the controls panel's band: {meters:?} {controls:?}"
+    );
 }
