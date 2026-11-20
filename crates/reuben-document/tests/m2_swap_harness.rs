@@ -559,3 +559,29 @@ fn the_install_step_makes_zero_heap_allocation() {
     // heap-neutral and the window was non-vacuous. Counting is armed only on this thread.
     assert_install_step_heap_neutral(&mut coord, &mut slot, BLOCK);
 }
+
+#[test]
+fn a_surviving_voicer_installs_with_zero_heap_allocation() {
+    // The transplant hands the live Voicer the fresh box's probe slot set and re-points each
+    // voice Plan at it; that must stay a pointer swap plus refcount moves, with no drop freeing.
+    let doc = voicer_doc(4);
+    let (mut coord, mut slot) = setup_with(&doc, voice_resolver());
+    let ch = slot.channels();
+    slot.queue_osc("/voicer/notes", &[Arg::F32(69.0), Arg::F32(1.0)]);
+    let mut out = vec![0.0f32; 64 * BLOCK * ch];
+    for _ in 0..8 {
+        slot.fill(&mut out);
+    }
+
+    assert_counter_is_live();
+
+    let report = coord.swap_document(&doc);
+    assert!(report.report.ok, "swap should install: {:?}", report.report);
+    assert_eq!(
+        report.diff.as_ref().unwrap().survived,
+        2,
+        "the Voicer and the output survive"
+    );
+
+    assert_install_step_heap_neutral(&mut coord, &mut slot, BLOCK);
+}

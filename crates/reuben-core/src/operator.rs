@@ -638,6 +638,17 @@ pub trait Operator: Send {
         None
     }
 
+    /// Exchange the slot set this node's hosted patch measures into with `slots`, re-pointing every
+    /// copy of the patch at the set it now holds. A Swap that transplants a surviving host passes
+    /// the fresh box's set through here into the live box, so the live voices measure into the set
+    /// the new Plan's [`NodeProbe::hosted`](crate::probe::NodeProbe::hosted) names. Both sets must
+    /// come from the same patch, so a node's slot index means the same node in either.
+    ///
+    /// **RT-safe:** runs at the render-callback top inside the transplant loop. Re-pointing clones
+    /// one `Arc` per copy and drops the one it replaces; the caller keeps every set held elsewhere,
+    /// so no drop here frees. Default no-op — only the Voicer hosts sub-patches.
+    fn swap_hosted_probes(&mut self, _slots: &mut Option<Arc<ProbeSlots>>) {}
+
     /// Called on a **surviving** operator box just after it is transplanted into a freshly built
     /// Plan across a Swap. A Swap resets every consumer's
     /// held-input latch to its declared default, so an operator that publishes a held output only

@@ -318,6 +318,22 @@ impl Operator for Voicer {
         self.probes.clone()
     }
 
+    fn swap_hosted_probes(&mut self, slots: &mut Option<Arc<ProbeSlots>>) {
+        debug_assert!(
+            match (&self.probes, &*slots) {
+                (Some(a), Some(b)) => a.nodes.len() == b.nodes.len(),
+                _ => true,
+            },
+            "hosted slot sets from different voice patches"
+        );
+        core::mem::swap(&mut self.probes, slots);
+        if let Some(probes) = &self.probes {
+            for slot in &mut self.slots {
+                slot.plan.probes = probes.clone();
+            }
+        }
+    }
+
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
         if self.slots.is_empty() {
@@ -384,7 +400,8 @@ impl Operator for Voicer {
             probes,
             ..
         } = self;
-        // Set together with `slots` at `on_instantiate`, so never `None` here.
+        // Set together with `slots` at `on_instantiate`; a `None` here would skip the commit below.
+        debug_assert!(scratch.is_some(), "a Voicer with voices has no render scratch");
         let Some(scratch) = scratch.as_mut() else {
             return;
         };
@@ -448,7 +465,7 @@ impl Operator for Voicer {
             };
         }
         // Every block, sounding voices or none, so an idle Voicer's meters still fall.
-        if let Some(probes) = probes {
+        if let Some(probes) = probes.as_deref().filter(|p| p.any_on()) {
             probes.commit(n);
         }
     }
@@ -612,9 +629,13 @@ mod tests {
 
         /// One Voicer per address, each with two voices of `patch`, summed to the master.
         fn plan(patch: &Graph, addresses: &[&str]) -> Plan {
+            plan_of(patch, addresses, 2)
+        }
+
+        fn plan_of(patch: &Graph, addresses: &[&str], voices: usize) -> Plan {
             let mut g = Graph::new();
             for address in addresses {
-                let v = g.add(address, voicer(patch, 2));
+                let v = g.add(address, voicer(patch, voices));
                 g.tap_output(v, OUT_AUDIO);
             }
             Plan::instantiate(g, AudioConfig::new(RATE, BLOCK)).expect("instantiate")
@@ -670,6 +691,24 @@ mod tests {
             render(&mut r, &mut plan, &[], 1.0);
             let fell = db(peak(&slots, "/vca") / before);
             assert!((fell + 12.0).abs() <= 0.5, "fell {fell} dB in 1 s");
+        }
+
+        /// Voices fold as more samples of one block, so two identical voices in phase sum their
+        /// squares: twice one voice's mean square, √2 its RMS.
+        #[test]
+        fn in_phase_voices_sum_their_mean_squares() {
+            let mean_square = |voices: usize| {
+                let mut plan = plan_of(&voice_patch(false), &["/v"], voices);
+                let slots = hosted(&plan, "/v");
+                slots.find("/osc").unwrap().set_on(true);
+                let mut r = Renderer::new(&plan);
+                // Without `active`, every voice's `/osc` runs from the same phase, note or none.
+                render(&mut r, &mut plan, &[], 2.0);
+                let (_, mean_square) = slots.find("/osc").unwrap().ports[0].level.read();
+                mean_square
+            };
+            let (one, two) = (mean_square(1), mean_square(2));
+            assert!((two / one - 2.0).abs() <= 0.02, "one {one}, two {two}");
         }
 
         #[test]
