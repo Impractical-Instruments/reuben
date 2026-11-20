@@ -28,6 +28,7 @@ use crate::descriptor::{Descriptor, Port, PortType};
 use crate::graph::{Connection, Graph, NodeKey};
 use crate::message::{Arg, Message};
 use crate::operator::Operator;
+use crate::probe::ProbeSlots;
 use crate::render::Target;
 use crate::vocab::harmony::Harmony;
 use crate::vocab::pitch::Pitch;
@@ -182,6 +183,8 @@ pub struct PlanNode {
     /// the former `msg_targets` (Note edges) and `ctx_targets` (Harmony edges): a published Harmony
     /// is just a Message to a Held input. The dst input port's [`PortKind`] decides how it lands.
     pub out_targets: Vec<Vec<(usize, usize)>>,
+    /// This node's slot in [`Plan::probes`], or `None` for a node with no Signal output.
+    pub probe: Option<usize>,
 }
 
 /// One outbound (OSC-out) sink: a node whose emitted Messages leave the
@@ -322,6 +325,13 @@ pub struct Plan {
     /// scan, so a collapsed pipe's minted address keeps feeding its rewired consumer. Empty for
     /// a graph with no dissolvable pipes.
     pub(crate) input_aliases: Vec<InputAlias>,
+    /// The level probes of this Plan's nodes, shared with whatever reads the levels and switches
+    /// probes on.
+    pub probes: Arc<ProbeSlots>,
+    /// `true` when this Plan's probes are shared with sibling Plans rendered in the same block,
+    /// whose host commits them once after rendering all of them; `render_plan` then leaves the
+    /// commit to it.
+    pub(crate) hosted: bool,
 }
 
 /// Why Instantiate failed.
@@ -433,6 +443,8 @@ impl Plan {
         // instead of rescanning the flat list.
         let adj = Adjacency::build(&graph);
         let order = topo_order(&graph, &adj)?;
+        // After dissolution, so a pipe collapsed out of the schedule gets no slot.
+        let probes = ProbeSlots::for_graph(&graph, &config);
 
         // Logical master width is derived from the instrument, not the device:
         // the highest referenced channel index + 1, floored to stereo so a mono patch still
@@ -638,6 +650,7 @@ impl Plan {
                 .collect();
 
             let node = graph.nodes.remove(*key).expect("key from topo order");
+            let probe = probes.index_of(&node.address);
             // Config-dependent runtime state: the Voicer instantiates its bound voice
             // graphs into per-voice sub-plans here, where `config` is fixed and we are off the hot
             // path.
@@ -660,6 +673,7 @@ impl Plan {
                 outputs,
                 recycled_outputs,
                 out_targets,
+                probe,
             });
 
             // Every buffer whose last reader was this node returns to the free list, for a
@@ -796,6 +810,8 @@ impl Plan {
             interface_outputs,
             captured: vec![0.0; captured_len],
             input_aliases,
+            probes,
+            hosted: false,
         })
     }
 

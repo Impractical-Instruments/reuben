@@ -325,6 +325,49 @@ fn render_block_is_allocation_free_after_warmup() {
     );
 }
 
+/// Every probe on adds a measure after each node and a commit per block; neither may touch the
+/// heap.
+#[test]
+fn render_with_every_probe_on_allocates_nothing() {
+    let cfg = AudioConfig::new(48_000.0, 256);
+    let graph = load_instrument(DEFAULT_JSON, &Registry::builtin(), &InstrumentsDir)
+        .expect("load default.json")
+        .graph;
+    let mut plan = Plan::instantiate(graph, cfg).expect("instantiate");
+    assert!(!plan.probes.nodes.is_empty(), "nothing to probe");
+    for node in &plan.probes.nodes {
+        node.set_on(true);
+    }
+    let mut r = Renderer::new(&plan);
+    let mut out = vec![0.0f32; cfg.block_size];
+    let note_on = [Message::new(
+        "/voicer/notes",
+        Note::new(Pitch::Absolute(60.0), 1.0),
+        0,
+    )];
+    r.render_block(&mut plan, &note_on, &mut out);
+    for _ in 0..16 {
+        r.render_block(&mut plan, &[], &mut out);
+    }
+
+    assert_counter_is_live();
+
+    let probed = measure(|| {
+        for _ in 0..1000 {
+            r.render_block(&mut plan, &[], &mut out);
+        }
+    })
+    .allocs;
+    assert_eq!(probed, 0, "probed render allocated {probed} time(s)");
+    assert!(
+        plan.probes
+            .nodes
+            .iter()
+            .any(|n| n.ports[0].level.read().0 > 0.0),
+        "no probe measured anything, so the window proved nothing"
+    );
+}
+
 /// Reads a voice patch from the repo `instruments/` tree, so `chord-player.json`'s
 /// `chord-player-voice` resource resolves.
 struct RepoInstruments;

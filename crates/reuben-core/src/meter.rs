@@ -92,10 +92,16 @@ pub struct Level {
 
 impl Level {
     /// Fold one block, `frames` frames long, into the held state. Samples a block lacks are
-    /// metered as silence, so a level committed nothing decays rather than freezing.
+    /// metered as silence, so a level committed nothing decays rather than freezing. A zero-frame
+    /// commit is no time passing and leaves the level as it was.
     ///
     /// RT-safe: no allocation, lock or syscall.
     pub fn commit(&self, block: Block, frames: usize, ballistics: &Ballistics) {
+        // The mean square divides by `frames`: zero frames would make it NaN, which reads as a
+        // blown-up block and pins the level at the ceiling.
+        if frames == 0 {
+            return;
+        }
         let (peak_fall, rms_keep) = ballistics.keep(frames);
         let mut peak = block.peak;
         let mut mean_square = block.sum_squares / frames as f32;
@@ -261,6 +267,15 @@ mod tests {
         );
         assert!(peak_db(&level) < before.0 - 10.0);
         assert!(rms_db(&level) < before.1 - 10.0);
+    }
+
+    #[test]
+    fn a_zero_frame_commit_leaves_the_level_alone() {
+        let level = Level::default();
+        drive(&level, 0.1, |_| 0.5);
+        let before = level.read();
+        level.commit(Block::default(), 0, &Ballistics::new(RATE));
+        assert_eq!(level.read(), before);
     }
 
     #[test]
