@@ -25,9 +25,9 @@ pub use call::{call, named_sources, CallKind, Called, Named};
 pub use history::{restore_instrument, DocumentHistory};
 pub use result::{
     Boundary, DeclaredMeta, Diag, DocumentView, EditResult, InputValue, InstrumentStructure,
-    InterfaceInput, InterfaceOutput, NodeConstant, NodeInput, NodePorts, NodeResource,
-    OperatorInfo, Operators, PortInfo, Position, Report, ResourceEntry, StructureNode, WireVerdict,
-    WireVerdicts,
+    InstrumentTree, InterfaceInput, InterfaceOutput, NodeConstant, NodeInput, NodePorts,
+    NodeResource, OperatorInfo, Operators, PortInfo, Position, Report, ResourceEntry,
+    StructureNode, TreeDocument, WireVerdict, WireVerdicts,
 };
 pub use verbs::*;
 

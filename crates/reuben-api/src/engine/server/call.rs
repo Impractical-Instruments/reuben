@@ -15,7 +15,7 @@ use serde_json::Value;
 use crate::authoring::{
     self, edit_summary, hash_instrument, CallKind, Called, Diag, EditResult, Named, Report,
 };
-use crate::resources::{Adapter, ResolveError, Resources, SampleBuffer};
+use crate::resources::{Adapter, Anchored, Resources};
 
 use super::super::wire::{ChangedBy, Event, Response, SwapReport};
 use super::{prepare_recording, went_live, Poisoned, ServerStore, StructureState, Tree, Went};
@@ -32,28 +32,6 @@ pub(super) fn read_tree(store: &ServerStore, origin: &str) -> Tree {
         let _ = load_instrument(&text, &Registry::builtin(), &Adapter(&anchored));
     }
     Tree::new(log.finish(), store.canonical(origin, None))
-}
-
-/// `store` with the top document's references resolved from `referrer`, as the Coordinator's
-/// `prepare_document_from` resolves them, so a read pass and a prepare record the same sources.
-struct Anchored<'a> {
-    store: &'a dyn Resources,
-    referrer: String,
-}
-
-impl Resources for Anchored<'_> {
-    fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
-        self.store.read_samples(source)
-    }
-
-    fn read_text(&self, source: &str) -> Result<String, ResolveError> {
-        self.store.read_text(source)
-    }
-
-    fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
-        self.store
-            .canonical(source, referrer.or(Some(&self.referrer)))
-    }
 }
 
 /// One roster verb, under the Coordinator lock for its whole run — reads included, so no read
@@ -435,6 +413,7 @@ mod tests {
 
     use super::*;
     use crate::authoring::DocumentHistory;
+    use crate::resources::{ResolveError, SampleBuffer};
     use std::sync::mpsc::TryRecvError;
 
     use crate::engine::server::{
@@ -871,6 +850,19 @@ mod tests {
         let before = installed_hash(state);
         let (output, _) = call(&s, "describe_instrument", json!({"source": "top.json"}));
         assert!(!output.is_null());
+        assert_eq!(installed_hash(state), before);
+    }
+
+    #[test]
+    fn read_instrument_tree_is_a_read_and_swaps_nothing() {
+        let s = serving();
+        let state = &s.state;
+        let before = installed_hash(state);
+        let (output, _) = call(&s, "read_instrument_tree", json!({"source": "top.json"}));
+        let documents = output["documents"].as_array().expect("documents");
+        assert_eq!(documents.len(), 2, "{output}");
+        assert_eq!(documents[0]["source"], "top.json");
+        assert!(documents[1]["source"].as_str().unwrap().ends_with("v.json"));
         assert_eq!(installed_hash(state), before);
     }
 

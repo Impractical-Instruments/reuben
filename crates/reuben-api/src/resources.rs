@@ -91,6 +91,30 @@ pub trait Resources {
 #[cfg(any(feature = "authoring", test))]
 pub(crate) struct Adapter<'a>(pub &'a dyn Resources);
 
+/// `store` with the top document's references resolved from `referrer`, as the Coordinator's
+/// `prepare_document_from` resolves them: what scopes a store to one document.
+#[cfg(any(feature = "authoring", test))]
+pub(crate) struct Anchored<'a> {
+    pub store: &'a dyn Resources,
+    pub referrer: String,
+}
+
+#[cfg(any(feature = "authoring", test))]
+impl Resources for Anchored<'_> {
+    fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+        self.store.read_samples(source)
+    }
+
+    fn read_text(&self, source: &str) -> Result<String, ResolveError> {
+        self.store.read_text(source)
+    }
+
+    fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
+        self.store
+            .canonical(source, referrer.or(Some(&self.referrer)))
+    }
+}
+
 /// [`Adapter`] for a store the engine must **own** rather than borrow: the Coordinator holds its
 /// resolver for the session (a by-path swap resolves through it), so the borrowed form cannot
 /// serve it.

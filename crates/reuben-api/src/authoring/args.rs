@@ -696,6 +696,14 @@ pub struct ReadInstrument {
     pub source: String,
 }
 
+/// Arguments for `read_instrument_tree`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReadInstrumentTree {
+    /// The top instrument document of the tree.
+    pub source: String,
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::string::ToString;

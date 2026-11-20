@@ -168,6 +168,8 @@ roster! {
 
     // Host-only verbs: served by a host's dispatcher, advertised by no door.
     READ_INSTRUMENT = "read_instrument", Host, authoring_prose::READ_INSTRUMENT;
+    READ_INSTRUMENT_TREE = "read_instrument_tree", Host,
+        authoring_prose::READ_INSTRUMENT_TREE;
     DESCRIBE_BOUNDARY = "describe_boundary", Host, authoring_prose::DESCRIBE_BOUNDARY;
     COPY_INSTRUMENT = "copy_instrument", Host, authoring_prose::COPY_INSTRUMENT;
     RESTORE_INSTRUMENT = "restore_instrument", Host, authoring_prose::RESTORE_INSTRUMENT;
@@ -299,6 +301,7 @@ mod tests {
             host,
             [
                 "read_instrument",
+                "read_instrument_tree",
                 "describe_boundary",
                 "copy_instrument",
                 "restore_instrument",

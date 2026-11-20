@@ -97,6 +97,7 @@ pub fn named_sources(tool: &str, args: &Value) -> Option<Vec<Named>> {
         | names::DESCRIBE_BOUNDARY
         | names::WIRE_COMPATIBILITY
         | names::READ_INSTRUMENT
+        | names::READ_INSTRUMENT_TREE
         | names::NEW_INSTRUMENT
         | names::RESTORE_INSTRUMENT
         | names::SET_INSTRUMENT_NAME
@@ -162,6 +163,9 @@ pub fn call<R: Resources>(
             run::<WireCompatibility, _>(args, read, |a| wire_compatibility(a, res))
         }
         names::READ_INSTRUMENT => run::<ReadInstrument, _>(args, read, |a| read_instrument(a, res)),
+        names::READ_INSTRUMENT_TREE => {
+            run::<ReadInstrumentTree, _>(args, read, |a| read_instrument_tree(a, res))
+        }
 
         names::NEW_INSTRUMENT => run::<NewInstrument, _>(
             args,

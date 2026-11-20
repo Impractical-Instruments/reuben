@@ -126,6 +126,10 @@ pub const REMOVE_INSTRUMENT_RESOURCE: &str = "Remove a resource entry by id.";
 
 pub const READ_INSTRUMENT: &str = "Read an instrument document back as a projection.";
 
+pub const READ_INSTRUMENT_TREE: &str =
+    "Read an instrument document and every document it reaches through a voice or patch, each \
+     once, as projections.";
+
 pub const DESCRIBE_BOUNDARY: &str =
     "Describe an instrument's boundary: its interface input and output pipes.";
 
