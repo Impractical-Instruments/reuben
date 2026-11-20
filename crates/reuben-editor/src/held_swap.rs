@@ -254,7 +254,7 @@ mod tests {
                 audio,
                 engine: Engine::idle(),
                 session: Session::open(&top, None, || {}),
-                link: EngineLink::new(String::new()),
+                link: EngineLink::default(),
                 _temp: temp,
                 _scratch: scratch,
             };
@@ -264,7 +264,7 @@ mod tests {
                 .running()
                 .and_then(RunningEngine::structure_addr)
                 .expect("the structure server bound");
-            editor.link = EngineLink::new(structure.to_string());
+            editor.link = EngineLink::new(structure.to_string()).expect("a loopback address");
             editor
         }
 

@@ -19,13 +19,12 @@ name = "reuben-mcp"
 path = "src/main.rs"
 
 [dependencies]
-# The window, and nothing behind it. Every tool this door advertises — the pure reads, the document
-# verbs, the engine verbs and the roster they are declared in — comes through here, plus the
-# reference filesystem resolver (`FsResolver`) filling the resource seam. The sidecar drives no
-# audio, so it takes no render half.
+# The window, and nothing behind it. Every tool this door advertises — the operator listing, the
+# document verbs, the engine verbs and the roster they are declared in — comes through here. No
+# resolver: the engine owns the instrument files and runs every document verb against them. The
+# sidecar drives no audio, so it takes no render half.
 reuben-api = { path = "../reuben-api", default-features = false, features = [
     "authoring",
-    "fs-resolver",
     "tcp",
 ] }
 # stdio server only: `server` + `macros` for the tool router, `transport-io` for the stdio pipe.
