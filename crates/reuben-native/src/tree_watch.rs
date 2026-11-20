@@ -133,7 +133,11 @@ fn follow(
         let mut aim = false;
         if due.is_some_and(|due| Instant::now() >= due) {
             (first, due) = (None, None);
-            state.reload();
+            if state.try_reload().is_err() {
+                // An earlier swap is still in flight and nothing was read: the touch is not
+                // spent, so read again after another quiet spell.
+                due = Some(Instant::now() + QUIET);
+            }
             aim = true;
         }
         // An install — this reload's, or one a client made — may have changed the tree.
@@ -248,6 +252,21 @@ mod tests {
         }
     }
 
+    /// The installed content hash. The event that announced an install is published while the
+    /// Coordinator is still held, so this waits for it to be let go.
+    fn installed_hash(state: &StructureState) -> String {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match state.try_installed() {
+                reuben_api::engine::Installed::Known { content_hash, .. } => return content_hash,
+                reuben_api::engine::Installed::Busy if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1))
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
     /// Serve `top` from a fresh directory holding `files`, watch it, save `edited` over the file
     /// at `edit` the way a text editor does, and expect the engine to follow within 2 s.
     fn follows(case: &str, top: &str, files: &[(&str, &str)], edit: &str, edited: &str) {
@@ -295,12 +314,80 @@ mod tests {
         let (hash, by) =
             changed_within(&events, Duration::from_secs(2)).expect("a change within 2 s");
         assert_eq!(by, ChangedBy::Outside);
-        match state.try_installed() {
-            reuben_api::engine::Installed::Known { content_hash, .. } => {
-                assert_eq!(content_hash, hash)
+        assert_eq!(installed_hash(&state), hash);
+
+        drop(watch);
+        state.close();
+        cb.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An outside write that lands while the engine's own swap is still in flight is followed
+    /// once the render side takes that swap home, with nothing else touching the files.
+    #[test]
+    fn an_outside_write_during_a_swap_in_flight_is_followed_once_it_lands() {
+        let dir = std::env::temp_dir().join(format!(
+            "reuben_tree_watch_in_flight_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("case dir");
+        let top_path = dir.join("top.json");
+        std::fs::write(&top_path, TOP).expect("seed the open instrument");
+
+        let staged: Staged<Box<dyn Resources + Send + Sync>> =
+            Staged::new(Box::new(FsResolver::for_instrument(&top_path)));
+        let (coordinator, side, _warnings) = reuben_api::engine::install_initial(
+            TOP,
+            staged.clone(),
+            AudioConfig::new(48_000.0, 128),
+        )
+        .expect("initial install");
+        let (control_tx, control_rx) = mpsc::channel::<ControlBatch>();
+        let host = NativeHost::new(Diagnostics::new(), control_tx).with_render_config(Arc::new(
+            HeadlessRenderConfig {
+                opened_input_channels: 0,
+            },
+        ));
+        let top_s = top_path.display().to_string();
+        let state = StructureState::new(
+            coordinator,
+            Arc::new(host),
+            Arc::new(DocumentHistory::new(staged)),
+        )
+        .with_installed_source(Some(top_s.clone()));
+        let events = InProcess::new(state.clone()).subscribe();
+        let watch = spawn(state.clone());
+
+        // No render side yet: this edit's swap stays in flight.
+        let edited = reuben_api::engine::dispatch_request(
+            &state,
+            reuben_api::engine::Request::Call {
+                tool: "set_instrument_name".to_string(),
+                args: serde_json::json!({"source": top_s, "name": "ours"}),
+            },
+        );
+        assert!(
+            matches!(edited, reuben_api::engine::Response::Called { .. }),
+            "{edited:?}"
+        );
+        let temp = top_path.with_extension("json.tmp");
+        std::fs::write(&temp, TOP.replace(r#""top""#, r#""theirs""#)).expect("write");
+        std::fs::rename(&temp, &top_path).expect("rename over");
+        // Long enough for the watcher to have read the files once and found the swap in flight.
+        std::thread::sleep(QUIET * 6);
+
+        let cb = FakeCallback::spawn(side, control_rx);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let followed = loop {
+            match changed_within(&events, deadline.saturating_duration_since(Instant::now())) {
+                Some((hash, ChangedBy::Outside)) => break Some(hash),
+                Some(_) => continue,
+                None => break None,
             }
-            other => panic!("{other:?}"),
-        }
+        };
+        let followed = followed.expect("the outside write followed within 2 s");
+        assert_eq!(installed_hash(&state), followed);
 
         drop(watch);
         state.close();

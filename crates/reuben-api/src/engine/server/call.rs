@@ -374,7 +374,9 @@ mod tests {
     use crate::authoring::DocumentHistory;
     use std::sync::mpsc::TryRecvError;
 
-    use crate::engine::server::{dispatch, EngineHost, InProcess, IngressClosed, Installed};
+    use crate::engine::server::{
+        dispatch, EngineHost, InProcess, IngressClosed, Installed, SwapInFlight,
+    };
     use crate::engine::wire::{ChangedBy, ControlMessage, DiagnosticsReport, Event, Request};
     use crate::render::RenderSlot;
     use crate::staged::Staged;
@@ -1189,6 +1191,29 @@ mod tests {
                 by: ChangedBy::Outside,
                 ..
             })
+        ));
+    }
+
+    #[test]
+    fn a_reload_while_a_swap_is_in_flight_says_so_and_reads_nothing() {
+        let s = serving();
+        let (first, _) = call_undrained(
+            &s.state,
+            "set_instrument_name",
+            json!({"source": "top.json", "name": "one"}),
+        );
+        assert_eq!(first["written"], true, "{first}");
+        s.files
+            .write_text("top.json", &TOP.replace(r#""top""#, r#""outside""#))
+            .unwrap();
+        assert_eq!(s.state.try_reload(), Err(SwapInFlight));
+        s.render();
+        assert!(matches!(
+            s.state.try_reload(),
+            Ok(Some(Event::Changed {
+                by: ChangedBy::Outside,
+                ..
+            }))
         ));
     }
 

@@ -53,7 +53,7 @@ pub use result::{
 };
 pub use server::{
     dispatch, dispatch_request, EngineHost, InProcess, IngressClosed, Installed, ServerStore,
-    StructureState, COORDINATOR_POISONED, IN_PROCESS_ENDPOINT,
+    StructureState, SwapInFlight, COORDINATOR_POISONED, IN_PROCESS_ENDPOINT,
 };
 
 /// The single-writer graph owner an [`StructureState`] serves. The engine's type, re-exported because

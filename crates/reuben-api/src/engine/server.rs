@@ -232,9 +232,21 @@ impl StructureState {
     /// Load the open instrument again from its files, after something outside the engine may have
     /// written them, and play it if it plans and differs from what plays.
     ///
+    /// [`try_reload`](Self::try_reload), with an earlier swap still in flight answered as `None`:
+    /// for a caller that will look again on the next touch of the files anyway.
+    pub fn reload(&self) -> Option<Event> {
+        self.try_reload().unwrap_or(None)
+    }
+
+    /// Load the open instrument again from its files, after something outside the engine may have
+    /// written them, and play it if it plans and differs from what plays.
+    ///
     /// It differs when the top document's content hash does, or the text of any document it
     /// reaches does: the hash covers only the top one.
     ///
+    /// - An earlier swap is still in flight: nothing is read, and [`SwapInFlight`] says to ask
+    ///   again shortly. A swap stays in flight only while the render side is not taking swaps
+    ///   home.
     /// - It plans and differs: it goes live and [`Event::Changed`] by [`ChangedBy::Outside`] is
     ///   published and returned.
     /// - It does not load or plan: what played keeps playing, and [`Event::Invalid`] is published
@@ -243,55 +255,68 @@ impl StructureState {
     ///   [`ChangedBy::Outside`] with the installed hash is published and returned, so a subscriber
     ///   hears the failure is over.
     /// - Otherwise `None`, and nothing is published: the files are what plays (the engine's own
-    ///   write reads back this way), nothing is open from a source, the Coordinator is poisoned, or
-    ///   an earlier swap is still in flight. That last is left for the next touch of the files to
-    ///   retry: a swap stays in flight only while the render side is not taking swaps home.
+    ///   write reads back this way), nothing is open from a source, or the Coordinator is
+    ///   poisoned.
     ///
     /// Under the Coordinator lock throughout, so the `discard` cannot drop another request's
     /// pending write and the files are read once against one installed hash.
-    pub fn reload(&self) -> Option<Event> {
-        let mut coordinator = self.coordinator().ok()?;
+    pub fn try_reload(&self) -> Result<Option<Event>, SwapInFlight> {
+        let Ok(mut coordinator) = self.coordinator() else {
+            return Ok(None);
+        };
         self.store.inner().discard();
-        let top = self.installed_source().ok()?.clone()?;
+        let Some(top) = self.installed_source().ok().and_then(|top| top.clone()) else {
+            return Ok(None);
+        };
+        // Reclaims a retiree that has come home, which ends its swap's flight and keeps the build
+        // below at live + new, as a by-path swap's does.
+        if coordinator.swap_in_flight() {
+            return Err(SwapInFlight);
+        }
         let origin = self.host.document_origin(&top);
-        // As a by-path swap does, so the build peaks at live + new.
-        drop(coordinator.try_reclaim());
         let text = match self.store.read_text(&origin) {
             Ok(text) => text,
-            Err(e) => return self.invalid(vec![diag(format!("{top} could not be read: {e}"))]),
+            Err(e) => return Ok(self.invalid(vec![diag(format!("{top} could not be read: {e}"))])),
         };
         let (prepared, tree) = prepare_recording(self, &coordinator, &text, &origin);
         let prepared = match prepared {
             Ok(prepared) => prepared,
-            Err(rejected) => return self.invalid(SwapReport::from_core(rejected).report.errors),
+            Err(rejected) => {
+                return Ok(self.invalid(SwapReport::from_core(rejected).report.errors));
+            }
+        };
+        let Ok(tree_cell) = self.tree_cell() else {
+            return Ok(None);
         };
         let unchanged = prepared.content_hash() == coordinator.installed_hash()
-            && self.tree_cell().ok()?.texts == tree.texts;
+            && tree_cell.texts == tree.texts;
+        drop(tree_cell);
         if unchanged {
             // Valid again with nothing to swap: a subscriber told of the failure hears it ended.
-            let was_invalid = self.reported_invalid.lock().ok()?.take().is_some();
-            if !was_invalid {
-                return None;
+            let Ok(mut reported) = self.reported_invalid.lock() else {
+                return Ok(None);
+            };
+            if reported.take().is_none() {
+                return Ok(None);
             }
             let event = Event::Changed {
                 hash: coordinator.installed_hash(),
                 by: ChangedBy::Outside,
             };
             self.events.publish(event.clone());
-            return Some(event);
+            return Ok(Some(event));
         }
-        if coordinator.swap_in_flight() {
-            return None;
-        }
-        // Refused only with a swap in flight, just ruled out under this same lock.
+        // Refused only with a swap in flight, ruled out above under this same lock.
         if !coordinator.commit_swap(prepared).report.ok {
-            return None;
+            return Ok(None);
         }
-        went_live(self, &mut coordinator, Some(top), tree, Went::Outside).ok()?;
-        Some(Event::Changed {
+        if went_live(self, &mut coordinator, Some(top), tree, Went::Outside).is_err() {
+            return Ok(None);
+        }
+        Ok(Some(Event::Changed {
             hash: coordinator.installed_hash(),
             by: ChangedBy::Outside,
-        })
+        }))
     }
 
     /// Publish and return [`Event::Invalid`] for `errors`, unless it is the failure last reported.
@@ -414,6 +439,11 @@ pub enum Installed {
     /// A panic poisoned the Coordinator; it answers nothing from here on.
     Poisoned,
 }
+
+/// [`StructureState::try_reload`]'s answer while an earlier swap is still in flight: nothing was
+/// read, and the files should be read again shortly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SwapInFlight;
 
 /// A lock a panic poisoned; answered as [`COORDINATOR_POISONED`].
 struct Poisoned;
