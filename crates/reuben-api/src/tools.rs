@@ -12,8 +12,8 @@
 //! is coupled to nothing, and a contract removed here would reach that door as dead plumbing
 //! behind a name it no longer advertises.
 //!
-//! Not every window verb is a roster entry: `describe_boundary` answers a door that reads a
-//! document structurally rather than a tool a model calls, so it has no advertised sentence to own.
+//! Verbs a model cannot call (`describe_boundary` among them) are roster entries of kind
+//! [`ContractKind::Host`]: named here so a host can dispatch them, but never advertised.
 
 use alloc::vec::Vec;
 
@@ -219,15 +219,6 @@ const VERB_PREFIXES: &[&str] = &[
     "wire_",
 ];
 
-/// Names that read as a tool and are not one, so prose may name them with no contract behind them.
-/// `describe_boundary` is the window verb answering a door that reads a document structurally
-/// rather than a tool a model calls — see the module header.
-///
-/// Kept as short as it can be. Prose that names something a model cannot call is usually a defect
-/// the scan has just found, not an exception it needs: an entry here silences the one check that
-/// would have caught it.
-const UNADVERTISED_VERBS: &[&str] = &["describe_boundary"];
-
 /// The verb names in `text` that no contract serves — empty for prose that only sends a model
 /// somewhere it can actually go.
 ///
@@ -255,7 +246,9 @@ pub fn unserved_verbs(text: &str) -> Vec<&str> {
             })
         })
         .filter(|token| {
-            !CONTRACTS.iter().any(|c| c.name == *token) && !UNADVERTISED_VERBS.contains(token)
+            !CONTRACTS
+                .iter()
+                .any(|c| c.kind != ContractKind::Host && c.name == *token)
         })
         .collect()
 }
@@ -269,6 +262,15 @@ mod tests {
     /// `non_upper_case_globals` reads as a set of variables at every door that imports it. The
     /// second token buys the casing back, and this holds the pair to the convention a door reads a
     /// symbol by.
+    #[test]
+    fn prose_naming_a_host_verb_sends_a_model_to_a_verb_it_cannot_call() {
+        for contract in CONTRACTS.iter().filter(|c| c.kind == ContractKind::Host) {
+            let prose = alloc::format!("then call `{}` to finish", contract.name);
+            assert_eq!(unserved_verbs(&prose), [contract.name]);
+        }
+        assert_eq!(unserved_verbs("call `new_instrument`"), Vec::<&str>::new());
+    }
+
     #[test]
     fn host_contracts_are_on_the_roster_and_never_advertised_as_document_or_pure() {
         let host: Vec<&str> = CONTRACTS
@@ -310,8 +312,8 @@ mod tests {
             assert_eq!(
                 unserved_verbs(contract.description),
                 Vec::<&str>::new(),
-                "`{}`'s sentence sends a model to a verb no contract serves; if the name is not a \
-                 tool a model can call, it belongs in UNADVERTISED_VERBS",
+                "`{}`'s sentence sends a model to a verb no contract serves; a Host verb is not \
+                 one a model can call",
                 contract.name
             );
         }
