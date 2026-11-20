@@ -31,6 +31,7 @@ use cpal::{SampleFormat, Stream};
 
 use crate::audio::{find_named_device, for_each_duplicate_target, validate_map_pairs, AudioError};
 use crate::diagnostics::Diagnostics;
+use crate::meters::Bank;
 use crate::profile::DeviceProfile;
 
 /// Steady-state ring fill, in core blocks (converted to input-rate frames at setup): the
@@ -89,7 +90,7 @@ pub(crate) fn open_input(
     engine_rate: f32,
     block_size: usize,
     diagnostics: Arc<Diagnostics>,
-) -> Result<(Stream, InputStage), AudioError> {
+) -> Result<(Stream, InputStage, Arc<Bank>), AudioError> {
     let device = select_input_device(host, profile.input.device.as_deref())?;
     let default_config = device
         .default_input_config()
@@ -136,6 +137,7 @@ pub(crate) fn open_input(
     let (floor, capacity, high_water) =
         ring_dimensions(block_size, in_rate as f64, engine_rate as f64);
     let (producer, consumer) = rtrb::RingBuffer::new(capacity * logical_channels);
+    let meters = Bank::new(device_channels, in_rate);
 
     let stream = build_input_stream(
         &device,
@@ -144,6 +146,7 @@ pub(crate) fn open_input(
         map,
         logical_channels,
         Arc::clone(&diagnostics),
+        Arc::clone(&meters),
     )?;
     let nominal_ratio = nominal_ratio(in_rate as f64, engine_rate as f64);
     let stage = InputStage::new(
@@ -155,7 +158,7 @@ pub(crate) fn open_input(
         capacity,
         diagnostics,
     );
-    Ok((stream, stage))
+    Ok((stream, stage, meters))
 }
 
 /// Pure selection logic for [`open_input`]'s non-f32-default path (no device I/O, so it has
@@ -212,6 +215,7 @@ fn build_input_stream(
     map: InputMap,
     logical_channels: usize,
     diagnostics: Arc<Diagnostics>,
+    meters: Arc<Bank>,
 ) -> Result<Stream, AudioError> {
     let device_channels = config.channels as usize;
     // Preallocated once; the callback only writes into it. Never grows.
@@ -220,6 +224,9 @@ fn build_input_stream(
         .build_input_stream(
             config,
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                // Every device channel, before the map: the meter shows what arrives whether or not
+                // the instrument listens to it.
+                meters.meter(data, data.len() / device_channels);
                 // `chunks_exact` so a ragged tail (never expected from cpal, but not our
                 // panic to risk on the RT thread) is dropped rather than smeared across
                 // channels.

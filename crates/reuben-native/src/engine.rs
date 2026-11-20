@@ -33,6 +33,7 @@ use reuben_api::FsResolver;
 
 use crate::audio::{self, AudioError};
 use crate::diagnostics::{self, Diagnostics, PeriodicLogger, Snapshot};
+use crate::meters::Meters;
 use crate::osc::{self, ControlBatch, DEFAULT_OSC_PORT};
 use crate::profile::DeviceProfile;
 use crate::rigs::DEFAULT_JSON;
@@ -364,15 +365,16 @@ pub(crate) fn start_with(
 
     let build =
         |cfg: AudioConfig| reuben_api::engine::install_initial(&instrument_json, resolver, cfg);
-    let (output, diagnostics, coordinator, render_config, warnings, audio_config, opened_input): (
-        _,
-        _,
-        _,
-        Arc<dyn RenderConfigPublisher>,
-        _,
-        _,
-        _,
-    ) = match render {
+    let (
+        output,
+        diagnostics,
+        meters,
+        coordinator,
+        render_config,
+        warnings,
+        audio_config,
+        opened_input,
+    ): (_, _, _, _, Arc<dyn RenderConfigPublisher>, _, _, _) = match render {
         Render::Device => {
             let mut negotiated = None;
             let live = audio::start(osc_rx, block_size, osc_out_tx, &profile, |cfg| {
@@ -387,6 +389,7 @@ pub(crate) fn start_with(
             (
                 Output::Device(live.streams),
                 live.diagnostics,
+                live.meters,
                 live.coordinator,
                 live.render_config,
                 live.warnings,
@@ -408,6 +411,7 @@ pub(crate) fn start_with(
             (
                 Output::Headless(FakeCallback::drive(side, osc_rx, osc_out_tx)),
                 Diagnostics::new(),
+                Meters::none(),
                 coordinator,
                 Arc::new(HeadlessRenderConfig {
                     opened_input_channels: opened_input,
@@ -424,6 +428,7 @@ pub(crate) fn start_with(
     // The structure channel owns the Coordinator — the single writer of graph structure — and
     // publishes each swap's device output map through `render_config`.
     let host = NativeHost::new(Arc::clone(&diagnostics), osc_tx)
+        .with_meters(meters)
         .with_render_config(render_config)
         .with_swap_hold(swap_hold);
     let state =

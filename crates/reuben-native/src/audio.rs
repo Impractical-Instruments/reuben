@@ -51,6 +51,7 @@ use reuben_api::render::{
 };
 
 use crate::diagnostics::Diagnostics;
+use crate::meters::{Bank, Meters};
 use crate::osc::ControlBatch;
 use crate::profile::DeviceProfile;
 use crate::structure::{
@@ -277,6 +278,8 @@ pub struct LiveAudio {
     pub streams: Streams,
     /// The shared xrun/ring counter surface both callbacks feed.
     pub diagnostics: Arc<Diagnostics>,
+    /// The levels both callbacks meter at the device.
+    pub meters: Meters,
     /// The passive Coordinator: the structure channel owns it and drives every swap.
     pub coordinator: Coordinator,
     /// The native device seam the structure server publishes each swap's output map + dark-degrade
@@ -373,8 +376,10 @@ where
     // its width is fixed for the session. A later swap that binds input while no matching stream is
     // open dark-degrades (the callback feeds `&[]`); the warning rode the swap report.
     let opened_input_channels = in_channels;
-    let (input_stream, mut input_stage) = if in_channels > 0 {
-        let (stream, stage) = crate::input::open_input(
+    let output_meters = Bank::new(channels, sample_rate);
+    let meters_for_callback = Arc::clone(&output_meters);
+    let (input_stream, mut input_stage, input_meters) = if in_channels > 0 {
+        let (stream, stage, meters) = crate::input::open_input(
             &host,
             profile,
             in_channels,
@@ -382,9 +387,9 @@ where
             block_size,
             Arc::clone(&diagnostics),
         )?;
-        (Some(stream), Some(stage))
+        (Some(stream), Some(stage), meters)
     } else {
-        (None, None)
+        (None, None, Bank::none())
     };
 
     let stream = device
@@ -474,6 +479,7 @@ where
                     let src = &buf[frame * logical..frame * logical + logical];
                     apply_output_map(output_map.map(), src, dst);
                 }
+                meters_for_callback.meter(data, frames);
 
                 // The budget is this callback's own frame count over the sample rate (cpal is free
                 // to ask for a different frame count than the core block), generalizing the
@@ -508,6 +514,10 @@ where
             input: input_stream,
         },
         diagnostics,
+        meters: Meters {
+            outputs: output_meters,
+            inputs: input_meters,
+        },
         coordinator,
         render_config,
         warnings,

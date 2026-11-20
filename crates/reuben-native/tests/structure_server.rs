@@ -18,11 +18,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use reuben_api::engine::{
-    Conflict, ControlArg, ControlMessage, DiagnosticsReport, DocSource, DocumentSnapshot, Request,
-    Response, StructureState,
+    Conflict, ControlArg, ControlMessage, DiagnosticsReport, DocSource, DocumentSnapshot,
+    MetersReport, Request, Response, StructureState, METER_FLOOR_DBFS,
 };
 use reuben_api::render::{Arg, AudioConfig};
 use reuben_native::diagnostics::Diagnostics;
+use reuben_native::meters::{Bank, Meters};
 use reuben_native::osc::{ControlBatch, OscIn};
 use reuben_native::structure::{HeadlessRenderConfig, NativeHost, StructureServer};
 use reuben_native::test_support::{FakeCallback, NoResources};
@@ -184,6 +185,55 @@ fn serves_the_three_verbs_over_loopback_ndjson_in_order() {
     assert_eq!(
         read_response(&mut reader),
         Response::Diagnostics(DiagnosticsReport::default())
+    );
+
+    // No device, so no channels to meter.
+    send(&mut writer, &Request::GetMeters);
+    assert_eq!(
+        read_response(&mut reader),
+        Response::Meters(MetersReport::default())
+    );
+
+    server.shutdown();
+    cb.stop();
+}
+
+#[test]
+fn get_meters_reads_the_levels_the_callbacks_metered() {
+    let (coordinator, side, _w) =
+        reuben_api::engine::install_initial(BASE_DOC, NoResources, cfg()).expect("install");
+    let meters = Meters {
+        outputs: Bank::new(2, 48_000.0),
+        inputs: Bank::new(1, 48_000.0),
+    };
+    let (control_tx, control_rx) = mpsc::channel::<ControlBatch>();
+    let state = StructureState::new(
+        coordinator,
+        Arc::new(NativeHost::new(Diagnostics::new(), control_tx).with_meters(meters.clone())),
+    );
+    let cb = FakeCallback::spawn(side, control_rx);
+    let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
+    let client = TcpStream::connect(server.local_addr()).expect("connect");
+    let mut writer = client.try_clone().unwrap();
+    let mut reader = BufReader::new(client);
+
+    // Left at full scale, right silent; the input at half scale.
+    let block: Vec<f32> = (0..128).flat_map(|_| [1.0, 0.0]).collect();
+    meters.outputs.meter(&block, 128);
+    meters.inputs.meter(&[0.5; 128], 128);
+
+    send(&mut writer, &Request::GetMeters);
+    let Response::Meters(report) = read_response(&mut reader) else {
+        panic!("expected Meters");
+    };
+    assert_eq!(report.frames, 128);
+    assert_eq!(report.outputs.len(), 2);
+    assert_eq!(report.outputs[0].peak_dbfs, 0.0);
+    assert_eq!(report.outputs[1].peak_dbfs, METER_FLOOR_DBFS);
+    assert_eq!(report.inputs.len(), 1);
+    assert!(
+        (report.inputs[0].peak_dbfs + 6.02).abs() < 0.01,
+        "{report:?}"
     );
 
     server.shutdown();

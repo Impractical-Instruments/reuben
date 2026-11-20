@@ -131,7 +131,7 @@ pub struct ControlMessage {
     pub args: Vec<ControlArg>,
 }
 
-/// One structure-channel request (its five verbs), serialized as a single JSON
+/// One structure-channel request (its six verbs), serialized as a single JSON
 /// object tagged by `verb`: `{"verb": "ping"}`, `{"verb": "swap", "source": …}`, ….
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "verb", rename_all = "snake_case")]
@@ -156,6 +156,8 @@ pub enum Request {
     /// Read the diagnostics counters, exposed past log-only (this channel is their
     /// vehicle).
     GetDiagnostics,
+    /// Read the engine's input and output levels, for a client to draw meters from.
+    GetMeters,
     /// Audition control values on the running engine — control traffic, riding the same channel as
     /// the structure verbs.
     ///
@@ -347,6 +349,8 @@ pub enum Response {
     Document(DocumentSnapshot),
     /// `GetDiagnostics`' answer: the diagnostics counters.
     Diagnostics(DiagnosticsReport),
+    /// `GetMeters`' answer: the levels at the device, one entry per channel.
+    Meters(MetersReport),
     /// A `Swap` whose `expect` guard missed: nothing installed — the [`Conflict`] names both
     /// hashes so the client re-reads via `GetDocument` and reconciles. A newtype variant, so both
     /// hashes ride the wire flat next to the `reply` tag under the user-facing field names (the
@@ -408,6 +412,67 @@ pub struct DiagnosticsReport {
     pub input_ring_producer_drops: u64,
 }
 
+/// The engine's levels at the device: what it sends out, after the output map, and what the input
+/// device delivers, before the input map. One entry per device channel, in channel order; a host
+/// with no device, or no input stream open, answers empty arrays.
+///
+/// The ballistics are the engine's, applied on the audio thread as each block is metered, so every
+/// client sees the same values whatever rate it polls at, and a transient between two polls still
+/// shows. A client may add its own peak hold on top.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct MetersReport {
+    /// One per device output channel.
+    pub outputs: Vec<ChannelLevel>,
+    /// One per input device channel, whether or not the input map routes it anywhere.
+    pub inputs: Vec<ChannelLevel>,
+    /// Output frames metered since the engine started. Unchanged between two polls means the
+    /// output callback is not running, and the levels are the last ones it measured.
+    pub frames: u64,
+}
+
+/// One channel's level, in dBFS: 0 is a full-scale sample. Clamped to -120..=60, so silence reads
+/// -120 and a channel carrying infinite or NaN samples reads 60.
+//
+// The numbers are spelled out because this comment is advertised to a model as schema prose;
+// `the_advertised_levels_name_the_constants` holds them to the constants.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ChannelLevel {
+    /// The highest sample magnitude, falling back at 12 dB per second once the signal drops.
+    pub peak_dbfs: f32,
+    /// The RMS level, an exponential average with a 0.3 s time constant. A full-scale sine reads
+    /// -3 dBFS.
+    pub rms_dbfs: f32,
+}
+
+impl ChannelLevel {
+    /// The level of a channel whose held peak magnitude is `peak` and whose averaged square is
+    /// `mean_square`, both linear, so every host converts them the same way.
+    pub fn from_linear(peak: f32, mean_square: f32) -> Self {
+        Self {
+            peak_dbfs: dbfs(20.0 * peak.log10()),
+            rms_dbfs: dbfs(10.0 * mean_square.log10()),
+        }
+    }
+}
+
+/// Clamp a level into the reported range: `log10(0)` is -inf, and a NaN is a channel gone bad,
+/// which says more as the ceiling than as silence.
+fn dbfs(level: f32) -> f32 {
+    if level.is_nan() {
+        return METER_CEILING_DBFS;
+    }
+    level.clamp(METER_FLOOR_DBFS, METER_CEILING_DBFS)
+}
+
+/// The lowest level a [`ChannelLevel`] reports; silence reads as this.
+pub const METER_FLOOR_DBFS: f32 = -120.0;
+/// The highest level a [`ChannelLevel`] reports.
+pub const METER_CEILING_DBFS: f32 = 60.0;
+/// How fast a [`ChannelLevel::peak_dbfs`] falls back once the signal drops.
+pub const PEAK_FALL_DB_PER_SEC: f32 = 12.0;
+/// The time constant of [`ChannelLevel::rms_dbfs`]'s average, in seconds.
+pub const RMS_WINDOW_SECS: f32 = 0.3;
+
 /// The one statement of the framing: compact JSON (serde_json never emits raw newlines —
 /// string contents escape to `\n`) plus the line terminator.
 fn to_ndjson_line<T: Serialize>(value: &T) -> String {
@@ -463,6 +528,26 @@ mod tests {
         }
     }
 
+    fn meters_report() -> MetersReport {
+        MetersReport {
+            outputs: vec![
+                ChannelLevel {
+                    peak_dbfs: -0.5,
+                    rms_dbfs: -3.5,
+                },
+                ChannelLevel {
+                    peak_dbfs: METER_FLOOR_DBFS,
+                    rms_dbfs: METER_FLOOR_DBFS,
+                },
+            ],
+            inputs: vec![ChannelLevel {
+                peak_dbfs: -18.0,
+                rms_dbfs: -24.0,
+            }],
+            frames: 96_000,
+        }
+    }
+
     /// Every request must serialize to exactly one newline-terminated JSON line (the NDJSON
     /// framing contract) and parse back to itself.
     fn assert_one_line_round_trip(req: &Request) {
@@ -509,8 +594,8 @@ mod tests {
 
     #[test]
     fn every_request_variant_round_trips_as_one_ndjson_line() {
-        // The five verbs: ping, swap (by value or by path, with the optional
-        // expect guard), get_document, get_diagnostics, send.
+        // The six verbs: ping, swap (by value or by path, with the optional
+        // expect guard), get_document, get_diagnostics, get_meters, send.
         let requests = [
             Request::Ping,
             Request::Swap {
@@ -527,6 +612,7 @@ mod tests {
             },
             Request::GetDocument,
             Request::GetDiagnostics,
+            Request::GetMeters,
             Request::Send {
                 messages: control_messages(),
             },
@@ -652,6 +738,7 @@ mod tests {
             tag(&Response::Diagnostics(diagnostics_report())),
             "diagnostics"
         );
+        assert_eq!(tag(&Response::Meters(meters_report())), "meters");
         assert_eq!(tag(&Response::Sent), "sent");
         assert_eq!(
             tag(&Response::Conflict(Conflict {
@@ -700,6 +787,8 @@ mod tests {
                 source: Some("voices/lead.json".to_string()),
             }),
             Response::Diagnostics(diagnostics_report()),
+            Response::Meters(meters_report()),
+            Response::Meters(MetersReport::default()),
             Response::Sent,
             Response::Conflict(Conflict {
                 expected: "0badc0de0badc0de".to_string(),
@@ -749,6 +838,80 @@ mod tests {
                 "input_ring_producer_drops": 96
             })
         );
+    }
+
+    #[test]
+    fn meters_response_carries_one_level_per_channel_flat_beside_the_tag() {
+        let v: serde_json::Value =
+            serde_json::from_str(&Response::Meters(meters_report()).to_ndjson()).expect("as value");
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "reply": "meters",
+                "outputs": [
+                    { "peak_dbfs": -0.5, "rms_dbfs": -3.5 },
+                    { "peak_dbfs": -120.0, "rms_dbfs": -120.0 }
+                ],
+                "inputs": [{ "peak_dbfs": -18.0, "rms_dbfs": -24.0 }],
+                "frames": 96000
+            })
+        );
+    }
+
+    #[test]
+    fn a_level_is_clamped_so_silence_and_a_blown_up_channel_still_serialize() {
+        let silent = ChannelLevel::from_linear(0.0, 0.0);
+        assert_eq!(silent.peak_dbfs, METER_FLOOR_DBFS);
+        assert_eq!(silent.rms_dbfs, METER_FLOOR_DBFS);
+
+        let blown = ChannelLevel::from_linear(f32::INFINITY, f32::NAN);
+        assert_eq!(blown.peak_dbfs, METER_CEILING_DBFS);
+        assert_eq!(blown.rms_dbfs, METER_CEILING_DBFS);
+
+        let full = ChannelLevel::from_linear(1.0, 0.5);
+        assert_eq!(full.peak_dbfs, 0.0);
+        assert!((full.rms_dbfs + 3.0103).abs() < 1e-3, "{full:?}");
+
+        let report = MetersReport {
+            outputs: vec![silent, blown],
+            ..MetersReport::default()
+        };
+        assert_one_line_response_round_trip(&Response::Meters(report));
+    }
+
+    /// The level prose is advertised to a model, so it spells the numbers out rather than linking
+    /// the constants; this keeps the two from drifting apart.
+    #[test]
+    fn the_advertised_levels_name_the_constants() {
+        let schema = serde_json::to_value(schemars::schema_for!(ChannelLevel)).expect("schema");
+        let described = |at: &str| {
+            schema
+                .pointer(at)
+                .and_then(|d| d.as_str())
+                .expect("described")
+                .replace('\n', " ")
+        };
+        let level = described("/description");
+        assert!(
+            level.contains(&format!("{METER_FLOOR_DBFS}..={METER_CEILING_DBFS}")),
+            "{level}"
+        );
+        let peak = described("/properties/peak_dbfs/description");
+        assert!(
+            peak.contains(&format!("{PEAK_FALL_DB_PER_SEC} dB per second")),
+            "{peak}"
+        );
+        let rms = described("/properties/rms_dbfs/description");
+        assert!(rms.contains(&format!("{RMS_WINDOW_SECS} s")), "{rms}");
+
+        let tool = crate::engine::prose::GET_ENGINE_METERS;
+        for spelled in [
+            format!("{METER_FLOOR_DBFS} floor"),
+            format!("{PEAK_FALL_DB_PER_SEC} dB a second"),
+            format!("{RMS_WINDOW_SECS} s"),
+        ] {
+            assert!(tool.contains(&spelled), "{spelled} not in {tool}");
+        }
     }
 
     #[test]
