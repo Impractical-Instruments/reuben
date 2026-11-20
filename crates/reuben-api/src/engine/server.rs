@@ -705,10 +705,10 @@ fn handle_swap(
 /// hold, the install and everything after it. `installed_from` is the path the document was read
 /// from, `None` for one by value.
 ///
-/// A by-path `swap` (not an `open`) of the file that plays, whose document and the documents it reaches read
-/// exactly as what plays, installs nothing and answers ok with no diff, whatever `expect` says:
-/// there is nothing for it to clobber. That is the swap of a client that edited the files itself,
-/// after the engine already followed the edit.
+/// A by-path `swap` (not an `open`) of the file that plays, whose document and the documents it
+/// reaches read exactly as what plays, installs nothing and answers ok with no diff, whatever
+/// `expect` says: there is nothing for it to clobber. That is the swap of a client that edited the
+/// files itself, after the engine already followed the edit.
 fn install_from(
     state: &StructureState,
     coordinator: &mut Coordinator,
