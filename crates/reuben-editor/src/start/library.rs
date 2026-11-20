@@ -17,19 +17,11 @@ pub struct Entry {
     pub error: Option<String>,
 }
 
-/// The library directory: `root` when one is given, else the first `instruments/` there is in the
-/// working directory or beside the executable. Absolute, so what is opened from it is named the
-/// same from anywhere. `Err` says, for the start screen, why there is none.
+/// The library directory: `root` when one is given, else the first of the library candidates
+/// `reuben play` also looks in. Absolute, so what is opened from it is named the same from
+/// anywhere. `Err` says, for the start screen, why there is none.
 pub fn locate(root: Option<&Path>) -> Result<PathBuf, String> {
-    // A release archive carries the library next to the binary, and a launch from a file manager
-    // (a double-click in Finder starts it in the home directory) has no say over the working one.
-    let beside_exe = std::env::current_exe()
-        .ok()
-        .and_then(|exe| Some(exe.parent()?.join("instruments")));
-    let fallbacks: Vec<PathBuf> = std::iter::once(PathBuf::from("instruments"))
-        .chain(beside_exe)
-        .collect();
-    locate_among(root, &fallbacks)
+    locate_among(root, &reuben_native::cli::library_candidates())
 }
 
 fn locate_among(root: Option<&Path>, fallbacks: &[PathBuf]) -> Result<PathBuf, String> {

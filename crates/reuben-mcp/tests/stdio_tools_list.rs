@@ -22,6 +22,7 @@ use reuben_api::tools::names;
 /// hanging CI.
 fn drive(extra: &[&str]) -> String {
     let mut child = Command::new(env!("CARGO_BIN_EXE_reuben-mcp"))
+        .env_remove(reuben_mcp::STRUCTURE_ADDR_ENV)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -108,9 +109,10 @@ fn advertises_the_window_prose() {
         .as_array()
         .unwrap_or_else(|| panic!("tools/list result missing a tools array:\n{response}"));
 
+    let served = reuben_mcp::tool_names();
     for contract in reuben_api::tools::CONTRACTS
         .iter()
-        .filter(|c| c.kind != reuben_api::tools::ContractKind::Host)
+        .filter(|c| served.contains(&c.name))
     {
         let name = contract.name;
         let tool = tools

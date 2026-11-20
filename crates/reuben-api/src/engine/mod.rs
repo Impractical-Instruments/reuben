@@ -45,11 +45,14 @@ mod verbs;
 pub mod wire;
 
 pub use args::*;
-pub use channel::{Channel, ChannelError, SwapOutcome, Transport};
+pub use channel::{
+    unanswered, CallOutcome, Channel, ChannelError, SwapOutcome, Transport, Unanswered,
+};
 pub use events::{Bus, Subscription};
 pub use prose::ENGINE_UNREACHABLE_GUIDANCE;
 pub use result::{
-    CurrentInstrument, EngineStatus, SendOutput, SidecarInfo, StatusEndpoints, SwapResult,
+    CurrentInstrument, EngineStatus, InstrumentList, SendOutput, SidecarInfo, StatusEndpoints,
+    SwapResult,
 };
 pub use server::{
     dispatch, dispatch_request, EngineHost, InProcess, IngressClosed, Installed, ServerStore,

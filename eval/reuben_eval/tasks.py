@@ -39,10 +39,13 @@ DOCUMENT = "instrument.json"
 #
 # 1: the whole-document procedure — read the file, re-emit the corrected document, validate by path.
 # 2: the document verbs — a one-value edit is one `set_instrument_input` call.
-REFERENCE_REVISION = 2
+# 3: the engine as server — an edit applies only to the open instrument, so each reference opens
+#    its document (after `new_instrument`, or first) before editing it.
+REFERENCE_REVISION = 3
 REFERENCE_REVISION_NOTE = (
-    "the reference solutions were rewritten to the document verbs, so a step in these series is the "
-    "harness asking for a different ideal call sequence — not the surface getting dearer or cheaper"
+    "the reference solutions now open their document before editing it, so a step in these series "
+    "is the harness asking for a different ideal call sequence — not the surface getting dearer or "
+    "cheaper"
 )
 
 
@@ -68,6 +71,11 @@ class Task:
     reference: list[Step]
     assertion: Callable[[dict[str, Any]], None]
     document: str = DOCUMENT
+
+
+def _open(source: str) -> Step:
+    """Open `source` on the session's engine: every edit applies only to the open instrument."""
+    return Step("mcp", "open_instrument", {"name": source})
 
 
 # -- assertion helpers ------------------------------------------------------------------------
@@ -291,7 +299,10 @@ def _from_scratch_reference() -> list[Step]:
     document and writes only if it is valid, so the last one already answered the question.
     """
     document = _from_scratch_document()
-    steps = [Step("mcp", "new_instrument", {"source": DOCUMENT, "name": document["instrument"]})]
+    steps = [
+        Step("mcp", "new_instrument", {"source": DOCUMENT, "name": document["instrument"]}),
+        _open(DOCUMENT),
+    ]
     steps += [
         Step(
             "mcp",
@@ -451,10 +462,11 @@ TASKS: list[Task] = [
             "it still validates."
         ),
         seed={DOCUMENT: VOICE},
-        # The whole task, in one call. The address and the port are named in the prompt, so nothing
-        # has to be read first, and the verb re-validates before it writes — which is the "make sure
-        # it still validates" half.
+        # The whole task, in one edit after the open. The address and the port are named in the
+        # prompt, so nothing has to be read first, and the verb re-validates before it writes — which
+        # is the "make sure it still validates" half.
         reference=[
+            _open(DOCUMENT),
             Step(
                 "mcp",
                 "set_instrument_input",
@@ -471,11 +483,13 @@ TASKS: list[Task] = [
             "and keep everything else as it is. Make sure it still validates."
         ),
         seed={DOCUMENT: VOICE},
-        # One call: the word goes in, the engine does the row → nodes → arithmetic join and
-        # re-validates before writing. No vocabulary read, no document read, no re-emission — the
-        # three things this shape used to cost. It exercises **one** target (`warmer` matches one of
-        # its three moves on this fixture); `intent_fan_out` below is where the fan-out shows.
+        # One edit after the open: the word goes in, the engine does the row → nodes → arithmetic
+        # join and re-validates before writing. No vocabulary read, no document read, no
+        # re-emission — the three things this shape used to cost. It exercises **one** target
+        # (`warmer` matches one of its three moves on this fixture); `intent_fan_out` below is where
+        # the fan-out shows.
         reference=[
+            _open(DOCUMENT),
             Step(
                 "mcp",
                 "set_instrument_inputs_by_intent",
@@ -493,6 +507,7 @@ TASKS: list[Task] = [
         ),
         seed={DOCUMENT: ACID, **ACID_SEED},
         reference=[
+            _open(DOCUMENT),
             Step(
                 "mcp",
                 "set_instrument_inputs_by_intent",
@@ -509,11 +524,13 @@ TASKS: list[Task] = [
             "there now."
         ),
         seed={DOCUMENT: BROKEN},
-        # Validate is the diagnosis — it names the dangling reference `/env_curv` but not the node
-        # that was meant, so the index projection is the read that supplies `/env_curve`. Then one
-        # `wire_instrument_input` re-points the edge; a verb reaches a document that does not load,
-        # which is what makes repair expressible without touching its bytes.
+        # The open succeeds on a document that does not load: it opens with nothing playing, and an
+        # edit the document accepts is written. Validate is the diagnosis — it names the dangling
+        # reference `/env_curv` but not the node that was meant, so the index projection is the
+        # read that supplies `/env_curve`. Then one `wire_instrument_input` re-points the edge, the
+        # instrument loads, and it starts playing — a repair without touching the document's bytes.
         reference=[
+            _open(DOCUMENT),
             Step("mcp", "validate_instrument", {"source": DOCUMENT}),
             Step("mcp", "describe_instrument", {"source": DOCUMENT, "view": "index"}),
             Step(
@@ -542,9 +559,10 @@ TASKS: list[Task] = [
         ),
         seed={DOCUMENT: BROKEN},
         # The fix lands before the note: write-iff-valid refuses the note until the document
-        # validates, so the ideal order is the repair's three calls, then the one the task asked
-        # for first.
+        # validates, so the ideal order is the repair's calls, then the one the task asked for
+        # first.
         reference=[
+            _open(DOCUMENT),
             Step("mcp", "validate_instrument", {"source": DOCUMENT}),
             Step("mcp", "describe_instrument", {"source": DOCUMENT, "view": "index"}),
             Step(

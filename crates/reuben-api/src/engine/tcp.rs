@@ -13,7 +13,7 @@ use std::io::{self, BufReader, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
-use super::channel::Transport;
+use super::channel::{unanswered, Transport};
 use super::wire::{read_ndjson_line, Event, Request, Response, MAX_LINE_BYTES};
 
 /// How long to wait for the loopback connect before declaring the engine unreachable. Loopback
@@ -169,10 +169,16 @@ impl Transport for TcpTransport {
         (&stream).write_all(line.as_bytes())?;
         (&stream).flush()?;
 
-        // Read exactly one response line (one response per request), no longer than the cap.
+        // Read exactly one response line (one response per request), no longer than the cap. The
+        // request is the engine's now: a read that runs out of budget is a missing answer, not a
+        // missing engine.
         let mut reader = BufReader::new(&stream);
         let mut response = String::new();
-        if read_ndjson_line(&mut reader, &mut response)? == 0 {
+        let read = read_ndjson_line(&mut reader, &mut response).map_err(|e| match e.kind() {
+            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => unanswered(e),
+            _ => e,
+        })?;
+        if read == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "the structure channel closed before answering",
@@ -220,6 +226,48 @@ mod tests {
         assert_eq!(reply.trim_end(), "{\"ping\":1}");
         assert_eq!(transport.endpoint(), addr);
         server.join().expect("server");
+    }
+
+    #[test]
+    fn a_read_timeout_after_the_request_was_written_is_marked_unanswered() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr").to_string();
+        let (done, wait) = std::sync::mpsc::channel::<()>();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            let mut line = String::new();
+            std::io::BufRead::read_line(&mut BufReader::new(&stream), &mut line).expect("read");
+            // Hold the connection open, answering nothing, until the client has given up.
+            let _ = wait.recv();
+        });
+        let transport = TcpTransport::new(&addr, DEFAULT_CONNECT_TIMEOUT);
+        let err = transport
+            .round_trip("{\"ping\":1}\n", Duration::from_millis(200))
+            .expect_err("no answer");
+        drop(done);
+        server.join().expect("server");
+        assert!(
+            err.get_ref()
+                .is_some_and(|cause| cause.is::<super::super::channel::Unanswered>()),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn a_refused_connect_is_not_marked_unanswered() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|l| l.local_addr())
+            .expect("a free port")
+            .port();
+        let transport = TcpTransport::new(format!("127.0.0.1:{port}"), DEFAULT_CONNECT_TIMEOUT);
+        let err = transport
+            .round_trip("{\"ping\":1}\n", Duration::from_millis(200))
+            .expect_err("nothing listens");
+        assert!(
+            !err.get_ref()
+                .is_some_and(|cause| cause.is::<super::super::channel::Unanswered>()),
+            "{err:?}"
+        );
     }
 
     #[test]

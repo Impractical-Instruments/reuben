@@ -2,15 +2,29 @@
 //! `initialize` handshake, and drive a `tools/call` over newline-delimited JSON-RPC — the actual
 //! protocol boundary a client sees, not an in-process shortcut.
 //!
-//! Every case seeds a real file, since a document is always named by `source`, and every call is
-//! bounded by a watchdog so a protocol regression fails loudly instead of hanging CI.
+//! No engine runs here: the sidecar is pointed at a loopback port nothing listens on, so a
+//! `reuben play` on the same machine can never answer. What a document read returns from a real
+//! engine is `native_engine`'s subject; here it is that, with none, the sidecar refuses rather
+//! than read the file itself. Every call is bounded by a watchdog so a protocol regression fails
+//! loudly instead of hanging CI.
 
 use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
+use reuben_api::engine::ENGINE_UNREACHABLE_GUIDANCE;
 use reuben_api::tools::names;
+use reuben_mcp::STRUCTURE_ADDR_ENV;
+
+/// A loopback address nothing listens on: bound for a free port, then released.
+fn dead_addr() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind to reserve a port");
+    let addr = listener.local_addr().expect("reserved addr");
+    drop(listener);
+    addr.to_string()
+}
 
 /// Drive the shim through initialize → initialized → a single `tools/call` and return the raw
 /// stdout. Requests are buffered into the child's stdin, which is then closed; on EOF the shim
@@ -18,6 +32,7 @@ use reuben_api::tools::names;
 /// a regression fails loudly instead of hanging CI.
 fn drive_tool_call(name: &str, arguments: serde_json::Value) -> String {
     let mut child = Command::new(env!("CARGO_BIN_EXE_reuben-mcp"))
+        .env(STRUCTURE_ADDR_ENV, dead_addr())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -173,173 +188,54 @@ fn describe_operators_compact_returns_signatures() {
     );
 }
 
-/// Write `document` into a fresh temp directory and return its path — the only way to hand these
-/// tools a document, since there is no inline arm.
-fn seeded(case: &str, document: serde_json::Value) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("reuben_mcp_read_only_{case}"));
-    let _ = std::fs::remove_dir_all(&dir);
+#[test]
+fn document_reads_with_no_engine_are_iserror_with_guidance() {
+    // The engine owns the files. With none running, a document read is a can't-do-the-job
+    // isError naming the fix — never an answer the sidecar made by reading the file itself.
+    let dir = std::env::temp_dir().join(format!("reuben_mcp_read_only_{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create the case directory");
     let path = dir.join("instrument.json");
     std::fs::write(
         &path,
-        serde_json::to_string_pretty(&document).expect("serialize"),
+        r#"{ "format_version": 3, "instrument": "t", "nodes": [] }"#,
     )
     .expect("seed");
-    path
-}
-
-/// A document that mints but does not load: the operator type is typo'd.
-fn typo_document() -> serde_json::Value {
-    serde_json::json!({
-        "instrument": "typo",
-        "nodes": [ { "type": "oscilllator", "address": "/osc" } ],
-        "outputs": []
-    })
-}
-
-#[test]
-fn validate_broken_doc_is_ok_false_not_iserror() {
-    // The crux: a failing validation is the tool *working*. A document with a typo'd operator type
-    // validates to `ok:false` with a node-named Diag — an ordinary result, NOT isError.
-    let path = seeded("validate_broken", typo_document());
-    let result = call_tool(
-        names::VALIDATE_INSTRUMENT,
-        serde_json::json!({ "source": path.to_string_lossy() }),
-    );
-    assert!(
-        !is_error(&result),
-        "a failed validation is an ordinary result, never isError: {result}"
-    );
-    let report = &result["structuredContent"];
-    assert_eq!(
-        report["ok"],
-        serde_json::json!(false),
-        "the broken document must validate to ok:false: {result}"
-    );
-    assert_eq!(
-        report["errors"][0]["node"],
-        serde_json::json!("/osc"),
-        "the error Diag must localize the offending node: {result}"
-    );
-}
-
-#[test]
-fn describe_instrument_projects_an_unloadable_document_but_has_no_boundary_for_it() {
-    // Two different answers about the same broken document: the structural views still project
-    // it, but the boundary view cannot be cut from a document that will not load.
-    let path = seeded("describe_unloadable", typo_document());
     let source = serde_json::json!({ "source": path.to_string_lossy() });
-    let result = call_tool(names::DESCRIBE_INSTRUMENT, source.clone());
-    assert!(
-        !is_error(&result),
-        "an unloadable document still has structure to read: {result}"
-    );
-    let text = result["structuredContent"]["text"]
-        .as_str()
-        .unwrap_or_else(|| panic!("the index view must carry rendered text: {result}"));
-    assert!(
-        text.contains("/osc"),
-        "the index projects the nodes it has: {text}"
-    );
-
-    // ...but the *boundary* is the resolved face a host sees, and a document that will not load has
-    // none. That case stays isError, pointing at the authority and at the view that does answer.
-    let mut boundary = source;
-    boundary["view"] = serde_json::json!("boundary");
-    let result = call_tool(names::DESCRIBE_INSTRUMENT, boundary);
-    assert!(
-        is_error(&result),
-        "an unloadable document has no boundary to describe: {result}"
-    );
-    let text = result["content"][0]["text"]
-        .as_str()
-        .unwrap_or_else(|| panic!("isError result must carry guidance text: {result}"));
-    assert!(
-        text.contains(names::VALIDATE_INSTRUMENT),
-        "the guidance must point at the validation authority: {text}"
-    );
-}
-
-#[test]
-fn an_incoherent_selection_is_refused_rather_than_silently_narrowed() {
-    // The selection grammar is core's (`Selection::from_terms`) precisely so both doors answer
-    // this the same way. Silently honouring one field and dropping the other is the trap: the
-    // caller that meant the dropped one gets a plausible answer to a question it did not ask.
-    let path = seeded("incoherent_selection", typo_document());
-    let source = path.to_string_lossy().to_string();
-
-    let both = call_tool(
-        names::DESCRIBE_INSTRUMENT,
-        serde_json::json!({
-            "source": source, "view": "nodes", "select": ["/osc"], "type": "oscillator"
-        }),
-    );
-    assert!(
-        is_error(&both),
-        "select and type together must be refused, not resolved by precedence: {both}"
-    );
-
-    // Same rule for every view that does not narrow: terms it cannot honour are refused, never
-    // quietly ignored behind a whole answer. The document has to *load*, or `boundary` would be
-    // refused for that alone and the selection never reached.
-    let loadable = seeded(
-        "unhonoured_selection",
-        serde_json::json!({
-            "format_version": 3,
-            "instrument": "loadable",
-            "nodes": [ { "type": "oscillator", "address": "/osc" } ],
-            "interface": { "outputs": { "out": { "from": "/osc.audio" } } }
-        }),
-    );
-    let loadable = loadable.to_string_lossy().to_string();
-    for view in ["index", "resources", "boundary"] {
-        let whole = call_tool(
-            names::DESCRIBE_INSTRUMENT,
-            serde_json::json!({ "source": loadable, "view": view }),
-        );
-        assert!(
-            !is_error(&whole),
-            "the {view} view answers no terms: {whole}"
-        );
-
-        let refused = call_tool(
-            names::DESCRIBE_INSTRUMENT,
-            serde_json::json!({ "source": loadable, "view": view, "select": ["/osc"] }),
-        );
-        let text = refused["content"][0]["text"].as_str().unwrap_or_default();
-        assert!(
-            is_error(&refused) && text.contains("takes no `select`"),
-            "the {view} view takes no selection; terms it ignores must be refused: {refused}"
+    for tool in [names::DESCRIBE_INSTRUMENT, names::VALIDATE_INSTRUMENT] {
+        let result = call_tool(tool, source.clone());
+        assert!(is_error(&result), "{tool}: {result}");
+        assert_eq!(
+            result["content"][0]["text"],
+            serde_json::json!(ENGINE_UNREACHABLE_GUIDANCE),
+            "{tool}: {result}"
         );
     }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn a_missing_source_is_iserror_and_there_is_no_inline_document_arm() {
-    // An unreadable `source` is the only can't-do-the-job shape left, and `document` is not a
-    // field — passing one is a schema violation, not a second way in. Neither may quietly succeed.
-    let missing = call_tool(
-        names::VALIDATE_INSTRUMENT,
-        serde_json::json!({ "source": "definitely/not/here.json" }),
-    );
-    assert!(
-        is_error(&missing),
-        "an unreadable source must be isError: {missing}"
-    );
-
+fn there_is_no_inline_document_arm() {
+    // `document` is not a field: passing one in place of `source` is refused at the argument
+    // boundary, before anything is asked of an engine.
     let inline = call_tool(
         names::VALIDATE_INSTRUMENT,
-        serde_json::json!({ "document": typo_document() }),
+        serde_json::json!({ "document": { "instrument": "t", "nodes": [] } }),
     );
     assert!(
         is_error(&inline),
         "there is no inline `document` arm to validate through: {inline}"
+    );
+    assert_ne!(
+        inline["content"][0]["text"],
+        serde_json::json!(ENGINE_UNREACHABLE_GUIDANCE),
+        "the arguments are refused before an engine is dialed: {inline}"
     );
 }
 
 /// Drive initialize → initialized → tools/list and return the raw stdout, watchdog-bounded.
 fn drive_tools_list() -> String {
     let mut child = Command::new(env!("CARGO_BIN_EXE_reuben-mcp"))
+        .env_remove(STRUCTURE_ADDR_ENV)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

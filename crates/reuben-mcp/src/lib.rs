@@ -1,10 +1,11 @@
 //! reuben-mcp — the per-conversation MCP stdio sidecar.
 //!
-//! A [`ServerHandler`] with a tool router over the [`reuben_api::tools::CONTRACTS`] roster, in
-//! three families: the pure introspection tools and the document verbs answer in-process through
-//! [`reuben_api::authoring`], over a [`reuben_api::FsResolver`] filling its resource seam, while
-//! the engine tools reach a user-owned `reuben play` through [`reuben_api::engine`], over the
-//! loopback transport in [`EngineLink`].
+//! A [`ServerHandler`] with a tool router over the [`reuben_api::tools::CONTRACTS`] roster. Only
+//! `describe_operators` answers in-process, through [`reuben_api::authoring`]: it reads no file.
+//! Every other tool reaches a user-owned `reuben play` through [`reuben_api::engine`], over the
+//! loopback transport in [`EngineLink`]. The engine verbs keep their own requests; every document
+//! read and edit is a `call` the engine runs against the instrument files it owns, so this door
+//! never reads or writes one.
 //!
 //! What is left here is the MCP-shaped part and only that: the roster, the transport, and the
 //! two-way map between a window answer and a `CallToolResult`. The argument shapes, the result
@@ -26,15 +27,12 @@
 //!
 //! Everywhere the door names a contract as a *value* rather than as a route key it writes
 //! [`reuben_api::tools::names`](mod@reuben_api::tools::names) instead, so the window dropping that
-//! contract is a compile error here. Today that is all test code, because the route key is the only
-//! place non-test source names a verb at all: the door reaches every one of them by calling the
-//! window function that serves it, and a function is not a string.
+//! contract is a compile error here. Non-test source does so for each verb it relays as a `call`,
+//! and for the roster verbs it does not serve.
 //!
 //! The one thing left that is genuinely this door's is the socket: `reuben-mcp` reaches a
 //! *separate process*, so it supplies a loopback TCP transport where an in-process host supplies
 //! none at all.
-
-use std::path::Path;
 
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -48,7 +46,7 @@ use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler
 
 use reuben_api::authoring::{self, Answer, EditResult, Refusal};
 use reuben_api::engine;
-use reuben_api::FsResolver;
+use reuben_api::tools::names;
 use serde::Serialize;
 
 mod engine_link;
@@ -65,14 +63,27 @@ pub use reuben_api::engine::{
 /// The tool surface this door advertises, in roster order — the exact spellings on `tools/list`,
 /// so the wire surface can only change by changing the roster.
 pub fn tool_names() -> Vec<&'static str> {
+    served_contracts().map(|c| c.name).collect()
+}
+
+/// Roster verbs this door does not serve. `swap_instrument` installs a document by path, which
+/// would reach around the server's store; an agent here opens a name and edits it live instead.
+const NOT_SERVED: &[&str] = &[names::SWAP_INSTRUMENT];
+
+/// The contracts this door routes: the roster, less host-only verbs and [`NOT_SERVED`].
+fn served_contracts() -> impl Iterator<Item = &'static reuben_api::tools::Contract> {
     reuben_api::tools::CONTRACTS
         .iter()
         .filter(|c| c.kind != reuben_api::tools::ContractKind::Host)
-        .map(|c| c.name)
-        .collect()
+        .filter(|c| !NOT_SERVED.contains(&c.name))
 }
 
-/// The `reuben://guide/authoring` resource URI: the authoring guide, `docs/agents/authoring.md`.
+/// The environment variable naming the engine's structure address, a loopback `ip:port`. Unset,
+/// the sidecar dials the window's `DEFAULT_STRUCTURE_ADDR`.
+pub const STRUCTURE_ADDR_ENV: &str = "REUBEN_STRUCTURE_ADDR";
+
+/// The `reuben://guide/authoring` resource URI: the MCP lane's cut of the authoring guide,
+/// `docs/agents/authoring.md`.
 /// The authority for what `resources/list` advertises.
 pub const GUIDE_RESOURCE_URI: &str = "reuben://guide/authoring";
 
@@ -99,19 +110,24 @@ pub const LIBRARY_INDEX_RESOURCE_MIME: &str = "text/markdown";
 /// The server `instructions`: the one-breath authoring gist, pointing at the three guide
 /// resources rather than restating them.
 const INSTRUCTIONS: &str = "reuben authoring sidecar. The instrument document is the durable \
-     truth; keep it in sync with the sound. **Never open, read or write an instrument file \
-     yourself** — name it by `source` and let these tools do it: `describe_instrument` reads its \
-     structure, the `*_instrument_*` verbs edit it one change at a time, and each one re-validates \
-     the whole document and writes only if it is valid — so while a document has errors, every \
-     edit is refused. A rejection lists under `pre_existing` the errors it can show were already \
-     there; fix those first. Validation reports one error at a time, so read a rejection's \
-     `notes` too. Start `reuben play` in another terminal \
-     first — the engine tools (`send_live_controls`, `swap_instrument`, `get_current_instrument`, \
-     `get_engine_diagnostics`) fail fast until it is reachable. The loop: `send_live_controls` to \
-     audition a change (ephemeral — clobbered at the next swap), then edit the document and \
-     `swap_instrument` to make it durable. Creating an instrument from scratch? Call \
-     `new_instrument` to land a guaranteed-valid seed at a source, then add nodes and wire them. \
-     Read `reuben://guide/authoring` \
+     truth, and what it says is what plays. **Never read or write an instrument file \
+     yourself** — name it and let these tools do it: `describe_instrument` reads its structure, \
+     and the `*_instrument_*` verbs edit it one change at a time. Start `reuben play` in another \
+     terminal first: every instrument tool asks it, and fails fast until it is reachable. It \
+     offers the instruments in its library directory (`reuben play --instrument-root <dir>`, \
+     else `instruments/` where it starts) and beside the one it plays (`reuben play <file>`), \
+     and `new_instrument` creates only there. The loop: `list_instruments` gives the names it \
+     offers (or `new_instrument` lands a \
+     guaranteed-valid seed at a new one); `open_instrument` opens one, and you must open an \
+     instrument before editing it; then each accepted edit is live at once — there is no separate \
+     step to make it heard. Every edit re-validates the whole instrument and is refused, with \
+     nothing written, if it would break it — so while a document has errors, every edit that \
+     leaves them is refused. A document that does not load still opens, with nothing playing: an \
+     edit it accepts is written, and playing starts once it loads. A rejection lists under \
+     `pre_existing` the errors it can show were already there; fix those first. Validation \
+     reports one error at a time, so read a rejection's `notes` too. \
+     `send_live_controls` auditions a value without committing it, and the next edit resets it, \
+     so fold a keeper into the document with an edit. Read `reuben://guide/authoring` \
      for the type system, wiring rules, instrument format, and the authoring loop. Read \
      `reuben://guide/vocabulary` for the word→move table translating intent language (\"warmer\", \
      \"busier\", \"sadder\") into parameter moves. Read `reuben://guide/library-index` for the \
@@ -192,6 +208,9 @@ struct ResourceEntry {
     /// distinct from `name` where the two diverge (e.g. `intent vocabulary` vs `vocabulary`), so
     /// the error prose is preserved bit-for-bit.
     noun: &'static str,
+    /// The lane whose cut of the file is served, for a file tagged by lane; `None` serves the
+    /// file whole.
+    lane: Option<reuben_guide::Lane>,
 }
 
 impl ResourceEntry {
@@ -217,6 +236,15 @@ impl ResourceEntry {
                 None,
             )
         })?;
+        let text = match self.lane {
+            Some(lane) => reuben_guide::lane_cut(&text, lane).map_err(|e| {
+                McpError::internal_error(
+                    format!("failed to cut the {} at {}: {e}", self.noun, path.display()),
+                    None,
+                )
+            })?,
+            None => text,
+        };
         Ok(ResourceContents::text(text, self.uri).with_mime_type(self.mime))
     }
 }
@@ -239,6 +267,7 @@ const RESOURCES: &[ResourceEntry] = &[
         env: AUTHORING_GUIDE_ENV,
         default_path: AUTHORING_GUIDE_PATH,
         noun: "authoring guide",
+        lane: Some(reuben_guide::Lane::Mcp),
     },
     ResourceEntry {
         uri: VOCABULARY_RESOURCE_URI,
@@ -251,6 +280,7 @@ const RESOURCES: &[ResourceEntry] = &[
         env: VOCABULARY_ENV,
         default_path: VOCABULARY_PATH,
         noun: "vocabulary",
+        lane: None,
     },
     ResourceEntry {
         uri: LIBRARY_INDEX_RESOURCE_URI,
@@ -263,6 +293,7 @@ const RESOURCES: &[ResourceEntry] = &[
         env: LIBRARY_INDEX_ENV,
         default_path: LIBRARY_INDEX_PATH,
         noun: "library index",
+        lane: None,
     },
 ];
 
@@ -281,10 +312,9 @@ fn served_resource_uris() -> String {
 
 /// The reuben MCP server: the declared-roster tool router plus the engine link.
 ///
-/// Pure tools (`describe_operators`, `describe_instrument`, `validate`) are always available;
-/// the engine tools (`send`, `swap`, `get_current_instrument`, `get_diagnostics`) reach a
-/// user-owned `reuben play` through [`EngineLink`] and fail fast when it is unreachable.
-/// `engine_status` answers "reachable?" and so is never itself an error.
+/// `describe_operators` is always available. Every other tool reaches a user-owned `reuben play`
+/// through [`EngineLink`] and fails fast when it is unreachable, except `get_engine_status`, which
+/// answers "reachable?" and so is never itself an error.
 pub struct ReubenServer {
     tool_router: ToolRouter<ReubenServer>,
     engine: EngineLink,
@@ -311,10 +341,9 @@ impl ReubenServer {
         }
     }
 
-    // --- Pure tools: always available -----------------------------------------------------------
+    // --- In-process: the one tool that reads no file ---------------------------------------------
 
-    /// List the operator set. Engine-free — always available, and the one authoring tool that needs
-    /// no resource store at all.
+    /// List the operator set. Engine-free, so an agent can ground itself before an engine runs.
     #[tool(
         name = "describe_operators",
         output_schema = rmcp::handler::server::tool::schema_for_output::<authoring::Operators>()
@@ -327,6 +356,8 @@ impl ReubenServer {
         answered(authoring::describe_operators(&p))
     }
 
+    // --- Document reads: a `call` to the engine, which owns the files -----------------------------
+
     /// Read a structural view of an instrument document.
     #[tool(
         name = "describe_instrument",
@@ -337,7 +368,11 @@ impl ReubenServer {
         &self,
         Parameters(p): Parameters<authoring::DescribeInstrument>,
     ) -> Result<CallToolResult, McpError> {
-        answered(authoring::describe_instrument(&p, &store(&p.source)))
+        answered(engine::call_tool(
+            names::DESCRIBE_INSTRUMENT,
+            &p,
+            self.engine.structure(),
+        ))
     }
 
     /// Validate an instrument document through the engine's own load + instantiate path.
@@ -350,12 +385,16 @@ impl ReubenServer {
         &self,
         Parameters(p): Parameters<authoring::ValidateInstrument>,
     ) -> Result<CallToolResult, McpError> {
-        answered(authoring::validate_instrument(&p, &store(&p.source)))
+        answered(engine::call_tool(
+            names::VALIDATE_INSTRUMENT,
+            &p,
+            self.engine.structure(),
+        ))
     }
 
     // --- Engine tools: reach a user-owned `reuben play` through the channel seam ----------------
 
-    // Each is one delegation, like the document verbs above: the batch bounds, the argument
+    // Each is one delegation, like the document verbs: the batch bounds, the argument
     // conversion, the unreachable/other split, the guard-miss shape and the glosses all live behind
     // `engine`. What this door still owns is the socket under the channel, the advertised schema,
     // and the isError decision.
@@ -386,15 +425,27 @@ impl ReubenServer {
     }
 
     #[tool(
-        name = "swap_instrument",
+        name = "open_instrument",
         output_schema = rmcp::handler::server::tool::schema_for_output::<engine::SwapResult>()
             .expect("SwapResult is an object schema")
     )]
-    async fn swap_instrument(
+    async fn open_instrument(
         &self,
-        Parameters(p): Parameters<engine::SwapInstrument>,
+        Parameters(p): Parameters<engine::OpenInstrument>,
     ) -> Result<CallToolResult, McpError> {
-        answered(engine::swap_instrument(&p, self.engine.structure()))
+        answered(engine::open_instrument(&p, self.engine.structure()))
+    }
+
+    #[tool(
+        name = "list_instruments",
+        output_schema = rmcp::handler::server::tool::schema_for_output::<engine::InstrumentList>()
+            .expect("InstrumentList is an object schema")
+    )]
+    async fn list_instruments(
+        &self,
+        Parameters(p): Parameters<engine::ListInstruments>,
+    ) -> Result<CallToolResult, McpError> {
+        answered(engine::list_instruments(&p, self.engine.structure()))
     }
 
     #[tool(
@@ -404,10 +455,7 @@ impl ReubenServer {
                 .expect("CurrentInstrument is an object schema")
     )]
     async fn get_current_instrument(&self) -> Result<CallToolResult, McpError> {
-        answered(engine::get_current_instrument(
-            self.engine.structure(),
-            installed_store,
-        ))
+        answered(engine::current_instrument(self.engine.structure()))
     }
 
     #[tool(
@@ -429,13 +477,12 @@ impl ReubenServer {
         answered(engine::get_engine_meters(self.engine.structure()))
     }
 
-    // --- Document tools: engine-free mutators over an instrument document -------------------------
+    // --- Document edits: a `call` to the engine, which owns the files -----------------------------
     //
-    // One roster entry per window verb, and nothing else. There is deliberately nothing else here:
-    // the `expect` guard, the write-iff-valid pipeline, the projection echo, the one-line gloss and
-    // the advertised sentence all live behind `authoring`, so a second door gets them without a
-    // second copy. What the door still owns is the roster spelling, the advertised schema, and the
-    // isError decision.
+    // One roster entry per window verb, and nothing else. The `expect` guard, the write-iff-valid
+    // pipeline, the swap of an accepted edit, the projection echo and the one-line gloss all run on
+    // the engine's side, and the advertised sentence lives behind `authoring`. What the door still
+    // owns is the roster spelling, the advertised schema, and the isError decision.
 
     #[tool(
         name = "new_instrument",
@@ -445,7 +492,11 @@ impl ReubenServer {
         &self,
         Parameters(p): Parameters<authoring::NewInstrument>,
     ) -> Result<CallToolResult, McpError> {
-        answered(authoring::new_instrument(&p, &store(&p.source)))
+        answered(engine::call_tool(
+            names::NEW_INSTRUMENT,
+            &p,
+            self.engine.structure(),
+        ))
     }
 
     #[tool(
@@ -456,7 +507,11 @@ impl ReubenServer {
         &self,
         Parameters(p): Parameters<authoring::SetInstrumentName>,
     ) -> Result<CallToolResult, McpError> {
-        answered(authoring::set_instrument_name(&p, &store(&p.source)))
+        answered(engine::call_tool(
+            names::SET_INSTRUMENT_NAME,
+            &p,
+            self.engine.structure(),
+        ))
     }
 
     #[tool(
@@ -467,7 +522,11 @@ impl ReubenServer {
         &self,
         Parameters(p): Parameters<authoring::SetInstrumentDescription>,
     ) -> Result<CallToolResult, McpError> {
-        answered(authoring::set_instrument_description(&p, &store(&p.source)))
+        answered(engine::call_tool(
+            names::SET_INSTRUMENT_DESCRIPTION,
+            &p,
+            self.engine.structure(),
+        ))
     }
 
     #[tool(
@@ -478,7 +537,11 @@ impl ReubenServer {
         &self,
         Parameters(p): Parameters<authoring::AddInstrumentNode>,
     ) -> Result<CallToolResult, McpError> {
-        answered(authoring::add_instrument_node(&p, &store(&p.source)))
+        answered(engine::call_tool(
+            names::ADD_INSTRUMENT_NODE,
+            &p,
+            self.engine.structure(),
+        ))
     }
 
     #[tool(
@@ -489,7 +552,11 @@ impl ReubenServer {
         &self,
         Parameters(p): Parameters<authoring::RemoveInstrumentNode>,
     ) -> Result<CallToolResult, McpError> {
-        answered(authoring::remove_instrument_node(&p, &store(&p.source)))
+        answered(engine::call_tool(
+            names::REMOVE_INSTRUMENT_NODE,
+            &p,
+            self.engine.structure(),
+        ))
     }
 
     #[tool(
@@ -500,7 +567,11 @@ impl ReubenServer {
         &self,
         Parameters(p): Parameters<authoring::RenameInstrumentNode>,
     ) -> Result<CallToolResult, McpError> {
-        answered(authoring::rename_instrument_node(&p, &store(&p.source)))
+        answered(engine::call_tool(
+            names::RENAME_INSTRUMENT_NODE,
+            &p,
+            self.engine.structure(),
+        ))
     }
 
     #[tool(
@@ -511,9 +582,10 @@ impl ReubenServer {
         &self,
         Parameters(p): Parameters<authoring::SetInstrumentNodeDescription>,
     ) -> Result<CallToolResult, McpError> {
-        answered(authoring::set_instrument_node_description(
+        answered(engine::call_tool(
+            names::SET_INSTRUMENT_NODE_DESCRIPTION,
             &p,
-            &store(&p.source),
+            self.engine.structure(),
         ))
     }
 
@@ -525,7 +597,11 @@ impl ReubenServer {
         &self,
         Parameters(p): Parameters<authoring::SetInstrumentInput>,
     ) -> Result<CallToolResult, McpError> {
-        answered(authoring::set_instrument_input(&p, &store(&p.source)))
+        answered(engine::call_tool(
+            names::SET_INSTRUMENT_INPUT,
+            &p,
+            self.engine.structure(),
+        ))
     }
 
     #[tool(
@@ -536,9 +612,10 @@ impl ReubenServer {
         &self,
         Parameters(p): Parameters<authoring::SetInstrumentInputsByIntent>,
     ) -> Result<CallToolResult, McpError> {
-        answered(authoring::set_instrument_inputs_by_intent(
+        answered(engine::call_tool(
+            names::SET_INSTRUMENT_INPUTS_BY_INTENT,
             &p,
-            &store(&p.source),
+            self.engine.structure(),
         ))
     }
 
@@ -550,7 +627,11 @@ impl ReubenServer {
         &self,
         Parameters(p): Parameters<authoring::WireInstrumentInput>,
     ) -> Result<CallToolResult, McpError> {
-        answered(authoring::wire_instrument_input(&p, &store(&p.source)))
+        answered(engine::call_tool(
+            names::WIRE_INSTRUMENT_INPUT,
+            &p,
+            self.engine.structure(),
+        ))
     }
 
     #[tool(
@@ -561,7 +642,11 @@ impl ReubenServer {
         &self,
         Parameters(p): Parameters<authoring::UnwireInstrumentInput>,
     ) -> Result<CallToolResult, McpError> {
-        answered(authoring::unwire_instrument_input(&p, &store(&p.source)))
+        answered(engine::call_tool(
+            names::UNWIRE_INSTRUMENT_INPUT,
+            &p,
+            self.engine.structure(),
+        ))
     }
 
     #[tool(
@@ -572,7 +657,11 @@ impl ReubenServer {
         &self,
         Parameters(p): Parameters<authoring::SetInstrumentConstant>,
     ) -> Result<CallToolResult, McpError> {
-        answered(authoring::set_instrument_constant(&p, &store(&p.source)))
+        answered(engine::call_tool(
+            names::SET_INSTRUMENT_CONSTANT,
+            &p,
+            self.engine.structure(),
+        ))
     }
 
     #[tool(
@@ -583,7 +672,11 @@ impl ReubenServer {
         &self,
         Parameters(p): Parameters<authoring::RemoveInstrumentConstant>,
     ) -> Result<CallToolResult, McpError> {
-        answered(authoring::remove_instrument_constant(&p, &store(&p.source)))
+        answered(engine::call_tool(
+            names::REMOVE_INSTRUMENT_CONSTANT,
+            &p,
+            self.engine.structure(),
+        ))
     }
 
     #[tool(
@@ -594,9 +687,10 @@ impl ReubenServer {
         &self,
         Parameters(p): Parameters<authoring::AddInstrumentInterfaceInput>,
     ) -> Result<CallToolResult, McpError> {
-        answered(authoring::add_instrument_interface_input(
+        answered(engine::call_tool(
+            names::ADD_INSTRUMENT_INTERFACE_INPUT,
             &p,
-            &store(&p.source),
+            self.engine.structure(),
         ))
     }
 
@@ -608,9 +702,10 @@ impl ReubenServer {
         &self,
         Parameters(p): Parameters<authoring::AddInstrumentInterfaceOutput>,
     ) -> Result<CallToolResult, McpError> {
-        answered(authoring::add_instrument_interface_output(
+        answered(engine::call_tool(
+            names::ADD_INSTRUMENT_INTERFACE_OUTPUT,
             &p,
-            &store(&p.source),
+            self.engine.structure(),
         ))
     }
 
@@ -622,9 +717,10 @@ impl ReubenServer {
         &self,
         Parameters(p): Parameters<authoring::RemoveInstrumentInterfacePipe>,
     ) -> Result<CallToolResult, McpError> {
-        answered(authoring::remove_instrument_interface_input(
+        answered(engine::call_tool(
+            names::REMOVE_INSTRUMENT_INTERFACE_INPUT,
             &p,
-            &store(&p.source),
+            self.engine.structure(),
         ))
     }
 
@@ -636,9 +732,10 @@ impl ReubenServer {
         &self,
         Parameters(p): Parameters<authoring::RemoveInstrumentInterfacePipe>,
     ) -> Result<CallToolResult, McpError> {
-        answered(authoring::remove_instrument_interface_output(
+        answered(engine::call_tool(
+            names::REMOVE_INSTRUMENT_INTERFACE_OUTPUT,
             &p,
-            &store(&p.source),
+            self.engine.structure(),
         ))
     }
 
@@ -650,9 +747,10 @@ impl ReubenServer {
         &self,
         Parameters(p): Parameters<authoring::SetInstrumentInterfaceInputMeta>,
     ) -> Result<CallToolResult, McpError> {
-        answered(authoring::set_instrument_interface_input_meta(
+        answered(engine::call_tool(
+            names::SET_INSTRUMENT_INTERFACE_INPUT_META,
             &p,
-            &store(&p.source),
+            self.engine.structure(),
         ))
     }
 
@@ -664,9 +762,10 @@ impl ReubenServer {
         &self,
         Parameters(p): Parameters<authoring::SetInstrumentInterfaceOutputMeta>,
     ) -> Result<CallToolResult, McpError> {
-        answered(authoring::set_instrument_interface_output_meta(
+        answered(engine::call_tool(
+            names::SET_INSTRUMENT_INTERFACE_OUTPUT_META,
             &p,
-            &store(&p.source),
+            self.engine.structure(),
         ))
     }
 
@@ -678,9 +777,10 @@ impl ReubenServer {
         &self,
         Parameters(p): Parameters<authoring::ClearInstrumentInterfaceMeta>,
     ) -> Result<CallToolResult, McpError> {
-        answered(authoring::clear_instrument_interface_meta(
+        answered(engine::call_tool(
+            names::CLEAR_INSTRUMENT_INTERFACE_META,
             &p,
-            &store(&p.source),
+            self.engine.structure(),
         ))
     }
 
@@ -692,7 +792,11 @@ impl ReubenServer {
         &self,
         Parameters(p): Parameters<authoring::AddInstrumentResource>,
     ) -> Result<CallToolResult, McpError> {
-        answered(authoring::add_instrument_resource(&p, &store(&p.source)))
+        answered(engine::call_tool(
+            names::ADD_INSTRUMENT_RESOURCE,
+            &p,
+            self.engine.structure(),
+        ))
     }
 
     #[tool(
@@ -703,7 +807,11 @@ impl ReubenServer {
         &self,
         Parameters(p): Parameters<authoring::RemoveInstrumentResource>,
     ) -> Result<CallToolResult, McpError> {
-        answered(authoring::remove_instrument_resource(&p, &store(&p.source)))
+        answered(engine::call_tool(
+            names::REMOVE_INSTRUMENT_RESOURCE,
+            &p,
+            self.engine.structure(),
+        ))
     }
 }
 
@@ -738,10 +846,7 @@ fn stamp_window_prose(router: &mut ToolRouter<ReubenServer>) {
          {unstamped:?}"
     );
 
-    for contract in reuben_api::tools::CONTRACTS
-        .iter()
-        .filter(|c| c.kind != reuben_api::tools::ContractKind::Host)
-    {
+    for contract in served_contracts() {
         let route = router.map.get_mut(contract.name).unwrap_or_else(|| {
             panic!(
                 "the window serves `{}`, but no tool advertises it",
@@ -853,24 +958,6 @@ fn edit_result_schema() -> std::sync::Arc<rmcp::model::JsonObject> {
         .expect("EditResult is an object schema")
 }
 
-/// The FS door's reading of an opaque document `source`: a filesystem path. Stat-only because no
-/// authoring path renders — introspection reports port metadata without decoding referenced audio.
-fn store(source: &str) -> FsResolver {
-    FsResolver::for_document(source).stat_only()
-}
-
-/// The FS door's store for projecting what the engine handed back, rooted at the installed
-/// `source`'s directory when the engine named one and at the sidecar cwd when it did not (an
-/// install by value has no directory to anchor against). Best-effort: an unresolvable nested
-/// reference degrades the projection rather than failing the call.
-fn installed_store(source: Option<&str>) -> FsResolver {
-    match source {
-        Some(source) => FsResolver::for_instrument(Path::new(source)).stat_only(),
-        None => FsResolver::new("."),
-    }
-    .stat_only()
-}
-
 /// Serve the MCP protocol over stdio until the client closes the connection. The
 /// current_thread runtime is built by `main`; this is the async body it drives. `main` injects the
 /// [`EngineLink`], so the composition root stays in `main`.
@@ -904,10 +991,14 @@ mod tests {
     #[derive(Debug, Default)]
     struct FakeTransport {
         ping: Option<Response>,
-        swap: Option<Response>,
         document: Option<Response>,
         diagnostics: Option<Response>,
         meters: Option<Response>,
+        open: Option<Response>,
+        /// The answer to a `call` of each scripted tool.
+        calls: Vec<(String, Response)>,
+        /// Every request that crossed the wire, in order, parsed back off it.
+        requests: Arc<Mutex<Vec<Request>>>,
         /// Whether the engine serves `send`. Not an `Option<Response>` like the others because the
         /// ack is derived from the batch that arrives, not canned.
         serves_send: bool,
@@ -932,8 +1023,13 @@ mod tests {
             Self::default()
         }
 
-        fn with_swap(mut self, response: Response) -> Self {
-            self.swap = Some(response);
+        fn with_open(mut self, response: Response) -> Self {
+            self.open = Some(response);
+            self
+        }
+
+        fn with_call(mut self, tool: &str, response: Response) -> Self {
+            self.calls.push((tool.to_string(), response));
             self
         }
 
@@ -963,12 +1059,22 @@ mod tests {
             };
             (transport, sent)
         }
+
+        /// The shared log of every request this transport answers, readable after the transport
+        /// has moved into a server.
+        fn request_log(&self) -> Arc<Mutex<Vec<Request>>> {
+            Arc::clone(&self.requests)
+        }
     }
 
     impl Transport for FakeTransport {
         fn round_trip(&self, line: &str, _read_timeout: Duration) -> io::Result<String> {
             let request = Request::from_ndjson(line)
                 .expect("the tool body must put a well-formed request line on the wire");
+            self.requests
+                .lock()
+                .expect("request log")
+                .push(request.clone());
             // Answered from the batch that actually arrived, parsed back off the wire — so the ack
             // can only be right if the serialization was.
             if let Request::Send { messages } = request {
@@ -981,15 +1087,19 @@ mod tests {
                     "connection refused",
                 ));
             }
-            let configured = match request {
-                Request::Ping => &self.ping,
-                Request::Swap { .. } => &self.swap,
-                Request::GetDocument => &self.document,
-                Request::GetDiagnostics => &self.diagnostics,
-                Request::GetMeters => &self.meters,
+            let configured = match &request {
+                Request::Ping => self.ping.as_ref(),
+                Request::GetDocument => self.document.as_ref(),
+                Request::GetDiagnostics => self.diagnostics.as_ref(),
+                Request::GetMeters => self.meters.as_ref(),
+                Request::Open { .. } => self.open.as_ref(),
+                Request::Call { tool, .. } => self
+                    .calls
+                    .iter()
+                    .find(|(scripted, _)| scripted == tool)
+                    .map(|(_, response)| response),
                 Request::SetProbes { .. }
-                | Request::Call { .. }
-                | Request::Open { .. }
+                | Request::Swap { .. }
                 | Request::List { .. }
                 | Request::Subscribe => {
                     unreachable!("no tool sends it")
@@ -1288,11 +1398,12 @@ mod tests {
     #[test]
     fn engine_tool_payloads_conform_to_their_advertised_output_schemas() {
         // Every engine tool that returns a structured payload, in every shape it can return one.
-        // The engine::SwapResult branches are checked separately because `flatten` +
-        // `skip_serializing_if` make them structurally different objects, and `engine_status` is
-        // checked both ways because `guidance` is its skip_serializing_if field.
+        // `open_instrument` is the route that advertises SwapResult. Its branches are checked
+        // separately because `flatten` + `skip_serializing_if` make them structurally different
+        // objects, and `engine_status` is checked both ways because `guidance` is its
+        // skip_serializing_if field.
         assert_payload_conforms(
-            names::SWAP_INSTRUMENT,
+            names::OPEN_INSTRUMENT,
             "clean install",
             &engine::SwapResult::installed(SwapReport {
                 report: Report {
@@ -1310,7 +1421,7 @@ mod tests {
             }),
         );
         assert_payload_conforms(
-            names::SWAP_INSTRUMENT,
+            names::OPEN_INSTRUMENT,
             "validation failure",
             &engine::SwapResult::installed(SwapReport {
                 report: Report {
@@ -1327,7 +1438,7 @@ mod tests {
             }),
         );
         assert_payload_conforms(
-            names::SWAP_INSTRUMENT,
+            names::OPEN_INSTRUMENT,
             "expect-guard miss",
             &engine::SwapResult::conflict(Conflict {
                 expected: "0badc0de".to_string(),
@@ -1335,7 +1446,7 @@ mod tests {
             }),
         );
         assert_payload_conforms(
-            names::SWAP_INSTRUMENT,
+            names::OPEN_INSTRUMENT,
             "held for the editor's user",
             &engine::SwapResult::held(HeldSwap {
                 requested: "instruments/groovebox.json".to_string(),
@@ -1476,7 +1587,7 @@ mod tests {
 
     #[test]
     fn the_instructions_send_a_model_only_to_verbs_the_roster_serves() {
-        // The gist names six verbs and is handed to every model that connects, so it is prose with
+        // The gist names verbs and is handed to every model that connects, so it is prose with
         // the same failure mode as an advertised sentence — and `stamp_window_prose`'s refusal
         // cannot see it, because that compares route keys and never reads inside a string. A verb
         // fully retired upstream (contract and route together) leaves the rest of this door
@@ -1486,6 +1597,13 @@ mod tests {
             Vec::<&str>::new(),
             "the server instructions send a model to a verb no contract serves"
         );
+        // `unserved_verbs` reads the whole roster, and this door leaves some of it unserved.
+        for verb in NOT_SERVED {
+            assert!(
+                !INSTRUCTIONS.contains(verb),
+                "the server instructions send a model to `{verb}`, which this door does not serve"
+            );
+        }
     }
 
     #[test]
@@ -1530,48 +1648,6 @@ mod tests {
                 "{GUIDE_RESOURCE_URI}, {VOCABULARY_RESOURCE_URI}, and {LIBRARY_INDEX_RESOURCE_URI}"
             ),
             "the served-URI list must read as an Oxford list for the current 3-resource roster"
-        );
-    }
-
-    #[test]
-    fn swap_instrument_result_serializes_report_hash_and_diff() {
-        // A successful swap serializes as the shared SwapReport shape —
-        // { ok, errors, warnings, content_hash, diff } — with no `conflict` key. The tool output
-        // FLATTENS the contract SwapReport, so the tool's structuredContent and the structure
-        // channel's response are the same serde type and cannot drift.
-        let report = SwapReport {
-            report: Report {
-                ok: true,
-                errors: vec![],
-                warnings: vec![],
-            },
-            content_hash: "00c0ffee".to_string(),
-            diff: Some(DiffSummary {
-                survived: 0,
-                state_reset: vec!["/osc".to_string()],
-                added: vec!["/delay".to_string()],
-                removed: vec![],
-            }),
-        };
-        let v = serde_json::to_value(engine::SwapResult::installed(report)).expect("serialize");
-        assert_eq!(
-            v,
-            serde_json::json!({
-                "ok": true,
-                "errors": [],
-                "warnings": [],
-                "content_hash": "00c0ffee",
-                "diff": {
-                    "survived": 0,
-                    "state_reset": ["/osc"],
-                    "added": ["/delay"],
-                    "removed": []
-                }
-            })
-        );
-        assert!(
-            v.as_object().is_some_and(|o| !o.contains_key("conflict")),
-            "a clean install omits the conflict key: {v}"
         );
     }
 
@@ -1674,151 +1750,6 @@ mod tests {
             first_text(&result).contains("reuben play"),
             "the guidance must name the fix: {result:?}"
         );
-    }
-
-    #[test]
-    fn swap_instrument_expect_mismatch_returns_conflict_no_install() {
-        // An expect-guard miss is an ORDINARY result (the guard
-        // guarding, not the tool failing), NOT isError; nothing is installed (ok:false, no diff),
-        // and the conflict names both hashes field-for-field so the model reconciles.
-        let fake = FakeTransport::reachable().with_swap(Response::Conflict(Conflict {
-            expected: "0badc0de".to_string(),
-            actual: "00c0ffee".to_string(),
-        }));
-        let result = block_on(server_with(fake).swap_instrument(Parameters(
-            engine::SwapInstrument {
-                path: "instruments/pad.json".to_string(),
-                expect: Some("0badc0de".to_string()),
-            },
-        )))
-        .expect("swap returns a result");
-        assert_ne!(
-            result.is_error,
-            Some(true),
-            "a conflict is a reconcilable outcome, not isError: {result:?}"
-        );
-        let s = result
-            .structured_content
-            .as_ref()
-            .expect("structured payload");
-        assert_eq!(
-            s["ok"],
-            serde_json::json!(false),
-            "an expect miss installs nothing ⇒ ok:false: {s}"
-        );
-        assert!(
-            s.as_object().is_some_and(|o| !o.contains_key("diff")),
-            "a rejected swap has no diff to report: {s}"
-        );
-        assert_eq!(s["conflict"]["expected"], serde_json::json!("0badc0de"));
-        assert_eq!(s["conflict"]["actual"], serde_json::json!("00c0ffee"));
-        // The contract `SwapReport::rejected` exists to own: content_hash names what KEEPS
-        // PLAYING (the conflict's `actual`), never the `expected` the client asked for. Reporting
-        // `expected` here would hand the model a hash that is not installed, so its next
-        // expect-guarded swap conflicts again — an unbreakable loop.
-        assert_eq!(
-            s["content_hash"],
-            serde_json::json!("00c0ffee"),
-            "a rejected swap reports the hash still playing, not the one asked for: {s}"
-        );
-    }
-
-    #[test]
-    fn swap_instrument_held_reads_as_not_yet_installed_rather_than_failed() {
-        let fake = FakeTransport::reachable().with_swap(Response::Held(HeldSwap {
-            requested: "instruments/groovebox.json".to_string(),
-            playing: Some("instruments/acid-techno.json".to_string()),
-            content_hash: "00c0ffee".to_string(),
-        }));
-        let result = block_on(server_with(fake).swap_instrument(Parameters(
-            engine::SwapInstrument {
-                path: "instruments/groovebox.json".to_string(),
-                expect: None,
-            },
-        )))
-        .expect("swap returns a result");
-        assert_ne!(result.is_error, Some(true), "{result:?}");
-        let s = result
-            .structured_content
-            .as_ref()
-            .expect("structured payload");
-        assert_eq!(s["ok"], serde_json::json!(false), "nothing installed: {s}");
-        assert_eq!(s["content_hash"], serde_json::json!("00c0ffee"));
-        assert_eq!(
-            s["held"]["requested"],
-            serde_json::json!("instruments/groovebox.json")
-        );
-        assert_eq!(
-            s["held"]["playing"],
-            serde_json::json!("instruments/acid-techno.json")
-        );
-        let text = first_text(&result);
-        for expected in [
-            "not installed yet",
-            "instruments/acid-techno.json keeps playing",
-            "get_current_instrument",
-            "retrying",
-        ] {
-            assert!(text.contains(expected), "{expected:?} missing from {text}");
-        }
-    }
-
-    #[test]
-    fn swap_instrument_relays_diff_summary_verbatim() {
-        // The tool relays the channel's diff unchanged. Fixture: an all-cold swap
-        // (nothing survived), which is what the web lane always reports and what a native swap
-        // reports when no node survives.
-        let report = SwapReport {
-            report: Report {
-                ok: true,
-                errors: vec![],
-                warnings: vec![],
-            },
-            content_hash: "00c0ffee".to_string(),
-            diff: Some(DiffSummary {
-                survived: 0,
-                state_reset: vec!["/osc".to_string()],
-                added: vec![],
-                removed: vec![],
-            }),
-        };
-        let fake = FakeTransport::reachable().with_swap(Response::SwapReport(report));
-        let result = block_on(server_with(fake).swap_instrument(Parameters(
-            engine::SwapInstrument {
-                path: "instruments/pad.json".to_string(),
-                expect: None,
-            },
-        )))
-        .expect("swap returns a result");
-        assert_ne!(
-            result.is_error,
-            Some(true),
-            "a successful swap is an ordinary result: {result:?}"
-        );
-        let s = result
-            .structured_content
-            .as_ref()
-            .expect("structured payload");
-        assert_eq!(s["ok"], serde_json::json!(true));
-        assert_eq!(
-            s["diff"]["survived"],
-            serde_json::json!(0),
-            "the channel's survived count is relayed verbatim: {s}"
-        );
-    }
-
-    #[test]
-    fn swap_instrument_unreachable_is_iserror() {
-        // Act-then-map on the mutating verb: a down engine is the fail-fast isError.
-        let result = block_on(server_with(FakeTransport::unreachable()).swap_instrument(
-            Parameters(engine::SwapInstrument {
-                path: "instruments/pad.json".to_string(),
-                expect: None,
-            }),
-        ))
-        .expect("swap returns a result");
-        assert_eq!(result.is_error, Some(true));
-        assert!(first_text(&result).contains("reuben play"));
     }
 
     #[test]
@@ -2003,8 +1934,9 @@ mod tests {
 
     #[test]
     fn get_current_instrument_projects_the_installed_graph_and_never_returns_it() {
-        // The tool answers "what is playing?" with a projection of what the ENGINE holds, plus the
-        // source and hash to reconcile against — the document itself stops at this door.
+        // The tool answers "what is playing?" with the engine's own projection of the source it
+        // installed, plus the source and hash to reconcile against — the document itself stops at
+        // this door.
         let doc = serde_json::json!({
             "format_version": 3,
             "instrument": "warm",
@@ -2015,11 +1947,20 @@ mod tests {
             content_hash: "00c0ffee".to_string(),
             source: Some("voices/warm.json".to_string()),
         };
-        let result = block_on(
-            server_with(FakeTransport::reachable().with_document(snapshot))
-                .get_current_instrument(),
-        )
-        .expect("result");
+        let fake = FakeTransport::reachable()
+            .with_document(snapshot)
+            .with_call(
+                names::DESCRIBE_INSTRUMENT,
+                Response::Called {
+                    output: serde_json::json!({
+                        "view": "index",
+                        "text": "instrument warm · 1 node\n/osc oscillator",
+                    }),
+                    summary: "index of voices/warm.json".to_string(),
+                },
+            );
+        let requests = fake.request_log();
+        let result = block_on(server_with(fake).get_current_instrument()).expect("result");
         assert_ne!(result.is_error, Some(true));
         let s = result
             .structured_content
@@ -2027,15 +1968,25 @@ mod tests {
             .expect("structured payload");
         assert_eq!(s["content_hash"], serde_json::json!("00c0ffee"));
         assert_eq!(s["source"], serde_json::json!("voices/warm.json"));
-        let projection = s["projection"].as_str().expect("a rendered projection");
-        assert!(
-            projection.contains("/osc") && projection.contains("oscillator"),
-            "the projection is of the installed graph: {projection}"
+        assert_eq!(
+            s["projection"],
+            serde_json::json!("instrument warm · 1 node\n/osc oscillator"),
+            "the projection is the engine's index of the installed source: {s}"
         );
         assert_eq!(
             s.get("document"),
             None,
             "the installed document must never ride back to the model"
+        );
+        assert!(
+            requests
+                .lock()
+                .expect("request log")
+                .contains(&Request::Call {
+                    tool: names::DESCRIBE_INSTRUMENT.to_string(),
+                    args: serde_json::json!({ "source": "voices/warm.json", "view": "index" }),
+                }),
+            "the projection is asked of the engine, by the installed source"
         );
     }
 
@@ -2234,192 +2185,238 @@ mod tests {
         }
     }
 
-    /// A minimal valid instrument the document-tool door tests edit on disk.
-    fn seed_instrument() -> &'static str {
-        r#"{
-            "format_version": 3,
-            "instrument": "door-test",
-            "nodes": [ { "type": "oscillator", "address": "/osc", "inputs": { "freq": 220.0 } } ]
-        }"#
+    fn open_pad(expect: Option<&str>) -> engine::OpenInstrument {
+        engine::OpenInstrument {
+            name: "pad.json".to_string(),
+            expect: expect.map(str::to_string),
+        }
     }
 
-    /// End-to-end through the FS door: a document verb interprets the opaque `source` path, edits the
-    /// file, and returns the `EditResult`. Proves the door's path rooting, write-through, and the
-    /// single `EditResult` output shape — none of which the core-level tests (over `MemoryResolver`)
-    /// exercise.
     #[test]
-    fn document_verb_edits_the_file_through_the_fs_door() {
-        let dir = std::env::temp_dir().join("reuben_mcp_edit_door_test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("inst.json");
-        std::fs::write(&path, seed_instrument()).unwrap();
-
-        let server = ReubenServer::new();
-        let result = block_on(server.set_instrument_input(Parameters(
-            authoring::SetInstrumentInput {
-                source: path.display().to_string(),
-                address: "/osc".to_string(),
-                input: "freq".to_string(),
-                value: serde_json::json!(440.0),
-                expect: None,
-            },
-        )))
-        .expect("set_instrument_input returns a result");
-
+    fn open_instrument_expect_mismatch_returns_conflict_no_install() {
+        // An expect-guard miss is an ordinary result (the guard guarding, not the tool failing):
+        // nothing is installed, and the conflict names both hashes so the model reconciles.
+        let fake = FakeTransport::reachable().with_open(Response::Conflict(Conflict {
+            expected: "0badc0de".to_string(),
+            actual: "00c0ffee".to_string(),
+        }));
+        let result =
+            block_on(server_with(fake).open_instrument(Parameters(open_pad(Some("0badc0de")))))
+                .expect("open returns a result");
         assert_ne!(
             result.is_error,
             Some(true),
-            "a valid edit is not isError: {result:?}"
+            "a conflict is a reconcilable outcome, not isError: {result:?}"
         );
         let s = result
             .structured_content
             .as_ref()
             .expect("structured payload");
-        assert_eq!(
-            s["written"],
-            serde_json::json!(true),
-            "the edit was written: {s}"
-        );
-        assert_eq!(s["report"]["ok"], serde_json::json!(true));
-        assert!(s["hash"].as_str().is_some_and(|h| !h.is_empty()));
-
-        // The file on disk actually changed.
-        let on_disk: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(
-            on_disk["nodes"][0]["inputs"]["freq"],
-            serde_json::json!(440.0)
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The door-side `expect` guard: a mismatched hash rejects the write as an ordinary result
-    /// (nothing changed), reporting the real current hash to reconcile against.
-    #[test]
-    fn document_verb_expect_guard_rejects_a_stale_write() {
-        let dir = std::env::temp_dir().join("reuben_mcp_edit_expect_test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("inst.json");
-        std::fs::write(&path, seed_instrument()).unwrap();
-        let before = std::fs::read_to_string(&path).unwrap();
-
-        let server = ReubenServer::new();
-        let result = block_on(server.set_instrument_input(Parameters(
-            authoring::SetInstrumentInput {
-                source: path.display().to_string(),
-                address: "/osc".to_string(),
-                input: "freq".to_string(),
-                value: serde_json::json!(440.0),
-                expect: Some("deadbeefdeadbeef".to_string()),
-            },
-        )))
-        .expect("returns a result");
-
-        assert_ne!(
-            result.is_error,
-            Some(true),
-            "a guard miss is ordinary, not isError"
-        );
-        let s = result
-            .structured_content
-            .as_ref()
-            .expect("structured payload");
-        assert_eq!(
-            s["written"],
-            serde_json::json!(false),
-            "a stale write is refused: {s}"
-        );
-        // The file is untouched.
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
-        // The guard tells the caller to re-read and reconcile, so it hands back the current view
-        // rather than an empty zoom that would cost a second round trip to fill.
-        let zoom = s["zoom"].as_str().expect("a zoom string");
+        assert_eq!(s["ok"], serde_json::json!(false), "nothing installed: {s}");
         assert!(
-            zoom.contains("/osc"),
-            "the guard echoes the current node index: {zoom:?}"
+            s.as_object().is_some_and(|o| !o.contains_key("diff")),
+            "a rejected open has no diff to report: {s}"
         );
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A can't-do-the-job precondition (no such node) is `isError`, distinct from a rejected edit.
-    #[test]
-    fn document_verb_missing_target_is_iserror() {
-        let dir = std::env::temp_dir().join("reuben_mcp_edit_target_test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("inst.json");
-        std::fs::write(&path, seed_instrument()).unwrap();
-
-        let server = ReubenServer::new();
-        let result = block_on(server.set_instrument_input(Parameters(
-            authoring::SetInstrumentInput {
-                source: path.display().to_string(),
-                address: "/ghost".to_string(),
-                input: "freq".to_string(),
-                value: serde_json::json!(1.0),
-                expect: None,
-            },
-        )))
-        .expect("returns a result");
+        assert_eq!(s["conflict"]["expected"], serde_json::json!("0badc0de"));
+        assert_eq!(s["conflict"]["actual"], serde_json::json!("00c0ffee"));
+        // content_hash names what keeps playing, never the `expected` the client asked for, or the
+        // model's next guarded open conflicts again.
         assert_eq!(
-            result.is_error,
-            Some(true),
-            "a missing target is isError: {result:?}"
+            s["content_hash"],
+            serde_json::json!("00c0ffee"),
+            "a rejected open reports the hash still playing: {s}"
         );
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A rejection for an error the document already had says so in the text a model reads, and
-    /// carries it apart from the edit's own in the structured result.
     #[test]
-    fn a_rejection_for_a_pre_existing_error_says_so() {
-        let dir = std::env::temp_dir().join("reuben_mcp_edit_pre_existing_test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("inst.json");
-        std::fs::write(
-            &path,
-            r#"{
-                "format_version": 3,
-                "instrument": "door-test",
-                "nodes": [
-                    { "type": "oscillator", "address": "/osc", "inputs": { "freq": { "from": "/gone" } } }
-                ]
-            }"#,
-        )
-        .unwrap();
-
-        let server = ReubenServer::new();
-        let result = block_on(server.set_instrument_node_description(Parameters(
-            authoring::SetInstrumentNodeDescription {
-                source: path.display().to_string(),
-                address: "/osc".to_string(),
-                description: Some("the tone".to_string()),
-                expect: None,
-            },
-        )))
-        .expect("returns a result");
-
-        assert_ne!(result.is_error, Some(true), "a rejection is ordinary");
+    fn open_instrument_held_reads_as_not_yet_installed_rather_than_failed() {
+        let fake = FakeTransport::reachable().with_open(Response::Held(HeldSwap {
+            requested: "instruments/groovebox.json".to_string(),
+            playing: Some("instruments/acid-techno.json".to_string()),
+            content_hash: "00c0ffee".to_string(),
+        }));
+        let result = block_on(server_with(fake).open_instrument(Parameters(open_pad(None))))
+            .expect("open returns a result");
+        assert_ne!(result.is_error, Some(true), "{result:?}");
+        let s = result
+            .structured_content
+            .as_ref()
+            .expect("structured payload");
+        assert_eq!(s["ok"], serde_json::json!(false), "nothing installed: {s}");
+        assert_eq!(s["content_hash"], serde_json::json!("00c0ffee"));
+        assert_eq!(
+            s["held"]["requested"],
+            serde_json::json!("instruments/groovebox.json")
+        );
+        assert_eq!(
+            s["held"]["playing"],
+            serde_json::json!("instruments/acid-techno.json")
+        );
         let text = first_text(&result);
-        assert!(
-            text.contains("already had 1 error(s) before this edit")
-                && text.contains("fix those first"),
-            "{text}"
-        );
-        let s = result
-            .structured_content
-            .as_ref()
-            .expect("structured payload");
-        assert_eq!(s["report"]["errors"], serde_json::json!([]), "{s}");
-        assert_eq!(s["pre_existing"][0]["node"], "/osc", "{s}");
-        assert_eq!(s["pre_existing"][0]["port"], "freq", "{s}");
+        for expected in [
+            "not installed yet",
+            "instruments/acid-techno.json keeps playing",
+            "get_current_instrument",
+            "retrying",
+        ] {
+            assert!(text.contains(expected), "{expected:?} missing from {text}");
+        }
+    }
 
-        let _ = std::fs::remove_dir_all(&dir);
+    /// The arguments `set_instrument_name` carries in the tests below.
+    fn rename_args() -> authoring::SetInstrumentName {
+        authoring::SetInstrumentName {
+            source: "pad.json".to_string(),
+            name: "warm pad".to_string(),
+            expect: Some("00c0ffee".to_string()),
+        }
+    }
+
+    /// A document verb puts exactly one line on the wire, a `call` naming the verb with the tool's
+    /// own arguments, and relays the server's output untouched.
+    #[test]
+    fn document_verb_is_one_call_to_the_server() {
+        let output = serde_json::json!({
+            "written": true,
+            "hash": "0ddba11",
+            "report": { "ok": true, "errors": [], "warnings": [] },
+            "zoom": "instrument warm pad",
+        });
+        let fake = FakeTransport::reachable().with_call(
+            names::SET_INSTRUMENT_NAME,
+            Response::Called {
+                output: output.clone(),
+                summary: "renamed to warm pad".to_string(),
+            },
+        );
+        let requests = fake.request_log();
+        let result = block_on(server_with(fake).set_instrument_name(Parameters(rename_args())))
+            .expect("returns a result");
+
+        assert_eq!(
+            *requests.lock().expect("request log"),
+            vec![Request::Call {
+                tool: names::SET_INSTRUMENT_NAME.to_string(),
+                args: serde_json::to_value(rename_args()).expect("args as JSON"),
+            }]
+        );
+        assert_ne!(result.is_error, Some(true), "{result:?}");
+        assert_eq!(result.structured_content, Some(output));
+        assert_eq!(first_text(&result), "renamed to warm pad");
+    }
+
+    /// An edit the server refused to write is still the tool working: an ordinary result whose
+    /// `written: false` the model acts on, exactly as when the edit ran in-process.
+    #[test]
+    fn document_verb_not_written_is_an_ordinary_result() {
+        let output = serde_json::json!({
+            "written": false,
+            "hash": "00c0ffee",
+            "report": { "ok": false, "errors": [], "warnings": [] },
+        });
+        let fake = FakeTransport::reachable().with_call(
+            names::SET_INSTRUMENT_NAME,
+            Response::Called {
+                output: output.clone(),
+                summary: "not written".to_string(),
+            },
+        );
+        let result = block_on(server_with(fake).set_instrument_name(Parameters(rename_args())))
+            .expect("returns a result");
+        assert_ne!(result.is_error, Some(true), "{result:?}");
+        assert_eq!(result.structured_content, Some(output));
+    }
+
+    #[test]
+    fn document_verb_refused_by_the_server_is_iserror_with_its_message() {
+        let message = "`pad` does not end in .json; nothing was written";
+        let fake = FakeTransport::reachable().with_call(
+            names::SET_INSTRUMENT_NAME,
+            Response::Refused {
+                message: message.to_string(),
+            },
+        );
+        let result = block_on(server_with(fake).set_instrument_name(Parameters(rename_args())))
+            .expect("returns a result");
+        assert_eq!(result.is_error, Some(true), "{result:?}");
+        assert_eq!(result.structured_content, None);
+        assert_eq!(first_text(&result), message);
+    }
+
+    /// With no engine there is no one to read or write the file, and the door must not fall back
+    /// to doing it itself: every document tool is isError, naming the fix.
+    #[test]
+    fn document_verb_with_no_engine_is_iserror_with_guidance() {
+        let server = server_with(FakeTransport::unreachable());
+        let results = [
+            block_on(server.set_instrument_name(Parameters(rename_args()))),
+            block_on(
+                server.describe_instrument(Parameters(
+                    serde_json::from_value(serde_json::json!({ "source": "pad.json" }))
+                        .expect("describe args"),
+                )),
+            ),
+            block_on(
+                server.validate_instrument(Parameters(authoring::ValidateInstrument {
+                    source: "pad.json".to_string(),
+                })),
+            ),
+        ];
+        for result in results {
+            let result = result.expect("returns a result");
+            assert_eq!(result.is_error, Some(true), "{result:?}");
+            assert!(
+                first_text(&result).contains(ENGINE_UNREACHABLE_GUIDANCE),
+                "the refusal carries the start-the-engine guidance: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn describe_operators_answers_with_no_engine() {
+        let fake = FakeTransport::unreachable();
+        let requests = fake.request_log();
+        let result = block_on(server_with(fake).describe_operators(Parameters(
+            authoring::DescribeOperators {
+                name: Some("oscillator".to_string()),
+                compact: true,
+            },
+        )))
+        .expect("returns a result");
+        assert_ne!(result.is_error, Some(true), "{result:?}");
+        assert!(result.structured_content.is_some(), "{result:?}");
+        assert_eq!(
+            *requests.lock().expect("request log"),
+            Vec::<Request>::new(),
+            "listing operators touches no engine"
+        );
+    }
+
+    #[test]
+    fn swap_instrument_is_not_advertised() {
+        assert!(!tool_names().contains(&names::SWAP_INSTRUMENT));
+        let advertised: Vec<String> = ReubenServer::new()
+            .tool_router
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        assert!(
+            !advertised.iter().any(|name| name == names::SWAP_INSTRUMENT),
+            "{advertised:?}"
+        );
+    }
+
+    /// A stale entry would skip nothing and silently stop meaning anything.
+    #[test]
+    fn not_served_entries_are_on_the_roster() {
+        for name in NOT_SERVED {
+            assert!(
+                reuben_api::tools::CONTRACTS
+                    .iter()
+                    .any(|contract| contract.name == *name),
+                "`{name}` is listed as not served, but the roster has no such verb"
+            );
+        }
     }
 }

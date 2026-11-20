@@ -17,17 +17,19 @@ use alloc::vec::Vec;
 use reuben_core::Registry;
 use reuben_document::projection::Projector;
 
-use crate::authoring::{Answer, Refusal, Resources};
+use crate::authoring::{Answer, DocumentView, Refusal, Resources};
 
-use super::args::{SendLiveControls, SwapInstrument};
-use super::channel::{Channel, ChannelError, SwapOutcome};
+use super::args::{ListInstruments, OpenInstrument, SendLiveControls, SwapInstrument};
+use super::channel::{CallOutcome, Channel, ChannelError, SwapOutcome};
 use super::prose::ENGINE_UNREACHABLE_GUIDANCE;
 use super::result::{
-    CurrentInstrument, EngineStatus, SendOutput, SidecarInfo, StatusEndpoints, SwapResult,
+    CurrentInstrument, EngineStatus, InstrumentList, SendOutput, SidecarInfo, StatusEndpoints,
+    SwapResult,
 };
 use super::wire::{
     over_long_batch_refusal, ChannelLevel, ControlArg, ControlMessage, DiagnosticsReport,
-    DocSource, DocumentSnapshot, MetersReport, SwapReport, EMPTY_BATCH_REFUSAL, MAX_SEND_BATCH,
+    DocSource, DocumentSnapshot, ListWhat, MetersReport, SwapReport, EMPTY_BATCH_REFUSAL,
+    MAX_SEND_BATCH,
 };
 
 /// Audition a batch of control values on the running engine.
@@ -112,19 +114,92 @@ pub fn swap_instrument(
     args: &SwapInstrument,
     channel: &Channel,
 ) -> Result<Answer<SwapResult>, Refusal> {
-    match channel.swap(DocSource::Path(args.path.clone()), args.expect.clone()) {
+    swap_answer(
+        channel.swap(DocSource::Path(args.path.clone()), args.expect.clone()),
+        Verb::Swap,
+    )
+}
+
+/// Stop playing the current instrument and play the one `name` names, read through the engine's
+/// store. Answers exactly as [`swap_instrument`] does.
+pub fn open_instrument(
+    args: &OpenInstrument,
+    channel: &Channel,
+) -> Result<Answer<SwapResult>, Refusal> {
+    swap_answer(
+        channel.open(args.name.clone(), args.expect.clone()),
+        Verb::Open,
+    )
+}
+
+/// List the instrument or sample names the engine offers.
+pub fn list_instruments(
+    args: &ListInstruments,
+    channel: &Channel,
+) -> Result<Answer<InstrumentList>, Refusal> {
+    let names = channel
+        .list(args.what)
+        .map_err(|why| refuse("the list could not be completed", why))?;
+    let kind = match (args.what, names.len()) {
+        (ListWhat::Instruments, 1) => "instrument",
+        (ListWhat::Instruments, _) => "instruments",
+        (ListWhat::Samples, 1) => "sample",
+        (ListWhat::Samples, _) => "samples",
+    };
+    let summary = format!("{} {kind} offered", names.len());
+    Ok(Answer {
+        output: InstrumentList { names },
+        summary,
+    })
+}
+
+/// The two verbs that install a document, so a summary names the one the model called.
+#[derive(Clone, Copy)]
+enum Verb {
+    Swap,
+    Open,
+}
+
+impl Verb {
+    fn noun(self) -> &'static str {
+        match self {
+            Verb::Swap => "swap",
+            Verb::Open => "open",
+        }
+    }
+
+    fn past(self) -> &'static str {
+        match self {
+            Verb::Swap => "swapped",
+            Verb::Open => "opened",
+        }
+    }
+}
+
+/// Map a swap-shaped channel outcome to the verb's answer.
+fn swap_answer(
+    outcome: Result<SwapOutcome, ChannelError>,
+    verb: Verb,
+) -> Result<Answer<SwapResult>, Refusal> {
+    match outcome {
         Ok(SwapOutcome::Installed(report)) => {
-            let summary = swap_summary(&report);
+            let summary = swap_summary(&report, verb);
             Ok(Answer {
                 output: SwapResult::installed(report),
                 summary,
             })
         }
         Ok(SwapOutcome::Conflict(conflict)) => {
+            let playing = if conflict.actual.is_empty() {
+                "nothing (the open instrument does not load)".to_string()
+            } else {
+                conflict.actual.clone()
+            };
             let summary = format!(
-                "swap rejected by the expect guard: the engine is playing {}, not the \
+                "{} rejected by the expect guard: the engine is playing {playing}, not the \
                  expected {} — re-read with get_current_instrument and reconcile",
-                conflict.actual, conflict.expected
+                verb.noun(),
+                conflict.expected
             );
             Ok(Answer {
                 output: SwapResult::conflict(conflict),
@@ -148,8 +223,63 @@ pub fn swap_instrument(
                 summary,
             })
         }
-        Err(why) => Err(refuse("the swap could not be completed", why)),
+        Ok(SwapOutcome::Refused(message)) => Err(Refusal::new(message)),
+        Err(why) => Err(refuse(
+            &format!("the {} could not be completed", verb.noun()),
+            why,
+        )),
     }
+}
+
+/// Run one non-engine roster verb on the engine's server, which owns the files it reads and writes.
+/// The verb's own output comes back as JSON; a refusal carries the server's message verbatim.
+pub fn call_tool<A: serde::Serialize>(
+    tool: &str,
+    args: &A,
+    channel: &Channel,
+) -> Result<Answer<serde_json::Value>, Refusal> {
+    let args = serde_json::to_value(args)
+        .map_err(|e| Refusal::new(format!("`{tool}` arguments could not be encoded: {e}")))?;
+    match channel.call(tool, args) {
+        Ok(CallOutcome::Called { output, summary }) => Ok(Answer { output, summary }),
+        Ok(CallOutcome::Refused(message)) => Err(Refusal::new(message)),
+        Err(why) => Err(refuse(&format!("`{tool}` could not be run"), why)),
+    }
+}
+
+/// What is the engine playing? As [`get_current_instrument`], except that the projection is the
+/// server's `describe_instrument` of the open `source` file, so the caller needs no store of its
+/// own. A projection that cannot be had is a note in its place, never an error: the hash is the
+/// load-bearing half.
+pub fn current_instrument(channel: &Channel) -> Result<Answer<CurrentInstrument>, Refusal> {
+    let snapshot = channel
+        .get_document()
+        .map_err(|why| refuse("could not read the current instrument", why))?;
+    let summary = playing_summary(&snapshot);
+    let projection = match &snapshot.source {
+        None => "(projection unavailable: no source to describe)".to_string(),
+        Some(source) if snapshot.content_hash.is_empty() => {
+            format!("(nothing plays: {source} does not load)")
+        }
+        Some(source) => {
+            let args = serde_json::json!({ "source": source, "view": "index" });
+            match call_tool("describe_instrument", &args, channel) {
+                Ok(answer) => match serde_json::from_value::<DocumentView>(answer.output) {
+                    Ok(view) => view.text,
+                    Err(e) => format!("(projection unavailable: {e})"),
+                },
+                Err(refusal) => format!("(projection unavailable: {})", refusal.message),
+            }
+        }
+    };
+    Ok(Answer {
+        output: CurrentInstrument {
+            projection,
+            source: snapshot.source,
+            content_hash: snapshot.content_hash,
+        },
+        summary,
+    })
 }
 
 /// What is the engine playing? Answered as a projection of the **installed** graph — the snapshot
@@ -166,14 +296,11 @@ pub fn get_current_instrument<S: Resources>(
     let snapshot = channel
         .get_document()
         .map_err(|why| refuse("could not read the current instrument", why))?;
-    let summary = match &snapshot.source {
-        Some(source) => format!("playing {source} (content_hash {})", snapshot.content_hash),
-        None => format!(
-            "playing an instrument installed by value (content_hash {})",
-            snapshot.content_hash
-        ),
+    let summary = playing_summary(&snapshot);
+    let projection = match (&snapshot.source, snapshot.content_hash.is_empty()) {
+        (Some(source), true) => format!("(nothing plays: {source} does not load)"),
+        _ => project_installed(&snapshot, &store_for(snapshot.source.as_deref())),
     };
-    let projection = project_installed(&snapshot, &store_for(snapshot.source.as_deref()));
     Ok(Answer {
         output: CurrentInstrument {
             projection,
@@ -182,6 +309,21 @@ pub fn get_current_instrument<S: Resources>(
         },
         summary,
     })
+}
+
+/// What `get_current_instrument` says plays. An empty content hash is the server's word that the
+/// open instrument does not load and nothing plays.
+fn playing_summary(snapshot: &DocumentSnapshot) -> String {
+    match &snapshot.source {
+        Some(source) if snapshot.content_hash.is_empty() => format!(
+            "{source} is open but does not load, so nothing plays until an edit makes it load"
+        ),
+        Some(source) => format!("playing {source} (content_hash {})", snapshot.content_hash),
+        None => format!(
+            "playing an instrument installed by value (content_hash {})",
+            snapshot.content_hash
+        ),
+    }
 }
 
 /// Read the engine's running counters.
@@ -234,12 +376,15 @@ fn levels(channels: &[ChannelLevel]) -> String {
 }
 
 /// The one place a failed exchange becomes a refusal, so no two verbs classify it differently:
-/// unreachable answers with the shared guidance, anything else names *which* call died.
+/// unreachable answers with the shared guidance, an unanswered request with its re-read guidance
+/// (the request may have run, so `context`'s "could not" would be false), and anything else names
+/// *which* call died.
 fn refuse(context: &str, why: ChannelError) -> Refusal {
-    if why.is_unreachable() {
-        return Refusal::new(ENGINE_UNREACHABLE_GUIDANCE);
+    match why {
+        ChannelError::Unreachable(_) => Refusal::new(ENGINE_UNREACHABLE_GUIDANCE),
+        ChannelError::NoAnswer(guidance) => Refusal::new(guidance),
+        why => Refusal::new(format!("{context}: {why}")),
     }
-    Refusal::new(format!("{context}: {why}"))
 }
 
 /// Convert a `send` message's JSON args into the wire's flat control atoms.
@@ -294,22 +439,49 @@ fn project_installed(snapshot: &DocumentSnapshot, store: &dyn Resources) -> Stri
 }
 
 /// One-line gloss of a swap outcome: what installed (with diff counts) or why nothing did.
-fn swap_summary(report: &SwapReport) -> String {
+fn swap_summary(report: &SwapReport, verb: Verb) -> String {
     if report.report.ok {
         match &report.diff {
             Some(diff) => format!(
-                "swapped (content_hash {}): {} survived, {} state-reset, {} added, {} removed",
+                "{} (content_hash {}): {} survived, {} state-reset, {} added, {} removed",
+                verb.past(),
                 report.content_hash,
                 diff.survived,
                 diff.state_reset.len(),
                 diff.added.len(),
                 diff.removed.len()
             ),
-            None => format!("swapped (content_hash {})", report.content_hash),
+            None => format!("{} (content_hash {})", verb.past(), report.content_hash),
         }
+    } else if report.content_hash.is_empty() {
+        // Nothing plays. The server's warnings say which instrument is open and whether this
+        // request opened it; the first error says what was refused.
+        let first = report
+            .report
+            .errors
+            .first()
+            .map_or("", |error| error.message.as_str());
+        let open = report
+            .report
+            .warnings
+            .iter()
+            .map(|warning| warning.message.as_str())
+            .collect::<Vec<_>>()
+            .join("; ");
+        let open = if open.is_empty() {
+            "nothing plays".to_string()
+        } else {
+            open
+        };
+        format!(
+            "{} did not install: {} error(s), the first: {first} — {open}",
+            verb.noun(),
+            report.report.errors.len(),
+        )
     } else {
         format!(
-            "swap rejected: {} error(s), {} warning(s) — nothing installed; {} keeps playing",
+            "{} rejected: {} error(s), {} warning(s) — nothing installed; {} keeps playing",
+            verb.noun(),
             report.report.errors.len(),
             report.report.warnings.len(),
             report.content_hash
@@ -392,6 +564,55 @@ mod tests {
         }
     }
 
+    /// A transport whose engine took the request and never answered.
+    #[derive(Debug)]
+    struct SlowEngine;
+
+    impl Transport for SlowEngine {
+        fn round_trip(&self, _line: &str, _read_timeout: Duration) -> io::Result<String> {
+            Err(super::super::channel::unanswered(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "read timed out",
+            )))
+        }
+
+        fn endpoint(&self) -> &str {
+            "127.0.0.1:9124"
+        }
+    }
+
+    /// A slow answer is not a dead engine: telling the caller to start one would send it to retry
+    /// a request the engine may already have applied.
+    #[test]
+    fn an_unanswered_request_says_it_may_have_been_applied() {
+        let channel = Channel::new(SlowEngine);
+        let refusals = [
+            call_tool("add_instrument_node", &serde_json::json!({}), &channel)
+                .expect_err("no answer"),
+            open_instrument(
+                &OpenInstrument {
+                    name: "a.json".to_string(),
+                    expect: None,
+                },
+                &channel,
+            )
+            .expect_err("no answer"),
+        ];
+        for refusal in refusals {
+            assert_ne!(refusal.message, ENGINE_UNREACHABLE_GUIDANCE);
+            assert!(
+                !refusal.message.contains("could not"),
+                "it may have been: {refusal}"
+            );
+            assert!(
+                refusal.message.contains("may have been applied")
+                    && refusal.message.contains("get_current_instrument")
+                    && refusal.message.contains("describe_instrument"),
+                "{refusal}"
+            );
+        }
+    }
+
     /// The one verb that must not refuse: asking whether the engine is there is answerable when it
     /// is not, and the guidance rides in the payload rather than replacing it.
     #[test]
@@ -430,5 +651,288 @@ mod tests {
             "the refusal names the offending message: {refusal}"
         );
         assert_ne!(refusal.message, ENGINE_UNREACHABLE_GUIDANCE);
+    }
+
+    /// A transport that answers each request with the next scripted line and records what it was
+    /// asked.
+    #[derive(Debug)]
+    struct Scripted {
+        replies: std::sync::Mutex<alloc::collections::VecDeque<String>>,
+        asked: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl Transport for Scripted {
+        fn round_trip(&self, line: &str, _read_timeout: Duration) -> io::Result<String> {
+            self.asked.lock().unwrap().push(line.to_string());
+            Ok(self
+                .replies
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("a scripted reply"))
+        }
+
+        fn endpoint(&self) -> &str {
+            "scripted"
+        }
+    }
+
+    fn scripted(replies: &[&str]) -> (Channel, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let transport = Scripted {
+            replies: std::sync::Mutex::new(replies.iter().map(|r| r.to_string()).collect()),
+            asked: asked.clone(),
+        };
+        (Channel::new(transport), asked)
+    }
+
+    #[test]
+    fn call_tool_unreachable_carries_the_start_reuben_play_guidance() {
+        let refusal = call_tool("describe_instrument", &serde_json::json!({}), &dead())
+            .expect_err("no engine to call");
+        assert!(
+            refusal.message.contains(ENGINE_UNREACHABLE_GUIDANCE),
+            "{refusal}"
+        );
+    }
+
+    #[test]
+    fn current_instrument_with_no_source_answers_unavailable_not_error() {
+        let (channel, asked) =
+            scripted(&[r#"{"reply":"document","document":{},"content_hash":"h"}"#]);
+        let answer = current_instrument(&channel).expect("an answer, not an error");
+        assert_eq!(
+            answer.output.projection,
+            "(projection unavailable: no source to describe)"
+        );
+        assert_eq!(answer.output.content_hash, "h");
+        assert_eq!(asked.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn current_instrument_projects_through_describe() {
+        let (channel, asked) = scripted(&[
+            r#"{"reply":"document","document":{},"content_hash":"h","source":"a.json"}"#,
+            r#"{"reply":"called","output":{"view":"index","text":"/osc sine"},"summary":"s"}"#,
+        ]);
+        let answer = current_instrument(&channel).expect("an answer");
+        assert_eq!(answer.output.projection, "/osc sine");
+        assert_eq!(answer.output.source.as_deref(), Some("a.json"));
+        let asked = asked.lock().unwrap();
+        let second = super::super::wire::Request::from_ndjson(&asked[1]).unwrap();
+        assert_eq!(
+            second,
+            super::super::wire::Request::Call {
+                tool: "describe_instrument".to_string(),
+                args: serde_json::json!({"source": "a.json", "view": "index"}),
+            }
+        );
+    }
+
+    #[test]
+    fn an_open_that_does_not_load_says_nothing_plays() {
+        let (channel, _) = scripted(&[
+            r#"{"reply":"swap_report","ok":false,"errors":[{"message":"bad"}],"warnings":[{"message":"b.json is open but does not load, so nothing plays until an edit makes it load"}],"content_hash":""}"#,
+        ]);
+        let answer = open_instrument(
+            &OpenInstrument {
+                name: "b.json".to_string(),
+                expect: None,
+            },
+            &channel,
+        )
+        .expect("an answer, not a refusal");
+        assert!(
+            answer
+                .summary
+                .contains("b.json is open but does not load, so nothing plays until an edit"),
+            "{}",
+            answer.summary
+        );
+        assert!(
+            !answer.summary.contains("keeps playing"),
+            "{}",
+            answer.summary
+        );
+    }
+
+    #[test]
+    fn a_refused_open_while_nothing_plays_names_the_refused_name_and_what_is_open() {
+        let (channel, _) = scripted(&[
+            r#"{"reply":"swap_report","ok":false,"errors":[{"message":"open missing.json: not found"}],"warnings":[{"message":"nothing was opened; b.json is still open but does not load, so nothing plays"}],"content_hash":""}"#,
+        ]);
+        let answer = open_instrument(
+            &OpenInstrument {
+                name: "missing.json".to_string(),
+                expect: None,
+            },
+            &channel,
+        )
+        .expect("an answer");
+        for expected in [
+            "open missing.json: not found",
+            "nothing was opened; b.json is still open",
+        ] {
+            assert!(
+                answer.summary.contains(expected),
+                "{expected:?} missing from {}",
+                answer.summary
+            );
+        }
+    }
+
+    #[test]
+    fn current_instrument_says_an_open_instrument_that_does_not_load_plays_nothing() {
+        let (channel, asked) = scripted(&[
+            r#"{"reply":"document","document":null,"content_hash":"","source":"b.json"}"#,
+        ]);
+        let answer = current_instrument(&channel).expect("an answer");
+        assert_eq!(
+            answer.summary,
+            "b.json is open but does not load, so nothing plays until an edit makes it load"
+        );
+        assert_eq!(answer.output.content_hash, "");
+        assert_eq!(
+            answer.output.projection,
+            "(nothing plays: b.json does not load)"
+        );
+        assert_eq!(
+            asked.lock().unwrap().len(),
+            1,
+            "no describe while nothing plays"
+        );
+    }
+
+    #[test]
+    fn current_instrument_notes_a_refused_describe_in_the_projection() {
+        let (channel, _) = scripted(&[
+            r#"{"reply":"document","document":{},"content_hash":"h","source":"a.json"}"#,
+            r#"{"reply":"refused","message":"nope"}"#,
+        ]);
+        let answer = current_instrument(&channel).expect("an answer");
+        assert_eq!(answer.output.projection, "(projection unavailable: nope)");
+    }
+
+    #[test]
+    fn open_instrument_relays_a_refusal() {
+        let (channel, asked) = scripted(&[r#"{"reply":"refused","message":"no such instrument"}"#]);
+        let refusal = open_instrument(
+            &OpenInstrument {
+                name: "nope".to_string(),
+                expect: None,
+            },
+            &channel,
+        )
+        .expect_err("a refused open is a refusal");
+        assert_eq!(refusal.message, "no such instrument");
+        let asked = asked.lock().unwrap();
+        assert_eq!(
+            super::super::wire::Request::from_ndjson(&asked[0]).unwrap(),
+            super::super::wire::Request::Open {
+                name: "nope".to_string(),
+                expect: None,
+            }
+        );
+    }
+
+    #[test]
+    fn open_instrument_held_reads_as_not_yet_installed() {
+        let (channel, _) = scripted(&[
+            r#"{"reply":"held","requested":"groovebox","playing":"acid-techno","content_hash":"00c0ffee"}"#,
+        ]);
+        let answer = open_instrument(
+            &OpenInstrument {
+                name: "groovebox".to_string(),
+                expect: None,
+            },
+            &channel,
+        )
+        .expect("held is an answer");
+        let held = answer.output.held.as_ref().expect("held payload");
+        assert_eq!(held.requested, "groovebox");
+        assert!(!answer.output.report.report.ok, "nothing installed");
+        for expected in [
+            "not installed yet",
+            "acid-techno keeps playing",
+            "get_current_instrument",
+        ] {
+            assert!(
+                answer.summary.contains(expected),
+                "{expected:?} missing from {}",
+                answer.summary
+            );
+        }
+    }
+
+    #[test]
+    fn list_instruments_summarizes_the_count() {
+        let (channel, _) = scripted(&[
+            r#"{"reply":"listed","names":["a","b"]}"#,
+            r#"{"reply":"listed","names":["kick"]}"#,
+            r#"{"reply":"listed","names":["a"]}"#,
+            r#"{"reply":"listed","names":["kick","snare"]}"#,
+        ]);
+        let instruments = list_instruments(
+            &ListInstruments {
+                what: ListWhat::Instruments,
+            },
+            &channel,
+        )
+        .expect("an answer");
+        assert_eq!(instruments.output.names, ["a", "b"]);
+        assert_eq!(instruments.summary, "2 instruments offered");
+        let samples = list_instruments(
+            &ListInstruments {
+                what: ListWhat::Samples,
+            },
+            &channel,
+        )
+        .expect("an answer");
+        assert_eq!(samples.summary, "1 sample offered");
+        let one = list_instruments(
+            &ListInstruments {
+                what: ListWhat::Instruments,
+            },
+            &channel,
+        )
+        .expect("an answer");
+        assert_eq!(one.summary, "1 instrument offered");
+        let two = list_instruments(
+            &ListInstruments {
+                what: ListWhat::Samples,
+            },
+            &channel,
+        )
+        .expect("an answer");
+        assert_eq!(two.summary, "2 samples offered");
+    }
+
+    fn open_summary(reply: &str) -> String {
+        let (channel, _) = scripted(&[reply]);
+        open_instrument(
+            &OpenInstrument {
+                name: "x".to_string(),
+                expect: Some("e".to_string()),
+            },
+            &channel,
+        )
+        .expect("an answer")
+        .summary
+    }
+
+    #[test]
+    fn open_instrument_conflict_says_open_not_swap() {
+        let summary = open_summary(r#"{"reply":"conflict","expected":"e","actual":"a"}"#);
+        assert!(summary.starts_with("open rejected"), "{summary}");
+        assert!(!summary.contains("swap"), "{summary}");
+    }
+
+    #[test]
+    fn open_instrument_failed_report_says_open_not_swap() {
+        let summary = open_summary(
+            r#"{"reply":"swap_report","ok":false,"errors":[],"warnings":[],"content_hash":"h"}"#,
+        );
+        assert!(summary.starts_with("open rejected"), "{summary}");
+        assert!(!summary.contains("swap"), "{summary}");
     }
 }

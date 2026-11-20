@@ -3,8 +3,9 @@
 //!
 //! Two invariants a caller may rely on: every exchange is bounded (the door's [`Transport`] holds
 //! the socket and the budget it is handed), and every transport failure becomes a
-//! [`ChannelError::Unreachable`] carrying the window's start-the-engine guidance — so this module
-//! never hangs and never panics.
+//! [`ChannelError`] — [`Unreachable`](ChannelError::Unreachable), carrying the window's
+//! start-the-engine guidance, unless the request reached the engine and only its answer is
+//! missing ([`NoAnswer`](ChannelError::NoAnswer)) — so this module never hangs and never panics.
 //!
 //! What is *not* here is the socket. A door supplies the [`Transport`]: loopback TCP for a process
 //! dialing `reuben play` (the `tcp` feature's), whatever an in-process host has instead. The
@@ -23,13 +24,20 @@ use std::time::Duration;
 use super::prose::ENGINE_UNREACHABLE_GUIDANCE;
 use super::wire::{
     over_long_probe_set_refusal, Conflict, ControlMessage, DiagnosticsReport, DocSource,
-    DocumentSnapshot, HeldSwap, MetersReport, Request, Response, SwapReport, MAX_PROBES,
+    DocumentSnapshot, HeldSwap, ListWhat, MetersReport, Request, Response, SwapReport, MAX_PROBES,
 };
 
 /// How long to wait for the one response line before giving up on a *wedged* server (connected but
-/// silent). Generous enough for a real swap's off-thread engine rebuild, tight enough that a hung
-/// engine surfaces as a fail-fast rather than a stalled tool call.
+/// silent), for a request that only reads or queues. Tight enough that a hung engine surfaces as a
+/// fail-fast rather than a stalled tool call.
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The read budget for a request that may load and plan a whole instrument tree: `swap`, `open`,
+/// and `call` (an edit re-plans and installs the open instrument). Each decodes every sample the
+/// tree references, and may first wait for the Coordinator behind another such request, so a
+/// large sample set on a cold disk takes several times [`DEFAULT_READ_TIMEOUT`]. Past this the
+/// answer is [`ChannelError::NoAnswer`], not a dead engine: the request may still be applied.
+const DEFAULT_WORK_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The read budget for `ping` specifically. A pong is **immediate** — the structure server answers
 /// `Ping` with `Pong` doing no work, unlike a `swap`'s off-thread engine rebuild — so
@@ -41,9 +49,12 @@ const DEFAULT_PING_READ_TIMEOUT: Duration = Duration::from_secs(1);
 /// A failed structure-channel exchange.
 #[derive(Debug)]
 pub enum ChannelError {
-    /// The engine could not be reached (connect refused, address unresolved, or a read/write
-    /// timeout on a wedged server). Carries the "start `reuben play`" guidance.
+    /// The engine could not be reached (connect refused, address unresolved, a write timeout, or a
+    /// liveness `ping` that went unanswered). Carries the "start `reuben play`" guidance.
     Unreachable(String),
+    /// The request was written but no answer came within the read budget: the engine may still
+    /// apply it. Carries the guidance to re-read before retrying.
+    NoAnswer(String),
     /// The request produced no domain answer: the server framed a [`Response::Error`] (e.g. an
     /// unreadable request, or a not-yet-wired verb), or the client refused it before sending
     /// (e.g. a probe set over [`MAX_PROBES`]).
@@ -59,6 +70,15 @@ impl ChannelError {
         ChannelError::Unreachable(format!("{ENGINE_UNREACHABLE_GUIDANCE} (cause: {cause})"))
     }
 
+    /// The no-answer error for a request whose answer did not come within `budget`.
+    fn no_answer(budget: Duration) -> Self {
+        ChannelError::NoAnswer(format!(
+            "The engine took the request but gave no answer within {} s, so it may have been \
+             applied. Re-read with get_current_instrument or describe_instrument before retrying.",
+            budget.as_secs_f32()
+        ))
+    }
+
     /// Whether this is the unreachable-engine case.
     pub fn is_unreachable(&self) -> bool {
         matches!(self, ChannelError::Unreachable(_))
@@ -68,7 +88,7 @@ impl ChannelError {
 impl fmt::Display for ChannelError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ChannelError::Unreachable(m) => write!(f, "{m}"),
+            ChannelError::Unreachable(m) | ChannelError::NoAnswer(m) => write!(f, "{m}"),
             ChannelError::Channel(m) => write!(f, "structure channel error: {m}"),
             ChannelError::Protocol(m) => write!(f, "structure channel protocol error: {m}"),
         }
@@ -88,6 +108,45 @@ pub enum SwapOutcome {
     /// The host held the swap to ask its user first: nothing installed; the [`HeldSwap`] names
     /// what keeps playing.
     Held(HeldSwap),
+    /// The server would not install it (a name it does not offer, say): nothing installed. The
+    /// message is the server's, verbatim.
+    Refused(String),
+}
+
+/// The outcome of a `call` that reached the engine — a verb that ran, or one the server refused to
+/// run. Transport failures are [`ChannelError`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum CallOutcome {
+    /// The verb ran: its output (the verb's own output type, as JSON) and one-line summary.
+    Called {
+        output: serde_json::Value,
+        summary: String,
+    },
+    /// The server refused to run it, with its reason verbatim.
+    Refused(String),
+}
+
+/// The cause a [`Transport`] wraps a read failure in, via [`unanswered`], once the whole request
+/// line was written: the request reached the engine, and only its answer is missing.
+#[derive(Debug)]
+pub struct Unanswered(io::Error);
+
+impl fmt::Display for Unanswered {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "no answer after the request was sent: {}", self.0)
+    }
+}
+
+impl std::error::Error for Unanswered {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+/// Mark a read timeout that followed a fully written request line, so the channel answers
+/// [`ChannelError::NoAnswer`] rather than [`ChannelError::Unreachable`].
+pub fn unanswered(cause: io::Error) -> io::Error {
+    io::Error::new(cause.kind(), Unanswered(cause))
 }
 
 /// The one thing a structure channel must be able to do: hand a request line to the engine and
@@ -101,7 +160,8 @@ pub trait Transport: Send + Sync + fmt::Debug {
     /// One request line out, one response line back. `read_timeout` is per-call because `ping`
     /// runs on a tighter budget than the other verbs. Any I/O failure — refused connect,
     /// unresolved address, timeout, or a peer that closed before answering — is an
-    /// [`io::Error`]; the caller classifies it.
+    /// [`io::Error`]; the caller classifies it. A read that timed out after the whole line was
+    /// written is returned through [`unanswered`].
     fn round_trip(&self, line: &str, read_timeout: Duration) -> io::Result<String>;
 
     /// The endpoint this transport dials, for `engine_status` and diagnostics.
@@ -117,15 +177,21 @@ pub struct Channel {
     /// The tighter read budget `ping` uses (its pong is immediate) — never longer than the general
     /// `read_timeout`, and capped at [`DEFAULT_PING_READ_TIMEOUT`]. See [`Self::ping`].
     ping_read_timeout: Duration,
+    /// The longer read budget of `swap`, `open` and `call`, which may plan a whole tree.
+    work_read_timeout: Duration,
 }
 
 impl Channel {
-    /// A channel over the door's transport, on the default per-verb read budget.
+    /// A channel over the door's transport, on the default per-verb read budgets.
     pub fn new(transport: impl Transport + 'static) -> Self {
-        Self::with_read_timeout(transport, DEFAULT_READ_TIMEOUT)
+        Self {
+            work_read_timeout: DEFAULT_WORK_READ_TIMEOUT,
+            ..Self::with_read_timeout(transport, DEFAULT_READ_TIMEOUT)
+        }
     }
 
-    /// A channel with an explicit general read budget; `ping`'s tighter one is derived from it.
+    /// A channel with one explicit read budget for every verb but `ping`, whose tighter one is
+    /// derived from it.
     pub fn with_read_timeout(transport: impl Transport + 'static, read_timeout: Duration) -> Self {
         Self {
             transport: Box::new(transport),
@@ -134,6 +200,7 @@ impl Channel {
             // than a caller's explicit read timeout (a deliberately tiny one still wins — the
             // wedged-server test relies on that), but capped at the ping default when it's generous.
             ping_read_timeout: read_timeout.min(DEFAULT_PING_READ_TIMEOUT),
+            work_read_timeout: read_timeout,
         }
     }
 
@@ -143,9 +210,17 @@ impl Channel {
     }
 
     /// Liveness: `Ok(())` iff the channel answered [`Response::Pong`]. The only probe on the
-    /// channel — every other verb acts and maps its own failure.
+    /// channel — every other verb acts and maps its own failure. An unanswered ping is
+    /// [`Unreachable`](ChannelError::Unreachable): a ping applies nothing, and an engine that
+    /// cannot answer it is not one to talk to.
     pub fn ping(&self) -> Result<(), ChannelError> {
-        match self.exchange_with(&Request::Ping, self.ping_read_timeout)? {
+        let answer = self
+            .exchange_with(&Request::Ping, self.ping_read_timeout)
+            .map_err(|e| match e {
+                ChannelError::NoAnswer(_) => ChannelError::unreachable("no answer to a ping"),
+                other => other,
+            })?;
+        match answer {
             Response::Pong => Ok(()),
             other => Err(unexpected("ping", "pong", &other)),
         }
@@ -158,12 +233,57 @@ impl Channel {
         source: DocSource,
         expect: Option<String>,
     ) -> Result<SwapOutcome, ChannelError> {
-        match self.exchange(&Request::Swap { source, expect })? {
+        match self.exchange_with(&Request::Swap { source, expect }, self.work_read_timeout)? {
             Response::SwapReport(report) => Ok(SwapOutcome::Installed(report)),
             Response::Conflict(conflict) => Ok(SwapOutcome::Conflict(conflict)),
             Response::Held(held) => Ok(SwapOutcome::Held(held)),
+            Response::Refused { message } => Ok(SwapOutcome::Refused(message)),
             Response::Error { message } => Err(ChannelError::Channel(message)),
-            other => Err(unexpected("swap", "swap_report/conflict/held", &other)),
+            other => Err(unexpected(
+                "swap",
+                "swap_report/conflict/held/refused",
+                &other,
+            )),
+        }
+    }
+
+    /// Unload the open instrument and play the one `name` names, read through the server's store.
+    /// Answers as [`swap`](Self::swap) does.
+    pub fn open(&self, name: String, expect: Option<String>) -> Result<SwapOutcome, ChannelError> {
+        match self.exchange_with(&Request::Open { name, expect }, self.work_read_timeout)? {
+            Response::SwapReport(report) => Ok(SwapOutcome::Installed(report)),
+            Response::Conflict(conflict) => Ok(SwapOutcome::Conflict(conflict)),
+            Response::Held(held) => Ok(SwapOutcome::Held(held)),
+            Response::Refused { message } => Ok(SwapOutcome::Refused(message)),
+            Response::Error { message } => Err(ChannelError::Channel(message)),
+            other => Err(unexpected(
+                "open",
+                "swap_report/conflict/held/refused",
+                &other,
+            )),
+        }
+    }
+
+    /// Run one non-engine roster verb on the server, against its store.
+    pub fn call(&self, tool: &str, args: serde_json::Value) -> Result<CallOutcome, ChannelError> {
+        let request = Request::Call {
+            tool: tool.to_string(),
+            args,
+        };
+        match self.exchange_with(&request, self.work_read_timeout)? {
+            Response::Called { output, summary } => Ok(CallOutcome::Called { output, summary }),
+            Response::Refused { message } => Ok(CallOutcome::Refused(message)),
+            Response::Error { message } => Err(ChannelError::Channel(message)),
+            other => Err(unexpected("call", "called/refused", &other)),
+        }
+    }
+
+    /// The names the server offers of one kind, sorted.
+    pub fn list(&self, what: ListWhat) -> Result<Vec<String>, ChannelError> {
+        match self.exchange(&Request::List { what })? {
+            Response::Listed { names } => Ok(names),
+            Response::Error { message } => Err(ChannelError::Channel(message)),
+            other => Err(unexpected("list", "listed", &other)),
         }
     }
 
@@ -221,7 +341,8 @@ impl Channel {
         }
     }
 
-    /// One request → one response on the general budget, which every verb but `ping` uses.
+    /// One request → one response on the general budget, which the verbs that only read or queue
+    /// use.
     fn exchange(&self, request: &Request) -> Result<Response, ChannelError> {
         self.exchange_with(request, self.read_timeout)
     }
@@ -229,7 +350,8 @@ impl Channel {
     /// [`exchange`](Self::exchange) with an explicit per-call read/write budget.
     ///
     /// The policy layer, above the socket: framing out, one line back, and the split between a
-    /// transport failure (unreachable) and a line that came back unparseable (protocol).
+    /// transport failure (unreachable), a request whose answer did not come (no answer), and a
+    /// line that came back unparseable (protocol).
     fn exchange_with(
         &self,
         request: &Request,
@@ -242,6 +364,9 @@ impl Channel {
                 // The bytes moved but no line could be framed from them: an over-long or
                 // non-UTF-8 line, from an engine that is plainly reachable.
                 io::ErrorKind::InvalidData => ChannelError::Protocol(e.to_string()),
+                _ if e.get_ref().is_some_and(|cause| cause.is::<Unanswered>()) => {
+                    ChannelError::no_answer(read_timeout)
+                }
                 _ => ChannelError::unreachable(e),
             })?;
         Response::from_ndjson(&line).map_err(|e| ChannelError::Protocol(e.to_string()))
@@ -276,5 +401,206 @@ mod tests {
     fn channel_and_protocol_errors_are_not_unreachable() {
         assert!(!ChannelError::Channel("unreadable request".to_string()).is_unreachable());
         assert!(!ChannelError::Protocol("bad json".to_string()).is_unreachable());
+    }
+
+    use serde_json::json;
+
+    #[derive(Debug)]
+    struct Fake {
+        reply: String,
+        asked: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl Transport for Fake {
+        fn round_trip(&self, line: &str, _read_timeout: Duration) -> io::Result<String> {
+            self.asked.lock().unwrap().push(line.to_string());
+            Ok(self.reply.clone())
+        }
+
+        fn endpoint(&self) -> &str {
+            "fake"
+        }
+    }
+
+    fn answering(reply: &str) -> (Channel, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let fake = Fake {
+            reply: reply.to_string(),
+            asked: asked.clone(),
+        };
+        (Channel::new(fake), asked)
+    }
+
+    #[test]
+    fn call_relays_called_output_and_summary() {
+        let (channel, asked) = answering(r#"{"reply":"called","output":{"x":1},"summary":"s"}"#);
+        let args = json!({"source": "a.json"});
+        let outcome = channel.call("describe_instrument", args.clone()).unwrap();
+        assert_eq!(
+            outcome,
+            CallOutcome::Called {
+                output: json!({"x": 1}),
+                summary: "s".to_string()
+            }
+        );
+        let expected = Request::Call {
+            tool: "describe_instrument".to_string(),
+            args,
+        }
+        .to_ndjson();
+        assert_eq!(asked.lock().unwrap().as_slice(), [expected]);
+    }
+
+    #[test]
+    fn call_relays_a_refusal_verbatim() {
+        let (channel, _) = answering(r#"{"reply":"refused","message":"m"}"#);
+        let outcome = channel.call("nope", json!({})).unwrap();
+        assert_eq!(outcome, CallOutcome::Refused("m".to_string()));
+    }
+
+    #[test]
+    fn open_maps_refused_held_conflict_and_report() {
+        let (channel, asked) = answering(r#"{"reply":"refused","message":"not offered"}"#);
+        let outcome = channel.open("a.json".to_string(), Some("h".to_string()));
+        assert_eq!(
+            outcome.unwrap(),
+            SwapOutcome::Refused("not offered".to_string())
+        );
+        let expected = Request::Open {
+            name: "a.json".to_string(),
+            expect: Some("h".to_string()),
+        }
+        .to_ndjson();
+        assert_eq!(asked.lock().unwrap().as_slice(), [expected]);
+
+        let held = HeldSwap {
+            requested: "a.json".to_string(),
+            content_hash: "h".to_string(),
+            playing: None,
+        };
+        let conflict = Conflict {
+            expected: "e".to_string(),
+            actual: "a".to_string(),
+        };
+        let report = SwapReport::rejected("h".to_string());
+        for (response, want) in [
+            (Response::Held(held.clone()), SwapOutcome::Held(held)),
+            (
+                Response::Conflict(conflict.clone()),
+                SwapOutcome::Conflict(conflict),
+            ),
+            (
+                Response::SwapReport(report.clone()),
+                SwapOutcome::Installed(report),
+            ),
+        ] {
+            let (channel, _) = answering(&response.to_ndjson());
+            assert_eq!(channel.open("a.json".to_string(), None).unwrap(), want);
+        }
+    }
+
+    #[test]
+    fn swap_maps_a_refusal_the_same_way() {
+        let (channel, _) = answering(r#"{"reply":"refused","message":"m"}"#);
+        let outcome = channel.swap(DocSource::Path("a.json".to_string()), None);
+        assert_eq!(outcome.unwrap(), SwapOutcome::Refused("m".to_string()));
+    }
+
+    /// A transport whose every exchange fails with what `fail` makes, recording each read budget.
+    #[derive(Debug)]
+    struct Failing {
+        fail: fn() -> io::Error,
+        budgets: std::sync::Arc<std::sync::Mutex<Vec<Duration>>>,
+    }
+
+    impl Transport for Failing {
+        fn round_trip(&self, _line: &str, read_timeout: Duration) -> io::Result<String> {
+            self.budgets.lock().unwrap().push(read_timeout);
+            Err((self.fail)())
+        }
+
+        fn endpoint(&self) -> &str {
+            "failing"
+        }
+    }
+
+    fn failing(
+        fail: fn() -> io::Error,
+    ) -> (Channel, std::sync::Arc<std::sync::Mutex<Vec<Duration>>>) {
+        let budgets = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let transport = Failing {
+            fail,
+            budgets: budgets.clone(),
+        };
+        (Channel::new(transport), budgets)
+    }
+
+    fn read_timed_out() -> io::Error {
+        unanswered(io::Error::new(io::ErrorKind::WouldBlock, "read timed out"))
+    }
+
+    #[test]
+    fn a_request_written_but_unanswered_is_no_answer_not_unreachable() {
+        let (channel, _) = failing(read_timed_out);
+        let errors = [
+            channel.call("add_instrument_node", json!({})).unwrap_err(),
+            channel.open("a.json".to_string(), None).unwrap_err(),
+            channel
+                .swap(DocSource::Path("a.json".to_string()), None)
+                .unwrap_err(),
+            channel.send(Vec::new()).unwrap_err(),
+        ];
+        for err in errors {
+            assert!(matches!(err, ChannelError::NoAnswer(_)), "{err:?}");
+            assert!(!err.is_unreachable());
+            let shown = err.to_string();
+            assert!(shown.contains("may have been applied"), "{shown}");
+            assert!(!shown.contains("reuben play"), "{shown}");
+        }
+    }
+
+    #[test]
+    fn a_failed_connect_stays_unreachable() {
+        let (channel, _) = failing(|| io::Error::new(io::ErrorKind::TimedOut, "connect timed out"));
+        let err = channel.call("add_instrument_node", json!({})).unwrap_err();
+        assert!(err.is_unreachable(), "{err:?}");
+    }
+
+    #[test]
+    fn an_unanswered_ping_is_unreachable() {
+        let (channel, _) = failing(read_timed_out);
+        assert!(channel.ping().unwrap_err().is_unreachable());
+    }
+
+    #[test]
+    fn swap_open_and_call_wait_longer_than_the_verbs_that_only_read() {
+        let (channel, budgets) = failing(read_timed_out);
+        let _ = channel.ping();
+        let _ = channel.get_document();
+        let _ = channel.call("describe_instrument", json!({}));
+        let _ = channel.open("a.json".to_string(), None);
+        let _ = channel.swap(DocSource::Path("a.json".to_string()), None);
+        assert_eq!(
+            budgets.lock().unwrap().as_slice(),
+            [
+                DEFAULT_PING_READ_TIMEOUT,
+                DEFAULT_READ_TIMEOUT,
+                DEFAULT_WORK_READ_TIMEOUT,
+                DEFAULT_WORK_READ_TIMEOUT,
+                DEFAULT_WORK_READ_TIMEOUT,
+            ]
+        );
+    }
+
+    #[test]
+    fn list_returns_the_names_in_order() {
+        let (channel, asked) = answering(r#"{"reply":"listed","names":["a.json","b.json"]}"#);
+        let names = channel.list(ListWhat::Instruments).unwrap();
+        assert_eq!(names, ["a.json", "b.json"]);
+        let expected = Request::List {
+            what: ListWhat::Instruments,
+        }
+        .to_ndjson();
+        assert_eq!(asked.lock().unwrap().as_slice(), [expected]);
     }
 }

@@ -17,9 +17,8 @@ use clap::{Parser, Subcommand};
 use reuben_api::authoring::{
     self, Diag, PortInfo, Refusal, COMPACT_DESCRIBE_LEGEND, SCAFFOLD_DEFAULT_NAME,
 };
-use reuben_api::engine::DEFAULT_STRUCTURE_ADDR;
 use reuben_api::FsResolver;
-use reuben_native::cli::{EngineFlags, InstrumentRoot, LOG_OSC_ENV};
+use reuben_native::cli::{EngineFlags, InstrumentRoot, INSTRUMENT_ROOT_ENV, LOG_OSC_ENV};
 use reuben_native::engine::{self, Instrument};
 use reuben_native::scaffold;
 
@@ -139,9 +138,11 @@ fn window_view(view: InstrumentView) -> authoring::InstrumentView {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let root = cli.instrument_root.resolve();
+    let root = cli.instrument_root;
     match cli.command {
-        Command::Play { path, engine } => play(path, engine, root),
+        // The server offers its library's instruments to clients, so it looks for one when none
+        // is named; a one-shot command keeps references resolving beside the file alone.
+        Command::Play { path, engine } => play(path, engine, root.resolve_or_default()),
         Command::Describe {
             op,
             json,
@@ -156,9 +157,9 @@ fn main() -> ExitCode {
             view,
             select,
             select_type,
-            root,
+            root.resolve(),
         ),
-        Command::Validate { path, json } => cmd_validate(&path, json, root),
+        Command::Validate { path, json } => cmd_validate(&path, json, root.resolve()),
         Command::ScaffoldOperator {
             spec,
             core_root,
@@ -585,9 +586,22 @@ fn play(path: Option<PathBuf>, flags: EngineFlags, root: Option<PathBuf>) -> Exi
         Instrument::Path(path) => println!("instrument: {}", path.display()),
         Instrument::Default => println!("instrument: <default> (pass a path to load your own)"),
     }
+    match &config.instrument_root {
+        Some(root) => println!("library: {}", root.display()),
+        None => println!(
+            "library: none (no instruments/ here or beside reuben; name one with \
+             --instrument-root or {INSTRUMENT_ROOT_ENV})"
+        ),
+    }
 
     let log_osc = config.log_osc;
-    let running = match engine::start(config) {
+    let structure_addr = config.structure.clone().unwrap_or_default();
+    let start = if flags.headless {
+        engine::start_headless
+    } else {
+        engine::start
+    };
+    let running = match start(config) {
         Ok(running) => running,
         Err(e) => {
             eprintln!("error: {e}");
@@ -605,7 +619,12 @@ fn play(path: Option<PathBuf>, flags: EngineFlags, root: Option<PathBuf>) -> Exi
         }
     }
     println!(
-        "audio out @ {} Hz, block {}",
+        "{} @ {} Hz, block {}",
+        if flags.headless {
+            "headless, no audio device,"
+        } else {
+            "audio out"
+        },
         running.sample_rate(),
         running.block_size()
     );
@@ -616,7 +635,7 @@ fn play(path: Option<PathBuf>, flags: EngineFlags, root: Option<PathBuf>) -> Exi
     match (running.structure_addr(), running.structure_error()) {
         (Some(addr), _) => println!("structure channel on {addr}"),
         (None, Some(e)) => eprintln!(
-            "warning: structure channel unavailable on {DEFAULT_STRUCTURE_ADDR} ({e}); MCP \
+            "warning: structure channel unavailable on {structure_addr} ({e}); MCP \
              structure ops (get_document/get_diagnostics/swap) are disabled this run"
         ),
         (None, None) => {}

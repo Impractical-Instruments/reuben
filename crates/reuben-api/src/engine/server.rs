@@ -20,7 +20,10 @@
 //! - [`Request::Call`] → one non-engine roster verb against the engine's store. A read answers
 //!   directly. An edit waits in memory while the whole open instrument loads and plans with it;
 //!   only then is it written and the new Plan swapped in, and otherwise nothing is written and the
-//!   answer says why.
+//!   answer says why. The exception is an open instrument that does not load: nothing plays, and
+//!   an edit is written whether or not it makes the instrument load.
+//! - [`Request::Open`] → unload what plays and play the named document. One that does not load
+//!   still opens, and nothing plays until an edit makes it load.
 //! - [`Request::Subscribe`] is not a request [`dispatch`] answers: it turns a connection into a
 //!   stream of [`Event`]s, which only the host's connection can carry. [`StructureState::subscribe`]
 //!   is what that connection streams from, and what [`InProcess::subscribe`] hands back.
@@ -85,11 +88,12 @@ pub trait EngineHost: Send + Sync {
         path.to_string()
     }
 
-    /// Whether to hold, rather than install, a by-path swap of `path` that a client sent through
-    /// [`dispatch`], so the host's user can be asked first. Called under the Coordinator lock once
-    /// the `expect` guard passed and the document loaded and planned, so only a swap that would
-    /// install is ever held; `true` answers [`Response::Held`] and installs nothing. Whatever
-    /// asking the user means is the host's, and must not wait on them.
+    /// Whether to hold, rather than install, a by-path swap or an open of `path` that a client sent
+    /// through [`dispatch`], so the host's user can be asked first. Called under the Coordinator
+    /// lock once the `expect` guard passed, and only for what would install: a swap whose document
+    /// loaded and planned, or any open, since an open of a document that does not load still
+    /// unloads what plays. `true` answers [`Response::Held`] and installs nothing. Whatever asking
+    /// the user means is the host's, and must not wait on them.
     ///
     /// Never consulted for a swap made through [`InProcess`], which is the host's own, nor for one
     /// by value, which names no source to ask about. Defaults to never holding.
@@ -195,7 +199,19 @@ pub struct StructureState {
     /// until something installs or a reload finds the files plan again. Written only under the
     /// Coordinator lock.
     reported_invalid: Arc<Mutex<Option<Vec<Diag>>>>,
+    /// Set while the open instrument does not load and [`SILENCE`] plays in its place. Written only
+    /// under the Coordinator lock.
+    silent: Arc<AtomicBool>,
 }
+
+/// What plays while the open instrument does not load: one output channel that is always zero.
+/// Installed by value through the ordinary swap, so the render side sees nothing new.
+const SILENCE: &str = r#"{"format_version":3,"instrument":"silence",
+    "interface":{"outputs":{"out":{"from":"/silence.audio"}}},
+    "nodes":[{"type":"output","address":"/silence"}]}"#;
+
+/// The content hash every answer reports while [`SILENCE`] plays: no document's hash names it.
+const NOTHING_PLAYS: &str = "";
 
 /// What every structure verb answers once a panic has poisoned the Coordinator lock.
 ///
@@ -226,7 +242,23 @@ impl StructureState {
             closed: Arc::new(AtomicBool::new(false)),
             events: Arc::new(Bus::default()),
             reported_invalid: Arc::new(Mutex::new(None)),
+            silent: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// The hash a client is told plays, and the one an `expect` is compared against: the installed
+    /// hash, or [`NOTHING_PLAYS`] while the open instrument does not load. Called under the
+    /// Coordinator lock.
+    fn playing_hash(&self, coordinator: &Coordinator) -> String {
+        if self.is_silent() {
+            NOTHING_PLAYS.to_string()
+        } else {
+            coordinator.installed_hash()
+        }
+    }
+
+    fn is_silent(&self) -> bool {
+        self.silent.load(Ordering::SeqCst)
     }
 
     /// Load the open instrument again from its files, after something outside the engine may have
@@ -250,7 +282,9 @@ impl StructureState {
     /// - It plans and differs: it goes live and [`Event::Changed`] by [`ChangedBy::Outside`] is
     ///   published and returned.
     /// - It does not load or plan: what played keeps playing, and [`Event::Invalid`] is published
-    ///   and returned, once per distinct set of errors.
+    ///   and returned, once per distinct set of errors. While the open instrument already did not
+    ///   load, the documents it now reaches become the ones an edit may touch.
+    /// - It plans while nothing plays because it did not load before: it goes live as above.
     /// - It plans and is what plays, after an [`Event::Invalid`]: [`Event::Changed`] by
     ///   [`ChangedBy::Outside`] with the installed hash is published and returned, so a subscriber
     ///   hears the failure is over.
@@ -282,13 +316,20 @@ impl StructureState {
         let prepared = match prepared {
             Ok(prepared) => prepared,
             Err(rejected) => {
+                if self.is_silent() {
+                    let Ok(mut tree_cell) = self.tree_cell() else {
+                        return Ok(None);
+                    };
+                    *tree_cell = tree;
+                }
                 return Ok(self.invalid(SwapReport::from_core(rejected).report.errors));
             }
         };
         let Ok(tree_cell) = self.tree_cell() else {
             return Ok(None);
         };
-        let unchanged = prepared.content_hash() == coordinator.installed_hash()
+        let unchanged = !self.is_silent()
+            && prepared.content_hash() == coordinator.installed_hash()
             && tree_cell.texts == tree.texts;
         drop(tree_cell);
         if unchanged {
@@ -322,11 +363,18 @@ impl StructureState {
     /// Publish and return [`Event::Invalid`] for `errors`, unless it is the failure last reported.
     /// Called under the Coordinator lock.
     fn invalid(&self, errors: Vec<Diag>) -> Option<Event> {
-        let mut reported = self.reported_invalid.lock().ok()?;
+        let reported = self.reported_invalid.lock().ok()?;
         if reported.as_ref() == Some(&errors) {
             return None;
         }
-        *reported = Some(errors.clone());
+        drop(reported);
+        self.publish_invalid(errors)
+    }
+
+    /// Publish and return [`Event::Invalid`] for `errors`, and remember it as the failure last
+    /// reported. Called under the Coordinator lock.
+    fn publish_invalid(&self, errors: Vec<Diag>) -> Option<Event> {
+        *self.reported_invalid.lock().ok()? = Some(errors.clone());
         let event = Event::Invalid { errors };
         self.events.publish(event.clone());
         Some(event)
@@ -386,7 +434,7 @@ impl StructureState {
         };
         Installed::Known {
             input_channels: coordinator.installed_input_channels(),
-            content_hash: coordinator.installed_hash(),
+            content_hash: self.playing_hash(&coordinator),
             source: source.clone(),
         }
     }
@@ -518,14 +566,19 @@ const UNSTREAMED_SUBSCRIBE: &str = "subscribe needs a connection that streams ev
      answers one response per request";
 
 /// The Coordinator owns the canonical document; serialize it + its hash under the lock so
-/// `get_document` never sees a half-installed pair.
+/// `get_document` never sees a half-installed pair. While the open instrument does not load, the
+/// document is `null` and the hash [`NOTHING_PLAYS`]: [`SILENCE`] is no document's.
 fn get_document(state: &StructureState) -> Result<Response, Poisoned> {
     let coordinator = state.coordinator()?;
-    let document = serde_json::to_value(&**coordinator.document())
-        .expect("canonical instrument document serializes to JSON");
+    let document = if state.is_silent() {
+        serde_json::Value::Null
+    } else {
+        serde_json::to_value(&**coordinator.document())
+            .expect("canonical instrument document serializes to JSON")
+    };
     Ok(Response::Document(DocumentSnapshot {
         document,
-        content_hash: coordinator.installed_hash(),
+        content_hash: state.playing_hash(&coordinator),
         // Read under the Coordinator lock too, so the source and the hash a caller compares it
         // against can never come from different installs.
         source: state.installed_source()?.clone(),
@@ -709,6 +762,9 @@ fn handle_swap(
 /// reaches read exactly as what plays, installs nothing and answers ok with no diff, whatever
 /// `expect` says: there is nothing for it to clobber. That is the swap of a client that edited the
 /// files itself, after the engine already followed the edit.
+///
+/// An `open` of a document that does not load or plan still opens it, unless the host holds it:
+/// see [`open_silent`].
 fn install_from(
     state: &StructureState,
     coordinator: &mut Coordinator,
@@ -750,7 +806,7 @@ fn install_from(
     };
 
     if let Some(expected) = &expect {
-        let actual = coordinator.installed_hash();
+        let actual = state.playing_hash(coordinator);
         if expected != &actual {
             return Response::Conflict(Conflict {
                 expected: expected.clone(),
@@ -759,27 +815,31 @@ fn install_from(
         }
     }
 
+    let holds = || {
+        caller == Caller::Client
+            && installed_from
+                .as_deref()
+                .is_some_and(|path| state.host.hold_swap(path))
+    };
+
     // Unguarded by construction: arbitration was settled above.
     let (core_report, tree) = match by_path {
-        // A document that does not load is rejected with its errors, never held: the user is
-        // only asked about something that would install.
+        // An open of a document that does not load still installs (silence), so it is offered
+        // to the host like any open that installs.
+        Some((Err(rejected), tree)) if went == Went::Opened => {
+            if holds() {
+                return held(state, coordinator, installed_from);
+            }
+            let name = installed_from.unwrap_or_default();
+            return open_silent(state, coordinator, name, tree, rejected);
+        }
+        // A swap of a document that does not load is rejected with its errors, never held: the
+        // user is only asked about something that would install.
         Some((Err(rejected), tree)) => (rejected, tree),
         Some((Ok(prepared), tree)) => {
-            let holds = caller == Caller::Client
-                && installed_from
-                    .as_deref()
-                    .is_some_and(|path| state.host.hold_swap(path));
-            if holds {
+            if holds() {
                 drop(prepared);
-                let playing = match state.installed_source() {
-                    Ok(source) => source.clone(),
-                    Err(poisoned) => return poisoned.into(),
-                };
-                return Response::Held(HeldSwap {
-                    requested: installed_from.unwrap_or_default(),
-                    playing,
-                    content_hash: coordinator.installed_hash(),
-                });
+                return held(state, coordinator, installed_from);
             }
             (coordinator.commit_swap(prepared), tree)
         }
@@ -793,8 +853,73 @@ fn install_from(
             Ok(warnings) => report.report.warnings.extend(warnings),
             Err(poisoned) => return poisoned.into(),
         }
+    } else {
+        installed_nothing(state, coordinator, &mut report, went);
     }
     Response::SwapReport(report)
+}
+
+/// The answer to a client's install the host holds: nothing installed, and what plays named.
+fn held(state: &StructureState, coordinator: &Coordinator, requested: Option<String>) -> Response {
+    let playing = match state.installed_source() {
+        Ok(source) => source.clone(),
+        Err(poisoned) => return poisoned.into(),
+    };
+    Response::Held(HeldSwap {
+        requested: requested.unwrap_or_default(),
+        playing,
+        content_hash: state.playing_hash(coordinator),
+    })
+}
+
+/// Open `name`, whose document does not load or plan (`rejected` says why): the instrument that
+/// played is unloaded and [`SILENCE`] plays, `name` becomes the open instrument with `tree` as the
+/// documents an edit may touch, and [`Event::Opened`] then [`Event::Invalid`] are published.
+///
+/// The answer is a report with `ok: false`, the load's errors, the hash [`NOTHING_PLAYS`], and a
+/// warning that says the document is open. An edit that makes it load starts it playing.
+fn open_silent(
+    state: &StructureState,
+    coordinator: &mut Coordinator,
+    name: String,
+    tree: Tree,
+    rejected: reuben_document::SwapReport,
+) -> Response {
+    let errors = SwapReport::from_core(rejected).report.errors;
+    let silenced = coordinator.swap_document(SILENCE);
+    if !silenced.report.ok {
+        // Only a swap still in flight refuses a document this fixed.
+        let mut report = SwapReport::from_core(silenced);
+        installed_nothing(state, coordinator, &mut report, Went::OpenedSilent);
+        return Response::SwapReport(report);
+    }
+    let mut warnings = match went_live(
+        state,
+        coordinator,
+        Some(name.clone()),
+        tree,
+        Went::OpenedSilent,
+    ) {
+        Ok(warnings) => warnings,
+        Err(poisoned) => return poisoned.into(),
+    };
+    state.publish_invalid(errors.clone());
+    warnings.push(Diag {
+        node: None,
+        port: None,
+        message: format!(
+            "{name} is open but does not load, so nothing plays until an edit makes it load"
+        ),
+    });
+    Response::SwapReport(SwapReport {
+        report: Report {
+            ok: false,
+            errors,
+            warnings,
+        },
+        content_hash: NOTHING_PLAYS.to_string(),
+        diff: None,
+    })
 }
 
 /// Whether `prepared`, read from `origin` with `tree`, is what plays: the same file however
@@ -811,12 +936,14 @@ fn plays_already(
         state.store.canonical(&playing, None) == state.store.canonical(origin, None)
     });
     Ok(same_file
+        && !state.is_silent()
         && prepared.content_hash() == coordinator.installed_hash()
         && state.tree_cell()?.texts == tree.texts)
 }
 
 /// Unload the open instrument and load, and play, the one `name` names: [`handle_swap`] by path,
-/// read through the server's store so the tree and the edits that follow see the same files.
+/// read through the server's store so the tree and the edits that follow see the same files. A
+/// document that does not load still opens, with nothing playing ([`open_silent`]).
 ///
 /// Under the Coordinator lock from the read on, so the `discard` cannot drop another request's
 /// pending write.
@@ -837,12 +964,17 @@ fn handle_open(
         Err(poisoned) => return poisoned.into(),
     };
     if !state.host.within(&origin, open.as_deref()) {
-        return rejected_report(coordinator.installed_hash(), not_offered(&name));
+        return rejected_report(state, &coordinator, not_offered(&name), Went::Opened);
     }
     let json = match state.store.read_text(&origin) {
         Ok(json) => json,
         Err(e) => {
-            return rejected_report(coordinator.installed_hash(), format!("open {name}: {e}"))
+            return rejected_report(
+                state,
+                &coordinator,
+                format!("open {name}: {e}"),
+                Went::Opened,
+            )
         }
     };
     install_from(
@@ -856,10 +988,13 @@ fn handle_open(
     )
 }
 
-/// The refusal for a name outside what the host offers: the client's own spelling and a fixed
-/// reason, so it says nothing of the server's paths or whether the file exists.
+/// The refusal for a name outside what the host offers: the client's own spelling, a fixed reason
+/// and where the offered names are, so it says nothing of the server's paths or whether the file
+/// exists.
 fn not_offered(name: &str) -> String {
-    format!("`{name}` is not offered by this server")
+    format!(
+        "`{name}` is not offered by this server; call `list_instruments` to see the names it offers"
+    )
 }
 
 /// What the host offers under `what`, each name one [`Request::Open`] (or, for a sample, a
@@ -919,6 +1054,9 @@ fn prepare_recording(
 enum Went {
     /// `open`: always [`Event::Opened`].
     Opened,
+    /// `open` of a document that does not load, with [`SILENCE`] installed in its place:
+    /// [`Event::Opened`] with the hash [`NOTHING_PLAYS`].
+    OpenedSilent,
     /// `swap`: [`Event::Opened`] when it names a source other than the one playing before, by
     /// value counting as a source of its own, and [`Event::Changed`] when it names the same one.
     Swapped,
@@ -945,6 +1083,11 @@ fn went_live(
     tree: Tree,
     went: Went,
 ) -> Result<Vec<Diag>, Poisoned> {
+    // First, before anything that can fail: the install is already committed, so a poisoned lock
+    // below must not leave the hash reported for silence once something else plays.
+    state
+        .silent
+        .store(went == Went::OpenedSilent, Ordering::SeqCst);
     let previous = core::mem::replace(&mut *state.installed_source()?, source.clone());
     *state.tree_cell()? = tree;
 
@@ -959,15 +1102,15 @@ fn went_live(
     // What plays changed, so a failure reported against what played before is news again.
     *state.reported_invalid.lock().map_err(|_| Poisoned)? = None;
 
-    let hash = coordinator.installed_hash();
+    let hash = state.playing_hash(coordinator);
     let opened = match went {
-        Went::Opened => true,
+        Went::Opened | Went::OpenedSilent => true,
         Went::Swapped => source != previous,
         Went::Edited | Went::Outside => false,
     };
     let by = match went {
         Went::Outside => ChangedBy::Outside,
-        Went::Opened | Went::Swapped | Went::Edited => ChangedBy::Client,
+        Went::Opened | Went::OpenedSilent | Went::Swapped | Went::Edited => ChangedBy::Client,
     };
     state.events.publish(if opened {
         Event::Opened {
@@ -999,13 +1142,20 @@ fn reclaim_retired(coordinator: &mut Coordinator, host: &dyn EngineHost) {
 /// (retain-prior).
 fn rejected_swap(state: &StructureState, message: String) -> Response {
     match state.coordinator() {
-        Ok(coordinator) => rejected_report(coordinator.installed_hash(), message),
+        Ok(coordinator) => rejected_report(state, &coordinator, message, Went::Swapped),
         Err(poisoned) => poisoned.into(),
     }
 }
 
-fn rejected_report(content_hash: String, message: String) -> Response {
-    Response::SwapReport(SwapReport {
+/// A report that installed nothing, for `message`, answering the request `went` names. Called
+/// under the Coordinator lock.
+fn rejected_report(
+    state: &StructureState,
+    coordinator: &Coordinator,
+    message: String,
+    went: Went,
+) -> Response {
+    let mut report = SwapReport {
         report: Report {
             ok: false,
             errors: vec![Diag {
@@ -1015,9 +1165,44 @@ fn rejected_report(content_hash: String, message: String) -> Response {
             }],
             warnings: Vec::new(),
         },
-        content_hash,
+        content_hash: String::new(),
         diff: None,
-    })
+    };
+    installed_nothing(state, coordinator, &mut report, went);
+    Response::SwapReport(report)
+}
+
+/// Make `report`, which installed nothing, name what plays: the playing hash and, while nothing
+/// plays, a warning naming the instrument still open, so a reader does not take the empty hash
+/// for the refused request's own load failing. `went` is the request that installed nothing.
+/// Called under the Coordinator lock.
+fn installed_nothing(
+    state: &StructureState,
+    coordinator: &Coordinator,
+    report: &mut SwapReport,
+    went: Went,
+) {
+    report.content_hash = state.playing_hash(coordinator);
+    if !state.is_silent() {
+        return;
+    }
+    let open = state
+        .installed_source()
+        .ok()
+        .and_then(|open| open.clone())
+        .unwrap_or_default();
+    report.report.warnings.push(Diag {
+        node: None,
+        port: None,
+        message: format!(
+            "nothing was {}; {open} is still open but does not load, so nothing plays",
+            match went {
+                Went::Opened | Went::OpenedSilent => "opened",
+                Went::Swapped => "swapped in",
+                Went::Edited | Went::Outside => "installed",
+            }
+        ),
+    });
 }
 
 /// Resolve a swap's source to its JSON text: inline JSON re-serialized, or a read through the host.

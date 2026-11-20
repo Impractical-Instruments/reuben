@@ -30,52 +30,67 @@ door's business, advertised where you call it and never restated here.
 
 1. **Introspect.** `describe_operators` for an operator's ports; `describe_instrument` for the
    structure of the document you are about to change.
-2. **Seed.** Creating from scratch? `new_instrument` writes a guaranteed-valid minimal document
-   at the source you name and refuses to overwrite an existing one, so you never stall guessing
-   the required top-level shape ([#146](https://github.com/Impractical-Instruments/reuben/issues/146)).
-   Never a blank file, and never a document you compose yourself.
-3. **Shape.** One verb per change — `add_instrument_node`, `wire_instrument_input`,
+2. **Seed or find.** Creating from scratch? `new_instrument` writes a guaranteed-valid minimal
+   document at the source you name and refuses to overwrite an existing one, so you never stall
+   guessing the required top-level shape. Never a blank file, and never a document you compose
+   yourself. Changing one that exists? `list_instruments` gives the names the engine offers.
+3. **Open.** `open_instrument` loads the instrument and plays it. Edits apply only to the open
+   instrument and the documents it nests, so open it before the first edit — `new_instrument`
+   does not open what it creates. An edit to anything else is refused: open it to edit it.
+4. **Shape.** One verb per change — `add_instrument_node`, `wire_instrument_input`,
    `set_instrument_input`, `set_instrument_constant`, and the `interface` and resource verbs. When
    the ask is a *musical word* rather than a number — warmer, looser, sadder — one verb does the
    whole thing: `set_instrument_inputs_by_intent` takes the word, finds every input the intent
    vocabulary's row for it names, sizes each step against that input's own declared range, and
-   applies them as one edit. Don't hand-expand a table row into a pile of value edits.
-4. **Keep the role true.** If the reshape changed what the instrument *is*, say so with
+   applies them as one edit. Don't hand-expand a table row into a pile of value edits. Each
+   accepted edit is live at once: there is no separate step to make it heard.
+5. **Keep the role true.** If the reshape changed what the instrument *is*, say so with
    `set_instrument_description`.
-5. **Confirm it's audible.** Valid is not audible: check generator→output reach before reporting
+6. **Confirm it's audible.** Valid is not audible: check generator→output reach before reporting
    done.
-6. **Swap.** `swap_instrument` installs the document — this is the step that makes the change heard.
 7. **Audition.** `send_live_controls` explores a value without committing it; fold a keeper back
-   into the document with `set_instrument_input`, then swap again.
+   into the document with `set_instrument_input`, which makes it live.
 
-Steps 6 and 7 need a running engine; the rest do not.
+Every step needs a running `reuben play`; only `describe_operators` answers without one. The
+names `list_instruments` gives, and the only places `new_instrument` may create, are the
+directories that engine offers: its library (`reuben play --instrument-root <dir>`, else
+`instruments/` where it starts) and the directory of the instrument it plays
+(`reuben play <file>`).
 
 Why the steps are what they are:
 
-- **The document is durable truth.** What the document says is what plays after the next Swap —
-  and what saves, shares, and reloads.
+- **The document is durable truth.** What the document says is what plays — an accepted edit is
+  installed as it is written — and what saves, shares, and reloads.
 - **You never touch the document's bytes.** Do not open, read, or write an instrument file: name it
-  by its `source` and let the tools do it. Read its structure with `describe_instrument`; change it
-  one verb at a time (`add_instrument_node`, `wire_instrument_input`, `set_instrument_input`…).
-  Every verb re-validates the **whole** document through the engine's own load path — still the
-  single validation authority — and **writes only if it is valid**, so a rejected edit leaves the
-  file exactly as it was. Then swap it in.
-- **A broken document refuses every edit until it is fixed.** Write-iff-valid holds for every
-  verb, so an edit to a document that was already invalid is refused however unrelated it is. A
+  and let the tools do it. Read its structure with `describe_instrument`; change it one verb at a
+  time (`add_instrument_node`, `wire_instrument_input`, `set_instrument_input`…). Every verb
+  re-validates the **whole** open instrument through the engine's own load path — still the
+  single validation authority — and **writes only if it still loads and plans**, except while
+  nothing plays (below); a rejected edit leaves every file exactly as it was and the instrument
+  playing as it was.
+- **A broken document refuses every edit until it is fixed**, except while nothing plays (below).
+  Write-iff-valid holds for every verb, so an edit to a document that was already invalid is
+  refused however unrelated it is. A
   rejection moves to `pre_existing` each error it can show the document already had — the same
   kind of error at the same node, port or field — and leaves the rest in `report.errors`. Fix the
   `pre_existing` errors first. An error left in `report.errors` is not proof your edit made it:
   validation reports one error at a time, so an error can sit unseen behind the one reported. When
   the error the load used to stop at is not the one reported now, a note names it.
+- **A broken document still opens, with nothing playing.** Opening a document that does not
+  load or plan opens it and unloads what was playing. The rule above still holds for the document
+  an edit changes: the edit is refused if that document keeps its own errors. Any other edit is
+  written even though the whole instrument does not plan yet, and nothing plays until the edit
+  that makes it load and plan — that edit starts it playing.
 - **Sending is ephemeral audition.** A live control message (`/filt/cutoff 1500`) changes
-  render state only — sweep a cutoff, try a tempo. The next Swap re-reads inputs from the
-  installed document, so an un-folded tweak is **clobbered by design**. (The MCP tool is
+  render state only — sweep a cutoff, try a tempo. The next edit re-reads inputs from the
+  document, so an un-folded tweak is **reset by design**. (The MCP tool is
   `send_live_controls`; the name says which half of the loop it is on.)
 - **Try, then commit.** Send to explore; when a value is a keeper, fold it into the document with
-  `set_instrument_input` and swap. Never let the sound and the document drift apart — the document
-  is the save source of truth.
-- **Renames reset state.** At Swap a node keeps its state iff a node with the same
-  fully-qualified address *and* the same operator type exists on both sides.
+  `set_instrument_input`. Never let the sound and the document drift apart — the document is the
+  save source of truth.
+- **Renames reset state.** At each swap — every accepted edit is one — a node keeps its state
+  iff a node with the same fully-qualified address *and* the same operator type exists on both
+  sides.
   Renaming an address, or changing the operator type at an address, is a remove + add;
   everything else — rewired inputs, changed params, new neighbors — leaves a survivor a
   survivor.
@@ -104,7 +119,8 @@ One more piece of authoring conduct — and the one the incremental surface made
   trusted for **selection only**; the `interface` block stays the mechanically-enforced
   face, so a stale role line can cost a bad-sounding pick, never a mis-wired document.
 
-Two swap rules of thumb:
+Two swap rules of thumb, which apply to every accepted edit, since each one swaps the open
+instrument in:
 
 - **A swap ducks the output for ~20ms.** The engine ramps the master to silence, installs
   the new Plan at zero, and ramps back up — a brief duck, never a click. Don't chase it as a
@@ -117,7 +133,6 @@ Two swap rules of thumb:
   lost and a surviving voice's gate stays high. Recoverable in-band: re-send the off (or
   re-trigger and release, or let voice stealing claim it). When notes were sounding, follow
   a swap with a corrective `send`.
-
 ## Doors and preconditions <!-- lanes: skills,mcp -->
 
 A checkout holds **two doors at once** — the CLI in the shell and the MCP sidecar — and they do
@@ -125,9 +140,9 @@ not serve the same steps. A tab holds one door, so this disambiguation is checko
 
 | | The sidecar (`reuben-mcp`) | The CLI (`cargo run -p reuben-native --bin reuben`) |
 |---|---|---|
-| Serves | the whole roster: the document verbs, the reads, the engine verbs | reads, plus `play` and `scaffold-operator` |
-| Over documents | **reads and writes** | **read-only**, except `new-instrument`, which writes a seed |
-| Needs | the sidecar reachable; its engine verbs also need a live `reuben play` | a build of `reuben-native` |
+| Serves | the document verbs, the reads, and the engine verbs, `open_instrument` among them | reads, plus `play` and `scaffold-operator` |
+| Over documents | asks `reuben play` to **read and write** them; the engine owns the files | **read-only**, except `new-instrument`, which writes a seed |
+| Needs | the sidecar reachable, and a live `reuben play` behind it for every tool but `describe_operators` | a build of `reuben-native` |
 
 **The document verbs are the sidecar's, and only the sidecar's.** If it is not reachable, the
 authoring loop's shape steps cannot be performed — **stop and say so**. Do not fall back to
@@ -145,7 +160,8 @@ Two steps have no verb at all, and are checkout-only for that reason:
 
 - **Regenerate the library index** when the available set or an instrument's face changed — no
   verb does it; *Recipe authoring* below has when and how.
-- **Hear it**: `reuben play <path>` — the engine the swap and audition steps talk to.
+- **Hear it**: `reuben play` — the engine every instrument tool asks, and the one
+  `open_instrument` opens an instrument on.
 
 <a id="type-system"></a>
 ## One `Input`, one `Arg` type <!-- lanes: skills,mcp,web -->
@@ -541,7 +557,7 @@ so this is a filesystem gesture followed by two ordinary verbs.
 3. **Missing = silence + a node-localized warning.** A missing or unreadable resource is
    never fatal: the node degrades to silence and `validate` (which stats the file) reports a
    warning naming the node — a wrong path is diagnosed from the report, not by ear. An
-   undecodable file surfaces the same way in the swap report as the dark-degrade warning:
+   undecodable file surfaces the same way in the edit's report as the dark-degrade warning:
    announced, not discovered.
 
 ## "Audio vs control" is boundary metadata, not a type <!-- lanes: skills,mcp,web -->

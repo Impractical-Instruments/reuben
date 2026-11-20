@@ -13,8 +13,8 @@ pub const ENGINE_UNREACHABLE_GUIDANCE: &str =
 pub const SEND_LIVE_CONTROLS: &str =
     "Send a batch of control messages to audition a change on the running engine. \
      Ephemeral by design: these values live in render state only and are \
-     CLOBBERED at the next swap — fold any you want to keep into the instrument document \
-     and swap. The ack means the engine received the batch and queued it for the next \
+     RESET by the next edit — fold any you want to keep into the instrument document with an \
+     edit. The ack means the engine received the batch and queued it for the next \
      rendered block — not that it took effect: an address matching no node/port is \
      dropped silently, exactly as it would be arriving from an external controller. \
      Fails fast if no engine is reachable.";
@@ -38,10 +38,10 @@ pub const SWAP_INSTRUMENT: &str =
      get_current_instrument later.";
 
 pub const GET_CURRENT_INSTRUMENT: &str =
-    "Report what the engine is playing: the source it was installed from, the installed content \
-     hash, and the node index of the live graph. Compare the hash against the one a document \
-     verb returns for that source to see whether your edits have been swapped in yet. Fails \
-     fast if no engine is reachable.";
+    "Report what the engine is playing: the source of the open instrument, its content hash, \
+     and the node index of that instrument. An empty content hash means the open instrument does \
+     not load and nothing plays until an edit makes it load. Fails fast if no engine is \
+     reachable.";
 
 pub const GET_ENGINE_DIAGNOSTICS: &str =
     "Return the engine's running diagnostics counters since start: output_xruns (events) plus \
@@ -53,3 +53,13 @@ pub const GET_ENGINE_METERS: &str =
      -120 floor), is clipping (peak at or above 0), or hears its input. Peaks fall back at 12 dB \
      a second and RMS averages over 0.3 s, so call it while the sound plays, not after. Fails \
      fast if no engine is reachable.";
+
+pub const OPEN_INSTRUMENT: &str =
+    "Stop playing the current instrument and load and play the one named `name`, a name \
+     `list_instruments` gave. Edits apply only to the open instrument and its nested files, so \
+     open an instrument before editing it. One that does not load still opens, with its errors \
+     and an empty content_hash: nothing plays until an edit makes it load.";
+
+pub const LIST_INSTRUMENTS: &str =
+    "List the names the engine offers: `what: \"instruments\"` for what `open_instrument` accepts \
+     and a `source` may name, `\"samples\"` for what a sample resource may reference.";

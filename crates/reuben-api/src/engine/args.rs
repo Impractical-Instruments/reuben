@@ -1,14 +1,16 @@
 //! The engine verbs' argument surface: flat, like the authoring half's, and advertised the same
 //! way — every `///` here is the field `description` a model reads.
 //!
-//! Three of the five verbs take nothing at all (`get_engine_status`, `get_current_instrument`,
-//! `get_engine_diagnostics` each ask the one question their name asks), so only two structs live
-//! here.
+//! Some verbs take nothing at all (`get_engine_status`, `get_current_instrument`,
+//! `get_engine_diagnostics` each ask the one question their name asks), so only the verbs with
+//! arguments have a struct here.
 
 use alloc::string::String;
 use alloc::vec::Vec;
 
 use serde::{Deserialize, Serialize};
+
+use super::wire::ListWhat;
 
 /// One control message in a `send` batch: an address and its primitive args.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -48,4 +50,21 @@ pub struct SwapInstrument {
     /// The content hash the client believes is installed; a mismatch rejects the swap.
     #[serde(default)]
     pub expect: Option<String>,
+}
+
+/// Arguments for `open_instrument`: the `name` of an instrument the engine offers, plus an optional
+/// `expect` content-hash guard.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct OpenInstrument {
+    /// The instrument to open: a name `list_instruments` returned.
+    pub name: String,
+    /// The content hash the client believes is installed; a mismatch rejects the open.
+    #[serde(default)]
+    pub expect: Option<String>,
+}
+
+/// Arguments for `list_instruments`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ListInstruments {
+    pub what: ListWhat,
 }

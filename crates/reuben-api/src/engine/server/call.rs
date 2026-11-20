@@ -1,6 +1,6 @@
 //! The `call` request: one roster verb run against the engine's store, under the Coordinator lock.
 //! A read answers directly; an edit is written and swapped in only if the whole open instrument
-//! still loads and plans with it.
+//! still loads and plans with it, unless the open instrument did not load to begin with.
 
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -176,6 +176,11 @@ fn in_client_terms(mut message: String, named: &[(String, String)]) -> String {
 
 /// An edit the verb has staged: write it and swap the new Plan in only if the open instrument,
 /// with the edit, still loads and plans; otherwise discard it and say why.
+///
+/// While the open instrument does not load and nothing plays, an edit that leaves it unable to
+/// load is written anyway, with [`Event::Invalid`](super::Event::Invalid) for what is still
+/// wrong: that is how a broken document is repaired. The edit that makes it load starts it
+/// playing.
 fn edit_or_refuse(
     state: &StructureState,
     coordinator: &mut Coordinator,
@@ -215,7 +220,8 @@ fn edit_or_refuse(
             state,
             source,
             vec![diag(
-                "no instrument document is open; swap one in by path to edit it".to_string(),
+                "no instrument document is open; open one with `open_instrument` to edit it"
+                    .to_string(),
             )],
             Vec::new(),
         );
@@ -256,6 +262,10 @@ fn edit_or_refuse(
     let (prepared, tree) = prepare_recording(state, coordinator, &text, &origin);
     let prepared = match prepared {
         Ok(prepared) => prepared,
+        Err(rejected) if state.is_silent() => {
+            let errors = SwapReport::from_core(rejected).report.errors;
+            return written_while_silent(state, result, source, &top, tree, errors);
+        }
         Err(rejected) => {
             return not_written(
                 state,
@@ -275,7 +285,8 @@ fn edit_or_refuse(
                     .to_string(),
             )],
             vec![format!(
-                "nothing was written and {top} keeps playing; try the edit again"
+                "nothing was written and {}; try the edit again",
+                still_playing(state, &top)
             )],
         );
     }
@@ -286,7 +297,8 @@ fn edit_or_refuse(
             source,
             vec![diag(e.to_string())],
             vec![format!(
-                "{source} could not be written; nothing was written and {top} keeps playing"
+                "{source} could not be written; nothing was written and {}",
+                still_playing(state, &top)
             )],
         );
     }
@@ -313,6 +325,53 @@ fn edit_or_refuse(
             }
         }
         Err(poisoned) => poisoned.into(),
+    }
+}
+
+/// What an edit that wrote nothing leaves sounding: `top`, or nothing while it does not load.
+fn still_playing(state: &StructureState, top: &str) -> String {
+    if state.is_silent() {
+        format!("nothing plays, since {top} does not load")
+    } else {
+        format!("{top} keeps playing")
+    }
+}
+
+/// Write an edit to an open instrument that does not load before or after it: nothing is swapped,
+/// `tree` becomes the documents an edit may touch, and `errors`, what still keeps `top` from
+/// loading, are published and noted.
+fn written_while_silent(
+    state: &StructureState,
+    mut result: EditResult,
+    source: &str,
+    top: &str,
+    tree: Tree,
+    errors: Vec<Diag>,
+) -> Response {
+    if let Err(e) = state.store.inner().commit() {
+        return not_written(
+            state,
+            source,
+            vec![diag(e.to_string())],
+            vec![format!("{source} could not be written")],
+        );
+    }
+    match state.tree_cell() {
+        Ok(mut cell) => *cell = tree,
+        Err(poisoned) => return poisoned.into(),
+    }
+    let still = errors
+        .iter()
+        .map(|e| e.message.as_str())
+        .collect::<Vec<_>>()
+        .join("; ");
+    result.notes.push(format!(
+        "written, but {top} still does not load, so nothing plays until it does: {still}"
+    ));
+    state.publish_invalid(errors);
+    Response::Called {
+        output: edit_output(&result),
+        summary: edit_summary(&result),
     }
 }
 
@@ -377,7 +436,9 @@ mod tests {
     use crate::engine::server::{
         dispatch, EngineHost, InProcess, IngressClosed, Installed, SwapInFlight,
     };
-    use crate::engine::wire::{ChangedBy, ControlMessage, DiagnosticsReport, Event, Request};
+    use crate::engine::wire::{
+        ChangedBy, ControlMessage, DiagnosticsReport, DocSource, Event, Request,
+    };
     use crate::render::RenderSlot;
     use crate::staged::Staged;
 
@@ -459,6 +520,20 @@ mod tests {
         "interface":{"outputs":{"out":{"from":"/osc.audio"}}},
         "nodes":[{"type":"oscillator","address":"/osc"}]}"#;
 
+    /// Its output is wired from a node it does not have, so it does not load.
+    const BROKEN_TOP: &str = r#"{"format_version":3,"instrument":"bt",
+        "interface":{"outputs":{"out":{"from":"/osc.audio"}}},
+        "nodes":[]}"#;
+
+    /// Nests `nv.json`, which is valid on its own but names no `out` for this to wire.
+    const NESTS_BROKEN: &str = r#"{"format_version":3,"instrument":"nt",
+        "resources":{"v":"nv.json"},
+        "interface":{"outputs":{"out":{"from":"/voice.out"}}},
+        "nodes":[{"type":"subpatch","address":"/voice","patch":"v"}]}"#;
+
+    const NESTED_WITHOUT_OUT: &str = r#"{"format_version":3,"instrument":"nv",
+        "nodes":[{"type":"oscillator","address":"/osc"}]}"#;
+
     /// A state serving `top.json` from an in-memory store, through the one `Staged` the Coordinator
     /// also resolves through, and the render side it swaps into.
     struct Served {
@@ -477,6 +552,16 @@ mod tests {
                 slot.fill(&mut buf);
             }
         }
+
+        /// The loudest sample of the last block rendered once any pending swap has landed.
+        fn peak(&self) -> f32 {
+            let mut slot = self.slot.borrow_mut();
+            let mut buf = vec![0.0f32; 128 * slot.channels().max(1)];
+            for _ in 0..BLOCKS_BETWEEN_CALLS {
+                slot.fill(&mut buf);
+            }
+            buf.iter().fold(0.0f32, |peak, s| peak.max(s.abs()))
+        }
     }
 
     /// Enough blocks for the render side to finish a swap, its declick ramp included.
@@ -491,7 +576,14 @@ mod tests {
 
     fn serving_with(host: Host) -> Served {
         let files = Arc::new(Files::default());
-        for (source, text) in [("top.json", TOP), ("v.json", V), ("other.json", OTHER)] {
+        for (source, text) in [
+            ("top.json", TOP),
+            ("v.json", V),
+            ("other.json", OTHER),
+            ("bt.json", BROKEN_TOP),
+            ("nt.json", NESTS_BROKEN),
+            ("nv.json", NESTED_WITHOUT_OUT),
+        ] {
             files.write_text(source, text).unwrap();
         }
         let staged: Staged<Box<dyn Resources + Send + Sync>> =
@@ -613,7 +705,7 @@ mod tests {
                 assert_eq!(report.content_hash, before);
                 assert_eq!(
                     report.report.errors[0].message,
-                    "`other.json` is not offered by this server"
+                    "`other.json` is not offered by this server; call `list_instruments` to see the names it offers"
                 );
             }
             other => panic!("expected a refusal, got {other:?}"),
@@ -631,7 +723,7 @@ mod tests {
         .to_ndjson();
         match dispatch(&s.state, &line) {
             Response::Refused { message } => {
-                assert_eq!(message, "`other.json` is not offered by this server")
+                assert_eq!(message, "`other.json` is not offered by this server; call `list_instruments` to see the names it offers")
             }
             other => panic!("expected a refusal, got {other:?}"),
         }
@@ -715,7 +807,7 @@ mod tests {
         );
         match dispatch(&s.state, &line) {
             Response::Refused { message } => {
-                assert_eq!(message, "`outside/k.wav` is not offered by this server")
+                assert_eq!(message, "`outside/k.wav` is not offered by this server; call `list_instruments` to see the names it offers")
             }
             other => panic!("expected a refusal, got {other:?}"),
         }
@@ -986,9 +1078,310 @@ mod tests {
             output["report"]["errors"][0]["message"]
                 .as_str()
                 .unwrap()
-                .contains("no instrument document is open"),
+                .contains("no instrument document is open; open one with `open_instrument`"),
             "{output}"
         );
+    }
+
+    fn open_report(s: &Served, name: &str, expect: Option<String>) -> crate::engine::SwapReport {
+        let report = match dispatch(&s.state, &open_line(name, expect)) {
+            Response::SwapReport(report) => report,
+            other => panic!("expected a swap report, got {other:?}"),
+        };
+        s.render();
+        report
+    }
+
+    fn snapshot(s: &Served) -> crate::engine::DocumentSnapshot {
+        match dispatch(&s.state, &Request::GetDocument.to_ndjson()) {
+            Response::Document(snapshot) => snapshot,
+            other => panic!("expected a document, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn open_of_a_broken_document_opens_it_silently() {
+        let s = serving();
+        assert!(s.peak() > 0.0, "the open instrument plays before");
+        let events = s.state.subscribe();
+        let report = open_report(&s, "bt.json", None);
+        assert!(!report.report.ok, "{report:?}");
+        assert!(!report.report.errors.is_empty(), "{report:?}");
+        assert_eq!(
+            report.content_hash, "",
+            "nothing plays, so no hash names it"
+        );
+        assert!(
+            report.report.warnings[0]
+                .message
+                .contains("nothing plays until an edit makes it load"),
+            "{report:?}"
+        );
+
+        assert_eq!(s.peak(), 0.0, "the silent Plan plays");
+        assert_eq!(
+            s.state.try_installed(),
+            Installed::Known {
+                input_channels: 0,
+                content_hash: String::new(),
+                source: Some("bt.json".to_string()),
+            }
+        );
+        let snapshot = snapshot(&s);
+        assert_eq!(snapshot.source.as_deref(), Some("bt.json"));
+        assert_eq!(snapshot.content_hash, "");
+        assert_eq!(snapshot.document, Value::Null);
+        assert_eq!(s.state.tree(), BTreeSet::from(["bt.json".to_string()]));
+
+        assert_eq!(
+            events.try_recv(),
+            Ok(Event::Opened {
+                name: "bt.json".to_string(),
+                hash: String::new(),
+            })
+        );
+        assert_eq!(
+            events.try_recv(),
+            Ok(Event::Invalid {
+                errors: report.report.errors.clone(),
+            })
+        );
+        assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn an_edit_that_fixes_the_open_broken_document_starts_playing() {
+        let s = serving();
+        open_report(&s, "bt.json", None);
+        let events = s.state.subscribe();
+        let (output, _) = call(
+            &s,
+            "add_instrument_node",
+            json!({"source": "bt.json", "type": "oscillator", "address": "/osc"}),
+        );
+        assert_eq!(output["written"], true, "{output}");
+        assert_eq!(json!(installed_hash(&s.state)), output["hash"]);
+        assert_eq!(
+            events.try_recv(),
+            Ok(Event::Changed {
+                hash: output["hash"].as_str().expect("hash").to_string(),
+                by: ChangedBy::Client,
+            })
+        );
+        assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
+        assert!(s.peak() > 0.0, "it plays");
+        assert_eq!(snapshot(&s).content_hash, installed_hash(&s.state));
+    }
+
+    #[test]
+    fn an_edit_that_leaves_it_broken_is_written_but_nothing_plays() {
+        let s = serving();
+        let opened = open_report(&s, "nt.json", None);
+        assert!(!opened.report.ok, "{opened:?}");
+        assert_eq!(
+            s.state.tree(),
+            BTreeSet::from(["nt.json".to_string(), "nv.json".to_string()]),
+            "the nested file the open read is part of the open instrument"
+        );
+        let events = s.state.subscribe();
+        let (output, _) = call(
+            &s,
+            "set_instrument_name",
+            json!({"source": "nv.json", "name": "renamed"}),
+        );
+        assert_eq!(output["written"], true, "{output}");
+        assert!(
+            output["notes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|n| n.as_str().unwrap().contains("nothing plays until")),
+            "{output}"
+        );
+        assert!(s.files.get("nv.json").unwrap().contains("renamed"));
+        assert!(
+            matches!(events.try_recv(), Ok(Event::Invalid { errors }) if !errors.is_empty()),
+            "an edit that leaves it broken says what is still wrong"
+        );
+        assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
+        assert_eq!(installed_hash(&s.state), "");
+        assert_eq!(s.peak(), 0.0);
+    }
+
+    #[test]
+    fn once_playing_the_strict_rule_is_back() {
+        let s = serving();
+        open_report(&s, "nt.json", None);
+        let (fixed, _) = call(
+            &s,
+            "add_instrument_interface_output",
+            json!({"source": "nv.json", "name": "out", "from": "/osc.audio"}),
+        );
+        assert_eq!(fixed["written"], true, "{fixed}");
+        assert!(s.peak() > 0.0, "the fix to the nested file makes it play");
+        let playing = installed_hash(&s.state);
+        assert_ne!(playing, "");
+        let written = s.files.get("nv.json").unwrap();
+
+        let (broken, _) = call(
+            &s,
+            "remove_instrument_interface_output",
+            json!({"source": "nv.json", "name": "out"}),
+        );
+        assert_eq!(broken["written"], false, "{broken}");
+        assert_eq!(s.files.get("nv.json").unwrap(), written);
+        assert_eq!(installed_hash(&s.state), playing);
+    }
+
+    #[test]
+    fn an_expect_on_open_of_a_broken_document_is_checked_against_what_plays() {
+        let s = serving();
+        let playing = installed_hash(&s.state);
+        match dispatch(&s.state, &open_line("bt.json", Some("0badc0de".into()))) {
+            Response::Conflict(conflict) => assert_eq!(conflict.actual, playing),
+            other => panic!("expected a conflict, got {other:?}"),
+        }
+        assert_eq!(installed_hash(&s.state), playing);
+        assert!(s.peak() > 0.0, "a conflict unloads nothing");
+
+        let report = open_report(&s, "bt.json", Some(playing.clone()));
+        assert_eq!(report.content_hash, "");
+        // Nothing plays now, and that is what a later `expect` is compared against.
+        match dispatch(&s.state, &open_line("other.json", Some(playing))) {
+            Response::Conflict(conflict) => assert_eq!(conflict.actual, ""),
+            other => panic!("expected a conflict, got {other:?}"),
+        }
+        let report = open_report(&s, "other.json", Some(String::new()));
+        assert!(report.report.ok, "{report:?}");
+    }
+
+    #[test]
+    fn a_client_open_of_a_broken_document_is_held_for_a_holding_host() {
+        let s = serving_with(Host {
+            hold: true,
+            only: None,
+        });
+        let before = s.state.try_installed();
+        let events = s.state.subscribe();
+        match dispatch(&s.state, &open_line("bt.json", None)) {
+            Response::Held(held) => assert_eq!(held.requested, "bt.json"),
+            other => panic!("expected a held open, got {other:?}"),
+        }
+        assert_eq!(s.state.try_installed(), before);
+        assert!(s.peak() > 0.0);
+        assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn a_refused_open_while_nothing_plays_names_what_is_still_open() {
+        let s = serving();
+        open_report(&s, "bt.json", None);
+        let report = open_report(&s, "missing.json", None);
+        assert!(!report.report.ok);
+        assert_eq!(report.content_hash, "");
+        assert!(
+            report.report.errors[0].message.contains("missing.json"),
+            "{report:?}"
+        );
+        assert_eq!(
+            report.report.warnings[0].message,
+            "nothing was opened; bt.json is still open but does not load, so nothing plays"
+        );
+        assert_eq!(s.state.tree(), BTreeSet::from(["bt.json".to_string()]));
+    }
+
+    #[test]
+    fn a_refused_swap_while_nothing_plays_says_nothing_was_swapped_in() {
+        let s = serving();
+        open_report(&s, "bt.json", None);
+        let line = Request::Swap {
+            source: DocSource::Path("missing.json".to_string()),
+            expect: None,
+        }
+        .to_ndjson();
+        let report = match dispatch(&s.state, &line) {
+            Response::SwapReport(report) => report,
+            other => panic!("expected a swap report, got {other:?}"),
+        };
+        assert!(!report.report.ok);
+        assert_eq!(report.content_hash, "");
+        assert_eq!(
+            report.report.warnings[0].message,
+            "nothing was swapped in; bt.json is still open but does not load, so nothing plays"
+        );
+    }
+
+    #[test]
+    fn an_edit_while_the_silence_swap_is_in_flight_says_nothing_plays() {
+        let s = serving();
+        // Nothing is rendered after the open, so its swap to silence stays in flight.
+        assert!(matches!(
+            dispatch(&s.state, &open_line("bt.json", None)),
+            Response::SwapReport(_)
+        ));
+        let (output, _) = call_undrained(
+            &s.state,
+            "add_instrument_node",
+            json!({"source": "bt.json", "type": "oscillator", "address": "/osc"}),
+        );
+        assert_eq!(output["written"], false, "{output}");
+        let note = output["notes"][0].as_str().unwrap();
+        assert!(
+            note.contains("nothing plays, since bt.json does not load"),
+            "{output}"
+        );
+        assert!(!note.contains("keeps playing"), "{output}");
+        assert_eq!(s.files.get("bt.json").unwrap(), BROKEN_TOP);
+    }
+
+    #[test]
+    fn opening_a_valid_document_while_a_broken_one_is_open_plays_it() {
+        let s = serving();
+        open_report(&s, "bt.json", None);
+        let events = s.state.subscribe();
+        let report = open_report(&s, "other.json", None);
+        assert!(report.report.ok, "{report:?}");
+        let hash = installed_hash(&s.state);
+        assert_ne!(hash, "");
+        assert_eq!(report.content_hash, hash);
+        assert_eq!(
+            events.try_recv(),
+            Ok(Event::Opened {
+                name: "other.json".to_string(),
+                hash: hash.clone(),
+            })
+        );
+        assert!(s.peak() > 0.0);
+        let snapshot = snapshot(&s);
+        assert_eq!(snapshot.content_hash, hash);
+        assert_ne!(snapshot.document, Value::Null);
+        assert_eq!(s.state.tree(), BTreeSet::from(["other.json".to_string()]));
+    }
+
+    #[test]
+    fn an_outside_fix_to_the_open_broken_document_starts_playing() {
+        let s = serving();
+        open_report(&s, "nt.json", None);
+        let events = s.state.subscribe();
+        // The same broken files read again: already reported.
+        assert_eq!(s.state.reload(), None);
+        s.files
+            .write_text("nv.json", &V.replace(r#""v""#, r#""nv""#))
+            .unwrap();
+        let reloaded = s.state.reload();
+        assert!(
+            matches!(
+                reloaded,
+                Some(Event::Changed {
+                    by: ChangedBy::Outside,
+                    ..
+                })
+            ),
+            "{reloaded:?}"
+        );
+        assert_eq!(events.try_recv().ok(), reloaded);
+        assert!(s.peak() > 0.0);
+        assert_ne!(installed_hash(&s.state), "");
     }
 
     #[test]

@@ -8,12 +8,13 @@ something checks the asked-for thing happened.
 So every test here is the *negative*: feed the assertion a document that a lazy or damaging model
 would plausibly produce, and require it to raise.
 
-Needs a built sidecar for the reference-solution test (`cargo build -p reuben-mcp`); that one test
-skips when the binary is absent so the rest still run on a bare checkout.
+Needs a built sidecar and engine for the tests that drive them (`cargo build -p reuben-mcp -p
+reuben-native`); those skip when either binary is absent so the rest still run on a bare checkout.
 """
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import json
 import pathlib
@@ -21,7 +22,15 @@ import tempfile
 import unittest
 
 from reuben_eval import tasks
-from reuben_eval.mcp import Sidecar, SidecarError, sidecar_binary
+from reuben_eval.mcp import (
+    DEFAULT_OSC_IN_PORT,
+    DEFAULT_STRUCTURE_PORT,
+    Engine,
+    Sidecar,
+    SidecarError,
+    engine_binary,
+    sidecar_binary,
+)
 from reuben_eval.runner import Session, run_reference
 from reuben_eval.workspace import (
     FILE_ACCESS,
@@ -32,12 +41,21 @@ from reuben_eval.workspace import (
 )
 
 
-def sidecar_available() -> bool:
+def binaries_available() -> bool:
+    """Both processes a session runs: the sidecar and the engine every instrument tool calls."""
     try:
         sidecar_binary()
+        engine_binary()
         return True
     except SidecarError:
         return False
+
+
+@contextlib.contextmanager
+def _served(root: pathlib.Path):
+    """A sidecar and the engine it calls, rooted at `root`, for a test that needs no task."""
+    with Engine(root) as engine, Sidecar(root, engine.structure_addr) as sidecar:
+        yield sidecar
 
 
 def _replay(task, extra_calls=()):
@@ -58,22 +76,63 @@ def _replay(task, extra_calls=()):
             return session.judge(), session.workspace.read_document(task.document)
 
 
+class TestSession(unittest.TestCase):
+    """Every instrument tool is a call to a running `reuben play`, so a session brings its own."""
+
+    @unittest.skipUnless(binaries_available(), "reuben-mcp or reuben not built")
+    def test_session_starts_its_own_engine(self) -> None:
+        task = tasks.BY_KEY["tweak"]
+        with tempfile.TemporaryDirectory(prefix="reuben-eval-session-") as root:
+            workspace = pathlib.Path(root) / "workspace"
+            with Session(task, workspace) as session:
+                engine = session.engine
+                self.assertIsNone(engine.process.poll(), "the engine exited during the session")
+                self.assertEqual(engine.argv[0], str(engine_binary()))
+                self.assertEqual(engine.cwd, session.workspace.root)
+                structure = engine.argv[engine.argv.index("--structure-addr") + 1]
+                osc_in = engine.argv[engine.argv.index("--osc-in") + 1]
+                root_flag = engine.argv.index("--instrument-root")
+                self.assertLess(root_flag, engine.argv.index("play"))
+                self.assertEqual(engine.argv[root_flag + 1], str(session.workspace.root))
+                self.assertIn("--headless", engine.argv)
+                # No instrument argument: the engine plays its built-in default rig.
+                self.assertEqual(engine.argv[-1], osc_in)
+                for address in (structure, osc_in):
+                    host, port = address.rsplit(":", 1)
+                    self.assertEqual(host, "127.0.0.1")
+                    self.assertNotIn(int(port), (DEFAULT_STRUCTURE_PORT, DEFAULT_OSC_IN_PORT))
+                self.assertEqual(session.sidecar.structure_addr, structure)
+                status = session.sidecar.call_tool("get_engine_status", {})
+                self.assertFalse(status.is_error, status.rendered())
+            self.assertIsNotNone(engine.process.poll(), "the engine outlived its session")
+
+    @unittest.skipUnless(binaries_available(), "reuben-mcp or reuben not built")
+    def test_the_engine_is_killed_when_the_session_raises(self) -> None:
+        task = tasks.BY_KEY["tweak"]
+        with tempfile.TemporaryDirectory(prefix="reuben-eval-session-") as root:
+            with self.assertRaises(RuntimeError):
+                with Session(task, pathlib.Path(root) / "workspace") as session:
+                    engine = session.engine
+                    raise RuntimeError("the run crashed")
+            self.assertIsNotNone(engine.process.poll(), "the engine outlived its session")
+
+
 class TestReferenceSolutions(unittest.TestCase):
     """The floor must be reachable, or the gate is measuring a broken workload."""
 
-    @unittest.skipUnless(sidecar_available(), "reuben-mcp not built")
+    @unittest.skipUnless(binaries_available(), "reuben-mcp or reuben not built")
     def test_every_reference_solution_passes(self) -> None:
         for task in tasks.TASKS:
             with self.subTest(task=task.key):
                 outcome = run_reference(task)
                 self.assertTrue(outcome.passed, f"{task.key}: {outcome.failure}")
 
-    @unittest.skipUnless(sidecar_available(), "reuben-mcp not built")
+    @unittest.skipUnless(binaries_available(), "reuben-mcp or reuben not built")
     def test_repair_task_costs_exactly_one_repair_round(self) -> None:
         """Metric (b)'s floor for `repair` is 1 — its first `validate` IS the diagnosis."""
         self.assertEqual(run_reference(tasks.BY_KEY["repair"]).repair_rounds, 1)
 
-    @unittest.skipUnless(sidecar_available(), "reuben-mcp not built")
+    @unittest.skipUnless(binaries_available(), "reuben-mcp or reuben not built")
     def test_engine_actually_rejects_the_broken_fixture(self) -> None:
         """The measured surface must still catch the defect the repair task is built on.
 
@@ -82,12 +141,10 @@ class TestReferenceSolutions(unittest.TestCase):
         engine ever stops rejecting the dangling edge, the repair task silently becomes a no-op and
         its cost drop reads to the gate as an improvement. This is the explicit tripwire.
         """
-        from reuben_eval.mcp import Sidecar
-
         with tempfile.TemporaryDirectory(prefix="reuben-broken-") as root:
             path = pathlib.Path(root) / tasks.DOCUMENT
             path.write_text(tasks.BROKEN, encoding="utf-8")
-            with Sidecar(pathlib.Path(root)) as sidecar:
+            with _served(pathlib.Path(root)) as sidecar:
                 verdict = sidecar.call_tool("validate_instrument", {"source": tasks.DOCUMENT})
         self.assertIs(
             (verdict.structured or {}).get("ok"),
@@ -95,18 +152,22 @@ class TestReferenceSolutions(unittest.TestCase):
             "the engine no longer rejects the BROKEN fixture — the repair task is measuring nothing",
         )
 
-    @unittest.skipUnless(sidecar_available(), "reuben-mcp not built")
+    @unittest.skipUnless(binaries_available(), "reuben-mcp or reuben not built")
     def test_the_tweak_floor_emits_no_document_at_all(self) -> None:
         """The number the surface work existed to move, arrived: a one-value change is one call.
 
         It used to be a whole document. `set_instrument_input` names the address, the port and the
-        value and nothing else, so metric (c) prices the ideal tweak at zero.
+        value and nothing else, so metric (c) prices the ideal tweak at zero. The one call before it
+        opens the document, which an edit needs.
         """
         outcome = run_reference(tasks.BY_KEY["tweak"])
         self.assertEqual(outcome.payload_characters, 0)
-        self.assertEqual(len(tasks.BY_KEY["tweak"].reference), 1)
+        self.assertEqual(
+            [step.name for step in tasks.BY_KEY["tweak"].reference],
+            ["open_instrument", "set_instrument_input"],
+        )
 
-    @unittest.skipUnless(sidecar_available(), "reuben-mcp not built")
+    @unittest.skipUnless(binaries_available(), "reuben-mcp or reuben not built")
     def test_the_from_scratch_reference_builds_the_document_it_declares(self) -> None:
         """The verb sequence and `_from_scratch_document` must not drift apart.
 
@@ -435,14 +496,16 @@ class TestRepairAndNote(unittest.TestCase):
         with self.assertRaises(AssertionError):
             tasks._assert_repair_and_note(self._noted(json.loads(tasks.BROKEN)))
 
-    @unittest.skipUnless(sidecar_available(), "reuben-mcp not built")
+    @unittest.skipUnless(binaries_available(), "reuben-mcp or reuben not built")
     def test_the_note_tried_first_is_refused_for_the_edge_it_did_not_break(self) -> None:
         """What a model meets when it takes the prompt in order: the refusal names the dangling
         edge as pre-existing and charges the note with nothing, so the next move is the fix."""
         with tempfile.TemporaryDirectory(prefix="reuben-repair-note-") as root:
             path = pathlib.Path(root) / tasks.DOCUMENT
             path.write_text(tasks.BROKEN, encoding="utf-8")
-            with Sidecar(pathlib.Path(root)) as sidecar:
+            with _served(pathlib.Path(root)) as sidecar:
+                opened = sidecar.call_tool("open_instrument", {"name": tasks.DOCUMENT})
+                self.assertFalse(opened.is_error, opened.rendered())
                 result = sidecar.call_tool(
                     "set_instrument_node_description",
                     {"source": tasks.DOCUMENT, "address": "/osc", "description": tasks.OSC_NOTE},
@@ -465,7 +528,7 @@ class TestTaskRoster(unittest.TestCase):
             {"from_scratch", "tweak", "intent_word", "intent_fan_out", "repair", "repair_and_note"},
         )
 
-    @unittest.skipUnless(sidecar_available(), "reuben-mcp not built")
+    @unittest.skipUnless(binaries_available(), "reuben-mcp or reuben not built")
     def test_every_reference_solution_actually_writes_the_document(self) -> None:
         """A reference must leave the document changed, not merely mention it.
 
@@ -559,7 +622,8 @@ class TestFileAccessIsANamedFailure(unittest.TestCase):
         """A near-miss on a real verb is a malformed call, not a reach for the filesystem."""
         for name in ("describe_instrument", "set_instrument_input", "new_instrument",
                      "add_instrument_node", "wire_instrument_input", "send_live_controls",
-                     "swap_instrument", "validate_instrument", "describe_operators"):
+                     "swap_instrument", "validate_instrument", "describe_operators",
+                     "open_instrument", "list_instruments"):
             with self.subTest(tool=name):
                 self.assertFalse(looks_like_file_access(name))
 
@@ -586,11 +650,11 @@ class TestFileAccessIsANamedFailure(unittest.TestCase):
             with self.subTest(tool=name):
                 self.assertTrue(looks_like_file_access(name))
 
-    @unittest.skipUnless(sidecar_available(), "reuben-mcp not built")
+    @unittest.skipUnless(binaries_available(), "reuben-mcp or reuben not built")
     def test_no_name_on_the_live_roster_trips_it(self) -> None:
         """The static sample above is a sample; this is the whole roster, whatever it grows to."""
         with tempfile.TemporaryDirectory(prefix="reuben-roster-") as root:
-            with Sidecar(pathlib.Path(root)) as sidecar:
+            with _served(pathlib.Path(root)) as sidecar:
                 names = sorted(sidecar.tools)
         self.assertGreater(len(names), 20, "the roster did not load")
         for name in names:
@@ -603,7 +667,7 @@ class TestFileAccessIsANamedFailure(unittest.TestCase):
                 reached = [step.name for step in task.reference if looks_like_file_access(step.name)]
                 self.assertIsNone(file_access_failure(reached), file_access_failure(reached))
 
-    @unittest.skipUnless(sidecar_available(), "reuben-mcp not built")
+    @unittest.skipUnless(binaries_available(), "reuben-mcp or reuben not built")
     def test_a_reach_after_a_correct_edit_still_fails_the_run(self) -> None:
         """Driven end to end, through the same path a live model's call takes.
 

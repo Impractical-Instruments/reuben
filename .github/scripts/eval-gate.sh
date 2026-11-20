@@ -57,7 +57,8 @@ export EVAL_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 export EVAL_COMMIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 export EVAL_DATE="$(git show -s --format=%cI HEAD 2>/dev/null || echo unknown)"
 
-build_sidecar() { cargo build -p reuben-mcp --quiet; }
+# The sidecar and the engine it calls: each session starts its own headless `reuben play`.
+build_sidecar() { cargo build -p reuben-mcp -p reuben-native --quiet; }
 run_eval() { python3 -m reuben_eval.gate "$@"; }
 
 # Make the worktree under each surface path match `$ref` EXACTLY, deletions included.

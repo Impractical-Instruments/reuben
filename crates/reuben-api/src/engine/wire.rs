@@ -233,13 +233,15 @@ pub enum Request {
     Subscribe,
 }
 
-/// What a [`Request::List`] asks for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Which kind of name to list.
+//
+// The wire's `Request::List` and `list_instruments` share this type, so its docs ship to models.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ListWhat {
-    /// Instruments an [`Open`](Request::Open) accepts.
+    /// The instruments `open_instrument` accepts.
     Instruments,
-    /// Samples a document can reference.
+    /// The samples a sample resource may reference.
     Samples,
 }
 
@@ -316,9 +318,11 @@ pub struct HeldSwap {
 // from it, so this type reaches a door and stops there. Hence no schema derive.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DocumentSnapshot {
-    /// The document the engine is currently playing, as raw JSON.
+    /// The document the engine is currently playing, as raw JSON. `null` while the open
+    /// instrument does not load and nothing plays.
     pub document: serde_json::Value,
-    /// Its content hash — the token a later swap's `expect` guard compares.
+    /// Its content hash — the token a later swap's `expect` guard compares. Empty while the open
+    /// instrument does not load and nothing plays; `source` then names the open instrument.
     pub content_hash: String,
     /// Where the playing document was installed from, when the engine knows: the `source` of the
     /// last successful swap, or the document `reuben play` started on. `None` after an install by
@@ -352,6 +356,9 @@ pub struct DiffSummary {
 /// What a `swap` returns: the validation report, the **installed** document's content hash (on
 /// `ok: false` nothing installed — the hash still names what keeps playing), and, on success, the
 /// diff summary. The report flattens so the wire shape is one flat object.
+///
+/// An empty hash means nothing plays: the open instrument does not load. An `open` of a document
+/// that does not load answers that way, with the load's errors, and the document is then open.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SwapReport {
     #[serde(flatten)]

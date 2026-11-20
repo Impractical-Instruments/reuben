@@ -1,9 +1,12 @@
-"""A minimal MCP stdio client that drives the real `reuben-mcp` sidecar.
+"""A minimal MCP stdio client that drives the real `reuben-mcp` sidecar, and the engine it calls.
 
 Both tiers go through this, so the surface being measured is **the actual door** — real tool
 schemas, the real server `instructions`, real `Report`/`Diag` shapes. Nothing can drift from what a
 user's client sees, and the grounding budget is counted for free because it arrives over the wire.
 No fourth door is invented in order to be measured.
+
+The sidecar asks a running `reuben play` for every instrument read and edit, so each session starts
+its own headless engine on ports of its own (`Engine`) and points the sidecar at it.
 
 Everything the server hands back is accumulated in a `Ledger` as it arrives. That is the whole
 measurement apparatus for metric (a): the harness never estimates a payload it did not receive.
@@ -14,8 +17,10 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import socket
 import subprocess
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -27,6 +32,15 @@ REPO = Path(__file__).resolve().parent.parent.parent
 # Long enough that a debug-build cold start or a big `describe_operators` never reads as a hang,
 # short enough that a wedged sidecar fails the run instead of the job's 6-hour ceiling.
 TIMEOUT_SECONDS = 120.0
+
+# The ports a developer's own `reuben play` holds by default: the structure channel and OSC-in. A
+# session never takes either, so an eval run neither collides with nor talks to that engine.
+DEFAULT_STRUCTURE_PORT = 9124
+DEFAULT_OSC_IN_PORT = 9000
+# The sidecar's own name for the engine address (`reuben_mcp::STRUCTURE_ADDR_ENV`).
+STRUCTURE_ADDR_ENV = "REUBEN_STRUCTURE_ADDR"
+# The line `reuben play` prints once its structure channel is bound.
+_ENGINE_READY = "structure channel on "
 
 
 class SidecarError(RuntimeError):
@@ -129,15 +143,145 @@ def sidecar_binary() -> Path:
     )
 
 
+def engine_binary() -> Path:
+    """Locate the built `reuben`, the engine a session plays. Never builds it, like the sidecar."""
+    override = os.environ.get("REUBEN_BIN")
+    if override:
+        path = Path(override)
+        if not path.is_file():
+            raise SidecarError(f"REUBEN_BIN={override} is not a file")
+        return path
+    for profile in ("release", "debug"):
+        candidate = REPO / "target" / profile / "reuben"
+        if candidate.is_file():
+            return candidate
+    raise SidecarError(
+        "reuben not found — run `cargo build -p reuben-native` or set REUBEN_BIN"
+    )
+
+
+def _free_port(kind: int) -> int:
+    """A loopback port the OS reports free for `kind`, never one of the defaults.
+
+    Released before the engine binds it, so another process could take it in between; the engine
+    then fails to start and the session says so rather than measuring someone else's engine.
+    """
+    while True:
+        with socket.socket(socket.AF_INET, kind) as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        if port not in (DEFAULT_STRUCTURE_PORT, DEFAULT_OSC_IN_PORT):
+            return port
+
+
+class Engine:
+    """One headless `reuben play`, rooted at a workspace, playing the built-in default rig.
+
+    Used as a context manager; the process is killed on exit either way. The workspace is both its
+    working directory, which names resolve against, and its instrument root, which it offers.
+    """
+
+    def __init__(self, cwd: Path) -> None:
+        self.cwd = cwd
+        self.structure_addr = f"127.0.0.1:{_free_port(socket.SOCK_STREAM)}"
+        self.osc_in = f"127.0.0.1:{_free_port(socket.SOCK_DGRAM)}"
+        self.argv = [
+            str(engine_binary()),
+            "--instrument-root",
+            str(cwd),
+            "play",
+            "--headless",
+            "--structure-addr",
+            self.structure_addr,
+            "--osc-in",
+            self.osc_in,
+        ]
+        self._proc: subprocess.Popen[str] | None = None
+
+    @property
+    def process(self) -> subprocess.Popen[str]:
+        if self._proc is None:
+            raise SidecarError("engine is not running")
+        return self._proc
+
+    def __enter__(self) -> Engine:
+        self._proc = subprocess.Popen(
+            self.argv,
+            cwd=str(self.cwd),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            bufsize=1,
+        )
+        try:
+            self._await_ready()
+        except BaseException:
+            self.__exit__(None, None, None)
+            raise
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        # `_proc` is kept after exit, not cleared, so a caller can still read the exit status off
+        # `process` once the session has ended.
+        proc = self._proc
+        if proc is None:
+            return
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except BaseException as interrupted:
+            # A timeout, or a Ctrl-C landing during the wait: the engine must not outlive the run.
+            proc.kill()
+            proc.wait(timeout=5)
+            if not isinstance(interrupted, Exception):
+                raise
+        finally:
+            if proc.stdout:
+                proc.stdout.close()
+
+    def _await_ready(self) -> None:
+        """Block until the structure channel is bound, then keep draining the engine's output.
+
+        The output is read on a thread throughout: a pipe left unread fills and blocks the engine.
+        """
+        proc = self.process
+        ready = threading.Event()
+        seen: list[str] = []
+
+        def drain() -> None:
+            try:
+                for line in proc.stdout:  # type: ignore[union-attr]
+                    if not ready.is_set():
+                        seen.append(line.rstrip())
+                        if line.startswith(_ENGINE_READY + self.structure_addr):
+                            ready.set()
+            except (OSError, ValueError):
+                pass  # `__exit__` closed the pipe under the read.
+
+        threading.Thread(target=drain, daemon=True).start()
+        deadline = time.monotonic() + TIMEOUT_SECONDS
+        while not ready.wait(0.05):
+            if proc.poll() is not None or time.monotonic() > deadline:
+                said = "\n".join(seen[-10:]) or "(nothing)"
+                raise SidecarError(
+                    f"reuben play did not serve its structure channel on {self.structure_addr}:\n"
+                    f"{said}"
+                )
+
+
 class Sidecar:
     """One `reuben-mcp` process, spoken to over newline-delimited JSON-RPC.
 
     Used as a context manager; the process is killed on exit either way. `cwd` roots the sidecar's
     path resolution, so each task gets its own workspace and tasks cannot contaminate each other.
+    `structure_addr` is the engine it calls; `None` leaves it unset, which dials the default.
     """
 
-    def __init__(self, cwd: Path) -> None:
+    def __init__(self, cwd: Path, structure_addr: str | None = None) -> None:
         self._cwd = cwd
+        self.structure_addr = structure_addr
         self._proc: subprocess.Popen[str] | None = None
         self._next_id = 0
         self.ledger = Ledger()
@@ -145,9 +289,13 @@ class Sidecar:
         self.instructions = ""
 
     def __enter__(self) -> Sidecar:
+        env = {key: value for key, value in os.environ.items() if key != STRUCTURE_ADDR_ENV}
+        if self.structure_addr is not None:
+            env[STRUCTURE_ADDR_ENV] = self.structure_addr
         self._proc = subprocess.Popen(
             [str(sidecar_binary())],
             cwd=str(self._cwd),
+            env=env,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,

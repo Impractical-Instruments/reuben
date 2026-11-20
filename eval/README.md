@@ -28,9 +28,15 @@ prototype's claim is checkable **before a single token of inference is bought**.
 that gates CI.
 
 ```sh
-cargo build -p reuben-mcp
+cargo build -p reuben-mcp -p reuben-native
 cd eval && python3 -m reuben_eval.gate
 ```
+
+The sidecar asks a running `reuben play` for every instrument read and edit, so each session
+starts its own: a headless engine on free loopback ports (never the defaults a developer's own
+engine holds), rooted at the task's workspace and playing the default rig until a reference opens
+the task's document. It is killed when the session ends, however it ends. `REUBEN_BIN` and
+`REUBEN_MCP_BIN` point the harness at binaries outside `target/`.
 
 The gate is **visibility, not a verdict**. A grounding metric that regresses lands as a warning
 annotation and a point on the trend — never a build failure. A gate that FAILs on roster growth
@@ -210,7 +216,7 @@ python3 eval/tools/gen_unicode_classes.py    # then refresh pins.json, and say s
 ## Where things live
 
 ```
-reuben_eval/mcp.py         MCP stdio client + the token ledger
+reuben_eval/mcp.py         MCP stdio client, the session engine, and the token ledger
 reuben_eval/workspace.py   the host roster, task seeding, the document-payload ledger (metric c)
 reuben_eval/tasks.py       the five tasks, reference solutions, structural assertions
 reuben_eval/runner.py      one task run, scored

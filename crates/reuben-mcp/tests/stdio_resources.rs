@@ -3,8 +3,8 @@
 //! JSON-RPC. Mirrors the harness in `stdio_tools_list.rs`, with the same watchdog so a regression
 //! fails loudly instead of hanging CI.
 //!
-//! What it holds: every resource is served byte-equal to the checkout, and every `INSTRUCTIONS`
-//! pointer resolves to one that exists.
+//! What it holds: the vocabulary and the library index are served byte-equal to the checkout, the
+//! guide is served as its MCP lane cut, and every `INSTRUCTIONS` pointer resolves to one that exists.
 
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
@@ -33,6 +33,7 @@ const RETIRED_SCHEMA_RESOURCE_URI: &str = concat!("reuben://", "schema/instrumen
 /// of them. A watchdog thread bounds the read so a protocol regression fails loudly.
 fn drive(requests: &[&str]) -> String {
     let mut child = Command::new(env!("CARGO_BIN_EXE_reuben-mcp"))
+        .env_remove(reuben_mcp::STRUCTURE_ADDR_ENV)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -164,6 +165,22 @@ fn read_authoring_guide_is_nonempty_markdown() {
         text.contains('#'),
         "the authoring guide is markdown — it should carry at least one heading"
     );
+}
+
+#[test]
+fn the_served_guide_is_the_mcp_cut_and_never_sends_a_model_to_swap() {
+    // This door does not serve `swap_instrument`, so the guide it serves must never name it; and it
+    // serves the guide's MCP cut, so no lane tag reaches the model either.
+    let (_, _, text) = read_resource(reuben_mcp::GUIDE_RESOURCE_URI);
+    assert!(
+        !text.contains("swap_instrument"),
+        "the served guide sends a model to `swap_instrument`, which this door does not serve"
+    );
+    assert!(
+        !text.contains("lanes:"),
+        "the served guide is the MCP cut, with every lane tag stripped"
+    );
+    assert!(text.contains("## The authoring loop"));
 }
 
 #[test]

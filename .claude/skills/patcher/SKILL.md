@@ -1,6 +1,6 @@
 ---
 name: patcher
-description: Build or modify a reuben Instrument or Rig — the playable graph of Operators behind an instrument document. Introspects the live operator set, then makes each change with one document verb rather than hand-editing the file. Use when the user says "build an instrument", "make a synth/pad/bass", "patch up a rig", "add a node", "wire X to Y", "change this instrument", or describes a sound to construct. Not for applying an already-authored document to the running engine (`swap_instrument`) or auditioning a value live (`send_live_controls`).
+description: Build or modify a reuben Instrument or Rig — the playable graph of Operators behind an instrument document. Introspects the live operator set, then makes each change with one document verb rather than hand-editing the file. Use when the user says "build an instrument", "make a synth/pad/bass", "patch up a rig", "add a node", "wire X to Y", "change this instrument", or describes a sound to construct. Not for only playing an existing instrument on the running engine, with no edit to follow (`open_instrument`), or auditioning a value live (`send_live_controls`).
 ---
 
 # patcher
