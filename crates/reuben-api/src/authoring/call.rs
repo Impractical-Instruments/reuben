@@ -274,7 +274,9 @@ pub fn call<R: Resources>(
         | names::SWAP_INSTRUMENT
         | names::GET_CURRENT_INSTRUMENT
         | names::GET_ENGINE_DIAGNOSTICS
-        | names::GET_ENGINE_METERS => Err(Refusal::new(format!(
+        | names::GET_ENGINE_METERS
+        | names::OPEN_INSTRUMENT
+        | names::LIST_INSTRUMENTS => Err(Refusal::new(format!(
             "`{tool}` is an engine verb, not served by call"
         ))),
         other => Err(Refusal::new(format!("unknown tool `{other}`"))),

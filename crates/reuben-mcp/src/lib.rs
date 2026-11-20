@@ -398,6 +398,30 @@ impl ReubenServer {
     }
 
     #[tool(
+        name = "open_instrument",
+        output_schema = rmcp::handler::server::tool::schema_for_output::<engine::SwapResult>()
+            .expect("SwapResult is an object schema")
+    )]
+    async fn open_instrument(
+        &self,
+        Parameters(p): Parameters<engine::OpenInstrument>,
+    ) -> Result<CallToolResult, McpError> {
+        answered(engine::open_instrument(&p, self.engine.structure()))
+    }
+
+    #[tool(
+        name = "list_instruments",
+        output_schema = rmcp::handler::server::tool::schema_for_output::<engine::InstrumentList>()
+            .expect("InstrumentList is an object schema")
+    )]
+    async fn list_instruments(
+        &self,
+        Parameters(p): Parameters<engine::ListInstruments>,
+    ) -> Result<CallToolResult, McpError> {
+        answered(engine::list_instruments(&p, self.engine.structure()))
+    }
+
+    #[tool(
         name = "get_current_instrument",
         output_schema =
             rmcp::handler::server::tool::schema_for_output::<engine::CurrentInstrument>()

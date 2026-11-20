@@ -53,3 +53,12 @@ pub const GET_ENGINE_METERS: &str =
      -120 floor), is clipping (peak at or above 0), or hears its input. Peaks fall back at 12 dB \
      a second and RMS averages over 0.3 s, so call it while the sound plays, not after. Fails \
      fast if no engine is reachable.";
+
+pub const OPEN_INSTRUMENT: &str =
+    "Stop playing the current instrument and load and play the one named `name`, a name \
+     `list_instruments` gave. Edits apply only to the open instrument and its nested files, so \
+     open an instrument before editing it.";
+
+pub const LIST_INSTRUMENTS: &str =
+    "List the names the engine offers: `what: \"instruments\"` for what `open_instrument` accepts \
+     and a `source` may name, `\"samples\"` for what a sample resource may reference.";

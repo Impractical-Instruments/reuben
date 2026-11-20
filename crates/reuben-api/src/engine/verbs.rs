@@ -19,15 +19,17 @@ use reuben_document::projection::Projector;
 
 use crate::authoring::{Answer, DocumentView, Refusal, Resources};
 
-use super::args::{SendLiveControls, SwapInstrument};
+use super::args::{ListInstruments, OpenInstrument, SendLiveControls, SwapInstrument};
 use super::channel::{CallOutcome, Channel, ChannelError, SwapOutcome};
 use super::prose::ENGINE_UNREACHABLE_GUIDANCE;
 use super::result::{
-    CurrentInstrument, EngineStatus, SendOutput, SidecarInfo, StatusEndpoints, SwapResult,
+    CurrentInstrument, EngineStatus, InstrumentList, SendOutput, SidecarInfo, StatusEndpoints,
+    SwapResult,
 };
 use super::wire::{
     over_long_batch_refusal, ChannelLevel, ControlArg, ControlMessage, DiagnosticsReport,
-    DocSource, DocumentSnapshot, MetersReport, SwapReport, EMPTY_BATCH_REFUSAL, MAX_SEND_BATCH,
+    DocSource, DocumentSnapshot, ListWhat, MetersReport, SwapReport, EMPTY_BATCH_REFUSAL,
+    MAX_SEND_BATCH,
 };
 
 /// Audition a batch of control values on the running engine.
@@ -112,7 +114,50 @@ pub fn swap_instrument(
     args: &SwapInstrument,
     channel: &Channel,
 ) -> Result<Answer<SwapResult>, Refusal> {
-    match channel.swap(DocSource::Path(args.path.clone()), args.expect.clone()) {
+    swap_answer(
+        channel.swap(DocSource::Path(args.path.clone()), args.expect.clone()),
+        "the swap could not be completed",
+    )
+}
+
+/// Stop playing the current instrument and play the one `name` names, read through the engine's
+/// store. Answers exactly as [`swap_instrument`] does.
+pub fn open_instrument(
+    args: &OpenInstrument,
+    channel: &Channel,
+) -> Result<Answer<SwapResult>, Refusal> {
+    swap_answer(
+        channel.open(args.name.clone(), args.expect.clone()),
+        "the open could not be completed",
+    )
+}
+
+/// List the instrument or sample names the engine offers.
+pub fn list_instruments(
+    args: &ListInstruments,
+    channel: &Channel,
+) -> Result<Answer<InstrumentList>, Refusal> {
+    let names = channel
+        .list(args.what)
+        .map_err(|why| refuse("the list could not be completed", why))?;
+    let kind = match args.what {
+        ListWhat::Instruments => "instruments",
+        ListWhat::Samples => "samples",
+    };
+    let summary = format!("{} {kind} offered", names.len());
+    Ok(Answer {
+        output: InstrumentList { names },
+        summary,
+    })
+}
+
+/// Map a swap-shaped channel outcome to the verb's answer; `failure` heads the refusal when the
+/// channel itself fails.
+fn swap_answer(
+    outcome: Result<SwapOutcome, ChannelError>,
+    failure: &str,
+) -> Result<Answer<SwapResult>, Refusal> {
+    match outcome {
         Ok(SwapOutcome::Installed(report)) => {
             let summary = swap_summary(&report);
             Ok(Answer {
@@ -149,7 +194,7 @@ pub fn swap_instrument(
             })
         }
         Ok(SwapOutcome::Refused(message)) => Err(Refusal::new(message)),
-        Err(why) => Err(refuse("the swap could not be completed", why)),
+        Err(why) => Err(refuse(failure, why)),
     }
 }
 
@@ -571,5 +616,81 @@ mod tests {
         ]);
         let answer = current_instrument(&channel).expect("an answer");
         assert_eq!(answer.output.projection, "(projection unavailable: nope)");
+    }
+
+    #[test]
+    fn open_instrument_relays_a_refusal() {
+        let (channel, asked) = scripted(&[r#"{"reply":"refused","message":"no such instrument"}"#]);
+        let refusal = open_instrument(
+            &OpenInstrument {
+                name: "nope".to_string(),
+                expect: None,
+            },
+            &channel,
+        )
+        .expect_err("a refused open is a refusal");
+        assert_eq!(refusal.message, "no such instrument");
+        let asked = asked.lock().unwrap();
+        assert_eq!(
+            super::super::wire::Request::from_ndjson(&asked[0]).unwrap(),
+            super::super::wire::Request::Open {
+                name: "nope".to_string(),
+                expect: None,
+            }
+        );
+    }
+
+    #[test]
+    fn open_instrument_held_reads_as_not_yet_installed() {
+        let (channel, _) = scripted(&[
+            r#"{"reply":"held","requested":"groovebox","playing":"acid-techno","content_hash":"00c0ffee"}"#,
+        ]);
+        let answer = open_instrument(
+            &OpenInstrument {
+                name: "groovebox".to_string(),
+                expect: None,
+            },
+            &channel,
+        )
+        .expect("held is an answer");
+        let held = answer.output.held.as_ref().expect("held payload");
+        assert_eq!(held.requested, "groovebox");
+        assert!(!answer.output.report.report.ok, "nothing installed");
+        for expected in [
+            "not installed yet",
+            "acid-techno keeps playing",
+            "get_current_instrument",
+        ] {
+            assert!(
+                answer.summary.contains(expected),
+                "{expected:?} missing from {}",
+                answer.summary
+            );
+        }
+    }
+
+    #[test]
+    fn list_instruments_summarizes_the_count() {
+        let (channel, _) = scripted(&[
+            r#"{"reply":"listed","names":["a","b"]}"#,
+            r#"{"reply":"listed","names":["kick"]}"#,
+        ]);
+        let instruments = list_instruments(
+            &ListInstruments {
+                what: ListWhat::Instruments,
+            },
+            &channel,
+        )
+        .expect("an answer");
+        assert_eq!(instruments.output.names, ["a", "b"]);
+        assert_eq!(instruments.summary, "2 instruments offered");
+        let samples = list_instruments(
+            &ListInstruments {
+                what: ListWhat::Samples,
+            },
+            &channel,
+        )
+        .expect("an answer");
+        assert_eq!(samples.summary, "1 samples offered");
     }
 }

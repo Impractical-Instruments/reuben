@@ -7,6 +7,7 @@
 //! numbers, no crate paths.
 
 use alloc::string::String;
+use alloc::vec::Vec;
 
 use serde::{Deserialize, Serialize};
 
@@ -135,4 +136,11 @@ pub struct CurrentInstrument {
     pub content_hash: String,
     /// The node index of the **installed** graph, rendered in the projection's line grammar.
     pub projection: String,
+}
+
+/// Output for `list_instruments`: the names the engine offers, sorted.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct InstrumentList {
+    /// The offered names, in the spelling the other verbs accept.
+    pub names: Vec<String>,
 }

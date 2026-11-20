@@ -29,7 +29,7 @@ pub enum ContractKind {
     Pure,
     /// An engine contract that reaches a running engine over the door's channel
     /// (`send_live_controls`/`get_engine_status`/`swap_instrument`/`get_current_instrument`/
-    /// `get_engine_diagnostics`/`get_engine_meters`).
+    /// `get_engine_diagnostics`/`get_engine_meters`/`open_instrument`/`list_instruments`).
     Engine,
     /// A **document-manipulation** contract: a pure, engine-free *mutator* over an
     /// instrument document through the resolver seam — read, apply one surgical edit, re-validate
@@ -114,6 +114,8 @@ roster! {
     GET_CURRENT_INSTRUMENT = "get_current_instrument", Engine, engine_prose::GET_CURRENT_INSTRUMENT;
     GET_ENGINE_DIAGNOSTICS = "get_engine_diagnostics", Engine, engine_prose::GET_ENGINE_DIAGNOSTICS;
     GET_ENGINE_METERS = "get_engine_meters", Engine, engine_prose::GET_ENGINE_METERS;
+    OPEN_INSTRUMENT = "open_instrument", Engine, engine_prose::OPEN_INSTRUMENT;
+    LIST_INSTRUMENTS = "list_instruments", Engine, engine_prose::LIST_INSTRUMENTS;
 
     // The document-manipulation vocabulary: the closed set of engine-free mutators an agent
     // authors a document through, grouped document · nodes · inputs · config · interface ·
@@ -208,7 +210,9 @@ const VERB_PREFIXES: &[&str] = &[
     "copy_",
     "describe_",
     "get_",
+    "list_",
     "new_",
+    "open_",
     "read_",
     "remove_",
     "rename_",
@@ -271,6 +275,17 @@ mod tests {
             assert_eq!(unserved_verbs(&prose), [contract.name]);
         }
         assert_eq!(unserved_verbs("call `new_instrument`"), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn open_and_list_are_engine_verbs_on_the_roster() {
+        for name in [names::OPEN_INSTRUMENT, names::LIST_INSTRUMENTS] {
+            let contract = CONTRACTS
+                .iter()
+                .find(|c| c.name == name)
+                .unwrap_or_else(|| panic!("`{name}` is not on the roster"));
+            assert_eq!(contract.kind, ContractKind::Engine, "{name}");
+        }
     }
 
     #[test]

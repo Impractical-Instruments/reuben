@@ -233,13 +233,15 @@ pub enum Request {
     Subscribe,
 }
 
-/// What a [`Request::List`] asks for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Which kind of name to list.
+//
+// The wire's `Request::List` and `list_instruments` share this type, so its docs ship to models.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ListWhat {
-    /// Instruments an [`Open`](Request::Open) accepts.
+    /// The instruments `open_instrument` accepts.
     Instruments,
-    /// Samples a document can reference.
+    /// The samples a sample resource may reference.
     Samples,
 }
 
