@@ -617,3 +617,33 @@ fn an_outside_repair_of_the_open_broken_document_starts_it_playing() {
     });
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_channel_subscription_over_tcp_sees_an_edit() {
+    let dir = scratch("server_calls_channel_subscription");
+    let library = dir.join("lib");
+    let open = dir.join("first.json");
+    write(&open, DOC);
+    let open_s = open.display().to_string();
+    serving(&open, &library, move |t| {
+        let channel = reuben_api::engine::Channel::new(TcpTransport::new(
+            t.endpoint().to_string(),
+            DEFAULT_CONNECT_TIMEOUT,
+        ));
+        let mut events = channel.subscribe().expect("subscribed");
+        let edited = output(call(
+            t,
+            "set_instrument_name",
+            serde_json::json!({"source": open_s, "name": "renamed"}),
+        ));
+        assert_eq!(edited["written"], true, "{edited}");
+        assert!(matches!(
+            events.next(),
+            Some(Event::Changed {
+                by: ChangedBy::Client,
+                ..
+            })
+        ));
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}

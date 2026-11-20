@@ -5,6 +5,7 @@
 //! client survives the engine restarting under it. A subscription is the one connection kept open:
 //! [`TcpTransport::subscribe`] dials its own and reads events from it until either end closes.
 
+use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -185,6 +186,10 @@ impl Transport for TcpTransport {
             ));
         }
         Ok(response)
+    }
+
+    fn subscribe(&self) -> io::Result<Box<dyn Iterator<Item = io::Result<Event>> + Send>> {
+        Ok(Box::new(TcpTransport::subscribe(self)?))
     }
 
     fn endpoint(&self) -> &str {

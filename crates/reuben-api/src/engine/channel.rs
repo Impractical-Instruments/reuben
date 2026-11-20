@@ -24,7 +24,8 @@ use std::time::Duration;
 use super::prose::ENGINE_UNREACHABLE_GUIDANCE;
 use super::wire::{
     over_long_probe_set_refusal, Conflict, ControlMessage, DiagnosticsReport, DocSource,
-    DocumentSnapshot, HeldSwap, ListWhat, MetersReport, Request, Response, SwapReport, MAX_PROBES,
+    DocumentSnapshot, Event, HeldSwap, ListWhat, MetersReport, Request, Response, SwapReport,
+    MAX_PROBES,
 };
 
 /// How long to wait for the one response line before giving up on a *wedged* server (connected but
@@ -166,7 +167,21 @@ pub trait Transport: Send + Sync + fmt::Debug {
 
     /// The endpoint this transport dials, for `engine_status` and diagnostics.
     fn endpoint(&self) -> &str;
+
+    /// A stream of the engine's [`Event`]s on a connection of its own, from the acknowledgement
+    /// on. The iterator ends when the engine closes the stream, and after the first read error.
+    /// A transport with no such stream answers [`io::ErrorKind::Unsupported`].
+    fn subscribe(&self) -> io::Result<Box<dyn Iterator<Item = io::Result<Event>> + Send>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this transport cannot stream events",
+        ))
+    }
 }
+
+/// The engine's events as a channel hands them: in the order the engine made them, ending when the
+/// engine closes the stream or a read fails.
+pub type Events = Box<dyn Iterator<Item = Event> + Send>;
 
 /// One engine's structure channel: the NDJSON framing, the response-variant classification, and
 /// the timeout policy, over the door's [`Transport`].
@@ -201,6 +216,19 @@ impl Channel {
             // wedged-server test relies on that), but capped at the ping default when it's generous.
             ping_read_timeout: read_timeout.min(DEFAULT_PING_READ_TIMEOUT),
             work_read_timeout: read_timeout,
+        }
+    }
+
+    /// Follow the engine's changes: one [`Event`] per change from now on, on a connection of its
+    /// own. Iterating blocks until the next one. A transport that cannot stream is a
+    /// [`ChannelError::Channel`]; one that cannot connect is [`Unreachable`](ChannelError::Unreachable).
+    pub fn subscribe(&self) -> Result<Events, ChannelError> {
+        match self.transport.subscribe() {
+            Ok(events) => Ok(Box::new(events.map_while(Result::ok))),
+            Err(e) if e.kind() == io::ErrorKind::Unsupported => {
+                Err(ChannelError::Channel(e.to_string()))
+            }
+            Err(e) => Err(ChannelError::unreachable(&e)),
         }
     }
 

@@ -494,7 +494,8 @@ impl Response {
 pub enum Event {
     /// The open instrument changed and the new Plan is playing. `hash` is the installed top
     /// document's content hash, whichever of its files changed: after an edit to a nested
-    /// document it is not the hash that edit's own result carries.
+    /// document it is not the hash that edit's own result carries. An empty `hash` is a write
+    /// while nothing plays: the file changed and no Plan was installed.
     Changed { hash: String, by: ChangedBy },
     /// Another instrument was opened and is playing. `name` is the name it was opened by; empty
     /// for one installed by value.

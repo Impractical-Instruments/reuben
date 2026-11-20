@@ -17,7 +17,7 @@ use crate::authoring::{
 };
 use crate::resources::{Adapter, ResolveError, Resources, SampleBuffer};
 
-use super::super::wire::{Response, SwapReport};
+use super::super::wire::{ChangedBy, Event, Response, SwapReport};
 use super::{prepare_recording, went_live, Poisoned, ServerStore, StructureState, Tree, Went};
 
 /// What the document at `origin` reaches, itself included: one load through `store`, building no
@@ -368,6 +368,10 @@ fn written_while_silent(
     result.notes.push(format!(
         "written, but {top} still does not load, so nothing plays until it does: {still}"
     ));
+    state.events.publish(Event::Changed {
+        hash: String::new(),
+        by: ChangedBy::Client,
+    });
     state.publish_invalid(errors);
     Response::Called {
         output: edit_output(&result),
@@ -1199,6 +1203,7 @@ mod tests {
             "{output}"
         );
         assert!(s.files.get("nv.json").unwrap().contains("renamed"));
+        assert!(matches!(events.try_recv(), Ok(Event::Changed { .. })));
         assert!(
             matches!(events.try_recv(), Ok(Event::Invalid { errors }) if !errors.is_empty()),
             "an edit that leaves it broken says what is still wrong"
@@ -1206,6 +1211,52 @@ mod tests {
         assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
         assert_eq!(installed_hash(&s.state), "");
         assert_eq!(s.peak(), 0.0);
+    }
+
+    #[test]
+    fn a_write_while_nothing_plays_publishes_changed_then_invalid() {
+        let s = serving();
+        open_report(&s, "nt.json", None);
+        let events = s.state.subscribe();
+        call(
+            &s,
+            "set_instrument_name",
+            json!({"source": "nv.json", "name": "renamed"}),
+        );
+        assert_eq!(
+            events.try_recv(),
+            Ok(Event::Changed {
+                hash: String::new(),
+                by: ChangedBy::Client
+            })
+        );
+        assert!(matches!(events.try_recv(), Ok(Event::Invalid { .. })));
+        assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn a_channel_subscription_over_in_process_sees_an_edit() {
+        let s = serving();
+        let channel = crate::engine::Channel::new(InProcess::new(s.state.clone()));
+        let mut events = channel.subscribe().expect("subscribe");
+        let edited = channel
+            .call(
+                "set_instrument_name",
+                json!({"source": "top.json", "name": "renamed"}),
+            )
+            .expect("call");
+        s.render();
+        assert!(
+            matches!(&edited, crate::engine::CallOutcome::Called { output, .. } if output["written"] == true),
+            "{edited:?}"
+        );
+        assert!(matches!(
+            events.next(),
+            Some(Event::Changed {
+                by: ChangedBy::Client,
+                ..
+            })
+        ));
     }
 
     #[test]

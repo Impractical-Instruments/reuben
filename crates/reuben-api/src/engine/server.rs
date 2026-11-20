@@ -647,6 +647,12 @@ impl Transport for InProcess {
     fn endpoint(&self) -> &str {
         IN_PROCESS_ENDPOINT
     }
+
+    fn subscribe(
+        &self,
+    ) -> std::io::Result<Box<dyn Iterator<Item = std::io::Result<Event>> + Send>> {
+        Ok(Box::new(self.state.subscribe().into_iter().map(Ok)))
+    }
 }
 
 /// What [`InProcess::endpoint`] reports: not an address, since nothing is dialed.
