@@ -123,3 +123,25 @@ pub const ADD_INSTRUMENT_RESOURCE: &str =
      to a `resource_source` (a file path for this door).";
 
 pub const REMOVE_INSTRUMENT_RESOURCE: &str = "Remove a resource entry by id.";
+
+pub const READ_INSTRUMENT: &str = "Read an instrument document back as a projection.";
+
+pub const DESCRIBE_BOUNDARY: &str =
+    "Describe an instrument's boundary: its interface input and output pipes.";
+
+pub const COPY_INSTRUMENT: &str = "Copy an instrument document from one source to another.";
+
+pub const RESTORE_INSTRUMENT: &str = "Write a previously read document back to its source.";
+
+pub const SET_INSTRUMENT_LAYOUT: &str = "Set the editor layout stored in an instrument document.";
+
+pub const SET_INSTRUMENT_RESOURCE: &str = "Set a resource entry's source by id.";
+
+pub const SET_INSTRUMENT_NODE_RESOURCE: &str =
+    "Point a node's resource reference at a resource id.";
+
+pub const WIRE_INSTRUMENT_INTERFACE_OUTPUT: &str =
+    "Wire an internal port to an existing master-tap output pipe.";
+
+pub const WIRE_COMPATIBILITY: &str =
+    "Report whether one port can be wired to another, with the reason when it cannot.";

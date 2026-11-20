@@ -219,6 +219,11 @@ impl Resources for FsResolver {
     /// A miss in both canonicalizes to the sibling candidate, so the eventual `NotFound`
     /// warning names the path the author most likely meant.
     ///
+    /// Only a relative source that stays under its directory falls back to the root. One that
+    /// climbs out (`../x.json`) or is absolute names a place relative to its referrer and nowhere
+    /// else: under the root it would name a file outside the root, chosen by whether something
+    /// exists beside the referrer.
+    ///
     /// A [document-scoped](FsResolver::for_document) resolver answers for its own document here
     /// too, and must: identity has to agree with where `locate` actually reads and writes, or a
     /// document that references itself would be keyed under a path it does not live at and slip the
@@ -236,7 +241,7 @@ impl Resources for FsResolver {
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or(&self.base_dir);
         let sibling = normalize(&base.join(source));
-        if let Some(root) = &self.root {
+        if let Some(root) = self.root.as_ref().filter(|_| stays_under(source)) {
             if !sibling.is_file() {
                 let rooted = normalize(&root.join(source));
                 if rooted.is_file() {
@@ -246,6 +251,24 @@ impl Resources for FsResolver {
         }
         sibling.display().to_string()
     }
+}
+
+/// Whether `source` is relative and, with `.` and `..` folded, never climbs above the directory it
+/// is joined to.
+fn stays_under(source: &str) -> bool {
+    let mut depth = 0usize;
+    for c in Path::new(source).components() {
+        match c {
+            Component::CurDir => {}
+            Component::Normal(_) => depth += 1,
+            Component::ParentDir => match depth.checked_sub(1) {
+                Some(up) => depth = up,
+                None => return false,
+            },
+            Component::RootDir | Component::Prefix(_) => return false,
+        }
+    }
+    true
 }
 
 /// Decode a WAV file into a planar [`SampleBuffer`] at its native sample rate. Integer PCM
@@ -616,6 +639,26 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(std::env::temp_dir().join("reuben_root_test"));
+    }
+
+    /// A name that climbs out of its referrer's directory means a file relative to that document,
+    /// so the root never answers for it: what it names cannot then depend on what exists there.
+    #[test]
+    fn a_name_that_climbs_out_of_its_directory_is_never_looked_up_under_the_root() {
+        let dir = std::env::temp_dir().join(format!("reuben_root_climb_{}", std::process::id()));
+        let base = dir.join("proj").join("open");
+        let root = dir.join("lib");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.json"), "{}").unwrap();
+
+        let resolver = FsResolver::new(&base).with_root(&root);
+        assert_eq!(
+            Path::new(&resolver.canonical("../lib/a.json", None)),
+            dir.join("proj").join("lib").join("a.json")
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

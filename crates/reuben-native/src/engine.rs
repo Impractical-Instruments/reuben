@@ -2,7 +2,8 @@
 //!
 //! [`start`] loads the instrument, opens the audio device (and the input device when the
 //! instrument binds input channels) per the [`DeviceProfile`], binds the OSC-in UDP listener and
-//! the optional OSC-out sender, and serves the loopback structure channel the MCP sidecar dials.
+//! the optional OSC-out sender, serves the loopback structure channel the MCP sidecar dials, and
+//! (unless [`EngineConfig::follow_files`] is off) follows outside edits to the instrument's files.
 //! The [`RunningEngine`] it returns is the whole session: it reaches the engine in-process through
 //! the window's own [`Channel`], and dropping it stops every thread and frees every port.
 //!
@@ -24,11 +25,13 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use reuben_api::authoring::{DocumentHistory, Resources};
 use reuben_api::engine::{
     Channel, FromDocumentError, InProcess, Installed, LoadWarning, StructureState,
     DEFAULT_STRUCTURE_ADDR,
 };
 use reuben_api::render::{self, AudioConfig, Message};
+use reuben_api::staged::Staged;
 use reuben_api::FsResolver;
 
 use crate::audio::{self, AudioError};
@@ -41,6 +44,7 @@ use crate::structure::{
     HeadlessRenderConfig, NativeHost, RenderConfigPublisher, StructureServer, SwapHold,
 };
 use crate::test_support::FakeCallback;
+use crate::tree_watch::{self, TreeWatch};
 
 /// The core render block size `reuben play` runs at.
 pub const DEFAULT_BLOCK_SIZE: usize = 256;
@@ -87,6 +91,10 @@ pub struct EngineConfig {
     /// Which swaps arriving over the structure socket are held for the host's user rather than
     /// installed. `None` holds none, which is `reuben play`.
     pub swap_hold: Option<SwapHold>,
+    /// Reload the open instrument when something outside the engine writes its files. On for
+    /// `reuben play`; off for a host whose user decides what plays, since a reload installs without
+    /// asking [`swap_hold`](Self::swap_hold).
+    pub follow_files: bool,
 }
 
 impl EngineConfig {
@@ -103,6 +111,7 @@ impl EngineConfig {
             structure: Some(DEFAULT_STRUCTURE_ADDR.to_string()),
             log_osc: false,
             swap_hold: None,
+            follow_files: true,
         }
     }
 }
@@ -161,14 +170,16 @@ impl std::error::Error for StartError {
 ///
 /// Dropping it — or [`shutdown`](Self::shutdown), which also returns the final counters — tears
 /// the session down in order and returns only once every thread it started has exited: the
-/// structure server (its connections woken and joined), the OSC-in listener, the audio streams
-/// (paused, then dropped — see [`Streams::pause`](audio::Streams::pause) for why both), the OSC-out
-/// sender, then the diagnostics logger. Every port it bound is free again afterwards.
+/// watcher following outside edits to the instrument's files, the structure server (its
+/// connections woken and joined), the OSC-in listener, the audio streams (paused, then dropped —
+/// see [`Streams::pause`](audio::Streams::pause) for why both), the OSC-out sender, then the
+/// diagnostics logger. Every port it bound is free again afterwards.
 ///
 /// Not `Send`: cpal's streams are not, on every host. Keep it on the thread that started it and
 /// hand [`channel`](Self::channel)s to any other.
 pub struct RunningEngine {
     state: Option<StructureState>,
+    tree_watch: Option<TreeWatch>,
     structure: Option<StructureServer>,
     structure_error: Option<io::Error>,
     osc_in: Option<OscListener>,
@@ -272,7 +283,9 @@ impl RunningEngine {
     }
 
     fn teardown(&mut self) {
-        // First, so a channel a caller still holds is unreachable from here on rather than
+        // Before the state closes, so no reload is mid-swap into a Coordinator being torn down.
+        self.tree_watch = None;
+        // Next, so a channel a caller still holds is unreachable from here on rather than
         // answering from a Coordinator whose render side is about to go.
         if let Some(state) = &self.state {
             state.close();
@@ -337,12 +350,14 @@ pub(crate) fn start_with(
         structure,
         log_osc,
         swap_hold,
+        follow_files,
     } = config;
 
     let structure = match structure {
         Some(addr) => Some(resolve_structure(&addr)?),
         None => None,
     };
+    let library_root = instrument_root.clone();
     let (instrument_json, resolver, initial_source) = read_instrument(instrument, instrument_root)?;
 
     // The one control ingress into the render callback. Two producers — the UDP listener (the
@@ -363,8 +378,13 @@ pub(crate) fn start_with(
         None => None,
     };
 
+    // One store for the session: the Coordinator resolves through a clone of it, and the
+    // structure channel's `call` writes through the same one, so an edit waiting in memory is what
+    // the check before it goes live loads.
+    let staged: Staged<Box<dyn Resources + Send + Sync>> = Staged::new(Box::new(resolver));
+    let store = Arc::new(DocumentHistory::new(staged.clone()));
     let build =
-        |cfg: AudioConfig| reuben_api::engine::install_initial(&instrument_json, resolver, cfg);
+        |cfg: AudioConfig| reuben_api::engine::install_initial(&instrument_json, staged, cfg);
     let (
         output,
         diagnostics,
@@ -430,9 +450,10 @@ pub(crate) fn start_with(
     let host = NativeHost::new(Arc::clone(&diagnostics), osc_tx)
         .with_meters(meters)
         .with_render_config(render_config)
-        .with_swap_hold(swap_hold);
-    let state =
-        StructureState::new(coordinator, Arc::new(host)).with_installed_source(initial_source);
+        .with_swap_hold(swap_hold)
+        .with_library_root(library_root);
+    let state = StructureState::new(coordinator, Arc::new(host), store)
+        .with_installed_source(initial_source);
     let (structure, structure_error) = match structure {
         Some(Ok(addrs)) => match StructureServer::bind(&addrs[..], state.clone()) {
             Ok(server) => (Some(server), None),
@@ -441,9 +462,11 @@ pub(crate) fn start_with(
         Some(Err(e)) => (None, Some(e)),
         None => (None, None),
     };
+    let tree_watch = follow_files.then(|| tree_watch::spawn(state.clone()));
 
     Ok(RunningEngine {
         state: Some(state),
+        tree_watch,
         structure,
         structure_error,
         osc_in,

@@ -27,16 +27,17 @@
 
 use std::io::{BufReader, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use reuben_api::authoring::Diag;
 use reuben_api::engine::{
-    dispatch, read_ndjson_line, ControlMessage, DiagnosticsReport, EngineHost, IngressClosed,
-    MetersReport, Response, StructureState,
+    dispatch, dispatch_request, read_ndjson_line, ControlMessage, DiagnosticsReport, EngineHost,
+    IngressClosed, ListWhat, MetersReport, Request, Response, StructureState, Subscription,
 };
 use reuben_api::probe::ProbeSlots;
 
@@ -281,6 +282,7 @@ pub struct NativeHost {
     control: Sender<ControlBatch>,
     render_config: Arc<dyn RenderConfigPublisher>,
     hold: Option<SwapHold>,
+    library_root: Option<PathBuf>,
 }
 
 /// What decides whether a client's by-path swap is held for the host's user rather than
@@ -334,6 +336,7 @@ impl NativeHost {
                 opened_input_channels: 0,
             }),
             hold: None,
+            library_root: None,
         }
     }
 
@@ -341,6 +344,26 @@ impl NativeHost {
     /// device, and answers empty arrays.
     pub fn with_meters(mut self, meters: Meters) -> Self {
         self.meters = meters;
+        self
+    }
+
+    /// The directories a client may name: the library root and the open instrument's directory,
+    /// absolute and normalized.
+    fn offered_dirs(&self, open: Option<&str>) -> Vec<PathBuf> {
+        let open_dir = open
+            .and_then(|source| lexical_absolute(Path::new(source)))
+            .and_then(|source| source.parent().map(Path::to_path_buf));
+        self.library_root
+            .iter()
+            .filter_map(|root| lexical_absolute(root))
+            .chain(open_dir)
+            .collect()
+    }
+
+    /// The library root [`offered`](EngineHost::offered) lists from, besides the open instrument's
+    /// own directory: the one the session's resolver falls back to.
+    pub fn with_library_root(mut self, root: Option<PathBuf>) -> Self {
+        self.library_root = root;
         self
     }
 
@@ -365,6 +388,46 @@ impl NativeHost {
     }
 }
 
+/// `path` made absolute against the working directory with `.` and `..` resolved by text alone, so
+/// a name cannot climb out of a directory it starts under. `None` when it cannot be made absolute.
+fn lexical_absolute(path: &Path) -> Option<PathBuf> {
+    let absolute = std::path::absolute(path).ok()?;
+    let mut normal = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                normal.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => normal.push(other),
+        }
+    }
+    Some(normal)
+}
+
+/// Add every `*.{extension}` file under `dir` to `found`, descending into subdirectories. An
+/// unreadable directory contributes nothing.
+fn collect_with_extension(
+    dir: &Path,
+    extension: &str,
+    found: &mut std::collections::BTreeSet<String>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_dir() {
+            collect_with_extension(&path, extension, found);
+        } else if path.extension().is_some_and(|e| e == extension) {
+            found.insert(path.display().to_string());
+        }
+    }
+}
+
 impl EngineHost for NativeHost {
     /// A by-path swap reads the file as spelled, against the working directory. Resource paths
     /// *inside* the document resolve from the file's own directory, then the library root
@@ -384,6 +447,31 @@ impl EngineHost for NativeHost {
             // fails on both, so the swap is rejected before this value is used.
             Err(_) => path.to_string(),
         }
+    }
+
+    /// Every file with extension `what` names, under the library root and under the directory of
+    /// the open instrument, recursively: absolute, sorted, each once. Nothing outside those two.
+    fn offered(&self, what: ListWhat, open: Option<&str>) -> Vec<String> {
+        let extension = match what {
+            ListWhat::Instruments => "json",
+            ListWhat::Samples => "wav",
+        };
+        let mut found = std::collections::BTreeSet::new();
+        for dir in self.offered_dirs(open) {
+            collect_with_extension(&dir, extension, &mut found);
+        }
+        found.into_iter().collect()
+    }
+
+    /// True iff `name`, made absolute and lexically normalized (`..` resolved), lies under the
+    /// library root or the open instrument's directory. The file need not exist.
+    fn within(&self, name: &str, open: Option<&str>) -> bool {
+        let Some(path) = lexical_absolute(Path::new(name)) else {
+            return false;
+        };
+        self.offered_dirs(open)
+            .iter()
+            .any(|dir| path.starts_with(dir))
     }
 
     /// **One `send` on the channel, not one per message.** That single push is what makes the
@@ -593,7 +681,8 @@ fn accept_loop(listener: TcpListener, state: StructureState, shutdown: Arc<Atomi
 /// Serve one connection: read one [`Request`] per line, write one [`Response`] per line, in
 /// order, until the client closes or shutdown wakes the blocked read. Blocking
 /// reads keep the framing exact; a blank line is framing noise, not a request, so it draws no
-/// response.
+/// response. A [`Request::Subscribe`] turns the connection into an event stream for the rest of
+/// its life.
 fn handle_connection(stream: TcpStream, state: StructureState, shutdown: Arc<AtomicBool>) {
     // Time-bound each read so the handler wakes to observe `shutdown` itself, rather than
     // depending on the accept thread's `shutdown(Shutdown::Both)` to unblock it — a wake that
@@ -620,11 +709,20 @@ fn handle_connection(stream: TcpStream, state: StructureState, shutdown: Arc<Ato
                     break;
                 }
                 if !line.trim().is_empty() {
-                    let response = dispatch(&state, &line);
-                    if writer.write_all(response.to_ndjson().as_bytes()).is_err() {
-                        break;
-                    }
-                    if writer.flush().is_err() {
+                    let response = match Request::from_ndjson(&line) {
+                        Ok(Request::Subscribe) => {
+                            // Subscribed before the reply, so no change made after the client
+                            // reads it is missed.
+                            let events = state.subscription();
+                            if write_line(&mut writer, &Response::Subscribed.to_ndjson()) {
+                                stream_events(&mut writer, &reader, &events, &shutdown);
+                            }
+                            break;
+                        }
+                        Ok(request) => dispatch_request(&state, request),
+                        Err(_) => dispatch(&state, &line),
+                    };
+                    if !write_line(&mut writer, &response.to_ndjson()) {
                         break;
                     }
                 }
@@ -660,10 +758,69 @@ fn handle_connection(stream: TcpStream, state: StructureState, shutdown: Arc<Ato
     }
 }
 
+/// Write and flush one line; `false` when the connection is gone.
+fn write_line(writer: &mut TcpStream, line: &str) -> bool {
+    writer.write_all(line.as_bytes()).is_ok() && writer.flush().is_ok()
+}
+
+/// How long one event write may block before the subscriber is dropped. An event line is a few
+/// hundred bytes and the kernel's send buffer holds many of them, so a write only blocks once a
+/// subscriber has stopped reading for a whole buffer's worth; ten seconds is far past any stall a
+/// LAN or tunnelled link recovers from, and short enough that a dead peer does not hold its
+/// handler for the OS's own keepalive timeout.
+const EVENT_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long each check for the subscriber having closed waits on the socket. Short, because it is
+/// paid once per [`ACCEPT_POLL`] and only ever ends early when the peer sent something.
+const PEER_CHECK: Duration = Duration::from_millis(1);
+
+/// Write each event as it is published until the client goes away or the server shuts down. The
+/// wait is bounded so the shutdown flag is seen within [`ACCEPT_POLL`] even when nothing changes.
+///
+/// Between waits the read half is checked: end of stream means the subscriber is gone, and any
+/// byte at all is a request on a connection that answers none, so either ends the stream. Ending
+/// drops `events`, which unsubscribes it at once rather than at the next publish.
+fn stream_events(
+    writer: &mut TcpStream,
+    reader: &BufReader<TcpStream>,
+    events: &Subscription,
+    shutdown: &AtomicBool,
+) {
+    // Bytes the client sent after `subscribe` and the line reader already buffered.
+    if !reader.buffer().is_empty() {
+        return;
+    }
+    let peer = reader.get_ref();
+    if writer.set_write_timeout(Some(EVENT_WRITE_TIMEOUT)).is_err()
+        || peer.set_read_timeout(Some(PEER_CHECK)).is_err()
+    {
+        return;
+    }
+    let mut probe = [0u8; 1];
+    while !shutdown.load(Ordering::SeqCst) {
+        match events.recv_timeout(ACCEPT_POLL) {
+            Ok(event) => {
+                if !write_line(writer, &event.to_ndjson()) {
+                    return;
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return,
+        }
+        match peer.peek(&mut probe) {
+            Err(ref e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut => {}
+            // Closed, sent a request, or failed.
+            Ok(_) | Err(_) => return,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{FakeCallback, NoResources};
+    use crate::test_support::{no_store, served, FakeCallback};
     use reuben_api::engine::{ControlArg, DocSource, Request, Response, MAX_SEND_BATCH};
     use reuben_api::render::{Arg, AudioConfig};
 
@@ -715,8 +872,10 @@ mod tests {
         base: &str,
         opened_input_channels: usize,
     ) -> (StructureState, FakeCallback, String) {
+        let staged = no_store();
         let (coordinator, side, _warnings) =
-            reuben_api::engine::install_initial(base, NoResources, cfg()).expect("initial install");
+            reuben_api::engine::install_initial(base, staged.clone(), cfg())
+                .expect("initial install");
         let base_hash = coordinator.installed_hash();
         let (control_tx, control_rx) = std::sync::mpsc::channel::<ControlBatch>();
         let host = NativeHost::new(Diagnostics::new(), control_tx).with_render_config(Arc::new(
@@ -724,7 +883,7 @@ mod tests {
                 opened_input_channels,
             },
         ));
-        let state = StructureState::new(coordinator, Arc::new(host));
+        let state = StructureState::new(coordinator, Arc::new(host), served(staged));
         (state, FakeCallback::spawn(side, control_rx), base_hash)
     }
 
@@ -751,6 +910,236 @@ mod tests {
         assert_eq!(report.input_ring_underruns, 11);
         assert_eq!(report.input_ring_overruns, 22);
         assert_eq!(report.input_ring_producer_drops, 33);
+    }
+
+    #[test]
+    fn offered_lists_only_library_and_open_dir() {
+        let base = std::env::temp_dir().join(format!("reuben-offered-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        for dir in ["lib/nested", "open", "elsewhere"] {
+            std::fs::create_dir_all(base.join(dir)).unwrap();
+        }
+        for file in [
+            "lib/a.json",
+            "lib/s.wav",
+            "lib/nested/n.json",
+            "open/b.json",
+            "elsewhere/c.json",
+            "elsewhere/d.wav",
+        ] {
+            std::fs::write(base.join(file), "").unwrap();
+        }
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let host =
+            NativeHost::new(Diagnostics::new(), tx).with_library_root(Some(base.join("lib")));
+        let abs = |relative: &str| {
+            relative
+                .split('/')
+                .fold(base.clone(), |path, part| path.join(part))
+                .display()
+                .to_string()
+        };
+        let open = abs("open/b.json");
+
+        assert_eq!(
+            host.offered(ListWhat::Instruments, Some(&open)),
+            [
+                abs("lib/a.json"),
+                abs("lib/nested/n.json"),
+                abs("open/b.json")
+            ]
+        );
+        assert_eq!(
+            host.offered(ListWhat::Samples, Some(&open)),
+            [abs("lib/s.wav")]
+        );
+        assert_eq!(
+            host.offered(ListWhat::Instruments, None),
+            [abs("lib/a.json"), abs("lib/nested/n.json")]
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn within_is_the_library_root_and_the_open_dir_by_normalized_path() {
+        let base = std::env::temp_dir().join("reuben-within-test");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let host =
+            NativeHost::new(Diagnostics::new(), tx).with_library_root(Some(base.join("lib")));
+        let abs = |relative: &str| {
+            relative
+                .split('/')
+                .fold(base.clone(), |path, part| path.join(part))
+                .display()
+                .to_string()
+        };
+        let open = abs("open/b.json");
+        let open = Some(open.as_str());
+
+        assert!(host.within(&abs("lib/a.json"), open));
+        assert!(host.within(&abs("lib/not/yet/there.json"), open));
+        assert!(host.within(&abs("open/new.json"), open));
+        assert!(host.within(&abs("lib/x/../a.json"), open));
+        assert!(!host.within(&abs("lib/../elsewhere/c.json"), open));
+        assert!(!host.within(&abs("open/../../escape.json"), open));
+        assert!(!host.within("/etc/passwd.json", open));
+        assert!(!host.within(&abs("lib2/a.json"), open));
+        assert!(!host.within(&abs("open/new.json"), None));
+    }
+
+    #[test]
+    fn a_bare_relative_open_source_still_offers_its_directory() {
+        let dir = std::env::current_dir().unwrap();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let host = NativeHost::new(Diagnostics::new(), tx);
+        assert!(host.within(
+            &dir.join("sibling.json").display().to_string(),
+            Some("pad.json")
+        ));
+        assert!(!host.within(
+            &dir.join("..").join("up.json").display().to_string(),
+            Some("pad.json")
+        ));
+        assert!(host.offered_dirs(Some("pad.json")).contains(&dir));
+    }
+
+    #[test]
+    fn tcp_subscriber_receives_events() {
+        use reuben_api::engine::{
+            ChangedBy, Event, TcpTransport, Transport, DEFAULT_CONNECT_TIMEOUT,
+        };
+        use reuben_api::resources::Resources;
+        use reuben_api::staged::Staged;
+        use reuben_api::FsResolver;
+
+        // Process-unique: a fixed name collides between concurrent checkouts, and this test
+        // deletes the directory it is about to use.
+        let dir =
+            std::env::temp_dir().join(format!("reuben_subscribe_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("case dir");
+        let top = dir.join("top.json");
+        std::fs::write(&top, BASE_DOC).expect("seed the open instrument");
+        let source = top.display().to_string();
+
+        let staged: Staged<Box<dyn Resources + Send + Sync>> =
+            Staged::new(Box::new(FsResolver::for_instrument(&top)));
+        let (coordinator, side, _warnings) =
+            reuben_api::engine::install_initial(BASE_DOC, staged.clone(), cfg())
+                .expect("initial install");
+        let (control_tx, control_rx) = std::sync::mpsc::channel::<ControlBatch>();
+        let host = NativeHost::new(Diagnostics::new(), control_tx).with_render_config(Arc::new(
+            HeadlessRenderConfig {
+                opened_input_channels: 0,
+            },
+        ));
+        let state = StructureState::new(coordinator, Arc::new(host), served(staged))
+            .with_installed_source(Some(source.clone()));
+        let cb = FakeCallback::spawn(side, control_rx);
+        let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
+        let transport = TcpTransport::new(server.local_addr().to_string(), DEFAULT_CONNECT_TIMEOUT);
+
+        // Read on a thread of its own: a stream with no event blocks for good, and a regression
+        // should fail the test, not hang it.
+        let mut events = transport.subscribe().expect("subscribed");
+        let (first_tx, first_rx) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let _ = first_tx.send(events.next());
+            events.next()
+        });
+        let edit = Request::Call {
+            tool: "set_instrument_name".to_string(),
+            args: serde_json::json!({"source": source, "name": "renamed"}),
+        };
+        let reply = transport
+            .round_trip(&edit.to_ndjson(), Duration::from_secs(10))
+            .expect("answered");
+        let output = match Response::from_ndjson(&reply).expect("a response") {
+            Response::Called { output, .. } => output,
+            other => panic!("expected a called answer, got {other:?}"),
+        };
+        assert_eq!(output["written"], true, "{output}");
+
+        match first_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("an event within the deadline")
+        {
+            Some(Ok(Event::Changed { hash, by })) => {
+                assert_eq!(by, ChangedBy::Client);
+                assert_eq!(serde_json::json!(hash), output["hash"]);
+            }
+            other => panic!("expected a changed event, got {other:?}"),
+        }
+
+        // Shutdown joins the subscriber's handler too, which closes the stream.
+        server.shutdown();
+        assert!(reader.join().expect("reader").is_none());
+        cb.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Poll `done` until it holds, failing the test past a deadline rather than hanging it.
+    fn within_deadline(what: &str, done: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !done() {
+            assert!(Instant::now() < deadline, "{what} within the deadline");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn a_subscriber_that_disconnects_while_idle_is_dropped() {
+        use reuben_api::engine::{TcpTransport, DEFAULT_CONNECT_TIMEOUT};
+
+        let (state, cb, _) = swap_fixture(BASE_DOC, 0);
+        let server = StructureServer::bind("127.0.0.1:0", state.clone()).expect("bind");
+        let transport = TcpTransport::new(server.local_addr().to_string(), DEFAULT_CONNECT_TIMEOUT);
+
+        let events = transport.subscribe().expect("subscribed");
+        assert_eq!(state.subscribers(), 1);
+        drop(events);
+        // Nothing is published: the handler has to notice the close itself.
+        within_deadline("the subscription is dropped", || state.subscribers() == 0);
+
+        server.shutdown();
+        cb.stop();
+    }
+
+    #[test]
+    fn a_request_after_subscribe_ends_the_stream() {
+        use std::io::{BufRead, Read};
+
+        let (state, cb, _) = swap_fixture(BASE_DOC, 0);
+        let server = StructureServer::bind("127.0.0.1:0", state.clone()).expect("bind");
+        let stream = TcpStream::connect(server.local_addr()).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("timeout");
+        let mut reader = BufReader::new(&stream);
+        (&stream)
+            .write_all(Request::Subscribe.to_ndjson().as_bytes())
+            .expect("subscribe");
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("reply");
+        assert_eq!(
+            Response::from_ndjson(&line).expect("a response"),
+            Response::Subscribed
+        );
+
+        (&stream)
+            .write_all(Request::Ping.to_ndjson().as_bytes())
+            .expect("ping");
+        // The server closes with the ping unread, which may reset the connection rather than end
+        // it cleanly; either way nothing answers it.
+        let mut rest = Vec::new();
+        match reader.read_to_end(&mut rest) {
+            Ok(_) => assert!(rest.is_empty(), "no answer to a request on a stream"),
+            Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::ConnectionReset, "{e}"),
+        }
+        within_deadline("the subscription is dropped", || state.subscribers() == 0);
+
+        server.shutdown();
+        cb.stop();
     }
 
     #[test]
@@ -796,8 +1185,10 @@ mod tests {
         let good = dir.join("next.json");
         std::fs::write(&good, envelope_doc("/eg")).expect("seed the swap target");
 
+        let staged = no_store();
+
         let (coordinator, side, _warnings) =
-            reuben_api::engine::install_initial(BASE_DOC, NoResources, cfg())
+            reuben_api::engine::install_initial(BASE_DOC, staged.clone(), cfg())
                 .expect("initial install");
         let (control_tx, control_rx) = std::sync::mpsc::channel::<ControlBatch>();
         let host = NativeHost::new(Diagnostics::new(), control_tx).with_render_config(Arc::new(
@@ -805,7 +1196,7 @@ mod tests {
                 opened_input_channels: 0,
             },
         ));
-        let state = StructureState::new(coordinator, Arc::new(host))
+        let state = StructureState::new(coordinator, Arc::new(host), served(staged))
             .with_installed_source(Some("initial.json".to_string()));
         let cb = FakeCallback::spawn(side, control_rx);
 
@@ -891,8 +1282,9 @@ mod tests {
 
     #[test]
     fn a_host_switches_off_probes_nobody_renews() {
+        let staged = no_store();
         let (coordinator, side, _w) =
-            reuben_api::engine::install_initial(BASE_DOC, NoResources, cfg()).expect("install");
+            reuben_api::engine::install_initial(BASE_DOC, staged.clone(), cfg()).expect("install");
         let slots = coordinator.installed_probes();
         let (control_tx, control_rx) = std::sync::mpsc::channel::<ControlBatch>();
         let host = Arc::new(NativeHost::with_probe_lease(
@@ -901,7 +1293,7 @@ mod tests {
             Duration::from_millis(30),
             Duration::from_millis(5),
         ));
-        let state = StructureState::new(coordinator, host.clone());
+        let state = StructureState::new(coordinator, host.clone(), served(staged));
         let cb = FakeCallback::spawn(side, control_rx);
         let resolved = EngineHost::set_probes(&*host, vec![vec!["/osc".to_string()]]).unwrap();
         assert_eq!(resolved.len(), 1);
@@ -918,8 +1310,9 @@ mod tests {
 
     #[test]
     fn get_diagnostics_reads_the_live_counters() {
+        let staged = no_store();
         let (coordinator, side, _w) =
-            reuben_api::engine::install_initial(BASE_DOC, NoResources, cfg()).expect("install");
+            reuben_api::engine::install_initial(BASE_DOC, staged.clone(), cfg()).expect("install");
         let diagnostics = Diagnostics::new();
         // This verb never touches control, but the ingress is a constructor parameter now — there
         // is no such thing as a host that cannot serve `send`.
@@ -927,6 +1320,7 @@ mod tests {
         let state = StructureState::new(
             coordinator,
             Arc::new(NativeHost::new(Arc::clone(&diagnostics), control_tx)),
+            served(staged),
         );
         let cb = FakeCallback::spawn(side, control_rx);
         // Fresh: zeroed.
@@ -1388,8 +1782,9 @@ mod tests {
         // spin the full SWAP_RECLAIM_TIMEOUT under the Coordinator lock, stalling get_document and
         // the next swap. No FakeCallback here — the render side is dropped, so
         // the retiree never comes home — so the liveness gate must bail at the grace instead.
+        let staged = no_store();
         let (coordinator, _side, _w) =
-            reuben_api::engine::install_initial(BASE_DOC, NoResources, cfg())
+            reuben_api::engine::install_initial(BASE_DOC, staged.clone(), cfg())
                 .expect("initial install");
         let (control_tx, _control_rx) = std::sync::mpsc::channel::<ControlBatch>();
         let host = NativeHost::new(Diagnostics::new(), control_tx).with_render_config(Arc::new(
@@ -1397,7 +1792,7 @@ mod tests {
                 opened_input_channels: 0,
             },
         ));
-        let state = StructureState::new(coordinator, Arc::new(host));
+        let state = StructureState::new(coordinator, Arc::new(host), served(staged));
 
         let start = Instant::now();
         let resp = dispatch(

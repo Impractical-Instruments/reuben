@@ -12,17 +12,18 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 
-use reuben_api::authoring::{validate_instrument, Report, ValidateInstrument};
+use reuben_api::authoring::{validate_instrument, Report, Resources, ValidateInstrument};
 use reuben_api::engine::{
     install_initial, Channel, DocSource, InProcess, StructureState, SwapOutcome, SwapReport,
 };
 use reuben_api::render::{AudioConfig, RenderSlot};
+use reuben_api::staged::Staged;
 use reuben_api::FsResolver;
 use reuben_native::diagnostics::Diagnostics;
 use reuben_native::engine::{EngineConfig, Instrument};
 use reuben_native::osc::ControlBatch;
 use reuben_native::structure::NativeHost;
-use reuben_native::test_support::{start_headless, within};
+use reuben_native::test_support::{served, start_headless, within};
 
 /// A voice that sounds with no note held: an oscillator straight to `audio`, and no `active`
 /// output, so the voicer can never judge it idle and skip it. The library's `default-voice` is
@@ -157,6 +158,9 @@ fn headless(launch: &Path, root: Option<&Path>) -> EngineConfig {
         instrument_root: root.map(Path::to_path_buf),
         osc_in: None,
         structure: None,
+        // A followed write would install before the swap these tests make, leaving it nothing
+        // to install and no diff to read.
+        follow_files: false,
         ..EngineConfig::new(Instrument::Path(launch.to_path_buf()))
     }
 }
@@ -267,24 +271,18 @@ fn swapping_the_launch_file_keeps_every_survivor() {
         let engine = start_headless(headless(&launch, None)).expect("start");
         let channel = engine.channel();
 
-        // Three spellings of the launch file, none of them the one the engine started on.
+        // Three spellings of the launch file. Each reads as exactly what plays, the documents it
+        // reaches included, so none installs anything: a spelling that resolved a voice from
+        // elsewhere would install, and carry a diff.
         let spellings = [
             launch.clone(),
             lib.join(".").join("euclidean-drums.json"),
             lib.join("voices").join("..").join("euclidean-drums.json"),
         ];
-        let mut nodes = None;
         for path in &spellings {
             let report = swap_path(&channel, path);
             assert_clean(&report, "the launch file");
-            let diff = report.diff.expect("an installed swap carries a diff");
-            assert!(
-                diff.state_reset.is_empty() && diff.added.is_empty() && diff.removed.is_empty(),
-                "{}: {diff:?}",
-                path.display()
-            );
-            assert!(diff.survived > 0);
-            assert_eq!(*nodes.get_or_insert(diff.survived), diff.survived);
+            assert_eq!(report.diff, None, "{}", path.display());
         }
 
         // An edit to a runtime input, then the Swap an author makes after it.
@@ -416,12 +414,14 @@ impl Played {
             Some(root) => store.with_root(root),
             None => store,
         };
+        let staged: Staged<Box<dyn Resources + Send + Sync>> = Staged::new(Box::new(store));
         let (coordinator, side, warnings) =
-            install_initial(&text, store, AudioConfig::new(48_000.0, BLOCK)).expect("install");
+            install_initial(&text, staged.clone(), AudioConfig::new(48_000.0, BLOCK))
+                .expect("install");
         assert!(warnings.is_empty(), "{warnings:?}");
         let (control, control_rx) = mpsc::channel::<ControlBatch>();
         let host = NativeHost::new(Diagnostics::new(), control);
-        let state = StructureState::new(coordinator, Arc::new(host));
+        let state = StructureState::new(coordinator, Arc::new(host), served(staged));
         Played {
             channel: Channel::new(InProcess::new(state)),
             slot: RenderSlot::new(side),

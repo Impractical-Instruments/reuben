@@ -547,12 +547,13 @@ pub(crate) mod test_support {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    use reuben_api::authoring::{new_instrument, NewInstrument};
+    use reuben_api::authoring::{new_instrument, DocumentHistory, NewInstrument, Resources};
     use reuben_api::engine::{
         get_current_instrument, install_initial, Channel, InProcess, Request, StructureState,
         Transport,
     };
     use reuben_api::render::AudioConfig;
+    use reuben_api::staged::Staged;
     use reuben_api::FsResolver;
     use reuben_native::diagnostics::Diagnostics;
     use reuben_native::osc::ControlBatch;
@@ -762,16 +763,19 @@ pub(crate) mod test_support {
 
         fn started(scratch: Scratch, lib: PathBuf, top: PathBuf) -> Self {
             let text = std::fs::read_to_string(&top).expect("read the fixture");
-            let (coordinator, side, _warnings) = install_initial(
-                &text,
-                FsResolver::for_instrument(&top),
-                AudioConfig::new(48_000.0, 128),
-            )
-            .expect("install the fixture");
+            let staged: Staged<Box<dyn Resources + Send + Sync>> =
+                Staged::new(Box::new(FsResolver::for_instrument(&top)));
+            let (coordinator, side, _warnings) =
+                install_initial(&text, staged.clone(), AudioConfig::new(48_000.0, 128))
+                    .expect("install the fixture");
             let (control, control_rx) = mpsc::channel::<ControlBatch>();
             let host = NativeHost::new(Diagnostics::new(), control);
-            let state = StructureState::new(coordinator, Arc::new(host))
-                .with_installed_source(Some(top.display().to_string()));
+            let state = StructureState::new(
+                coordinator,
+                Arc::new(host),
+                Arc::new(DocumentHistory::new(staged)),
+            )
+            .with_installed_source(Some(top.display().to_string()));
             Rig {
                 session: Session::open(&top, None, || {}),
                 lib,

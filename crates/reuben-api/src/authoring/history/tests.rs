@@ -489,7 +489,9 @@ fn every_verb_answers_the_same_through_the_history_as_through_the_bare_store() {
 
 #[test]
 fn no_roster_serves_restore() {
-    assert!(!crate::tools::names().contains(&"restore_instrument"));
+    assert!(!crate::tools::CONTRACTS
+        .iter()
+        .any(|c| c.name == "restore_instrument" && c.kind != crate::tools::ContractKind::Host));
 }
 
 /// A v1 host whose input pipe takes its type from the nested child, so what its text normalizes to

@@ -145,3 +145,47 @@ impl ResourceResolver for Adapter<'_> {
         self.0.canonical(source, referrer)
     }
 }
+
+impl<R: Resources + ?Sized> Resources for alloc::sync::Arc<R> {
+    fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+        (**self).read_samples(source)
+    }
+
+    fn read_text(&self, source: &str) -> Result<String, ResolveError> {
+        (**self).read_text(source)
+    }
+
+    fn write_text(&self, source: &str, text: &str) -> Result<(), ResolveError> {
+        (**self).write_text(source, text)
+    }
+
+    fn create_text(&self, source: &str, text: &str) -> Result<Created, ResolveError> {
+        (**self).create_text(source, text)
+    }
+
+    fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
+        (**self).canonical(source, referrer)
+    }
+}
+
+impl<R: Resources + ?Sized> Resources for alloc::boxed::Box<R> {
+    fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+        (**self).read_samples(source)
+    }
+
+    fn read_text(&self, source: &str) -> Result<String, ResolveError> {
+        (**self).read_text(source)
+    }
+
+    fn write_text(&self, source: &str, text: &str) -> Result<(), ResolveError> {
+        (**self).write_text(source, text)
+    }
+
+    fn create_text(&self, source: &str, text: &str) -> Result<Created, ResolveError> {
+        (**self).create_text(source, text)
+    }
+
+    fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
+        (**self).canonical(source, referrer)
+    }
+}

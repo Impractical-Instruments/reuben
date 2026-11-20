@@ -6,6 +6,12 @@
 //! the structure channel, the MCP sidecar dials it — which is why the envelope, the verbs and the
 //! guards are the window's rather than either door's.
 //!
+//! The engine also runs authoring for its clients: a client sends `call` to read or edit the open
+//! instrument (the engine validates, writes the file and swaps the new Plan in), `open` to play
+//! another instrument, `list` to learn which instruments and samples it may name, and `subscribe`
+//! to be told when the instrument changes, whoever changed it. The engine holds the files, so a
+//! client never reads or writes document text itself.
+//!
 //! The three pieces, and which side of the channel each serves:
 //!
 //! - [`wire`] — what both ends serialize. Neither door owns it, so neither can move it alone.
@@ -29,6 +35,7 @@ use alloc::vec::Vec;
 
 mod args;
 mod channel;
+mod events;
 pub mod prose;
 mod result;
 pub mod server;
@@ -39,13 +46,14 @@ pub mod wire;
 
 pub use args::*;
 pub use channel::{Channel, ChannelError, SwapOutcome, Transport};
+pub use events::{Bus, Subscription};
 pub use prose::ENGINE_UNREACHABLE_GUIDANCE;
 pub use result::{
     CurrentInstrument, EngineStatus, SendOutput, SidecarInfo, StatusEndpoints, SwapResult,
 };
 pub use server::{
-    dispatch, EngineHost, InProcess, IngressClosed, Installed, StructureState,
-    COORDINATOR_POISONED, IN_PROCESS_ENDPOINT,
+    dispatch, dispatch_request, EngineHost, InProcess, IngressClosed, Installed, ServerStore,
+    StructureState, SwapInFlight, COORDINATOR_POISONED, IN_PROCESS_ENDPOINT,
 };
 
 /// The single-writer graph owner an [`StructureState`] serves. The engine's type, re-exported because
@@ -65,10 +73,11 @@ pub use reuben_document::FromDocumentError;
 pub use tcp::{TcpTransport, DEFAULT_CONNECT_TIMEOUT};
 pub use verbs::*;
 pub use wire::{
-    read_ndjson_line, ChannelLevel, Conflict, ControlArg, ControlMessage, DiagnosticsReport,
-    DiffSummary, DocSource, DocumentSnapshot, HeldSwap, MetersReport, PortLevel, ProbeLevels,
-    Request, Response, SwapReport, DEFAULT_STRUCTURE_ADDR, MAX_LINE_BYTES, MAX_PROBES,
-    MAX_SEND_BATCH, METER_CEILING_DBFS, METER_FLOOR_DBFS, PEAK_FALL_DB_PER_SEC, RMS_WINDOW_SECS,
+    read_ndjson_line, ChangedBy, ChannelLevel, Conflict, ControlArg, ControlMessage,
+    DiagnosticsReport, DiffSummary, DocSource, DocumentSnapshot, Event, HeldSwap, ListWhat,
+    MetersReport, PortLevel, ProbeLevels, Request, Response, SwapReport, DEFAULT_STRUCTURE_ADDR,
+    MAX_LINE_BYTES, MAX_PROBES, MAX_SEND_BATCH, METER_CEILING_DBFS, METER_FLOOR_DBFS,
+    PEAK_FALL_DB_PER_SEC, RMS_WINDOW_SECS,
 };
 
 /// Build the [`Coordinator`] + [`RenderSide`](crate::render::RenderSide) pair for `doc_json`, at
@@ -78,6 +87,10 @@ pub use wire::{
 /// mailbox — so the first swap is what first fills it. Resource problems are non-fatal and come
 /// back as [`LoadWarning`]s for the host to surface; only a document that will not load or will
 /// not plan is an error.
+///
+/// A host that serves `call` passes a clone of the [`Staged`](crate::staged::Staged) its
+/// [`ServerStore`] wraps: the Coordinator then owns that clone, and an edit waiting in memory is
+/// what a prepare loads.
 ///
 /// It sits on the authoring surface because its *input* is a document, and everything it touches to
 /// get from that string to a built Engine is `reuben-document`'s. What it hands back is the render

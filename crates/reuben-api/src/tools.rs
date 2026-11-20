@@ -12,8 +12,8 @@
 //! is coupled to nothing, and a contract removed here would reach that door as dead plumbing
 //! behind a name it no longer advertises.
 //!
-//! Not every window verb is a roster entry: `describe_boundary` answers a door that reads a
-//! document structurally rather than a tool a model calls, so it has no advertised sentence to own.
+//! Verbs a model cannot call (`describe_boundary` among them) are roster entries of kind
+//! [`ContractKind::Host`]: named here so a host can dispatch them, but never advertised.
 
 use alloc::vec::Vec;
 
@@ -36,6 +36,9 @@ pub enum ContractKind {
     /// the whole document, write iff valid. Distinct from [`Pure`](Self::Pure), which is read-only
     /// introspection: a door hosts both in-process, but only these write.
     Document,
+    /// A verb served only by a host's `call` dispatcher — never listed as a tool by a
+    /// model-facing door. Door code that advertises or routes the roster skips these.
+    Host,
 }
 
 /// One entry in the contract roster: the exact name advertised on the wire, its channel kind, and
@@ -160,15 +163,32 @@ roster! {
         authoring_prose::ADD_INSTRUMENT_RESOURCE;
     REMOVE_INSTRUMENT_RESOURCE = "remove_instrument_resource", Document,
         authoring_prose::REMOVE_INSTRUMENT_RESOURCE;
+
+    // Host-only verbs: served by a host's dispatcher, advertised by no door.
+    READ_INSTRUMENT = "read_instrument", Host, authoring_prose::READ_INSTRUMENT;
+    DESCRIBE_BOUNDARY = "describe_boundary", Host, authoring_prose::DESCRIBE_BOUNDARY;
+    COPY_INSTRUMENT = "copy_instrument", Host, authoring_prose::COPY_INSTRUMENT;
+    RESTORE_INSTRUMENT = "restore_instrument", Host, authoring_prose::RESTORE_INSTRUMENT;
+    SET_INSTRUMENT_LAYOUT = "set_instrument_layout", Host,
+        authoring_prose::SET_INSTRUMENT_LAYOUT;
+    SET_INSTRUMENT_RESOURCE = "set_instrument_resource", Host,
+        authoring_prose::SET_INSTRUMENT_RESOURCE;
+    SET_INSTRUMENT_NODE_RESOURCE = "set_instrument_node_resource", Host,
+        authoring_prose::SET_INSTRUMENT_NODE_RESOURCE;
+    WIRE_INSTRUMENT_INTERFACE_OUTPUT = "wire_instrument_interface_output", Host,
+        authoring_prose::WIRE_INSTRUMENT_INTERFACE_OUTPUT;
+    WIRE_COMPATIBILITY = "wire_compatibility", Host, authoring_prose::WIRE_COMPATIBILITY;
 }
 
-/// The roster's contract names, in [`CONTRACTS`] order — the ordered name-set a door advertises.
-/// A door builds its wire surface from this rather than a hand-typed list.
+/// Every contract name in the roster, in [`CONTRACTS`] order — the [`ContractKind::Host`] entries
+/// included. A host dispatches by these; a door advertises only the ones that are not `Host`, so a
+/// door building its wire surface filters those out rather than hand-typing a list.
 ///
-/// A door is held to it at **construction**, not by a test observing the wire afterwards: the MCP
-/// door stamps each contract's sentence onto its built router and refuses to start unless the two
-/// name-sets match exactly, which is what keeps this derivation from needing a duplicate to check
-/// it against. A door that cannot make the same refusal owes itself the equivalent check.
+/// A door is held to its advertised set at **construction**, not by a test observing the wire
+/// afterwards: the MCP door stamps each contract's sentence onto its built router and refuses to
+/// start unless the two name-sets match exactly, which is what keeps that derivation from needing a
+/// duplicate to check it against. A door that cannot make the same refusal owes itself the
+/// equivalent check.
 pub fn names() -> Vec<&'static str> {
     CONTRACTS.iter().map(|c| c.name).collect()
 }
@@ -178,18 +198,21 @@ pub fn names() -> Vec<&'static str> {
 /// instrument. What makes a token in prose *read* as a tool a model can call.
 ///
 /// Parity: this cannot be derived from [`CONTRACTS`], and deriving it would be worse than useless.
-/// Eight of these thirteen are carried by exactly one contract, so a derived list would lose the
+/// Most of these are carried by exactly one contract, so a derived list would lose the
 /// opening at the moment that contract left the roster — un-shaping the very token left dangling in
 /// a sibling's sentence, and passing the check whose whole job is to fail there. The list has to
 /// outlive the entry to catch its removal.
 const VERB_PREFIXES: &[&str] = &[
     "add_",
     "clear_",
+    "copy_",
     "describe_",
     "get_",
     "new_",
+    "read_",
     "remove_",
     "rename_",
+    "restore_",
     "send_",
     "set_",
     "swap_",
@@ -197,15 +220,6 @@ const VERB_PREFIXES: &[&str] = &[
     "validate_",
     "wire_",
 ];
-
-/// Names that read as a tool and are not one, so prose may name them with no contract behind them.
-/// `describe_boundary` is the window verb answering a door that reads a document structurally
-/// rather than a tool a model calls — see the module header.
-///
-/// Kept as short as it can be. Prose that names something a model cannot call is usually a defect
-/// the scan has just found, not an exception it needs: an entry here silences the one check that
-/// would have caught it.
-const UNADVERTISED_VERBS: &[&str] = &["describe_boundary"];
 
 /// The verb names in `text` that no contract serves — empty for prose that only sends a model
 /// somewhere it can actually go.
@@ -234,7 +248,9 @@ pub fn unserved_verbs(text: &str) -> Vec<&str> {
             })
         })
         .filter(|token| {
-            !CONTRACTS.iter().any(|c| c.name == *token) && !UNADVERTISED_VERBS.contains(token)
+            !CONTRACTS
+                .iter()
+                .any(|c| c.kind != ContractKind::Host && c.name == *token)
         })
         .collect()
 }
@@ -248,6 +264,38 @@ mod tests {
     /// `non_upper_case_globals` reads as a set of variables at every door that imports it. The
     /// second token buys the casing back, and this holds the pair to the convention a door reads a
     /// symbol by.
+    #[test]
+    fn prose_naming_a_host_verb_sends_a_model_to_a_verb_it_cannot_call() {
+        for contract in CONTRACTS.iter().filter(|c| c.kind == ContractKind::Host) {
+            let prose = alloc::format!("then call `{}` to finish", contract.name);
+            assert_eq!(unserved_verbs(&prose), [contract.name]);
+        }
+        assert_eq!(unserved_verbs("call `new_instrument`"), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn host_contracts_are_on_the_roster_and_never_advertised_as_document_or_pure() {
+        let host: Vec<&str> = CONTRACTS
+            .iter()
+            .filter(|c| c.kind == ContractKind::Host)
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(
+            host,
+            [
+                "read_instrument",
+                "describe_boundary",
+                "copy_instrument",
+                "restore_instrument",
+                "set_instrument_layout",
+                "set_instrument_resource",
+                "set_instrument_node_resource",
+                "wire_instrument_interface_output",
+                "wire_compatibility",
+            ]
+        );
+    }
+
     #[test]
     fn a_symbol_is_the_upper_case_of_the_name_it_carries() {
         for (symbol, spelling) in SYMBOLS_AND_SPELLINGS {
@@ -266,8 +314,8 @@ mod tests {
             assert_eq!(
                 unserved_verbs(contract.description),
                 Vec::<&str>::new(),
-                "`{}`'s sentence sends a model to a verb no contract serves; if the name is not a \
-                 tool a model can call, it belongs in UNADVERTISED_VERBS",
+                "`{}`'s sentence sends a model to a verb no contract serves; a Host verb is not \
+                 one a model can call",
                 contract.name
             );
         }

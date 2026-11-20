@@ -17,31 +17,49 @@
 //!   swap are one critical section.
 //! - [`Request::Send`] → control traffic, handed to the host's ingress as **one** batch. The one
 //!   verb that does not touch the Coordinator: control is not structure.
+//! - [`Request::Call`] → one non-engine roster verb against the engine's store. A read answers
+//!   directly. An edit waits in memory while the whole open instrument loads and plans with it;
+//!   only then is it written and the new Plan swapped in, and otherwise nothing is written and the
+//!   answer says why.
+//! - [`Request::Subscribe`] is not a request [`dispatch`] answers: it turns a connection into a
+//!   stream of [`Event`]s, which only the host's connection can carry. [`StructureState::subscribe`]
+//!   is what that connection streams from, and what [`InProcess::subscribe`] hands back.
+//!
+//! Each install that goes live publishes one [`Event`], under the Coordinator lock, so subscribers
+//! hear them in install order.
 //!
 //! The Coordinator is single-writer, so it sits behind one [`Mutex`] here and concurrent
 //! connections serialize on it.
 
 use alloc::boxed::Box;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::Duration;
 
 use reuben_core::probe::ProbeSlots;
 use reuben_document::coordinator::Coordinator;
 
-use crate::authoring::{Diag, Report};
+use crate::authoring::{Diag, DocumentHistory, Report};
+use crate::resources::Resources;
+use crate::staged::{Reads, Staged};
 
 use super::channel::Transport;
+use super::events::{Bus, Subscription};
+
+mod call;
+use call::{diag, handle_call, read_tree};
 
 use super::wire::{
-    over_long_batch_refusal, over_long_probe_set_refusal, Conflict, ControlMessage,
-    DiagnosticsReport, DocSource, DocumentSnapshot, HeldSwap, MetersReport, Request, Response,
-    SwapReport, EMPTY_BATCH_REFUSAL, MAX_PROBES, MAX_SEND_BATCH,
+    over_long_batch_refusal, over_long_probe_set_refusal, ChangedBy, Conflict, ControlMessage,
+    DiagnosticsReport, DocSource, DocumentSnapshot, Event, HeldSwap, ListWhat, MetersReport,
+    Request, Response, SwapReport, EMPTY_BATCH_REFUSAL, MAX_PROBES, MAX_SEND_BATCH,
 };
 
 /// What a host must provide for the window to serve the engine verbs — the device, the clock and
@@ -77,6 +95,24 @@ pub trait EngineHost: Send + Sync {
     /// by value, which names no source to ask about. Defaults to never holding.
     fn hold_swap(&self, _path: &str) -> bool {
         false
+    }
+
+    /// The names this host offers under `what`, for [`Request::List`]: instruments a
+    /// [`Request::Open`] accepts, or samples a document can reference. `open` is the source of the
+    /// instrument now playing, when there is one, so a host can offer what sits beside it.
+    /// Defaults to nothing.
+    fn offered(&self, _what: ListWhat, _open: Option<&str>) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Whether a client may name `name`, a source as the store reads it, in `open` or in a `call`
+    /// that reads or creates it. `open` is the source of the instrument now playing, when there is
+    /// one. A document in the open instrument's own tree is always nameable; this decides the rest.
+    ///
+    /// Defaults to `true`: a store that is not a filesystem has nothing to confine. A host over a
+    /// filesystem overrides it to keep a client to what [`offered`](Self::offered) lists.
+    fn within(&self, _name: &str, _open: Option<&str>) -> bool {
+        true
     }
 
     /// Hand a control batch to the engine's ingress **as one unit**, so a gesture cannot straddle
@@ -130,6 +166,10 @@ pub trait EngineHost: Send + Sync {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IngressClosed;
 
+/// The store a [`StructureState`] serves `call` through. Its [`Staged`] is a clone of the one the
+/// Coordinator resolves through, so an edit waiting in memory is what the next prepare loads.
+pub type ServerStore = DocumentHistory<Staged<Box<dyn Resources + Send + Sync>>>;
+
 /// Everything the channel answers with, cheap to clone (`Arc`-backed) so a host can hand one to
 /// every connection it serves.
 #[derive(Clone)]
@@ -144,8 +184,17 @@ pub struct StructureState {
     /// because it is only ever written under the Coordinator lock (so the pair still advances
     /// together) and read beside it — no path takes this lock first, so the ordering cannot invert.
     installed_source: Arc<Mutex<Option<String>>>,
+    store: Arc<ServerStore>,
+    /// What the last successful install read: the documents an edit may touch. Written only under
+    /// the Coordinator lock, as `installed_source` is.
+    tree: Arc<Mutex<Tree>>,
     /// Set by [`close`](StructureState::close) when the host tears the engine down.
     closed: Arc<AtomicBool>,
+    events: Arc<Bus>,
+    /// The errors of the last [`Event::Invalid`] a [`reload`](StructureState::reload) published,
+    /// until something installs or a reload finds the files plan again. Written only under the
+    /// Coordinator lock.
+    reported_invalid: Arc<Mutex<Option<Vec<Diag>>>>,
 }
 
 /// What every structure verb answers once a panic has poisoned the Coordinator lock.
@@ -158,22 +207,165 @@ pub const COORDINATOR_POISONED: &str =
      restart the engine";
 
 impl StructureState {
-    /// Wrap a Coordinator the host built (with `install_initial`) and the seam it serves through.
-    pub fn new(coordinator: Coordinator, host: Arc<dyn EngineHost>) -> Self {
+    /// Wrap a Coordinator the host built (with `install_initial`), the seam it serves through, and
+    /// the store `call` reads and writes. The store's [`Staged`] must be a clone of the one handed
+    /// to `install_initial`: an edit is checked by loading through the Coordinator's resolver, so
+    /// a separate store's pending write would never be seen.
+    pub fn new(
+        coordinator: Coordinator,
+        host: Arc<dyn EngineHost>,
+        store: Arc<ServerStore>,
+    ) -> Self {
         host.install_probes(coordinator.installed_probes());
         Self {
             coordinator: Arc::new(Mutex::new(coordinator)),
             host,
             installed_source: Arc::new(Mutex::new(None)),
+            store,
+            tree: Arc::new(Mutex::new(Tree::default())),
             closed: Arc::new(AtomicBool::new(false)),
+            events: Arc::new(Bus::default()),
+            reported_invalid: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Load the open instrument again from its files, after something outside the engine may have
+    /// written them, and play it if it plans and differs from what plays.
+    ///
+    /// [`try_reload`](Self::try_reload), with an earlier swap still in flight answered as `None`:
+    /// for a caller that will look again on the next touch of the files anyway.
+    pub fn reload(&self) -> Option<Event> {
+        self.try_reload().unwrap_or(None)
+    }
+
+    /// Load the open instrument again from its files, after something outside the engine may have
+    /// written them, and play it if it plans and differs from what plays.
+    ///
+    /// It differs when the top document's content hash does, or the text of any document it
+    /// reaches does: the hash covers only the top one.
+    ///
+    /// - An earlier swap is still in flight: nothing is read, and [`SwapInFlight`] says to ask
+    ///   again shortly. A swap stays in flight only while the render side is not taking swaps
+    ///   home.
+    /// - It plans and differs: it goes live and [`Event::Changed`] by [`ChangedBy::Outside`] is
+    ///   published and returned.
+    /// - It does not load or plan: what played keeps playing, and [`Event::Invalid`] is published
+    ///   and returned, once per distinct set of errors.
+    /// - It plans and is what plays, after an [`Event::Invalid`]: [`Event::Changed`] by
+    ///   [`ChangedBy::Outside`] with the installed hash is published and returned, so a subscriber
+    ///   hears the failure is over.
+    /// - Otherwise `None`, and nothing is published: the files are what plays (the engine's own
+    ///   write reads back this way), nothing is open from a source, or the Coordinator is
+    ///   poisoned.
+    ///
+    /// Under the Coordinator lock throughout, so the `discard` cannot drop another request's
+    /// pending write and the files are read once against one installed hash.
+    pub fn try_reload(&self) -> Result<Option<Event>, SwapInFlight> {
+        let Ok(mut coordinator) = self.coordinator() else {
+            return Ok(None);
+        };
+        self.store.inner().discard();
+        let Some(top) = self.installed_source().ok().and_then(|top| top.clone()) else {
+            return Ok(None);
+        };
+        // Reclaims a retiree that has come home, which ends its swap's flight and keeps the build
+        // below at live + new, as a by-path swap's does.
+        if coordinator.swap_in_flight() {
+            return Err(SwapInFlight);
+        }
+        let origin = self.host.document_origin(&top);
+        let text = match self.store.read_text(&origin) {
+            Ok(text) => text,
+            Err(e) => return Ok(self.invalid(vec![diag(format!("{top} could not be read: {e}"))])),
+        };
+        let (prepared, tree) = prepare_recording(self, &coordinator, &text, &origin);
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(rejected) => {
+                return Ok(self.invalid(SwapReport::from_core(rejected).report.errors));
+            }
+        };
+        let Ok(tree_cell) = self.tree_cell() else {
+            return Ok(None);
+        };
+        let unchanged = prepared.content_hash() == coordinator.installed_hash()
+            && tree_cell.texts == tree.texts;
+        drop(tree_cell);
+        if unchanged {
+            // Valid again with nothing to swap: a subscriber told of the failure hears it ended.
+            let Ok(mut reported) = self.reported_invalid.lock() else {
+                return Ok(None);
+            };
+            if reported.take().is_none() {
+                return Ok(None);
+            }
+            let event = Event::Changed {
+                hash: coordinator.installed_hash(),
+                by: ChangedBy::Outside,
+            };
+            self.events.publish(event.clone());
+            return Ok(Some(event));
+        }
+        // Refused only with a swap in flight, ruled out above under this same lock.
+        if !coordinator.commit_swap(prepared).report.ok {
+            return Ok(None);
+        }
+        if went_live(self, &mut coordinator, Some(top), tree, Went::Outside).is_err() {
+            return Ok(None);
+        }
+        Ok(Some(Event::Changed {
+            hash: coordinator.installed_hash(),
+            by: ChangedBy::Outside,
+        }))
+    }
+
+    /// Publish and return [`Event::Invalid`] for `errors`, unless it is the failure last reported.
+    /// Called under the Coordinator lock.
+    fn invalid(&self, errors: Vec<Diag>) -> Option<Event> {
+        let mut reported = self.reported_invalid.lock().ok()?;
+        if reported.as_ref() == Some(&errors) {
+            return None;
+        }
+        *reported = Some(errors.clone());
+        let event = Event::Invalid { errors };
+        self.events.publish(event.clone());
+        Some(event)
+    }
+
+    /// A receiver of one [`Event`] per install that goes live from now on, in install order. It
+    /// disconnects when the state is [closed](Self::close).
+    pub fn subscribe(&self) -> Receiver<Event> {
+        self.events.subscribe()
+    }
+
+    /// [`subscribe`](Self::subscribe) for a connection the host streams events over: dropping it
+    /// unsubscribes at once, so a client that leaves while nothing changes is not kept.
+    pub fn subscription(&self) -> Subscription {
+        self.events.subscription()
+    }
+
+    /// How many subscribers events are being sent to.
+    pub fn subscribers(&self) -> usize {
+        self.events.subscribers()
+    }
+
+    /// The canonical sources the last successful install read, the top document's included. An
+    /// edit to any other source is refused.
+    pub fn tree(&self) -> BTreeSet<String> {
+        self.tree
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .sources
+            .clone()
     }
 
     /// Mark the engine torn down, for every clone of this state: an [`InProcess`] transport over
     /// it then fails each exchange as a dead socket would, instead of answering from a Coordinator
-    /// whose render side is gone. A host calls it before it stops its server.
+    /// whose render side is gone, and every subscriber's stream disconnects. A host calls it before
+    /// it stops its server.
     pub fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
+        self.events.close();
     }
 
     /// Whether [`close`](Self::close) has been called on any clone.
@@ -207,6 +399,10 @@ impl StructureState {
         self.installed_source.lock().map_err(|_| Poisoned)
     }
 
+    fn tree_cell(&self) -> Result<MutexGuard<'_, Tree>, Poisoned> {
+        self.tree.lock().map_err(|_| Poisoned)
+    }
+
     /// Name the source the *initial* document was installed from. A builder step because it has a
     /// working default (`None`, a built-in rig): every later swap re-points it from the `source` it
     /// installed, so this only ever answers for the run's first document.
@@ -214,7 +410,15 @@ impl StructureState {
     /// **Replaces the cell rather than writing through it**, so the "only ever written under the
     /// Coordinator lock" invariant on that field has no exception to carve out. Taking `self` by
     /// value makes it structurally true: a builder step can only run before there is anyone to race.
+    ///
+    /// Also records the tree the initial document reaches, by loading it through the store, so an
+    /// edit made before the first swap is checked against it.
     pub fn with_installed_source(mut self, source: Option<String>) -> Self {
+        let tree = match &source {
+            Some(source) => read_tree(&self.store, &self.host.document_origin(source)),
+            None => Tree::default(),
+        };
+        self.tree = Arc::new(Mutex::new(tree));
         self.installed_source = Arc::new(Mutex::new(source));
         self
     }
@@ -235,6 +439,11 @@ pub enum Installed {
     /// A panic poisoned the Coordinator; it answers nothing from here on.
     Poisoned,
 }
+
+/// [`StructureState::try_reload`]'s answer while an earlier swap is still in flight: nothing was
+/// read, and the files should be read again shortly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SwapInFlight;
 
 /// A lock a panic poisoned; answered as [`COORDINATOR_POISONED`].
 struct Poisoned;
@@ -260,7 +469,22 @@ impl From<Poisoned> for Response {
 /// This is a client's entry, so a by-path swap is offered to [`EngineHost::hold_swap`] first.
 /// [`InProcess`], the host's own transport, never is.
 pub fn dispatch(state: &StructureState, line: &str) -> Response {
-    serve(state, line, Caller::Client)
+    match Request::from_ndjson(line) {
+        Ok(request) => dispatch_request(state, request),
+        Err(e) => unreadable(e),
+    }
+}
+
+/// [`dispatch`] for a request the host has already parsed — to see whether it is a
+/// [`Request::Subscribe`] its connection must stream for — so it is not parsed twice.
+pub fn dispatch_request(state: &StructureState, request: Request) -> Response {
+    serve(state, request, Caller::Client)
+}
+
+fn unreadable(e: serde_json::Error) -> Response {
+    Response::Error {
+        message: format!("unreadable request: {e}"),
+    }
 }
 
 /// Who sent a request: a client of the host's server, whose swap the host may hold, or the host
@@ -271,20 +495,27 @@ enum Caller {
     Host,
 }
 
-fn serve(state: &StructureState, line: &str, caller: Caller) -> Response {
-    match Request::from_ndjson(line) {
-        Ok(Request::Ping) => Response::Pong,
-        Ok(Request::GetDocument) => get_document(state).unwrap_or_else(Response::from),
-        Ok(Request::GetDiagnostics) => Response::Diagnostics(state.host.diagnostics()),
-        Ok(Request::GetMeters) => Response::Meters(state.host.meters()),
-        Ok(Request::SetProbes { paths }) => handle_set_probes(state, paths),
-        Ok(Request::Swap { source, expect }) => handle_swap(state, source, expect, caller),
-        Ok(Request::Send { messages }) => handle_send(state, messages),
-        Err(e) => Response::Error {
-            message: format!("unreadable request: {e}"),
+fn serve(state: &StructureState, request: Request, caller: Caller) -> Response {
+    match request {
+        Request::Ping => Response::Pong,
+        Request::GetDocument => get_document(state).unwrap_or_else(Response::from),
+        Request::GetDiagnostics => Response::Diagnostics(state.host.diagnostics()),
+        Request::GetMeters => Response::Meters(state.host.meters()),
+        Request::SetProbes { paths } => handle_set_probes(state, paths),
+        Request::Swap { source, expect } => handle_swap(state, source, expect, caller),
+        Request::Send { messages } => handle_send(state, messages),
+        Request::Call { tool, args } => handle_call(state, &tool, args),
+        Request::Open { name, expect } => handle_open(state, name, expect, caller),
+        Request::List { what } => handle_list(state, what),
+        Request::Subscribe => Response::Error {
+            message: UNSTREAMED_SUBSCRIBE.to_string(),
         },
     }
 }
+
+/// What a `subscribe` answers when it reaches [`dispatch`] rather than a connection that streams.
+const UNSTREAMED_SUBSCRIBE: &str = "subscribe needs a connection that streams events; this one \
+     answers one response per request";
 
 /// The Coordinator owns the canonical document; serialize it + its hash under the lock so
 /// `get_document` never sees a half-installed pair.
@@ -327,6 +558,11 @@ impl InProcess {
     pub fn new(state: StructureState) -> Self {
         Self { state }
     }
+
+    /// A receiver of one [`Event`] per install that goes live from now on, in install order.
+    pub fn subscribe(&self) -> Receiver<Event> {
+        self.state.subscribe()
+    }
 }
 
 impl core::fmt::Debug for InProcess {
@@ -345,9 +581,12 @@ impl Transport for InProcess {
         }
         // Unwind-safe in the sense that matters: the only state a panic can leave half-written
         // is behind the Coordinator lock, which the panic poisons and `dispatch` then refuses.
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            serve(&self.state, line, Caller::Host)
-        }))
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            || match Request::from_ndjson(line) {
+                Ok(request) => serve(&self.state, request, Caller::Host),
+                Err(e) => unreadable(e),
+            },
+        ))
         .map(|response| response.to_ndjson())
         .map_err(|_| std::io::Error::other("the engine panicked answering the request"))
     }
@@ -441,9 +680,6 @@ fn handle_swap(
         DocSource::Path(path) => Some(path.clone()),
         DocSource::Document(_) => None,
     };
-    let origin = installed_from
-        .as_deref()
-        .map(|path| state.host.document_origin(path));
 
     let json = match resolve_source(source, state.host.as_ref()) {
         Ok(json) => json,
@@ -453,6 +689,64 @@ fn handle_swap(
     let mut coordinator = match state.coordinator() {
         Ok(coordinator) => coordinator,
         Err(poisoned) => return poisoned.into(),
+    };
+    install_from(
+        state,
+        &mut coordinator,
+        &json,
+        installed_from,
+        expect,
+        caller,
+        Went::Swapped,
+    )
+}
+
+/// Steps 2 to 5 of [`handle_swap`], for a document already read: the `expect` guard, the build, the
+/// hold, the install and everything after it. `installed_from` is the path the document was read
+/// from, `None` for one by value.
+///
+/// A by-path `swap` (not an `open`) of the file that plays, whose document and the documents it
+/// reaches read exactly as what plays, installs nothing and answers ok with no diff, whatever
+/// `expect` says: there is nothing for it to clobber. That is the swap of a client that edited the
+/// files itself, after the engine already followed the edit.
+fn install_from(
+    state: &StructureState,
+    coordinator: &mut Coordinator,
+    json: &str,
+    installed_from: Option<String>,
+    expect: Option<String>,
+    caller: Caller,
+    went: Went,
+) -> Response {
+    // Built before the `expect` guard, which it may make moot.
+    let by_path = match installed_from
+        .as_deref()
+        .map(|path| state.host.document_origin(path))
+    {
+        Some(origin) => {
+            // The one-call swap's own first step, kept so a build here peaks at live + new.
+            drop(coordinator.try_reclaim());
+            let (prepared, tree) = prepare_recording(state, coordinator, json, &origin);
+            if let (Ok(prepared), Went::Swapped) = (&prepared, went) {
+                match plays_already(state, coordinator, &origin, prepared, &tree) {
+                    Ok(false) => {}
+                    Ok(true) => {
+                        return Response::SwapReport(SwapReport {
+                            report: Report {
+                                ok: true,
+                                errors: Vec::new(),
+                                warnings: Vec::new(),
+                            },
+                            content_hash: coordinator.installed_hash(),
+                            diff: None,
+                        })
+                    }
+                    Err(poisoned) => return poisoned.into(),
+                }
+            }
+            Some((prepared, tree))
+        }
+        None => None,
     };
 
     if let Some(expected) = &expect {
@@ -466,58 +760,224 @@ fn handle_swap(
     }
 
     // Unguarded by construction: arbitration was settled above.
-    let core_report = match &origin {
-        Some(origin) => {
-            // The one-call swap's own first step, kept so a build here peaks at live + new.
-            drop(coordinator.try_reclaim());
-            match coordinator.prepare_document_from(&json, origin) {
-                // A document that does not load is rejected with its errors, never held: the
-                // user is only asked about something that would install.
-                Err(rejected) => rejected,
-                Ok(prepared) => {
-                    let holds = caller == Caller::Client
-                        && installed_from
-                            .as_deref()
-                            .is_some_and(|path| state.host.hold_swap(path));
-                    if holds {
-                        drop(prepared);
-                        let playing = match state.installed_source() {
-                            Ok(source) => source.clone(),
-                            Err(poisoned) => return poisoned.into(),
-                        };
-                        return Response::Held(HeldSwap {
-                            requested: installed_from.unwrap_or_default(),
-                            playing,
-                            content_hash: coordinator.installed_hash(),
-                        });
-                    }
-                    coordinator.commit_swap(prepared)
-                }
+    let (core_report, tree) = match by_path {
+        // A document that does not load is rejected with its errors, never held: the user is
+        // only asked about something that would install.
+        Some((Err(rejected), tree)) => (rejected, tree),
+        Some((Ok(prepared), tree)) => {
+            let holds = caller == Caller::Client
+                && installed_from
+                    .as_deref()
+                    .is_some_and(|path| state.host.hold_swap(path));
+            if holds {
+                drop(prepared);
+                let playing = match state.installed_source() {
+                    Ok(source) => source.clone(),
+                    Err(poisoned) => return poisoned.into(),
+                };
+                return Response::Held(HeldSwap {
+                    requested: installed_from.unwrap_or_default(),
+                    playing,
+                    content_hash: coordinator.installed_hash(),
+                });
             }
+            (coordinator.commit_swap(prepared), tree)
         }
-        // By value there is nowhere the document came from: the session's anchor stands.
-        None => coordinator.swap_document(&json),
+        // By value there is nowhere the document came from: the session's anchor stands, and no
+        // document is open to edit.
+        None => (coordinator.swap_document(json), Tree::default()),
     };
     let mut report = SwapReport::from_core(core_report);
     if report.report.ok {
-        // The installed document advanced, so the source that named it does too — under the
-        // Coordinator lock, so the two never disagree about which install a reader is looking at.
-        match state.installed_source() {
-            Ok(mut source) => *source = installed_from,
+        match went_live(state, coordinator, installed_from, tree, went) {
+            Ok(warnings) => report.report.warnings.extend(warnings),
             Err(poisoned) => return poisoned.into(),
         }
-
-        let logical = coordinator.installed_channels();
-        let input_channels = coordinator.installed_input_channels();
-        report
-            .report
-            .warnings
-            .extend(state.host.publish_render_config(logical, input_channels));
-        state.host.install_probes(coordinator.installed_probes());
-
-        reclaim_retired(&mut coordinator, state.host.as_ref());
     }
     Response::SwapReport(report)
+}
+
+/// Whether `prepared`, read from `origin` with `tree`, is what plays: the same file however
+/// spelled, the same content hash, and the same texts for every document it reaches.
+fn plays_already(
+    state: &StructureState,
+    coordinator: &Coordinator,
+    origin: &str,
+    prepared: &reuben_document::PreparedSwap,
+    tree: &Tree,
+) -> Result<bool, Poisoned> {
+    let same_file = state.installed_source()?.as_deref().is_some_and(|playing| {
+        let playing = state.host.document_origin(playing);
+        state.store.canonical(&playing, None) == state.store.canonical(origin, None)
+    });
+    Ok(same_file
+        && prepared.content_hash() == coordinator.installed_hash()
+        && state.tree_cell()?.texts == tree.texts)
+}
+
+/// Unload the open instrument and load, and play, the one `name` names: [`handle_swap`] by path,
+/// read through the server's store so the tree and the edits that follow see the same files.
+///
+/// Under the Coordinator lock from the read on, so the `discard` cannot drop another request's
+/// pending write.
+fn handle_open(
+    state: &StructureState,
+    name: String,
+    expect: Option<String>,
+    caller: Caller,
+) -> Response {
+    let mut coordinator = match state.coordinator() {
+        Ok(coordinator) => coordinator,
+        Err(poisoned) => return poisoned.into(),
+    };
+    state.store.inner().discard();
+    let origin = state.host.document_origin(&name);
+    let open = match state.installed_source() {
+        Ok(source) => source.clone(),
+        Err(poisoned) => return poisoned.into(),
+    };
+    if !state.host.within(&origin, open.as_deref()) {
+        return rejected_report(coordinator.installed_hash(), not_offered(&name));
+    }
+    let json = match state.store.read_text(&origin) {
+        Ok(json) => json,
+        Err(e) => {
+            return rejected_report(coordinator.installed_hash(), format!("open {name}: {e}"))
+        }
+    };
+    install_from(
+        state,
+        &mut coordinator,
+        &json,
+        Some(name),
+        expect,
+        caller,
+        Went::Opened,
+    )
+}
+
+/// The refusal for a name outside what the host offers: the client's own spelling and a fixed
+/// reason, so it says nothing of the server's paths or whether the file exists.
+fn not_offered(name: &str) -> String {
+    format!("`{name}` is not offered by this server")
+}
+
+/// What the host offers under `what`, each name one [`Request::Open`] (or, for a sample, a
+/// resource reference) accepts back.
+fn handle_list(state: &StructureState, what: ListWhat) -> Response {
+    let open = match state.installed_source() {
+        Ok(source) => source.clone(),
+        Err(poisoned) => return poisoned.into(),
+    };
+    Response::Listed {
+        names: state.host.offered(what, open.as_deref()),
+    }
+}
+
+/// The documents an install read.
+#[derive(Default)]
+struct Tree {
+    /// Every canonical source the load read, the top document's included.
+    sources: BTreeSet<String>,
+    /// The texts of the documents the top one reaches, without the top one's: the installed
+    /// content hash already says whether that one changed, and leaving it out keeps a top document
+    /// reformatted without a change from swapping.
+    texts: BTreeMap<String, u64>,
+}
+
+impl Tree {
+    /// `reads` from a load of the document at canonical source `top`.
+    fn new(mut reads: Reads, top: String) -> Self {
+        reads.remove(&top);
+        let mut sources: BTreeSet<String> = reads.keys().cloned().collect();
+        sources.insert(top);
+        Self {
+            sources,
+            texts: reads,
+        }
+    }
+}
+
+/// Prepare `json`, read from `origin`, and what the load read.
+fn prepare_recording(
+    state: &StructureState,
+    coordinator: &Coordinator,
+    json: &str,
+    origin: &str,
+) -> (
+    Result<reuben_document::PreparedSwap, reuben_document::SwapReport>,
+    Tree,
+) {
+    let log = state.store.inner().record_reads();
+    let prepared = coordinator.prepare_document_from(json, origin);
+    let tree = Tree::new(log.finish(), state.store.canonical(origin, None));
+    (prepared, tree)
+}
+
+/// Which verb made an install that went live, which decides the [`Event`] it publishes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Went {
+    /// `open`: always [`Event::Opened`].
+    Opened,
+    /// `swap`: [`Event::Opened`] when it names a source other than the one playing before, by
+    /// value counting as a source of its own, and [`Event::Changed`] when it names the same one.
+    Swapped,
+    /// An edit through `call`: always [`Event::Changed`] by a client.
+    Edited,
+    /// A [`StructureState::reload`] after an outside write: [`Event::Changed`] by
+    /// [`ChangedBy::Outside`].
+    Outside,
+}
+
+/// Everything after a committed install, shared by `swap`, `open` and an edit made through `call`:
+/// the source and tree that name what plays advance, the host gets the new geometry and probes,
+/// the retiree is reclaimed, and subscribers hear of it. Returns the host's render-config warnings
+/// for the report.
+///
+/// Under the Coordinator lock, so the source, the tree and the installed hash never disagree
+/// about which install a reader is looking at, and events publish in install order. The render
+/// config is published BEFORE the reclaim, so the map is in flight before the callback installs
+/// the new engine and the two mailboxes stay in lockstep.
+fn went_live(
+    state: &StructureState,
+    coordinator: &mut Coordinator,
+    source: Option<String>,
+    tree: Tree,
+    went: Went,
+) -> Result<Vec<Diag>, Poisoned> {
+    let previous = core::mem::replace(&mut *state.installed_source()?, source.clone());
+    *state.tree_cell()? = tree;
+
+    let warnings = state.host.publish_render_config(
+        coordinator.installed_channels(),
+        coordinator.installed_input_channels(),
+    );
+    state.host.install_probes(coordinator.installed_probes());
+
+    reclaim_retired(coordinator, state.host.as_ref());
+
+    // What plays changed, so a failure reported against what played before is news again.
+    *state.reported_invalid.lock().map_err(|_| Poisoned)? = None;
+
+    let hash = coordinator.installed_hash();
+    let opened = match went {
+        Went::Opened => true,
+        Went::Swapped => source != previous,
+        Went::Edited | Went::Outside => false,
+    };
+    let by = match went {
+        Went::Outside => ChangedBy::Outside,
+        Went::Opened | Went::Swapped | Went::Edited => ChangedBy::Client,
+    };
+    state.events.publish(if opened {
+        Event::Opened {
+            name: source.unwrap_or_default(),
+            hash,
+        }
+    } else {
+        Event::Changed { hash, by }
+    });
+    Ok(warnings)
 }
 
 /// Take the retired Engine back from the render side and **drop it here, off the audio thread** —
@@ -538,10 +998,13 @@ fn reclaim_retired(coordinator: &mut Coordinator, host: &dyn EngineHost) {
 /// message, no diff, and the still-installed hash — the report names what keeps playing
 /// (retain-prior).
 fn rejected_swap(state: &StructureState, message: String) -> Response {
-    let content_hash = match state.coordinator() {
-        Ok(coordinator) => coordinator.installed_hash(),
-        Err(poisoned) => return poisoned.into(),
-    };
+    match state.coordinator() {
+        Ok(coordinator) => rejected_report(coordinator.installed_hash(), message),
+        Err(poisoned) => poisoned.into(),
+    }
+}
+
+fn rejected_report(content_hash: String, message: String) -> Response {
     Response::SwapReport(SwapReport {
         report: Report {
             ok: false,
@@ -570,8 +1033,9 @@ fn resolve_source(source: DocSource, host: &dyn EngineHost) -> Result<String, St
 #[cfg(all(test, feature = "render"))]
 mod tests {
     use super::*;
-    use crate::authoring::{ResolveError, Resources, SampleBuffer};
+    use crate::authoring::{DocumentHistory, ResolveError, Resources, SampleBuffer};
     use crate::engine::{get_engine_status, Channel, ChannelError};
+    use crate::staged::Staged;
 
     const DOC: &str = r#"{"format_version":3,"instrument":"t",
         "interface":{"outputs":{"out":{"from":"/osc.audio"}}},
@@ -661,8 +1125,12 @@ mod tests {
             crate::engine::install_initial(DOC, NoStore, reuben_core::AudioConfig::new(48e3, 128))
                 .expect("install");
         let host = Arc::new(host);
-        let state = StructureState::new(coordinator, Arc::clone(&host) as Arc<dyn EngineHost>)
-            .with_installed_source(Some("playing.json".to_string()));
+        let store = Arc::new(DocumentHistory::new(Staged::new(
+            Box::new(NoStore) as Box<dyn Resources + Send + Sync>
+        )));
+        let state =
+            StructureState::new(coordinator, Arc::clone(&host) as Arc<dyn EngineHost>, store)
+                .with_installed_source(Some("playing.json".to_string()));
         (state, host)
     }
 
@@ -837,6 +1305,27 @@ mod tests {
         match dispatch(&state, &Request::GetDocument.to_ndjson()) {
             Response::Error { message } => assert_eq!(message, COORDINATOR_POISONED),
             other => panic!("expected the poisoned refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn close_disconnects_in_process_subscribers() {
+        let state = state(false);
+        let events = InProcess::new(state.clone()).subscribe();
+        state.close();
+        assert_eq!(
+            events.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        );
+        assert_eq!(state.subscribers(), 0);
+    }
+
+    #[test]
+    fn subscribe_through_dispatch_is_a_channel_error() {
+        let state = state(false);
+        match dispatch(&state, &Request::Subscribe.to_ndjson()) {
+            Response::Error { message } => assert_eq!(message, UNSTREAMED_SUBSCRIBE),
+            other => panic!("expected a channel error, got {other:?}"),
         }
     }
 

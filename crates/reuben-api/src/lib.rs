@@ -53,6 +53,9 @@ pub mod engine;
 pub mod schema;
 
 #[cfg(feature = "authoring")]
+pub mod staged;
+
+#[cfg(feature = "authoring")]
 pub mod tools;
 
 #[cfg(feature = "fs-resolver")]
@@ -69,6 +72,9 @@ pub use reuben_core::meter;
 
 /// The per-node level probes, for a host that switches them on and reads them.
 pub use reuben_core::probe;
+
+#[cfg(feature = "authoring")]
+pub use staged::Staged;
 
 #[cfg(feature = "fs-resolver")]
 pub use fs_resolver::FsResolver;

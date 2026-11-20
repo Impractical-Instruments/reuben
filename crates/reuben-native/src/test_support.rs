@@ -11,8 +11,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use reuben_api::authoring::DocumentHistory;
+use reuben_api::engine::ServerStore;
 use reuben_api::render::{AudioConfig, Message, RenderSide, RenderSlot};
 use reuben_api::resources::{ResolveError, Resources, SampleBuffer};
+use reuben_api::staged::Staged;
 
 use crate::engine::{start_with, EngineConfig, Render, RunningEngine, StartError};
 use crate::osc::{ControlBatch, OscIn};
@@ -28,6 +31,17 @@ impl Resources for NoResources {
     fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
         Err(ResolveError::NotFound(source.to_string()))
     }
+}
+
+/// A [`NoResources`] store as a session holds it: hand a clone to `install_initial` and the same
+/// one to [`served`], as the host does.
+pub fn no_store() -> Staged<Box<dyn Resources + Send + Sync>> {
+    Staged::new(Box::new(NoResources))
+}
+
+/// The store a `StructureState` serves `call` through, over `staged`.
+pub fn served(staged: Staged<Box<dyn Resources + Send + Sync>>) -> Arc<ServerStore> {
+    Arc::new(DocumentHistory::new(staged))
 }
 
 /// How long [`FakeCallback::await_queued`] waits for a batch to reach `queue_osc` before giving up.
