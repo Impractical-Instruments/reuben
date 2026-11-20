@@ -112,8 +112,8 @@ pub fn trail(ui: &mut egui::Ui, session: &mut Session) -> Option<TrailAsk> {
     asked
 }
 
-/// Draw the session's rows of the top bar: undo and redo, then whether the engine plays the
-/// instrument. Returns the undo or redo clicked.
+/// Draw the session's rows of the top bar: undo and redo, whether the engine plays the
+/// instrument, and the warning that its files are not watched. Returns the undo or redo clicked.
 pub fn bar(ui: &mut egui::Ui, session: &Session) -> Option<Direction> {
     let asked = undo(ui, session);
     let name = session.tree().top().name();
@@ -166,9 +166,13 @@ fn status(ui: &mut egui::Ui, status: &Status, name: &str) {
             );
             // One line per fault in every file of the instrument: unbounded, in a bar that takes
             // its height from the canvas below.
+            // Salted with the reasons, so a new set opens at its first line rather than where the
+            // last was scrolled to. The minimum is set too: a row of the top bar offers one line
+            // of height, and the area would otherwise fall back to egui's smaller default.
             egui::ScrollArea::vertical()
-                .id_salt("held")
+                .id_salt(("held", why))
                 .max_height(HELD_HEIGHT)
+                .min_scrolled_height(HELD_HEIGHT)
                 .show(ui, |ui| {
                     for line in why {
                         ui.colored_label(ui.visuals().error_fg_color, line);
@@ -231,10 +235,17 @@ mod tests {
         );
         let ctx = egui::Context::default();
         let mut height = 0.0;
+        // The top bar's nesting: a row offers its column one line of height, not the window's.
         ctx.run_ui(egui::RawInput::default(), |ui| {
-            let top = ui.cursor().top();
-            status(ui, &held, "ui");
-            height = ui.cursor().top() - top;
+            egui::Panel::top("bar").show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        let top = ui.cursor().top();
+                        status(ui, &held, "ui");
+                        height = ui.cursor().top() - top;
+                    });
+                });
+            });
         })
         .drop_without_applying_deltas();
         assert!(height > HELD_HEIGHT, "the reasons are drawn: {height}");
