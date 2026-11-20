@@ -324,7 +324,7 @@ fn edit_output(result: &EditResult) -> Value {
     serde_json::to_value(result).expect("an edit result serializes to JSON")
 }
 
-fn diag(message: String) -> Diag {
+pub(super) fn diag(message: String) -> Diag {
     Diag {
         node: None,
         port: None,
@@ -1072,5 +1072,103 @@ mod tests {
             other => panic!("expected a swap report, got {other:?}"),
         }
         assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn reload_after_outside_edit_swaps_and_reports_outside() {
+        let s = serving();
+        let events = s.state.subscribe();
+        s.files
+            .write_text("top.json", &TOP.replace(r#""top""#, r#""edited""#))
+            .unwrap();
+        let reloaded = s.state.reload();
+        s.render();
+        let Some(Event::Changed { hash, by }) = reloaded.clone() else {
+            panic!("expected a change, got {reloaded:?}");
+        };
+        assert_eq!(by, ChangedBy::Outside);
+        assert_eq!(installed_hash(&s.state), hash);
+        assert_eq!(events.try_recv().expect("an event"), reloaded.unwrap());
+        assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn reload_of_invalid_tree_keeps_playing() {
+        let s = serving();
+        let events = s.state.subscribe();
+        let before = installed_hash(&s.state);
+        s.files.write_text("v.json", "{ not json").unwrap();
+        let reloaded = s.state.reload();
+        assert!(
+            matches!(&reloaded, Some(Event::Invalid { errors }) if !errors.is_empty()),
+            "{reloaded:?}"
+        );
+        assert_eq!(installed_hash(&s.state), before);
+        assert_eq!(events.try_recv().expect("an event"), reloaded.unwrap());
+    }
+
+    #[test]
+    fn an_unchanged_invalid_tree_is_reported_once() {
+        let s = serving();
+        let events = s.state.subscribe();
+        s.files.write_text("v.json", "{ not json").unwrap();
+        assert!(matches!(s.state.reload(), Some(Event::Invalid { .. })));
+        assert_eq!(s.state.reload(), None);
+        assert!(events.try_recv().is_ok());
+        assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
+
+        // Put back as it plays, then broken the same way again: a new failure to report.
+        s.files.write_text("v.json", V).unwrap();
+        assert_eq!(s.state.reload(), None);
+        s.files.write_text("v.json", "{ not json").unwrap();
+        assert!(matches!(s.state.reload(), Some(Event::Invalid { .. })));
+    }
+
+    #[test]
+    fn own_write_is_not_reported_as_outside() {
+        let s = serving();
+        let (output, _) = call(
+            &s,
+            "set_instrument_name",
+            json!({"source": "top.json", "name": "renamed"}),
+        );
+        assert_eq!(output["written"], true, "{output}");
+        let events = s.state.subscribe();
+        assert_eq!(s.state.reload(), None);
+        assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn reload_while_a_swap_is_in_flight_installs_nothing() {
+        let s = serving();
+        let (first, _) = call_undrained(
+            &s.state,
+            "set_instrument_name",
+            json!({"source": "top.json", "name": "one"}),
+        );
+        assert_eq!(first["written"], true, "{first}");
+        s.files
+            .write_text("top.json", &TOP.replace(r#""top""#, r#""outside""#))
+            .unwrap();
+        assert_eq!(s.state.reload(), None);
+        assert_eq!(json!(installed_hash(&s.state)), first["hash"]);
+
+        // Once the render side has taken the swap home, the same files go live.
+        s.render();
+        assert!(matches!(
+            s.state.reload(),
+            Some(Event::Changed {
+                by: ChangedBy::Outside,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn reload_with_nothing_open_reports_nothing() {
+        let mut s = serving();
+        s.state = s.state.clone().with_installed_source(None);
+        s.files.write_text("top.json", "{ not json").unwrap();
+        assert_eq!(s.state.reload(), None);
     }
 }

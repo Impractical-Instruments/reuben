@@ -54,7 +54,7 @@ use super::channel::Transport;
 use super::events::{Bus, Subscription};
 
 mod call;
-use call::{handle_call, read_tree};
+use call::{diag, handle_call, read_tree};
 
 use super::wire::{
     over_long_batch_refusal, over_long_probe_set_refusal, ChangedBy, Conflict, ControlMessage,
@@ -191,6 +191,10 @@ pub struct StructureState {
     /// Set by [`close`](StructureState::close) when the host tears the engine down.
     closed: Arc<AtomicBool>,
     events: Arc<Bus>,
+    /// The errors of the last [`Event::Invalid`] a [`reload`](StructureState::reload) published,
+    /// until something installs or the files load as what plays. Written only under the
+    /// Coordinator lock.
+    reported_invalid: Arc<Mutex<Option<Vec<Diag>>>>,
 }
 
 /// What every structure verb answers once a panic has poisoned the Coordinator lock.
@@ -221,7 +225,69 @@ impl StructureState {
             tree: Arc::new(Mutex::new(BTreeSet::new())),
             closed: Arc::new(AtomicBool::new(false)),
             events: Arc::new(Bus::default()),
+            reported_invalid: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Load the open instrument again from its files, after something outside the engine may have
+    /// written them, and play it if it plans and differs from what plays.
+    ///
+    /// - It plans and differs: it goes live and [`Event::Changed`] by [`ChangedBy::Outside`] is
+    ///   published and returned.
+    /// - It does not load or plan: what played keeps playing, and [`Event::Invalid`] is published
+    ///   and returned, once per distinct set of errors.
+    /// - Otherwise `None`, and nothing is published: the files are what plays (the engine's own
+    ///   write reads back this way), nothing is open from a source, the Coordinator is poisoned, or
+    ///   an earlier swap is still in flight. That last is left for the next touch of the files to
+    ///   retry: a swap stays in flight only while the render side is not taking swaps home.
+    ///
+    /// Under the Coordinator lock throughout, so the `discard` cannot drop another request's
+    /// pending write and the files are read once against one installed hash.
+    pub fn reload(&self) -> Option<Event> {
+        let mut coordinator = self.coordinator().ok()?;
+        self.store.inner().discard();
+        let top = self.installed_source().ok()?.clone()?;
+        let origin = self.host.document_origin(&top);
+        // As a by-path swap does, so the build peaks at live + new.
+        drop(coordinator.try_reclaim());
+        let text = match self.store.read_text(&origin) {
+            Ok(text) => text,
+            Err(e) => return self.invalid(vec![diag(format!("{top} could not be read: {e}"))]),
+        };
+        let (prepared, tree) = prepare_recording(self, &coordinator, &text, &origin);
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(rejected) => return self.invalid(SwapReport::from_core(rejected).report.errors),
+        };
+        if prepared.content_hash() == coordinator.installed_hash() {
+            *self.reported_invalid.lock().ok()? = None;
+            return None;
+        }
+        if coordinator.swap_in_flight() {
+            return None;
+        }
+        // Refused only with a swap in flight, just ruled out under this same lock.
+        if !coordinator.commit_swap(prepared).report.ok {
+            return None;
+        }
+        went_live(self, &mut coordinator, Some(top), tree, Went::Outside).ok()?;
+        Some(Event::Changed {
+            hash: coordinator.installed_hash(),
+            by: ChangedBy::Outside,
+        })
+    }
+
+    /// Publish and return [`Event::Invalid`] for `errors`, unless it is the failure last reported.
+    /// Called under the Coordinator lock.
+    fn invalid(&self, errors: Vec<Diag>) -> Option<Event> {
+        let mut reported = self.reported_invalid.lock().ok()?;
+        if reported.as_ref() == Some(&errors) {
+            return None;
+        }
+        *reported = Some(errors.clone());
+        let event = Event::Invalid { errors };
+        self.events.publish(event.clone());
+        Some(event)
     }
 
     /// A receiver of one [`Event`] per install that goes live from now on, in install order. It
@@ -743,8 +809,11 @@ enum Went {
     /// `swap`: [`Event::Opened`] when it names a source other than the one playing before, by
     /// value counting as a source of its own, and [`Event::Changed`] when it names the same one.
     Swapped,
-    /// An edit through `call`: always [`Event::Changed`].
+    /// An edit through `call`: always [`Event::Changed`] by a client.
     Edited,
+    /// A [`StructureState::reload`] after an outside write: [`Event::Changed`] by
+    /// [`ChangedBy::Outside`].
+    Outside,
 }
 
 /// Everything after a committed install, shared by `swap`, `open` and an edit made through `call`:
@@ -774,11 +843,18 @@ fn went_live(
 
     reclaim_retired(coordinator, state.host.as_ref());
 
+    // What plays changed, so a failure reported against what played before is news again.
+    *state.reported_invalid.lock().map_err(|_| Poisoned)? = None;
+
     let hash = coordinator.installed_hash();
     let opened = match went {
         Went::Opened => true,
         Went::Swapped => source != previous,
-        Went::Edited => false,
+        Went::Edited | Went::Outside => false,
+    };
+    let by = match went {
+        Went::Outside => ChangedBy::Outside,
+        Went::Opened | Went::Swapped | Went::Edited => ChangedBy::Client,
     };
     state.events.publish(if opened {
         Event::Opened {
@@ -786,10 +862,7 @@ fn went_live(
             hash,
         }
     } else {
-        Event::Changed {
-            hash,
-            by: ChangedBy::Client,
-        }
+        Event::Changed { hash, by }
     });
     Ok(warnings)
 }

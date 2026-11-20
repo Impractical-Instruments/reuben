@@ -32,3 +32,4 @@ pub mod scaffold;
 pub mod structure;
 #[doc(hidden)]
 pub mod test_support;
+pub mod tree_watch;

@@ -3317,6 +3317,7 @@ dependencies = [
  "clap",
  "cpal",
  "libc",
+ "notify",
  "reuben-api",
  "reuben-contract",
  "rosc",

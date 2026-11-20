@@ -2,7 +2,8 @@
 //!
 //! [`start`] loads the instrument, opens the audio device (and the input device when the
 //! instrument binds input channels) per the [`DeviceProfile`], binds the OSC-in UDP listener and
-//! the optional OSC-out sender, and serves the loopback structure channel the MCP sidecar dials.
+//! the optional OSC-out sender, serves the loopback structure channel the MCP sidecar dials, and
+//! follows outside edits to the instrument's files.
 //! The [`RunningEngine`] it returns is the whole session: it reaches the engine in-process through
 //! the window's own [`Channel`], and dropping it stops every thread and frees every port.
 //!
@@ -43,6 +44,7 @@ use crate::structure::{
     HeadlessRenderConfig, NativeHost, RenderConfigPublisher, StructureServer, SwapHold,
 };
 use crate::test_support::FakeCallback;
+use crate::tree_watch::{self, TreeWatch};
 
 /// The core render block size `reuben play` runs at.
 pub const DEFAULT_BLOCK_SIZE: usize = 256;
@@ -163,14 +165,16 @@ impl std::error::Error for StartError {
 ///
 /// Dropping it — or [`shutdown`](Self::shutdown), which also returns the final counters — tears
 /// the session down in order and returns only once every thread it started has exited: the
-/// structure server (its connections woken and joined), the OSC-in listener, the audio streams
-/// (paused, then dropped — see [`Streams::pause`](audio::Streams::pause) for why both), the OSC-out
-/// sender, then the diagnostics logger. Every port it bound is free again afterwards.
+/// watcher following outside edits to the instrument's files, the structure server (its
+/// connections woken and joined), the OSC-in listener, the audio streams (paused, then dropped —
+/// see [`Streams::pause`](audio::Streams::pause) for why both), the OSC-out sender, then the
+/// diagnostics logger. Every port it bound is free again afterwards.
 ///
 /// Not `Send`: cpal's streams are not, on every host. Keep it on the thread that started it and
 /// hand [`channel`](Self::channel)s to any other.
 pub struct RunningEngine {
     state: Option<StructureState>,
+    tree_watch: Option<TreeWatch>,
     structure: Option<StructureServer>,
     structure_error: Option<io::Error>,
     osc_in: Option<OscListener>,
@@ -274,7 +278,9 @@ impl RunningEngine {
     }
 
     fn teardown(&mut self) {
-        // First, so a channel a caller still holds is unreachable from here on rather than
+        // Before the state closes, so no reload is mid-swap into a Coordinator being torn down.
+        self.tree_watch = None;
+        // Next, so a channel a caller still holds is unreachable from here on rather than
         // answering from a Coordinator whose render side is about to go.
         if let Some(state) = &self.state {
             state.close();
@@ -450,9 +456,11 @@ pub(crate) fn start_with(
         Some(Err(e)) => (None, Some(e)),
         None => (None, None),
     };
+    let tree_watch = tree_watch::spawn(state.clone());
 
     Ok(RunningEngine {
         state: Some(state),
+        tree_watch: Some(tree_watch),
         structure,
         structure_error,
         osc_in,

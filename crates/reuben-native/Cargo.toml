@@ -23,6 +23,8 @@ rtrb.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json.workspace = true
 clap.workspace = true
+# Follows outside edits to the open instrument's files.
+notify.workspace = true
 
 # SIGINT/SIGTERM handler for `play`'s clean shutdown. Unix-only: `play`'s dev
 # persona is a checkout + a terminal; non-unix keeps the OS default Ctrl-C.
