@@ -22,7 +22,7 @@ nodes with typed ports.
 
 Nesting is an authoring concept only; at runtime everything inlines into one flat graph.
 
-## The authoring loop: the document is truth, `send` is audition <!-- lanes: skills,mcp -->
+## The authoring loop: the document is truth, `send` is audition <!-- lanes: skills,mcp,web -->
 
 A conversational edit works on one thing: the **instrument document**, and it walks the same
 steps every time. Each step names the verb that performs it — what that verb *takes* is the
@@ -61,8 +61,9 @@ Why the steps are what they are:
   and let the tools do it. Read its structure with `describe_instrument`; change it one verb at a
   time (`add_instrument_node`, `wire_instrument_input`, `set_instrument_input`…). Every verb
   re-validates the **whole** open instrument through the engine's own load path — still the
-  single validation authority — and **writes only if it still loads and plans**, so a rejected
-  edit leaves every file exactly as it was and the instrument playing as it was.
+  single validation authority — and **writes only if it still loads and plans**, except while
+  nothing plays (below); a rejected edit leaves every file exactly as it was and the instrument
+  playing as it was.
 - **A broken document refuses every edit until it is fixed.** Write-iff-valid holds for every
   verb, so an edit to a document that was already invalid is refused however unrelated it is. A
   rejection moves to `pre_existing` each error it can show the document already had — the same
@@ -70,9 +71,11 @@ Why the steps are what they are:
   `pre_existing` errors first. An error left in `report.errors` is not proof your edit made it:
   validation reports one error at a time, so an error can sit unseen behind the one reported. When
   the error the load used to stop at is not the one reported now, a note names it.
-- **A broken document still opens, silent.** Opening a document that does not load opens it with
-  nothing playing. An edit that document accepts is written, and the edit that makes it load
-  starts it playing.
+- **A broken document still opens, with nothing playing.** Opening a document that does not
+  load or plan opens it and unloads what was playing. The rule above still holds for the document
+  an edit changes: the edit is refused if that document keeps its own errors. Any other edit is
+  written even though the whole instrument does not plan yet, and nothing plays until the edit
+  that makes it load and plan — that edit starts it playing.
 - **Sending is ephemeral audition.** A live control message (`/filt/cutoff 1500`) changes
   render state only — sweep a cutoff, try a tempo. The next edit re-reads inputs from the
   document, so an un-folded tweak is **reset by design**. (The MCP tool is
@@ -80,104 +83,9 @@ Why the steps are what they are:
 - **Try, then commit.** Send to explore; when a value is a keeper, fold it into the document with
   `set_instrument_input`. Never let the sound and the document drift apart — the document is the
   save source of truth.
-- **Renames reset state.** At each edit a node keeps its state iff a node with the same
-  fully-qualified address *and* the same operator type exists on both sides.
-  Renaming an address, or changing the operator type at an address, is a remove + add;
-  everything else — rewired inputs, changed params, new neighbors — leaves a survivor a
-  survivor.
-
-Two pieces of loop conduct, in every lane:
-
-- **Sanity-check that it's audible.** Validating (`reuben validate` on the CLI,
-  `validate_instrument` on the MCP/web surfaces — every document verb runs it for you before
-  writing) proves the graph is *legal*, **not that it makes sound** — a disconnected oscillator or an unfed output pipe validates clean and
-  renders silence. Before reporting a reshape done, check generator→output reach: is there a
-  path from a sound source to a declared `interface` output, and are the voicer's
-  `freq`/`gate` reaching the voice chain? Warnings (an unresolvable sample, a dark subpatch)
-  are advisory — the document is still valid.
-- **When unsure of a port, `describe` it — never infer.** Port, input, and param names come
-  from the live operator set, not from memory or a sketch; a guessed name costs a repair
-  round.
-
-One more piece of authoring conduct — and the one the incremental surface made *deliberate*:
-
-- **Keep the description true when you reshape.** An instrument's reuse story — its
-  **recipe-role** — is the first sentence of its own top-level description (`doc` on disk,
-  `description` in the views): what it is, and when to reach for it. A surgical verb does not
-  re-present it, so nothing will remind you: after a reshape that changes what the instrument
-  *is* or when it earns reaching for, say so with `set_instrument_description`. The role is
-  trusted for **selection only**; the `interface` block stays the mechanically-enforced
-  face, so a stale role line can cost a bad-sounding pick, never a mis-wired document.
-
-Every accepted edit swaps the open instrument in, so two swap rules of thumb apply to each edit:
-
-- **An edit ducks the output for ~20ms.** The engine ramps the master to silence, installs
-  the new Plan at zero, and ramps back up — a brief duck, never a click. Don't chase it as a
-  dropout. A node at the same address with the same operator type keeps its live state across
-  the edit; only the changed nodes rebuild cold.
-- **A note-off racing an edit can hang a note — re-send the off.** Pending messages are
-  dropped at install, so an off landing in that window (≤ one block plus the down-ramp) is
-  lost and a surviving voice's gate stays high. Recoverable in-band: re-send the off (or
-  re-trigger and release, or let voice stealing claim it). When notes were sounding, follow
-  an edit with a corrective `send`.
-
-The next section is the web chat lane's copy of this loop, which still installs a document with
-`swap_instrument`. In a checkout or over the MCP sidecar there is no swap step: follow this one.
-
-## The authoring loop: the document is truth, `send` is audition <!-- lanes: web -->
-
-A conversational edit works on one thing: the **instrument document**, and it walks the same
-steps every time. Each step names the verb that performs it — what that verb *takes* is the
-door's business, advertised where you call it and never restated here.
-
-1. **Introspect.** `describe_operators` for an operator's ports; `describe_instrument` for the
-   structure of the document you are about to change.
-2. **Seed.** Creating from scratch? `new_instrument` writes a guaranteed-valid minimal document
-   at the source you name and refuses to overwrite an existing one, so you never stall guessing
-   the required top-level shape ([#146](https://github.com/Impractical-Instruments/reuben/issues/146)).
-   Never a blank file, and never a document you compose yourself.
-3. **Shape.** One verb per change — `add_instrument_node`, `wire_instrument_input`,
-   `set_instrument_input`, `set_instrument_constant`, and the `interface` and resource verbs. When
-   the ask is a *musical word* rather than a number — warmer, looser, sadder — one verb does the
-   whole thing: `set_instrument_inputs_by_intent` takes the word, finds every input the intent
-   vocabulary's row for it names, sizes each step against that input's own declared range, and
-   applies them as one edit. Don't hand-expand a table row into a pile of value edits.
-4. **Keep the role true.** If the reshape changed what the instrument *is*, say so with
-   `set_instrument_description`.
-5. **Confirm it's audible.** Valid is not audible: check generator→output reach before reporting
-   done.
-6. **Swap.** `swap_instrument` installs the document — this is the step that makes the change heard.
-7. **Audition.** `send_live_controls` explores a value without committing it; fold a keeper back
-   into the document with `set_instrument_input`, then swap again.
-
-Steps 6 and 7 need a running engine; the rest do not.
-
-Why the steps are what they are:
-
-- **The document is durable truth.** What the document says is what plays after the next Swap —
-  and what saves, shares, and reloads.
-- **You never touch the document's bytes.** Do not open, read, or write an instrument file: name it
-  by its `source` and let the tools do it. Read its structure with `describe_instrument`; change it
-  one verb at a time (`add_instrument_node`, `wire_instrument_input`, `set_instrument_input`…).
-  Every verb re-validates the **whole** document through the engine's own load path — still the
-  single validation authority — and **writes only if it is valid**, so a rejected edit leaves the
-  file exactly as it was. Then swap it in.
-- **A broken document refuses every edit until it is fixed.** Write-iff-valid holds for every
-  verb, so an edit to a document that was already invalid is refused however unrelated it is. A
-  rejection moves to `pre_existing` each error it can show the document already had — the same
-  kind of error at the same node, port or field — and leaves the rest in `report.errors`. Fix the
-  `pre_existing` errors first. An error left in `report.errors` is not proof your edit made it:
-  validation reports one error at a time, so an error can sit unseen behind the one reported. When
-  the error the load used to stop at is not the one reported now, a note names it.
-- **Sending is ephemeral audition.** A live control message (`/filt/cutoff 1500`) changes
-  render state only — sweep a cutoff, try a tempo. The next Swap re-reads inputs from the
-  installed document, so an un-folded tweak is **clobbered by design**. (The MCP tool is
-  `send_live_controls`; the name says which half of the loop it is on.)
-- **Try, then commit.** Send to explore; when a value is a keeper, fold it into the document with
-  `set_instrument_input` and swap. Never let the sound and the document drift apart — the document
-  is the save source of truth.
-- **Renames reset state.** At Swap a node keeps its state iff a node with the same
-  fully-qualified address *and* the same operator type exists on both sides.
+- **Renames reset state.** At each swap — every accepted edit is one — a node keeps its state
+  iff a node with the same fully-qualified address *and* the same operator type exists on both
+  sides.
   Renaming an address, or changing the operator type at an address, is a remove + add;
   everything else — rewired inputs, changed params, new neighbors — leaves a survivor a
   survivor.
@@ -206,7 +114,8 @@ One more piece of authoring conduct — and the one the incremental surface made
   trusted for **selection only**; the `interface` block stays the mechanically-enforced
   face, so a stale role line can cost a bad-sounding pick, never a mis-wired document.
 
-Two swap rules of thumb:
+Two swap rules of thumb, which apply to every accepted edit, since each one swaps the open
+instrument in:
 
 - **A swap ducks the output for ~20ms.** The engine ramps the master to silence, installs
   the new Plan at zero, and ramps back up — a brief duck, never a click. Don't chase it as a
@@ -219,7 +128,6 @@ Two swap rules of thumb:
   lost and a surviving voice's gate stays high. Recoverable in-band: re-send the off (or
   re-trigger and release, or let voice stealing claim it). When notes were sounding, follow
   a swap with a corrective `send`.
-
 ## Doors and preconditions <!-- lanes: skills,mcp -->
 
 A checkout holds **two doors at once** — the CLI in the shell and the MCP sidecar — and they do
@@ -227,7 +135,7 @@ not serve the same steps. A tab holds one door, so this disambiguation is checko
 
 | | The sidecar (`reuben-mcp`) | The CLI (`cargo run -p reuben-native --bin reuben`) |
 |---|---|---|
-| Serves | the whole roster: the document verbs, the reads, the engine verbs | reads, plus `play` and `scaffold-operator` |
+| Serves | the document verbs, the reads, and the engine verbs, `open_instrument` among them | reads, plus `play` and `scaffold-operator` |
 | Over documents | **reads and writes** | **read-only**, except `new-instrument`, which writes a seed |
 | Needs | the sidecar reachable, and a live `reuben play` behind it for every tool but `describe_operators` | a build of `reuben-native` |
 

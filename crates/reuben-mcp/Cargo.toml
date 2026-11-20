@@ -27,6 +27,8 @@ reuben-api = { path = "../reuben-api", default-features = false, features = [
     "authoring",
     "tcp",
 ] }
+# The authoring guide's lane cut: the guide resource serves the MCP lane's sections only.
+reuben-guide = { path = "../reuben-guide" }
 # stdio server only: `server` + `macros` for the tool router, `transport-io` for the stdio pipe.
 # No HTTP/reqwest/streamable-http transport — the network stack stays out.
 rmcp = { workspace = true, features = ["server", "macros", "transport-io"] }

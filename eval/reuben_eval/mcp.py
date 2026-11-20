@@ -223,15 +223,20 @@ class Engine:
         return self
 
     def __exit__(self, *exc: object) -> None:
+        # `_proc` is kept after exit, not cleared, so a caller can still read the exit status off
+        # `process` once the session has ended.
         proc = self._proc
         if proc is None:
             return
         try:
             proc.terminate()
             proc.wait(timeout=5)
-        except Exception:
+        except BaseException as interrupted:
+            # A timeout, or a Ctrl-C landing during the wait: the engine must not outlive the run.
             proc.kill()
             proc.wait(timeout=5)
+            if not isinstance(interrupted, Exception):
+                raise
         finally:
             if proc.stdout:
                 proc.stdout.close()

@@ -1,7 +1,8 @@
 //! The authoring guide's `lanes:` section tags and the mechanical lane cut.
 //!
 //! `docs/agents/authoring.md` is authored once; the web lane bundles a build-time slice — the full
-//! guide minus checkout-only sections (the filesystem sample workflow). The slice is
+//! guide minus checkout-only sections (the filesystem sample workflow) — and `reuben-mcp` serves
+//! the MCP lane's slice as its guide resource. The slice is
 //! never hand-paraphrased: every Markdown heading carries a trailing `<!-- lanes: ... -->` tag
 //! naming the lanes its section ships to, and [`lane_cut`] keeps exactly the sections tagged for
 //! the requested lane — a deterministic function of the tags + the guide, emitted by

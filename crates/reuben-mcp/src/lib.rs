@@ -82,7 +82,8 @@ fn served_contracts() -> impl Iterator<Item = &'static reuben_api::tools::Contra
 /// the sidecar dials the window's `DEFAULT_STRUCTURE_ADDR`.
 pub const STRUCTURE_ADDR_ENV: &str = "REUBEN_STRUCTURE_ADDR";
 
-/// The `reuben://guide/authoring` resource URI: the authoring guide, `docs/agents/authoring.md`.
+/// The `reuben://guide/authoring` resource URI: the MCP lane's cut of the authoring guide,
+/// `docs/agents/authoring.md`.
 /// The authority for what `resources/list` advertises.
 pub const GUIDE_RESOURCE_URI: &str = "reuben://guide/authoring";
 
@@ -120,7 +121,8 @@ const INSTRUCTIONS: &str = "reuben authoring sidecar. The instrument document is
      nothing written, if it would break it — so while a document has errors, every edit that \
      leaves them is refused. A document that does not load still opens, with nothing playing: an \
      edit it accepts is written, and playing starts once it loads. A rejection lists under \
-     `pre_existing` the errors it can show were already there; fix those first. Validation reports one error at a time, so read a rejection's `notes` too. \
+     `pre_existing` the errors it can show were already there; fix those first. Validation \
+     reports one error at a time, so read a rejection's `notes` too. \
      `send_live_controls` auditions a value without committing it, and the next edit resets it, \
      so fold a keeper into the document with an edit. Read `reuben://guide/authoring` \
      for the type system, wiring rules, instrument format, and the authoring loop. Read \
@@ -203,6 +205,9 @@ struct ResourceEntry {
     /// distinct from `name` where the two diverge (e.g. `intent vocabulary` vs `vocabulary`), so
     /// the error prose is preserved bit-for-bit.
     noun: &'static str,
+    /// The lane whose cut of the file is served, for a file tagged by lane; `None` serves the
+    /// file whole.
+    lane: Option<reuben_guide::Lane>,
 }
 
 impl ResourceEntry {
@@ -228,6 +233,15 @@ impl ResourceEntry {
                 None,
             )
         })?;
+        let text = match self.lane {
+            Some(lane) => reuben_guide::lane_cut(&text, lane).map_err(|e| {
+                McpError::internal_error(
+                    format!("failed to cut the {} at {}: {e}", self.noun, path.display()),
+                    None,
+                )
+            })?,
+            None => text,
+        };
         Ok(ResourceContents::text(text, self.uri).with_mime_type(self.mime))
     }
 }
@@ -250,6 +264,7 @@ const RESOURCES: &[ResourceEntry] = &[
         env: AUTHORING_GUIDE_ENV,
         default_path: AUTHORING_GUIDE_PATH,
         noun: "authoring guide",
+        lane: Some(reuben_guide::Lane::Mcp),
     },
     ResourceEntry {
         uri: VOCABULARY_RESOURCE_URI,
@@ -262,6 +277,7 @@ const RESOURCES: &[ResourceEntry] = &[
         env: VOCABULARY_ENV,
         default_path: VOCABULARY_PATH,
         noun: "vocabulary",
+        lane: None,
     },
     ResourceEntry {
         uri: LIBRARY_INDEX_RESOURCE_URI,
@@ -274,6 +290,7 @@ const RESOURCES: &[ResourceEntry] = &[
         env: LIBRARY_INDEX_ENV,
         default_path: LIBRARY_INDEX_PATH,
         noun: "library index",
+        lane: None,
     },
 ];
 

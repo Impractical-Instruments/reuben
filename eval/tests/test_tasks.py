@@ -504,6 +504,8 @@ class TestRepairAndNote(unittest.TestCase):
             path = pathlib.Path(root) / tasks.DOCUMENT
             path.write_text(tasks.BROKEN, encoding="utf-8")
             with _served(pathlib.Path(root)) as sidecar:
+                opened = sidecar.call_tool("open_instrument", {"name": tasks.DOCUMENT})
+                self.assertFalse(opened.is_error, opened.rendered())
                 result = sidecar.call_tool(
                     "set_instrument_node_description",
                     {"source": tasks.DOCUMENT, "address": "/osc", "description": tasks.OSC_NOTE},
