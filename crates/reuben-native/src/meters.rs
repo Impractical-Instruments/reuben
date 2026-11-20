@@ -1,59 +1,32 @@
 //! Level meters at the device: each audio callback folds its block into one [`Bank`], and the
 //! structure server reads the banks as a [`MetersReport`].
 //!
-//! The ballistics run here, on the audio thread, rather than in whatever reads them: the reader
-//! sees only the latest value, so a peak between two of its reads would otherwise be lost, and
-//! every client would apply its own decay at its own poll rate. Per callback that costs one `exp`
-//! and, per channel, a fold over its samples and two relaxed stores.
+//! The fold and ballistics are [`reuben_api::meter`]'s; they run here, on the audio thread, so the
+//! reader sees a held value rather than whatever its own poll rate happens to catch.
 
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use reuben_api::engine::{ChannelLevel, MetersReport, PEAK_FALL_DB_PER_SEC, RMS_WINDOW_SECS};
-
-/// The most a block is metered at: +60 dBFS peak, +60 dBFS RMS, the reported ceiling. A channel
-/// blowing up passes through huge finite values on its way to infinity or NaN; held at those, its
-/// meter would take a minute to fall back once it recovers, and held at infinity, forever.
-const BLOWN_UP_PEAK: f32 = 1_000.0;
-const BLOWN_UP_MEAN_SQUARE: f32 = BLOWN_UP_PEAK * BLOWN_UP_PEAK;
-
-/// Below this a held value is flushed to zero, so a channel falling silent leaves the held state at
-/// exactly zero rather than decaying through denormals, which are slow on some CPUs. About
-/// -200 dBFS, far under the reported floor. The samples folded in are not flushed: a block of
-/// denormal samples costs the engine that produced it more than the meter.
-const FLUSH_BELOW: f32 = 1e-10;
+use reuben_api::engine::{ChannelLevel, MetersReport};
+use reuben_api::meter::{Ballistics, Block, Level};
 
 /// One direction's channels: the output device's, or the input device's.
 ///
-/// Each channel's held peak and averaged square live in atomics as `f32` bits. Only the one
-/// callback that meters this bank writes them, so it reads its own last stores back as its state;
-/// `Relaxed` throughout, since a reader wants the latest value of each and nothing ordered
-/// between them.
+/// Only the one callback that meters this bank writes its levels; see [`Level`].
 #[derive(Debug)]
 pub struct Bank {
     channels: Box<[Level]>,
     frames: AtomicU64,
-    /// The peak's fall per frame, as a log gain: `ln` of the factor it is multiplied by each frame.
-    peak_fall_per_frame: f32,
-    /// The RMS average's per-frame `ln` decay: `-1 / (window × sample rate)`.
-    rms_decay_per_frame: f32,
-}
-
-#[derive(Debug, Default)]
-struct Level {
-    peak: AtomicU32,
-    mean_square: AtomicU32,
+    ballistics: Ballistics,
 }
 
 impl Bank {
     /// `channels` channels, metered at `sample_rate`.
     pub fn new(channels: usize, sample_rate: f32) -> Arc<Self> {
-        let rate = sample_rate.max(1.0);
         Arc::new(Self {
             channels: (0..channels).map(|_| Level::default()).collect(),
             frames: AtomicU64::new(0),
-            peak_fall_per_frame: -PEAK_FALL_DB_PER_SEC / 20.0 * std::f32::consts::LN_10 / rate,
-            rms_decay_per_frame: -1.0 / (RMS_WINDOW_SECS * rate),
+            ballistics: Ballistics::new(sample_rate),
         })
     }
 
@@ -78,33 +51,9 @@ impl Bank {
         }
         let whole = (block.len() / width).min(frames);
         let block = &block[..whole * width];
-        let peak_fall = (self.peak_fall_per_frame * frames as f32).exp();
-        let rms_keep = (self.rms_decay_per_frame * frames as f32).exp();
         for (channel, level) in self.channels.iter().enumerate() {
-            let mut peak = 0.0f32;
-            let mut sum_squares = 0.0f32;
-            for &sample in block.iter().skip(channel).step_by(width) {
-                // `max` passes over a NaN sample; the sum of squares does not, and is caught below.
-                peak = peak.max(sample.abs());
-                sum_squares += sample * sample;
-            }
-            let mut mean_square = sum_squares / frames as f32;
-            // A mean square this large, or NaN, means a sample at least this large, so the peak
-            // goes to the ceiling with it.
-            if mean_square.is_nan() || mean_square > BLOWN_UP_MEAN_SQUARE {
-                mean_square = BLOWN_UP_MEAN_SQUARE;
-                peak = BLOWN_UP_PEAK;
-            }
-            let peak = peak.min(BLOWN_UP_PEAK);
-
-            let held = f32::from_bits(level.peak.load(Ordering::Relaxed)) * peak_fall;
-            let held = flush(peak.max(held));
-            let averaged = f32::from_bits(level.mean_square.load(Ordering::Relaxed));
-            let averaged = flush(mean_square + (averaged - mean_square) * rms_keep);
-            level.peak.store(held.to_bits(), Ordering::Relaxed);
-            level
-                .mean_square
-                .store(averaged.to_bits(), Ordering::Relaxed);
+            let samples = block.iter().skip(channel).step_by(width).copied();
+            level.commit(Block::measure(samples), frames, &self.ballistics);
         }
         self.frames.fetch_add(frames as u64, Ordering::Relaxed);
     }
@@ -114,10 +63,8 @@ impl Bank {
         self.channels
             .iter()
             .map(|level| {
-                ChannelLevel::from_linear(
-                    f32::from_bits(level.peak.load(Ordering::Relaxed)),
-                    f32::from_bits(level.mean_square.load(Ordering::Relaxed)),
-                )
+                let (peak, mean_square) = level.read();
+                ChannelLevel::from_linear(peak, mean_square)
             })
             .collect()
     }
@@ -125,14 +72,6 @@ impl Bank {
     /// Frames metered since the bank was made.
     pub fn frames(&self) -> u64 {
         self.frames.load(Ordering::Relaxed)
-    }
-}
-
-fn flush(value: f32) -> f32 {
-    if value < FLUSH_BELOW {
-        0.0
-    } else {
-        value
     }
 }
 
@@ -221,37 +160,6 @@ mod tests {
     }
 
     #[test]
-    fn a_peak_between_two_reads_is_held_and_falls_back_at_the_published_rate() {
-        let bank = Bank::new(1, RATE);
-        // One full-scale sample, then a second of silence.
-        drive(&bank, 1.0, |frame, _| if frame == 0 { 1.0 } else { 0.0 });
-        let level = bank.levels()[0];
-        // A block's own peak is stored undecayed, so the fall runs over every block but the first.
-        let blocks = RATE as usize / BLOCK;
-        let elapsed = ((blocks - 1) * BLOCK) as f32 / RATE;
-        assert!(
-            close(level.peak_dbfs, -PEAK_FALL_DB_PER_SEC * elapsed, 0.01),
-            "{level:?}"
-        );
-    }
-
-    #[test]
-    fn rms_settles_with_the_published_time_constant() {
-        let bank = Bank::new(1, RATE);
-        // Ten time constants of full-scale DC: settled to within 0.01 dB.
-        drive(&bank, 10.0 * RMS_WINDOW_SECS, |_, _| 1.0);
-        let settled = bank.levels()[0];
-        assert!(close(settled.rms_dbfs, 0.0, 0.01), "{settled:?}");
-        // Whole blocks only, so the silence lasts a little under one time constant.
-        let blocks = (RMS_WINDOW_SECS * RATE) as usize / BLOCK;
-        drive(&bank, RMS_WINDOW_SECS, |_, _| 0.0);
-        let silent_for = (blocks * BLOCK) as f32 / RATE;
-        let want = 10.0 * (-silent_for / RMS_WINDOW_SECS).exp().log10();
-        let level = bank.levels()[0];
-        assert!(close(level.rms_dbfs, want, 0.01), "{level:?}");
-    }
-
-    #[test]
     fn a_blown_up_channel_reads_the_ceiling_then_recovers() {
         let bank = Bank::new(2, RATE);
         let mut block = vec![0.0; BLOCK * 2];
@@ -268,20 +176,6 @@ mod tests {
             assert_eq!(level.peak_dbfs, METER_FLOOR_DBFS, "{level:?}");
             assert_eq!(level.rms_dbfs, METER_FLOOR_DBFS, "{level:?}");
         }
-    }
-
-    #[test]
-    fn a_huge_finite_sample_is_held_at_the_ceiling_so_it_falls_back_in_seconds() {
-        let bank = Bank::new(1, RATE);
-        let mut block = vec![0.0; BLOCK];
-        block[0] = 1e30;
-        bank.meter(&block, BLOCK);
-        assert_eq!(bank.levels()[0].peak_dbfs, METER_CEILING_DBFS);
-        // From the ceiling, 180 dB at 12 dB a second is 15 s to the floor.
-        drive(&bank, 16.0, |_, _| 0.0);
-        let level = bank.levels()[0];
-        assert_eq!(level.peak_dbfs, METER_FLOOR_DBFS, "{level:?}");
-        assert_eq!(level.rms_dbfs, METER_FLOOR_DBFS, "{level:?}");
     }
 
     #[test]

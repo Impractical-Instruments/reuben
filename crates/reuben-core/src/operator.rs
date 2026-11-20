@@ -21,6 +21,7 @@ use crate::descriptor::Descriptor;
 use crate::graph::Graph;
 use crate::message::{Arg, Emit, Event, FromArg};
 use crate::plan::PlanError;
+use crate::probe::ProbeSlots;
 use crate::resources::{ResolvedRefs, ResourceStore};
 use crate::signal::{BlockMut, BlockView};
 
@@ -628,6 +629,25 @@ pub trait Operator: Send {
     fn on_instantiate(&mut self, _config: &AudioConfig) -> Result<(), PlanError> {
         Ok(())
     }
+
+    /// The probe slots of the voice patch this node hosts, shared by all of its voices and
+    /// committed by this node once per `process`. Read once, after
+    /// [`Operator::on_instantiate`], to hang them off this node's own probe. Default `None` — only
+    /// the Voicer hosts sub-patches.
+    fn hosted_probes(&self) -> Option<Arc<ProbeSlots>> {
+        None
+    }
+
+    /// Exchange the slot set this node's hosted patch measures into with `slots`, re-pointing every
+    /// copy of the patch at the set it now holds. A Swap that transplants a surviving host passes
+    /// the fresh box's set through here into the live box, so the live voices measure into the set
+    /// the new Plan's [`NodeProbe::hosted`](crate::probe::NodeProbe::hosted) names. Both sets must
+    /// come from the same patch, so a node's slot index means the same node in either.
+    ///
+    /// **RT-safe:** runs at the render-callback top inside the transplant loop. Re-pointing clones
+    /// one `Arc` per copy and drops the one it replaces; the caller keeps every set held elsewhere,
+    /// so no drop here frees. Default no-op — only the Voicer hosts sub-patches.
+    fn swap_hosted_probes(&mut self, _slots: &mut Option<Arc<ProbeSlots>>) {}
 
     /// Called on a **surviving** operator box just after it is transplanted into a freshly built
     /// Plan across a Swap. A Swap resets every consumer's

@@ -27,6 +27,7 @@ use smallvec::SmallVec;
 
 use crate::descriptor::{Port, PortType};
 use crate::message::{Arg, Emit, Event, Message};
+use crate::meter::Block;
 use crate::operator::Io;
 use crate::plan::{InterfaceOutput, Plan, PlanNode, PortKind};
 use crate::signal::{AudioSample, BlockMut};
@@ -368,6 +369,7 @@ fn render_inbound<E: Executor>(
 
     let sample_rate = plan.config.sample_rate;
     let block_size = frames;
+    let probing = plan.probes.any_on();
 
     // Disjoint field borrows so `process_node` can hold `arena` (inputs) and
     // `out_scratch` (outputs) at once while reading `routes`/`order`.
@@ -398,6 +400,17 @@ fn render_inbound<E: Executor>(
             sample_rate,
             block_size,
         );
+
+        // Measured now or never: once a later node runs, this node's output slots may be
+        // recycled to it.
+        if let Some(p) = plan.nodes[i].probe.filter(|_| probing) {
+            if plan.probes.nodes.get(p).is_some_and(|n| n.is_on()) {
+                for (port, &buf) in plan.nodes[i].outputs.iter().enumerate() {
+                    let block = Block::measure(arena[buf][..frames].iter().copied());
+                    plan.probes.accumulate(p, port, block);
+                }
+            }
+        }
 
         // An `osc_out` sink: its emissions leave the graph. Drain each to
         // the outbound list stamped with the node's (fixed) address and the already-block-
@@ -482,6 +495,10 @@ fn render_inbound<E: Executor>(
                 }
             }
         }
+    }
+
+    if probing && !plan.hosted {
+        plan.probes.commit(frames);
     }
 }
 

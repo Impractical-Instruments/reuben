@@ -471,10 +471,9 @@ fn dbfs(level: f32) -> f32 {
 pub const METER_FLOOR_DBFS: f32 = -120.0;
 /// The highest level a [`ChannelLevel`] reports.
 pub const METER_CEILING_DBFS: f32 = 60.0;
-/// How fast a [`ChannelLevel::peak_dbfs`] falls back once the signal drops.
-pub const PEAK_FALL_DB_PER_SEC: f32 = 12.0;
-/// The time constant of [`ChannelLevel::rms_dbfs`]'s average, in seconds.
-pub const RMS_WINDOW_SECS: f32 = 0.3;
+/// How fast a [`ChannelLevel::peak_dbfs`] falls back, in dB per second, and the time constant of
+/// [`ChannelLevel::rms_dbfs`]'s average, in seconds. Defined by the meter in `reuben-core`.
+pub use reuben_core::meter::{PEAK_FALL_DB_PER_SEC, RMS_WINDOW_SECS};
 
 /// The longest line either end of the structure channel reads, newline included. A line is one
 /// request or one response, and the largest is a whole document, inline in a `swap` or read back by

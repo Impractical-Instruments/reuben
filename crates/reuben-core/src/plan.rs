@@ -28,6 +28,7 @@ use crate::descriptor::{Descriptor, Port, PortType};
 use crate::graph::{Connection, Graph, NodeKey};
 use crate::message::{Arg, Message};
 use crate::operator::Operator;
+use crate::probe::ProbeSlots;
 use crate::render::Target;
 use crate::vocab::harmony::Harmony;
 use crate::vocab::pitch::Pitch;
@@ -182,6 +183,8 @@ pub struct PlanNode {
     /// the former `msg_targets` (Note edges) and `ctx_targets` (Harmony edges): a published Harmony
     /// is just a Message to a Held input. The dst input port's [`PortKind`] decides how it lands.
     pub out_targets: Vec<Vec<(usize, usize)>>,
+    /// This node's slot in [`Plan::probes`], or `None` for a node with no Signal output.
+    pub probe: Option<usize>,
 }
 
 /// One outbound (OSC-out) sink: a node whose emitted Messages leave the
@@ -322,6 +325,13 @@ pub struct Plan {
     /// scan, so a collapsed pipe's minted address keeps feeding its rewired consumer. Empty for
     /// a graph with no dissolvable pipes.
     pub(crate) input_aliases: Vec<InputAlias>,
+    /// The level probes of this Plan's nodes, shared with whatever reads the levels and switches
+    /// probes on.
+    pub probes: Arc<ProbeSlots>,
+    /// `true` when this Plan's probes are shared with sibling Plans rendered in the same block,
+    /// whose host commits them once after rendering all of them; `render_plan` then leaves the
+    /// commit to it.
+    pub(crate) hosted: bool,
 }
 
 /// Why Instantiate failed.
@@ -422,7 +432,35 @@ impl Plan {
     }
 
     /// Instantiate a Graph into an executable Plan (the construction sub-step of a Swap).
-    pub fn instantiate(mut graph: Graph, mut config: AudioConfig) -> Result<Plan, PlanError> {
+    pub fn instantiate(graph: Graph, config: AudioConfig) -> Result<Plan, PlanError> {
+        Self::build(graph, config, None)
+    }
+
+    /// Instantiate one of several copies of a patch rendered by one host, measuring into the
+    /// host's `probes` rather than a slot set of its own. `probes` must have been built from a
+    /// copy of the same patch, after Instantiate's pipe dissolution — the slot set of another
+    /// copy's Plan — so every node this Plan renders finds its slot by address. The host commits
+    /// `probes` once per block, after rendering every copy; `render_plan` leaves them uncommitted.
+    ///
+    /// `probes` is shared, so a node in this copy that itself hosts a patch does not get its slots
+    /// hung off `probes`: only the copy whose Plan built the set exposes its hosting nodes' slots.
+    /// For a Voicer inside a voice patch, that is outer voice 0's: its inner voice meters show
+    /// outer voice 0 alone, and freeze while that voice is idle.
+    pub fn instantiate_hosted(
+        graph: Graph,
+        config: AudioConfig,
+        probes: Arc<ProbeSlots>,
+    ) -> Result<Plan, PlanError> {
+        let mut plan = Self::build(graph, config, Some(probes))?;
+        plan.hosted = true;
+        Ok(plan)
+    }
+
+    fn build(
+        mut graph: Graph,
+        mut config: AudioConfig,
+        probes: Option<Arc<ProbeSlots>>,
+    ) -> Result<Plan, PlanError> {
         // Validate the authored wires first (same error surface as before), then collapse
         // pass-through interface pipes out of the schedule (the pipe is a format
         // concept, not a mandatory rendered node) before ordering what actually executes.
@@ -433,6 +471,11 @@ impl Plan {
         // instead of rescanning the flat list.
         let adj = Adjacency::build(&graph);
         let order = topo_order(&graph, &adj)?;
+        // After dissolution, so a pipe collapsed out of the schedule gets no slot.
+        let mut probes = probes.unwrap_or_else(|| ProbeSlots::for_graph(&graph, &config));
+        // `(slot, hosted slots)` of each node that hosts a patch, hung off its slot once every
+        // node has been through `on_instantiate`.
+        let mut hosts: Vec<(usize, Arc<ProbeSlots>)> = Vec::new();
 
         // Logical master width is derived from the instrument, not the device:
         // the highest referenced channel index + 1, floored to stereo so a mono patch still
@@ -638,11 +681,20 @@ impl Plan {
                 .collect();
 
             let node = graph.nodes.remove(*key).expect("key from topo order");
+            let probe = probes.index_of(&node.address);
             // Config-dependent runtime state: the Voicer instantiates its bound voice
             // graphs into per-voice sub-plans here, where `config` is fixed and we are off the hot
             // path.
             let mut op = node.op;
             op.on_instantiate(&config)?;
+            debug_assert!(
+                probe.is_some() || !node.descriptor.outputs.iter().any(|p| p.ty.is_buffer()),
+                "{} has a Signal output and no slot — hosted slots built from another patch?",
+                node.address
+            );
+            if let (Some(slot), Some(hosted)) = (probe, op.hosted_probes()) {
+                hosts.push((slot, hosted));
+            }
 
             let materialize_clean = vec![false; materialize.len()];
             let materialize_device_fed = vec![false; materialize.len()];
@@ -660,6 +712,7 @@ impl Plan {
                 outputs,
                 recycled_outputs,
                 out_targets,
+                probe,
             });
 
             // Every buffer whose last reader was this node returns to the free list, for a
@@ -785,6 +838,15 @@ impl Plan {
             })
             .collect();
 
+        // A slot set this Plan built is still unshared here. One passed in by a host is shared
+        // with the host's other copies and stays as built: the copy whose Plan built it already
+        // hung its own hosting nodes' slots there, and those of a later copy go unexposed.
+        if let Some(slots) = Arc::get_mut(&mut probes) {
+            for (slot, hosted) in hosts {
+                slots.nodes[slot].hosted = Some(hosted);
+            }
+        }
+
         Ok(Plan {
             config,
             nodes,
@@ -796,6 +858,8 @@ impl Plan {
             interface_outputs,
             captured: vec![0.0; captured_len],
             input_aliases,
+            probes,
+            hosted: false,
         })
     }
 
@@ -830,8 +894,10 @@ impl Plan {
     /// one-way `coordinator → plan/engine` layering); [`crate::engine::Engine`] forwards straight to
     /// here.
     ///
-    /// **RT-safe:** a bounded loop of [`core::mem::swap`] over `Box<dyn Operator>` — pointer
-    /// swaps only, no allocation, no drop, no lock. Runs at the render-callback top.
+    /// **RT-safe:** a bounded loop of [`core::mem::swap`] over `Box<dyn Operator>`, plus the
+    /// hosted-probe exchange ([`Operator::swap_hosted_probes`]), whose `Arc` re-points move
+    /// refcounts while each set stays held by its Plan — no allocation, no drop that frees, no
+    /// lock. Runs at the render-callback top.
     pub(crate) fn transplant_survivors(&mut self, from: &mut Plan, pairs: &[(usize, usize)]) {
         for &(old_index, new_index) in pairs {
             debug_assert!(
@@ -839,6 +905,15 @@ impl Plan {
                 "migration table index out of range — mispaired table/engine"
             );
             core::mem::swap(&mut from.nodes[old_index].op, &mut self.nodes[new_index].op);
+            // Hand the live box the slot set this Plan's probe names, and the cold box the live
+            // box's old one, which the retiring Plan's probe also names: each set stays held by
+            // the Plan it belongs to, so no drop here frees, and the old set is freed off-thread
+            // with the retiring Plan.
+            let (cold, live) = (&mut from.nodes[old_index].op, &mut self.nodes[new_index].op);
+            let mut slots = None;
+            cold.swap_hosted_probes(&mut slots);
+            live.swap_hosted_probes(&mut slots);
+            cold.swap_hosted_probes(&mut slots);
             // Re-assert on-change held outputs so a consumer isn't stranded on the post-transplant
             // reset default. RT-safe: no allocation.
             self.nodes[new_index].op.on_transplant();
@@ -2239,6 +2314,104 @@ mod port_range {
         assert!(
             topo_order(&g, &adj).is_ok(),
             "the dead wire was counted as an in-edge"
+        );
+    }
+}
+
+#[cfg(test)]
+mod hosted_probes {
+    use alloc::boxed::Box;
+    use alloc::sync::Arc;
+    use alloc::vec;
+
+    use super::{Plan, PortKind};
+    use crate::config::AudioConfig;
+    use crate::graph::Graph;
+    use crate::operator::Operator;
+    use crate::operators::pipe::Pipe;
+    use crate::operators::{oscillator, voicer, Oscillator, Voicer};
+    use crate::render::Renderer;
+
+    /// A `/freq` Signal pipe into `/osc`, the voice's `audio`. The pipe has one consumer, so
+    /// Instantiate dissolves it.
+    fn voice() -> Graph {
+        let mut g = Graph::new();
+        let pipe = Box::new(Pipe::new(PortKind::Signal));
+        let freq = g.add_boxed("/freq", pipe, Arc::new(Pipe::descriptor()));
+        let osc = g.add("/osc", Oscillator::new());
+        g.connect(freq, 0usize, osc, oscillator::IN_FREQ);
+        g.interface.inputs.insert("freq".into(), (freq, 0));
+        g.interface
+            .outputs
+            .insert("audio".into(), (osc, oscillator::OUT_AUDIO.index()));
+        g
+    }
+
+    #[test]
+    fn a_hosting_node_exposes_its_voices_slots() {
+        let mut v = Voicer::new();
+        v.bind_voices(vec![voice(), voice()]);
+        let mut g = Graph::new();
+        let v = g.add("/v", v);
+        g.tap_output(v, voicer::OUT_AUDIO);
+        let plan = Plan::instantiate(g, AudioConfig::new(48_000.0, 128)).expect("instantiate");
+
+        let outer = plan
+            .probes
+            .find("/v")
+            .expect("the Voicer has Signal outputs");
+        let hosted = outer
+            .hosted
+            .as_ref()
+            .expect("the Voicer hosts its voices' slots");
+        assert!(hosted.find("/osc").is_some());
+        assert!(
+            hosted.find("/freq").is_none(),
+            "a pipe dissolved out of every voice has no slot"
+        );
+    }
+
+    /// `/v`, a Voicer with two voices, summed to the master; with `extra`, an outer oscillator
+    /// beside it, so the two Plans differ outside the Voicer.
+    fn voicer_plan(extra: bool) -> Plan {
+        let mut v = Voicer::new();
+        v.bind_voices(vec![voice(), voice()]);
+        let mut g = Graph::new();
+        let v = g.add("/v", v);
+        g.tap_output(v, voicer::OUT_AUDIO);
+        if extra {
+            let osc = g.add("/lfo", Oscillator::new());
+            g.tap_output(osc, oscillator::OUT_AUDIO);
+        }
+        Plan::instantiate(g, AudioConfig::new(48_000.0, 128)).expect("instantiate")
+    }
+
+    fn index_of(plan: &Plan, address: &str) -> usize {
+        plan.nodes()
+            .iter()
+            .position(|n| &*n.address == address)
+            .expect("the node")
+    }
+
+    #[test]
+    fn a_surviving_voicer_meters_into_the_new_plans_slots() {
+        let mut a = voicer_plan(false);
+        let mut b = voicer_plan(true);
+        let pairs = [(index_of(&a, "/v"), index_of(&b, "/v"))];
+        b.transplant_survivors(&mut a, &pairs);
+
+        let hosted = b.probes.find("/v").unwrap().hosted.clone().unwrap();
+        hosted.find("/osc").unwrap().set_on(true);
+        // Without an `active` output the Voicer renders every voice every block, note or none.
+        let mut r = Renderer::new(&b);
+        let mut out = vec![0.0f32; 128];
+        for _ in 0..40 {
+            r.render_block(&mut b, &[], &mut out);
+        }
+        let (peak, _) = hosted.find("/osc").unwrap().ports[0].read();
+        assert!(
+            peak > 0.5,
+            "the live Voicer measured elsewhere: peak {peak}"
         );
     }
 }

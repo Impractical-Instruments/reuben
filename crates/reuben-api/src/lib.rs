@@ -64,5 +64,8 @@ pub mod render;
 #[cfg(feature = "authoring")]
 pub mod resources;
 
+/// The level meter's fold and ballistics, for a host that meters its own device buffers.
+pub use reuben_core::meter;
+
 #[cfg(feature = "fs-resolver")]
 pub use fs_resolver::FsResolver;
