@@ -225,3 +225,53 @@ fn a_client_lists_edits_and_opens_over_tcp() {
     });
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A fresh directory for `case`, removed first: process-unique, so concurrent checkouts do not
+/// share it.
+fn scratch(case: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("reuben_{case}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    dir
+}
+
+/// Serve `open` with `library` as the instrument root, run `f` against a client of it, and tear
+/// the engine down.
+fn serving(open: &Path, library: &Path, f: impl FnOnce(&TcpTransport) + Send + 'static) {
+    let config = EngineConfig {
+        osc_in: Some("127.0.0.1:0".to_string()),
+        structure: Some("127.0.0.1:0".to_string()),
+        instrument_root: Some(library.to_path_buf()),
+        ..EngineConfig::new(Instrument::Path(open.to_path_buf()))
+    };
+    within(HANG_SECS, move || {
+        let engine = start_headless(config).expect("the engine starts");
+        let addr = engine.structure_addr().expect("a structure socket");
+        f(&TcpTransport::new(
+            addr.to_string(),
+            DEFAULT_CONNECT_TIMEOUT,
+        ));
+        timed_teardown(engine, false);
+    });
+}
+
+#[test]
+fn a_create_named_like_a_library_file_leaves_the_library_file_alone() {
+    let dir = scratch("server_calls_create_library");
+    let library = dir.join("library");
+    let open = dir.join("open").join("first.json");
+    write(&open, DOC);
+    let in_library = library.join("pad.json");
+    write(&in_library, OTHER);
+
+    serving(&open, &library, |t| {
+        let created = call(
+            t,
+            "new_instrument",
+            serde_json::json!({"source": "pad.json", "name": "fresh"}),
+        );
+        assert!(matches!(created, Response::Refused { .. }), "{created:?}");
+    });
+    assert_eq!(std::fs::read_to_string(&in_library).unwrap(), OTHER);
+    assert!(!dir.join("open").join("pad.json").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}

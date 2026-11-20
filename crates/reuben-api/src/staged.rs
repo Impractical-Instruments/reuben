@@ -3,8 +3,13 @@
 //! An edit is applied, the whole instrument is checked to still load and plan, and only then does
 //! [`Staged::commit`] write to the inner store. Until then every read through the wrapper sees the
 //! pending text and the inner store sees nothing.
+//!
+//! Every source is read from and written to the inner store by its canonical key, never by the
+//! spelling a caller used: where a store's key differs from the spelling (a library-root fallback),
+//! the place checked, the place read and the place written are then one place.
 
 use alloc::collections::BTreeMap;
+use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -15,12 +20,20 @@ use crate::resources::{Created, ResolveError, Resources, SampleBuffer};
 struct Shared<S> {
     inner: S,
     /// Keyed by `inner.canonical(source, None)`, so two spellings of one source are one write.
-    pending: Mutex<BTreeMap<String, String>>,
+    pending: Mutex<BTreeMap<String, Pending>>,
     /// `Some` while a [`ReadLog`] is alive.
     reads: Arc<ReadSlot>,
 }
 
 type ReadSlot = Mutex<Option<Reads>>;
+
+/// One staged write.
+struct Pending {
+    text: String,
+    /// Staged by [`create_text`](Resources::create_text): committed through the inner store's own
+    /// create, so it still refuses a file that appeared after the stage.
+    create: bool,
+}
 
 /// Every canonical source a [`ReadLog`] saw served, each with a fingerprint of the text it was
 /// served: two loads read the same texts exactly when their `Reads` are equal.
@@ -92,11 +105,23 @@ impl<S: Resources> Staged<S> {
     }
 
     /// Write every pending text to the inner store in sorted source order and clear pending. Stops
-    /// at the first failure and returns it; pending is cleared either way.
+    /// at the first failure and returns it; pending is cleared either way. A create that finds its
+    /// source taken by then fails with [`ResolveError::Write`] and writes nothing there.
     pub fn commit(&self) -> Result<(), ResolveError> {
         let drained = core::mem::take(&mut *lock(&self.shared.pending));
-        for (source, text) in &drained {
-            self.shared.inner.write_text(source, text)?;
+        for (source, pending) in &drained {
+            if !pending.create {
+                self.shared.inner.write_text(source, &pending.text)?;
+                continue;
+            }
+            match self.shared.inner.create_text(source, &pending.text)? {
+                Created::Written => {}
+                Created::Taken => {
+                    return Err(ResolveError::Write(format!(
+                        "{source}: something was created there first"
+                    )))
+                }
+            }
         }
         Ok(())
     }
@@ -127,10 +152,12 @@ impl<S: Resources> Resources for Staged<S> {
 
     fn read_text(&self, source: &str) -> Result<String, ResolveError> {
         let key = self.key(source);
-        let pending = lock(&self.shared.pending).get(&key).cloned();
+        let pending = lock(&self.shared.pending)
+            .get(&key)
+            .map(|pending| pending.text.clone());
         let text = match pending {
             Some(text) => text,
-            None => self.shared.inner.read_text(source)?,
+            None => self.shared.inner.read_text(&key)?,
         };
         if let Some(log) = lock(&self.shared.reads).as_mut() {
             log.insert(key, fingerprint(&text));
@@ -138,9 +165,18 @@ impl<S: Resources> Resources for Staged<S> {
         Ok(text)
     }
 
+    /// Over a pending create, the source stays a create.
     fn write_text(&self, source: &str, text: &str) -> Result<(), ResolveError> {
         let key = self.key(source);
-        lock(&self.shared.pending).insert(key, text.to_string());
+        let mut pending = lock(&self.shared.pending);
+        let create = pending.get(&key).is_some_and(|pending| pending.create);
+        pending.insert(
+            key,
+            Pending {
+                text: text.to_string(),
+                create,
+            },
+        );
         Ok(())
     }
 
@@ -150,12 +186,19 @@ impl<S: Resources> Resources for Staged<S> {
         if pending {
             return Ok(Created::Taken);
         }
-        match self.shared.inner.read_text(source) {
+        match self.shared.inner.read_text(&key) {
             Ok(_) => return Ok(Created::Taken),
             Err(ResolveError::NotFound(_)) => {}
             Err(other) => return Err(other),
         }
-        self.write_text(source, text).map(|()| Created::Written)
+        lock(&self.shared.pending).insert(
+            key,
+            Pending {
+                text: text.to_string(),
+                create: true,
+            },
+        );
+        Ok(Created::Written)
     }
 
     fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
@@ -167,6 +210,7 @@ impl<S: Resources> Resources for Staged<S> {
 mod tests {
     use super::*;
     use alloc::collections::BTreeMap;
+    use alloc::format;
 
     #[derive(Default)]
     struct Map(Mutex<BTreeMap<String, String>>);
@@ -252,6 +296,70 @@ mod tests {
         assert_eq!(staged.create_text("a", "y").unwrap(), Created::Taken);
         assert_eq!(staged.create_text("b", "y").unwrap(), Created::Written);
         assert_eq!(staged.read_text("b").unwrap(), "y");
+    }
+
+    /// Holds files under `base/` and `root/`, and names a source by the first of those it is
+    /// found under, `base/` when neither: a store whose canonical key is not its source's spelling.
+    #[derive(Default)]
+    struct Rooted(Map);
+
+    impl Resources for Rooted {
+        fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+            self.0.read_samples(source)
+        }
+        fn read_text(&self, source: &str) -> Result<String, ResolveError> {
+            self.0.read_text(source)
+        }
+        fn write_text(&self, source: &str, text: &str) -> Result<(), ResolveError> {
+            self.0.write_text(source, text)
+        }
+        fn create_text(&self, source: &str, text: &str) -> Result<Created, ResolveError> {
+            if self.0.read_text(source).is_ok() {
+                return Ok(Created::Taken);
+            }
+            self.0.write_text(source, text).map(|()| Created::Written)
+        }
+        fn canonical(&self, source: &str, _: Option<&str>) -> String {
+            let root = format!("root/{source}");
+            if self.0.read_text(&format!("base/{source}")).is_err()
+                && self.0.read_text(&root).is_ok()
+            {
+                return root;
+            }
+            format!("base/{source}")
+        }
+    }
+
+    #[test]
+    fn a_create_of_a_file_found_under_the_root_is_taken_and_overwrites_nothing() {
+        let inner = Arc::new(Rooted(Map::with(&[("root/pad.json", "library")])));
+        let staged = Staged::new(Arc::clone(&inner));
+        assert_eq!(
+            staged.create_text("pad.json", "new").unwrap(),
+            Created::Taken
+        );
+        staged.commit().unwrap();
+        assert_eq!(inner.0.read_text("root/pad.json").unwrap(), "library");
+    }
+
+    #[test]
+    fn a_read_by_its_spelling_reads_the_file_its_canonical_key_names() {
+        let staged = Staged::new(Rooted(Map::with(&[("root/pad.json", "library")])));
+        assert_eq!(staged.read_text("pad.json").unwrap(), "library");
+    }
+
+    #[test]
+    fn a_create_commits_exclusively_and_fails_over_a_file_that_appeared_meanwhile() {
+        let inner = Arc::new(Rooted::default());
+        let staged = Staged::new(Arc::clone(&inner));
+        assert_eq!(
+            staged.create_text("b.json", "ours").unwrap(),
+            Created::Written
+        );
+        inner.0.write_text("base/b.json", "theirs").unwrap();
+        assert!(matches!(staged.commit(), Err(ResolveError::Write(_))));
+        assert_eq!(inner.0.read_text("base/b.json").unwrap(), "theirs");
+        assert!(staged.pending().is_empty());
     }
 
     /// Fails every write to `bad`, and runs `on_read` inside every read.
