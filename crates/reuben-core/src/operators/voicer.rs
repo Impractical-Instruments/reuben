@@ -28,6 +28,7 @@
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -37,6 +38,7 @@ use crate::graph::Graph;
 use crate::message::{Arg, Message};
 use crate::operator::{Io, Operator};
 use crate::plan::{Plan, PlanError};
+use crate::probe::ProbeSlots;
 use crate::render::{render_plan, RenderScratch, SerialExecutor};
 use crate::vocab::pitch::Pitch;
 
@@ -172,6 +174,9 @@ pub struct Voicer {
     pool: VoicePool,
     /// Per-voice render state (sub-plan + arena), parallel by index to `pool.voices`.
     slots: Vec<VoiceSlot>,
+    /// The one probe slot set every voice plan measures into; committed at the end of each
+    /// `process`, so a node's level folds every voice's samples and its ballistics advance once.
+    probes: Option<Arc<ProbeSlots>>,
     /// Shared per-block render scratch, sized to the (uniform) voice plan. Reused across voices.
     scratch: Option<RenderScratch>,
     /// Shared per-channel master scratch for a sub-render; `master[0]` is the voice's audio.
@@ -256,6 +261,9 @@ impl Operator for Voicer {
 
         let block = config.block_size;
         let mut slots = Vec::with_capacity(graphs.len());
+        // Voice 0's Plan builds the shared slot set, after Instantiate has dissolved the
+        // interface pipes out of it, so every slot names a node each voice actually renders.
+        let mut probes: Option<Arc<ProbeSlots>> = None;
         for g in graphs {
             // Hosted voice plans get **no input-master plumbing**:
             // the loader's
@@ -265,7 +273,15 @@ impl Operator for Voicer {
             // slipped through (a programmatic `bind_voices` caller), the Voicer renders every
             // voice with `inputs = &[]`, and an unsupplied channel falls back to the pipe's
             // ordinary message-fed materialize path — hosted bindings stay inert either way.
-            let plan = Plan::instantiate(g, *config)?;
+            let plan = match &probes {
+                None => {
+                    let mut plan = Plan::instantiate(g, *config)?;
+                    plan.hosted = true;
+                    probes = Some(plan.probes.clone());
+                    plan
+                }
+                Some(shared) => Plan::instantiate_hosted(g, *config, shared.clone())?,
+            };
             let arena = (0..plan.num_buffers).map(|_| vec![0.0; block]).collect();
             slots.push(VoiceSlot { plan, arena });
         }
@@ -294,7 +310,12 @@ impl Operator for Voicer {
         );
         self.pool = VoicePool::new(slots.len());
         self.slots = slots;
+        self.probes = probes;
         Ok(())
+    }
+
+    fn hosted_probes(&self) -> Option<Arc<ProbeSlots>> {
+        self.probes.clone()
     }
 
     fn process(&mut self, io: &mut Io) {
@@ -360,8 +381,10 @@ impl Operator for Voicer {
             gate_addr,
             audio_buf,
             active_cap,
+            probes,
             ..
         } = self;
+        // Set together with `slots` at `on_instantiate`, so never `None` here.
         let Some(scratch) = scratch.as_mut() else {
             return;
         };
@@ -423,6 +446,10 @@ impl Operator for Voicer {
                 Some(c) => slot.plan.captured.get(c).copied().unwrap_or(0.0) > 0.5,
                 None => pool.voices[i].on,
             };
+        }
+        // Every block, sounding voices or none, so an idle Voicer's meters still fall.
+        if let Some(probes) = probes {
+            probes.commit(n);
         }
     }
 
@@ -527,5 +554,153 @@ mod tests {
         assert!(!same_note(Pitch::Degree(0), Pitch::Absolute(60.0)));
         assert!(same_note(Pitch::Degree(2), Pitch::Degree(2)));
         assert!(same_note(Pitch::Absolute(60.0), Pitch::Absolute(60.0)));
+    }
+
+    // --- probes: every voice of one Voicer folds into one slot set ---
+
+    mod probes {
+        use alloc::sync::Arc;
+
+        use super::*;
+        use crate::message::Arg;
+        use crate::operators::envelope::{self, Envelope};
+        use crate::operators::mul::mul_f32_signal::{self, MulF32Signal};
+        use crate::operators::oscillator::{self, Oscillator};
+        use crate::probe::ProbeSlots;
+        use crate::render::Renderer;
+        use crate::vocab::pitch::Note;
+
+        const RATE: f32 = 48_000.0;
+        const BLOCK: usize = 128;
+
+        /// `/osc` → `/vca` ← `/env.cv`, `/vca` the voice's `audio`. Sustain at 1 so a held note
+        /// peaks at the sine's 1.0; release at its 1 ms floor so `/vca` falls silent at once. With
+        /// `active` the Voicer skips a voice once its envelope idles; without it, every voice
+        /// renders every block.
+        fn voice_patch(active: bool) -> Graph {
+            let mut g = Graph::new();
+            let osc = g.add("/osc", Oscillator::new());
+            let env = g.add("/env", Envelope::new());
+            let vca = g.add("/vca", MulF32Signal::new());
+            g.set_value(env, "sustain", &Arg::F32(1.0));
+            g.set_value(env, "release", &Arg::F32(0.001));
+            g.connect(osc, oscillator::OUT_AUDIO, vca, mul_f32_signal::IN_A);
+            g.connect(env, envelope::OUT_CV, vca, mul_f32_signal::IN_B);
+            let iface = &mut g.interface;
+            iface
+                .inputs
+                .insert("freq".into(), (osc, oscillator::IN_FREQ.index()));
+            iface
+                .inputs
+                .insert("gate".into(), (env, envelope::IN_GATE.index()));
+            iface
+                .outputs
+                .insert("audio".into(), (vca, mul_f32_signal::OUT_OUT.index()));
+            if active {
+                iface
+                    .outputs
+                    .insert("active".into(), (env, envelope::OUT_ACTIVE.index()));
+            }
+            g
+        }
+
+        fn voicer(patch: &Graph, voices: usize) -> Voicer {
+            let mut v = Voicer::new();
+            v.bind_voices((0..voices).map(|_| patch.spawn_copy()).collect());
+            v
+        }
+
+        /// One Voicer per address, each with two voices of `patch`, summed to the master.
+        fn plan(patch: &Graph, addresses: &[&str]) -> Plan {
+            let mut g = Graph::new();
+            for address in addresses {
+                let v = g.add(address, voicer(patch, 2));
+                g.tap_output(v, OUT_AUDIO);
+            }
+            Plan::instantiate(g, AudioConfig::new(RATE, BLOCK)).expect("instantiate")
+        }
+
+        fn hosted(plan: &Plan, address: &str) -> Arc<ProbeSlots> {
+            plan.nodes()
+                .iter()
+                .find(|n| &*n.address == address)
+                .expect("the Voicer node")
+                .op
+                .hosted_probes()
+                .expect("a Voicer with voices hosts a slot set")
+        }
+
+        fn peak(slots: &ProbeSlots, address: &str) -> f32 {
+            slots.find(address).expect("a slot").ports[0].level.read().0
+        }
+
+        fn note(address: &str, velocity: f32) -> Message {
+            let notes = format!("{address}/notes");
+            Message::new(&notes, Arg::Note(Note::new(Pitch::Absolute(69.0), velocity)), 0)
+        }
+
+        fn render(r: &mut Renderer, plan: &mut Plan, messages: &[Message], seconds: f32) {
+            let mut out = vec![0.0f32; BLOCK];
+            r.render_block(plan, messages, &mut out);
+            for _ in 1..(seconds * RATE) as usize / BLOCK {
+                r.render_block(plan, &[], &mut out);
+            }
+        }
+
+        fn db(ratio: f32) -> f32 {
+            20.0 * ratio.log10()
+        }
+
+        #[test]
+        fn voices_fold_into_one_meter_that_decays_once_per_block() {
+            let mut plan = plan(&voice_patch(false), &["/v"]);
+            let slots = hosted(&plan, "/v");
+            slots.find("/osc").unwrap().set_on(true);
+            slots.find("/vca").unwrap().set_on(true);
+            let mut r = Renderer::new(&plan);
+
+            render(&mut r, &mut plan, &[note("/v", 1.0), note("/v", 1.0)], 0.5);
+            let held = peak(&slots, "/osc");
+            assert!((held - 1.0).abs() <= 1e-3, "two voices peak {held}, not 2.0");
+
+            // Both voices keep rendering, silent past their 1 ms release: two renders a block, one
+            // commit.
+            render(&mut r, &mut plan, &[note("/v", 0.0), note("/v", 0.0)], 0.1);
+            let before = peak(&slots, "/vca");
+            render(&mut r, &mut plan, &[], 1.0);
+            let fell = db(peak(&slots, "/vca") / before);
+            assert!((fell + 12.0).abs() <= 0.5, "fell {fell} dB in 1 s");
+        }
+
+        #[test]
+        fn a_silent_voicer_still_decays_its_meters() {
+            let mut plan = plan(&voice_patch(true), &["/v"]);
+            let slots = hosted(&plan, "/v");
+            slots.find("/osc").unwrap().set_on(true);
+            let mut r = Renderer::new(&plan);
+
+            render(&mut r, &mut plan, &[note("/v", 1.0), note("/v", 1.0)], 0.5);
+            render(&mut r, &mut plan, &[note("/v", 0.0), note("/v", 0.0)], 0.1);
+            // Every voice idle: from here the Voicer renders none of them.
+            let before = peak(&slots, "/osc");
+            assert!(before > 0.5, "peak {before}");
+            render(&mut r, &mut plan, &[], 1.0);
+            let fell = db(peak(&slots, "/osc") / before);
+            assert!((fell + 12.0).abs() <= 0.5, "fell {fell} dB in 1 s");
+        }
+
+        #[test]
+        fn two_voicers_on_one_voice_patch_meter_separately() {
+            let mut plan = plan(&voice_patch(true), &["/a", "/b"]);
+            let (a, b) = (hosted(&plan, "/a"), hosted(&plan, "/b"));
+            assert!(!Arc::ptr_eq(&a, &b));
+            a.find("/osc").unwrap().set_on(true);
+            b.find("/osc").unwrap().set_on(true);
+            let mut r = Renderer::new(&plan);
+
+            render(&mut r, &mut plan, &[note("/a", 1.0)], 0.5);
+            assert!(peak(&a, "/osc") > 0.9);
+            assert_eq!(b.find("/osc").unwrap().ports[0].level.read(), (0.0, 0.0));
+        }
     }
 }

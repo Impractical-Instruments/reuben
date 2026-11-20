@@ -21,6 +21,7 @@ use std::sync::Arc;
 use reuben_core::message::{Arg, Message};
 use reuben_core::operators::{Clock, Output, SamplePlayer};
 use reuben_core::plan::Plan;
+use reuben_core::probe::ProbeSlots;
 use reuben_core::render::Renderer;
 use reuben_core::resources::{ResolvedRefs, ResourceStore, SampleBuffer};
 use reuben_core::vocab::pitch::{Note, Pitch};
@@ -325,6 +326,16 @@ fn render_block_is_allocation_free_after_warmup() {
     );
 }
 
+/// Every probe of `slots` on, and of every slot set a node in it hosts.
+fn every_probe_on(slots: &ProbeSlots) {
+    for node in &slots.nodes {
+        node.set_on(true);
+        if let Some(hosted) = &node.hosted {
+            every_probe_on(hosted);
+        }
+    }
+}
+
 /// Every probe on adds a measure after each node and a commit per block; neither may touch the
 /// heap.
 #[test]
@@ -335,9 +346,11 @@ fn render_with_every_probe_on_allocates_nothing() {
         .graph;
     let mut plan = Plan::instantiate(graph, cfg).expect("instantiate");
     assert!(!plan.probes.nodes.is_empty(), "nothing to probe");
-    for node in &plan.probes.nodes {
-        node.set_on(true);
-    }
+    every_probe_on(&plan.probes);
+    assert!(
+        plan.probes.nodes.iter().any(|n| n.hosted.is_some()),
+        "the Voicer hosts no slots, so its voices' measure and commit went unproved"
+    );
     let mut r = Renderer::new(&plan);
     let mut out = vec![0.0f32; cfg.block_size];
     let note_on = [Message::new(
@@ -366,6 +379,15 @@ fn render_with_every_probe_on_allocates_nothing() {
             .any(|n| n.ports[0].level.read().0 > 0.0),
         "no probe measured anything, so the window proved nothing"
     );
+    assert!(
+        plan.probes
+            .nodes
+            .iter()
+            .filter_map(|n| n.hosted.as_deref())
+            .flat_map(|hosted| &hosted.nodes)
+            .any(|n| n.ports[0].level.read().0 > 0.0),
+        "no voice probe measured anything, so the window proved nothing for the voices"
+    );
 
     // Measuring only reads a node's output before a later node inherits its arena slot, so a
     // probed render must match an unprobed one bit for bit, recycled slots included.
@@ -376,9 +398,7 @@ fn render_with_every_probe_on_allocates_nothing() {
         Plan::instantiate(graph, cfg).expect("instantiate")
     };
     let (mut plain, mut probed) = (fresh(), fresh());
-    for node in &probed.probes.nodes {
-        node.set_on(true);
-    }
+    every_probe_on(&probed.probes);
     let (mut r_plain, mut r_probed) = (Renderer::new(&plain), Renderer::new(&probed));
     let (mut a, mut b) = (vec![0.0f32; cfg.block_size], vec![0.0f32; cfg.block_size]);
     let mut sounded = false;

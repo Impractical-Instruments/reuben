@@ -21,6 +21,7 @@ use crate::descriptor::Descriptor;
 use crate::graph::Graph;
 use crate::message::{Arg, Emit, Event, FromArg};
 use crate::plan::PlanError;
+use crate::probe::ProbeSlots;
 use crate::resources::{ResolvedRefs, ResourceStore};
 use crate::signal::{BlockMut, BlockView};
 
@@ -627,6 +628,14 @@ pub trait Operator: Send {
     /// (a voice sub-plan can be malformed); the error aborts the whole instantiate. Default `Ok(())`.
     fn on_instantiate(&mut self, _config: &AudioConfig) -> Result<(), PlanError> {
         Ok(())
+    }
+
+    /// The probe slots of the voice patch this node hosts, shared by all of its voices and
+    /// committed by this node once per `process`. Read once, after
+    /// [`Operator::on_instantiate`], to hang them off this node's own probe. Default `None` — only
+    /// the Voicer hosts sub-patches.
+    fn hosted_probes(&self) -> Option<Arc<ProbeSlots>> {
+        None
     }
 
     /// Called on a **surviving** operator box just after it is transplanted into a freshly built
