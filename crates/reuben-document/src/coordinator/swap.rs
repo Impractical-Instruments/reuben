@@ -442,6 +442,19 @@ impl Coordinator {
         self.mailbox.try_reclaim()
     }
 
+    /// Whether a previous swap is still in flight, after reclaiming its retiree if it has come
+    /// home (the retiree is dropped here, off the audio thread). `false` means the next
+    /// [`commit_swap`](Self::commit_swap) of a swap prepared at this config installs.
+    ///
+    /// The answer holds for as long as the caller keeps `&mut self`: the render side only drains
+    /// the install slot and posts retirees, and only this Coordinator's own install or reclaim
+    /// changes whether a swap is in flight. So a caller that holds the Coordinator's lock from
+    /// this check to the commit cannot be refused in between.
+    pub fn swap_in_flight(&mut self) -> bool {
+        drop(self.mailbox.try_reclaim());
+        self.mailbox.in_flight()
+    }
+
     /// Blocking reclaim: poll until the retiree returns or `timed_out` fires. The
     /// caller supplies the clock (core is OS-free) — see [`CoordinatorMailbox::reclaim`]. Dropping
     /// the returned bundle is the off-thread free; it opens the slot for the next swap.

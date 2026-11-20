@@ -781,6 +781,20 @@ fn edit_or_refuse(
             );
         }
     };
+    if coordinator.swap_in_flight() {
+        drop(prepared);
+        return not_written(
+            state,
+            source,
+            vec![diag(
+                "a previous swap is still in flight: the engine has not finished installing it"
+                    .to_string(),
+            )],
+            vec![format!(
+                "nothing was written and {top} keeps playing; try the edit again"
+            )],
+        );
+    }
     if let Err(e) = staged.commit() {
         drop(prepared);
         return not_written(
@@ -793,23 +807,15 @@ fn edit_or_refuse(
         );
     }
 
-    let swapped = SwapReport::from_core(coordinator.commit_swap(prepared));
-    if !swapped.report.ok {
-        // Written, but the engine is still installing an earlier swap: say so rather than claim
-        // the edit is playing.
-        result
-            .notes
-            .extend(swapped.report.errors.into_iter().map(|e| {
-                format!(
-                "{source} was written, but the engine did not take it ({}); swap {top} to hear it",
-                e.message
-            )
-            }));
-        return Response::Called {
-            output: edit_output(&result),
-            summary: edit_summary(&result),
-        };
-    }
+    // Unreachable refusal: nothing was in flight under this same lock, and the swap was prepared
+    // by this Coordinator at its own config. A panic here poisons the lock rather than answer for
+    // a file that no longer matches what plays.
+    let swapped = coordinator.commit_swap(prepared);
+    assert!(
+        swapped.report.ok,
+        "commit_swap refused with no swap in flight: {:?}",
+        swapped.report.errors
+    );
     match went_live(state, coordinator, Some(top), tree) {
         Ok(warnings) if warnings.is_empty() => Response::Called {
             output: edit_output(&result),
@@ -1395,6 +1401,45 @@ mod tests {
             json!({"source": "top.json", "name": "two", "expect": stale}),
         );
         assert_eq!(second["written"], false, "{second}");
+        assert_eq!(json!(installed_hash(&state)), first["hash"]);
+    }
+
+    #[test]
+    fn an_edit_while_a_swap_is_in_flight_writes_nothing() {
+        // `serving` drops the render side and its host gives up reclaiming at once, so the first
+        // edit's swap never comes home and stays in flight.
+        let (state, files) = serving();
+        let (first, _) = call(
+            &state,
+            "set_instrument_name",
+            json!({"source": "top.json", "name": "one"}),
+        );
+        assert_eq!(first["written"], true, "{first}");
+        let written = files.get("top.json").unwrap();
+
+        let (second, _) = call(
+            &state,
+            "set_instrument_name",
+            json!({"source": "top.json", "name": "two"}),
+        );
+        assert_eq!(second["written"], false, "{second}");
+        assert_eq!(second["report"]["ok"], false, "{second}");
+        assert!(
+            second["report"]["errors"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("still in flight"),
+            "{second}"
+        );
+        assert!(
+            second["notes"][0]
+                .as_str()
+                .unwrap()
+                .contains("nothing was written"),
+            "{second}"
+        );
+        assert_eq!(second["hash"], first["hash"]);
+        assert_eq!(files.get("top.json").unwrap(), written);
         assert_eq!(json!(installed_hash(&state)), first["hash"]);
     }
 

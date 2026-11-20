@@ -198,6 +198,12 @@ impl<T: Send> CoordinatorMailbox<T> {
         }
     }
 
+    /// Whether a published swap has not yet been reclaimed, so [`install`](Self::install) would
+    /// refuse. Only this end's own `install` and reclaims change it.
+    pub fn in_flight(&self) -> bool {
+        self.in_flight
+    }
+
     /// Drain the retire slot: take back the retiree the render side displaced, if it
     /// has arrived. Non-blocking.
     ///
