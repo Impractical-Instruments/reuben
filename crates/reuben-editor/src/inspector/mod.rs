@@ -28,6 +28,7 @@ use crate::edit::{self, Verb};
 use crate::sends::{Live, Replies};
 use crate::session::Session;
 
+pub(crate) use self::resources::relative_source;
 pub use self::view::show;
 
 /// One change to the document.
@@ -905,7 +906,10 @@ mod tests {
             assert_eq!((port.min, port.max), (Some(20.0), Some(2000.0)));
             assert_eq!(port.curve.as_deref(), Some("exponential"));
             assert_eq!(port.unit, "Hz");
-            assert_eq!(Controls::open(Some(&rig.top), None).binds(), ["pitch"]);
+            assert_eq!(
+                Controls::open(Some(&rig.top_source()), &rig.channel_source()).binds(),
+                ["pitch"]
+            );
 
             // A field the set-meta verb writes is cleared through its own verb, the rest kept. The
             // port reports the effective curve, the one the oscillator's `freq` input sweeps by;
@@ -1060,7 +1064,7 @@ mod tests {
             let after = top(&rig);
             assert!(after.inputs.is_empty() && after.outputs.is_empty());
             assert_eq!(
-                Controls::open(Some(&rig.top), None).binds(),
+                Controls::open(Some(&rig.top_source()), &rig.channel_source()).binds(),
                 [] as [&str; 0]
             );
         });

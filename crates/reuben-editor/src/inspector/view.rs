@@ -71,7 +71,7 @@ pub fn show(
                             instrument(ui, inspector, top, &problems, &mut asks);
                             interface::list(ui, inspector, top, &mut asks);
                             let document = std::path::Path::new(&session.viewed().source);
-                            resources::list(ui, inspector, top, document, &mut asks);
+                            resources::list(ui, inspector, top, document, channel, &mut asks);
                         }
                         Some(Item::Node(address)) => {
                             match top.nodes.iter().find(|n| &n.address == address) {

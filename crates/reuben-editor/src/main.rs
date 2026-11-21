@@ -7,6 +7,7 @@
 
 mod audio;
 mod canvas;
+mod chooser;
 mod config;
 mod controls;
 mod edit;
@@ -46,7 +47,7 @@ use crate::held_swap::HeldSwaps;
 use crate::inspector::Inspector;
 use crate::meter_strip::MeterStrip;
 use crate::session::{Session, Status, TrailAsk};
-use crate::start::{Choice, Launch, Start};
+use crate::start::{Choice, Start};
 
 #[derive(Parser)]
 #[command(name = "reuben-editor", about = "Edit and play reuben instruments.")]
@@ -111,7 +112,6 @@ fn main() -> eframe::Result {
             let root = args.instrument_root.clone().resolve_or_default();
             let mut start_screen = Start::new(ConfigDir::user());
             let held = HeldSwaps::new(wake.clone());
-            let launch = Launch { root: root.clone() };
             let mut audio = AudioSettings::load(ConfigDir::user());
             let mut engine = match args.attach.clone() {
                 Some(addr) => Engine::attach(addr, wake.clone()),
@@ -132,10 +132,10 @@ fn main() -> eframe::Result {
                     }
                 }
             });
-            let mut canvas = Canvas::open(None, None);
+            let mut canvas = Canvas::empty();
             let mut inspector = Inspector::default();
-            let top = session.as_ref().map(|session| PathBuf::from(session.top()));
-            let controls = Controls::open(top.as_deref(), launch.root.as_deref());
+            let top = session.as_ref().map(Session::top);
+            let controls = Controls::open(top, &|| engine.channel());
             if let Some(session) = &session {
                 start_screen.opened(session.top());
                 view(&mut canvas, &mut inspector, session);
@@ -149,7 +149,6 @@ fn main() -> eframe::Result {
                 inspector,
                 session,
                 start: start_screen,
-                launch,
                 held,
                 meters: MeterStrip::new(wake),
                 follow,
@@ -204,7 +203,7 @@ fn view(canvas: &mut Canvas, inspector: &mut Inspector, session: &Session) {
         .instrument()
         .is_some_and(|drawn| drawn != viewed.source)
     {
-        *canvas = Canvas::open(None, None);
+        *canvas = Canvas::empty();
         *inspector = Inspector::default();
     }
     canvas.reload(&viewed.source, &viewed.read);
@@ -237,7 +236,6 @@ struct Editor {
     inspector: Inspector,
     session: Option<Session>,
     start: Start,
-    launch: Launch,
     held: HeldSwaps,
     meters: MeterStrip,
     follow: Follow,
@@ -281,10 +279,10 @@ impl Editor {
     fn show(&mut self, session: Session) {
         let top = PathBuf::from(session.top());
         self.held.opened(&top);
-        self.canvas = Canvas::open(None, None);
+        self.canvas = Canvas::empty();
         self.inspector = Inspector::default();
         view(&mut self.canvas, &mut self.inspector, &session);
-        self.controls = Controls::open(Some(&top), self.launch.root.as_deref());
+        self.controls = Controls::open(Some(session.top()), &|| self.engine.channel());
         self.start.opened(session.top());
         self.session = Some(session);
     }
@@ -364,8 +362,7 @@ impl Editor {
         }
         // A tree that does not load keeps the panel of the instrument still playing.
         if poll.reloaded && !matches!(session.status(), Status::Held(_)) {
-            let top = PathBuf::from(session.top());
-            self.controls = Controls::open(Some(&top), self.launch.root.as_deref());
+            self.controls = Controls::open(Some(session.top()), &|| self.engine.channel());
         }
     }
 }
@@ -447,7 +444,7 @@ impl eframe::App for Editor {
                 self.start.show_again();
             }
             if let Some(session) = &mut self.session {
-                if let Some(asked) = session::trail(ui, session) {
+                if let Some(asked) = session::trail(ui, session, &|| self.engine.channel()) {
                     match asked {
                         TrailAsk::Leave(depth) => session.leave(depth),
                         TrailAsk::LocalCopy => {
@@ -477,7 +474,8 @@ impl eframe::App for Editor {
                 true => self.meters.node_levels(),
                 false => &[],
             };
-            self.canvas.show(ui, rejected, levels)
+            self.canvas
+                .show(ui, rejected, levels, &|| self.engine.channel())
         });
         for gesture in gestures.inner {
             let Some(session) = &mut self.session else {

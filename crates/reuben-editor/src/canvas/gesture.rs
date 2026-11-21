@@ -435,12 +435,13 @@ mod tests {
                 &voice
             ));
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-            while rig.session.users() == Some(&Listing::Checking) {
+            let channel = rig.channel_source();
+            while rig.session.users(&channel) == Some(&Listing::Checking) {
                 assert!(std::time::Instant::now() < deadline, "never listed");
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
             assert_eq!(
-                rig.session.users(),
+                rig.session.users(&channel),
                 Some(&Listing::Listed(Ok(vec![
                     "acid-techno".to_string(),
                     "euclidean-drums".to_string(),
@@ -448,7 +449,6 @@ mod tests {
                 ])))
             );
 
-            let channel = rig.channel_source();
             let result = Gesture::Remove {
                 address: "/sweep_cv".into(),
             }

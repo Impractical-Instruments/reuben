@@ -64,21 +64,21 @@ fn editor(top: &Path, config: &TempConfig) -> Editor {
         reuben_native::engine::start_headless,
     );
     let session = Session::open(&top.display().to_string(), &|| engine.channel());
-    let mut canvas = Canvas::open(None, None);
+    let mut canvas = Canvas::empty();
     let mut inspector = Inspector::default();
     view(&mut canvas, &mut inspector, &session);
     let mut start = Start::new(config.dir());
     start.opened(&top.display().to_string());
     let (follow, latest) = follower(engine.channel(), || {});
+    let controls = Controls::open(Some(&top.display().to_string()), &|| engine.channel());
     Editor {
         engine,
         audio: AudioSettings::load_with(config.dir(), two_devices),
-        controls: Controls::open(Some(top), None),
+        controls,
         canvas,
         inspector,
         session: Some(session),
         start,
-        launch: Launch { root: None },
         held: HeldSwaps::new(|| {}),
         meters: MeterStrip::new(|| {}),
         follow,
@@ -282,12 +282,11 @@ fn attached(addr: String, config: &TempConfig, session: Option<Session>) -> Edit
     Editor {
         engine,
         audio: AudioSettings::load_with(config.dir(), two_devices),
-        controls: Controls::open(None, None),
-        canvas: Canvas::open(None, None),
+        controls: Controls::open(None, &|| None),
+        canvas: Canvas::empty(),
         inspector: Inspector::default(),
         session,
         start: Start::new(config.dir()),
-        launch: Launch { root: None },
         held: HeldSwaps::new(|| {}),
         meters: MeterStrip::new(|| {}),
         follow,
@@ -782,7 +781,7 @@ fn an_instrument_named_by_a_relative_path_at_launch_shows_its_level() {
         );
         let session = launched(&relative, &mut editor.engine, &editor.held, || {})
             .expect("the server opens it");
-        editor.canvas = Canvas::open(None, None);
+        editor.canvas = Canvas::empty();
         view(&mut editor.canvas, &mut editor.inspector, &session);
         editor.session = Some(session);
         let mut harness = harness(editor);

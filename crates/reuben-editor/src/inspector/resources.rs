@@ -1,12 +1,14 @@
 //! The viewed document's `resources` table in the inspector, with nothing selected: each id and the
-//! source it names, added and repointed through the native file picker, and removed. With a node
-//! selected, the id each of its resource slots reads, picked from the table.
+//! source it names, added and repointed by picking one of the samples or instruments the server
+//! offers, and removed. With a node selected, the id each of its resource slots reads, picked from
+//! the table.
 //!
 //! A picked file is stored relative to the viewed document's directory, which is where that
 //! document's references resolve from, so the table survives the instrument being moved whole.
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::OnceLock;
 
 use eframe::egui;
@@ -15,12 +17,13 @@ use reuben_api::authoring::{
     RemoveInstrumentResource, ResourceEntry, SetInstrumentNodeResource, SetInstrumentResource,
     StructureNode,
 };
+use reuben_api::engine::{Channel, ListWhat};
 use reuben_api::tools::names;
 
 use super::view::Ask;
 use super::{Edit, Inspector};
+use crate::chooser;
 use crate::edit::Verb;
-use crate::pick;
 
 /// One change to the resources table, or to what a node reads from it.
 #[derive(Debug, Clone, PartialEq)]
@@ -100,10 +103,11 @@ impl Kind {
         }
     }
 
-    fn pick(self, dir: Option<&Path>) -> Option<PathBuf> {
+    /// The names of this kind the server offers.
+    fn listed(self) -> ListWhat {
         match self {
-            Kind::Sample => pick::sample(dir),
-            Kind::Document => pick::instrument_to_open(dir),
+            Kind::Sample => ListWhat::Samples,
+            Kind::Document => ListWhat::Instruments,
         }
     }
 
@@ -117,20 +121,66 @@ impl Kind {
     }
 }
 
-/// The id typed into the "add a resource" row, held between frames for the document it was typed
-/// in: viewing another document starts the row empty.
-#[derive(Debug, Clone, Default, PartialEq)]
+/// The id typed into the "add a resource" row, and the chooser a button opened, held between frames
+/// for the document they were made in: viewing another document starts the row empty and closes
+/// the chooser.
+#[derive(Debug, Default)]
 pub struct Draft {
     id: String,
     document: PathBuf,
+    choosing: Option<Choosing>,
+}
+
+/// A chooser open for what a button asked, over the names the server offers of its kind.
+#[derive(Debug)]
+struct Choosing {
+    want: Want,
+    offered: Offered,
+}
+
+/// The names a chooser offers: being listed off the UI thread, or listed, or why not.
+#[derive(Debug)]
+enum Offered {
+    Listing(Receiver<Result<Vec<String>, String>>),
+    Listed(Result<Vec<String>, String>),
+}
+
+impl Choosing {
+    /// Open a chooser for `want`, its names asked of the server through `channel` on a thread of
+    /// their own; `ctx` is repainted when they arrive.
+    fn ask(want: Want, channel: Option<Channel>, ctx: egui::Context) -> Self {
+        let what = want.kind().listed();
+        let (done, listing) = mpsc::channel();
+        std::thread::spawn(move || {
+            let listed = match channel {
+                Some(channel) => channel.list(what).map_err(|e| e.to_string()),
+                None => Err("no engine is running to list them".to_string()),
+            };
+            if done.send(listed).is_ok() {
+                ctx.request_repaint();
+            }
+        });
+        Self {
+            want,
+            offered: Offered::Listing(listing),
+        }
+    }
+
+    fn heard(&mut self) {
+        if let Offered::Listing(listing) = &self.offered {
+            if let Ok(listed) = listing.try_recv() {
+                self.offered = Offered::Listed(listed);
+            }
+        }
+    }
 }
 
 impl Draft {
     fn viewing(&mut self, document: &Path) {
         if self.document != document {
             *self = Draft {
-                id: String::new(),
                 document: document.to_path_buf(),
+                ..Draft::default()
             };
         }
     }
@@ -238,17 +288,28 @@ fn readers<'a>(top: &'a InstrumentStructure, id: &str) -> Vec<&'a str> {
 }
 
 /// What a button in the table asked to pick a file for.
+#[derive(Debug)]
 enum Want {
     Add(Kind),
     Repoint(String, Kind),
 }
 
-/// The resources table of `top`, the document at `document`, with a row to add an entry.
+impl Want {
+    fn kind(&self) -> Kind {
+        match self {
+            Want::Add(kind) | Want::Repoint(_, kind) => *kind,
+        }
+    }
+}
+
+/// The resources table of `top`, the document at `document`, with a row to add an entry. What an
+/// entry names is picked from what the server offers, listed through `channel`.
 pub fn list(
     ui: &mut egui::Ui,
     inspector: &mut Inspector,
     top: &InstrumentStructure,
     document: &Path,
+    channel: &dyn Fn() -> Option<Channel>,
     asks: &mut Vec<Ask>,
 ) {
     inspector.resource.viewing(document);
@@ -295,26 +356,56 @@ pub fn list(
             want = Some(Want::Add(Kind::Document));
         }
     });
-    let Some(want) = want else { return };
+    if let Some(want) = want {
+        let ask = Choosing::ask(want, channel(), ui.ctx().clone());
+        inspector.resource.choosing = Some(ask);
+    }
+    let Some(choosing) = &mut inspector.resource.choosing else {
+        return;
+    };
+    choosing.heard();
     let Some(dir) = dir else {
+        inspector.resource.choosing = None;
         asks.push(Ask::Refuse(
             "The document has no directory to name a file from.".to_string(),
         ));
         return;
     };
+    ui.separator();
+    ui.label(match (&choosing.want, choosing.want.kind()) {
+        (Want::Add(_), Kind::Sample) => "Add which sample?".to_string(),
+        (Want::Add(_), Kind::Document) => "Add which instrument?".to_string(),
+        (Want::Repoint(id, _), _) => format!("Point {id} at which file?"),
+    });
+    let picked = match &choosing.offered {
+        Offered::Listing(_) => {
+            ui.weak("Listing what the server offers…");
+            None
+        }
+        Offered::Listed(Err(e)) => {
+            ui.colored_label(
+                ui.visuals().error_fg_color,
+                format!("The server could not list them: {e}"),
+            );
+            None
+        }
+        Offered::Listed(Ok(names)) => {
+            let id = ui.id().with("resource chooser");
+            chooser::show(ui, id, names, &dir.display().to_string())
+        }
+    };
+    let cancelled = ui.button("Cancel").clicked();
+    if picked.is_none() && !cancelled {
+        return;
+    }
+    let Some(Choosing { want, .. }) = inspector.resource.choosing.take() else {
+        return;
+    };
+    let Some(picked) = picked else { return };
+    let picked = Path::new(&picked);
     let edit = match want {
-        Want::Add(kind) => {
-            let Some(picked) = kind.pick(Some(dir)) else {
-                return;
-            };
-            inspector.resource.add(top, dir, &picked)
-        }
-        Want::Repoint(id, kind) => {
-            let Some(picked) = kind.pick(Some(dir)) else {
-                return;
-            };
-            repoint(&id, dir, &picked)
-        }
+        Want::Add(_) => inspector.resource.add(top, dir, picked),
+        Want::Repoint(id, _) => repoint(&id, dir, picked),
     };
     asks.push(match edit {
         Ok(edit) => Ask::Edit(Edit::Resource(edit), None),

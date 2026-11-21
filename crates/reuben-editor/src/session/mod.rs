@@ -11,7 +11,6 @@ mod undo;
 mod users;
 mod view;
 
-use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -91,8 +90,10 @@ pub struct Session {
     /// Why the last edit did not land, until one does: kept here so the canvas and the inspector,
     /// which both write, show the same one.
     feedback: Option<Feedback>,
-    /// The file `users` is about, and the instruments that play it, as last listed.
-    users: Option<(PathBuf, Listing)>,
+    /// The document `users` is about, and the instruments that play it, as last listed.
+    users: Option<(String, Listing)>,
+    /// A listing is due: the view moved or the tree changed since the last one was asked for.
+    relist: bool,
     /// Where a listing under way will arrive. Replaced, and so let go, by the next listing.
     listing: Option<Receiver<Result<Vec<String>, String>>>,
 }
@@ -111,6 +112,7 @@ impl Session {
             undo: Undo::default(),
             feedback: None,
             users: None,
+            relist: false,
             listing: None,
         };
         if channel().is_none() {
@@ -192,9 +194,12 @@ impl Session {
         self.list_users();
     }
 
-    /// The instruments that play the viewed document: those beside the top-level document.
-    /// `None` while the top-level document is viewed.
-    pub fn users(&mut self) -> Option<&Listing> {
+    /// The instruments of the server's library that play the viewed document, asked through
+    /// `channel` when a listing is due. `None` while the top-level document is viewed.
+    pub fn users(&mut self, channel: &dyn Fn() -> Option<Channel>) -> Option<&Listing> {
+        if std::mem::take(&mut self.relist) {
+            self.ask_users(channel());
+        }
         if let Some(listed) = self.listing.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.listing = None;
             if let Some((_, listing)) = &mut self.users {
@@ -204,35 +209,44 @@ impl Session {
         self.users.as_ref().map(|(_, listing)| listing)
     }
 
-    /// List again who plays the viewed document, off the UI thread: it reads every instrument
-    /// beside the top-level document. Every time the view moves or the tree changes, since another
-    /// instrument may have taken up or let go of the document meanwhile. The last answer for the
-    /// same document stands until the new one arrives.
+    /// Have who plays the viewed document listed again, on the next [`users`](Self::users).
+    /// Every time the view moves or the tree changes, since another instrument may have taken up
+    /// or let go of the document meanwhile. The last answer for the same document stands until the
+    /// new one arrives.
     fn list_users(&mut self) {
         self.listing = None;
         if self.trail.is_empty() {
             self.users = None;
+            self.relist = false;
             return;
         }
-        let path = PathBuf::from(&self.viewed().source);
-        let beside = Path::new(&self.top).parent().map(Path::to_path_buf);
+        let source = self.viewed().source.clone();
+        if (self.users.as_ref()).is_none_or(|(listed, _)| *listed != source) {
+            self.users = Some((source, Listing::Checking));
+        }
+        self.relist = true;
+    }
+
+    /// Ask the server's library, off the UI thread, which instruments read the viewed document.
+    fn ask_users(&mut self, channel: Option<Channel>) {
+        let Some((source, _)) = &self.users else {
+            return;
+        };
+        let source = source.clone();
         let (done, listing) = mpsc::channel();
-        let scanned = path.clone();
         let wake = Arc::clone(&self.wake);
         std::thread::spawn(move || {
-            let libraries: Vec<&Path> = beside.as_deref().into_iter().collect();
-            if done.send(users(&libraries, None, &scanned)).is_ok() {
+            let listed = match channel {
+                Some(channel) => (channel.library())
+                    .map(|library| users(&library, &source))
+                    .map_err(|e| e.to_string()),
+                None => Err("no engine is running to list the library".to_string()),
+            };
+            if done.send(listed).is_ok() {
                 wake();
             }
         });
         self.listing = Some(listing);
-        if self
-            .users
-            .as_ref()
-            .is_none_or(|(listed, _)| *listed != path)
-        {
-            self.users = Some((path, Listing::Checking));
-        }
     }
 
     pub fn status(&self) -> &Status {
@@ -812,7 +826,11 @@ mod tests {
         within(HANG_SECS, || {
             let mut rig = Rig::open("trail", "acid-techno.json");
             let session = &mut rig.session;
-            assert_eq!(session.users(), None, "the top-level document is viewed");
+            assert_eq!(
+                session.users(&|| None),
+                None,
+                "the top-level document is viewed"
+            );
             assert!(session.enter("/tempo").is_err(), "no voice or patch there");
             assert!(session.trail().is_empty());
 

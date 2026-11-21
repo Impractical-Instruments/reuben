@@ -1,8 +1,6 @@
 //! Drawing the panel. Everything decided here is how a control looks and which gesture a pointer
 //! made on it; what a gesture sends is [`Control::message`].
 
-use std::path::Path;
-
 use eframe::egui::{self, Rect, Sense, Stroke, StrokeKind, Vec2};
 use reuben_api::engine::ControlSendMessage;
 
@@ -29,12 +27,12 @@ const KNOB_SWEEP: f32 = 1.5 * std::f32::consts::PI;
 /// Pointer travel, in points, that takes a knob across its whole range.
 const KNOB_TRAVEL: f32 = 160.0;
 
-pub fn header(ui: &mut egui::Ui, surface: Option<&Path>, running: bool) {
+pub fn header(ui: &mut egui::Ui, from_surface: bool, running: bool) {
     ui.horizontal(|ui| {
         theme::section(ui, "Controls");
-        ui.weak(match surface {
-            Some(path) => format!("from {}", path.display()),
-            None => "generated from the instrument's interface".to_string(),
+        ui.weak(match from_surface {
+            true => "from the instrument's surface doc",
+            false => "generated from the instrument's interface",
         });
         if !running {
             ui.colored_label(

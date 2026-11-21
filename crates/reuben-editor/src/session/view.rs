@@ -1,6 +1,7 @@
 //! Undo and redo, whether the engine is playing the open instrument, and the way down into it.
 
 use eframe::egui;
+use reuben_api::engine::Channel;
 
 use super::{Direction, Document, Listing, Session, Status};
 
@@ -46,8 +47,12 @@ pub enum TrailAsk {
 
 /// Draw the way down from the top-level document to the one viewed, as a line of links back up,
 /// the local copy action, and, when the document viewed is one other instruments play too, who
-/// they are.
-pub fn trail(ui: &mut egui::Ui, session: &mut Session) -> Option<TrailAsk> {
+/// they are, as the server's library says through `channel`.
+pub fn trail(
+    ui: &mut egui::Ui,
+    session: &mut Session,
+    channel: &dyn Fn() -> Option<Channel>,
+) -> Option<TrailAsk> {
     if session.trail().is_empty() {
         return None;
     }
@@ -85,7 +90,7 @@ pub fn trail(ui: &mut egui::Ui, session: &mut Session) -> Option<TrailAsk> {
         }
     });
     let viewed = std::path::Path::new(&session.viewed().source).to_path_buf();
-    match session.users() {
+    match session.users(channel) {
         Some(Listing::Listed(Ok(users))) if users.len() > 1 => {
             ui.colored_label(
                 ui.visuals().warn_fg_color,

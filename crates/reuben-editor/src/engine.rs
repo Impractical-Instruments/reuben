@@ -14,9 +14,9 @@ use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use reuben_api::authoring::{validate_instrument, ValidateInstrument};
-use reuben_api::engine::{Channel, Installed, SwapOutcome};
-use reuben_api::FsResolver;
+use reuben_api::authoring::{Report, ValidateInstrument};
+use reuben_api::engine::{call_tool, Channel, Installed, SwapOutcome};
+use reuben_api::tools::names;
 use reuben_native::engine::{self, EngineConfig, Instrument, RunningEngine, StartError};
 use reuben_native::profile::DeviceProfile;
 use reuben_native::structure::input_stream_fits;
@@ -349,6 +349,8 @@ impl Engine {
         // Open but playing nothing, as a document that does not load is: there is no input width
         // to keep, so the restart starts on nothing and opens it again.
         let mut reopen = None;
+        // What the server plays, by the name it plays it under: the file the new start reads.
+        let mut playing = None;
         if let Some(running) = &self.running {
             match running.channel().get_document() {
                 Ok(document) => match document.source {
@@ -356,7 +358,10 @@ impl Engine {
                         config.instrument = Instrument::Silent;
                         reopen = Some(source);
                     }
-                    Some(source) => config.instrument = Instrument::Path(source.into()),
+                    Some(source) => {
+                        config.instrument = Instrument::Path(source.clone().into());
+                        playing = Some(source);
+                    }
                     None if document.content_hash.is_empty() => {
                         config.instrument = Instrument::Silent;
                     }
@@ -365,14 +370,11 @@ impl Engine {
                 Err(e) => unsourced = Some(format!("the engine did not say what it is: {e}")),
             }
         }
-        if let Instrument::Path(path) = &config.instrument {
-            if let Err(why) = loads(path, config.instrument_root.as_deref()) {
+        if let (Some(source), Some(running)) = (&playing, &self.running) {
+            if let Err(why) = loads(&running.channel(), source) {
                 self.push(Line::new(
                     Level::Error,
-                    format!(
-                        "{refused}: {} does not load to start again from: {why}",
-                        path.display()
-                    ),
+                    format!("{refused}: {source} does not load to start again from: {why}"),
                 ));
                 return false;
             }
@@ -691,17 +693,17 @@ impl Engine {
     }
 }
 
-/// Whether the instrument at `path` loads, through the window's own validation; `Err` says why
-/// not.
-fn loads(path: &Path, root: Option<&Path>) -> Result<(), String> {
-    let source = path.display().to_string();
-    let mut store = FsResolver::for_document(&source).stat_only();
-    if let Some(root) = root {
-        store = store.with_root(root);
-    }
-    let report = validate_instrument(&ValidateInstrument { source }, &store)
-        .map_err(|refusal| refusal.message)?
-        .output;
+/// Whether the instrument the server names `source` loads, as the server validates it; `Err` says
+/// why not. Asked before the engine stops: the file may have stopped loading since it was
+/// installed, and a start on it would leave no server at all.
+fn loads(channel: &Channel, source: &str) -> Result<(), String> {
+    let args = ValidateInstrument {
+        source: source.to_string(),
+    };
+    let answer =
+        call_tool(names::VALIDATE_INSTRUMENT, &args, channel).map_err(|refusal| refusal.message)?;
+    let report: Report = serde_json::from_value(answer.output)
+        .map_err(|e| format!("the server's report could not be read: {e}"))?;
     if report.ok {
         return Ok(());
     }

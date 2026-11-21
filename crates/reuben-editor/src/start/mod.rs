@@ -22,11 +22,6 @@ use crate::engine::Engine;
 use crate::pick;
 use crate::session::{Session, Status};
 
-/// What the editor was launched with, kept for what it opens later.
-pub struct Launch {
-    pub root: Option<PathBuf>,
-}
-
 /// What the start screen says while there is no server to list the library.
 pub const NO_ENGINE: &str = "No engine is running, so there is no library to list.";
 

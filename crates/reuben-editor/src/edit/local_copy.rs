@@ -6,10 +6,10 @@
 //! repoint is an undo step. Undoing it puts the entry back on the original; the copy stays on disk,
 //! unreferenced, and a redo points the entry at it again.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use reuben_api::authoring::{CopyInstrument, EditResult, Refusal, SetInstrumentResource};
-use reuben_api::engine::Channel;
+use reuben_api::engine::{Channel, ListWhat};
 use reuben_api::tools::names;
 
 use super::{call, write, Verb};
@@ -45,22 +45,27 @@ pub fn make(session: &mut Session, channel: &dyn Fn() -> Option<Channel>) -> Opt
         return None;
     };
     let parent_source = parent.source.clone();
-    let from = PathBuf::from(&crumb.source);
-    let beside_parent = Path::new(&parent.source).parent().map(Path::to_path_buf);
-    let owner = parent_stem(Path::new(&parent.source));
-    let Some((to, repointed)) = free_name(&from, &owner, |name| {
-        let reference = renamed(&entry.source, name);
-        // The reference must land on the copy: a file of that name beside the referencing
-        // document would be found before the one beside the original.
-        let taken = from.with_file_name(name).exists()
-            || (beside_parent.as_ref()).is_some_and(|dir| dir.join(&reference).exists());
-        (!taken).then_some(reference)
-    }) else {
-        refuse(session, &crumb.source, "no free name beside it for a copy");
+    let Some(server) = channel() else {
+        refuse(
+            session,
+            &crumb.source,
+            "no engine is running to name a copy",
+        );
         return None;
     };
+    let offered = match server.list(ListWhat::Instruments) {
+        Ok(offered) => offered,
+        Err(e) => {
+            let why = format!("the server could not list its instruments: {e}");
+            refuse(session, &crumb.source, &why);
+            return None;
+        }
+    };
+    let taken = shadowing(&crumb.source, &parent_source, &entry.source, offered);
+    let to = free_name(&crumb.source, &taken);
+    let copy_file = Path::new(&to).file_name().unwrap_or_default();
+    let repointed = renamed(&entry.source, &copy_file.to_string_lossy());
 
-    let to = to.display().to_string();
     let copied = call(
         channel,
         Verb::of(
@@ -107,37 +112,59 @@ fn refuse(session: &mut Session, source: &str, why: &str) {
     *session.feedback_mut() = Feedback::of(source, None, &refused);
 }
 
-/// The referencing document's file stem, which names whose copy it is.
-fn parent_stem(parent: &Path) -> String {
-    parent
-        .file_stem()
-        .map_or_else(|| "local".to_string(), |s| s.to_string_lossy().into_owned())
+/// The first of `<stem>-copy.json`, `<stem>-copy-2.json`, … beside `source` that is not one of
+/// `offered`, as the server names it.
+pub fn free_name(source: &str, offered: &[String]) -> String {
+    let path = Path::new(source);
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    let extension =
+        (path.extension()).map_or_else(String::new, |e| format!(".{}", e.to_string_lossy()));
+    (1..)
+        .map(|n| match n {
+            1 => format!("{stem}-copy{extension}"),
+            n => format!("{stem}-copy-{n}{extension}"),
+        })
+        .map(|name| path.with_file_name(name).display().to_string())
+        .find(|name| !offered.contains(name))
+        .expect("an unbounded range has a name `offered` does not hold")
 }
 
-/// The first of `<stem>-<owner>.json`, `<stem>-<owner>-2.json`, … that `free` accepts, beside
-/// `from`, with what `free` answered for it.
-fn free_name<T>(
-    from: &Path,
-    owner: &str,
-    mut free: impl FnMut(&str) -> Option<T>,
-) -> Option<(PathBuf, T)> {
-    let stem = from.file_stem()?.to_string_lossy();
-    let extension = from
-        .extension()
-        .map_or_else(String::new, |e| format!(".{}", e.to_string_lossy()));
-    // Enough to step past every copy a person would make by hand; past it something is wrong.
-    for n in 1..=100 {
-        let suffix = if n == 1 {
-            String::new()
-        } else {
-            format!("-{n}")
-        };
-        let name = format!("{stem}-{owner}{suffix}{extension}");
-        if let Some(answer) = free(&name) {
-            return Some((from.with_file_name(&name), answer));
+/// `offered`, with every name beside `source` whose reference from `parent` would be found first
+/// somewhere else: a reference resolves from the referencing document's directory, so a copy
+/// named `x` beside `source` is only reached through `reference` when nothing named `x` sits
+/// where `reference`'s directory lands from `parent`.
+fn shadowing(source: &str, parent: &str, reference: &str, mut offered: Vec<String>) -> Vec<String> {
+    let beside = Path::new(source).parent().map(lexical);
+    let reached = Path::new(parent)
+        .parent()
+        .map(|dir| lexical(&dir.join(reference)))
+        .and_then(|path| path.parent().map(Path::to_path_buf));
+    if let (Some(beside), Some(reached)) = (beside, reached) {
+        if beside != reached {
+            let shadows: Vec<String> = (offered.iter())
+                .filter(|name| Path::new(name.as_str()).parent() == Some(reached.as_path()))
+                .filter_map(|name| Path::new(name).file_name())
+                .map(|file| beside.join(file).display().to_string())
+                .collect();
+            offered.extend(shadows);
         }
     }
-    None
+    offered
+}
+
+/// `path` with each `.` dropped and each `..` folded into the component before it.
+fn lexical(path: &Path) -> PathBuf {
+    let mut folded = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                folded.pop();
+            }
+            other => folded.push(other),
+        }
+    }
+    folded
 }
 
 /// `reference` with its last path segment replaced by `name`, every other segment kept as the
@@ -194,14 +221,50 @@ mod tests {
     }
 
     #[test]
-    fn the_first_free_name_is_taken() {
-        let from = Path::new("voices").join("kick-voice.json");
-        let (path, n) = free_name(&from, "acid", |name| {
-            (name != "kick-voice-acid.json").then(|| name.to_string())
-        })
-        .expect("a free name");
-        assert_eq!(path, Path::new("voices").join("kick-voice-acid-2.json"));
-        assert_eq!(n, "kick-voice-acid-2.json");
+    fn free_name_skips_names_the_server_lists() {
+        let source = "/l/voices/kick-voice.json";
+        assert_eq!(free_name(source, &[]), "/l/voices/kick-voice-copy.json");
+        let offered = [
+            "/l/voices/kick-voice.json".to_string(),
+            "/l/voices/kick-voice-copy.json".to_string(),
+            "/l/kick-voice-copy-2.json".to_string(),
+        ];
+        assert_eq!(
+            free_name(source, &offered),
+            "/l/voices/kick-voice-copy-2.json",
+            "a name elsewhere is not beside the source"
+        );
+        let offered = [
+            &offered[..],
+            &["/l/voices/kick-voice-copy-2.json".to_string()],
+        ]
+        .concat();
+        assert_eq!(
+            free_name(source, &offered),
+            "/l/voices/kick-voice-copy-3.json"
+        );
+    }
+
+    #[test]
+    fn a_name_the_reference_would_find_first_elsewhere_is_taken() {
+        let offered = vec!["/top/voices/kick-voice-copy.json".to_string()];
+        let taken = shadowing(
+            "/lib/voices/kick-voice.json",
+            "/top/mine.json",
+            "voices/kick-voice.json",
+            offered,
+        );
+        assert_eq!(
+            free_name("/lib/voices/kick-voice.json", &taken),
+            "/lib/voices/kick-voice-copy-2.json"
+        );
+        let beside = shadowing(
+            "/lib/voices/kick-voice.json",
+            "/lib/acid.json",
+            "./voices/../voices/kick-voice.json",
+            Vec::new(),
+        );
+        assert!(beside.is_empty(), "{beside:?}");
     }
 
     /// The issue's acceptance: after a local copy, editing the voice changes this instrument only.
@@ -220,7 +283,7 @@ mod tests {
             let channel = rig.channel_source();
             let copy = make(&mut rig.session, &channel).expect("the copy is made");
             assert_eq!(rig.session.feedback(), None);
-            let copy_path = rig.lib.join("voices").join("kick-voice-acid-techno.json");
+            let copy_path = rig.lib.join("voices").join("kick-voice-copy.json");
             assert_eq!(copy, copy_path.display().to_string());
             assert!(
                 crate::session::test_support::names(&rig.session.viewed().source, &copy_path),
@@ -229,7 +292,7 @@ mod tests {
             assert_eq!(rig.session.trail().len(), 1);
             assert_eq!(
                 kick_entry(&rig, &rig.top.clone()),
-                "voices/kick-voice-acid-techno.json"
+                "voices/kick-voice-copy.json"
             );
             assert_eq!(hash_on_disk(&copy_path), original_hash);
 
@@ -276,7 +339,7 @@ mod tests {
             assert!(rig.session.trail().is_empty(), "the view goes back up");
 
             restore(&mut rig.session, &channel, Direction::Redo);
-            assert_eq!(kick_entry(&rig, &top), "voices/kick-voice-acid-techno.json");
+            assert_eq!(kick_entry(&rig, &top), "voices/kick-voice-copy.json");
             assert!(
                 rig.session.trail().is_empty(),
                 "redo leaves the view where it is"
@@ -301,7 +364,7 @@ mod tests {
                 .expect("/kick_v voices kick-voice again");
             let second = make(&mut rig.session, &channel).expect("the second copy");
             assert_ne!(first, second);
-            let second_path = rig.lib.join("voices").join("kick-voice-acid-techno-2.json");
+            let second_path = rig.lib.join("voices").join("kick-voice-copy-2.json");
             assert_eq!(second, second_path.display().to_string());
             assert!(crate::session::test_support::names(
                 &rig.session.viewed().source,
@@ -309,13 +372,12 @@ mod tests {
             ));
             assert_eq!(
                 kick_entry(&rig, &rig.top.clone()),
-                "voices/kick-voice-acid-techno-2.json"
+                "voices/kick-voice-copy-2.json"
             );
         });
     }
 
-    /// Two steps down, the document one step up is itself a voice: the repoint is written there,
-    /// and the copy is named for it.
+    /// Two steps down, the document one step up is itself a voice: the repoint is written there.
     #[test]
     fn a_copy_two_steps_down_repoints_the_voice_above_it() {
         within(HANG_SECS, || {
@@ -331,7 +393,7 @@ mod tests {
 
             let channel = rig.channel_source();
             let copy = make(&mut rig.session, &channel).expect("the copy is made");
-            let copy_path = voices.join("shaped-vca-kick-voice.json");
+            let copy_path = voices.join("shaped-vca-copy.json");
             assert_eq!(copy, copy_path.display().to_string());
             assert!(crate::session::test_support::names(
                 &rig.session.viewed().source,
@@ -344,7 +406,7 @@ mod tests {
                 })
                 .expect("the kick voice is in the tree");
             let entry = kick.reference("/vca").expect("/vca references a patch");
-            assert_eq!(entry.source, "shaped-vca-kick-voice.json");
+            assert_eq!(entry.source, "shaped-vca-copy.json");
             assert_eq!(hash_on_disk(&original), original_hash);
             assert_eq!(hash_on_disk(&rig.top.clone()), top_hash);
         });
@@ -380,7 +442,7 @@ mod tests {
                 "{:?}",
                 rig.session.feedback()
             );
-            let copy_path = rig.lib.join("voices").join("kick-voice-acid-techno.json");
+            let copy_path = rig.lib.join("voices").join("kick-voice-copy.json");
             assert!(copy_path.exists(), "the copy is left on disk");
             assert_eq!(kick_entry(&rig, &rig.top.clone()), "voices/kick-voice.json");
             assert!(crate::session::test_support::names(

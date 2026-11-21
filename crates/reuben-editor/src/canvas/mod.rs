@@ -1,8 +1,8 @@
 //! The canvas: the open document drawn as boxes and wires, and the gestures that edit it.
 //!
-//! Everything drawn comes from [`read_instrument`]'s structured answer, read when the canvas opens
-//! and again after every change on disk. A box the document stores a position for is drawn there;
-//! every other box is placed by [`place`](place::place)'s rule.
+//! Everything drawn comes from the server's structured read of the document, handed to
+//! [`Canvas::reload`] whenever the session reads it. A box the document stores a position for is
+//! drawn there; every other box is placed by [`place`](place::place)'s rule.
 //!
 //! Dragging empty canvas pans. Scrolling pans too, and zooms about the pointer when it is a pinch
 //! or has the zoom modifier held. A click selects the box or wire under it, or nothing; with shift
@@ -31,15 +31,14 @@ mod place;
 mod view;
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use eframe::egui::{self, Pos2, Rect, Sense, Vec2};
 use reuben_api::authoring::{
-    read_instrument, wire_compatibility, Diag, EditResult, InstrumentStructure, LayoutPosition,
-    ReadInstrument, Refusal, WireCompatibility,
+    Diag, EditResult, InstrumentStructure, LayoutPosition, Refusal, WireCompatibility, WireVerdicts,
 };
-use reuben_api::engine::ProbeLevels;
-use reuben_api::FsResolver;
+use reuben_api::engine::{call_tool, Channel, ProbeLevels};
+use reuben_api::tools::names;
 
 use self::camera::Camera;
 pub use self::gesture::Gesture;
@@ -81,28 +80,6 @@ impl Document {
             },
         }
     }
-}
-
-/// The store the document at `instrument` is read through. `root` is the library root its nested
-/// references fall back to, as for the engine. Only structure is drawn, so samples are checked for
-/// presence rather than decoded.
-fn store(instrument: &Path, root: Option<&Path>) -> FsResolver {
-    let store = FsResolver::for_document(&instrument.display().to_string()).stat_only();
-    match root {
-        Some(root) => store.with_root(root),
-        None => store,
-    }
-}
-
-/// Read the instrument file at `instrument`.
-///
-/// `Err` is a document that cannot be read or parsed. One that reads but does not load is `Ok`,
-/// with the load report's diagnostics in it.
-fn read(instrument: &Path, root: Option<&Path>) -> Result<InstrumentStructure, String> {
-    let source = instrument.display().to_string();
-    read_instrument(&ReadInstrument { source }, &store(instrument, root))
-        .map(|answer| answer.output)
-        .map_err(|refusal| refusal.message)
 }
 
 fn load(read: &Result<InstrumentStructure, String>) -> Result<Document, String> {
@@ -151,9 +128,8 @@ struct Renaming {
 
 /// The canvas of the open instrument, with how it is being looked at and what is selected.
 pub struct Canvas {
-    /// The server's name for the document drawn, and the library root a canvas opened on a file
-    /// read it with, while one is drawn.
-    instrument: Option<(String, Option<PathBuf>)>,
+    /// The server's name for the document drawn, while one is drawn.
+    instrument: Option<String>,
     loaded: Option<Result<Document, String>>,
     /// `None` until the first frame, when the size of the area to fit the document into is known.
     camera: Option<Camera>,
@@ -179,12 +155,11 @@ pub struct Canvas {
 }
 
 impl Canvas {
-    /// The canvas for `instrument`, or an empty one when no instrument is open.
-    pub fn open(instrument: Option<&Path>, root: Option<&Path>) -> Self {
+    /// A canvas drawing nothing, until [`reload`](Self::reload) hands it a document.
+    pub fn empty() -> Self {
         Self {
-            instrument: instrument
-                .map(|path| (path.display().to_string(), root.map(Path::to_path_buf))),
-            loaded: instrument.map(|path| load(&read(path, root))),
+            instrument: None,
+            loaded: None,
             camera: None,
             selection: None,
             also: Vec::new(),
@@ -216,7 +191,7 @@ impl Canvas {
                 self.selection = Some(self.also.remove(0));
             }
         }
-        self.instrument = Some((instrument.to_string(), None));
+        self.instrument = Some(instrument.to_string());
         self.loaded = Some(loaded);
         self.taps.clear();
         self.probes.clear();
@@ -259,7 +234,7 @@ impl Canvas {
 
     /// The server's name for the document drawn, while one is.
     pub fn instrument(&self) -> Option<&str> {
-        self.instrument.as_ref().map(|(name, _)| name.as_str())
+        self.instrument.as_deref()
     }
 
     /// The address of the node whose voice or patch was asked to be opened since the last call.
@@ -347,14 +322,15 @@ impl Canvas {
     }
 
     /// Begin a drag pressed at `point`, in canvas units: a wire from the output port there, else a
-    /// move of the box there and the rest of the selection with it, else a pan.
-    fn press(&mut self, point: Pos2, shift: bool) {
+    /// move of the box there and the rest of the selection with it, else a pan. Which inputs take
+    /// a wire is asked of the server through `channel`.
+    fn press(&mut self, point: Pos2, shift: bool, channel: &dyn Fn() -> Option<Channel>) {
         let Some(doc) = self.doc() else {
             self.drag = Some(Drag::Pan);
             return;
         };
         if let Some(from) = geometry::output_at(&doc.graph, &doc.rects, point, PORT_REACH) {
-            let verdicts = self.verdicts(from).unwrap_or_else(|why| {
+            let verdicts = self.verdicts(from, channel).unwrap_or_else(|why| {
                 self.notice = Some(why);
                 BTreeMap::new()
             });
@@ -433,24 +409,32 @@ impl Canvas {
         }
     }
 
-    /// Ask the document which inputs, and which output pipes, take a wire from `from`.
-    fn verdicts(&self, from: PortRef) -> Result<BTreeMap<PortRef, Option<String>>, String> {
-        let (Some((name, root)), Some(doc)) = (&self.instrument, self.doc()) else {
+    /// Ask the server which inputs, and which output pipes, of the document drawn take a wire from
+    /// `from`.
+    fn verdicts(
+        &self,
+        from: PortRef,
+        channel: &dyn Fn() -> Option<Channel>,
+    ) -> Result<BTreeMap<PortRef, Option<String>>, String> {
+        let (Some(name), Some(doc)) = (&self.instrument, self.doc()) else {
             return Ok(BTreeMap::new());
         };
         let Some(source) = gesture::wire_source(&doc.graph, from) else {
             return Ok(BTreeMap::new());
         };
-        let answer = wire_compatibility(
-            &WireCompatibility {
-                source: name.clone(),
-                from: source,
-                to: None,
-            },
-            &store(Path::new(name), root.as_deref()),
-        )
-        .map_err(|refusal| refusal.message)?;
-        Ok((answer.output.verdicts.into_iter())
+        let Some(channel) = channel() else {
+            return Err("no engine is running to say which inputs take the wire".to_string());
+        };
+        let args = WireCompatibility {
+            source: name.clone(),
+            from: source,
+            to: None,
+        };
+        let answer = call_tool(names::WIRE_COMPATIBILITY, &args, &channel)
+            .map_err(|refusal| refusal.message)?;
+        let answer: WireVerdicts = serde_json::from_value(answer.output)
+            .map_err(|e| format!("the server's wire verdicts could not be read: {e}"))?;
+        Ok((answer.verdicts.into_iter())
             .filter_map(|verdict| {
                 let at = gesture::target_ref(&doc.graph, &verdict.target)?;
                 Some((at, verdict.reason.filter(|_| !verdict.ok)))
@@ -563,12 +547,14 @@ impl Canvas {
     ///
     /// `rejected` is what the last edit of the drawn document was turned away with, shown on the
     /// boxes and ports it names beside what the load report says. `levels` is the engine's latest
-    /// reading of the probed nodes, drawn on the boxes that meter them.
+    /// reading of the probed nodes, drawn on the boxes that meter them. `channel` reaches the
+    /// server, which says which inputs take a wire being drawn.
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
         rejected: &[Diag],
         levels: &[ProbeLevels],
+        channel: &dyn Fn() -> Option<Channel>,
     ) -> Vec<Gesture> {
         let doc = match &self.loaded {
             None => {
@@ -625,7 +611,7 @@ impl Canvas {
         let primary = egui::PointerButton::Primary;
         if response.drag_started_by(primary) {
             if let Some(origin) = ui.input(|i| i.pointer.press_origin()) {
-                self.press(to_canvas(origin), shift);
+                self.press(to_canvas(origin), shift, channel);
             }
         } else if response.drag_started() {
             self.drag = Some(Drag::Pan);
@@ -933,18 +919,45 @@ fn moved(doc: &Document, boxes: &[usize], by: Vec2) -> Vec<LayoutPosition> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use reuben_api::authoring::{
-        add_instrument_interface_output, add_instrument_node, new_instrument,
+        add_instrument_interface_output, add_instrument_node, new_instrument, read_instrument,
         set_instrument_layout, AddInstrumentInterfaceOutput, AddInstrumentNode, LayoutTarget,
-        NewInstrument, Report, SetInstrumentLayout,
+        NewInstrument, ReadInstrument, Report, SetInstrumentLayout,
     };
+    use reuben_api::FsResolver;
     use serde_json::json;
 
     use super::place::{overlaps, place};
     use super::*;
     use crate::config::test_support::TempConfig;
+    use crate::session::test_support::{Rig, Scratch};
+
+    /// Read the instrument file at `instrument` from disk, as the server's tree read answers it.
+    fn read(instrument: &Path) -> Result<InstrumentStructure, String> {
+        let source = instrument.display().to_string();
+        read_instrument(
+            &ReadInstrument {
+                source: source.clone(),
+            },
+            &FsResolver::for_document(&source).stat_only(),
+        )
+        .map(|answer| answer.output)
+        .map_err(|refusal| refusal.message)
+    }
+
+    /// A canvas drawing the instrument file at `instrument`.
+    fn opened(instrument: &Path) -> Canvas {
+        let mut canvas = Canvas::empty();
+        canvas.reload(&instrument.display().to_string(), &read(instrument));
+        canvas
+    }
+
+    /// The server a canvas asks while no engine is running.
+    fn no_engine() -> Option<Channel> {
+        None
+    }
 
     /// The three documents the canvas has to stay legible on.
     const LIBRARY: [&str; 3] = ["acid-techno", "groovebox", "breath-harp"];
@@ -953,7 +966,7 @@ mod tests {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../instruments")
             .join(format!("{name}.json"));
-        load(&read(&path, None)).unwrap_or_else(|e| panic!("{name} reads: {e}"))
+        load(&read(&path)).unwrap_or_else(|e| panic!("{name} reads: {e}"))
     }
 
     /// `doc`'s graph with every stored position dropped, so the test is of the placement rule
@@ -986,7 +999,7 @@ mod tests {
     fn a_double_click_opens_only_a_node_that_references_a_voice_or_patch() {
         let path =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../instruments/acid-techno.json");
-        let canvas = Canvas::open(Some(&path), None);
+        let canvas = opened(&path);
         let doc = canvas.doc().expect("it reads");
         let centre = |address: &str| {
             doc.rects[doc
@@ -1073,7 +1086,7 @@ mod tests {
             &store,
         )
         .unwrap();
-        let before = load(&read(&path, None)).unwrap();
+        let before = load(&read(&path)).unwrap();
         let unmoved = before.graph.index_of(&Item::Node(address.clone())).unwrap();
         assert_eq!(before.graph.boxes[unmoved].stored, None);
         set_instrument_layout(
@@ -1090,7 +1103,7 @@ mod tests {
         )
         .unwrap();
 
-        let after = load(&read(&path, None)).unwrap();
+        let after = load(&read(&path)).unwrap();
         let moved = after.graph.index_of(&Item::Node(address)).unwrap();
         assert_eq!(after.rects[moved].min, Pos2::new(640.0, -120.0));
         assert_eq!(overlaps(&after.rects), []);
@@ -1124,7 +1137,7 @@ mod tests {
             .unwrap();
         };
         add("/kept");
-        let mut canvas = Canvas::open(Some(&path), None);
+        let mut canvas = opened(&path);
         let camera = Camera {
             offset: egui::Vec2::new(7.0, -3.0),
             zoom: 0.5,
@@ -1138,13 +1151,13 @@ mod tests {
         let before = boxes(&canvas);
 
         add("/added");
-        canvas.reload(&path.display().to_string(), &read(&path, None));
+        canvas.reload(&path.display().to_string(), &read(&path));
         assert_eq!(boxes(&canvas), before + 1);
         assert_eq!(canvas.camera, Some(camera));
         assert_eq!(canvas.selection, Some(Item::Node("/kept".into())));
 
         canvas.selection = Some(Item::Node("/gone".into()));
-        canvas.reload(&path.display().to_string(), &read(&path, None));
+        canvas.reload(&path.display().to_string(), &read(&path));
         assert_eq!(canvas.selection, None);
     }
 
@@ -1153,7 +1166,7 @@ mod tests {
         let scratch = crate::session::test_support::Scratch::new("canvas_missing_sample");
         let lib = scratch.library();
         std::fs::remove_file(lib.join("samples/testvox.wav")).expect("the sample is there");
-        let doc = load(&read(&lib.join("granular-cloud.json"), None)).expect("it reads");
+        let doc = load(&read(&lib.join("granular-cloud.json"))).expect("it reads");
         let cloud = doc.graph.index_of(&Item::Node("/cloud".into())).unwrap();
         let problems = &doc.graph.boxes[cloud].problems;
         assert!(
@@ -1166,12 +1179,12 @@ mod tests {
     #[test]
     fn a_file_that_is_not_a_document_is_reported_not_drawn() {
         let missing = PathBuf::from("does-not-exist.json");
-        assert!(load(&read(&missing, None)).is_err());
+        assert!(load(&read(&missing)).is_err());
     }
 
     #[test]
     fn a_click_selects_the_box_under_it_and_a_click_on_nothing_clears() {
-        let mut canvas = Canvas::open(None, None);
+        let mut canvas = Canvas::empty();
         canvas.loaded = Some(Ok(library("breath-harp")));
         let (item, inside, outside) = {
             let Some(Ok(doc)) = &canvas.loaded else {
@@ -1192,7 +1205,7 @@ mod tests {
 
     #[test]
     fn the_selection_shown_is_the_box_selected_first() {
-        let mut canvas = Canvas::open(None, None);
+        let mut canvas = Canvas::empty();
         let (first, second) = (Item::Node("/a".into()), Item::Node("/b".into()));
         canvas.select(Some(first.clone()));
         canvas.toggle(second.clone());
@@ -1205,7 +1218,7 @@ mod tests {
 
     #[test]
     fn no_instrument_has_nothing_to_select() {
-        let mut canvas = Canvas::open(None, None);
+        let mut canvas = Canvas::empty();
         canvas.click(Pos2::ZERO, 1.0, false);
         assert_eq!(canvas.selection, None);
     }
@@ -1270,15 +1283,20 @@ mod tests {
         }
 
         fn canvas(&self) -> Canvas {
-            Canvas::open(Some(&self.path), None)
+            opened(&self.path)
         }
 
         fn reload(&self, canvas: &mut Canvas) {
-            canvas.reload(&self.path.display().to_string(), &read(&self.path, None));
+            canvas.reload(&self.path.display().to_string(), &read(&self.path));
         }
 
         fn source(&self) -> String {
             self.path.display().to_string()
+        }
+
+        /// A server with the seed open, for a canvas to ask which inputs take a wire.
+        fn served(&self, test: &str) -> Rig {
+            Rig::on(Scratch::new(test), self.path.clone())
         }
     }
 
@@ -1318,11 +1336,12 @@ mod tests {
     fn a_wire_dragged_from_an_output_marks_the_inputs_that_take_it_and_wires_the_one_dropped_on() {
         let seed = Seed::new();
         let mut canvas = seed.canvas();
+        let rig = seed.served("canvas_wire_marks");
         let (from, start) = port(&canvas, "/osc", "audio", true);
         let (cutoff, cutoff_at) = port(&canvas, "/filter", "cutoff", false);
         let (sync, _) = port(&canvas, "/clock", "sync", false);
 
-        canvas.press(start + Vec2::new(2.0, 1.0), false);
+        canvas.press(start + Vec2::new(2.0, 1.0), false, &rig.channel_source());
         let Some(Drag::Wire {
             from: f, verdicts, ..
         }) = &canvas.drag
@@ -1349,14 +1368,17 @@ mod tests {
     fn a_wire_dropped_on_an_input_that_refuses_it_edits_nothing_and_says_why() {
         let seed = Seed::new();
         let mut canvas = seed.canvas();
+        let rig = seed.served("canvas_wire_refused");
+        let channel = rig.channel_source();
         let (_, start) = port(&canvas, "/osc", "audio", true);
         let (_, sync_at) = port(&canvas, "/clock", "sync", false);
-        canvas.press(start, false);
+        canvas.press(start, false, &channel);
+        assert_eq!(canvas.notice, None, "the server answered");
         assert_eq!(canvas.release(sync_at), None);
         assert!(canvas.notice.is_some());
 
         canvas.notice = None;
-        canvas.press(start, false);
+        canvas.press(start, false, &channel);
         assert_eq!(canvas.release(sync_at + Vec2::new(0.0, 400.0)), None);
         assert_eq!(canvas.notice, None, "a drop on nothing is not a refusal");
     }
@@ -1367,7 +1389,7 @@ mod tests {
         let mut canvas = seed.canvas();
         let osc = Item::Node("/osc".into());
         let by = Vec2::new(10.0, 25.0);
-        canvas.press(middle_of(&canvas, &osc), false);
+        canvas.press(middle_of(&canvas, &osc), false, &no_engine);
         assert_eq!(canvas.selection, Some(osc.clone()));
         canvas.drag_to(Pos2::ZERO, by * 0.5);
         canvas.drag_to(Pos2::ZERO, by * 0.5);
@@ -1400,7 +1422,7 @@ mod tests {
         let mut canvas = seed.canvas();
         let (osc, clock) = (Item::Node("/osc".into()), Item::Node("/clock".into()));
         canvas.click(middle_of(&canvas, &osc), 1.0, false);
-        canvas.press(middle_of(&canvas, &clock), true);
+        canvas.press(middle_of(&canvas, &clock), true, &no_engine);
         assert_eq!(canvas.selected(), [&osc, &clock]);
         canvas.drag_to(Pos2::ZERO, Vec2::new(5.0, 0.0));
         let Some(Gesture::Move(positions)) = canvas.release(Pos2::ZERO) else {
@@ -1417,7 +1439,7 @@ mod tests {
         }
 
         let nowhere = geometry::bounds(doc.rects.iter().copied()).unwrap().max + Vec2::splat(500.0);
-        canvas.press(nowhere, false);
+        canvas.press(nowhere, false, &no_engine);
         assert_eq!(canvas.drag, Some(Drag::Pan));
         assert_eq!(canvas.release(nowhere), None);
     }
@@ -1426,7 +1448,11 @@ mod tests {
     fn a_box_pressed_without_moving_is_no_edit() {
         let seed = Seed::new();
         let mut canvas = seed.canvas();
-        canvas.press(middle_of(&canvas, &Item::Node("/osc".into())), false);
+        canvas.press(
+            middle_of(&canvas, &Item::Node("/osc".into())),
+            false,
+            &no_engine,
+        );
         assert_eq!(canvas.release(Pos2::ZERO), None);
     }
 
@@ -1481,8 +1507,9 @@ mod tests {
             geometry::input_pos(&doc.graph.boxes[i], doc.rects[i], 0)
         };
         let (_, start) = port(&canvas, "/osc", "audio", true);
+        let rig = seed.served("canvas_wire_feeds_pipe");
 
-        canvas.press(start, false);
+        canvas.press(start, false, &rig.channel_source());
         let Some(Drag::Wire { verdicts, .. }) = &canvas.drag else {
             panic!("not a wire: {:?}", canvas.drag)
         };
@@ -1679,7 +1706,7 @@ mod tests {
         let starts = [middle_of(&canvas, &Item::Node("/clock".into())), start];
         unwire_elsewhere(&seed);
         for start in starts {
-            canvas.press(start, false);
+            canvas.press(start, false, &no_engine);
             assert!(
                 matches!(canvas.drag, Some(Drag::Move { .. } | Drag::Wire { .. })),
                 "{:?}",
@@ -1697,7 +1724,7 @@ mod tests {
             assert_eq!(canvas.drag, None);
         }
 
-        canvas.press(Pos2::new(-5000.0, -5000.0), false);
+        canvas.press(Pos2::new(-5000.0, -5000.0), false, &no_engine);
         assert_eq!(canvas.drag, Some(Drag::Pan));
         seed.reload(&mut canvas);
         canvas.dragged(Pos2::ZERO, Vec2::new(10.0, 0.0));
