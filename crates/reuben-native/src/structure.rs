@@ -356,35 +356,42 @@ impl NativeHost {
     /// The directories a client may name: the library root, every [offered](Self::offer_dir)
     /// directory and the open instrument's directory, absolute and normalized, each once.
     fn offered_dirs(&self, open: Option<&str>) -> Vec<PathBuf> {
-        self.walked_dirs(open)
-            .into_iter()
-            .map(|(dir, _)| dir)
-            .collect()
-    }
-
-    /// [`offered_dirs`](Self::offered_dirs), each with whether [`offered`](EngineHost::offered)
-    /// lists beneath it: the library root's and the open instrument's directory's subdirectories
-    /// list, an offered directory's do not, since one may be as wide as a home directory. A
-    /// directory named twice keeps the first one's depth.
-    fn walked_dirs(&self, open: Option<&str>) -> Vec<(PathBuf, bool)> {
         let open_dir = open
             .and_then(|source| lexical_absolute(Path::new(source)))
             .and_then(|source| source.parent().map(Path::to_path_buf));
         let extra = self.extra_dirs().clone();
-        let mut dirs: Vec<(PathBuf, bool)> = Vec::new();
-        for (dir, deep) in self
+        let mut dirs = Vec::new();
+        for dir in self
             .library_root
             .iter()
             .filter_map(|root| lexical_absolute(root))
-            .map(|root| (root, true))
-            .chain(extra.into_iter().map(|dir| (dir, false)))
-            .chain(open_dir.map(|dir| (dir, true)))
+            .chain(extra)
+            .chain(open_dir)
         {
-            if !dirs.iter().any(|(seen, _)| *seen == dir) {
-                dirs.push((dir, deep));
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
             }
         }
         dirs
+    }
+
+    /// [`offered_dirs`](Self::offered_dirs), each with whether [`offered`](EngineHost::offered)
+    /// lists beneath it. The library root's and the open instrument's directory's subdirectories
+    /// list, wherever else that directory was named from: "Open file…" offers the file's own
+    /// directory before it opens the file, and its voices and samples must still list. Any other
+    /// offered directory lists only its own files, since one may be as wide as a home directory.
+    fn walked_dirs(&self, open: Option<&str>) -> Vec<(PathBuf, bool)> {
+        let root = (self.library_root.as_deref()).and_then(lexical_absolute);
+        let open_dir = open
+            .and_then(|source| lexical_absolute(Path::new(source)))
+            .and_then(|source| source.parent().map(Path::to_path_buf));
+        self.offered_dirs(open)
+            .into_iter()
+            .map(|dir| {
+                let deep = Some(&dir) == root.as_ref() || Some(&dir) == open_dir.as_ref();
+                (dir, deep)
+            })
+            .collect()
     }
 
     /// Offer `dir` from now on, beside the library root and the open instrument's directory, in
@@ -1189,7 +1196,45 @@ mod tests {
         );
         assert_eq!(
             host.offered(ListWhat::Instruments, Some(&abs("offered/o.json"))),
-            [abs("offered/o.json")]
+            [abs("offered/nested/n.json"), abs("offered/o.json")]
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// "Open file…", the command line and a recent each offer the file's own directory and then
+    /// open the file: its voices and samples still list, and once another instrument is open the
+    /// offered directory lists only its own files again.
+    #[test]
+    fn an_offered_dir_that_is_also_the_open_dir_lists_its_subdirectories() {
+        let (base, abs) = scratch_dir("offer-open-dir-test");
+        std::fs::create_dir_all(base.join("mine/voices")).unwrap();
+        std::fs::create_dir_all(base.join("mine/samples")).unwrap();
+        std::fs::create_dir_all(base.join("other")).unwrap();
+        for file in [
+            "mine/top.json",
+            "mine/voices/v.json",
+            "mine/samples/s.wav",
+            "other/x.json",
+        ] {
+            std::fs::write(abs(file), "").unwrap();
+        }
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let host = NativeHost::new(Diagnostics::new(), tx);
+        host.offer_dir(&base.join("mine"));
+        let open = abs("mine/top.json");
+
+        assert_eq!(
+            host.offered(ListWhat::Instruments, Some(&open)),
+            [abs("mine/top.json"), abs("mine/voices/v.json")]
+        );
+        assert_eq!(
+            host.offered(ListWhat::Samples, Some(&open)),
+            [abs("mine/samples/s.wav")]
+        );
+        let elsewhere = abs("other/x.json");
+        assert_eq!(
+            host.offered(ListWhat::Instruments, Some(&elsewhere)),
+            [abs("mine/top.json"), abs("other/x.json")]
         );
         let _ = std::fs::remove_dir_all(&base);
     }
