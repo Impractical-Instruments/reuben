@@ -58,7 +58,7 @@ impl NormalizedDoc {
     /// This document as the child a `subpatch` node's `bind` rebinds: `bound` (child resource id
     /// → canonical source, see [`InstrumentDoc::bound`]) answers ahead of its `resources` table.
     /// Load-session state only — the shape is untouched, so the invariant still holds.
-    pub(super) fn with_bound(&self, bound: BTreeMap<String, Option<String>>) -> Self {
+    pub(crate) fn with_bound(&self, bound: BTreeMap<String, Option<String>>) -> Self {
         let mut doc = self.0.clone();
         doc.bound = bound;
         NormalizedDoc(doc)

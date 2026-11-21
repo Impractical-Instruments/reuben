@@ -630,6 +630,7 @@ mod tests {
                 },
             ],
             resources: Vec::new(),
+            bind: Vec::new(),
             ports: NodePorts {
                 inputs: vec![
                     port("audio", "signal"),

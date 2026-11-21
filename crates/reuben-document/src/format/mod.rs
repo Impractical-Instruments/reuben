@@ -486,11 +486,15 @@ pub struct NodeDoc {
     /// the source this document's `resources` table gives instead of its own row — so one child
     /// document is reused with a different sample per use. The child still declares its own
     /// default for every id it lets a host bind, and stays a complete instrument on its own: a
-    /// key naming no row in the child's `resources` is the fatal [`LoadError::UnknownBinding`],
-    /// and the field on any other operator is [`LoadError::UnknownResource`] (slot `bind`). A
-    /// value missing from this document's table is the non-fatal
-    /// [`LoadWarning::MissingResource`]: the child's reference degrades as its own missing id
-    /// would.
+    /// key naming no row in the child's `resources` is the fatal [`LoadError::UnknownBinding`]
+    /// (checked against the child, so not while the child is unavailable and the node dark), and
+    /// the field on any other operator is [`LoadError::UnknownResource`] (slot `bind`). A value
+    /// missing from this document's table is the non-fatal [`LoadWarning::MissingResource`]: the
+    /// child's reference degrades as its own missing id would.
+    ///
+    /// The child reads a bound id through every slot, its own `patch` refs and `bind` values
+    /// included — so binding a child's `patch` id swaps which grandchild it nests, and a child
+    /// forwarding a bound id through its own `bind` hands the grandchild this document's source.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub bind: BTreeMap<String, String>,
     /// This node's editor canvas position; editor-owned, see [`Layout`].
@@ -1417,18 +1421,74 @@ fn lookup_source(
     referrer: Option<&str>,
     warnings: &mut Vec<LoadWarning>,
 ) -> Option<String> {
-    if let Some(bound) = doc.bound.get(id) {
-        return bound.clone();
+    match doc.source_of(id, resolver, referrer) {
+        ResourceSource::Canonical(canon) => Some(canon),
+        ResourceSource::Unfilled => None,
+        ResourceSource::Missing => {
+            warnings.push(LoadWarning::MissingResource {
+                node: node.to_string(),
+                slot,
+                id: id.to_string(),
+            });
+            None
+        }
     }
-    let Some(source) = doc.resources.get(id) else {
-        warnings.push(LoadWarning::MissingResource {
-            node: node.to_string(),
-            slot,
-            id: id.to_string(),
-        });
-        return None;
-    };
-    Some(resolver.canonical(source, referrer))
+}
+
+/// Where one resource id of a document leads, as the loader reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ResourceSource {
+    /// The canonical source the loader fetches.
+    Canonical(String),
+    /// The id is in neither the document's `resources` table nor its bindings.
+    Missing,
+    /// A hosting `subpatch` bound the id to a row its own table lacks.
+    Unfilled,
+}
+
+impl InstrumentDoc {
+    /// Where `id` leads in this document: a binding a hosting `subpatch` placed on it first
+    /// ([`InstrumentDoc::bound`], already canonical), else its own `resources` row canonicalized
+    /// relative to `referrer`. The one statement of the lookup, so the loader and every reader
+    /// that has to agree with it (the Swap manifest) resolve an id the same way.
+    pub(crate) fn source_of(
+        &self,
+        id: &str,
+        resolver: &dyn ResourceResolver,
+        referrer: Option<&str>,
+    ) -> ResourceSource {
+        if let Some(bound) = self.bound.get(id) {
+            return match bound {
+                Some(canon) => ResourceSource::Canonical(canon.clone()),
+                None => ResourceSource::Unfilled,
+            };
+        }
+        match self.resources.get(id) {
+            Some(source) => ResourceSource::Canonical(resolver.canonical(source, referrer)),
+            None => ResourceSource::Missing,
+        }
+    }
+
+    /// The bindings `node`'s `bind` places on the child it nests, each value looked up through
+    /// [`source_of`](Self::source_of) in this document — the map
+    /// [`NormalizedDoc::with_bound`] takes. Pushes no warning; the loader's subpatch pass warns.
+    pub(crate) fn bindings_of(
+        &self,
+        node: &NodeDoc,
+        resolver: &dyn ResourceResolver,
+        referrer: Option<&str>,
+    ) -> BTreeMap<String, Option<String>> {
+        node.bind
+            .iter()
+            .map(|(key, id)| {
+                let source = match self.source_of(id, resolver, referrer) {
+                    ResourceSource::Canonical(canon) => Some(canon),
+                    ResourceSource::Missing | ResourceSource::Unfilled => None,
+                };
+                (key.clone(), source)
+            })
+            .collect()
+    }
 }
 
 /// The voice-pool size for a Voicer node: the node's **stored** value for the
@@ -5956,6 +6016,23 @@ mod tests {
                 other.map(|l| l.warnings)
             ),
         }
+    }
+
+    #[test]
+    fn a_bind_key_on_a_dark_child_is_checked_once_the_child_resolves() {
+        // While the child is unavailable there are no keys to check it against: the host loads
+        // dark, as any unavailable child does, and the typo is the fatal error once it resolves.
+        let json = r#"{"format_version":4,"instrument":"host",
+            "resources":{"voice":"lib/voice","scrape":"lib/scrape"},
+            "nodes":[{"type":"subpatch","address":"/a","patch":"voice",
+                      "bind":{"smaple":"scrape"}}]}"#;
+        let dark = load_instrument(json, &reg(), &crate::resources::MemoryResolver::new())
+            .expect("a dark child validates no keys");
+        assert!(!dark.availability_held(), "{:?}", dark.warnings);
+        assert!(matches!(
+            load_instrument(json, &reg(), &Library::new()),
+            Err(LoadError::UnknownBinding { .. })
+        ));
     }
 
     #[test]

@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::format::NormalizedDoc;
+use crate::format::{NodeDoc, NormalizedDoc, ResourceSource};
 use crate::resources::ResourceResolver;
 use crate::DiffSummary;
 use reuben_core::coordinator::MigrationTable;
@@ -194,7 +194,7 @@ fn walk_document(
 /// Plan's latches win, so a param edit survives.
 fn node_fingerprint(
     doc: &NormalizedDoc,
-    node: &crate::format::NodeDoc,
+    node: &NodeDoc,
     descriptor: &Descriptor,
     referrer: Option<&str>,
     registry: &Registry,
@@ -224,7 +224,7 @@ fn node_fingerprint(
         if let Some(id) = &node.voice {
             h.tag(b"voice");
             h.write_u64(hosted_doc_identity(
-                doc, id, referrer, registry, resolver, depth,
+                doc, id, None, referrer, registry, resolver, depth,
             ));
         }
     }
@@ -233,18 +233,18 @@ fn node_fingerprint(
 }
 
 /// The content identity of a `sample` resource: its decoded bytes (channels + sample rate),
-/// resolved through the same canonicalization the loader uses. A missing id or a resolve/decode
-/// failure hashes to a fixed sentinel (so two equally-broken resolutions match).
+/// resolved through the loader's own lookup — a binding a hosting `subpatch` placed on `doc`
+/// included. A missing id or a resolve/decode failure hashes to a fixed sentinel (so two
+/// equally-broken resolutions match).
 fn sample_identity(
     doc: &NormalizedDoc,
     id: &str,
     referrer: Option<&str>,
     resolver: &dyn ResourceResolver,
 ) -> u64 {
-    let Some(source) = doc.resources.get(id) else {
+    let ResourceSource::Canonical(canon) = doc.source_of(id, resolver, referrer) else {
         return UNRESOLVED_MISSING;
     };
-    let canon = resolver.canonical(source, referrer);
     match resolver.resolve(&canon) {
         Ok(buffer) => buffer_identity(&buffer),
         Err(_) => UNRESOLVED_FAILED,
@@ -271,10 +271,12 @@ fn buffer_identity(buffer: &SampleBuffer) -> u64 {
 /// The recursive content identity of a hosted document (a `voice` or `patch` source):
 /// the child's canonical JSON bytes **plus** the content identity of everything *it* resolves —
 /// samples, and its own hosted documents, recursively. This is what makes the parent's fingerprint
-/// sensitive to a change buried inside a hosted voice patch.
+/// sensitive to a change buried inside a hosted voice patch. `nest` is the `subpatch` node making
+/// the reference, whose `bind` the child is built under.
 fn hosted_doc_identity(
     doc: &NormalizedDoc,
     id: &str,
+    nest: Option<&NodeDoc>,
     referrer: Option<&str>,
     registry: &Registry,
     resolver: &dyn ResourceResolver,
@@ -283,73 +285,93 @@ fn hosted_doc_identity(
     if depth > MAX_DEPTH {
         return UNRESOLVED_FAILED;
     }
-    let Some(source) = doc.resources.get(id) else {
+    let ResourceSource::Canonical(canon) = doc.source_of(id, resolver, referrer) else {
         return UNRESOLVED_MISSING;
     };
-    let canon = resolver.canonical(source, referrer);
     let Ok(text) = resolver.resolve_text(&canon) else {
         return UNRESOLVED_FAILED;
     };
-    doc_content_identity(&text, &canon, registry, resolver, depth + 1)
+    match NormalizedDoc::from_json(&text, registry, Some(resolver)) {
+        Ok(child) => {
+            let child = bound_child(doc, child, nest, referrer, resolver);
+            doc_content_identity(&child, &canon, registry, resolver, depth + 1)
+        }
+        // A resolved-but-malformed child: the build would have failed too, but the fingerprint
+        // must still be a deterministic function of the content.
+        Err(_) => {
+            let mut h = Fnv::new();
+            h.tagged(b"raw", text.as_bytes());
+            h.finish()
+        }
+    }
 }
 
-/// The content identity of a document given its source text: the canonical (re-serialized) JSON
-/// less its editor-only `layout`, plus each node's resolved sample/voice/patch content, recursively. Re-serializing through
-/// [`NormalizedDoc`] makes the identity insensitive to source-text formatting (matching
-/// [`crate::content_hash`]); a text that fails to parse falls back to its raw bytes so content
-/// still gates.
+/// `child` as the loader builds it under `nest`'s `bind`, each value looked up in `host`.
+fn bound_child(
+    host: &NormalizedDoc,
+    child: NormalizedDoc,
+    nest: Option<&NodeDoc>,
+    referrer: Option<&str>,
+    resolver: &dyn ResourceResolver,
+) -> NormalizedDoc {
+    match nest.filter(|n| !n.bind.is_empty()) {
+        Some(n) => child.with_bound(host.bindings_of(n, resolver, referrer)),
+        None => child,
+    }
+}
+
+/// The content identity of a parsed document: the canonical (re-serialized) JSON less its
+/// editor-only `layout`, plus each node's resolved sample/voice/patch content, recursively.
+/// Re-serializing through [`NormalizedDoc`] makes the identity insensitive to source-text
+/// formatting (matching [`crate::content_hash`]). The resolved content is read through `child`'s
+/// own bindings, so a bound source's bytes count rather than the default's.
 fn doc_content_identity(
-    text: &str,
+    child: &NormalizedDoc,
     canon: &str,
     registry: &Registry,
     resolver: &dyn ResourceResolver,
     depth: usize,
 ) -> u64 {
     let mut h = Fnv::new();
-    match NormalizedDoc::from_json(text, registry, Some(resolver)) {
-        Ok(child) => {
-            h.tagged(b"doc", child.engine_json().as_bytes());
-            for node in &child.nodes {
-                let Some(descriptor) = registry.get(&node.type_name).map(|e| &e.descriptor) else {
-                    continue;
-                };
-                if descriptor.has_resource("sample") {
-                    if let Some(id) = &node.sample {
-                        h.tag(b"s");
-                        h.write_u64(sample_identity(&child, id, Some(canon), resolver));
-                    }
-                }
-                if descriptor.has_resource("voice") {
-                    if let Some(id) = &node.voice {
-                        h.tag(b"v");
-                        h.write_u64(hosted_doc_identity(
-                            &child,
-                            id,
-                            Some(canon),
-                            registry,
-                            resolver,
-                            depth,
-                        ));
-                    }
-                }
-                if descriptor.has_resource("patch") {
-                    if let Some(id) = &node.patch {
-                        h.tag(b"p");
-                        h.write_u64(hosted_doc_identity(
-                            &child,
-                            id,
-                            Some(canon),
-                            registry,
-                            resolver,
-                            depth,
-                        ));
-                    }
-                }
+    h.tagged(b"doc", child.engine_json().as_bytes());
+    for node in &child.nodes {
+        let Some(descriptor) = registry.get(&node.type_name).map(|e| &e.descriptor) else {
+            continue;
+        };
+        if descriptor.has_resource("sample") {
+            if let Some(id) = &node.sample {
+                h.tag(b"s");
+                h.write_u64(sample_identity(child, id, Some(canon), resolver));
             }
         }
-        // A resolved-but-malformed child: the build would have failed too, but the fingerprint
-        // must still be a deterministic function of the content.
-        Err(_) => h.tagged(b"raw", text.as_bytes()),
+        if descriptor.has_resource("voice") {
+            if let Some(id) = &node.voice {
+                h.tag(b"v");
+                h.write_u64(hosted_doc_identity(
+                    child,
+                    id,
+                    None,
+                    Some(canon),
+                    registry,
+                    resolver,
+                    depth,
+                ));
+            }
+        }
+        if descriptor.has_resource("patch") {
+            if let Some(id) = &node.patch {
+                h.tag(b"p");
+                h.write_u64(hosted_doc_identity(
+                    child,
+                    id,
+                    Some(node),
+                    Some(canon),
+                    registry,
+                    resolver,
+                    depth,
+                ));
+            }
+        }
     }
     h.finish()
 }
@@ -357,19 +379,22 @@ fn doc_content_identity(
 /// Resolve a subpatch node's child document (its `patch` source) to a parsed [`NormalizedDoc`]
 /// plus its canonical id, mirroring the loader's subpatch pass (resolve → canonicalize → parse).
 /// `None` on any availability failure (no patch ref, missing id, unreadable/malformed text) — a
-/// dark subpatch, which contributes no Plan nodes.
+/// dark subpatch, which contributes no Plan nodes. The child comes back under `node`'s `bind`, as
+/// the loader builds it.
 fn resolve_child_doc(
     doc: &NormalizedDoc,
-    node: &crate::format::NodeDoc,
+    node: &NodeDoc,
     referrer: Option<&str>,
     registry: &Registry,
     resolver: &dyn ResourceResolver,
 ) -> Option<(NormalizedDoc, String)> {
     let id = node.patch.as_ref()?;
-    let source = doc.resources.get(id)?;
-    let canon = resolver.canonical(source, referrer);
+    let ResourceSource::Canonical(canon) = doc.source_of(id, resolver, referrer) else {
+        return None;
+    };
     let text = resolver.resolve_text(&canon).ok()?;
     let child = NormalizedDoc::from_json(&text, registry, Some(resolver)).ok()?;
+    let child = bound_child(doc, child, Some(node), referrer, resolver);
     Some((child, canon))
 }
 
@@ -607,6 +632,107 @@ mod tests {
             fingerprint(&original, "/voicer"),
             fingerprint(&changed, "/voicer"),
             "a change inside the hosted voice document must change the parent's fingerprint"
+        );
+    }
+
+    /// A sampled child whose own `sample` row defaults to `lib/default` — the bindable case.
+    const BOUND_CHILD: &str = r#"{ "format_version": 4, "instrument": "voice",
+        "resources": { "sample": "lib/default" },
+        "interface": { "outputs": { "audio": { "from": "/s.audio" } } },
+        "nodes": [ { "type": "sample", "address": "/s", "sample": "sample" } ] }"#;
+
+    /// A host nesting [`BOUND_CHILD`] at `/a` with `sample` bound to the host id `bound`, whose
+    /// row points at `source`.
+    fn bound_host(bound: &str, source: &str) -> String {
+        format!(
+            r#"{{ "format_version": 4, "instrument": "host",
+                 "resources": {{ "voice": "lib/voice", "{bound}": "{source}" }},
+                 "interface": {{ "outputs": {{ "out": {{ "from": "/a.audio" }} }} }},
+                 "nodes": [ {{ "type": "subpatch", "address": "/a", "patch": "voice",
+                               "bind": {{ "sample": "{bound}" }} }} ] }}"#
+        )
+    }
+
+    /// [`BOUND_CHILD`] plus samples whose bytes all differ.
+    fn bound_resolver() -> MemoryResolver {
+        let mut r = MemoryResolver::new();
+        r.insert_text("lib/voice", BOUND_CHILD);
+        for (key, level) in [
+            ("lib/default", 0.1),
+            ("lib/scrape", 0.25),
+            ("lib/hiss", 0.5),
+        ] {
+            r.insert_sample(key, SampleBuffer::new(vec![vec![level; 4]], 48_000.0));
+        }
+        r
+    }
+
+    #[test]
+    fn rebinding_a_subpatch_to_another_host_id_resets_the_bound_node() {
+        let resolver = bound_resolver();
+        let old = manifest_for(&bound_host("scrape", "lib/scrape"), &resolver);
+        let new = manifest_for(&bound_host("hiss", "lib/hiss"), &resolver);
+        assert_ne!(fingerprint(&old, "/a/s"), fingerprint(&new, "/a/s"));
+        let (_, diff) = old.diff(&new);
+        assert_eq!(diff.state_reset, vec!["/a/s".to_string()], "{diff:?}");
+    }
+
+    #[test]
+    fn repointing_the_bound_host_row_resets_the_bound_node() {
+        let resolver = bound_resolver();
+        let old = manifest_for(&bound_host("scrape", "lib/scrape"), &resolver);
+        let new = manifest_for(&bound_host("scrape", "lib/hiss"), &resolver);
+        let (_, diff) = old.diff(&new);
+        assert_eq!(diff.state_reset, vec!["/a/s".to_string()], "{diff:?}");
+    }
+
+    #[test]
+    fn an_unchanged_binding_keeps_the_bound_node_a_survivor() {
+        let resolver = bound_resolver();
+        let old = manifest_for(&bound_host("scrape", "lib/scrape"), &resolver);
+        let new = manifest_for(&bound_host("scrape", "lib/scrape"), &resolver);
+        let (_, diff) = old.diff(&new);
+        assert_eq!(diff.survived, 1, "{diff:?}");
+        assert!(diff.state_reset.is_empty(), "{diff:?}");
+    }
+
+    #[test]
+    fn a_bound_sample_inside_a_hosted_voice_reaches_the_voicer_fingerprint() {
+        // A voice patch nesting the bindable child: what the voicer hosts includes the bound
+        // sample's bytes, not the child's default.
+        let voice = |bound: &str| {
+            format!(
+                r#"{{ "format_version": 4, "instrument": "v",
+                     "resources": {{ "child": "lib/voice", "b": "{bound}" }},
+                     "interface": {{ "outputs": {{ "audio": {{ "from": "/c.audio" }} }} }},
+                     "nodes": [ {{ "type": "subpatch", "address": "/c", "patch": "child",
+                                   "bind": {{ "sample": "b" }} }} ] }}"#
+            )
+        };
+        let host = r#"{ "format_version": 4, "instrument": "top",
+            "resources": { "v": "lib/v" },
+            "interface": { "outputs": { "out": { "from": "/vo.audio" } } },
+            "nodes": [ { "type": "voicer", "address": "/vo", "voice": "v" } ] }"#;
+        let mut scrape = bound_resolver();
+        scrape.insert_text("lib/v", voice("lib/scrape"));
+        let mut hiss = bound_resolver();
+        hiss.insert_text("lib/v", voice("lib/hiss"));
+        // The voice text unchanged, only the bytes behind its bound row.
+        let mut hiss_bytes = bound_resolver();
+        hiss_bytes.insert_text("lib/v", voice("lib/scrape"));
+        hiss_bytes.insert_sample(
+            "lib/scrape",
+            SampleBuffer::new(vec![vec![0.5; 4]], 48_000.0),
+        );
+        let a = manifest_for(host, &scrape);
+        assert_ne!(
+            fingerprint(&a, "/vo"),
+            fingerprint(&manifest_for(host, &hiss), "/vo")
+        );
+        assert_ne!(
+            fingerprint(&a, "/vo"),
+            fingerprint(&manifest_for(host, &hiss_bytes), "/vo"),
+            "new bytes behind an unchanged bound row must move the voicer's fingerprint"
         );
     }
 

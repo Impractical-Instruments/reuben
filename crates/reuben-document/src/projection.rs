@@ -782,6 +782,10 @@ struct LoadFacts {
     /// Node address → `(slot, why)`, for darkness with **no id to blame at all** — today only a
     /// `subpatch` carrying no `patch` reference.
     dark_nodes: BTreeMap<String, (String, String)>,
+    /// Canonical source → why, for every fetch that failed inside a nested child, at any depth.
+    /// A `bind` hands the child one of *this* document's sources, and the loader reports that
+    /// fetch from inside the child it binds, so this is where a binding's darkness is found.
+    nested_failures: BTreeMap<String, String>,
 }
 
 /// The projection source: one mint, at most one load, from which every view is cut. Doors hold this
@@ -897,11 +901,14 @@ impl<'a> Projector<'a> {
         }
         // The loader canonicalizes a source before fetching it and reports the canonical form, so
         // the lookup has to canonicalize too — the same call `boundary_of` makes.
-        if let Some(why) = facts
-            .dark_sources
-            .get(&(slot.to_string(), self.resolver.canonical(source, None)))
-        {
+        let canon = self.resolver.canonical(source, None);
+        if let Some(why) = facts.dark_sources.get(&(slot.to_string(), canon.clone())) {
             return Some(why.clone());
+        }
+        if slot == "bind" {
+            if let Some(why) = facts.nested_failures.get(&canon) {
+                return Some(why.clone());
+            }
         }
         match facts.dark_nodes.get(node) {
             Some((s, why)) if s == slot => Some(why.clone()),
@@ -1349,6 +1356,7 @@ fn collect_dark(w: &LoadWarning, facts: &mut LoadFacts) {
                 .or_insert_with(|| ("patch".to_string(), w.to_string()));
         }
         LoadWarning::Nested { warning, .. } => {
+            collect_nested_failures(warning, facts);
             if let LoadWarning::ResolveFailed { slot, source, .. } = warning.as_ref() {
                 if matches!(*slot, "voice" | "patch") {
                     // By SOURCE, not by the node the wrapper names or the inner `id`: the loader
@@ -1363,6 +1371,21 @@ fn collect_dark(w: &LoadWarning, facts: &mut LoadFacts) {
                 }
             }
         }
+        _ => {}
+    }
+}
+
+/// File every fetch failure under `w`, however deeply nested, by its canonical source — see
+/// [`LoadFacts::nested_failures`].
+fn collect_nested_failures(w: &LoadWarning, facts: &mut LoadFacts) {
+    match w {
+        LoadWarning::ResolveFailed { source, .. } => {
+            facts
+                .nested_failures
+                .entry(source.clone())
+                .or_insert_with(|| w.to_string());
+        }
+        LoadWarning::Nested { warning, .. } => collect_nested_failures(warning, facts),
         _ => {}
     }
 }
@@ -2398,6 +2421,57 @@ mod tests {
         assert!(!zoom.contains("DARK:"), "{zoom}");
         // The parent's reference is sound, so the child's face still describes.
         assert!(zoom.contains("boundary: child"), "{zoom}");
+    }
+
+    /// A binding is the host's reference, so a host row that names an unreadable file is the
+    /// host's darkness — even though the loader reports the failed fetch from inside the child.
+    #[test]
+    fn a_bound_source_that_fails_to_resolve_is_dark_on_the_binding() {
+        const HOST: &str = r#"{
+            "format_version": 4,
+            "instrument": "host",
+            "resources": { "c": "child.json", "scrape": "typo.wav", "hiss": "hiss.wav" },
+            "nodes": [
+                {"type": "subpatch", "address": "/a", "patch": "c", "bind": {"sample": "scrape"}},
+                {"type": "subpatch", "address": "/b", "patch": "c", "bind": {"sample": "hiss"}}
+            ]
+        }"#;
+        const CHILD: &str = r#"{
+            "format_version": 4,
+            "instrument": "child",
+            "resources": { "sample": "default.wav" },
+            "interface": { "outputs": { "audio": {"from": "/sp.audio"} } },
+            "nodes": [ {"type": "sample", "address": "/sp", "sample": "sample"} ]
+        }"#;
+        struct OnlyHiss;
+        impl ResourceResolver for OnlyHiss {
+            fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+                match source {
+                    "hiss.wav" => Ok(SampleBuffer::new(vec![vec![0.5]], 48_000.0)),
+                    _ => Err(ResolveError::NotFound(source.to_string())),
+                }
+            }
+            fn resolve_text(&self, _: &str) -> Result<String, ResolveError> {
+                Ok(CHILD.to_string())
+            }
+        }
+        let registry = Registry::builtin();
+        let p = Projector::new(HOST, &registry, &OnlyHiss).expect("mints");
+        let index = p.index().render();
+        assert!(index.contains("/a subpatch dark:bind"), "{index}");
+        assert!(!index.contains("/b subpatch dark"), "{index}");
+        let zoom = p.zoom(&Selection::names(["/a", "/b"])).render();
+        assert!(
+            zoom.contains("bind: sample=scrape -> typo.wav DARK:"),
+            "{zoom}"
+        );
+        assert!(
+            zoom.contains("bind: sample=hiss -> hiss.wav\n") || zoom.ends_with("hiss.wav"),
+            "{zoom}"
+        );
+        let res = p.resources().render();
+        let typo = res.lines().find(|l| l.contains("typo.wav")).expect("row");
+        assert!(typo.contains("DARK"), "{res}");
     }
 
     /// A `subpatch` declares no outputs of its own — its ports are its child's face — so sugar

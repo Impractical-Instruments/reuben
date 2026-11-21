@@ -6,7 +6,7 @@
 //! reported a problem* (an ordinary [`Answer`] carrying `ok: false`) and one that could not do the
 //! job at all (a [`Refusal`]).
 
-use alloc::collections::{BTreeSet, VecDeque};
+use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -777,7 +777,9 @@ pub fn read_instrument(
 const DOCUMENT_SLOTS: [&str; 2] = ["voice", "patch"];
 
 /// Read the document at `args.source` and every document it reaches through a `voice` or `patch`
-/// resource: the top first, then breadth-first, each source once.
+/// resource: the top first, then breadth-first, each source once. A `subpatch` node's `bind` is a
+/// reach too: where the child reads a bound id through `voice` or `patch`, the host's document for
+/// it is in the tree.
 ///
 /// Each document is read through `resources` scoped to it, so its references resolve from where
 /// it lives. A document that cannot be read is an entry with `error` set and nothing beneath it;
@@ -789,10 +791,22 @@ pub fn read_instrument_tree(
     let mut seen = BTreeSet::from([resources.canonical(&args.source, None)]);
     let mut documents: Vec<TreeDocument> = Vec::new();
     let mut queue = VecDeque::from([args.source.clone()]);
+    // A read document's key → the ids its nodes read a document through. A binding can only be
+    // followed once its child is read, and a child is read once however many hosts bind it, so
+    // what each read document reads is kept for a binding that arrives after it.
+    let mut reads: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    // A child's key → `(child id, host's source)` bindings still waiting for that child's read.
+    let mut pending: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    let mut follow = |source: &str, queue: &mut VecDeque<String>| {
+        if seen.insert(resources.canonical(source, None)) {
+            queue.push_back(source.to_string());
+        }
+    };
     while let Some(source) = queue.pop_front() {
+        let key = resources.canonical(&source, None);
         let anchored = Anchored {
             store: resources,
-            referrer: resources.canonical(&source, None),
+            referrer: key.clone(),
         };
         let read = read_instrument(
             &ReadInstrument {
@@ -803,19 +817,47 @@ pub fn read_instrument_tree(
         match read {
             Ok(answer) => {
                 let structure = answer.output;
+                let canonical_of = |id: &str| {
+                    (structure.resources.iter())
+                        .find(|e| e.id == id)
+                        .map(|e| e.canonical.clone())
+                };
+                let mut reads_here = BTreeSet::new();
                 for node in &structure.nodes {
                     let Some(slot) = (node.resources.iter())
                         .find(|slot| DOCUMENT_SLOTS.contains(&slot.slot.as_str()))
                     else {
                         continue;
                     };
-                    let Some(entry) = (structure.resources.iter()).find(|e| e.id == slot.id) else {
+                    reads_here.insert(slot.id.clone());
+                    let Some(child) = canonical_of(&slot.id) else {
                         continue;
                     };
-                    if seen.insert(resources.canonical(&entry.canonical, None)) {
-                        queue.push_back(entry.canonical.clone());
+                    follow(&child, &mut queue);
+                    if slot.slot != "patch" {
+                        continue;
+                    }
+                    let child_key = resources.canonical(&child, None);
+                    for b in &node.bind {
+                        let Some(bound) = canonical_of(&b.id) else {
+                            continue;
+                        };
+                        match reads.get(&child_key) {
+                            Some(ids) if ids.contains(&b.child) => follow(&bound, &mut queue),
+                            Some(_) => {}
+                            None => pending
+                                .entry(child_key.clone())
+                                .or_default()
+                                .push((b.child.clone(), bound)),
+                        }
                     }
                 }
+                for (id, bound) in pending.remove(&key).unwrap_or_default() {
+                    if reads_here.contains(&id) {
+                        follow(&bound, &mut queue);
+                    }
+                }
+                reads.insert(key, reads_here);
                 documents.push(TreeDocument {
                     source,
                     structure: Some(structure),
@@ -1043,8 +1085,8 @@ pub(crate) fn edit_summary(result: &EditResult) -> String {
 mod tests {
     use super::*;
     use crate::authoring::result::{
-        DeclaredMeta, InputValue, NodeConstant, NodeInput, NodeResource, PortInfo, Position,
-        ResourceEntry, StructureNode,
+        DeclaredMeta, InputValue, NodeBinding, NodeConstant, NodeInput, NodeResource, PortInfo,
+        Position, ResourceEntry, StructureNode,
     };
     use crate::resources::{ResolveError, SampleBuffer};
     use std::cell::RefCell;
@@ -2049,6 +2091,49 @@ mod tests {
         assert_eq!(tree.documents[0].source, "inst.json");
         assert!(tree.documents[1].source.ends_with("fx.json"));
         assert!(tree.documents.iter().all(|d| d.structure.is_some()));
+    }
+
+    #[test]
+    fn a_tree_follows_a_binding_to_the_hosts_document() {
+        // `/n` binds its child's voice document `v` to the host's `alt`: the child then hosts
+        // alt.json, so the tree reaches it, alongside the child's own default.
+        let store = MemoryStore::with(
+            "inst.json",
+            r#"{ "format_version": 4, "instrument": "host",
+                 "resources": { "w": "wrap.json", "alt": "alt.json" },
+                 "nodes": [ { "type": "subpatch", "address": "/n", "patch": "w",
+                              "bind": { "v": "alt" } } ] }"#,
+        );
+        for (key, text) in [
+            (
+                "wrap.json",
+                r#"{ "format_version": 4, "instrument": "wrap",
+                     "resources": { "v": "fx.json" },
+                     "nodes": [ { "type": "voicer", "address": "/vo", "voice": "v" } ] }"#,
+            ),
+            ("fx.json", WIRE_CHILD),
+            ("alt.json", WIRE_CHILD),
+        ] {
+            store
+                .texts
+                .borrow_mut()
+                .insert(key.to_string(), text.to_string());
+        }
+        let tree = read_tree("inst.json", &store);
+        let sources: Vec<&str> = tree.documents.iter().map(|d| d.source.as_str()).collect();
+        assert_eq!(sources.len(), 4, "{sources:?}");
+        assert!(
+            sources.iter().any(|s| s.ends_with("alt.json")),
+            "{sources:?}"
+        );
+        let host = tree.documents[0].structure.as_ref().unwrap();
+        assert_eq!(
+            node(host, "/n").bind,
+            vec![NodeBinding {
+                child: "v".to_string(),
+                id: "alt".to_string(),
+            }]
+        );
     }
 
     #[test]
