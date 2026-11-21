@@ -95,8 +95,8 @@ pub struct EngineFlags {
     /// The structure channel's token, which a client on another machine must send. Else
     /// `REUBEN_STRUCTURE_TOKEN`, which keeps it out of the process list. It travels in clear:
     /// use a network that encrypts (Tailscale) or one you trust.
-    #[arg(long, value_name = "TOKEN")]
-    pub token: Option<String>,
+    #[arg(long, value_name = "TOKEN", value_parser = parse_token)]
+    pub token: Option<Token>,
     /// Listen for OSC on this `host:port` instead of every interface at the default port.
     #[arg(long, value_name = "HOST:PORT")]
     pub osc_in: Option<String>,
@@ -166,12 +166,21 @@ impl EngineFlags {
     }
 }
 
-/// The `--token` flag, else the environment variable's value; refused when empty.
-fn token(flag: Option<String>, env: Option<String>) -> Result<Option<Token>, FlagsError> {
-    flag.or(env)
-        .map(Token::new)
-        .transpose()
-        .map_err(|_| FlagsError::EmptyToken)
+/// The `--token` flag, else the environment variable's value, refused when empty. The flag is a
+/// [`Token`] from the start, so no `Debug` of the flags prints it.
+fn token(flag: Option<Token>, env: Option<String>) -> Result<Option<Token>, FlagsError> {
+    match flag {
+        Some(flag) => Ok(Some(flag)),
+        None => env
+            .map(Token::new)
+            .transpose()
+            .map_err(|_| FlagsError::EmptyToken),
+    }
+}
+
+/// `--token`'s parser: an empty one is a usage error.
+fn parse_token(token: &str) -> Result<Token, EmptyToken> {
+    Token::new(token)
 }
 
 /// Which server a client subcommand asks.
@@ -184,8 +193,8 @@ pub struct ServerFlags {
     pub structure_addr: Option<String>,
     /// The token a server on another machine asks for. Else `REUBEN_STRUCTURE_TOKEN`, which keeps
     /// it out of the process list.
-    #[arg(long, value_name = "TOKEN")]
-    pub token: Option<String>,
+    #[arg(long, value_name = "TOKEN", value_parser = parse_token)]
+    pub token: Option<Token>,
     /// Start a temporary server in this process rather than ask a running `reuben play`.
     #[arg(long, conflicts_with = "structure_addr")]
     pub temporary_server: bool,
@@ -227,7 +236,7 @@ pub enum FlagsError {
     StructureNotAnIp(String),
     /// `--structure-addr` is beyond loopback and no token was given.
     TokenRequired(String),
-    /// The token given is empty.
+    /// `REUBEN_STRUCTURE_TOKEN` is set but empty.
     EmptyToken,
 }
 
@@ -249,7 +258,7 @@ impl fmt::Display for FlagsError {
                 "--structure-addr {addr} is not loopback, so the structure channel needs a token: \
                  pass --token or set {STRUCTURE_TOKEN_ENV}"
             ),
-            FlagsError::EmptyToken => write!(f, "--token: {EmptyToken}"),
+            FlagsError::EmptyToken => write!(f, "{STRUCTURE_TOKEN_ENV}: {EmptyToken}"),
         }
     }
 }
@@ -343,6 +352,14 @@ mod tests {
     }
 
     #[test]
+    fn flags_never_print_the_token() {
+        let engine = format!("{:?}", parse(&["--token", "s3cret"]));
+        assert!(!engine.contains("s3cret"), "{engine}");
+        let client = format!("{:?}", server(&["--token", "s3cret"]).expect("parse"));
+        assert!(!client.contains("s3cret"), "{client}");
+    }
+
+    #[test]
     fn the_token_flag_wins_over_the_env() {
         let flags = parse(&["--token", "flag"]);
         let config = flags
@@ -365,16 +382,17 @@ mod tests {
 
     #[test]
     fn an_empty_token_is_refused() {
-        let flags = parse(&["--token", ""]);
-        let error = flags
-            .config_with_env(Instrument::Default, None, None)
-            .expect_err("an empty token is refused");
+        let flag = Probe::try_parse_from(["probe", "--token", ""])
+            .err()
+            .expect("an empty --token is a usage error");
+        assert_eq!(flag.kind(), clap::error::ErrorKind::ValueValidation);
+        let from_env = parse(&[])
+            .config_with_env(Instrument::Default, None, Some(" ".into()))
+            .expect_err("an empty env token is refused");
         assert_eq!(
-            error.to_string(),
-            "--token: a structure channel token must not be empty"
+            from_env.to_string(),
+            "REUBEN_STRUCTURE_TOKEN: a structure channel token must not be empty"
         );
-        let from_env = parse(&[]).config_with_env(Instrument::Default, None, Some(" ".into()));
-        assert!(matches!(from_env, Err(FlagsError::EmptyToken)));
     }
 
     #[derive(Parser)]
@@ -442,10 +460,12 @@ mod tests {
 
     #[test]
     fn server_flags_refuse_an_empty_token() {
-        let flags =
-            server(&["--structure-addr", "192.168.1.2:9124", "--token", " "]).expect("parse");
+        let flag = server(&["--structure-addr", "192.168.1.2:9124", "--token", " "])
+            .expect_err("an empty --token is a usage error");
+        assert_eq!(flag.kind(), clap::error::ErrorKind::ValueValidation);
+        let flags = server(&["--structure-addr", "192.168.1.2:9124"]).expect("parse");
         assert!(matches!(
-            flags.target_with_env(None, None),
+            flags.target_with_env(None, Some(String::new())),
             Err(FlagsError::EmptyToken)
         ));
     }

@@ -40,7 +40,7 @@ use reuben_api::authoring::Diag;
 use reuben_api::engine::{
     admit, dispatch, dispatch_request, read_ndjson_line, Admit, ControlMessage, DiagnosticsReport,
     EngineHost, IngressClosed, ListWhat, MetersReport, Request, Response, StructureState,
-    Subscription, Token,
+    Subscription, Token, TOKEN_REQUIRED,
 };
 use reuben_api::probe::ProbeSlots;
 
@@ -780,17 +780,16 @@ fn accept_loop(
                 let wake = stream.try_clone().ok();
                 let handler_state = state.clone();
                 let handler_shutdown = Arc::clone(&shutdown);
-                let admission = Admission {
-                    peer: peer.ip(),
-                    token: token.clone(),
-                };
-                let handle = std::thread::Builder::new()
+                let admission = Admission::new(peer.ip(), token.clone());
+                let spawned = std::thread::Builder::new()
                     .name("structure-conn".to_string())
                     .spawn(move || {
                         handle_connection(stream, handler_state, admission, handler_shutdown)
-                    })
-                    .expect("spawn structure-conn thread");
-                handlers.push((handle, wake));
+                    });
+                // Out of threads: this connection is dropped, and the channel keeps serving.
+                if let Ok(handle) = spawned {
+                    handlers.push((handle, wake));
+                }
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(ACCEPT_POLL);
@@ -843,6 +842,13 @@ fn handle_connection(
     let mut line = String::new();
     loop {
         if shutdown.load(Ordering::SeqCst) {
+            break;
+        }
+        if !admitted && admission.deadline.is_some_and(|by| Instant::now() >= by) {
+            let refused = Response::Error {
+                message: TOKEN_REQUIRED.to_string(),
+            };
+            let _ = write_line(&mut writer, &refused.to_ndjson());
             break;
         }
         match read_ndjson_line(&mut reader, &mut line) {
@@ -921,7 +927,25 @@ fn handle_connection(
 struct Admission {
     peer: IpAddr,
     token: Option<Arc<Token>>,
+    /// When a peer that must present the token is closed for not having sent a first line, so an
+    /// idle stranger cannot hold a handler thread.
+    deadline: Option<Instant>,
 }
+
+impl Admission {
+    fn new(peer: IpAddr, token: Option<Arc<Token>>) -> Self {
+        let must_present = token.is_some() && !peer.to_canonical().is_loopback();
+        Self {
+            peer,
+            token,
+            deadline: must_present.then(|| Instant::now() + ADMIT_WITHIN),
+        }
+    }
+}
+
+/// How long a peer on another machine has to send its first line. A client sends its credential
+/// in the same write as its first request, so any real one is far inside this.
+const ADMIT_WITHIN: Duration = Duration::from_secs(5);
 
 /// Write and flush one line; `false` when the connection is gone.
 fn write_line(writer: &mut TcpStream, line: &str) -> bool {

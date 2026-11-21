@@ -133,3 +133,47 @@ fn a_client_on_another_interface_does_everything_with_the_token() {
         let _ = std::fs::remove_dir_all(Path::new(&dir));
     });
 }
+
+#[test]
+fn a_peer_elsewhere_that_never_presents_the_token_is_closed() {
+    use std::io::{BufRead, BufReader, Write};
+
+    let Some(ip) = off_loopback() else {
+        eprintln!("skipped: no non-loopback interface");
+        return;
+    };
+    within(HANG_SECS, move || {
+        let engine = start_headless(EngineConfig {
+            osc_in: None,
+            structure: Some("0.0.0.0:0".to_string()),
+            token: Some(Token::new("s3cret").expect("a token")),
+            follow_files: false,
+            ..EngineConfig::new(Instrument::Silent)
+        })
+        .expect("the engine starts");
+        let addr = SocketAddr::new(ip, engine.structure_addr().expect("bound").port());
+
+        // Silent, and blank lines: neither is a first line, so neither may hold the connection.
+        for blank in ["", "\n\n  \n"] {
+            let stream = std::net::TcpStream::connect(addr).expect("connect");
+            (&stream).write_all(blank.as_bytes()).expect("write");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(15)))
+                .expect("a read timeout");
+            let mut reply = String::new();
+            BufReader::new(&stream)
+                .read_line(&mut reply)
+                .expect("the engine answers before closing");
+            assert!(reply.contains(TOKEN_REQUIRED), "{blank:?}: {reply:?}");
+            let mut rest = String::new();
+            assert_eq!(
+                BufReader::new(&stream)
+                    .read_line(&mut rest)
+                    .expect("closed"),
+                0,
+                "{blank:?}: the connection is closed"
+            );
+        }
+        timed_teardown(engine, false);
+    });
+}
