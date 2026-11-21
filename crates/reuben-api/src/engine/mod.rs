@@ -1,4 +1,4 @@
-//! The engine half: reaching a **running** engine — install a document, audition a control
+//! The engine half: reaching a **running** engine — open an instrument, audition a control
 //! gesture, ask what is playing, read the counters.
 //!
 //! "Engine" here is the running instance a door reaches, not the render Engine a host drives per
@@ -10,7 +10,8 @@
 //! instrument (the engine validates, writes the file and swaps the new Plan in), `open` to play
 //! another instrument, `list` to learn which instruments and samples it may name, and `subscribe`
 //! to be told when the instrument changes, whoever changed it. The engine holds the files, so a
-//! client never reads or writes document text itself.
+//! client never reads or writes document text itself, and no request carries a document in: only
+//! the engine swaps one.
 //!
 //! The three pieces, and which side of the channel each serves:
 //!
@@ -81,8 +82,8 @@ pub use tcp::{TcpTransport, DEFAULT_CONNECT_TIMEOUT};
 pub use verbs::*;
 pub use wire::{
     read_ndjson_line, ChangedBy, ChannelLevel, Conflict, ControlArg, ControlMessage,
-    DiagnosticsReport, DiffSummary, DocSource, DocumentSnapshot, Event, HeldSwap, Library,
-    LibraryEntry, ListWhat, MetersReport, PortLevel, ProbeLevels, Request, Response, SwapReport,
+    DiagnosticsReport, DiffSummary, DocumentSnapshot, Event, HeldSwap, Library, LibraryEntry,
+    ListWhat, MetersReport, PortLevel, ProbeLevels, Request, Response, SwapReport,
     DEFAULT_STRUCTURE_ADDR, MAX_LINE_BYTES, MAX_PROBES, MAX_SEND_BATCH, METER_CEILING_DBFS,
     METER_FLOOR_DBFS, PEAK_FALL_DB_PER_SEC, RMS_WINDOW_SECS,
 };

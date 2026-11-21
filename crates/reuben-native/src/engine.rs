@@ -10,9 +10,9 @@
 //! In-process and over the socket are the same channel, not two paths: [`RunningEngine::channel`]
 //! is a [`Channel`] over [`InProcess`], which dispatches into the very [`StructureState`] the
 //! [`StructureServer`] serves. A caller drives it with the window's engine verbs
-//! ([`swap_instrument`](reuben_api::engine::swap_instrument),
+//! ([`open_instrument`](reuben_api::engine::open_instrument),
 //! [`send_live_controls`](reuben_api::engine::send_live_controls),
-//! [`get_engine_status`](reuben_api::engine::get_engine_status), …), and a swap made in-process is
+//! [`get_engine_status`](reuben_api::engine::get_engine_status), …), and an open made in-process is
 //! the document the sidecar reads next, because there is one Coordinator behind both.
 
 use std::fmt;
@@ -673,9 +673,9 @@ fn resolve_structure(addr: &str) -> Result<io::Result<Vec<SocketAddr>>, StartErr
 /// for the built-in rig and for silence, which have no source to name.
 ///
 /// The Coordinator owns the resolver for the session, and every swap resolves through it. Its base
-/// directory is the anchor for this document and for a swap by value; a by-path swap hands the
-/// swapped file's own path in as the referrer, so that document resolves from its own directory.
-/// The library root is the fallback for all three.
+/// directory is the anchor for this document; an open hands the opened file's own path in as the
+/// referrer, so that document resolves from its own directory. The library root is the fallback
+/// for both.
 fn read_instrument(
     instrument: Instrument,
     root: Option<PathBuf>,

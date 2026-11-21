@@ -305,7 +305,6 @@ pub fn call_scoped<R: Resources>(
 
         names::SEND_LIVE_CONTROLS
         | names::GET_ENGINE_STATUS
-        | names::SWAP_INSTRUMENT
         | names::GET_CURRENT_INSTRUMENT
         | names::GET_ENGINE_DIAGNOSTICS
         | names::GET_ENGINE_METERS
@@ -394,7 +393,7 @@ mod tests {
                 contract.name
             );
         }
-        assert_eq!(named_sources(names::SWAP_INSTRUMENT, &json!({})), None);
+        assert_eq!(named_sources(names::OPEN_INSTRUMENT, &json!({})), None);
     }
 
     #[test]
@@ -434,7 +433,7 @@ mod tests {
     #[test]
     fn engine_contract_is_refused() {
         let store = DocumentHistory::new(MemoryStore::default());
-        let refusal = call(names::SWAP_INSTRUMENT, json!({}), &store).unwrap_err();
+        let refusal = call(names::OPEN_INSTRUMENT, json!({}), &store).unwrap_err();
         assert!(refusal.message.contains("not served by call"), "{refusal}");
     }
 

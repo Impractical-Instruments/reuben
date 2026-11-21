@@ -1,12 +1,12 @@
-//! The five engine verbs: audition a control gesture, ask whether the engine is there, install a
-//! document, read what is playing, read the counters.
+//! The engine verbs: audition a control gesture, ask whether the engine is there, open an
+//! instrument, list what can be opened, read what is playing, read the counters.
 //!
 //! Each is act-then-map — the exchange itself reports a dead engine, so there is no separate probe
 //! and no window between checking and acting. What a door still owns is its transport and how it
 //! renders an [`Answer`] or a [`Refusal`]; the classification between them is decided here, once.
 //!
 //! The split is the same one the authoring half draws: a verb that *ran* and reported a problem is
-//! an [`Answer`] (a rejected swap, an `expect` conflict — the guard guarding), and only a verb that
+//! an [`Answer`] (a rejected open, an `expect` conflict — the guard guarding), and only a verb that
 //! could not do its job at all is a [`Refusal`]. [`get_engine_status`] cannot refuse, because
 //! answering "is it there?" is its whole job.
 
@@ -14,12 +14,9 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use reuben_core::Registry;
-use reuben_document::projection::Projector;
+use crate::authoring::{Answer, DocumentView, Refusal};
 
-use crate::authoring::{Answer, DocumentView, Refusal, Resources};
-
-use super::args::{ListInstruments, OpenInstrument, SendLiveControls, SwapInstrument};
+use super::args::{ListInstruments, OpenInstrument, SendLiveControls};
 use super::channel::{CallOutcome, Channel, ChannelError, SwapOutcome};
 use super::prose::ENGINE_UNREACHABLE_GUIDANCE;
 use super::result::{
@@ -28,8 +25,7 @@ use super::result::{
 };
 use super::wire::{
     over_long_batch_refusal, ChannelLevel, ControlArg, ControlMessage, DiagnosticsReport,
-    DocSource, DocumentSnapshot, ListWhat, MetersReport, SwapReport, EMPTY_BATCH_REFUSAL,
-    MAX_SEND_BATCH,
+    DocumentSnapshot, ListWhat, MetersReport, SwapReport, EMPTY_BATCH_REFUSAL, MAX_SEND_BATCH,
 };
 
 /// Audition a batch of control values on the running engine.
@@ -106,30 +102,16 @@ pub fn get_engine_status(channel: &Channel, door_version: &str) -> Answer<Engine
     Answer { output, summary }
 }
 
-/// Install a document from a path as the playing engine.
-///
-/// An `ok: false` load report, an `expect` conflict and a held swap are all ordinary answers: the
-/// channel worked, and the report is the deliverable.
-pub fn swap_instrument(
-    args: &SwapInstrument,
-    channel: &Channel,
-) -> Result<Answer<SwapResult>, Refusal> {
-    swap_answer(
-        channel.swap(DocSource::Path(args.path.clone()), args.expect.clone()),
-        Verb::Swap,
-    )
-}
-
 /// Stop playing the current instrument and play the one `name` names, read through the engine's
-/// store. Answers exactly as [`swap_instrument`] does.
+/// store.
+///
+/// An `ok: false` load report, an `expect` conflict and a held open are all ordinary answers: the
+/// channel worked, and the report is the deliverable.
 pub fn open_instrument(
     args: &OpenInstrument,
     channel: &Channel,
 ) -> Result<Answer<SwapResult>, Refusal> {
-    swap_answer(
-        channel.open(args.name.clone(), args.expect.clone()),
-        Verb::Open,
-    )
+    open_answer(channel.open(args.name.clone(), args.expect.clone()))
 }
 
 /// List the instrument or sample names the engine offers.
@@ -153,37 +135,11 @@ pub fn list_instruments(
     })
 }
 
-/// The two verbs that install a document, so a summary names the one the model called.
-#[derive(Clone, Copy)]
-enum Verb {
-    Swap,
-    Open,
-}
-
-impl Verb {
-    fn noun(self) -> &'static str {
-        match self {
-            Verb::Swap => "swap",
-            Verb::Open => "open",
-        }
-    }
-
-    fn past(self) -> &'static str {
-        match self {
-            Verb::Swap => "swapped",
-            Verb::Open => "opened",
-        }
-    }
-}
-
-/// Map a swap-shaped channel outcome to the verb's answer.
-fn swap_answer(
-    outcome: Result<SwapOutcome, ChannelError>,
-    verb: Verb,
-) -> Result<Answer<SwapResult>, Refusal> {
+/// Map an open's channel outcome to the verb's answer.
+fn open_answer(outcome: Result<SwapOutcome, ChannelError>) -> Result<Answer<SwapResult>, Refusal> {
     match outcome {
         Ok(SwapOutcome::Installed(report)) => {
-            let summary = swap_summary(&report, verb);
+            let summary = open_summary(&report);
             Ok(Answer {
                 output: SwapResult::installed(report),
                 summary,
@@ -196,9 +152,8 @@ fn swap_answer(
                 conflict.actual.clone()
             };
             let summary = format!(
-                "{} rejected by the expect guard: the engine is playing {playing}, not the \
+                "open rejected by the expect guard: the engine is playing {playing}, not the \
                  expected {} — re-read with get_current_instrument and reconcile",
-                verb.noun(),
                 conflict.expected
             );
             Ok(Answer {
@@ -224,10 +179,7 @@ fn swap_answer(
             })
         }
         Ok(SwapOutcome::Refused(message)) => Err(Refusal::new(message)),
-        Err(why) => Err(refuse(
-            &format!("the {} could not be completed", verb.noun()),
-            why,
-        )),
+        Err(why) => Err(refuse("the open could not be completed", why)),
     }
 }
 
@@ -247,10 +199,10 @@ pub fn call_tool<A: serde::Serialize>(
     }
 }
 
-/// What is the engine playing? As [`get_current_instrument`], except that the projection is the
-/// server's `describe_instrument` of the open `source` file, so the caller needs no store of its
-/// own. A projection that cannot be had is a note in its place, never an error: the hash is the
-/// load-bearing half.
+/// What is the engine playing? The source and hash the server names, and the server's
+/// `describe_instrument` index of that file, so the caller needs no store of its own and never
+/// holds the document. A projection that cannot be had is a note in its place, never an error: the
+/// hash is the load-bearing half.
 pub fn current_instrument(channel: &Channel) -> Result<Answer<CurrentInstrument>, Refusal> {
     let snapshot = channel
         .get_document()
@@ -282,45 +234,17 @@ pub fn current_instrument(channel: &Channel) -> Result<Answer<CurrentInstrument>
     })
 }
 
-/// What is the engine playing? Answered as a projection of the **installed** graph — the snapshot
-/// the channel hands back reaches the window and stops here, never a document in a model's context.
-///
-/// `store_for` opens the caller's store against the source the engine names, because which document
-/// is playing (and so what its relative references resolve against) is the answer, not the question.
-/// A projection failure degrades to a note in place of the view rather than failing the call: the
-/// hash is the load-bearing half.
-pub fn get_current_instrument<S: Resources>(
-    channel: &Channel,
-    store_for: impl Fn(Option<&str>) -> S,
-) -> Result<Answer<CurrentInstrument>, Refusal> {
-    let snapshot = channel
-        .get_document()
-        .map_err(|why| refuse("could not read the current instrument", why))?;
-    let summary = playing_summary(&snapshot);
-    let projection = match (&snapshot.source, snapshot.content_hash.is_empty()) {
-        (Some(source), true) => format!("(nothing plays: {source} does not load)"),
-        _ => project_installed(&snapshot, &store_for(snapshot.source.as_deref())),
-    };
-    Ok(Answer {
-        output: CurrentInstrument {
-            projection,
-            source: snapshot.source,
-            content_hash: snapshot.content_hash,
-        },
-        summary,
-    })
-}
-
-/// What `get_current_instrument` says plays. An empty content hash is the server's word that the
-/// open instrument does not load and nothing plays.
+/// What `get_current_instrument` says plays. An empty content hash is the server's word that
+/// nothing plays: the open instrument does not load, or nothing is open.
 fn playing_summary(snapshot: &DocumentSnapshot) -> String {
     match &snapshot.source {
         Some(source) if snapshot.content_hash.is_empty() => format!(
             "{source} is open but does not load, so nothing plays until an edit makes it load"
         ),
         Some(source) => format!("playing {source} (content_hash {})", snapshot.content_hash),
+        None if snapshot.content_hash.is_empty() => "nothing is open, so nothing plays".to_string(),
         None => format!(
-            "playing an instrument installed by value (content_hash {})",
+            "playing the built-in default rig, which has no file (content_hash {})",
             snapshot.content_hash
         ),
     }
@@ -421,37 +345,19 @@ fn control_args(args: &[serde_json::Value]) -> Result<Vec<ControlArg>, String> {
         .collect()
 }
 
-/// The node index of what the engine is actually playing, cut from the snapshot the channel handed
-/// back.
-fn project_installed(snapshot: &DocumentSnapshot, store: &dyn Resources) -> String {
-    let json = match serde_json::to_string(&snapshot.document) {
-        Ok(json) => json,
-        Err(e) => return format!("(projection unavailable: {e})"),
-    };
-    match Projector::new(
-        &json,
-        &Registry::builtin(),
-        &crate::resources::Adapter(store),
-    ) {
-        Ok(p) => p.index().render(),
-        Err(e) => format!("(projection unavailable: {e})"),
-    }
-}
-
-/// One-line gloss of a swap outcome: what installed (with diff counts) or why nothing did.
-fn swap_summary(report: &SwapReport, verb: Verb) -> String {
+/// One-line gloss of an open's outcome: what installed (with diff counts) or why nothing did.
+fn open_summary(report: &SwapReport) -> String {
     if report.report.ok {
         match &report.diff {
             Some(diff) => format!(
-                "{} (content_hash {}): {} survived, {} state-reset, {} added, {} removed",
-                verb.past(),
+                "opened (content_hash {}): {} survived, {} state-reset, {} added, {} removed",
                 report.content_hash,
                 diff.survived,
                 diff.state_reset.len(),
                 diff.added.len(),
                 diff.removed.len()
             ),
-            None => format!("{} (content_hash {})", verb.past(), report.content_hash),
+            None => format!("opened (content_hash {})", report.content_hash),
         }
     } else if report.content_hash.is_empty() {
         // Nothing plays. The server's warnings say which instrument is open and whether this
@@ -474,14 +380,12 @@ fn swap_summary(report: &SwapReport, verb: Verb) -> String {
             open
         };
         format!(
-            "{} did not install: {} error(s), the first: {first} — {open}",
-            verb.noun(),
+            "open did not install: {} error(s), the first: {first} — {open}",
             report.report.errors.len(),
         )
     } else {
         format!(
-            "{} rejected: {} error(s), {} warning(s) — nothing installed; {} keeps playing",
-            verb.noun(),
+            "open rejected: {} error(s), {} warning(s) — nothing installed; {} keeps playing",
             report.report.errors.len(),
             report.report.warnings.len(),
             report.content_hash
@@ -496,7 +400,6 @@ mod tests {
     use super::super::args::ControlSendMessage;
     use super::super::channel::Transport;
     use super::*;
-    use crate::authoring::{ResolveError, Resources, SampleBuffer};
     use std::io;
     use std::time::Duration;
 
@@ -514,15 +417,6 @@ mod tests {
 
         fn endpoint(&self) -> &str {
             "127.0.0.1:9124"
-        }
-    }
-
-    /// A store that holds nothing — `get_current_instrument` never reaches it against a dead engine.
-    struct NoStore;
-
-    impl Resources for NoStore {
-        fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
-            Err(ResolveError::NotFound(source.to_string()))
         }
     }
 
@@ -547,15 +441,15 @@ mod tests {
                 &channel,
             )
             .expect_err("no engine to send to"),
-            swap_instrument(
-                &SwapInstrument {
-                    path: "inst.json".to_string(),
+            open_instrument(
+                &OpenInstrument {
+                    name: "inst.json".to_string(),
                     expect: None,
                 },
                 &channel,
             )
             .expect_err("no engine to install into"),
-            get_current_instrument(&channel, |_| NoStore).expect_err("nothing is playing"),
+            current_instrument(&channel).expect_err("nothing is playing"),
             get_engine_diagnostics(&channel).expect_err("no counters to read"),
             get_engine_meters(&channel).expect_err("no levels to read"),
         ];

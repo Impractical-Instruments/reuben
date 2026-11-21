@@ -169,12 +169,12 @@ fn read_authoring_guide_is_nonempty_markdown() {
 
 #[test]
 fn the_served_guide_is_the_mcp_cut_and_never_sends_a_model_to_swap() {
-    // This door does not serve `swap_instrument`, so the guide it serves must never name it; and it
-    // serves the guide's MCP cut, so no lane tag reaches the model either.
+    // No door serves `swap_instrument`, so the guide must never name it; and this door serves the
+    // guide's MCP cut, so no lane tag reaches the model either.
     let (_, _, text) = read_resource(reuben_mcp::GUIDE_RESOURCE_URI);
     assert!(
         !text.contains("swap_instrument"),
-        "the served guide sends a model to `swap_instrument`, which this door does not serve"
+        "the served guide sends a model to `swap_instrument`, which no door serves"
     );
     assert!(
         !text.contains("lanes:"),

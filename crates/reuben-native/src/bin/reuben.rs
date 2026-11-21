@@ -719,8 +719,8 @@ fn play(path: Option<PathBuf>, flags: EngineFlags, root: Option<PathBuf>) -> Exi
     match (running.structure_addr(), running.structure_error()) {
         (Some(addr), _) => println!("structure channel on {addr}"),
         (None, Some(e)) => eprintln!(
-            "warning: structure channel unavailable on {structure_addr} ({e}); MCP \
-             structure ops (get_document/get_diagnostics/swap) are disabled this run"
+            "warning: structure channel unavailable on {structure_addr} ({e}); no client \
+             (reuben-mcp, the editor, the CLI) can call, open, list or subscribe this run"
         ),
         (None, None) => {}
     }

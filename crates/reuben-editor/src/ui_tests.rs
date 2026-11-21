@@ -294,10 +294,29 @@ fn attached(addr: String, config: &TempConfig, session: Option<Session>) -> Edit
     }
 }
 
-/// The `level` resting value of the document `played` has installed.
+/// The `level` resting value of the document `played` has installed: its file, read through the
+/// server, and only while that file is what plays (its hash is the installed one). `Null` until
+/// then.
 fn installed_level(played: &reuben_native::engine::RunningEngine) -> serde_json::Value {
-    let installed = played.channel().get_document().unwrap().document;
-    installed["interface"]["inputs"]["level"]["default"].clone()
+    let channel = played.channel();
+    let playing = channel.get_document().unwrap();
+    let Some(source) = playing.source else {
+        return serde_json::Value::Null;
+    };
+    let read =
+        reuben_api::engine::call_tool("read_instrument", &json!({ "source": source }), &channel)
+            .expect("the server reads what it plays")
+            .output;
+    let read: reuben_api::authoring::InstrumentStructure =
+        serde_json::from_value(read).expect("a read_instrument answer");
+    if read.hash != playing.content_hash {
+        return serde_json::Value::Null;
+    }
+    read.inputs
+        .into_iter()
+        .find(|input| input.port.name == "level")
+        .and_then(|input| input.port.default)
+        .unwrap_or_default()
 }
 
 /// Step the harness until `done`, sleeping between steps so the link's thread and the session's
@@ -868,21 +887,21 @@ fn an_attached_edit_keeps_its_level_once_its_swap_lands() {
         }
         until_osc_level(&mut harness);
 
-        // Another client's Swap onto another file: the link's report of it replaces what the
+        // Another client's open of another file: the link's report of it replaces what the
         // editor's own Swap noted.
         let other = top.with_file_name("other.json");
         std::fs::copy(&top, &other).expect("copy the instrument");
-        let swapped = reuben_api::engine::swap_instrument(
-            &reuben_api::engine::SwapInstrument {
-                path: other.display().to_string(),
+        let opened = reuben_api::engine::open_instrument(
+            &reuben_api::engine::OpenInstrument {
+                name: other.display().to_string(),
                 expect: None,
             },
             &played.channel(),
         )
-        .expect("the Swap ran");
-        assert!(swapped.output.report.report.ok, "{:?}", swapped.output);
+        .expect("the open ran");
+        assert!(opened.output.report.report.ok, "{:?}", opened.output);
         let other_source = other.display().to_string();
-        step_until(&mut harness, "saw the other client's Swap", |editor| {
+        step_until(&mut harness, "saw the other client's open", |editor| {
             editor.engine.plays().map(|p| p.source.as_str()) == Some(other_source.as_str())
         });
         harness.state_mut().engine.shutdown();
@@ -895,7 +914,7 @@ fn installed_hash(played: &reuben_native::engine::RunningEngine) -> Option<Strin
     Some(played.channel().get_document().ok()?.content_hash)
 }
 #[test]
-fn a_swap_back_to_what_the_link_last_reported_is_still_followed() {
+fn an_open_back_to_what_the_link_last_reported_is_still_followed() {
     use reuben_native::test_support::{start_headless, within};
 
     let scratch = Scratch::new("ui_node_meters_swap_back");
@@ -926,17 +945,17 @@ fn a_swap_back_to_what_the_link_last_reported_is_still_followed() {
             session.status() == &Status::Current
                 && editor.engine.plays().map(|p| p.source.as_str()) == Some(shown_source.as_str())
         });
-        // Another client swaps the first file back in at once, before the link's next probe: the
+        // Another client opens the first file again at once, before the link's next probe: the
         // same file and content the link last reported.
-        let swapped = reuben_api::engine::swap_instrument(
-            &reuben_api::engine::SwapInstrument {
-                path: first.display().to_string(),
+        let opened = reuben_api::engine::open_instrument(
+            &reuben_api::engine::OpenInstrument {
+                name: first.display().to_string(),
                 expect: None,
             },
             &played.channel(),
         )
-        .expect("the Swap ran");
-        assert!(swapped.output.report.report.ok, "{:?}", swapped.output);
+        .expect("the open ran");
+        assert!(opened.output.report.report.ok, "{:?}", opened.output);
 
         // Until the editor follows it, the shown file's boxes must not take its levels.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);

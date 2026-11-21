@@ -41,17 +41,6 @@ pub struct SendLiveControls {
     pub messages: Vec<ControlSendMessage>,
 }
 
-/// Arguments for `swap_instrument`: a `path` (path-only — you can only install what exists on
-/// disk) plus an optional `expect` content-hash guard.
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct SwapInstrument {
-    /// Path to the instrument document to install.
-    pub path: String,
-    /// The content hash the client believes is installed; a mismatch rejects the swap.
-    #[serde(default)]
-    pub expect: Option<String>,
-}
-
 /// Arguments for `open_instrument`: the `name` of an instrument the engine offers, plus an optional
 /// `expect` content-hash guard.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]

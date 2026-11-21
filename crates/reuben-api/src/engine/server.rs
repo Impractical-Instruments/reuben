@@ -6,15 +6,11 @@
 //!
 //! The verbs:
 //! - [`Request::Ping`] → [`Response::Pong`] — liveness of the channel itself.
-//! - [`Request::GetDocument`] → the Coordinator's canonical document + its content hash. It changes
-//!   only when a [`Request::Swap`] installs a new one.
+//! - [`Request::GetDocument`] → what plays, by source and content hash, never its text. It changes
+//!   when an open, an accepted edit or an outside edit to the open instrument installs a new one.
 //! - [`Request::GetDiagnostics`] → the host's counters, snapshotted off-thread.
 //! - [`Request::GetMeters`] → the host's levels at the device, read the same way.
 //! - [`Request::SetProbes`] → which nodes `GetMeters` also reports, chosen through the host.
-//! - [`Request::Swap`] → a **mailbox swap**: the Coordinator validates and builds a whole new
-//!   Engine off-thread, fills the install mailbox, and returns a real report with survivor/reset
-//!   stats. The `expect` guard is applied here, inside the Coordinator lock, so the compare and the
-//!   swap are one critical section.
 //! - [`Request::Send`] → control traffic, handed to the host's ingress as **one** batch. The one
 //!   verb that does not touch the Coordinator: control is not structure.
 //! - [`Request::Call`] → one non-engine roster verb against the engine's store. A read answers
@@ -22,8 +18,13 @@
 //!   only then is it written and the new Plan swapped in, and otherwise nothing is written and the
 //!   answer says why. The exception is an open instrument that does not load: nothing plays, and
 //!   an edit is written whether or not it makes the instrument load.
-//! - [`Request::Open`] → unload what plays and play the named document. One that does not load
-//!   still opens, and nothing plays until an edit makes it load.
+//! - [`Request::Open`] → unload what plays and play the named document, by a **mailbox swap**: the
+//!   Coordinator validates and builds a whole new Engine off-thread, fills the install mailbox, and
+//!   returns a real report with survivor/reset stats. The `expect` guard is applied inside the
+//!   Coordinator lock, so the compare and the swap are one critical section. A document that does
+//!   not load still opens, and nothing plays until an edit makes it load.
+//!
+//! A client changes what plays only through `Open` and `Call`: no request carries a document.
 //! - [`Request::Subscribe`] is not a request [`dispatch`] answers: it turns a connection into a
 //!   stream of [`Event`]s, which only the host's connection can carry. [`StructureState::subscribe`]
 //!   is what that connection streams from, and what [`InProcess::subscribe`] hands back.
@@ -61,8 +62,8 @@ use call::{diag, handle_call, handle_library, read_tree};
 
 use super::wire::{
     over_long_batch_refusal, over_long_probe_set_refusal, ChangedBy, Conflict, ControlMessage,
-    DiagnosticsReport, DocSource, DocumentSnapshot, Event, HeldSwap, ListWhat, MetersReport,
-    Request, Response, SwapReport, EMPTY_BATCH_REFUSAL, MAX_PROBES, MAX_SEND_BATCH,
+    DiagnosticsReport, DocumentSnapshot, Event, HeldSwap, ListWhat, MetersReport, Request,
+    Response, SwapReport, EMPTY_BATCH_REFUSAL, MAX_PROBES, MAX_SEND_BATCH,
 };
 
 /// What a host must provide for the window to serve the engine verbs — the device, the clock and
@@ -72,15 +73,10 @@ use super::wire::{
 /// *channel* does. `Send + Sync` because a host serving concurrent connections calls it from
 /// several threads (a swap's calls run under the Coordinator lock).
 pub trait EngineHost: Send + Sync {
-    /// Read a by-path swap's document text. What a path names is the host's business — a file for
-    /// `reuben play`, a store key elsewhere. The error is a human message the swap turns into a
-    /// rejected report.
-    fn read_document(&self, path: &str) -> Result<String, String>;
-
-    /// The source the session's resource store knows the document at `path` by. A by-path swap
-    /// resolves the document's relative references from there, so the store's
+    /// The source the session's resource store knows the document at `path` by. An open reads the
+    /// document there and resolves its relative references from there, so the store's
     /// [`canonical`](crate::resources::Resources::canonical) must take this, with no referrer, to
-    /// the document [`read_document`](Self::read_document) read.
+    /// the document `path` names.
     ///
     /// Defaults to `path` unchanged, which is right wherever the host and the store read one key
     /// space. A host whose `path` and whose store are relative to different places overrides it.
@@ -88,15 +84,14 @@ pub trait EngineHost: Send + Sync {
         path.to_string()
     }
 
-    /// Whether to hold, rather than install, a by-path swap or an open of `path` that a client sent
-    /// through [`dispatch`], so the host's user can be asked first. Called under the Coordinator
-    /// lock once the `expect` guard passed, and only for what would install: a swap whose document
-    /// loaded and planned, or any open, since an open of a document that does not load still
-    /// unloads what plays. `true` answers [`Response::Held`] and installs nothing. Whatever asking
-    /// the user means is the host's, and must not wait on them.
+    /// Whether to hold, rather than install, an open of `path` that a client sent through
+    /// [`dispatch`], so the host's user can be asked first. Called under the Coordinator lock once
+    /// the `expect` guard passed, for any open, since an open of a document that does not load
+    /// still unloads what plays. `true` answers [`Response::Held`] and installs nothing. Whatever
+    /// asking the user means is the host's, and must not wait on them.
     ///
-    /// Never consulted for a swap made through [`InProcess`], which is the host's own, nor for one
-    /// by value, which names no source to ask about. Defaults to never holding.
+    /// Never consulted for an open made through [`InProcess`], which is the host's own. Defaults to
+    /// never holding.
     fn hold_swap(&self, _path: &str) -> bool {
         false
     }
@@ -201,8 +196,8 @@ pub type ServerStore = DocumentHistory<Staged<Box<dyn Resources + Send + Sync>>>
 pub struct StructureState {
     coordinator: Arc<Mutex<Coordinator>>,
     host: Arc<dyn EngineHost>,
-    /// Where the playing document came from: the `source` of the last successful swap, or what the
-    /// host started on. `None` for an install by value and for a built-in default rig.
+    /// Where the playing document came from: the instrument last opened, or what the host started
+    /// on. `None` for a built-in default rig and while nothing is open.
     ///
     /// Door-side state, not the Coordinator's: the engine installs *document text* and has no
     /// notion of where it came from. Its own `Mutex` rather than a field behind the Coordinator's,
@@ -326,7 +321,7 @@ impl StructureState {
             return Ok(None);
         };
         // Reclaims a retiree that has come home, which ends its swap's flight and keeps the build
-        // below at live + new, as a by-path swap's does.
+        // below at live + new, as an open's does.
         if coordinator.swap_in_flight() {
             return Err(SwapInFlight);
         }
@@ -496,8 +491,8 @@ impl StructureState {
     }
 
     /// Start with nothing open and nothing playing, the Coordinator having been built from
-    /// [`SILENCE`]: every answer reports the empty content hash, `get_document` a `null` document
-    /// and no source, and an edit is refused until an `open` names an instrument.
+    /// [`SILENCE`]: every answer reports the empty content hash, `get_document` no source, and an
+    /// edit is refused until an `open` names an instrument.
     ///
     /// A builder step, like [`with_installed_source`](Self::with_installed_source), so the
     /// "only ever written under the Coordinator lock" invariant on the flag has no exception.
@@ -551,7 +546,7 @@ impl From<Poisoned> for Response {
 /// reports failure), so a malformed request still gets exactly one framed reply and the
 /// one-response-per-request invariant holds.
 ///
-/// This is a client's entry, so a by-path swap is offered to [`EngineHost::hold_swap`] first.
+/// This is a client's entry, so an open is offered to [`EngineHost::hold_swap`] first.
 /// [`InProcess`], the host's own transport, never is.
 pub fn dispatch(state: &StructureState, line: &str) -> Response {
     match Request::from_ndjson(line) {
@@ -572,7 +567,7 @@ fn unreadable(e: serde_json::Error) -> Response {
     }
 }
 
-/// Who sent a request: a client of the host's server, whose swap the host may hold, or the host
+/// Who sent a request: a client of the host's server, whose open the host may hold, or the host
 /// itself through [`InProcess`].
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Caller {
@@ -587,7 +582,6 @@ fn serve(state: &StructureState, request: Request, caller: Caller) -> Response {
         Request::GetDiagnostics => Response::Diagnostics(state.host.diagnostics()),
         Request::GetMeters => Response::Meters(state.host.meters()),
         Request::SetProbes { paths } => handle_set_probes(state, paths),
-        Request::Swap { source, expect } => handle_swap(state, source, expect, caller),
         Request::Send { messages } => handle_send(state, messages),
         Request::Call { tool, args } => handle_call(state, &tool, args),
         Request::Open { name, expect } => handle_open(state, name, expect, caller),
@@ -604,19 +598,12 @@ fn serve(state: &StructureState, request: Request, caller: Caller) -> Response {
 const UNSTREAMED_SUBSCRIBE: &str = "subscribe needs a connection that streams events; this one \
      answers one response per request";
 
-/// The Coordinator owns the canonical document; serialize it + its hash under the lock so
-/// `get_document` never sees a half-installed pair. While the open instrument does not load, the
-/// document is `null` and the hash [`NOTHING_PLAYS`]: [`SILENCE`] is no document's.
+/// What plays, by source and hash, both read under the Coordinator lock so `get_document` never
+/// pairs a source with another install's hash. While the open instrument does not load, the hash
+/// is [`NOTHING_PLAYS`]: [`SILENCE`] is no document's.
 fn get_document(state: &StructureState) -> Result<Response, Poisoned> {
     let coordinator = state.coordinator()?;
-    let document = if state.is_silent() {
-        serde_json::Value::Null
-    } else {
-        serde_json::to_value(&**coordinator.document())
-            .expect("canonical instrument document serializes to JSON")
-    };
     Ok(Response::Document(DocumentSnapshot {
-        document,
         content_hash: state.playing_hash(&coordinator),
         // Read under the Coordinator lock too, so the source and the hash a caller compares it
         // against can never come from different installs.
@@ -631,7 +618,7 @@ fn get_document(state: &StructureState) -> Result<Response, Poisoned> {
 /// The request still crosses the NDJSON envelope. That is the point, not an overhead to optimize
 /// away: the framing and the response classification are then the ones a socket client gets, so an
 /// in-process caller and the MCP sidecar cannot see different answers to the same request — with
-/// the one exception the host asks for: its own swaps are never held ([`EngineHost::hold_swap`]).
+/// the one exception the host asks for: its own opens are never held ([`EngineHost::hold_swap`]).
 ///
 /// `round_trip` fails in exactly the two cases a socket client would see a dead peer: the host has
 /// [closed](StructureState::close) the state (the engine is torn down), or the request panicked —
@@ -745,111 +732,33 @@ fn handle_set_probes(state: &StructureState, paths: Vec<Vec<String>>) -> Respons
     }
 }
 
-/// The mailbox-swap install path. Everything runs under the Coordinator lock so the
-/// `expect`-compare and the swap are one atomic critical section (a compare-and-swap) — concurrent
-/// swaps from multiple connections serialize, and neither `get_document` nor another swap sees a
-/// half-installed document. In order:
+/// The install half of [`handle_open`], for `json`, the document read at `origin`, under the
+/// Coordinator lock so the `expect`-compare and the swap are one critical section: concurrent opens
+/// serialize, and neither `get_document` nor another open sees a half-installed document. In order:
 ///
-/// 1. **Resolve** the source to its JSON text — inline JSON re-serialized, or a read through the
-///    host, which also names where a path's document resolves its own references from. A read
-///    failure is a rejected report (no install, prior retained), not a channel error.
+/// 1. **Build**: the Coordinator validates and builds a whole new Engine off-thread.
 /// 2. **Arbitrate**: a stale `expect` rejects with the real installed hash as [`Response::Conflict`]
 ///    and does **not** swap. Absent `expect` is last-write-wins. Done here rather than inside the
 ///    Coordinator's swap, which owns no guard at all, by design.
-/// 3. **Swap**: the Coordinator validates + builds a whole new Engine off-thread, fills the install
-///    mailbox, and returns the real report. A load/plan error aborts with `ok: false` and the prior
-///    hash — the old engine keeps playing (retain-prior). A client's by-path swap that validated
-///    is offered to [`EngineHost::hold_swap`] between the build and the install; a held one is
-///    dropped and answers [`Response::Held`].
-/// 4. **Publish** the render config for the new engine's geometry and fold any warning into the
+/// 3. **Hold**: a client's open is offered to [`EngineHost::hold_swap`]; a held one is dropped and
+///    answers [`Response::Held`].
+/// 4. **Swap**: the build fills the install mailbox. A document that does not load or plan still
+///    opens, with nothing playing: see [`open_silent`].
+/// 5. **Publish** the render config for the new engine's geometry and fold any warning into the
 ///    report — BEFORE the reclaim, so the map is in flight before the callback installs the new
 ///    engine and the two mailboxes stay in lockstep.
-/// 5. **Reclaim** the retired Engine off-thread, clearing the mailbox for the next swap.
-fn handle_swap(
-    state: &StructureState,
-    source: DocSource,
-    expect: Option<String>,
-    caller: Caller,
-) -> Response {
-    // Name the source before resolving consumes it — recorded only if the install below succeeds, so
-    // a rejected swap leaves `get_document` still naming what is actually playing. Named by its
-    // origin, not the client's spelling, so every client that hears of it names the same document.
-    // An install by value has no source to name.
-    let installed_from = match &source {
-        DocSource::Path(path) => Some(state.host.document_origin(path)),
-        DocSource::Document(_) => None,
-    };
-
-    let json = match resolve_source(source, state.host.as_ref()) {
-        Ok(json) => json,
-        Err(message) => return rejected_swap(state, message),
-    };
-
-    let mut coordinator = match state.coordinator() {
-        Ok(coordinator) => coordinator,
-        Err(poisoned) => return poisoned.into(),
-    };
-    install_from(
-        state,
-        &mut coordinator,
-        &json,
-        installed_from,
-        expect,
-        caller,
-        Went::Swapped,
-    )
-}
-
-/// Steps 2 to 5 of [`handle_swap`], for a document already read: the `expect` guard, the build, the
-/// hold, the install and everything after it. `installed_from` is the path the document was read
-/// from, `None` for one by value.
-///
-/// A by-path `swap` (not an `open`) of the file that plays, whose document and the documents it
-/// reaches read exactly as what plays, installs nothing and answers ok with no diff, whatever
-/// `expect` says: there is nothing for it to clobber. That is the swap of a client that edited the
-/// files itself, after the engine already followed the edit.
-///
-/// An `open` of a document that does not load or plan still opens it, unless the host holds it:
-/// see [`open_silent`].
-fn install_from(
+/// 6. **Reclaim** the retired Engine off-thread, clearing the mailbox for the next swap.
+fn install_opened(
     state: &StructureState,
     coordinator: &mut Coordinator,
     json: &str,
-    installed_from: Option<String>,
+    origin: String,
     expect: Option<String>,
     caller: Caller,
-    went: Went,
 ) -> Response {
-    // Built before the `expect` guard, which it may make moot.
-    let by_path = match installed_from
-        .as_deref()
-        .map(|path| state.host.document_origin(path))
-    {
-        Some(origin) => {
-            // The one-call swap's own first step, kept so a build here peaks at live + new.
-            drop(coordinator.try_reclaim());
-            let (prepared, tree) = prepare_recording(state, coordinator, json, &origin);
-            if let (Ok(prepared), Went::Swapped) = (&prepared, went) {
-                match plays_already(state, coordinator, &origin, prepared, &tree) {
-                    Ok(false) => {}
-                    Ok(true) => {
-                        return Response::SwapReport(SwapReport {
-                            report: Report {
-                                ok: true,
-                                errors: Vec::new(),
-                                warnings: Vec::new(),
-                            },
-                            content_hash: coordinator.installed_hash(),
-                            diff: None,
-                        })
-                    }
-                    Err(poisoned) => return poisoned.into(),
-                }
-            }
-            Some((prepared, tree))
-        }
-        None => None,
-    };
+    // The one-call swap's own first step, kept so a build here peaks at live + new.
+    drop(coordinator.try_reclaim());
+    let (prepared, tree) = prepare_recording(state, coordinator, json, &origin);
 
     if let Some(expected) = &expect {
         let actual = state.playing_hash(coordinator);
@@ -861,58 +770,38 @@ fn install_from(
         }
     }
 
-    let holds = || {
-        caller == Caller::Client
-            && installed_from
-                .as_deref()
-                .is_some_and(|path| state.host.hold_swap(path))
-    };
+    // Offered whether or not the document loads: an open that does not load still unloads what
+    // plays.
+    if caller == Caller::Client && state.host.hold_swap(&origin) {
+        drop(prepared);
+        return held(state, coordinator, origin);
+    }
 
     // Unguarded by construction: arbitration was settled above.
-    let (core_report, tree) = match by_path {
-        // An open of a document that does not load still installs (silence), so it is offered
-        // to the host like any open that installs.
-        Some((Err(rejected), tree)) if went == Went::Opened => {
-            if holds() {
-                return held(state, coordinator, installed_from);
-            }
-            let name = installed_from.unwrap_or_default();
-            return open_silent(state, coordinator, name, tree, rejected);
-        }
-        // A swap of a document that does not load is rejected with its errors, never held: the
-        // user is only asked about something that would install.
-        Some((Err(rejected), tree)) => (rejected, tree),
-        Some((Ok(prepared), tree)) => {
-            if holds() {
-                drop(prepared);
-                return held(state, coordinator, installed_from);
-            }
-            (coordinator.commit_swap(prepared), tree)
-        }
-        // By value there is nowhere the document came from: the session's anchor stands, and no
-        // document is open to edit.
-        None => (coordinator.swap_document(json), Tree::default()),
+    let core_report = match prepared {
+        Ok(prepared) => coordinator.commit_swap(prepared),
+        Err(rejected) => return open_silent(state, coordinator, origin, tree, rejected),
     };
     let mut report = SwapReport::from_core(core_report);
     if report.report.ok {
-        match went_live(state, coordinator, installed_from, tree, went) {
+        match went_live(state, coordinator, Some(origin), tree, Went::Opened) {
             Ok(warnings) => report.report.warnings.extend(warnings),
             Err(poisoned) => return poisoned.into(),
         }
     } else {
-        installed_nothing(state, coordinator, &mut report, went);
+        installed_nothing(state, coordinator, &mut report, Went::Opened);
     }
     Response::SwapReport(report)
 }
 
-/// The answer to a client's install the host holds: nothing installed, and what plays named.
-fn held(state: &StructureState, coordinator: &Coordinator, requested: Option<String>) -> Response {
+/// The answer to a client's open the host holds: nothing installed, and what plays named.
+fn held(state: &StructureState, coordinator: &Coordinator, requested: String) -> Response {
     let playing = match state.installed_source() {
         Ok(source) => source.clone(),
         Err(poisoned) => return poisoned.into(),
     };
     Response::Held(HeldSwap {
-        requested: requested.unwrap_or_default(),
+        requested,
         playing,
         content_hash: state.playing_hash(coordinator),
     })
@@ -968,28 +857,9 @@ fn open_silent(
     })
 }
 
-/// Whether `prepared`, read from `origin` with `tree`, is what plays: the same file however
-/// spelled, the same content hash, and the same texts for every document it reaches.
-fn plays_already(
-    state: &StructureState,
-    coordinator: &Coordinator,
-    origin: &str,
-    prepared: &reuben_document::PreparedSwap,
-    tree: &Tree,
-) -> Result<bool, Poisoned> {
-    let same_file = state.installed_source()?.as_deref().is_some_and(|playing| {
-        let playing = state.host.document_origin(playing);
-        state.store.canonical(&playing, None) == state.store.canonical(origin, None)
-    });
-    Ok(same_file
-        && !state.is_silent()
-        && prepared.content_hash() == coordinator.installed_hash()
-        && state.tree_cell()?.texts == tree.texts)
-}
-
-/// Unload the open instrument and load, and play, the one `name` names: [`handle_swap`] by path,
-/// read through the server's store so the tree and the edits that follow see the same files. A
-/// document that does not load still opens, with nothing playing ([`open_silent`]).
+/// Unload the open instrument and load, and play, the one `name` names, read through the server's
+/// store so the tree and the edits that follow see the same files. A document that does not load
+/// still opens, with nothing playing ([`open_silent`]).
 ///
 /// Under the Coordinator lock from the read on, so the `discard` cannot drop another request's
 /// pending write.
@@ -1023,16 +893,8 @@ fn handle_open(
             )
         }
     };
-    // By its origin, as a swap is, so the `Opened` every client hears names one spelling.
-    install_from(
-        state,
-        &mut coordinator,
-        &json,
-        Some(origin),
-        expect,
-        caller,
-        Went::Opened,
-    )
+    // By its origin, so the `Opened` every client hears names one spelling.
+    install_opened(state, &mut coordinator, &json, origin, expect, caller)
 }
 
 /// The refusal for a name outside what the host offers: the client's own spelling, a fixed reason
@@ -1120,9 +982,6 @@ enum Went {
     /// `open` of a document that does not load, with [`SILENCE`] installed in its place:
     /// [`Event::Opened`] with the hash [`NOTHING_PLAYS`].
     OpenedSilent,
-    /// `swap`: [`Event::Opened`] when it names a source other than the one playing before, by
-    /// value counting as a source of its own, and [`Event::Changed`] when it names the same one.
-    Swapped,
     /// An edit through `call`: always [`Event::Changed`] by a client.
     Edited,
     /// A [`StructureState::reload`] after an outside write: [`Event::Changed`] by
@@ -1130,7 +989,7 @@ enum Went {
     Outside,
 }
 
-/// Everything after a committed install, shared by `swap`, `open` and an edit made through `call`:
+/// Everything after a committed install, shared by `open`, an edit made through `call` and a reload:
 /// the source and tree that name what plays advance, the host gets the new geometry and probes,
 /// the retiree is reclaimed, and subscribers hear of it. Returns the host's render-config warnings
 /// for the report.
@@ -1151,7 +1010,7 @@ fn went_live(
     state
         .silent
         .store(went == Went::OpenedSilent, Ordering::SeqCst);
-    let previous = core::mem::replace(&mut *state.installed_source()?, source.clone());
+    *state.installed_source()? = source.clone();
     *state.tree_cell()? = tree;
 
     let warnings = state.host.publish_render_config(
@@ -1168,12 +1027,11 @@ fn went_live(
     let hash = state.playing_hash(coordinator);
     let opened = match went {
         Went::Opened | Went::OpenedSilent => true,
-        Went::Swapped => source != previous,
         Went::Edited | Went::Outside => false,
     };
     let by = match went {
         Went::Outside => ChangedBy::Outside,
-        Went::Opened | Went::OpenedSilent | Went::Swapped | Went::Edited => ChangedBy::Client,
+        Went::Opened | Went::OpenedSilent | Went::Edited => ChangedBy::Client,
     };
     state.events.publish(if opened {
         Event::Opened {
@@ -1197,16 +1055,6 @@ fn reclaim_retired(coordinator: &mut Coordinator, host: &dyn EngineHost) {
     match coordinator.reclaim(&mut give_up) {
         Ok(retiree) => drop(retiree),
         Err(_) => { /* audio not consuming yet; the next swap or shutdown reclaims it */ }
-    }
-}
-
-/// A rejected swap that never reached the Coordinator (a source read failure): `ok: false`, the
-/// message, no diff, and the still-installed hash — the report names what keeps playing
-/// (retain-prior).
-fn rejected_swap(state: &StructureState, message: String) -> Response {
-    match state.coordinator() {
-        Ok(coordinator) => rejected_report(state, &coordinator, message, Went::Swapped),
-        Err(poisoned) => poisoned.into(),
     }
 }
 
@@ -1251,7 +1099,6 @@ fn installed_nothing(
     }
     let what = match went {
         Went::Opened | Went::OpenedSilent => "opened",
-        Went::Swapped => "swapped in",
         Went::Edited | Went::Outside => "installed",
     };
     let message = match state.installed_source().ok().and_then(|open| open.clone()) {
@@ -1265,16 +1112,6 @@ fn installed_nothing(
         port: None,
         message,
     });
-}
-
-/// Resolve a swap's source to its JSON text: inline JSON re-serialized, or a read through the host.
-/// A failure here is a human message the caller turns into a rejected swap.
-fn resolve_source(source: DocSource, host: &dyn EngineHost) -> Result<String, String> {
-    match source {
-        DocSource::Document(value) => serde_json::to_string(&value)
-            .map_err(|e| format!("serialize inline swap document: {e}")),
-        DocSource::Path(path) => host.read_document(&path),
-    }
 }
 
 #[cfg(all(test, feature = "render"))]
@@ -1294,13 +1131,19 @@ mod tests {
         fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
             Err(ResolveError::NotFound(source.to_string()))
         }
+        fn read_text(&self, source: &str) -> Result<String, ResolveError> {
+            if source == PATH {
+                return Ok(DOC.to_string());
+            }
+            Err(ResolveError::NotFound(source.to_string()))
+        }
     }
 
     /// A host that panics under the Coordinator lock — `publish_render_config` runs inside a swap's
     /// critical section — when `panic_on_publish` is set.
     struct Host {
         panic_on_publish: bool,
-        /// Holds every client swap it is offered, and counts the offers.
+        /// Holds every client open it is offered, and counts the offers.
         hold: bool,
         offered: std::sync::atomic::AtomicUsize,
         /// Counts `set_probes` calls.
@@ -1313,16 +1156,10 @@ mod tests {
         meters_nodes: bool,
     }
 
-    /// The one path [`Host`] reads [`DOC`] from.
+    /// The one name [`NoStore`] reads [`DOC`] at.
     const PATH: &str = "t.json";
 
     impl EngineHost for Host {
-        fn read_document(&self, path: &str) -> Result<String, String> {
-            if path == PATH {
-                return Ok(DOC.to_string());
-            }
-            Err(format!("no file {path}"))
-        }
         fn hold_swap(&self, _path: &str) -> bool {
             self.offered.fetch_add(1, Ordering::SeqCst);
             self.hold
@@ -1438,26 +1275,26 @@ mod tests {
         let (state, host) = holding();
         assert_eq!(host.installed.load(Ordering::SeqCst), 1);
         let channel = Channel::new(InProcess::new(state.clone()));
-        swap_by_value(&channel).expect("swap");
+        open_doc(&channel).expect("open");
         assert_eq!(host.installed.load(Ordering::SeqCst), 2);
         let given = host.last_installed.lock().unwrap().clone().expect("given");
         let coordinator = state.coordinator.lock().unwrap();
         assert!(Arc::ptr_eq(&given, &coordinator.installed_probes()));
     }
 
-    fn swap_by_path(expect: Option<String>) -> String {
-        Request::Swap {
-            source: DocSource::Path(PATH.to_string()),
+    fn open_line(expect: Option<String>) -> String {
+        Request::Open {
+            name: PATH.to_string(),
             expect,
         }
         .to_ndjson()
     }
 
     #[test]
-    fn a_client_swap_the_host_holds_installs_nothing_and_names_what_plays() {
+    fn a_client_open_the_host_holds_installs_nothing_and_names_what_plays() {
         let (state, _host) = holding();
         let before = state.try_installed();
-        match dispatch(&state, &swap_by_path(None)) {
+        match dispatch(&state, &open_line(None)) {
             Response::Held(held) => {
                 assert_eq!(held.requested, PATH);
                 assert_eq!(held.playing.as_deref(), Some("playing.json"));
@@ -1466,16 +1303,16 @@ mod tests {
                 };
                 assert_eq!(&held.content_hash, content_hash);
             }
-            other => panic!("expected a held swap, got {other:?}"),
+            other => panic!("expected a held open, got {other:?}"),
         }
         assert_eq!(state.try_installed(), before);
     }
 
     #[test]
-    fn the_hosts_own_swap_is_never_offered_for_holding() {
+    fn the_hosts_own_open_is_never_offered_for_holding() {
         let (state, host) = holding();
         let channel = Channel::new(InProcess::new(state.clone()));
-        match channel.swap(DocSource::Path(PATH.to_string()), None) {
+        match open_doc(&channel) {
             Ok(super::super::SwapOutcome::Installed(report)) => {
                 assert!(report.report.ok, "{:?}", report.report.errors)
             }
@@ -1487,7 +1324,7 @@ mod tests {
     #[test]
     fn a_stale_expect_conflicts_before_the_host_is_asked_to_hold() {
         let (state, host) = holding();
-        match dispatch(&state, &swap_by_path(Some("0badc0de".to_string()))) {
+        match dispatch(&state, &open_line(Some("0badc0de".to_string()))) {
             Response::Conflict(conflict) => assert_eq!(conflict.expected, "0badc0de"),
             other => panic!("expected a conflict, got {other:?}"),
         }
@@ -1497,8 +1334,8 @@ mod tests {
     #[test]
     fn an_unreadable_source_is_rejected_before_the_host_is_asked_to_hold() {
         let (state, host) = holding();
-        let line = Request::Swap {
-            source: DocSource::Path("missing.json".to_string()),
+        let line = Request::Open {
+            name: "missing.json".to_string(),
             expect: None,
         }
         .to_ndjson();
@@ -1509,26 +1346,8 @@ mod tests {
         assert_eq!(host.offered.load(Ordering::SeqCst), 0);
     }
 
-    #[test]
-    fn a_swap_by_value_names_no_source_to_hold() {
-        let (state, host) = holding();
-        let line = Request::Swap {
-            source: DocSource::Document(serde_json::from_str(DOC).expect("doc json")),
-            expect: None,
-        }
-        .to_ndjson();
-        match dispatch(&state, &line) {
-            Response::SwapReport(report) => assert!(report.report.ok),
-            other => panic!("expected an install, got {other:?}"),
-        }
-        assert_eq!(host.offered.load(Ordering::SeqCst), 0);
-    }
-
-    fn swap_by_value(channel: &Channel) -> Result<super::super::SwapOutcome, ChannelError> {
-        channel.swap(
-            DocSource::Document(serde_json::from_str(DOC).expect("doc json")),
-            None,
-        )
+    fn open_doc(channel: &Channel) -> Result<super::super::SwapOutcome, ChannelError> {
+        channel.open(PATH.to_string(), None)
     }
 
     #[test]
@@ -1536,12 +1355,12 @@ mod tests {
         let state = state(true);
         let channel = Channel::new(InProcess::new(state.clone()));
 
-        let first = swap_by_value(&channel).expect_err("the panicking swap has no answer");
+        let first = open_doc(&channel).expect_err("the panicking open has no answer");
         assert!(first.is_unreachable(), "{first}");
 
         // Poisoned now: in-process and over any other door, an error rather than a panic.
         for err in [
-            swap_by_value(&channel).expect_err("poisoned"),
+            open_doc(&channel).expect_err("poisoned"),
             channel.get_document().expect_err("poisoned"),
         ] {
             match err {
@@ -1567,6 +1386,28 @@ mod tests {
         assert_eq!(state.subscribers(), 0);
     }
 
+    /// `get_document` names what plays and its hash, and never hands a client the document.
+    #[test]
+    fn a_snapshot_carries_no_document() {
+        let fields = |state: &StructureState| {
+            let line = dispatch(state, &Request::GetDocument.to_ndjson()).to_ndjson();
+            let value: serde_json::Value = serde_json::from_str(&line).expect("a JSON object");
+            let mut keys: Vec<String> = value
+                .as_object()
+                .expect("an object")
+                .keys()
+                .cloned()
+                .collect();
+            keys.sort();
+            (keys, value)
+        };
+        let (keys, _) = fields(&state(false));
+        assert_eq!(keys, ["content_hash", "reply", "source"]);
+        let (keys, value) = fields(&state(false).with_nothing_open());
+        assert_eq!(keys, ["content_hash", "reply"]);
+        assert_eq!(value["content_hash"], "");
+    }
+
     #[test]
     fn subscribe_through_dispatch_is_a_channel_error() {
         let state = state(false);
@@ -1583,8 +1424,6 @@ mod tests {
         assert!(get_engine_status(&channel, "test").output.reachable);
         state.close();
         assert!(!get_engine_status(&channel, "test").output.reachable);
-        assert!(swap_by_value(&channel)
-            .expect_err("closed")
-            .is_unreachable());
+        assert!(open_doc(&channel).expect_err("closed").is_unreachable());
     }
 }

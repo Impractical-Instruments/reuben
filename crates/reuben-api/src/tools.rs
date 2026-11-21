@@ -28,7 +28,7 @@ pub enum ContractKind {
     /// (`describe_operators`/`describe_instrument`/`validate_instrument`).
     Pure,
     /// An engine contract that reaches a running engine over the door's channel
-    /// (`send_live_controls`/`get_engine_status`/`swap_instrument`/`get_current_instrument`/
+    /// (`send_live_controls`/`get_engine_status`/`get_current_instrument`/
     /// `get_engine_diagnostics`/`get_engine_meters`/`open_instrument`/`list_instruments`).
     Engine,
     /// A **document-manipulation** contract: a pure, engine-free *mutator* over an
@@ -68,8 +68,8 @@ macro_rules! roster {
         /// One `&'static str` per [`CONTRACTS`](crate::tools::CONTRACTS) entry, in roster order:
         /// the symbol a door names a contract by where it would otherwise write a string literal.
         ///
-        /// A door writes `names::SWAP_INSTRUMENT` in the projection or the dispatch arm that
-        /// spells `"swap_instrument"` today, and a contract removed upstream is `E0425: cannot
+        /// A door writes `names::OPEN_INSTRUMENT` in the projection or the dispatch arm that
+        /// would otherwise spell `"open_instrument"`, and a contract removed upstream is `E0425: cannot
         /// find value` at that site — the compile error the roster owes its consumers, in place of
         /// dead plumbing behind a name nobody advertises any more.
         ///
@@ -110,7 +110,6 @@ roster! {
 
     SEND_LIVE_CONTROLS = "send_live_controls", Engine, engine_prose::SEND_LIVE_CONTROLS;
     GET_ENGINE_STATUS = "get_engine_status", Engine, engine_prose::GET_ENGINE_STATUS;
-    SWAP_INSTRUMENT = "swap_instrument", Engine, engine_prose::SWAP_INSTRUMENT;
     GET_CURRENT_INSTRUMENT = "get_current_instrument", Engine, engine_prose::GET_CURRENT_INSTRUMENT;
     GET_ENGINE_DIAGNOSTICS = "get_engine_diagnostics", Engine, engine_prose::GET_ENGINE_DIAGNOSTICS;
     GET_ENGINE_METERS = "get_engine_meters", Engine, engine_prose::GET_ENGINE_METERS;

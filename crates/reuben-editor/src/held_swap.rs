@@ -1,10 +1,10 @@
-//! A Swap `reuben-mcp` asks the embedded engine for, of an instrument other than the one open
-//! here: held rather than installed, so a background agent does not replace what the user is
-//! working on, and put to the user to accept or decline.
+//! An open another client (`reuben-mcp`, say) asks the embedded engine for, of an instrument other
+//! than the one open here: held rather than installed, so a background agent does not replace what
+//! the user is working on, and put to the user to accept or decline.
 //!
-//! A Swap of the open top-level file is not held: it installs what the file watcher would install
-//! anyway. Any other source is, a voice or subpatch file inside the open instrument's tree
-//! included, since installing it would replace the top-level instrument.
+//! An open of the open top-level file is not held: it reinstalls what already plays. Any other
+//! source is, a voice or subpatch file inside the open instrument's tree included, since opening
+//! it would replace the top-level instrument.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -17,15 +17,15 @@ use reuben_native::structure::SwapHold;
 /// changes, so a click the user aimed at what was there before does not answer it.
 const ARMING: Duration = Duration::from_millis(600);
 
-/// The open instrument and the one Swap waiting on the user, shared between the engine's
-/// structure server, which holds a Swap, and the UI thread, which asks about it.
+/// The open instrument and the one open waiting on the user, shared between the engine's
+/// structure server, which holds it, and the UI thread, which asks about it.
 #[derive(Clone)]
 pub struct HeldSwaps {
     inner: Arc<Inner>,
 }
 
 struct Inner {
-    /// One lock for both, so a Swap judged against one open file cannot leave a question about
+    /// One lock for both, so an open judged against one open file cannot leave a question about
     /// the file opened meanwhile.
     state: Mutex<State>,
     wake: Box<dyn Fn() + Send + Sync>,
@@ -36,11 +36,11 @@ struct State {
     /// The open top-level file, [`canonical`]. `None` while nothing is open, when nothing
     /// is held.
     open: Option<PathBuf>,
-    /// A later held Swap replaces it.
+    /// A later held open replaces it.
     pending: Option<Asked>,
 }
 
-/// A held Swap the user is being asked about.
+/// A held open the user is being asked about.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Asked {
     /// The engine's name for it, which it plays under once opened, so the agent sees the source
@@ -51,7 +51,7 @@ pub struct Asked {
 }
 
 impl HeldSwaps {
-    /// `wake` is called from the structure server's thread when a Swap is held, so the prompt is
+    /// `wake` is called from the structure server's thread when an open is held, so the prompt is
     /// drawn without waiting for input.
     pub fn new(wake: impl Fn() + Send + Sync + 'static) -> Self {
         Self {
@@ -79,18 +79,18 @@ impl HeldSwaps {
     }
 
     /// Nothing is open now, as after an open the server refused with nothing open before it: no
-    /// Swap is held.
+    /// open is held.
     pub fn closed(&self) {
         self.state().open = None;
     }
 
-    /// The Swap the user is being asked about, if any.
+    /// The open the user is being asked about, if any.
     pub fn pending(&self) -> Option<Asked> {
         self.state().pending.clone()
     }
 
     /// The user chose to open `shown`. Returns the name to open it by, as the client asked for
-    /// it, unless another held Swap has replaced the one they were shown.
+    /// it, unless another held open has replaced the one they were shown.
     pub fn accept(&self, shown: &Asked) -> Option<String> {
         let mut state = self.state();
         if state.pending.as_ref() != Some(shown) {
@@ -102,7 +102,7 @@ impl HeldSwaps {
             .map(|asked| asked.path.display().to_string())
     }
 
-    /// The user kept what is open rather than `shown`: nothing changes. A Swap held since they
+    /// The user kept what is open rather than `shown`: nothing changes. An open held since they
     /// were shown it is still asked about.
     pub fn decline(&self, shown: &Asked) {
         let mut state = self.state();
@@ -147,7 +147,7 @@ pub fn canonical(path: &Path) -> PathBuf {
     crate::names::lexical(path)
 }
 
-/// Draw the prompt while a Swap is held, floating over the bottom-right corner of `within` so
+/// Draw the prompt while an open is held, floating over the bottom-right corner of `within` so
 /// nothing under it moves when it appears. It takes no focus, and its buttons ignore clicks for [`ARMING`]
 /// after what it asks about changes, so a gesture under way carries on until the user turns to
 /// it. Returns the name the user chose to open.
@@ -198,8 +198,7 @@ fn name(path: &Path) -> String {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use reuben_api::engine::{get_current_instrument, swap_instrument, SwapInstrument, SwapResult};
-    use reuben_api::FsResolver;
+    use reuben_api::engine::{open_instrument, OpenInstrument, SwapResult};
     use reuben_mcp::EngineLink;
     use reuben_native::engine::{EngineConfig, RunningEngine, StartError};
     use reuben_native::test_support::{start_headless, within};
@@ -280,28 +279,31 @@ mod tests {
             self.open_file(&name);
         }
 
-        /// `reuben-mcp`'s `swap_instrument` of `path`.
-        fn mcp_swaps(&self, path: &str) -> SwapResult {
-            swap_instrument(
-                &SwapInstrument {
-                    path: path.to_string(),
-                    expect: None,
+        /// `reuben-mcp`'s `open_instrument` of `path`.
+        fn mcp_opens(&self, path: &str) -> SwapResult {
+            self.mcp_opens_expecting(path, None)
+        }
+
+        fn mcp_opens_expecting(&self, path: &str, expect: Option<String>) -> SwapResult {
+            open_instrument(
+                &OpenInstrument {
+                    name: path.to_string(),
+                    expect,
                 },
                 self.link.structure(),
             )
-            .expect("the swap reached the engine")
+            .expect("the open reached the engine")
             .output
         }
 
-        /// What `reuben-mcp`'s `get_current_instrument` names as playing.
+        /// What the engine names as playing.
         fn playing(&self) -> String {
-            get_current_instrument(self.link.structure(), |source: Option<&str>| {
-                FsResolver::for_document(source.expect("installed from a file")).stat_only()
-            })
-            .expect("the engine answers")
-            .output
-            .source
-            .expect("installed from a file")
+            self.link
+                .structure()
+                .get_document()
+                .expect("the engine answers")
+                .source
+                .expect("installed from a file")
         }
 
         fn spelled(&self, relative: &str) -> String {
@@ -320,12 +322,12 @@ mod tests {
     }
 
     #[test]
-    fn a_swap_of_the_open_file_installs_with_no_prompt() {
+    fn an_open_of_the_open_file_installs_with_no_prompt() {
         within(HANG_SECS, || {
             let mut editor = Editor::open("held_same", "acid-techno.json");
-            let swapped = editor.mcp_swaps(&editor.spelled("acid-techno.json"));
-            assert!(swapped.report.report.ok, "{:?}", swapped.report.report);
-            assert_eq!(swapped.held, None);
+            let opened = editor.mcp_opens(&editor.spelled("acid-techno.json"));
+            assert!(opened.report.report.ok, "{:?}", opened.report.report);
+            assert_eq!(opened.held, None);
             assert_eq!(editor.held.pending(), None);
             assert_eq!(editor.wakes.load(Ordering::SeqCst), 0);
             editor.engine.shutdown();
@@ -336,28 +338,28 @@ mod tests {
     fn another_spelling_of_the_open_file_is_the_open_file() {
         within(HANG_SECS, || {
             let mut editor = Editor::open("held_spelling", "acid-techno.json");
-            let swapped = editor.mcp_swaps(&editor.spelled("voices/../acid-techno.json"));
-            assert_eq!(swapped.held, None);
-            assert!(swapped.report.report.ok, "{:?}", swapped.report.report);
+            let opened = editor.mcp_opens(&editor.spelled("voices/../acid-techno.json"));
+            assert_eq!(opened.held, None);
+            assert!(opened.report.report.ok, "{:?}", opened.report.report);
             editor.engine.shutdown();
         });
     }
 
     #[test]
-    fn a_swap_of_another_instrument_is_held_and_accepting_opens_it() {
+    fn an_open_of_another_instrument_is_held_and_accepting_opens_it() {
         within(HANG_SECS, || {
             let mut editor = Editor::open("held_accept", "acid-techno.json");
             let acid = editor.spelled("acid-techno.json");
             let groovebox = editor.spelled("groovebox.json");
 
             let asked_at = Instant::now();
-            let swapped = editor.mcp_swaps(&groovebox);
+            let opened = editor.mcp_opens(&groovebox);
             assert!(
                 asked_at.elapsed() < Duration::from_secs(1),
-                "a held swap answers at once, not after the user does"
+                "a held open answers at once, not after the user does"
             );
-            let held = swapped.held.expect("the swap is held");
-            assert!(!swapped.report.report.ok);
+            let held = opened.held.expect("the open is held");
+            assert!(!opened.report.report.ok);
             assert_eq!(held.requested, groovebox);
             assert_eq!(held.playing.as_deref(), Some(acid.as_str()));
             assert_eq!(editor.playing(), acid);
@@ -374,19 +376,19 @@ mod tests {
                 "the source the agent asked for"
             );
 
-            // Open now, so the agent's next swap of it is not held.
-            assert_eq!(editor.mcp_swaps(&groovebox).held, None);
+            // Open now, so the agent's next open of it is not held.
+            assert_eq!(editor.mcp_opens(&groovebox).held, None);
             editor.engine.shutdown();
         });
     }
 
     #[test]
-    fn declining_a_held_swap_changes_nothing() {
+    fn declining_a_held_open_changes_nothing() {
         within(HANG_SECS, || {
             let mut editor = Editor::open("held_decline", "acid-techno.json");
             let acid = editor.spelled("acid-techno.json");
             assert!(editor
-                .mcp_swaps(&editor.spelled("groovebox.json"))
+                .mcp_opens(&editor.spelled("groovebox.json"))
                 .held
                 .is_some());
 
@@ -404,8 +406,8 @@ mod tests {
         within(HANG_SECS, || {
             let mut editor = Editor::open("held_voice", "acid-techno.json");
             let acid = editor.spelled("acid-techno.json");
-            let swapped = editor.mcp_swaps(&editor.spelled("voices/kick-voice.json"));
-            assert!(swapped.held.is_some(), "{:?}", swapped.report);
+            let opened = editor.mcp_opens(&editor.spelled("voices/kick-voice.json"));
+            assert!(opened.held.is_some(), "{:?}", opened.report);
             assert_eq!(editor.playing(), acid);
             editor.engine.shutdown();
         });
@@ -423,12 +425,12 @@ mod tests {
             );
 
             let acid = editor.spelled("acid-techno.json");
-            let swapped = editor.mcp_swaps(&acid);
-            assert_eq!(swapped.held, None);
-            assert!(swapped.report.report.ok, "{:?}", swapped.report.report);
+            let opened = editor.mcp_opens(&acid);
+            assert_eq!(opened.held, None);
+            assert!(opened.report.report.ok, "{:?}", opened.report.report);
             assert_eq!(editor.held.pending(), None);
 
-            assert!(editor.mcp_swaps(&kick).held.is_some(), "the viewed voice");
+            assert!(editor.mcp_opens(&kick).held.is_some(), "the viewed voice");
             assert_eq!(editor.playing(), acid);
             editor.engine.shutdown();
         });
@@ -438,23 +440,23 @@ mod tests {
     fn another_file_spelled_through_dot_dot_is_still_held() {
         within(HANG_SECS, || {
             let mut editor = Editor::open("held_other_spelling", "acid-techno.json");
-            let swapped = editor.mcp_swaps(&editor.spelled("voices/../groovebox.json"));
-            assert!(swapped.held.is_some(), "{:?}", swapped.report);
+            let opened = editor.mcp_opens(&editor.spelled("voices/../groovebox.json"));
+            assert!(opened.held.is_some(), "{:?}", opened.report);
             editor.engine.shutdown();
         });
     }
 
     #[test]
-    fn a_second_held_swap_replaces_the_first_and_an_answer_to_the_first_does_nothing() {
+    fn a_second_held_open_replaces_the_first_and_an_answer_to_the_first_does_nothing() {
         within(HANG_SECS, || {
             let mut editor = Editor::open("held_twice", "acid-techno.json");
             assert!(editor
-                .mcp_swaps(&editor.spelled("groovebox.json"))
+                .mcp_opens(&editor.spelled("groovebox.json"))
                 .held
                 .is_some());
             let first = editor.held.pending().expect("the user is asked");
             let default = editor.spelled("default.json");
-            assert!(editor.mcp_swaps(&default).held.is_some());
+            assert!(editor.mcp_opens(&default).held.is_some());
             assert_eq!(editor.wakes.load(Ordering::SeqCst), 2);
             let second = editor.held.pending().expect("the user is asked");
             assert_eq!(second.path, Path::new(&default));
@@ -470,15 +472,10 @@ mod tests {
     fn a_stale_expect_conflicts_and_asks_nothing() {
         within(HANG_SECS, || {
             let mut editor = Editor::open("held_expect", "acid-techno.json");
-            let answer = swap_instrument(
-                &SwapInstrument {
-                    path: editor.spelled("groovebox.json"),
-                    expect: Some("0badc0de".to_string()),
-                },
-                editor.link.structure(),
-            )
-            .expect("the swap reached the engine")
-            .output;
+            let answer = editor.mcp_opens_expecting(
+                &editor.spelled("groovebox.json"),
+                Some("0badc0de".to_string()),
+            );
             assert!(answer.conflict.is_some(), "{answer:?}");
             assert_eq!(answer.held, None);
             assert_eq!(editor.held.pending(), None);
@@ -487,19 +484,21 @@ mod tests {
     }
 
     #[test]
-    fn a_document_that_does_not_load_is_rejected_with_its_errors_and_asks_nothing() {
+    fn an_open_of_a_document_that_does_not_load_is_held_too() {
         within(HANG_SECS, || {
             let mut editor = Editor::open("held_broken", "acid-techno.json");
+            let acid = editor.spelled("acid-techno.json");
             let broken = editor.spelled("broken.json");
             std::fs::write(
                 &broken,
                 r#"{"format_version":3,"instrument":"t","nodes":[{"#,
             )
             .expect("write a broken document");
-            let swapped = editor.mcp_swaps(&broken);
-            assert_eq!(swapped.held, None);
-            assert!(!swapped.report.report.errors.is_empty(), "{swapped:?}");
-            assert_eq!(editor.held.pending(), None);
+            // Opening it would still unload what plays, so the user is asked.
+            let opened = editor.mcp_opens(&broken);
+            assert!(opened.held.is_some(), "{opened:?}");
+            assert!(editor.held.pending().is_some());
+            assert_eq!(editor.playing(), acid);
             editor.engine.shutdown();
         });
     }
@@ -509,7 +508,7 @@ mod tests {
         within(HANG_SECS, || {
             let mut editor = Editor::open("held_opened", "acid-techno.json");
             let groovebox = editor.spelled("groovebox.json");
-            assert!(editor.mcp_swaps(&groovebox).held.is_some());
+            assert!(editor.mcp_opens(&groovebox).held.is_some());
             editor.open_file(&groovebox);
             assert_eq!(editor.held.pending(), None);
             assert_eq!(editor.playing(), groovebox);

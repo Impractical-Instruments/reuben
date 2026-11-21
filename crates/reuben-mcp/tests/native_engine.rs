@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use reuben_api::engine::{
-    get_engine_status, send_live_controls, swap_instrument, SendLiveControls, SwapInstrument,
+    get_engine_status, open_instrument, send_live_controls, OpenInstrument, SendLiveControls,
     IN_PROCESS_ENDPOINT,
 };
 use reuben_api::tools::names;
@@ -283,16 +283,16 @@ fn a_channel_held_past_shutdown_is_unreachable() {
 
     let status = get_engine_status(&channel, env!("CARGO_PKG_VERSION"));
     assert!(!status.output.reachable, "{}", status.summary);
-    let swap = swap_instrument(
-        &SwapInstrument {
-            path: target,
+    let open = open_instrument(
+        &OpenInstrument {
+            name: target,
             expect: None,
         },
         &channel,
     );
     assert!(
-        swap.is_err(),
-        "a swap after shutdown must not report success"
+        open.is_err(),
+        "an open after shutdown must not report success"
     );
     assert!(send_live_controls(&gate_off(), &channel).is_err());
     assert!(channel

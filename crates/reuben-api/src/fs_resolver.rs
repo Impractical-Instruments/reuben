@@ -361,8 +361,7 @@ mod tests {
     /// A reference in the launch document has one identity whether it is resolved from the
     /// session's base directory or with the launch file's own canonical id as the referrer —
     /// however the launch path and the later spelling of it were written, and with or without a
-    /// library root. That equality is what lets a by-path swap of the launch file keep its
-    /// survivors.
+    /// library root. That equality is what lets an open of the launch file keep its survivors.
     #[test]
     fn a_launch_files_references_are_one_identity_from_the_base_or_from_the_file() {
         struct Scratch(PathBuf);

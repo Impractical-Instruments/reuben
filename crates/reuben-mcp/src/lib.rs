@@ -66,16 +66,11 @@ pub fn tool_names() -> Vec<&'static str> {
     served_contracts().map(|c| c.name).collect()
 }
 
-/// Roster verbs this door does not serve. `swap_instrument` installs a document by path, which
-/// would reach around the server's store; an agent here opens a name and edits it live instead.
-const NOT_SERVED: &[&str] = &[names::SWAP_INSTRUMENT];
-
-/// The contracts this door routes: the roster, less host-only verbs and [`NOT_SERVED`].
+/// The contracts this door routes: the roster, less host-only verbs.
 fn served_contracts() -> impl Iterator<Item = &'static reuben_api::tools::Contract> {
     reuben_api::tools::CONTRACTS
         .iter()
         .filter(|c| c.kind != reuben_api::tools::ContractKind::Host)
-        .filter(|c| !NOT_SERVED.contains(&c.name))
 }
 
 pub use reuben_api::engine::STRUCTURE_ADDR_ENV;
@@ -1097,7 +1092,6 @@ mod tests {
                     .find(|(scripted, _)| scripted == tool)
                     .map(|(_, response)| response),
                 Request::SetProbes { .. }
-                | Request::Swap { .. }
                 | Request::List { .. }
                 | Request::Library
                 | Request::Surface
@@ -1597,13 +1591,6 @@ mod tests {
             Vec::<&str>::new(),
             "the server instructions send a model to a verb no contract serves"
         );
-        // `unserved_verbs` reads the whole roster, and this door leaves some of it unserved.
-        for verb in NOT_SERVED {
-            assert!(
-                !INSTRUCTIONS.contains(verb),
-                "the server instructions send a model to `{verb}`, which this door does not serve"
-            );
-        }
     }
 
     #[test]
@@ -1935,15 +1922,8 @@ mod tests {
     #[test]
     fn get_current_instrument_projects_the_installed_graph_and_never_returns_it() {
         // The tool answers "what is playing?" with the engine's own projection of the source it
-        // installed, plus the source and hash to reconcile against — the document itself stops at
-        // this door.
-        let doc = serde_json::json!({
-            "format_version": 3,
-            "instrument": "warm",
-            "nodes": [{ "type": "oscillator", "address": "/osc", "inputs": { "freq": 220.0 } }],
-        });
+        // installed, plus the source and hash to reconcile against — no document reaches this door.
         let snapshot = DocumentSnapshot {
-            document: doc.clone(),
             content_hash: "00c0ffee".to_string(),
             source: Some("voices/warm.json".to_string()),
         };
@@ -2390,33 +2370,5 @@ mod tests {
             Vec::<Request>::new(),
             "listing operators touches no engine"
         );
-    }
-
-    #[test]
-    fn swap_instrument_is_not_advertised() {
-        assert!(!tool_names().contains(&names::SWAP_INSTRUMENT));
-        let advertised: Vec<String> = ReubenServer::new()
-            .tool_router
-            .list_all()
-            .into_iter()
-            .map(|tool| tool.name.to_string())
-            .collect();
-        assert!(
-            !advertised.iter().any(|name| name == names::SWAP_INSTRUMENT),
-            "{advertised:?}"
-        );
-    }
-
-    /// A stale entry would skip nothing and silently stop meaning anything.
-    #[test]
-    fn not_served_entries_are_on_the_roster() {
-        for name in NOT_SERVED {
-            assert!(
-                reuben_api::tools::CONTRACTS
-                    .iter()
-                    .any(|contract| contract.name == *name),
-                "`{name}` is listed as not served, but the roster has no such verb"
-            );
-        }
     }
 }

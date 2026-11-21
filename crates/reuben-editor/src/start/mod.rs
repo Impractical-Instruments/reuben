@@ -443,7 +443,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use reuben_api::authoring::{set_instrument_name, SetInstrumentName};
-    use reuben_api::engine::{swap_instrument, SwapInstrument};
+    use reuben_api::engine::{open_instrument, OpenInstrument};
     use reuben_api::FsResolver;
     use reuben_native::engine::Instrument;
     use reuben_native::profile::DeviceProfile;
@@ -761,8 +761,7 @@ mod tests {
             follow(&mut session, &mut engine, false, |_| panic!("not loadable"));
             assert_eq!(errors(&engine).len(), 1);
 
-            // The file comes back changed, and the change is Swapped in by something other than
-            // the session.
+            // The file comes back changed, and something other than the session opens it again.
             std::fs::write(&mic, text).unwrap();
             let renamed = set_instrument_name(
                 &SetInstrumentName {
@@ -775,15 +774,15 @@ mod tests {
             .expect("the verb ran")
             .output;
             assert!(renamed.written, "{:?}", renamed.report);
-            let swapped = swap_instrument(
-                &SwapInstrument {
-                    path: name(&mic),
+            let opened = open_instrument(
+                &OpenInstrument {
+                    name: name(&mic),
                     expect: None,
                 },
                 &engine.channel().expect("running"),
             )
-            .expect("the swap reached the engine");
-            assert!(swapped.output.report.report.ok, "{}", swapped.summary);
+            .expect("the open reached the engine");
+            assert!(opened.output.report.report.ok, "{}", opened.summary);
 
             follow(&mut session, &mut engine, false, headless);
             restarted_with_input(&engine, &mic);
@@ -807,22 +806,22 @@ mod tests {
     }
 
     #[test]
-    fn the_report_names_what_a_sidecar_swapped_in_not_the_open_file() {
+    fn the_report_names_what_a_sidecar_opened_not_the_file_the_session_had_open() {
         within(HANG_SECS, || {
-            let scratch = Scratch::new("start_sidecar_swap");
+            let scratch = Scratch::new("start_sidecar_open");
             let lib = scratch.library();
             let mut engine = launched(&lib);
             let mut session = opened(&lib.join("default.json"), &engine);
             let other = lib.join("groovebox.json");
-            let swapped = swap_instrument(
-                &SwapInstrument {
-                    path: name(&other),
+            let answer = open_instrument(
+                &OpenInstrument {
+                    name: name(&other),
                     expect: None,
                 },
                 &engine.channel().expect("running"),
             )
-            .expect("the swap reached the engine");
-            assert!(swapped.output.report.report.ok, "{}", swapped.summary);
+            .expect("the open reached the engine");
+            assert!(answer.output.report.report.ok, "{}", answer.summary);
 
             follow(&mut session, &mut engine, false, headless);
             assert_eq!(engine.instrument(), Some(&Instrument::Path(other.clone())));
