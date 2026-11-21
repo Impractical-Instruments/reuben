@@ -1257,7 +1257,7 @@ mod tests {
         let wire = serde_json::to_value(&answer.output).expect("serializes");
         assert_eq!(wire["pre_existing"][0]["port"], "a", "{wire}");
 
-        // Ahead of `/gone` in the load, so this one is the edit's own.
+        // Beside `/gone`, so this one is the edit's own and `/gone` stays the document's.
         let wire_in = WireInstrumentInput {
             source: "inst.json".to_string(),
             address: "/osc".to_string(),
@@ -1268,10 +1268,12 @@ mod tests {
         let added = wire_instrument_input(&wire_in, &store).expect("the verb ran");
         assert!(!added.output.written);
         assert_eq!(added.output.report.errors.len(), 1, "{:?}", added.output);
+        assert_eq!(added.output.pre_existing.len(), 1, "{:?}", added.output);
+        assert!(added.output.notes.is_empty(), "{:?}", added.output);
         assert!(
             added
                 .summary
-                .starts_with("not written — 1 error(s); 1 note(s);"),
+                .starts_with("not written — 1 error(s), and the document already had 1 more"),
             "{}",
             added.summary
         );
@@ -2614,8 +2616,8 @@ mod tests {
         assert_eq!(names(&node(&doc, "/sub").ports.outputs), vec!["out"]);
     }
 
-    /// The loader stops at the first refused wire; the read reports each one, and an interface
-    /// output's on the pipe.
+    /// The read reports each refused wire where it is held, an interface output's on the pipe, in
+    /// document order: the interface ahead of the nodes.
     #[test]
     fn every_refused_wire_is_reported_where_it_is_held() {
         let mut broken: serde_json::Value =
@@ -2628,7 +2630,7 @@ mod tests {
             .iter()
             .map(|d| (d.node.as_deref(), d.port.as_deref()))
             .collect();
-        assert_eq!(held, vec![(Some("/h"), Some("root")), (None, Some("busy"))]);
+        assert_eq!(held, vec![(None, Some("busy")), (Some("/h"), Some("root"))]);
     }
 
     #[test]

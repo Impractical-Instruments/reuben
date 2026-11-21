@@ -608,7 +608,9 @@ fn out_of_range_channel_is_a_pointed_load_error() {
         { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/mic" } } }
       ]
     }"#;
-    let Err(err) = load_instrument(IN_HUGE, &Registry::builtin(), &none) else {
+    let Err(err) = load_instrument(IN_HUGE, &Registry::builtin(), &none)
+        .map_err(reuben_document::LoadErrors::into_first)
+    else {
         panic!("a 1e8 input channel must not load");
     };
     assert!(
@@ -624,7 +626,9 @@ fn out_of_range_channel_is_a_pointed_load_error() {
       },
       "nodes": [ { "type": "oscillator", "address": "/osc" } ]
     }"#;
-    let Err(err) = load_instrument(OUT_HUGE, &Registry::builtin(), &none) else {
+    let Err(err) = load_instrument(OUT_HUGE, &Registry::builtin(), &none)
+        .map_err(reuben_document::LoadErrors::into_first)
+    else {
         panic!("a 1e8 output channel must not load");
     };
     assert!(

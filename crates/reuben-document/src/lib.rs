@@ -31,6 +31,7 @@ pub use describe::{describe_boundary, BoundaryDesc, BoundaryPortDesc};
 pub use engine::{from_document, FromDocumentError};
 pub use format::{
     load, load_instrument, load_instrument_doc, resolve_instrument, DocValue, InstrumentDoc,
-    InterfaceDoc, LoadError, LoadWarning, Loaded, NormalizedDoc, WireEnd, SCAFFOLD_DEFAULT_NAME,
+    InterfaceDoc, LoadError, LoadErrors, LoadWarning, Loaded, NormalizedDoc, WireEnd,
+    SCAFFOLD_DEFAULT_NAME,
 };
 pub use resources::{Created, MemoryResolver, ResolveError, ResourceResolver};

@@ -143,7 +143,7 @@ impl Coordinator {
         config: AudioConfig,
     ) -> Result<(Coordinator, RenderSide, Vec<LoadWarning>), FromDocumentError> {
         let doc = NormalizedDoc::from_json(doc_json, &registry, Some(&*resolver))
-            .map_err(FromDocumentError::Load)?;
+            .map_err(|e| FromDocumentError::Load(e.into()))?;
         let (engine, manifest, warnings, installed_probes) =
             build_engine(&doc, &registry, &*resolver, config)?;
         // Record the initial engine's logical geometry before it moves into the RenderSide:
@@ -314,8 +314,8 @@ impl Coordinator {
         let (engine, manifest, warnings, probes) =
             match build_engine(&doc, &self.registry, resolver, self.config) {
                 Ok(built) => built,
-                Err(FromDocumentError::Load(e)) => {
-                    return Err(self.reject(vec![Diag::from_load(&e)]))
+                Err(FromDocumentError::Load(errors)) => {
+                    return Err(self.reject(errors.iter().map(Diag::from_load).collect()))
                 }
                 Err(FromDocumentError::Plan(e)) => {
                     return Err(self.reject(vec![Diag {

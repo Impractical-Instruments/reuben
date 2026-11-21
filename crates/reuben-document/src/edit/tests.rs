@@ -169,10 +169,10 @@ fn the_edit_that_fixes_the_only_error_is_written() {
     assert!(result.pre_existing.is_empty());
 }
 
-/// The loader stops at the first error, so an edit that adds one the load reaches first is refused
-/// for its own, with a note naming the one the load used to stop at.
+/// The load reports every error, so an edit that adds one beside one already there is refused for
+/// its own, and the old one is told apart from it.
 #[test]
-fn an_error_the_edit_adds_ahead_of_one_already_there_is_its_own() {
+fn an_error_the_edit_adds_beside_one_already_there_is_its_own() {
     let registry = Registry::builtin();
     let resolver = resolver_with(&seed_dangling());
 
@@ -189,9 +189,12 @@ fn an_error_the_edit_adds_ahead_of_one_already_there_is_its_own() {
     assert!(!result.written);
     assert_eq!(result.report.errors.len(), 1, "{result:?}");
     assert_eq!(result.report.errors[0].node.as_deref(), Some("/osc"));
-    assert!(result.pre_existing.is_empty(), "{result:?}");
-    assert_eq!(result.notes.len(), 1, "{result:?}");
-    assert!(result.notes[0].contains("/gone"), "{result:?}");
+    assert_eq!(result.pre_existing.len(), 1, "{result:?}");
+    assert!(
+        result.pre_existing[0].message.contains("/gone"),
+        "{result:?}"
+    );
+    assert!(result.notes.is_empty(), "{result:?}");
 }
 
 /// An edit that rewrites the faulty value itself, to another faulty value, is matched on what the
@@ -271,9 +274,8 @@ fn a_fault_at_a_migrated_address_is_matched_after_the_migration() {
 /// With a second dangling reference the document cannot be repaired one wire at a time: each fix
 /// leaves the other fault, so each is refused, and write-iff-valid holds the file where it was.
 ///
-/// The load stops at `/gone`, so `/lost` is invisible before the first fix: that fix is refused for
-/// `/lost` and told the load used to stop at `/gone`. The second fix is refused for `/gone`, which
-/// the load did reach, as pre-existing.
+/// Each fix is refused for the fault it leaves, which the load sees before the edit too, so it is
+/// pre-existing and the edit is charged with nothing.
 #[test]
 fn two_independent_faults_refuse_each_single_fix() {
     let registry = Registry::builtin();
@@ -297,17 +299,118 @@ fn two_independent_faults_refuse_each_single_fix() {
         .expect("the verb ran");
 
     assert!(!first.written && !second.written, "{first:?} {second:?}");
-    assert_eq!(first.report.errors[0].node.as_deref(), Some("/amp2"));
-    assert!(first.pre_existing.is_empty(), "{first:?}");
-    assert_eq!(first.notes.len(), 1, "{first:?}");
-    assert!(first.notes[0].contains("/gone"), "{first:?}");
-    assert!(second.report.errors.is_empty(), "{second:?}");
-    assert_eq!(second.pre_existing[0].node.as_deref(), Some("/amp"));
-    assert!(second.notes.is_empty(), "{second:?}");
+    for (result, left) in [(&first, "/amp2"), (&second, "/amp")] {
+        assert!(result.report.errors.is_empty(), "{result:?}");
+        assert_eq!(result.pre_existing.len(), 1, "{result:?}");
+        assert_eq!(result.pre_existing[0].node.as_deref(), Some(left));
+        assert!(result.notes.is_empty(), "{result:?}");
+    }
 }
 
-/// The loader reports one error per validation, so the multiset rule is held here directly, over
-/// faults taken from real validations.
+/// A nested child's error is the referencing node's, matched by that node and by what it is inside
+/// the child — never by the child's own addresses, which can name a node of this document too.
+#[test]
+fn a_nested_childs_error_is_matched_at_the_node_that_holds_it() {
+    let registry = Registry::builtin();
+    let mut resolver = resolver_with(
+        &json!({
+            "format_version": 3,
+            "instrument": "test",
+            "resources": { "fx": "fx.json" },
+            "nodes": [
+                { "type": "oscillator", "address": "/o", "inputs": { "freq": 220.0 } },
+                { "type": "subpatch", "address": "/fx", "patch": "fx" }
+            ]
+        })
+        .to_string(),
+    );
+    resolver.insert_text(
+        "fx.json",
+        json!({
+            "format_version": 3,
+            "instrument": "fx",
+            "nodes": [{ "type": "oscillator", "address": "/o", "inputs": { "bogus": 1.0 } }]
+        })
+        .to_string(),
+    );
+
+    // The edit adds, on this document's `/o`, the very fault the child has on its own `/o`.
+    let result = set_instrument_input(SRC, "/o", "bogus", json!(1.0), &registry, &resolver)
+        .expect("the verb ran");
+
+    assert!(!result.written);
+    assert_eq!(result.pre_existing.len(), 1, "{result:?}");
+    assert_eq!(result.pre_existing[0].node.as_deref(), Some("/fx"));
+    assert_eq!(result.report.errors.len(), 1, "{result:?}");
+    assert_eq!(
+        (
+            result.report.errors[0].node.as_deref(),
+            result.report.errors[0].port.as_deref()
+        ),
+        (Some("/o"), Some("bogus")),
+        "{result:?}"
+    );
+}
+
+/// Removing one of two nodes that use the same broken child leaves the other's error where it was:
+/// it is the document's, not the edit's.
+#[test]
+fn removing_one_use_of_a_broken_child_leaves_the_others_error_pre_existing() {
+    let registry = Registry::builtin();
+    let mut resolver = resolver_with(
+        &json!({
+            "format_version": 3,
+            "instrument": "test",
+            "resources": { "c": "c.json" },
+            "nodes": [
+                { "type": "subpatch", "address": "/fx1", "patch": "c" },
+                { "type": "subpatch", "address": "/fx2", "patch": "c" }
+            ]
+        })
+        .to_string(),
+    );
+    resolver.insert_text(
+        "c.json",
+        r#"{"format_version":3,"instrument":"c","nodes":[{"type":"nope","address":"/x"}]}"#,
+    );
+
+    let result = remove_instrument_node(SRC, "/fx1", &registry, &resolver).expect("the verb ran");
+
+    assert!(!result.written);
+    assert!(result.report.errors.is_empty(), "{result:?}");
+    assert_eq!(result.pre_existing.len(), 1, "{result:?}");
+    assert_eq!(result.pre_existing[0].node.as_deref(), Some("/fx2"));
+}
+
+/// A child too broken to name a slot of its own — here, not JSON at all — is still one fault of the
+/// node that references it.
+#[test]
+fn an_unparseable_child_is_matched_at_the_node_that_holds_it() {
+    let registry = Registry::builtin();
+    let mut resolver = resolver_with(
+        &json!({
+            "format_version": 3,
+            "instrument": "test",
+            "resources": { "c": "c.json" },
+            "nodes": [
+                { "type": "oscillator", "address": "/o" },
+                { "type": "subpatch", "address": "/fx", "patch": "c" }
+            ]
+        })
+        .to_string(),
+    );
+    resolver.insert_text("c.json", "{ not json");
+
+    let result = set_instrument_node_description(SRC, "/o", Some("tone"), &registry, &resolver)
+        .expect("the verb ran");
+
+    assert!(!result.written);
+    assert!(result.report.errors.is_empty(), "{result:?}");
+    assert_eq!(result.pre_existing.len(), 1, "{result:?}");
+    assert!(result.notes.is_empty(), "{result:?}");
+}
+
+/// The multiset rule, held directly over faults taken from real validations.
 #[test]
 fn faults_match_as_a_multiset() {
     let registry = Registry::builtin();
@@ -322,7 +425,7 @@ fn faults_match_as_a_multiset() {
         let (mut errs, faults): (Vec<_>, Vec<_>) = errors.into_iter().unzip();
         let (prior, found): (Vec<_>, Vec<_>) = found.into_iter().unzip();
         let split = split_pre_existing(&mut errs, faults, prior, found);
-        (split.pre_existing, errs, split.displaced)
+        (split.pre_existing, errs, split.unmatchable)
     };
     let a = (a, fa);
     let b = (b, fb);
@@ -337,17 +440,22 @@ fn faults_match_as_a_multiset() {
     );
     assert_eq!(
         split(vec![a.clone()], vec![a.clone(), a.clone()]),
-        (vec![a.0.clone()], vec![], vec![a.0.clone()])
+        (vec![a.0.clone()], vec![], vec![])
     );
     assert_eq!(
         split(vec![b.clone()], vec![a.clone()]),
-        (vec![], vec![b.0.clone()], vec![a.0.clone()])
+        (vec![], vec![b.0.clone()], vec![])
     );
-    // An error with no fault matches nothing, not even an identical one.
+    // An error with no fault matches nothing, not even an identical one; the old one is told
+    // about only when the edit's errors hold one with no fault too.
     let blind = (a.0.clone(), None);
     assert_eq!(
-        split(vec![blind.clone()], vec![blind]),
-        (vec![], vec![a.0.clone()], vec![a.0])
+        split(vec![blind.clone()], vec![blind.clone()]),
+        (vec![], vec![a.0.clone()], vec![a.0.clone()])
+    );
+    assert_eq!(
+        split(vec![b.clone()], vec![blind]),
+        (vec![], vec![b.0.clone()], vec![])
     );
 }
 
@@ -389,13 +497,15 @@ fn a_second_wire_to_the_same_missing_node_is_the_edits_own() {
         .expect("the verb ran");
 
     assert!(!result.written);
-    assert!(result.pre_existing.is_empty(), "{result:?}");
+    assert_eq!(result.report.errors.len(), 1, "{result:?}");
     let at = &result.report.errors[0];
     assert_eq!(
         (at.node.as_deref(), at.port.as_deref()),
         (Some("/osc"), Some("freq")),
         "{result:?}"
     );
+    assert_eq!(result.pre_existing.len(), 1, "{result:?}");
+    assert_eq!(result.pre_existing[0].node.as_deref(), Some("/amp"));
 }
 
 /// A rename moves a node's faults with it: the error at the new address is the one the old address

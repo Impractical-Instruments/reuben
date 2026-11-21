@@ -4,15 +4,15 @@
 
 use reuben_core::{AudioConfig, Engine, Plan, PlanError, Registry};
 
-use crate::format::{load_instrument, LoadError, LoadWarning};
+use crate::format::{load_instrument, LoadErrors, LoadWarning};
 use crate::resources::ResourceResolver;
 
 /// Why [`from_document`] failed: the document didn't load, or the loaded graph
 /// didn't instantiate.
 #[derive(Debug)]
 pub enum FromDocumentError {
-    /// The instrument document failed to parse/build (see [`LoadError`]).
-    Load(LoadError),
+    /// The instrument document failed to parse/build: every error it has.
+    Load(LoadErrors),
     /// The loaded graph failed to instantiate into a [`Plan`] (see [`PlanError`]).
     Plan(PlanError),
 }

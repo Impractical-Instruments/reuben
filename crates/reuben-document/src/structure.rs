@@ -11,7 +11,6 @@ use std::collections::BTreeMap;
 use crate::contract::{content_hash, Diag, Report};
 use crate::format::{
     parse_wire, ConfigValue, DocValue, InputValue, Layout, LoadWarning, NodeDoc, NormalizedDoc,
-    WirePorts, WireTarget,
 };
 use crate::introspect::{curve, describe, describe_patch, validate_doc_with, PortInfo};
 use crate::projection::Rebased;
@@ -30,10 +29,9 @@ pub struct Structure {
     pub inputs: Vec<InputPipe>,
     pub outputs: Vec<OutputPipe>,
     pub resources: Vec<Resource>,
-    /// What [`validate_doc`](crate::introspect::validate_doc) reports, with three additions that
-    /// localize a failure on a node of *this* document: every wire the loader's type rule refuses
-    /// is an error on the node and input holding it (the loader stops at the first, and names the
-    /// source), a nested child that did not load is a diagnostic on the node referencing it, and a
+    /// What [`validate_doc`](crate::introspect::validate_doc) reports, with two additions that
+    /// localize a failure on a node of *this* document: a nested child that did not load is a
+    /// diagnostic on every node referencing it, and a
     /// sample that did not resolve is a warning on every node reading it (the loader resolves each
     /// id once, for no node in particular).
     pub report: Report,
@@ -131,7 +129,7 @@ pub struct Resource {
 }
 
 /// Read `doc` as data. One load of the document, plus one load of each distinct child a node
-/// references; a document that does not load pays a second port resolution to localize its wires.
+/// references.
 pub fn read(
     doc: &NormalizedDoc,
     registry: &Registry,
@@ -149,7 +147,6 @@ pub fn read(
         .iter()
         .map(|n| children.face(n, &mut report))
         .collect();
-    localize_wires(doc, registry, resolver, &mut report);
 
     let index: BTreeMap<&str, usize> = doc
         .nodes
@@ -317,14 +314,14 @@ impl Children<'_> {
                 let said =
                     report.ok && unavailable && report.warnings.iter().any(|w| w.node == diag.node);
                 if !report.ok && !unavailable {
-                    // The loader's own error for this failure is localized on a node of the
-                    // *child*, an address that names nothing in this document or, worse, one of
-                    // its unrelated nodes. `diag` carries the same text on the node that holds
-                    // the child, so the loader's copy goes.
-                    report.errors.retain(|d| {
-                        d.message == diag.message || !diag.message.contains(&d.message)
-                    });
-                    report.errors.push(diag);
+                    // The loader reports a broken child's own errors on the node referencing it,
+                    // each led by that node; one it did not get to load the child for gets this.
+                    let nested = format!("in {:?}: ", n.address);
+                    let reported = (report.errors.iter())
+                        .any(|d| d.node == diag.node && d.message.starts_with(&nested));
+                    if !reported {
+                        report.errors.push(diag);
+                    }
                 } else if !said {
                     report.warnings.push(diag);
                 }
@@ -406,60 +403,6 @@ fn sample_readers(doc: &NormalizedDoc, w: &LoadWarning) -> Vec<Diag> {
         }
     }
     vec![Diag::from_warning(w)]
-}
-
-/// Replace the loader's one wire error with an error per refused wire, each on the node and input
-/// that hold it. Only a document that failed to load has any, and only one whose endpoints still
-/// resolve can be asked.
-fn localize_wires(
-    doc: &NormalizedDoc,
-    registry: &Registry,
-    resolver: &dyn ResourceResolver,
-    report: &mut Report,
-) {
-    if report.ok {
-        return;
-    }
-    let Ok(ports) = WirePorts::resolve(doc, registry, resolver) else {
-        return;
-    };
-    let mut refused = Vec::new();
-    for n in &doc.nodes {
-        for (name, value) in &n.inputs {
-            let InputValue::Wire { from } = value else {
-                continue;
-            };
-            let to = WireTarget::Input {
-                node: n.address.clone(),
-                port: name.clone(),
-            };
-            if let Err(e) = ports.check_ref(from, &to) {
-                refused.push(Diag {
-                    node: Some(n.address.clone()),
-                    port: Some(name.clone()),
-                    message: e.to_string(),
-                });
-            }
-        }
-    }
-    for (name, entry) in doc.interface.iter().flat_map(|i| &i.outputs) {
-        let Some(feed) = entry.feed() else { continue };
-        let to = WireTarget::InterfaceOutput(name.clone());
-        if let Err(e) = ports.check_ref(&feed.from, &to) {
-            // A boundary-named problem localizes on `port`, as the loader's own do.
-            refused.push(Diag {
-                node: None,
-                port: Some(name.clone()),
-                message: e.to_string(),
-            });
-        }
-    }
-    // The loader's error for the first refused wire is one of these, worded identically because
-    // both come from the same check; it goes, so the wire is reported once.
-    report
-        .errors
-        .retain(|d| !refused.iter().any(|r| r.message == d.message));
-    report.errors.extend(refused);
 }
 
 /// Read a wire-ref the way pass 2 does: a reference that names a whole address is that address,
