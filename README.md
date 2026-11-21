@@ -2,7 +2,7 @@
 
 Deterministic CI performance trend: callgrind **instruction counts (Ir)** for rendering **1 s of audio** (375 × 128-frame blocks @ 48 kHz), recorded on every direct push to `dev`. Instruction counts don't jitter — every visible move is a real code change (or a toolchain bump).
 
-**214 commits** · 2026-07-12 → 2026-11-21 · 17803 data points · last: `1cbdb2e` (2026-11-21T15:33:38-05:00)
+**215 commits** · 2026-07-12 → 2026-11-21 · 17900 data points · last: `bb2d0d4` (2026-11-21T15:33:17-05:00)
 
 *Companion trend: the **main** series lives on the [`bench-history`](https://github.com/Impractical-Instruments/reuben/tree/bench-history) branch.*
 
@@ -45,10 +45,10 @@ Cost paid **once per Swap**, on the caller's thread — which in the browser is 
 |---|---:|---:|---:|---|
 | `deep_n2048` | 63.6M | ±0.0% | **-3.5%** | 2026-07-30 |
 | `deep_n4096` | 128.7M | ±0.0% | **-3.1%** | 2026-07-30 |
-| `deep_n8192` | 258.1M | ±0.0% | **-6.5%** | 2026-07-30 |
+| `deep_n8192` | 258.2M | ±0.0% | **-6.5%** | 2026-07-30 |
 | `nest_n2048` | 45.6M | ±0.0% | **-19.2%** | 2026-07-30 |
 | `nest_n4096` | 93.2M | ±0.0% | **-18.8%** | 2026-07-30 |
-| `nest_n8192` | 188.3M | ±0.0% | **-18.2%** | 2026-07-30 |
+| `nest_n8192` | 188.4M | ±0.0% | **-18.2%** | 2026-07-30 |
 | `wide_n2048` | 53.9M | ±0.0% | -2.1% | 2026-07-30 |
 | `wide_n4096` | 109.6M | ±0.0% | **-5.7%** | 2026-07-30 |
 | `wide_n8192` | 219.8M | ±0.0% | **-6.2%** | 2026-07-30 |
@@ -82,10 +82,10 @@ Cost paid **once per Swap**, on the caller's thread — which in the browser is 
 | `macro/sampler-arp` | 14.4M | ±0.0% | **-9.1%** | 2026-07-12 |
 | `construct/deep_n2048` | 63.6M | ±0.0% | **-3.5%** | 2026-07-30 |
 | `construct/deep_n4096` | 128.7M | ±0.0% | **-3.1%** | 2026-07-30 |
-| `construct/deep_n8192` | 258.1M | ±0.0% | **-6.5%** | 2026-07-30 |
+| `construct/deep_n8192` | 258.2M | ±0.0% | **-6.5%** | 2026-07-30 |
 | `construct/nest_n2048` | 45.6M | ±0.0% | **-19.2%** | 2026-07-30 |
 | `construct/nest_n4096` | 93.2M | ±0.0% | **-18.8%** | 2026-07-30 |
-| `construct/nest_n8192` | 188.3M | ±0.0% | **-18.2%** | 2026-07-30 |
+| `construct/nest_n8192` | 188.4M | ±0.0% | **-18.2%** | 2026-07-30 |
 | `construct/wide_n2048` | 53.9M | ±0.0% | -2.1% | 2026-07-30 |
 | `construct/wide_n4096` | 109.6M | ±0.0% | **-5.7%** | 2026-07-30 |
 | `construct/wide_n8192` | 219.8M | ±0.0% | **-6.2%** | 2026-07-30 |
@@ -196,26 +196,26 @@ The deterministic tier of the eval harness: each task's **reference solution** (
 
 | Task | Metric | Latest | vs prev | vs first | since |
 |---|---|---:|---:|---:|---|
-| `from_scratch` | grounding tokens | 22,916 | +0.3% | **+375.6%** | 2026-07-22 |
-| `from_scratch` | fixed grounding | 22,543 | +0.3% | **+372.9%** | 2026-07-22 |
+| `from_scratch` | grounding tokens | 22,916 | ±0.0% | **+375.6%** | 2026-07-22 |
+| `from_scratch` | fixed grounding | 22,543 | ±0.0% | **+372.9%** | 2026-07-22 |
 | `from_scratch` | document chars | 0 | — | **-100.0%** | 2026-07-22 |
-| `intent_fan_out` | grounding tokens | 23,134 | +0.3% | **+21.6%** | 2026-07-28 |
-| `intent_fan_out` | fixed grounding | 22,543 | +0.3% | **+20.1%** | 2026-07-28 |
+| `intent_fan_out` | grounding tokens | 23,134 | ±0.0% | **+21.6%** | 2026-07-28 |
+| `intent_fan_out` | fixed grounding | 22,543 | ±0.0% | **+20.1%** | 2026-07-28 |
 | `intent_fan_out` | document chars | 0 | — | — | 2026-07-28 |
-| `intent_word` | grounding tokens | 22,751 | +0.3% | **+20.4%** | 2026-07-28 |
-| `intent_word` | fixed grounding | 22,543 | +0.3% | **+20.1%** | 2026-07-28 |
+| `intent_word` | grounding tokens | 22,751 | ±0.0% | **+20.4%** | 2026-07-28 |
+| `intent_word` | fixed grounding | 22,543 | ±0.0% | **+20.1%** | 2026-07-28 |
 | `intent_word` | document chars | 0 | — | — | 2026-07-28 |
 | `nudge` | grounding tokens | 19,324 | ±0.0% | **+207.6%** | 2026-07-22 |
 | `nudge` | fixed grounding | 17,808 | ±0.0% | **+273.6%** | 2026-07-22 |
 | `nudge` | document chars | 2,098 | ±0.0% | ±0.0% | 2026-07-22 |
-| `repair` | grounding tokens | 22,896 | +0.3% | **+374.8%** | 2026-07-22 |
-| `repair` | fixed grounding | 22,543 | +0.3% | **+372.9%** | 2026-07-22 |
+| `repair` | grounding tokens | 22,894 | ±0.0% | **+374.8%** | 2026-07-22 |
+| `repair` | fixed grounding | 22,543 | ±0.0% | **+372.9%** | 2026-07-22 |
 | `repair` | document chars | 0 | — | **-100.0%** | 2026-07-22 |
-| `repair_and_note` | grounding tokens | 22,967 | +0.3% | **+7.2%** | 2026-11-19 |
-| `repair_and_note` | fixed grounding | 22,543 | +0.3% | **+6.6%** | 2026-11-19 |
+| `repair_and_note` | grounding tokens | 22,969 | ±0.0% | **+7.2%** | 2026-11-19 |
+| `repair_and_note` | fixed grounding | 22,543 | ±0.0% | **+6.6%** | 2026-11-19 |
 | `repair_and_note` | document chars | 0 | — | — | 2026-11-19 |
-| `tweak` | grounding tokens | 22,700 | +0.3% | **+374.9%** | 2026-07-22 |
-| `tweak` | fixed grounding | 22,543 | +0.3% | **+372.9%** | 2026-07-22 |
+| `tweak` | grounding tokens | 22,700 | ±0.0% | **+374.9%** | 2026-07-22 |
+| `tweak` | fixed grounding | 22,543 | ±0.0% | **+372.9%** | 2026-07-22 |
 | `tweak` | document chars | 0 | — | **-100.0%** | 2026-07-22 |
 
 - **Fixed grounding** is what every turn of every task pays before the model does anything: the server `instructions` plus every tool schema. It creeps when a tool description or the authoring guide grows, and nothing else watches it.
