@@ -19,8 +19,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use reuben_api::engine::{
-    Conflict, ControlArg, ControlMessage, DiagnosticsReport, DocumentSnapshot, MetersReport,
-    Request, Response, StructureState, MAX_LINE_BYTES, METER_FLOOR_DBFS,
+    credential_line, Conflict, ControlArg, ControlMessage, DiagnosticsReport, DocumentSnapshot,
+    MetersReport, Request, Response, StructureState, TcpTransport, Token, Transport,
+    DEFAULT_CONNECT_TIMEOUT, MAX_LINE_BYTES, METER_FLOOR_DBFS, REFUSED_TOKEN,
 };
 use reuben_api::render::{Arg, AudioConfig};
 use reuben_native::diagnostics::Diagnostics;
@@ -729,6 +730,107 @@ fn a_swap_line_is_unreadable_and_the_connection_keeps_serving() {
         other => panic!("expected Document, got {other:?}"),
     }
 
+    server.shutdown();
+    cb.stop();
+}
+
+/// A token for the tests that serve beyond loopback.
+fn token(t: &str) -> Token {
+    Token::new(t).expect("a token")
+}
+
+/// One ping over a fresh connection from a transport carrying `token`.
+fn ping_with(addr: std::net::SocketAddr, token: Option<Token>) -> Response {
+    let transport = TcpTransport::new(addr.to_string(), DEFAULT_CONNECT_TIMEOUT).with_token(token);
+    let line = transport
+        .round_trip(&Request::Ping.to_ndjson(), Duration::from_secs(5))
+        .expect("an answer");
+    Response::from_ndjson(&line).expect("a response")
+}
+
+/// The loopback address of a server bound on every interface.
+fn on_loopback(server: &StructureServer) -> std::net::SocketAddr {
+    std::net::SocketAddr::from(([127, 0, 0, 1], server.local_addr().port()))
+}
+
+#[test]
+fn a_bind_beyond_loopback_without_a_token_is_refused() {
+    let (state, cb, _) = wired(BASE_DOC, 0);
+    let refused = StructureServer::bind_with_token("0.0.0.0:0", state, None)
+        .err()
+        .expect("refused");
+    assert_eq!(
+        refused.kind(),
+        std::io::ErrorKind::InvalidInput,
+        "{refused}"
+    );
+    cb.stop();
+}
+
+#[test]
+fn a_loopback_client_needs_no_token_on_a_server_that_has_one() {
+    let (state, cb, _) = wired(BASE_DOC, 0);
+    let server = StructureServer::bind_with_token("0.0.0.0:0", state, Some(token("good")))
+        .expect("bind with a token");
+    assert_eq!(ping_with(on_loopback(&server), None), Response::Pong);
+    assert_eq!(
+        ping_with(on_loopback(&server), Some(token("good"))),
+        Response::Pong
+    );
+    server.shutdown();
+    cb.stop();
+}
+
+#[test]
+fn a_wrong_token_is_refused_even_from_loopback() {
+    let (state, cb, _) = wired(BASE_DOC, 0);
+    let server = StructureServer::bind_with_token("0.0.0.0:0", state, Some(token("good")))
+        .expect("bind with a token");
+    assert_eq!(
+        ping_with(on_loopback(&server), Some(token("bad"))),
+        Response::Error {
+            message: REFUSED_TOKEN.to_string()
+        }
+    );
+    assert_eq!(
+        ping_with(on_loopback(&server), Some(token("good"))),
+        Response::Pong
+    );
+    server.shutdown();
+    cb.stop();
+}
+
+#[test]
+fn a_credential_after_the_first_line_is_unreadable() {
+    let (state, cb, _) = wired(BASE_DOC, 0);
+    let server = StructureServer::bind_with_token("0.0.0.0:0", state, Some(token("good")))
+        .expect("bind with a token");
+    let client = TcpStream::connect(on_loopback(&server)).expect("connect");
+    let mut writer = client.try_clone().expect("clone");
+    let mut reader = BufReader::new(client);
+    send(&mut writer, &Request::Ping);
+    assert_eq!(read_response(&mut reader), Response::Pong);
+    writer
+        .write_all(credential_line(&token("good")).as_bytes())
+        .expect("write the credential");
+    match read_response(&mut reader) {
+        Response::Error { message } => {
+            assert!(message.starts_with("unreadable request"), "{message}")
+        }
+        other => panic!("expected an unreadable request, got {other:?}"),
+    }
+    server.shutdown();
+    cb.stop();
+}
+
+#[test]
+fn a_server_without_a_token_ignores_a_credential() {
+    let (state, cb, _) = wired(BASE_DOC, 0);
+    let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
+    assert_eq!(
+        ping_with(server.local_addr(), Some(token("any"))),
+        Response::Pong
+    );
     server.shutdown();
     cb.stop();
 }

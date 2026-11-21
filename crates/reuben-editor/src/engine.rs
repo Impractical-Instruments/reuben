@@ -831,7 +831,7 @@ mod tests {
         let mut asked = None;
         let _ = Engine::start_with(config(library("acid-techno.json")), |config| {
             asked = Some(config.follow_files);
-            Err(StartError::StructureNotLoopback(String::new()))
+            Err(StartError::StructureNeedsToken(String::new()))
         });
         assert_eq!(asked, Some(true));
     }
