@@ -762,3 +762,64 @@ fn a_refused_open_with_nothing_open_says_nothing_is_open() {
     });
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// What a relative name, `..` and all, is published as: the one absolute, normalized spelling, so
+/// a client in another directory names the same file.
+#[test]
+fn an_open_or_swap_by_a_relative_name_is_published_absolute() {
+    // Relative to the test's working directory, the crate's own.
+    let relative = |name: &str| format!("../../crates/../instruments/{name}");
+    let absolute = |name: &str| {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let repo = manifest.parent().unwrap().parent().unwrap();
+        repo.join("instruments").join(name).display().to_string()
+    };
+    let config = EngineConfig {
+        osc_in: Some("127.0.0.1:0".to_string()),
+        structure: Some("127.0.0.1:0".to_string()),
+        instrument_root: Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instruments")),
+        ..EngineConfig::new(Instrument::Silent)
+    };
+    within(HANG_SECS, move || {
+        let engine = start_headless(config).expect("the engine starts");
+        let addr = engine.structure_addr().expect("a structure socket");
+        let t = TcpTransport::new(addr.to_string(), DEFAULT_CONNECT_TIMEOUT);
+        let events = follow(&t);
+        let opened = |events: &Receiver<Event>| loop {
+            match events.recv_timeout(REPLY).expect("an opened event") {
+                Event::Opened { name, .. } => break name,
+                _ => continue,
+            }
+        };
+
+        let report = ask(
+            &t,
+            &Request::Open {
+                name: relative("default.json"),
+                expect: None,
+            },
+        );
+        assert!(matches!(report, Response::SwapReport(_)), "{report:?}");
+        assert_eq!(opened(&events), absolute("default.json"));
+        assert_eq!(
+            snapshot(&t).source.as_deref(),
+            Some(absolute("default.json").as_str())
+        );
+
+        let report = ask(
+            &t,
+            &Request::Swap {
+                source: reuben_api::engine::DocSource::Path(relative("groovebox.json")),
+                expect: None,
+            },
+        );
+        assert!(matches!(report, Response::SwapReport(_)), "{report:?}");
+        assert_eq!(opened(&events), absolute("groovebox.json"));
+        assert_eq!(
+            snapshot(&t).source.as_deref(),
+            Some(absolute("groovebox.json").as_str())
+        );
+
+        timed_teardown(engine, false);
+    });
+}

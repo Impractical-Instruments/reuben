@@ -356,20 +356,32 @@ impl NativeHost {
     /// The directories a client may name: the library root, every [offered](Self::offer_dir)
     /// directory and the open instrument's directory, absolute and normalized, each once.
     fn offered_dirs(&self, open: Option<&str>) -> Vec<PathBuf> {
+        self.walked_dirs(open)
+            .into_iter()
+            .map(|(dir, _)| dir)
+            .collect()
+    }
+
+    /// [`offered_dirs`](Self::offered_dirs), each with whether [`offered`](EngineHost::offered)
+    /// lists beneath it: the library root's and the open instrument's directory's subdirectories
+    /// list, an offered directory's do not, since one may be as wide as a home directory. A
+    /// directory named twice keeps the first one's depth.
+    fn walked_dirs(&self, open: Option<&str>) -> Vec<(PathBuf, bool)> {
         let open_dir = open
             .and_then(|source| lexical_absolute(Path::new(source)))
             .and_then(|source| source.parent().map(Path::to_path_buf));
         let extra = self.extra_dirs().clone();
-        let mut dirs = Vec::new();
-        for dir in self
+        let mut dirs: Vec<(PathBuf, bool)> = Vec::new();
+        for (dir, deep) in self
             .library_root
             .iter()
             .filter_map(|root| lexical_absolute(root))
-            .chain(extra)
-            .chain(open_dir)
+            .map(|root| (root, true))
+            .chain(extra.into_iter().map(|dir| (dir, false)))
+            .chain(open_dir.map(|dir| (dir, true)))
         {
-            if !dirs.contains(&dir) {
-                dirs.push(dir);
+            if !dirs.iter().any(|(seen, _)| *seen == dir) {
+                dirs.push((dir, deep));
             }
         }
         dirs
@@ -425,7 +437,7 @@ impl NativeHost {
 
 /// `path` made absolute against the working directory with `.` and `..` resolved by text alone, so
 /// a name cannot climb out of a directory it starts under. `None` when it cannot be made absolute.
-fn lexical_absolute(path: &Path) -> Option<PathBuf> {
+pub(crate) fn lexical_absolute(path: &Path) -> Option<PathBuf> {
     let absolute = std::path::absolute(path).ok()?;
     let mut normal = PathBuf::new();
     for component in absolute.components() {
@@ -440,11 +452,12 @@ fn lexical_absolute(path: &Path) -> Option<PathBuf> {
     Some(normal)
 }
 
-/// Add every `*.{extension}` file under `dir` to `found`, descending into subdirectories. An
+/// Add every `*.{extension}` file in `dir` to `found`, and, when `deep`, in its subdirectories. An
 /// unreadable directory contributes nothing.
 fn collect_with_extension(
     dir: &Path,
     extension: &str,
+    deep: bool,
     found: &mut std::collections::BTreeSet<String>,
 ) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -456,7 +469,9 @@ fn collect_with_extension(
             continue;
         };
         if kind.is_dir() {
-            collect_with_extension(&path, extension, found);
+            if deep {
+                collect_with_extension(&path, extension, deep, found);
+            }
         } else if path.extension().is_some_and(|e| e == extension) {
             found.insert(path.display().to_string());
         }
@@ -480,36 +495,41 @@ fn locate_surface(instrument: &Path) -> Option<PathBuf> {
 }
 
 impl EngineHost for NativeHost {
-    /// A by-path swap reads the file as spelled, against the working directory. Resource paths
+    /// A by-path swap reads the file its [origin](Self::document_origin) names. Resource paths
     /// *inside* the document resolve from the file's own directory, then the library root
     /// ([`document_origin`](Self::document_origin)); one that resolves in neither dark-degrades to
     /// a load warning rather than a crash.
     fn read_document(&self, path: &str) -> Result<String, String> {
-        std::fs::read_to_string(path).map_err(|e| format!("read {path}: {e}"))
+        // Read at its origin, which folds `..` by text, so the file read is the one the store
+        // knows by that name even where a symlinked directory precedes the `..`.
+        std::fs::read_to_string(self.document_origin(path)).map_err(|e| format!("read {path}: {e}"))
     }
 
     /// Absolute, because the session's `FsResolver` joins a relative source onto the launch
     /// instrument's directory while [`read_document`](Self::read_document) read `path` against the
-    /// working directory: only an absolute spelling names the same file to both.
+    /// working directory: only an absolute spelling names the same file to both. Normalized as
+    /// [`library`](EngineHost::library) and [`offered`](EngineHost::offered) spell their names, so
+    /// a client that opened one of them hears it back by the name it opened.
     fn document_origin(&self, path: &str) -> String {
-        match std::path::absolute(path) {
-            Ok(absolute) => absolute.display().to_string(),
+        match lexical_absolute(Path::new(path)) {
+            Some(absolute) => absolute.display().to_string(),
             // Fails for an empty path, or a relative one with no working directory. The read
             // fails on both, so the swap is rejected before this value is used.
-            Err(_) => path.to_string(),
+            None => path.to_string(),
         }
     }
 
     /// Every file with extension `what` names, under the library root and under the directory of
-    /// the open instrument, recursively: absolute, sorted, each once. Nothing outside those two.
+    /// the open instrument, recursively, and directly in each offered directory: absolute, sorted,
+    /// each once. Nothing outside those.
     fn offered(&self, what: ListWhat, open: Option<&str>) -> Vec<String> {
         let extension = match what {
             ListWhat::Instruments => "json",
             ListWhat::Samples => "wav",
         };
         let mut found = std::collections::BTreeSet::new();
-        for dir in self.offered_dirs(open) {
-            collect_with_extension(&dir, extension, &mut found);
+        for (dir, deep) in self.walked_dirs(open) {
+            collect_with_extension(&dir, extension, deep, &mut found);
         }
         found.into_iter().collect()
     }
@@ -535,9 +555,8 @@ impl EngineHost for NativeHost {
             };
             for entry in entries.flatten() {
                 let path = entry.path();
-                if entry.file_type().is_ok_and(|kind| kind.is_file())
-                    && path.extension().is_some_and(|e| e == "json")
-                {
+                // `Path::is_file` follows a symlink, which `DirEntry::file_type` does not.
+                if path.is_file() && path.extension().is_some_and(|e| e == "json") {
                     found.insert(path.display().to_string());
                 }
             }
@@ -1131,10 +1150,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn library_lists_a_symlinked_document() {
+        let (base, abs) = scratch_dir("library-symlink-test");
+        std::fs::create_dir_all(base.join("lib")).unwrap();
+        std::fs::create_dir_all(base.join("elsewhere")).unwrap();
+        std::fs::write(abs("elsewhere/real.json"), "").unwrap();
+        std::os::unix::fs::symlink(abs("elsewhere/real.json"), abs("lib/linked.json")).unwrap();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let host =
+            NativeHost::new(Diagnostics::new(), tx).with_library_root(Some(base.join("lib")));
+        assert_eq!(host.library(None), [abs("lib/linked.json")]);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn an_offered_dir_is_listed_and_within() {
         let (base, abs) = scratch_dir("offer-dir-test");
         std::fs::create_dir_all(base.join("offered/nested")).unwrap();
+        std::fs::write(abs("offered/o.json"), "").unwrap();
         std::fs::write(abs("offered/nested/n.json"), "").unwrap();
         let (tx, _rx) = std::sync::mpsc::channel();
         let host = NativeHost::new(Diagnostics::new(), tx);
@@ -1146,9 +1181,15 @@ mod tests {
         assert!(host.within(&abs("offered/new.json"), None));
         assert!(host.within(&abs("offered/nested/n.json"), None));
         assert!(!host.within(&abs("offered/../escape.json"), None));
+        // An offered directory may be as wide as a home directory: only its own files list, also
+        // while the open instrument is one of them.
         assert_eq!(
             host.offered(ListWhat::Instruments, None),
-            [abs("offered/nested/n.json")]
+            [abs("offered/o.json")]
+        );
+        assert_eq!(
+            host.offered(ListWhat::Instruments, Some(&abs("offered/o.json"))),
+            [abs("offered/o.json")]
         );
         let _ = std::fs::remove_dir_all(&base);
     }

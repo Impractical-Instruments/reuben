@@ -15,7 +15,7 @@ use serde_json::Value;
 use crate::authoring::{
     self, edit_summary, hash_instrument, CallKind, Called, Diag, EditResult, Named, Report,
 };
-use crate::resources::{Adapter, Anchored, Resources};
+use crate::resources::{Adapter, Anchored, ResolveError, Resources, SampleBuffer};
 
 use super::super::wire::{ChangedBy, Event, Library, LibraryEntry, Response, SwapReport};
 use super::{prepare_recording, went_live, Poisoned, ServerStore, StructureState, Tree, Went};
@@ -35,53 +35,85 @@ pub(super) fn read_tree(store: &ServerStore, origin: &str) -> Tree {
 }
 
 /// The instruments the host offers, each read through the store, and the directories it lets a
-/// client create in. Run under the Coordinator lock, as [`handle_call`] reads, and leaves nothing
-/// staged. A document that does not read is an entry with `error` set.
+/// client create in. Each entry is read under the Coordinator lock of its own, as [`handle_call`]
+/// reads, so a long library never holds an edit back for longer than one entry takes; each leaves
+/// nothing staged. A document that does not read is an entry with `error` set.
 pub(super) fn handle_library(state: &StructureState) -> Response {
-    let _coordinator = match state.coordinator() {
-        Ok(coordinator) => coordinator,
-        Err(poisoned) => return poisoned.into(),
-    };
     let open = match state.installed_source() {
         Ok(source) => source.clone(),
         Err(poisoned) => return poisoned.into(),
     };
     let open = open.as_deref();
-    let staged = state.store.inner();
-    let instruments = state
-        .host
-        .library(open)
-        .into_iter()
-        .map(|name| {
-            let reads = read_tree(&state.store, &name).sources.into_iter().collect();
-            let read = authoring::read_instrument(
-                &authoring::ReadInstrument {
-                    source: name.clone(),
-                },
-                &*state.store,
-            );
-            staged.discard();
-            let (title, description, error) = match read {
-                Ok(answer) => (
-                    Some(answer.output.instrument),
-                    answer.output.description,
-                    None,
-                ),
-                Err(refusal) => (None, None, Some(refusal.message)),
-            };
-            LibraryEntry {
-                name,
-                title,
-                description,
-                error,
-                reads,
-            }
-        })
-        .collect();
+    let mut instruments = Vec::new();
+    for name in state.host.library(open) {
+        match library_entry(state, name) {
+            Ok(entry) => instruments.push(entry),
+            Err(poisoned) => return poisoned.into(),
+        }
+    }
     Response::Library(Library {
         instruments,
         dirs: state.host.creatable(open),
     })
+}
+
+/// The library entry for `name`, read under the Coordinator lock. No sample is decoded: the entry
+/// carries only the documents its tree reads.
+fn library_entry(state: &StructureState, name: String) -> Result<LibraryEntry, Poisoned> {
+    let _coordinator = state.coordinator()?;
+    let store = NoSamples(&*state.store);
+    let log = state.store.inner().record_reads();
+    if let Ok(text) = store.read_text(&name) {
+        let anchored = Anchored {
+            store: &store,
+            referrer: store.canonical(&name, None),
+        };
+        let _ = load_instrument(&text, &Registry::builtin(), &Adapter(&anchored));
+    }
+    let reads = Tree::new(log.finish(), store.canonical(&name, None))
+        .sources
+        .into_iter()
+        .collect();
+    let read = authoring::read_instrument(
+        &authoring::ReadInstrument {
+            source: name.clone(),
+        },
+        &store,
+    );
+    state.store.inner().discard();
+    let (title, description, error) = match read {
+        Ok(answer) => (
+            Some(answer.output.instrument),
+            answer.output.description,
+            None,
+        ),
+        Err(refusal) => (None, None, Some(refusal.message)),
+    };
+    Ok(LibraryEntry {
+        name,
+        title,
+        description,
+        error,
+        reads,
+    })
+}
+
+/// A store that serves every sample as empty and decodes none: for reading a document only for
+/// what it says of itself and the documents it reaches.
+struct NoSamples<'a>(&'a dyn Resources);
+
+impl Resources for NoSamples<'_> {
+    fn read_samples(&self, _source: &str) -> Result<SampleBuffer, ResolveError> {
+        Ok(SampleBuffer::empty())
+    }
+
+    fn read_text(&self, source: &str) -> Result<String, ResolveError> {
+        self.0.read_text(source)
+    }
+
+    fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
+        self.0.canonical(source, referrer)
+    }
 }
 
 /// One roster verb, under the Coordinator lock for its whole run — reads included, so no read
@@ -457,6 +489,7 @@ mod tests {
     use alloc::collections::{BTreeMap, BTreeSet};
     use alloc::sync::Arc;
     use core::cell::RefCell;
+    use core::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
     use serde_json::json;
@@ -522,7 +555,7 @@ mod tests {
 
     /// An in-memory store whose texts a test reads back to see what was written.
     #[derive(Default)]
-    struct Files(Mutex<BTreeMap<String, String>>);
+    struct Files(Mutex<BTreeMap<String, String>>, AtomicUsize);
 
     impl Files {
         fn get(&self, source: &str) -> Option<String> {
@@ -532,6 +565,7 @@ mod tests {
 
     impl Resources for Files {
         fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+            self.1.fetch_add(1, Ordering::SeqCst);
             Err(ResolveError::NotFound(source.to_string()))
         }
         fn read_text(&self, source: &str) -> Result<String, ResolveError> {
@@ -933,6 +967,24 @@ mod tests {
             broken.error.is_some() && broken.title.is_none(),
             "{broken:?}"
         );
+    }
+
+    #[test]
+    fn a_library_read_decodes_no_sample() {
+        let s = serving();
+        let sampled = r#"{"format_version":3,"instrument":"sampled",
+            "resources":{"k":"k.wav","v":"v.json"},
+            "interface":{"outputs":{"out":{"from":"/voice.out"}}},
+            "nodes":[{"type":"granulator","address":"/g","sample":"k"},
+                     {"type":"subpatch","address":"/voice","patch":"v"}]}"#;
+        s.files.write_text("top.json", sampled).unwrap();
+        let Response::Library(library) = dispatch(&s.state, &Request::Library.to_ndjson()) else {
+            panic!("expected a library");
+        };
+        let entry = &library.instruments[0];
+        assert_eq!(entry.title.as_deref(), Some("sampled"), "{entry:?}");
+        assert!(entry.reads.iter().any(|r| r == "v.json"), "{entry:?}");
+        assert_eq!(s.files.1.load(Ordering::SeqCst), 0, "a sample was read");
     }
 
     #[test]

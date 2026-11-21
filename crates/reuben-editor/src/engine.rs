@@ -739,10 +739,13 @@ pub(crate) mod test_support {
 
     pub const HANG_SECS: u64 = 10;
 
+    /// The repo's instrument `name`, spelled as the server names it.
     pub fn library(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../instruments")
-            .join(name)
+        crate::names::lexical(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../instruments")
+                .join(name),
+        )
     }
 
     /// `reuben play`'s config with ephemeral loopback ports, so parallel tests and a `reuben play`
@@ -1200,7 +1203,7 @@ mod tests {
     }
 
     #[test]
-    fn a_relative_path_is_named_absolute_and_one_swapped_in_by_another_client_is_not_opened() {
+    fn a_relative_path_is_named_absolute_and_one_swapped_in_by_another_client_is_followed() {
         within(HANG_SECS, || {
             // Relative to the test's working directory, the crate's own.
             let relative = "../../instruments/default.json";
@@ -1212,7 +1215,8 @@ mod tests {
             assert!(source.is_absolute(), "{}", source.display());
             assert!(source.is_file(), "{}", source.display());
 
-            // A by-path Swap names the file as the client spelled it, relative to the engine.
+            // A by-path Swap spelled relative to the engine is published by the server's own
+            // absolute name, so the editor can follow it.
             let swapped = played
                 .channel()
                 .swap(
@@ -1226,18 +1230,16 @@ mod tests {
                 swapped,
                 reuben_api::engine::SwapOutcome::Installed(_)
             ));
-            let warned = loop {
-                engine.follow_link();
-                assert_eq!(engine.unfollowed(), None);
-                let warnings: Vec<_> = (engine.report().iter())
-                    .filter(|l| l.level == Level::Warning)
-                    .collect();
-                if let [line] = warnings.as_slice() {
-                    break line.text.clone();
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            };
-            assert!(warned.contains("absolute path"), "{warned}");
+            let followed = await_playing(&mut engine);
+            assert_eq!(
+                followed.source,
+                library("groovebox.json").display().to_string()
+            );
+            assert!(
+                !(engine.report().iter()).any(|l| l.level == Level::Warning),
+                "{:?}",
+                engine.report()
+            );
             engine.shutdown();
             reuben_native::diagnostics::log_snapshot(&played.shutdown());
         });

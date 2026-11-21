@@ -687,9 +687,10 @@ fn read_instrument(
                     path: path.clone(),
                     error,
                 })?;
-            // Absolute, because a client reading it back may run in another directory.
-            let source = std::path::absolute(&path)
-                .unwrap_or_else(|_| path.clone())
+            // Absolute, because a client reading it back may run in another directory, and
+            // normalized as every name the server publishes is.
+            let source = crate::structure::lexical_absolute(&path)
+                .unwrap_or_else(|| path.clone())
                 .display()
                 .to_string();
             (json, FsResolver::for_instrument(&path), Some(source))

@@ -772,10 +772,11 @@ fn handle_swap(
     caller: Caller,
 ) -> Response {
     // Name the source before resolving consumes it — recorded only if the install below succeeds, so
-    // a rejected swap leaves `get_document` still naming what is actually playing. An install by
-    // value has no source to name.
+    // a rejected swap leaves `get_document` still naming what is actually playing. Named by its
+    // origin, not the client's spelling, so every client that hears of it names the same document.
+    // An install by value has no source to name.
     let installed_from = match &source {
-        DocSource::Path(path) => Some(path.clone()),
+        DocSource::Path(path) => Some(state.host.document_origin(path)),
         DocSource::Document(_) => None,
     };
 
@@ -1022,11 +1023,12 @@ fn handle_open(
             )
         }
     };
+    // By its origin, as a swap is, so the `Opened` every client hears names one spelling.
     install_from(
         state,
         &mut coordinator,
         &json,
-        Some(name),
+        Some(origin),
         expect,
         caller,
         Went::Opened,
