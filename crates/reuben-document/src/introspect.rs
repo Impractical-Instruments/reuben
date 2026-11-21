@@ -601,10 +601,28 @@ impl Fault {
     /// - a document-level error (unparseable text, a version, a resource cycle, anonymous outputs)
     ///   has no slot at all;
     /// - a nested instrument's error is the referencing node's only if the inner error has a fault
-    ///   of its own in the child.
+    ///   of its own in the child, or is one the child can hold only once (unparseable text, a
+    ///   version, a resource cycle, anonymous outputs), which the host node then locates.
     fn of_load(e: &LoadError, diag: &Diag) -> Option<Self> {
         if let LoadError::Nested { error, .. } = e {
-            let inner = Fault::of_load(error, &Diag::from_load(error))?;
+            let whole = matches!(
+                **error,
+                LoadError::Json(_)
+                    | LoadError::UnsupportedVersion { .. }
+                    | LoadError::CyclicResource { .. }
+                    | LoadError::AnonymousOutputs
+            );
+            let inner = match Fault::of_load(error, &Diag::from_load(error)) {
+                Some(inner) => inner,
+                None if whole => Fault {
+                    kind: std::mem::discriminant(&**error),
+                    node: None,
+                    port: None,
+                    field: None,
+                    inner: None,
+                },
+                None => return None,
+            };
             return Some(Fault {
                 kind: std::mem::discriminant(e),
                 node: diag.node.clone(),

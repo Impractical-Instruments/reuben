@@ -94,8 +94,8 @@ fn within_a_node_the_errors_follow_the_check_order() {
 
 #[test]
 fn an_unknown_operator_type_is_reported_once() {
-    // Every other fault here hangs off `/x`, whose ports nothing can know: its own inputs, the
-    // wire out of it, and the interface output it feeds.
+    // Every fault but `/ghost` hangs off `/x`, whose ports nothing can know: its own literal, the
+    // wires out of it, and the interface output it feeds. What its wire names is another matter.
     let doc = instrument(
         json!([
             { "type": "nosuchoperator", "address": "/x",
@@ -106,8 +106,13 @@ fn an_unknown_operator_type_is_reported_once() {
         json!({ "outputs": { "main": { "from": "/x.out" } } }),
     );
     let errors = errors(&doc, &MemoryResolver::new());
-    assert_eq!(loci(&errors), vec![(Some("/x"), None)], "{errors:?}");
+    assert_eq!(
+        loci(&errors),
+        vec![(Some("/x"), None), (Some("/x"), Some("a"))],
+        "{errors:?}"
+    );
     assert!(errors[0].message.contains("nosuchoperator"), "{errors:?}");
+    assert!(errors[1].message.contains("/ghost"), "{errors:?}");
 }
 
 #[test]
@@ -136,7 +141,11 @@ fn a_malformed_input_pipe_still_holds_its_address() {
     let errors = errors(&doc, &MemoryResolver::new());
     assert_eq!(
         loci(&errors),
-        vec![(None, Some("cutoff")), (Some("/cutoff"), None)],
+        vec![
+            (None, Some("cutoff")),
+            (Some("/cutoff"), None),
+            (Some("/cutoff"), Some("freq"))
+        ],
         "{errors:?}"
     );
     assert!(errors[1].message.contains("duplicate"), "{errors:?}");
@@ -199,7 +208,7 @@ const BROKEN_CHILD: &str = r#"{ "format_version": 3, "instrument": "fx",
     "interface": { "outputs": { "out": { "from": "/o" } } } }"#;
 
 #[test]
-fn a_broken_child_reports_its_own_errors_once_however_many_nodes_use_it() {
+fn a_broken_child_is_reported_on_each_node_that_uses_it_and_nowhere_else() {
     let mut resolver = MemoryResolver::new();
     resolver.insert_text("fx.json", BROKEN_CHILD);
     let doc = json!({
@@ -215,10 +224,16 @@ fn a_broken_child_reports_its_own_errors_once_however_many_nodes_use_it() {
     });
     let errors = errors(&doc, &resolver);
     let messages: Vec<&str> = errors.iter().map(|d| d.message.as_str()).collect();
-    assert_eq!(errors.len(), 3, "{messages:#?}");
-    assert!(messages[0].contains("bogus"), "{messages:#?}");
-    assert!(messages[1].contains("Squarish"), "{messages:#?}");
-    assert_eq!(loci(&errors[2..]), vec![(Some("/c"), Some("waveform"))]);
+    assert_eq!(errors.len(), 5, "{messages:#?}");
+    for (at, host) in [(0, "/one"), (2, "/two")] {
+        assert!(
+            messages[at].starts_with(&format!("in {host:?}:")),
+            "{messages:#?}"
+        );
+        assert!(messages[at].contains("bogus"), "{messages:#?}");
+        assert!(messages[at + 1].contains("Squarish"), "{messages:#?}");
+    }
+    assert_eq!(loci(&errors[4..]), vec![(Some("/c"), Some("waveform"))]);
 }
 
 #[test]
@@ -251,4 +266,108 @@ fn the_load_itself_returns_every_error() {
     assert!(matches!(err.first(), LoadError::UnknownNode { .. }));
     let kinds: Vec<_> = err.iter().map(std::mem::discriminant).collect();
     assert_eq!(kinds.len(), 4);
+}
+
+const BROKEN_TYPE_CHILD: &str = r#"{ "format_version": 3, "instrument": "c",
+    "nodes": [ { "type": "nope", "address": "/x" } ] }"#;
+
+fn with_child(child: &str) -> MemoryResolver {
+    let mut resolver = MemoryResolver::new();
+    resolver.insert_text("c.json", child);
+    resolver
+}
+
+#[test]
+fn a_broken_child_is_reported_on_every_node_that_references_it() {
+    // Each reference is its own fault in this document: removing one leaves the other's error
+    // exactly where it was.
+    let doc = json!({
+        "format_version": 3, "instrument": "t",
+        "resources": { "c": "c.json" },
+        "nodes": [
+            { "type": "voicer", "address": "/v", "voice": "c" },
+            { "type": "subpatch", "address": "/s", "patch": "c" },
+            { "type": "subpatch", "address": "/t", "patch": "c" }
+        ]
+    });
+    let errors = errors(&doc, &with_child(BROKEN_TYPE_CHILD));
+    assert_eq!(
+        loci(&errors),
+        vec![(Some("/v"), None), (Some("/s"), None), (Some("/t"), None)],
+        "{errors:#?}"
+    );
+}
+
+#[test]
+fn a_broken_child_does_not_hide_a_bind_key_on_another_reference() {
+    let doc = json!({
+        "format_version": 3, "instrument": "t",
+        "resources": { "c": "c.json", "k": "k.wav" },
+        "nodes": [
+            { "type": "subpatch", "address": "/a", "patch": "c" },
+            { "type": "subpatch", "address": "/b", "patch": "c", "bind": { "nope": "k" } }
+        ]
+    });
+    let errors = errors(&doc, &with_child(BROKEN_TYPE_CHILD));
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("bind key \"nope\"")),
+        "{errors:#?}"
+    );
+}
+
+#[test]
+fn a_voice_on_a_node_with_no_voice_slot_is_one_error() {
+    let doc = json!({
+        "format_version": 3, "instrument": "t",
+        "resources": { "c": "c.json" },
+        "nodes": [ { "type": "oscillator", "address": "/o", "voice": "c" } ]
+    });
+    let errors = errors(&doc, &with_child(BROKEN_TYPE_CHILD));
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert!(errors[0].message.contains("resource slot"), "{errors:#?}");
+}
+
+#[test]
+fn a_wire_source_is_checked_whatever_is_wrong_with_the_node_holding_it() {
+    for node in [
+        json!([{ "type": "oscillator", "address": "/o sc", "inputs": { "freq": { "from": "/ghost" } } }]),
+        json!([
+            { "type": "oscillator", "address": "/o" },
+            { "type": "oscillator", "address": "/o", "inputs": { "freq": { "from": "/ghost" } } }
+        ]),
+        json!([{ "type": "nope", "address": "/o", "inputs": { "freq": { "from": "/ghost" } } }]),
+    ] {
+        let mut doc = instrument(node, json!({}));
+        doc["format_version"] = json!(4);
+        let errors = errors(&doc, &MemoryResolver::new());
+        assert_eq!(errors.len(), 2, "{errors:#?}");
+        assert!(errors[1].message.contains("/ghost"), "{errors:#?}");
+    }
+}
+
+#[test]
+fn the_structure_read_pins_a_broken_child_on_a_node_that_has_other_errors_too() {
+    let doc = json!({
+        "format_version": 3, "instrument": "t",
+        "resources": { "c": "c.json" },
+        "nodes": [
+            { "type": "subpatch", "address": "/a", "patch": "c" },
+            { "type": "subpatch", "address": "/b", "patch": "c", "config": { "bogus": 1 } }
+        ]
+    });
+    let registry = Registry::builtin();
+    let resolver = with_child(BROKEN_TYPE_CHILD);
+    let doc = reuben_document::NormalizedDoc::from_json(&doc.to_string(), &registry, None)
+        .expect("parses");
+    let read = reuben_document::structure::read(&doc, &registry, &resolver);
+    let on_b: Vec<&str> = (read.report.errors.iter())
+        .filter(|d| d.node.as_deref() == Some("/b"))
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(on_b.iter().any(|m| m.contains("nope")), "{on_b:#?}");
+    assert!(on_b.iter().any(|m| m.contains("bogus")), "{on_b:#?}");
+    let on_a = (read.report.errors.iter()).filter(|d| d.node.as_deref() == Some("/a"));
+    assert_eq!(on_a.count(), 1, "{:#?}", read.report.errors);
 }

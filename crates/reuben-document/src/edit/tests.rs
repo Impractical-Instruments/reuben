@@ -352,6 +352,64 @@ fn a_nested_childs_error_is_matched_at_the_node_that_holds_it() {
     );
 }
 
+/// Removing one of two nodes that use the same broken child leaves the other's error where it was:
+/// it is the document's, not the edit's.
+#[test]
+fn removing_one_use_of_a_broken_child_leaves_the_others_error_pre_existing() {
+    let registry = Registry::builtin();
+    let mut resolver = resolver_with(
+        &json!({
+            "format_version": 3,
+            "instrument": "test",
+            "resources": { "c": "c.json" },
+            "nodes": [
+                { "type": "subpatch", "address": "/fx1", "patch": "c" },
+                { "type": "subpatch", "address": "/fx2", "patch": "c" }
+            ]
+        })
+        .to_string(),
+    );
+    resolver.insert_text(
+        "c.json",
+        r#"{"format_version":3,"instrument":"c","nodes":[{"type":"nope","address":"/x"}]}"#,
+    );
+
+    let result = remove_instrument_node(SRC, "/fx1", &registry, &resolver).expect("the verb ran");
+
+    assert!(!result.written);
+    assert!(result.report.errors.is_empty(), "{result:?}");
+    assert_eq!(result.pre_existing.len(), 1, "{result:?}");
+    assert_eq!(result.pre_existing[0].node.as_deref(), Some("/fx2"));
+}
+
+/// A child too broken to name a slot of its own — here, not JSON at all — is still one fault of the
+/// node that references it.
+#[test]
+fn an_unparseable_child_is_matched_at_the_node_that_holds_it() {
+    let registry = Registry::builtin();
+    let mut resolver = resolver_with(
+        &json!({
+            "format_version": 3,
+            "instrument": "test",
+            "resources": { "c": "c.json" },
+            "nodes": [
+                { "type": "oscillator", "address": "/o" },
+                { "type": "subpatch", "address": "/fx", "patch": "c" }
+            ]
+        })
+        .to_string(),
+    );
+    resolver.insert_text("c.json", "{ not json");
+
+    let result = set_instrument_node_description(SRC, "/o", Some("tone"), &registry, &resolver)
+        .expect("the verb ran");
+
+    assert!(!result.written);
+    assert!(result.report.errors.is_empty(), "{result:?}");
+    assert_eq!(result.pre_existing.len(), 1, "{result:?}");
+    assert!(result.notes.is_empty(), "{result:?}");
+}
+
 /// The multiset rule, held directly over faults taken from real validations.
 #[test]
 fn faults_match_as_a_multiset() {

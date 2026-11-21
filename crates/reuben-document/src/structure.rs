@@ -31,7 +31,7 @@ pub struct Structure {
     pub resources: Vec<Resource>,
     /// What [`validate_doc`](crate::introspect::validate_doc) reports, with two additions that
     /// localize a failure on a node of *this* document: a nested child that did not load is a
-    /// diagnostic on every node referencing it (the loader reports its errors on the first), and a
+    /// diagnostic on every node referencing it, and a
     /// sample that did not resolve is a warning on every node reading it (the loader resolves each
     /// id once, for no node in particular).
     pub report: Report,
@@ -314,9 +314,12 @@ impl Children<'_> {
                 let said =
                     report.ok && unavailable && report.warnings.iter().any(|w| w.node == diag.node);
                 if !report.ok && !unavailable {
-                    // The loader reports a broken child's own errors once, on the first node that
-                    // references it; every other node referencing it gets this one.
-                    if !report.errors.iter().any(|d| d.node == diag.node) {
+                    // The loader reports a broken child's own errors on the node referencing it,
+                    // each led by that node; one it did not get to load the child for gets this.
+                    let nested = format!("in {:?}: ", n.address);
+                    let reported = (report.errors.iter())
+                        .any(|d| d.node == diag.node && d.message.starts_with(&nested));
+                    if !reported {
                         report.errors.push(diag);
                     }
                 } else if !said {

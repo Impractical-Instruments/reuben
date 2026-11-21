@@ -891,15 +891,17 @@ impl std::error::Error for LoadError {
     }
 }
 
-/// Every error one load found — never empty. In document order: the `interface` inputs, then its
-/// outputs, then the nodes, each in the order the document holds them, and within one entry in the
-/// order the loader checks it. A nested child's errors stand at the node that references it, in the
-/// child's own order.
+/// Every error one load found — never empty. In document order as a save writes it: the
+/// `interface` inputs, then its outputs, then the nodes in the order the document holds them;
+/// interface entries and a node's inputs are keyed maps, so they come in name order. Within one
+/// entry, the order the loader checks it. A nested child's errors are each
+/// [`Nested`](LoadError::Nested) under the node that references it, on every node that does.
 ///
 /// One root fault is one error. A check that would only restate it is skipped: nothing is checked
-/// against the ports of a node whose operator type is unknown, or of a `subpatch` whose child did
-/// not load, or of an interface input pipe that could not be minted, and a wire into an input that
-/// does not exist is not also checked at its source.
+/// against the ports of a node whose operator type is unknown, whose address is refused or held by
+/// another entry, or of a `subpatch` whose child did not load, nor against an interface input pipe
+/// that could not be minted, and a wire into an input that does not exist is not also checked at
+/// its source. What a wire names is checked whatever is wrong with the node holding it.
 #[derive(Debug)]
 pub struct LoadErrors(Vec<LoadError>);
 
@@ -1298,11 +1300,6 @@ struct LoadCtx {
     /// one, which used to re-read by omission. Availability is singled out above precisely
     /// because it was the one thing *both* paths re-evaluated per site.
     built: BTreeMap<String, Loaded>,
-    /// Children this load has already reported broken, by canonical id or [`bound_build_key`]: a
-    /// later reference to one is dark and reports nothing, so a broken child is one set of errors
-    /// however many nodes use it. A build that skipped one is not complete, but it can be cached in
-    /// `built` all the same: the error was reported, so this load fails whatever else it builds.
-    broken: BTreeSet<String>,
 }
 
 /// The node addresses minted during one load, deduped by value — the table and its own index in
@@ -1496,6 +1493,13 @@ fn load_doc_guarded(
     // or resolve failure degrades to silence (empty graphs) with a warning, like a sample.
     'voicers: for (at, n) in doc.nodes.iter().enumerate() {
         let Some(id) = &n.voice else { continue };
+        // A `voice` on an operator with no voice slot is already that node's error.
+        let hosts_voices = registry
+            .get(&n.type_name)
+            .is_some_and(|e| e.descriptor.has_resource("voice"));
+        if !hosts_voices {
+            continue;
+        }
         let Some(key) = graph.find(&n.address) else {
             continue;
         };
@@ -1516,8 +1520,6 @@ fn load_doc_guarded(
                     voices.push(Graph::new());
                 }
             }
-            // A patch this load already reported broken is not reported again.
-            Some(canon) if ctx.broken.contains(&canon) => continue,
             Some(canon) => {
                 for i in 0..n_voices {
                     // Every copy is the same build, so a broken patch is reported once.
@@ -1527,7 +1529,6 @@ fn load_doc_guarded(
                         Ok(loaded) => loaded,
                         Err(errors) => {
                             found.nested(Site::Node(at), &n.address, errors);
-                            ctx.broken.insert(canon);
                             continue 'voicers;
                         }
                     };
@@ -2101,6 +2102,7 @@ impl InstrumentDoc {
             if let Err(e) = check_node_address(&n.address) {
                 found.push(site, e);
                 dark.insert(n.address.clone());
+                unchecked.insert(at);
                 claimed = false;
             }
             let address = ctx.addresses.intern(&n.address);
@@ -2287,11 +2289,6 @@ impl InstrumentDoc {
                 })
                 .collect();
             let built_key = bound_build_key(&canon, &bound);
-            // A child already reported broken in this load is not loaded, nor reported, again.
-            if ctx.broken.contains(&canon) || ctx.broken.contains(&built_key) {
-                dark.insert(n.address.clone());
-                continue;
-            }
             let already_built = ctx.built.get(&built_key).map(Loaded::copy);
             let loaded = match already_built {
                 Some(loaded) => loaded,
@@ -2317,7 +2314,7 @@ impl InstrumentDoc {
                                     }
                                     Err(e) => {
                                         found.nested(site, &n.address, [e]);
-                                        ctx.broken.insert(canon.clone());
+                                        unchecked.insert(at);
                                         dark.insert(n.address.clone());
                                         continue;
                                     }
@@ -2363,7 +2360,7 @@ impl InstrumentDoc {
                         Ok(loaded) => loaded,
                         Err(errors) => {
                             found.nested(site, &n.address, errors);
-                            ctx.broken.insert(built_key);
+                            unchecked.insert(at);
                             dark.insert(n.address.clone());
                             continue;
                         }
@@ -2390,6 +2387,7 @@ impl InstrumentDoc {
                 Ok(face) => face,
                 Err(e) => {
                     found.push(site, e);
+                    unchecked.insert(at);
                     dark.insert(n.address.clone());
                     continue;
                 }
@@ -2489,9 +2487,11 @@ impl InstrumentDoc {
         // the prefixed internal address.
         for (at, n) in self.nodes.iter().enumerate() {
             let site = Site::Node(at);
-            // An unavailable nest's boundary wires are dropped with its warning; the wires of a
-            // node whose ports are unknown, or whose address names another node, are not checked.
-            if dark.contains(&n.address) || unchecked.contains(&at) {
+            // An unavailable nest's boundary wires are dropped with its warning. A node whose own
+            // ports are unknown, or whose address names another node, still has every wire's
+            // source checked: what a wire names does not depend on what it lands on.
+            let sources_only = unchecked.contains(&at);
+            if dark.contains(&n.address) && !sources_only {
                 continue;
             }
             for (name, value) in &n.inputs {
@@ -2501,15 +2501,18 @@ impl InstrumentDoc {
                 // Destination: this node's input port, or — on a subpatch — its face input.
                 // A dark boundary port drops the wire, like a dark nest.
                 // An input that does not exist is the wire's one fault: its source is not checked.
-                let (dst_key, dst_port, to_ty) =
+                let dst = if sources_only {
+                    None
+                } else {
                     match resolve_input(&faces, &by_addr, &n.address, name) {
-                        Ok(Some(dst)) => dst,
+                        Ok(Some(dst)) => Some(dst),
                         Ok(None) => continue,
                         Err(e) => {
                             found.push(site, e);
                             continue;
                         }
-                    };
+                    }
+                };
                 // Source: a node's output port, or a subpatch's face output.
                 let (src_addr, src_port_name) = parse_wire(from);
                 // A source refused as a whole address (`/my.tone`) is dark under the whole
@@ -2532,6 +2535,9 @@ impl InstrumentDoc {
                             continue;
                         }
                     };
+                let Some((dst_key, dst_port, to_ty)) = dst else {
+                    continue;
+                };
 
                 if !wire_type_compatible(&from_ty, &to_ty) {
                     found.push(
