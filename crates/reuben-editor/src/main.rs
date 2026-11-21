@@ -12,6 +12,7 @@ mod controls;
 mod edit;
 mod engine;
 mod feedback;
+mod follow;
 mod held_swap;
 mod inspector;
 mod link;
@@ -25,10 +26,12 @@ mod theme;
 mod ui_tests;
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use clap::{CommandFactory, Parser};
 use eframe::egui;
+use reuben_api::engine::{Channel, Event};
 use reuben_native::cli::{EngineFlags, InstrumentRoot};
 use reuben_native::engine::{EngineConfig, Instrument};
 
@@ -37,6 +40,7 @@ use crate::canvas::Canvas;
 use crate::config::ConfigDir;
 use crate::controls::Controls;
 use crate::engine::{Engine, Level};
+use crate::follow::Follow;
 use crate::held_swap::HeldSwaps;
 use crate::inspector::Inspector;
 use crate::meter_strip::MeterStrip;
@@ -101,15 +105,7 @@ fn main() -> eframe::Result {
             theme::install(&cc.egui_ctx);
             let root = args.instrument_root.clone().resolve();
             let controls = Controls::open(args.path.as_deref(), root.as_deref());
-            let session = args.path.as_deref().map(|path| {
-                let ctx = cc.egui_ctx.clone();
-                Session::open(path, root.as_deref(), move || ctx.request_repaint())
-            });
-            let mut canvas = Canvas::open(None, None);
-            let mut inspector = Inspector::default();
-            if let Some(session) = &session {
-                view(&mut canvas, &mut inspector, session);
-            }
+            let path = args.path.clone();
             let mut start_screen = Start::new(ConfigDir::user(), root.as_deref());
             if let Some(path) = args.path.as_deref().filter(|p| p.is_file()) {
                 start_screen.opened(path);
@@ -134,6 +130,20 @@ fn main() -> eframe::Result {
                 }),
                 None => start(args, &mut audio, &launch, Engine::start),
             };
+            let session = path.as_deref().map(|path| {
+                let ctx = cc.egui_ctx.clone();
+                Session::open(&path.display().to_string(), &|| engine.channel())
+                    .with_wake(move || ctx.request_repaint())
+            });
+            let mut canvas = Canvas::open(None, None);
+            let mut inspector = Inspector::default();
+            if let Some(session) = &session {
+                view(&mut canvas, &mut inspector, session);
+            }
+            let (follow, latest) = follower(engine.channel(), {
+                let ctx = cc.egui_ctx.clone();
+                move || ctx.request_repaint()
+            });
             Ok(Box::new(Editor {
                 engine,
                 audio,
@@ -148,7 +158,8 @@ fn main() -> eframe::Result {
                     let ctx = cc.egui_ctx.clone();
                     move || ctx.request_repaint()
                 }),
-                same_file: None,
+                follow,
+                latest,
             }))
         }),
     )
@@ -179,13 +190,33 @@ fn start(
 /// it, start over on this one: their view, selection and held values belong to the one they drew.
 fn view(canvas: &mut Canvas, inspector: &mut Inspector, session: &Session) {
     let viewed = session.viewed();
-    let source = std::path::Path::new(&viewed.source);
-    if canvas.instrument().is_some_and(|drawn| drawn != source) {
+    if canvas
+        .instrument()
+        .is_some_and(|drawn| drawn != viewed.source)
+    {
         *canvas = Canvas::open(None, None);
         *inspector = Inspector::default();
     }
-    canvas.reload(source, session.root(), &viewed.read);
+    canvas.reload(&viewed.source, &viewed.read);
     canvas.tap(session);
+}
+
+/// The engine's channel as of the last frame, for [`Follow`]'s thread to subscribe through: the
+/// engine itself lives on the UI thread, and is replaced when it restarts.
+type Latest = Arc<Mutex<Option<Channel>>>;
+
+/// A [`Follow`] of whichever engine the editor has, starting on `channel`, and the cell each frame
+/// puts its channel in. `wake` is called whenever the follow has events.
+fn follower(channel: Option<Channel>, wake: impl Fn() + Send + Sync + 'static) -> (Follow, Latest) {
+    let latest = Arc::new(Mutex::new(channel));
+    let follow = Follow::start(
+        {
+            let latest = Arc::clone(&latest);
+            move || latest.lock().unwrap_or_else(PoisonError::into_inner).take()
+        },
+        wake,
+    );
+    (follow, latest)
 }
 
 struct Editor {
@@ -199,38 +230,21 @@ struct Editor {
     launch: Launch,
     held: HeldSwaps,
     meters: MeterStrip,
-    /// The file the engine plays and the session's top-level file, as spelled when they were last
-    /// compared, and whether they are one file: resolving them stats the disk, so it is done again
-    /// only when a spelling changes.
-    same_file: Option<(String, PathBuf, bool)>,
+    follow: Follow,
+    latest: Latest,
 }
 
 impl Editor {
-    /// Whether the engine plays the open session's top-level file, so a node path the canvas
-    /// resolves names a node of what is drawn. Another file's Plan can have the same addresses —
-    /// while a Swap onto this one runs or was refused, or before an attached editor opens what the
-    /// engine plays — and its levels must not show on these boxes.
-    ///
-    /// Of the same file, the Plan installed must be of what the session read, unless a Swap of it
-    /// is running: that Plan is the one about to be replaced, and blanking every meter for each
-    /// edit's Swap would flicker the canvas. A Swap that was refused leaves the older Plan playing
-    /// for good, so it does not meter.
+    /// Whether the engine plays the open session's top-level document as the session read it, so
+    /// a node path the canvas resolves names a node of what is drawn. Another document's Plan can
+    /// have the same addresses — before an attached editor opens what the engine plays, or while
+    /// the server holds what it read back — and its levels must not show on these boxes.
     fn metered(&mut self) -> bool {
         let (Some(session), Some(plays)) = (&self.session, self.engine.plays()) else {
             return false;
         };
-        let top = session.top();
-        let same = match &self.same_file {
-            Some((source, file, same)) if *source == plays.source && file == top => *same,
-            _ => {
-                let same = held_swap::canonical(std::path::Path::new(&plays.source))
-                    == held_swap::canonical(top);
-                self.same_file = Some((plays.source.clone(), top.to_path_buf(), same));
-                same
-            }
-        };
         let read = session.tree().documents().first().and_then(|d| d.hash());
-        same && (session.status() == &Status::Swapping || read == Some(plays.content_hash.as_str()))
+        plays.source == session.top() && read == Some(plays.content_hash.as_str())
     }
 
     /// Open the instrument at `path` in place of whatever is open. The canvas and the inspector
@@ -264,52 +278,58 @@ impl Editor {
         self.start.opened(path);
     }
 
-    /// Follow what the attached engine plays, as it changes: open the file it names, with no Swap,
-    /// since it plays it already. Its files are Swapped in where they are not what the engine
-    /// installed from them — they changed while it was not answering, or before the editor
-    /// attached — or where the session is not sure the engine plays them; a file the engine plays is
-    /// opened rather than another Swapped over it.
+    /// Follow what the attached engine plays, as it changes: open the document it names, with no
+    /// Swap, since it plays it already.
     fn follow_attached(&mut self, ctx: &egui::Context) {
         self.engine.follow_link();
-        // Followed once the Swap lands, whatever it installed.
-        if self
-            .session
-            .as_ref()
-            .is_some_and(|session| session.status() == &Status::Swapping)
-        {
-            return;
-        }
         let Some(playing) = self.engine.unfollowed() else {
             return;
         };
-        let path = PathBuf::from(&playing.source);
-        if self.session.as_ref().is_none_or(|s| s.top() != path) {
-            let wake = {
-                let ctx = ctx.clone();
-                move || ctx.request_repaint()
-            };
-            let session = Session::open(&path, self.launch.root.as_deref(), wake);
-            self.show(session, &path, true);
-        }
-        let Some(session) = &mut self.session else {
-            return;
-        };
-        let on_disk = session.tree().documents().first().and_then(|d| d.hash());
-        if on_disk != Some(playing.content_hash.as_str()) || session.status() != &Status::Current {
-            session.reinstall(&|| self.engine.channel());
+        if self
+            .session
+            .as_ref()
+            .is_none_or(|s| s.top() != playing.source)
+        {
+            self.follow_open(&playing.source, ctx);
         }
     }
 
-    /// Take in what the session saw change on disk, and rebuild what is drawn from the files.
+    /// Show a session on the instrument the server names `name`, which it plays already.
+    fn follow_open(&mut self, name: &str, ctx: &egui::Context) {
+        let wake = {
+            let ctx = ctx.clone();
+            move || ctx.request_repaint()
+        };
+        let session = Session::open(name, &|| self.engine.channel()).with_wake(wake);
+        self.show(session, std::path::Path::new(name), true);
+    }
+
+    /// Take in what the server said changed, and rebuild what is drawn from the tree it reads.
     fn follow_files(&mut self, ui: &egui::Ui) {
+        *self.latest.lock().unwrap_or_else(PoisonError::into_inner) = self.engine.channel();
         self.follow_attached(ui.ctx());
+        let events = self.follow.drain();
         let Some(session) = &mut self.session else {
             return;
         };
-        let poll = session.poll(Instant::now(), &|| self.engine.channel());
-        if let Some(content_hash) = session.take_installed() {
-            self.engine
-                .note_installed(session.top().display().to_string(), content_hash);
+        let poll = session.poll(&events, &|| self.engine.channel());
+        // What the server says plays is known the moment it says so, where an attached engine's
+        // probe waits on its next round.
+        for event in &events {
+            match event {
+                Event::Changed { hash, .. } if !hash.is_empty() => {
+                    self.engine
+                        .note_installed(session.top().to_string(), hash.clone());
+                }
+                Event::Opened { name, hash } if !name.is_empty() => {
+                    self.engine.note_installed(name.clone(), hash.clone());
+                }
+                _ => {}
+            }
+        }
+        if let (Some(name), Some(_)) = (&poll.opened, self.engine.link()) {
+            self.follow_open(name, ui.ctx());
+            return;
         }
         start::follow(
             session,
@@ -326,18 +346,10 @@ impl Editor {
         if poll.reloaded {
             view(&mut self.canvas, &mut self.inspector, session);
         }
-        // The files load and nothing plays them: the engine stopped, or never started, on a
-        // tree that did not load.
-        if poll.reloaded && session.status() == &Status::NoEngine {
-            self.engine.resume();
-            session.reinstall(&|| self.engine.channel());
-        }
         // A tree that does not load keeps the panel of the instrument still playing.
         if poll.reloaded && !matches!(session.status(), Status::Held(_)) {
-            self.controls = Controls::open(Some(session.top()), session.root());
-        }
-        if let Some(wait) = poll.wait {
-            ui.ctx().request_repaint_after(wait);
+            let top = PathBuf::from(session.top());
+            self.controls = Controls::open(Some(&top), self.launch.root.as_deref());
         }
     }
 }

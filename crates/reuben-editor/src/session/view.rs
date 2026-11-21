@@ -84,7 +84,7 @@ pub fn trail(ui: &mut egui::Ui, session: &mut Session) -> Option<TrailAsk> {
             asked = Some(TrailAsk::LocalCopy);
         }
     });
-    let path = session.viewed().path.clone();
+    let viewed = std::path::Path::new(&session.viewed().source).to_path_buf();
     match session.users() {
         Some(Listing::Listed(Ok(users))) if users.len() > 1 => {
             ui.colored_label(
@@ -92,7 +92,7 @@ pub fn trail(ui: &mut egui::Ui, session: &mut Session) -> Option<TrailAsk> {
                 format!(
                     "{} is used by {} instruments ({}): an edit here changes every one of them. \
                      Make a local copy to change this one only.",
-                    path.file_name().unwrap_or_default().to_string_lossy(),
+                    viewed.file_name().unwrap_or_default().to_string_lossy(),
                     users.len(),
                     users.join(", ")
                 ),
@@ -112,18 +112,12 @@ pub fn trail(ui: &mut egui::Ui, session: &mut Session) -> Option<TrailAsk> {
     asked
 }
 
-/// Draw the session's rows of the top bar: undo and redo, whether the engine plays the
-/// instrument, and the warning that its files are not watched. Returns the undo or redo clicked.
+/// Draw the session's rows of the top bar: undo and redo, and whether the engine plays the
+/// instrument. Returns the undo or redo clicked.
 pub fn bar(ui: &mut egui::Ui, session: &Session) -> Option<Direction> {
     let asked = undo(ui, session);
     let name = session.tree().top().name();
     status(ui, session.status(), &name);
-    if let Some(e) = session.watch_error() {
-        ui.colored_label(
-            ui.visuals().warn_fg_color,
-            format!("Not watching {name}'s files for changes: {e}"),
-        );
-    }
     asked
 }
 
@@ -156,13 +150,10 @@ fn status(ui: &mut egui::Ui, status: &Status, name: &str) {
         Status::NoEngine => {
             ui.label(format!("No engine is running; {name} is not playing."));
         }
-        Status::Swapping => {
-            ui.label("Swapping…");
-        }
         Status::Held(why) => {
             ui.colored_label(
                 ui.visuals().error_fg_color,
-                "Still playing the last instrument that loaded:",
+                format!("{name} does not play as it is:"),
             );
             // One line per fault in every file of the instrument: unbounded, in a bar that takes
             // its height from the canvas below.

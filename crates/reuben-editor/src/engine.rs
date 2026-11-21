@@ -73,7 +73,7 @@ pub struct Playing {
 pub struct Engine {
     running: Option<RunningEngine>,
     /// Set only by [`attach`](Self::attach), and then `running` and `config` stay `None` for good:
-    /// what restarts, refits or resumes an embedded engine finds nothing to act on.
+    /// what restarts or refits an embedded engine finds nothing to act on.
     attached: Option<Link>,
     /// What the attached engine was last seen to play, until the editor follows it.
     unfollowed: Option<Playing>,
@@ -210,10 +210,10 @@ impl Engine {
         config: EngineConfig,
         start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
     ) -> Self {
-        // The editor's user decides what plays: a reload after an outside write would install
-        // without the held-swap prompt.
+        // The server follows outside writes to the open instrument's documents, and the session
+        // hears them as events: the editor has no watcher of its own.
         let config = EngineConfig {
-            follow_files: false,
+            follow_files: true,
             ..config
         };
         let kept = Some(config.clone());
@@ -344,25 +344,6 @@ impl Engine {
         true
     }
 
-    /// Start the engine as it was last asked to start, when none is running. Does nothing when
-    /// one is, or when no start was ever attempted.
-    pub fn resume(&mut self) {
-        self.resume_with(engine::start);
-    }
-
-    /// [`resume`](Self::resume) through `start`, the seam a test puts the headless engine in.
-    pub(crate) fn resume_with(
-        &mut self,
-        start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
-    ) {
-        if self.running.is_some() {
-            return;
-        }
-        if let Some(config) = self.config.clone() {
-            *self = Self::start_with(config, start);
-        }
-    }
-
     fn push(&mut self, line: Line) {
         match line.level {
             Level::Info => println!("{line}"),
@@ -378,7 +359,7 @@ impl Engine {
 
     /// Bring the report and the config up to the instrument the engine has installed now, which a
     /// Swap — the editor's or `reuben-mcp`'s — may have changed since it started: the report names
-    /// it, and a [`resume`](Self::resume) after a stop starts on it. Never waits.
+    /// it, and a restart starts on it. Never waits.
     pub fn follow_installed(&mut self) {
         if self.attached.is_none() {
             match self.installed() {
@@ -707,13 +688,13 @@ mod tests {
     }
 
     #[test]
-    fn the_embedded_engine_does_not_follow_outside_writes() {
+    fn the_embedded_engine_follows_outside_writes() {
         let mut asked = None;
         let _ = Engine::start_with(config(library("acid-techno.json")), |config| {
             asked = Some(config.follow_files);
             Err(StartError::StructureNotLoopback(String::new()))
         });
-        assert_eq!(asked, Some(false));
+        assert_eq!(asked, Some(true));
     }
 
     #[test]
@@ -943,32 +924,6 @@ mod tests {
     }
 
     #[test]
-    fn an_engine_that_did_not_start_is_started_once_its_file_loads() {
-        let path = seed(
-            "resume",
-            r#"{"format_version":3,"instrument":"t","nodes":[{"#,
-        );
-        within(HANG_SECS, {
-            let path = path.clone();
-            move || {
-                let mut engine = Engine::start_with(config(path.clone()), start_headless);
-                assert!(engine.running().is_none());
-                engine.resume_with(start_headless);
-                assert!(engine.running().is_none(), "the file still does not load");
-
-                std::fs::copy(library("default.json"), &path).unwrap();
-                engine.resume_with(start_headless);
-                assert!(engine.running().is_some());
-                assert_eq!(errors(&engine), Vec::<&str>::new());
-
-                engine.resume_with(|_| panic!("a running engine is not started again"));
-                engine.shutdown();
-            }
-        });
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
     fn a_restart_onto_a_file_that_no_longer_loads_keeps_the_engine_playing() {
         let scratch = crate::session::test_support::Scratch::new("engine_restart_unloadable");
         let path = scratch.library().join("default.json");
@@ -1077,12 +1032,11 @@ mod tests {
             let echoed = osc::decode(&buf[..n]).expect("decode");
             assert_eq!(echoed[0].args, vec![Arg::F32(0.5)]);
 
-            // Nothing here owns the device, so nothing here restarts or resumes it.
+            // Nothing here owns the device, so nothing here restarts it.
             assert_eq!(engine.profile(), None);
             engine.restart_with(DeviceProfile::default(), |_| {
                 panic!("an attached engine is not restarted")
             });
-            engine.resume_with(|_| panic!("an attached engine is not started"));
             assert!(!engine.fit_input(|_| panic!("an attached engine is not refit")));
 
             engine.shutdown();

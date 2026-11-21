@@ -4,7 +4,10 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use super::Tree;
+use reuben_api::authoring::{read_instrument, ReadInstrument};
+use reuben_api::FsResolver;
+
+use super::tree::nested;
 
 /// The names of the instruments directly in any of `libraries` whose tree reaches the document at
 /// `path`, sorted. `root` is the library root references fall back to, as for the engine. A
@@ -38,14 +41,49 @@ pub fn users(libraries: &[&Path], root: Option<&Path>, path: &Path) -> Result<Ve
     }
     let mut names = Vec::new();
     for top in tops {
-        let tree = Tree::resolve(&top, root);
-        let mut nested = tree.documents()[1..].iter();
-        if nested.any(|document| same_file(&document.path) == target) {
-            names.push(tree.top().name());
+        let (name, reached) = reaches(&top, root);
+        if reached.iter().any(|path| same_file(path) == target) {
+            names.extend(name);
         }
     }
     names.sort();
     Ok(names)
+}
+
+/// The `instrument` name of the document at `top`, when it reads, and the files of every document
+/// it reaches through a `voice` or `patch` resource, each once.
+fn reaches(top: &Path, root: Option<&Path>) -> (Option<String>, Vec<PathBuf>) {
+    let read = |path: &Path| {
+        let source = path.display().to_string();
+        let store = FsResolver::for_document(&source).stat_only();
+        let store = match root {
+            Some(root) => store.with_root(root),
+            None => store,
+        };
+        read_instrument(&ReadInstrument { source }, &store)
+            .ok()
+            .map(|answer| answer.output)
+    };
+    let Some(first) = read(top) else {
+        return (None, Vec::new());
+    };
+    let name = Some(first.instrument.clone());
+    let mut seen = BTreeSet::from([top.to_path_buf()]);
+    let mut reached = Vec::new();
+    let mut next = vec![first];
+    while let Some(structure) = next.pop() {
+        for node in &structure.nodes {
+            let Some(source) = nested(&structure, node) else {
+                continue;
+            };
+            let path = PathBuf::from(source);
+            if seen.insert(path.clone()) {
+                reached.push(path.clone());
+                next.extend(read(&path));
+            }
+        }
+    }
+    (name, reached)
 }
 
 /// `path` as one file is spelled however it was reached: a reference resolved from a relative

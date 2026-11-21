@@ -1,30 +1,19 @@
-//! The open instrument's file tree: the top-level document plus every document it reaches through
-//! a `voice` or `patch` resource, each read as it is on disk.
+//! The open instrument's tree: the top-level document plus every document it reaches through a
+//! `voice` or `patch` resource, each as the server reads it.
 
-use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use reuben_api::authoring::{
-    read_instrument, InstrumentStructure, ReadInstrument, ResourceEntry, StructureNode,
+    InstrumentStructure, InstrumentTree, ReadInstrumentTree, ResourceEntry, StructureNode,
 };
-use reuben_api::FsResolver;
+use reuben_api::engine::{call_tool, Channel};
+use reuben_api::tools::names;
 
 /// The node slot whose document runs as a voice: a Plan of its own, hosted by the node.
 const VOICE_SLOT: &str = "voice";
 
 /// The node slots whose resource is a document rather than a sample.
 const DOCUMENT_SLOTS: [&str; 2] = [VOICE_SLOT, "patch"];
-
-/// The store one document is read and edited through: scoped to that document, because a
-/// document's references resolve from its store's top level. Samples are checked for presence
-/// rather than decoded.
-pub fn store(source: &str, root: Option<&Path>) -> FsResolver {
-    let store = FsResolver::for_document(source).stat_only();
-    match root {
-        Some(root) => store.with_root(root),
-        None => store,
-    }
-}
 
 /// The resolved source of the document `node` of `structure` references as its voice or its
 /// patch: the source a load of `structure` reads it from.
@@ -42,41 +31,18 @@ fn reference<'a>(
     (structure.resources.iter()).find(|entry| entry.id == reference.id)
 }
 
-/// One file of the tree.
+/// One document of the tree.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Document {
-    /// What names this document to a `reuben-api` verb: the path the instrument was opened by for
-    /// the top-level document, the resolved source of the referencing resource for every other.
+    /// The server's name for this document, which names it to every verb: the name the instrument
+    /// was opened by for the top-level document, the referencing resource's resolved source for
+    /// every other.
     pub source: String,
-    /// Where the document is on disk, absolute.
-    pub path: PathBuf,
-    /// The document as it is on disk, or why it could not be read.
+    /// The document as the server read it, or why it could not.
     pub read: Result<InstrumentStructure, String>,
 }
 
 impl Document {
-    fn read(source: String, path: PathBuf, root: Option<&Path>) -> Self {
-        let read = read_instrument(
-            &ReadInstrument {
-                source: source.clone(),
-            },
-            &store(&source, root),
-        )
-        .map(|answer| answer.output)
-        .map_err(|refusal| refusal.message);
-        Self { source, path, read }
-    }
-
-    /// The resolved sources of the documents this one's nodes reference, in node order.
-    fn children(&self) -> Vec<&str> {
-        let Ok(structure) = &self.read else {
-            return Vec::new();
-        };
-        (structure.nodes.iter())
-            .filter_map(|node| nested(structure, node))
-            .collect()
-    }
-
     /// The resolved source of the document the node at `address` references, when this document
     /// reads and has such a node.
     pub fn nested(&self, address: &str) -> Option<&str> {
@@ -103,11 +69,11 @@ impl Document {
             .is_some_and(|node| node.resources.iter().any(|r| r.slot == VOICE_SLOT))
     }
 
-    /// The document's `instrument` name, or its file name when it does not read.
+    /// The document's `instrument` name, or its file stem when it does not read.
     pub fn name(&self) -> String {
         match &self.read {
             Ok(structure) => structure.instrument.clone(),
-            Err(_) => (self.path.file_stem())
+            Err(_) => (Path::new(&self.source).file_stem())
                 .map_or_else(|| self.source.clone(), |s| s.to_string_lossy().into_owned()),
         }
     }
@@ -119,37 +85,67 @@ impl Document {
             .ok()
             .map(|structure| structure.hash.as_str())
     }
+
+    /// Why this document holds the instrument back from playing as it is: it does not read, or
+    /// its load reports errors. Empty when it does not.
+    pub fn faults(&self) -> Vec<String> {
+        let name = &self.source;
+        match &self.read {
+            Err(e) => vec![format!("{name}: {e}")],
+            Ok(structure) => (structure.report.errors.iter())
+                .map(|error| match &error.node {
+                    Some(node) => format!("{name}: {node}: {}", error.message),
+                    None => format!("{name}: {}", error.message),
+                })
+                .collect(),
+        }
+    }
 }
 
-/// Every file of the open instrument, the top-level document first and each file once.
+/// Every document of the open instrument, the top-level document first and each once.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tree {
     documents: Vec<Document>,
 }
 
 impl Tree {
-    /// Read the tree of the instrument at `top` from disk. `root` is the library root a reference
-    /// falls back to, as for the engine.
-    pub fn resolve(top: &Path, root: Option<&Path>) -> Self {
-        let top_path = std::path::absolute(top).unwrap_or_else(|_| top.to_path_buf());
-        let mut seen = BTreeSet::from([top_path.clone()]);
-        let mut documents = vec![Document::read(top.display().to_string(), top_path, root)];
-        let mut next = 0;
-        while next < documents.len() {
-            let children: Vec<String> = documents[next]
-                .children()
-                .into_iter()
-                .map(str::to_string)
-                .collect();
-            for source in children {
-                let path = PathBuf::from(&source);
-                if seen.insert(path.clone()) {
-                    documents.push(Document::read(source, path, root));
-                }
-            }
-            next += 1;
+    /// The tree of the instrument the server names `top`, in one `read_instrument_tree` call.
+    /// `Err` is a call that could not be made or was refused.
+    pub fn read(top: &str, channel: &Channel) -> Result<Tree, String> {
+        let answer = call_tool(
+            names::READ_INSTRUMENT_TREE,
+            &ReadInstrumentTree {
+                source: top.to_string(),
+            },
+            channel,
+        )
+        .map_err(|refusal| refusal.message)?;
+        let tree: InstrumentTree = serde_json::from_value(answer.output)
+            .map_err(|e| format!("`read_instrument_tree` answered something else: {e}"))?;
+        let documents: Vec<Document> = (tree.documents.into_iter())
+            .map(|document| Document {
+                read: match (document.structure, document.error) {
+                    (Some(structure), _) => Ok(structure),
+                    (None, error) => Err(error.unwrap_or_else(|| "it was not read".to_string())),
+                },
+                source: document.source,
+            })
+            .collect();
+        if documents.is_empty() {
+            return Err(format!("the server read no document for {top}"));
         }
-        Self { documents }
+        Ok(Tree { documents })
+    }
+
+    /// A tree of `top` alone, not read, `why` saying so: what a session shows until the server
+    /// first answers.
+    pub fn unread(top: &str, why: String) -> Tree {
+        Tree {
+            documents: vec![Document {
+                source: top.to_string(),
+                read: Err(why),
+            }],
+        }
     }
 
     pub fn documents(&self) -> &[Document] {
@@ -164,132 +160,77 @@ impl Tree {
         self.documents.iter().find(|d| d.source == source)
     }
 
-    /// Why this tree must not be swapped in; empty when it may be.
-    ///
-    /// A nested document that is on disk and does not load is one: the engine's load would report
-    /// it as a warning and install the instrument without that voice or subpatch, replacing a Plan
-    /// that plays with one that does not. A nested document that is not on disk at all is not one
-    /// here, since the instrument may never have had it; the session holds the tree when a
-    /// document it had loaded goes missing.
-    pub fn blocked(&self) -> Vec<String> {
-        let mut why = Vec::new();
-        for (index, document) in self.documents.iter().enumerate() {
-            let name = document.path.display();
-            match &document.read {
-                Ok(structure) => {
-                    for error in &structure.report.errors {
-                        why.push(match &error.node {
-                            Some(node) => format!("{name}: {node}: {}", error.message),
-                            None => format!("{name}: {}", error.message),
-                        });
-                    }
-                    if !structure.report.ok && structure.report.errors.is_empty() {
-                        why.push(format!("{name}: does not load"));
-                    }
-                }
-                // A referencing document comes first in the tree and has usually said this
-                // already, on the node that holds the reference.
-                Err(e) if why.iter().any(|said| said.contains(e.as_str())) => {}
-                Err(e) if index == 0 || document.path.exists() => why.push(format!("{name}: {e}")),
-                Err(_) => {}
-            }
-        }
-        why
+    /// Why this tree does not play as it is: each fault of each of its documents. Empty when it
+    /// does.
+    pub fn faults(&self) -> Vec<String> {
+        self.documents.iter().flat_map(Document::faults).collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::session::test_support::Scratch;
+    use reuben_native::test_support::within;
 
-    fn paths(tree: &Tree) -> Vec<&Path> {
-        tree.documents().iter().map(|d| d.path.as_path()).collect()
+    use super::*;
+    use crate::session::test_support::Rig;
+
+    const HANG_SECS: u64 = 60;
+
+    fn files(tree: &Tree) -> Vec<&str> {
+        tree.documents().iter().map(|d| d.source.as_str()).collect()
     }
 
     #[test]
-    fn the_tree_is_the_top_level_file_and_every_document_it_references() {
-        let scratch = Scratch::new("tree_references");
-        let lib = scratch.library();
-        let tree = Tree::resolve(&lib.join("default.json"), None);
-        assert_eq!(
-            paths(&tree),
-            [
-                lib.join("default.json").as_path(),
-                lib.join("voices").join("default-voice.json").as_path()
-            ]
-        );
-        assert_eq!(tree.blocked(), Vec::<String>::new());
-        assert!(tree.documents().iter().all(|d| d.hash().is_some()));
+    fn the_tree_is_the_top_level_document_and_every_document_it_references() {
+        within(HANG_SECS, || {
+            let rig = Rig::open("tree_references", "default.json");
+            let tree = Tree::read(&rig.top_source(), &rig.channel()).expect("read");
+            let sources = files(&tree);
+            assert_eq!(sources.len(), 2, "{sources:?}");
+            assert_eq!(sources[0], rig.top_source());
+            assert!(Path::new(sources[1]).ends_with("voices/default-voice.json"));
+            assert_eq!(tree.faults(), Vec::<String>::new());
+            assert!(tree.documents().iter().all(|d| d.hash().is_some()));
+        });
     }
 
     /// `acid-techno` nests documents that reference documents of their own, from a directory that
-    /// is not the top-level file's: one store reused down the tree would miss them.
+    /// is not the top-level file's.
     #[test]
-    fn a_nested_documents_own_references_resolve_from_its_directory() {
-        let scratch = Scratch::new("tree_nested");
-        let lib = scratch.library();
-        let tree = Tree::resolve(&lib.join("acid-techno.json"), None);
-        assert_eq!(tree.blocked(), Vec::<String>::new());
-        let unread: Vec<_> = tree
-            .documents()
-            .iter()
-            .filter(|d| d.read.is_err())
-            .map(|d| &d.path)
-            .collect();
-        assert_eq!(unread, Vec::<&PathBuf>::new());
-        let nested = lib.join("voices").join("shaped-vca.json");
-        assert!(
-            paths(&tree).contains(&nested.as_path()),
-            "{:?}",
-            paths(&tree)
-        );
-        let mut once = paths(&tree);
-        once.sort();
-        once.dedup();
-        assert_eq!(once.len(), tree.documents().len(), "each file once");
+    fn a_nested_documents_own_references_are_in_the_tree_once() {
+        within(HANG_SECS, || {
+            let rig = Rig::open("tree_nested", "acid-techno.json");
+            let tree = Tree::read(&rig.top_source(), &rig.channel()).expect("read");
+            assert_eq!(tree.faults(), Vec::<String>::new());
+            let sources = files(&tree);
+            assert!(
+                (sources.iter()).any(|s| Path::new(s).ends_with("voices/shaped-vca.json")),
+                "{sources:?}"
+            );
+            let mut once = sources.clone();
+            once.sort();
+            once.dedup();
+            assert_eq!(once.len(), sources.len(), "each document once");
+        });
     }
 
     #[test]
-    fn a_reference_only_the_library_root_holds_is_in_the_tree() {
-        let scratch = Scratch::new("tree_root");
-        let lib = scratch.library();
-        let bare = scratch.path("bare").join("default.json");
-        std::fs::create_dir_all(bare.parent().unwrap()).unwrap();
-        std::fs::copy(lib.join("default.json"), &bare).unwrap();
-
-        let tree = Tree::resolve(&bare, Some(&lib));
-        assert_eq!(
-            paths(&tree),
-            [
-                bare.as_path(),
-                lib.join("voices").join("default-voice.json").as_path()
-            ]
-        );
-    }
-
-    #[test]
-    fn a_nested_document_that_does_not_parse_blocks_and_a_missing_one_does_not() {
-        let scratch = Scratch::new("tree_blocked");
-        let lib = scratch.library();
-        let voice = lib.join("voices").join("default-voice.json");
-
-        std::fs::write(&voice, "{ not an instrument").unwrap();
-        let broken = Tree::resolve(&lib.join("default.json"), None);
-        assert_eq!(broken.documents().len(), 2, "still watched");
-        assert_eq!(broken.blocked().len(), 1, "{:?}", broken.blocked());
-
-        std::fs::remove_file(&voice).unwrap();
-        let missing = Tree::resolve(&lib.join("default.json"), None);
-        assert_eq!(missing.documents().len(), 2, "watched for its return");
-        assert_eq!(missing.blocked(), Vec::<String>::new());
-    }
-
-    #[test]
-    fn a_top_level_file_that_is_missing_blocks() {
-        let scratch = Scratch::new("tree_missing_top");
-        let tree = Tree::resolve(&scratch.path("nothing.json"), None);
-        assert_eq!(tree.blocked().len(), 1);
-        assert!(tree.top().hash().is_none());
+    fn a_nested_document_that_does_not_parse_is_a_fault_of_its_own() {
+        within(HANG_SECS, || {
+            let rig = Rig::open("tree_broken", "default.json");
+            std::fs::write(
+                rig.lib.join("voices/default-voice.json"),
+                "{ not an instrument",
+            )
+            .unwrap();
+            let tree = Tree::read(&rig.top_source(), &rig.channel()).expect("read");
+            assert_eq!(tree.documents().len(), 2);
+            assert!(tree.documents()[1].read.is_err());
+            assert!(
+                (tree.faults().iter()).any(|f| f.starts_with(&tree.documents()[1].source)),
+                "{:?}",
+                tree.faults()
+            );
+        });
     }
 }

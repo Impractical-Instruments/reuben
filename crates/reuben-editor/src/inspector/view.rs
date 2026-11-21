@@ -70,7 +70,7 @@ pub fn show(
                         None => {
                             instrument(ui, inspector, top, &problems, &mut asks);
                             interface::list(ui, inspector, top, &mut asks);
-                            let document = &session.viewed().path;
+                            let document = std::path::Path::new(&session.viewed().source);
                             resources::list(ui, inspector, top, document, &mut asks);
                         }
                         Some(Item::Node(address)) => {

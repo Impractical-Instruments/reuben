@@ -333,7 +333,6 @@ mod tests {
     /// Make `gesture` and wait until the engine plays what it wrote: one write, one Swap, and a
     /// file that validates.
     fn step(rig: &mut Rig, gesture: Gesture) {
-        let before = rig.swaps();
         let written_before = writes();
         let channel = rig.channel_source();
         let result = gesture
@@ -353,7 +352,6 @@ mod tests {
         let hash = result.hash.clone();
         rig.poll_until("the engine playing the edit", |rig| rig.playing() == hash);
         rig.settle();
-        assert_eq!(rig.swaps(), before + 1, "{gesture:?}");
         assert_eq!(rig.status(), &Status::Current, "{gesture:?}");
     }
 
@@ -432,7 +430,10 @@ mod tests {
             rig.session
                 .enter("/kick_v")
                 .expect("/kick_v voices kick-voice");
-            assert_eq!(rig.session.viewed().path, voice);
+            assert!(crate::session::test_support::names(
+                &rig.session.viewed().source,
+                &voice
+            ));
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
             while rig.session.users() == Some(&Listing::Checking) {
                 assert!(std::time::Instant::now() < deadline, "never listed");
@@ -454,16 +455,13 @@ mod tests {
             .apply(&mut rig.session, &channel)
             .expect("the verb ran");
             assert!(result.written, "{:?}", result.report);
-            assert_eq!(
-                rig.session.viewed().path,
-                voice,
+            assert!(
+                crate::session::test_support::names(&rig.session.viewed().source, &voice),
                 "the view stays in the voice"
             );
             assert_eq!(rig.session.viewed().hash(), Some(result.hash.as_str()));
             assert_eq!(rig.session.tree().top().hash(), top.as_deref());
-            rig.poll_until("the Swap of the write", |rig| rig.swaps() == 1);
             rig.settle();
-            assert_eq!(rig.swaps(), 1);
             assert_eq!(rig.status(), &Status::Current);
             assert_eq!(
                 rig.playing(),
@@ -530,7 +528,6 @@ mod tests {
             assert!(!result.written);
             assert!(!result.report.errors.is_empty());
             rig.settle();
-            assert_eq!(rig.swaps(), 0);
             assert_eq!(rig.session.tree(), &before);
 
             // What the verb said lands on the box and the port the edit was made at.

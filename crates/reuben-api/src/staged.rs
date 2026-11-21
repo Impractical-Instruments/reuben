@@ -35,12 +35,17 @@ struct Pending {
     create: bool,
 }
 
-/// Every canonical source a [`ReadLog`] saw served, each with a fingerprint of the text it was
-/// served: two loads read the same texts exactly when their `Reads` are equal.
+/// Every canonical source a [`ReadLog`] saw asked for, each with a fingerprint of the text it was
+/// served, or a fixed value when none could be: two loads read the same texts exactly when their
+/// `Reads` are equal.
 ///
 /// The fingerprint is std's `DefaultHasher`, whose output may change between Rust releases: it
 /// compares reads within one process and must not be persisted.
 pub type Reads = BTreeMap<String, u64>;
+
+/// What a source that could not be read is recorded as. Recorded at all so the document it would
+/// be stays one of the load's, and its file coming back reads as a change.
+const UNREAD: u64 = 0;
 
 fn fingerprint(text: &str) -> u64 {
     use core::hash::{Hash, Hasher};
@@ -65,8 +70,8 @@ impl<S> Clone for Staged<S> {
     }
 }
 
-/// Recording of every canonical source, and the text, [`Staged::read_text`](Resources::read_text)
-/// served since [`Staged::record_reads`]. Dropping it without [`finish`](Self::finish) stops the recording.
+/// Recording of every canonical source [`Staged::read_text`](Resources::read_text) was asked for
+/// since [`Staged::record_reads`], and the text it served. Dropping it without [`finish`](Self::finish) stops the recording.
 pub struct ReadLog {
     reads: Arc<ReadSlot>,
 }
@@ -156,13 +161,13 @@ impl<S: Resources> Resources for Staged<S> {
             .get(&key)
             .map(|pending| pending.text.clone());
         let text = match pending {
-            Some(text) => text,
-            None => self.shared.inner.read_text(&key)?,
+            Some(text) => Ok(text),
+            None => self.shared.inner.read_text(&key),
         };
         if let Some(log) = lock(&self.shared.reads).as_mut() {
-            log.insert(key, fingerprint(&text));
+            log.insert(key, text.as_deref().map_or(UNREAD, fingerprint));
         }
-        Ok(text)
+        text
     }
 
     /// Over a pending create, the source stays a create.
@@ -287,6 +292,17 @@ mod tests {
         assert_ne!(seen["a"], seen["b"]);
         staged.read_text("a").unwrap();
         assert!(lock(&staged.shared.reads).is_none());
+    }
+
+    #[test]
+    fn a_source_that_could_not_be_read_is_in_the_log_apart_from_any_text() {
+        let staged = Staged::new(Map::with(&[("a", "1")]));
+        let log = staged.record_reads();
+        staged.read_text("a").unwrap();
+        assert!(staged.read_text("gone").is_err());
+        let seen = log.finish();
+        assert_eq!(seen.get("gone"), Some(&UNREAD));
+        assert_ne!(seen["a"], UNREAD);
     }
 
     #[test]

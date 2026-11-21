@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui;
 use reuben_api::authoring::NewInstrument;
-use reuben_api::engine::Channel;
+use reuben_api::engine::{swap_instrument, Channel, SwapInstrument};
 use reuben_api::tools::names;
 use reuben_native::cli::EngineFlags;
 use reuben_native::engine::{EngineConfig, Instrument, RunningEngine, StartError};
@@ -32,13 +32,13 @@ pub struct Launch {
     pub swap_hold: Option<SwapHold>,
 }
 
-/// Open the instrument at `path`: a session on its files, and `engine` playing it. A running
-/// engine, or an attached one, has the instrument Swapped in, which the session reports as for any
-/// other Swap, and [`follow`] then names in the engine's report; with none running, one is started
-/// through `start`, on the stored audio choice. A start that fails leaves the session saying nothing
-/// plays, so the next load of the files starts the engine again.
+/// Open the instrument at `path`: `engine` playing it, and a session on its tree as the server
+/// reads it. A running engine, or an attached one, has the instrument Swapped in; with none
+/// running, one is started through `start`, on the stored audio choice. A start that fails leaves
+/// the session saying nothing plays.
 ///
-/// `start` is [`reuben_native::engine::start`], or the headless engine in a test.
+/// `wake` is called from another thread whenever the session has news off the UI thread. `start`
+/// is [`reuben_native::engine::start`], or the headless engine in a test.
 pub fn open(
     path: &Path,
     launch: &Launch,
@@ -47,12 +47,18 @@ pub fn open(
     wake: impl Fn() + Send + Sync + 'static,
     start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
 ) -> Session {
-    let root = launch.root.as_deref();
-    let mut session = Session::open(path, root, wake);
+    let name = path.display().to_string();
     // An attached engine that is not answering is waited for, never replaced by one started here.
     if engine.channel().is_some() || engine.link().is_some() {
-        session.reinstall(&|| engine.channel());
-        return session;
+        if let Some(channel) = engine.channel() {
+            let args = SwapInstrument {
+                path: name.clone(),
+                expect: None,
+            };
+            // What it answers, the session reads: a tree that does not load shows held.
+            let _ = swap_instrument(&args, &channel);
+        }
+        return Session::open(&name, &|| engine.channel()).with_wake(wake);
     }
     let config = audio
         .engine_config(
@@ -68,16 +74,13 @@ pub fn open(
         Ok(config) => Engine::start_with(config, start),
         Err(e) => Engine::not_started(e),
     };
-    if engine.channel().is_none() {
-        session.reinstall(&|| None);
-    }
-    session
+    Session::open(&name, &|| engine.channel()).with_wake(wake)
 }
 
 /// Bring `engine` up to what it has installed: its report names the instrument, and, once the
-/// session's files are what it plays, an engine whose input stream does not fit them is restarted
-/// on them through `start`. A restart that fails leaves the session saying nothing plays.
-/// `reloaded` is whether the session read its files again since the last call, which lets a
+/// session's tree is what it plays, an engine whose input stream does not fit it is restarted
+/// on it through `start`. A restart that fails leaves the session saying nothing plays.
+/// `reloaded` is whether the session read its tree again since the last call, which lets a
 /// restart refused for files that did not load be tried again. Called every frame.
 pub fn follow(
     session: &mut Session,
@@ -93,12 +96,12 @@ pub fn follow(
         return;
     }
     if engine.fit_input(start) && engine.channel().is_none() {
-        session.reinstall(&|| None);
+        session.refresh(&|| None);
     }
 }
 
 /// Whether the controls panel is rebuilt from the instrument `session` just opened. Not when its
-/// files do not load and an engine plays on: the panel stays the one for what is heard.
+/// tree does not load and an engine plays on: the panel stays the one for what is heard.
 pub fn panel_follows(session: &Session, engine: &Engine) -> bool {
     !matches!(session.status(), Status::Held(_)) || engine.channel().is_none()
 }
@@ -328,19 +331,10 @@ mod tests {
         .source
     }
 
-    /// Poll `session` until it has Swapped what it opened in.
+    /// Assert `session` reads what it opened as playing.
     fn swapped_in(session: &mut Session, engine: &Engine) {
-        let deadline = Instant::now() + Duration::from_secs(HANG_SECS);
-        while session.status() != &Status::Current {
-            assert!(
-                !matches!(session.status(), Status::Held(_)),
-                "{:?}",
-                session.status()
-            );
-            assert!(Instant::now() < deadline, "the Swap never landed");
-            session.poll(Instant::now(), &|| engine.channel());
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        session.refresh(&|| engine.channel());
+        assert_eq!(session.status(), &Status::Current);
     }
 
     #[test]
@@ -494,16 +488,17 @@ mod tests {
             std::fs::write(&path, text).unwrap();
             let deadline = Instant::now() + Duration::from_secs(HANG_SECS);
             loop {
-                session.poll(Instant::now(), &|| engine.channel());
+                session.refresh(&|| engine.channel());
                 let reread = (session.tree().top().read.as_ref())
                     .is_ok_and(|top| top.instrument == "mic-space");
-                if reread && session.status() == &Status::Current {
+                // The engine follows the write itself; the session reads what it follows.
+                let installed = engine.input_fits() == Some(false);
+                if reread && installed && session.status() == &Status::Current {
                     break;
                 }
                 assert!(Instant::now() < deadline, "{:?}", session.status());
                 std::thread::sleep(Duration::from_millis(5));
             }
-            assert_eq!(engine.input_fits(), Some(false));
 
             follow(&mut session, &mut engine, false, headless);
             restarted_with_input(&engine, &path);
@@ -893,7 +888,7 @@ mod tests {
         let session = open(&path, &launch(), &mut audio, &mut engine, || {}, headless);
         assert!(engine.channel().is_none());
         assert!(
-            !matches!(session.status(), Status::Current | Status::Swapping),
+            !matches!(session.status(), Status::Current),
             "{:?}",
             session.status()
         );

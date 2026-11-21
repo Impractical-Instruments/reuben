@@ -46,8 +46,8 @@ pub fn make(session: &mut Session, channel: &dyn Fn() -> Option<Channel>) -> Opt
     };
     let parent_source = parent.source.clone();
     let from = PathBuf::from(&crumb.source);
-    let beside_parent = parent.path.parent().map(Path::to_path_buf);
-    let owner = parent_stem(&parent.path);
+    let beside_parent = Path::new(&parent.source).parent().map(Path::to_path_buf);
+    let owner = parent_stem(Path::new(&parent.source));
     let Some((to, repointed)) = free_name(&from, &owner, |name| {
         let reference = renamed(&entry.source, name);
         // The reference must land on the copy: a file of that name beside the referencing
@@ -176,7 +176,7 @@ mod tests {
 
     fn kick_entry(rig: &Rig, top: &Path) -> String {
         let document = (rig.session.tree().documents().iter())
-            .find(|d| d.path == top)
+            .find(|d| crate::session::test_support::names(&d.source, top))
             .expect("the top-level document is in the tree");
         let structure = document.read.as_ref().expect("it reads");
         (structure.resources.iter())
@@ -222,9 +222,8 @@ mod tests {
             assert_eq!(rig.session.feedback(), None);
             let copy_path = rig.lib.join("voices").join("kick-voice-acid-techno.json");
             assert_eq!(copy, copy_path.display().to_string());
-            assert_eq!(
-                rig.session.viewed().path,
-                copy_path,
+            assert!(
+                crate::session::test_support::names(&rig.session.viewed().source, &copy_path),
                 "the view is on the copy"
             );
             assert_eq!(rig.session.trail().len(), 1);
@@ -253,9 +252,6 @@ mod tests {
             for (name, hash) in &others {
                 assert_eq!(&hash_on_disk(&rig.lib.join(name)), hash, "{name}");
             }
-            rig.poll_until("the Swap of the edits", |rig| {
-                rig.status() == &Status::Current && rig.swaps() >= 1
-            });
             rig.settle();
             assert_eq!(rig.status(), &Status::Current);
         });
@@ -307,7 +303,10 @@ mod tests {
             assert_ne!(first, second);
             let second_path = rig.lib.join("voices").join("kick-voice-acid-techno-2.json");
             assert_eq!(second, second_path.display().to_string());
-            assert_eq!(rig.session.viewed().path, second_path);
+            assert!(crate::session::test_support::names(
+                &rig.session.viewed().source,
+                &second_path
+            ));
             assert_eq!(
                 kick_entry(&rig, &rig.top.clone()),
                 "voices/kick-voice-acid-techno-2.json"
@@ -334,10 +333,15 @@ mod tests {
             let copy = make(&mut rig.session, &channel).expect("the copy is made");
             let copy_path = voices.join("shaped-vca-kick-voice.json");
             assert_eq!(copy, copy_path.display().to_string());
-            assert_eq!(rig.session.viewed().path, copy_path);
+            assert!(crate::session::test_support::names(
+                &rig.session.viewed().source,
+                &copy_path
+            ));
             assert_eq!(rig.session.trail().len(), 2);
             let kick = (rig.session.tree().documents().iter())
-                .find(|d| d.path == voices.join("kick-voice.json"))
+                .find(|d| {
+                    crate::session::test_support::names(&d.source, &voices.join("kick-voice.json"))
+                })
                 .expect("the kick voice is in the tree");
             let entry = kick.reference("/vca").expect("/vca references a patch");
             assert_eq!(entry.source, "shaped-vca-kick-voice.json");
@@ -379,10 +383,10 @@ mod tests {
             let copy_path = rig.lib.join("voices").join("kick-voice-acid-techno.json");
             assert!(copy_path.exists(), "the copy is left on disk");
             assert_eq!(kick_entry(&rig, &rig.top.clone()), "voices/kick-voice.json");
-            assert_eq!(
-                rig.session.viewed().path,
-                rig.lib.join("voices").join("kick-voice.json")
-            );
+            assert!(crate::session::test_support::names(
+                &rig.session.viewed().source,
+                &rig.lib.join("voices").join("kick-voice.json")
+            ));
             assert_eq!(rig.session.undo().next(Direction::Undo), None);
         });
     }

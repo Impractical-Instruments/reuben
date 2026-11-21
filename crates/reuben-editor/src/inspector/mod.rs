@@ -379,7 +379,6 @@ mod tests {
                 frame(&mut rig, &mut inspector, &cutoff, value, true);
                 assert_eq!(inspector.error, None);
                 assert_eq!(inspector.writes, 0, "a held value is never written");
-                assert_eq!(rig.swaps(), 0);
                 assert_eq!(rig.session.tree().top().hash(), before.as_deref());
             }
             let received = rig.live_received(values.len());
@@ -399,9 +398,7 @@ mod tests {
             assert_eq!(inspector.writes, 1, "letting go writes once");
             assert_ne!(rig.session.tree().top().hash(), before.as_deref());
             assert_eq!(literal(&rig, "/map_cutoff", "out_max"), json!(10350.0));
-            rig.poll_until("the Swap of the write", |rig| rig.swaps() == 1);
             rig.settle();
-            assert_eq!(rig.swaps(), 1, "one write, one Swap");
             assert_eq!(rig.status(), &Status::Current);
             assert_eq!(
                 Some(rig.playing().as_str()),
@@ -422,7 +419,10 @@ mod tests {
                 .enter("/kick_v")
                 .expect("/kick_v voices kick-voice");
             let voice = rig.lib.join("voices").join("kick-voice.json");
-            assert_eq!(rig.session.viewed().path, voice);
+            assert!(crate::session::test_support::names(
+                &rig.session.viewed().source,
+                &voice
+            ));
             let top = rig.session.tree().top().hash().map(str::to_string);
             let before = rig.session.viewed().hash().map(str::to_string);
             let mut inspector = Inspector::default();
@@ -439,9 +439,11 @@ mod tests {
             assert_eq!(inspector.writes, 1);
             assert_eq!(rig.live_received(1), [], "nothing was sent live");
             assert_ne!(rig.session.viewed().hash(), before.as_deref());
-            assert_eq!(rig.session.viewed().path, voice);
+            assert!(crate::session::test_support::names(
+                &rig.session.viewed().source,
+                &voice
+            ));
             assert_eq!(rig.session.tree().top().hash(), top.as_deref());
-            rig.poll_until("the Swap of the write", |rig| rig.swaps() == 1);
             rig.settle();
             assert_eq!(rig.status(), &Status::Current);
         });
@@ -461,9 +463,7 @@ mod tests {
             assert_eq!(inspector.error, None);
             assert_eq!(inspector.writes, 1);
             assert_eq!(literal(&rig, "/voicer", "voices").as_f64(), Some(4.0));
-            rig.poll_until("the Swap of the write", |rig| rig.swaps() == 1);
             rig.settle();
-            assert_eq!(rig.swaps(), 1);
             assert_eq!(rig.live_received(1), [], "a constant is never sent live");
         });
     }
@@ -511,7 +511,6 @@ mod tests {
                 None,
                 "an input is not a constant"
             );
-            rig.poll_until("the Swap of the write", |rig| rig.swaps() == 1);
         });
     }
 
@@ -600,7 +599,7 @@ mod tests {
             let mut rig = Rig::open("inspector_unreadable", INSTRUMENT);
             let mut inspector = Inspector::default();
             let cutoff = target(&rig, "/map_cutoff", "out_max");
-            let path = rig.session.tree().top().path.clone();
+            let path = rig.top.clone();
             let text = std::fs::read_to_string(&path).expect("the instrument");
             let channel = rig.channel_source();
 
@@ -724,7 +723,6 @@ mod tests {
             );
             assert_eq!(rig.session.tree(), &before);
             rig.settle();
-            assert_eq!(rig.swaps(), 0);
         });
     }
 
@@ -1076,7 +1074,10 @@ mod tests {
                 .enter("/space")
                 .expect("/space nests space.json");
             let child = rig.lib.join("patches").join("space.json");
-            assert_eq!(rig.session.viewed().path, child);
+            assert!(crate::session::test_support::names(
+                &rig.session.viewed().source,
+                &child
+            ));
             let face = |rig: &Rig| -> Vec<String> {
                 let top = (rig.session.tree().top().read.as_ref()).expect("the top reads");
                 let space = (top.nodes.iter())
@@ -1101,7 +1102,10 @@ mod tests {
                 &channel,
             );
             assert!(wrote, "{:?}", rig.session.feedback());
-            assert_eq!(rig.session.viewed().path, child);
+            assert!(crate::session::test_support::names(
+                &rig.session.viewed().source,
+                &child
+            ));
             let viewed = (rig.session.viewed().read.clone()).expect("the child reads");
             assert!(viewed.inputs.iter().any(|p| p.port.name == "width"));
             assert!(face(&rig).iter().any(|p| p == "width"), "{:?}", face(&rig));
@@ -1114,7 +1118,6 @@ mod tests {
             );
             assert!(wrote, "{:?}", rig.session.feedback());
             assert!(!face(&rig).iter().any(|p| p == "width"));
-            rig.poll_until("the Swap of the writes", |rig| rig.swaps() >= 1);
             rig.settle();
             assert_eq!(rig.status(), &Status::Current);
         });

@@ -253,7 +253,7 @@ mod tests {
                 launch,
                 audio,
                 engine: Engine::idle(),
-                session: Session::open(&top, None, || {}),
+                session: Session::open(&top.display().to_string(), &|| None),
                 link: EngineLink::default(),
                 _temp: temp,
                 _scratch: scratch,
@@ -284,12 +284,7 @@ mod tests {
                 || {},
                 start,
             );
-            let deadline = Instant::now() + Duration::from_secs(HANG_SECS);
-            while self.session.status() != &Status::Current {
-                assert!(Instant::now() < deadline, "{:?}", self.session.status());
-                self.session.poll(Instant::now(), &|| self.engine.channel());
-                std::thread::sleep(Duration::from_millis(5));
-            }
+            assert_eq!(self.session.status(), &Status::Current);
         }
 
         fn accept(&mut self, shown: &Asked) {
@@ -374,7 +369,7 @@ mod tests {
 
             editor.accept(&asked);
             assert_eq!(editor.held.pending(), None);
-            assert_eq!(editor.session.top(), Path::new(&groovebox));
+            assert_eq!(editor.session.top(), groovebox);
             assert_eq!(
                 editor.playing(),
                 groovebox,
@@ -400,7 +395,7 @@ mod tests {
             let asked = editor.held.pending().expect("the user is asked");
             editor.held.decline(&asked);
             assert_eq!(editor.held.pending(), None);
-            assert_eq!(editor.session.top(), Path::new(&acid));
+            assert_eq!(editor.session.top(), acid);
             assert_eq!(editor.playing(), acid);
             editor.engine.shutdown();
         });

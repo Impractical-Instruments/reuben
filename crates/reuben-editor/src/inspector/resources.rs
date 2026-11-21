@@ -613,7 +613,7 @@ mod tests {
     }
 
     fn dir(rig: &Rig) -> PathBuf {
-        let path = &rig.session.viewed().path;
+        let path = Path::new(&rig.session.viewed().source);
         path.parent()
             .expect("a document has a directory")
             .to_path_buf()
@@ -690,7 +690,10 @@ mod tests {
             let mut rig = Rig::open("resources_patch", "granular-cloud.json");
             rig.session.enter("/verb").expect("/verb patches space");
             let space = rig.lib.join("patches").join("space.json");
-            assert_eq!(rig.session.viewed().path, space);
+            assert!(crate::session::test_support::names(
+                &rig.session.viewed().source,
+                &space
+            ));
             let mut inspector = Inspector::default();
             let sample = rig.lib.join("samples/testvox.wav");
 

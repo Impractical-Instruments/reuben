@@ -151,8 +151,9 @@ struct Renaming {
 
 /// The canvas of the open instrument, with how it is being looked at and what is selected.
 pub struct Canvas {
-    /// The instrument file and the library root, while one is open.
-    instrument: Option<(PathBuf, Option<PathBuf>)>,
+    /// The server's name for the document drawn, and the library root a canvas opened on a file
+    /// read it with, while one is drawn.
+    instrument: Option<(String, Option<PathBuf>)>,
     loaded: Option<Result<Document, String>>,
     /// `None` until the first frame, when the size of the area to fit the document into is known.
     camera: Option<Camera>,
@@ -181,7 +182,8 @@ impl Canvas {
     /// The canvas for `instrument`, or an empty one when no instrument is open.
     pub fn open(instrument: Option<&Path>, root: Option<&Path>) -> Self {
         Self {
-            instrument: instrument.map(|path| (path.to_path_buf(), root.map(Path::to_path_buf))),
+            instrument: instrument
+                .map(|path| (path.display().to_string(), root.map(Path::to_path_buf))),
             loaded: instrument.map(|path| load(&read(path, root))),
             camera: None,
             selection: None,
@@ -198,18 +200,12 @@ impl Canvas {
         }
     }
 
-    /// Draw `read`, the document at `instrument` as just read, keeping the view. `root` is the
-    /// library root its nested references fall back to, as for the engine.
+    /// Draw `read`, the document the server names `instrument` as just read, keeping the view.
     ///
     /// The selection is kept while the document still has the boxes it names. A selected wire and
     /// an open menu are let go, and a move or a wire being drawn is dropped for the rest of its
     /// drag, since the indices they hold may name something else now. A pan carries on.
-    pub fn reload(
-        &mut self,
-        instrument: &Path,
-        root: Option<&Path>,
-        read: &Result<InstrumentStructure, String>,
-    ) {
+    pub fn reload(&mut self, instrument: &str, read: &Result<InstrumentStructure, String>) {
         let loaded = load(read);
         if let Ok(doc) = &loaded {
             if (self.selection.as_ref()).is_some_and(|item| doc.graph.index_of(item).is_none()) {
@@ -220,7 +216,7 @@ impl Canvas {
                 self.selection = Some(self.also.remove(0));
             }
         }
-        self.instrument = Some((instrument.to_path_buf(), root.map(Path::to_path_buf)));
+        self.instrument = Some((instrument.to_string(), None));
         self.loaded = Some(loaded);
         self.taps.clear();
         self.probes.clear();
@@ -261,9 +257,9 @@ impl Canvas {
         self.entered = Some(address.to_string());
     }
 
-    /// The file drawn, while one is.
-    pub fn instrument(&self) -> Option<&Path> {
-        self.instrument.as_ref().map(|(path, _)| path.as_path())
+    /// The server's name for the document drawn, while one is.
+    pub fn instrument(&self) -> Option<&str> {
+        self.instrument.as_ref().map(|(name, _)| name.as_str())
     }
 
     /// The address of the node whose voice or patch was asked to be opened since the last call.
@@ -439,7 +435,7 @@ impl Canvas {
 
     /// Ask the document which inputs, and which output pipes, take a wire from `from`.
     fn verdicts(&self, from: PortRef) -> Result<BTreeMap<PortRef, Option<String>>, String> {
-        let (Some((path, root)), Some(doc)) = (&self.instrument, self.doc()) else {
+        let (Some((name, root)), Some(doc)) = (&self.instrument, self.doc()) else {
             return Ok(BTreeMap::new());
         };
         let Some(source) = gesture::wire_source(&doc.graph, from) else {
@@ -447,11 +443,11 @@ impl Canvas {
         };
         let answer = wire_compatibility(
             &WireCompatibility {
-                source: path.display().to_string(),
+                source: name.clone(),
                 from: source,
                 to: None,
             },
-            &store(path, root.as_deref()),
+            &store(Path::new(name), root.as_deref()),
         )
         .map_err(|refusal| refusal.message)?;
         Ok((answer.output.verdicts.into_iter())
@@ -1142,13 +1138,13 @@ mod tests {
         let before = boxes(&canvas);
 
         add("/added");
-        canvas.reload(&path, None, &read(&path, None));
+        canvas.reload(&path.display().to_string(), &read(&path, None));
         assert_eq!(boxes(&canvas), before + 1);
         assert_eq!(canvas.camera, Some(camera));
         assert_eq!(canvas.selection, Some(Item::Node("/kept".into())));
 
         canvas.selection = Some(Item::Node("/gone".into()));
-        canvas.reload(&path, None, &read(&path, None));
+        canvas.reload(&path.display().to_string(), &read(&path, None));
         assert_eq!(canvas.selection, None);
     }
 
@@ -1278,7 +1274,7 @@ mod tests {
         }
 
         fn reload(&self, canvas: &mut Canvas) {
-            canvas.reload(&self.path, None, &read(&self.path, None));
+            canvas.reload(&self.path.display().to_string(), &read(&self.path, None));
         }
 
         fn source(&self) -> String {

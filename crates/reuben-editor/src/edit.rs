@@ -48,8 +48,8 @@ const NO_ENGINE: &str = "no engine is running, so nothing can be edited";
 ///
 /// A change that is written is one undo step, and clears what could be redone.
 ///
-/// The session reads the files again before this returns, so its tree is what the server left on
-/// disk, written or not. The next [`Session::poll`] reports the reload. An `Ok` whose `written` is
+/// The session reads the tree from the server again before this returns, so it is what the server
+/// left, written or not. The next [`Session::poll`] reports the reload. An `Ok` whose `written` is
 /// false is a rejected edit or a conflict; its report says which, on the node and port at fault.
 /// Either way, and for a verb that could not run, the session holds the [`Feedback`] until an edit
 /// lands.
@@ -190,7 +190,7 @@ fn file_name(source: &str) -> String {
 /// Undo or redo the editor's next step in `direction`: return its file to the state on the far
 /// side of it, guarded by the hash on this side, through the server's `restore_instrument`.
 ///
-/// The session reads the files again before this returns, as after [`write`](fn@write), and holds
+/// The session reads the tree again before this returns, as after [`write`](fn@write), and holds
 /// the outcome's [`note`](Restored::note) for the window to show.
 pub fn restore(
     session: &mut Session,
@@ -352,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn an_editor_write_to_a_voice_file_swaps_once_and_not_again_when_the_watcher_reports_it() {
+    fn an_editor_write_to_a_voice_file_is_read_back_before_the_server_says_anything() {
         within(HANG_SECS, || {
             let mut rig = Rig::open("edit_once", "default.json");
             let voice = voice_source(&rig);
@@ -362,14 +362,14 @@ mod tests {
             assert_eq!(
                 rig.session.tree().document(&voice).and_then(|d| d.hash()),
                 Some(edit.hash.as_str()),
-                "the session holds what the verb wrote before the watcher says anything"
+                "the session holds what the verb wrote before the server says anything"
             );
 
-            rig.poll_until("the watcher reporting the editor's own write", |rig| {
-                rig.touches() > 0
-            });
             rig.settle();
-            assert_eq!(rig.swaps(), 1);
+            assert_eq!(
+                rig.session.tree().document(&voice).and_then(|d| d.hash()),
+                Some(edit.hash.as_str()),
+            );
             assert_eq!(rig.status(), &Status::Current);
         });
     }
@@ -446,7 +446,6 @@ mod tests {
             });
             assert!(!matches!(&edit, Ok(result) if result.written), "{edit:?}");
             rig.settle();
-            assert_eq!(rig.swaps(), 0);
             assert_eq!(rig.session.tree(), &before);
         });
     }
@@ -495,7 +494,7 @@ mod tests {
             .tree()
             .documents()
             .iter()
-            .find(|d| d.path.ends_with("patches/dj-strip.json"))
+            .find(|d| Path::new(&d.source).ends_with("patches/dj-strip.json"))
             .expect("the subpatch file is in the tree")
             .source
             .clone();
@@ -793,7 +792,7 @@ mod tests {
             assert_eq!(hash(&rig, &strip), strip_with_drive);
             let parent = rig.session.tree().top().read.as_ref().expect("reads");
             assert!(parent.report.ok, "{:?}", parent.report.errors);
-            assert_eq!(rig.session.tree().blocked(), Vec::<String>::new());
+            assert_eq!(rig.session.tree().faults(), Vec::<String>::new());
         });
     }
 
@@ -844,8 +843,8 @@ mod tests {
                 .session
                 .tree()
                 .document(&strip)
+                .map(|d| Path::new(&d.source))
                 .unwrap()
-                .path
                 .parent()
                 .unwrap()
                 .to_path_buf();
@@ -910,7 +909,7 @@ mod tests {
             let (mut rig, top, strip) = drums("undo_unreadable");
             set_trim(&mut rig, &top, 0.5);
             rename(&mut rig, &strip, "renamed-strip");
-            let path = rig.session.tree().document(&strip).unwrap().path.clone();
+            let path = std::path::PathBuf::from(&strip);
 
             std::fs::write(&path, "{ not an instrument").unwrap();
             let refused = undo(&mut rig);
