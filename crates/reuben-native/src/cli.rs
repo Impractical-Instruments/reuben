@@ -120,6 +120,12 @@ impl EngineFlags {
         )
     }
 
+    /// The structure channel token: `--token`, else [`STRUCTURE_TOKEN_ENV`]. For a binary that
+    /// attaches to a server rather than starting one.
+    pub fn token(&self) -> Result<Option<Token>, FlagsError> {
+        token(self.token.clone(), std::env::var(STRUCTURE_TOKEN_ENV).ok())
+    }
+
     /// [`config`](Self::config) with the token's environment variable passed in.
     pub fn config_with_env(
         &self,

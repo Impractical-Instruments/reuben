@@ -277,7 +277,17 @@ fn echoing(scratch: &Scratch, level: f64) -> PathBuf {
 
 /// The editor as `main` builds it for `--attach addr`, showing `session` if it is given one.
 fn attached(addr: String, config: &TempConfig, session: Option<Session>) -> Editor {
-    let engine = Engine::attach(addr, || {});
+    attached_with(addr, None, config, session)
+}
+
+/// [`attached`], for `--attach addr --token …`.
+fn attached_with(
+    addr: String,
+    token: Option<reuben_api::engine::Token>,
+    config: &TempConfig,
+    session: Option<Session>,
+) -> Editor {
+    let engine = Engine::attach(addr, token, || {});
     let (follow, latest) = follower(engine.channel(), || {});
     Editor {
         engine,
@@ -396,6 +406,59 @@ fn an_editor_attached_to_a_running_engine_plays_it_and_swaps_its_saves() {
             .channel()
             .ping()
             .expect("closing the editor stopped nothing");
+        reuben_native::diagnostics::log_snapshot(&played.shutdown());
+    });
+}
+
+#[test]
+fn an_editor_attached_with_the_token_follows_a_token_server() {
+    use reuben_api::engine::Token;
+    use reuben_native::engine::EngineConfig;
+    use reuben_native::test_support::{start_headless, within};
+
+    let scratch = Scratch::new("ui_attached_token");
+    let config = TempConfig::new();
+    let top = echoing(&scratch, 0.2);
+
+    within(crate::engine::test_support::HANG_SECS, move || {
+        let token = Token::new("s3cret").expect("a token");
+        let played = start_headless(EngineConfig {
+            structure: Some("0.0.0.0:0".to_string()),
+            token: Some(token.clone()),
+            ..crate::engine::test_support::config(top.clone())
+        })
+        .expect("the engine starts with a token");
+        let port = played.structure_addr().expect("bound").port();
+        let addr = format!("127.0.0.1:{port}");
+
+        let mut admitted = harness(attached_with(addr.clone(), Some(token), &config, None));
+        step_until(&mut admitted, "opened what the engine plays", |editor| {
+            editor.session.is_some()
+        });
+        assert_eq!(
+            admitted.state().session.as_ref().unwrap().top(),
+            top.display().to_string()
+        );
+        assert_eq!(admitted.state().controls.binds(), vec!["level"]);
+        admitted.state_mut().engine.shutdown();
+
+        let wrong = Token::new("guess").expect("a token");
+        let mut refused = harness(attached_with(addr.clone(), Some(wrong), &config, None));
+        let says =
+            format!("The engine on {addr} refused this editor: the engine refused this token");
+        step_until(&mut refused, "said the engine refused it", |editor| {
+            editor
+                .engine
+                .link()
+                .is_some_and(|link| link.refusal().is_some())
+        });
+        refused.run_steps(2);
+        refused.get_by_label(&says);
+        assert!(
+            refused.state().session.is_none(),
+            "a refused editor opens nothing"
+        );
+        refused.state_mut().engine.shutdown();
         reuben_native::diagnostics::log_snapshot(&played.shutdown());
     });
 }

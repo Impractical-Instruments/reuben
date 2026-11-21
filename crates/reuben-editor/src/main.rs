@@ -59,7 +59,8 @@ struct Args {
     path: Option<PathBuf>,
     /// Attach to a `reuben play` already running instead of starting an engine, at its structure
     /// channel's address: open the instrument it plays and play it live. The audio device and the
-    /// engine flags stay what `reuben play` was started with.
+    /// engine flags stay what `reuben play` was started with. An engine on another machine takes
+    /// its token: `--token`, or `REUBEN_STRUCTURE_TOKEN`.
     #[arg(
         long,
         value_name = "HOST:PORT",
@@ -90,6 +91,11 @@ impl Args {
 
 fn main() -> eframe::Result {
     let args = Args::checked(Args::try_parse()).unwrap_or_else(|e| e.exit());
+    let token = args.engine.token().unwrap_or_else(|e| {
+        Args::command()
+            .error(clap::error::ErrorKind::ValueValidation, e)
+            .exit()
+    });
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("reuben-editor")
         .with_app_id("reuben-editor")
@@ -117,7 +123,7 @@ fn main() -> eframe::Result {
             let held = HeldSwaps::new(wake.clone());
             let mut audio = AudioSettings::load(ConfigDir::user());
             let mut engine = match args.attach.clone() {
-                Some(addr) => Engine::attach(addr, wake.clone()),
+                Some(addr) => Engine::attach(addr, token.clone(), wake.clone()),
                 None => start(
                     &args,
                     root,
