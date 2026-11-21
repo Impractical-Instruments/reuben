@@ -413,7 +413,7 @@ fn engine_link_pings_reachable_only_when_the_engine_answers() {
             message: "no".to_string(),
         },
     });
-    let link = EngineLink::new(live.addr.to_string()).expect("a loopback address");
+    let link = EngineLink::new(live.addr.to_string(), None);
     assert!(
         within(Duration::from_secs(5), "link live", move || link
             .structure()
@@ -422,7 +422,7 @@ fn engine_link_pings_reachable_only_when_the_engine_answers() {
         "a live ping-answering engine must read as reachable"
     );
 
-    let dead = EngineLink::new(dead_addr()).expect("a loopback address");
+    let dead = EngineLink::new(dead_addr(), None);
     let err = within(Duration::from_secs(5), "link dead", move || {
         dead.structure().ping()
     });

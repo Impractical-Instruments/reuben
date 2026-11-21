@@ -562,7 +562,7 @@ mod tests {
             let addr = (engine.running())
                 .and_then(RunningEngine::structure_addr)
                 .expect("the structure server bound");
-            let link = EngineLink::new(addr.to_string()).expect("a loopback address");
+            let link = EngineLink::new(addr.to_string(), None);
             let opened = open_instrument(
                 &OpenInstrument {
                     name: lib.join("groovebox.json").display().to_string(),

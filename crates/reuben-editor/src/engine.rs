@@ -875,7 +875,7 @@ mod tests {
                 .expect("the structure server bound");
 
             // The link `reuben-mcp` builds for its engine tools, over the loopback socket.
-            let link = EngineLink::new(structure.to_string()).expect("a loopback address");
+            let link = EngineLink::new(structure.to_string(), None);
             let status = get_engine_status(link.structure(), env!("CARGO_PKG_VERSION"));
             assert!(status.output.reachable, "{}", status.summary);
 
@@ -1145,7 +1145,7 @@ mod tests {
                     .running()
                     .and_then(RunningEngine::structure_addr)
                     .expect("the structure server bound");
-                EngineLink::new(addr.to_string()).expect("a loopback address")
+                EngineLink::new(addr.to_string(), None)
             };
 
             let target = library("groovebox.json").display().to_string();

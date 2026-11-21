@@ -73,7 +73,7 @@ fn served_contracts() -> impl Iterator<Item = &'static reuben_api::tools::Contra
         .filter(|c| c.kind != reuben_api::tools::ContractKind::Host)
 }
 
-pub use reuben_api::engine::STRUCTURE_ADDR_ENV;
+pub use reuben_api::engine::{STRUCTURE_ADDR_ENV, STRUCTURE_TOKEN_ENV};
 
 /// The `reuben://guide/authoring` resource URI: the MCP lane's cut of the authoring guide,
 /// `docs/agents/authoring.md`.

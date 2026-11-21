@@ -79,7 +79,7 @@ fn the_sidecar_reaches_an_engine_started_through_the_entry_point() {
         let structure = engine.structure_addr().expect("the structure server bound");
 
         // Exactly what the sidecar's `get_engine_status` tool runs, over the link it builds.
-        let link = EngineLink::new(structure.to_string()).expect("a loopback address");
+        let link = EngineLink::new(structure.to_string(), None);
         let status = get_engine_status(link.structure(), env!("CARGO_PKG_VERSION"));
         assert!(status.output.reachable, "{}", status.summary);
         assert_eq!(status.output.endpoints.structure, structure.to_string());
