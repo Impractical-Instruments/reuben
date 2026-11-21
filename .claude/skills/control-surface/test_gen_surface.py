@@ -747,7 +747,8 @@ class LiveEngineBoundaryTest(unittest.TestCase):
         # on reuben-core — only reuben-api does. Workspace-wide, the member's feature still names.
         cmd = ["cargo", "run", "-q", "--bin", "reuben",
                "--features", "reuben-core/bench", "--",
-               "describe", str(self.SPACE), "--view", "boundary", "--json"]
+               "describe", str(self.SPACE), "--view", "boundary", "--json",
+               "--temporary-server"]
         try:
             proc = subprocess.run(cmd, cwd=self.REPO_ROOT, capture_output=True, text=True,
                                   timeout=self.CARGO_TIMEOUT)
@@ -792,6 +793,20 @@ class LiveEngineBoundaryTest(unittest.TestCase):
         self.assertNotEqual(reuben_bin, "reuben", "find_reuben should locate the freshly built binary")
         by_addr = {c["address"] for c in g.boundary_controls(g.run_describe(reuben_bin, self.SPACE))}
         self.assertEqual(by_addr, {"/space/in", "/tone/in"})
+
+
+class RunDescribeTest(unittest.TestCase):
+    """`run_describe` reads the instrument file it is handed through a temporary server, never a
+    `reuben play` that happens to be running: that one may not offer the file, and may have been
+    built before the operators the file uses."""
+
+    def test_run_describe_asks_a_temporary_server(self):
+        from unittest import mock
+        done = subprocess.CompletedProcess([], 0, stdout='{"inputs": [], "outputs": []}', stderr="")
+        with mock.patch.object(g.subprocess, "run", return_value=done) as run:
+            g.run_describe("reuben", Path("inst.json"))
+        argv = run.call_args.args[0]
+        self.assertIn("--temporary-server", argv)
 
 
 class FixtureMatchTest(unittest.TestCase):

@@ -1,7 +1,10 @@
 //! `reuben` — the command-line entry point.
 //!
 //! Five subcommands — `play`, `describe`, `validate`, `scaffold-operator`, `new-instrument` —
-//! each documented on its own `--help`. Send notes to a playing instrument with:
+//! each documented on its own `--help`. `play` is the server. `describe`, `validate` and
+//! `new-instrument` are its clients: they ask the running `reuben play` when one answers, and
+//! otherwise a temporary headless server they start in this process. Send notes to a playing
+//! instrument with:
 //!
 //! ```text
 //! /voicer/notes  [69.0, 1.0]   # note-on  (MIDI 69 = A4, gate 1)
@@ -14,13 +17,17 @@ use std::sync::mpsc;
 
 use clap::{Parser, Subcommand};
 
-use reuben_api::authoring::{
-    self, Diag, PortInfo, Refusal, COMPACT_DESCRIBE_LEGEND, SCAFFOLD_DEFAULT_NAME,
+use reuben_api::authoring::{self, Diag, PortInfo, COMPACT_DESCRIBE_LEGEND, SCAFFOLD_DEFAULT_NAME};
+use reuben_api::engine::call_tool;
+use reuben_api::tools::names;
+use reuben_native::cli::{
+    EngineFlags, InstrumentRoot, ServerFlags, INSTRUMENT_ROOT_ENV, LOG_OSC_ENV,
 };
-use reuben_api::FsResolver;
-use reuben_native::cli::{EngineFlags, InstrumentRoot, INSTRUMENT_ROOT_ENV, LOG_OSC_ENV};
+use reuben_native::client::{self, Names, Reached, Temporary};
 use reuben_native::engine::{self, Instrument};
 use reuben_native::scaffold;
+use reuben_native::structure::lexical_absolute;
+use serde::de::DeserializeOwned;
 
 #[derive(Parser)]
 #[command(name = "reuben", about = "Play and author reuben instruments.")]
@@ -41,7 +48,8 @@ enum Command {
         engine: EngineFlags,
     },
     /// Print the operator set, one operator's ports/params/resources, or — given an instrument
-    /// JSON path — a structural view of that instrument.
+    /// JSON path — a structural view of that instrument. Asks the running `reuben play`, or a
+    /// temporary server when none runs.
     Describe {
         /// Operator type to describe, or an instrument JSON path (its structural views). A path
         /// is recognized by shape — ends in `.json` or contains a separator; a bare name is
@@ -69,14 +77,19 @@ enum Command {
         /// with `--select`.
         #[arg(long, value_name = "TYPE", conflicts_with = "select")]
         select_type: Option<String>,
+        #[command(flatten)]
+        server: ServerFlags,
     },
-    /// Load + plan an instrument (no audio) and report errors/warnings.
+    /// Load + plan an instrument (no audio) and report errors/warnings. Asks the running
+    /// `reuben play`, or a temporary server when none runs; never changes what plays.
     Validate {
         /// Instrument JSON to validate.
         path: PathBuf,
         /// Emit machine-readable JSON instead of a human summary.
         #[arg(long)]
         json: bool,
+        #[command(flatten)]
+        server: ServerFlags,
     },
     /// Generate a new Operator's Rust skeleton from a contract spec and wire its registration.
     ScaffoldOperator {
@@ -91,7 +104,9 @@ enum Command {
         json: bool,
     },
     /// Create a guaranteed-valid minimal instrument document at a path — the start move for
-    /// creating an instrument from scratch (#146). Refuses to overwrite an existing document.
+    /// creating an instrument from scratch. Refuses to overwrite an existing document. The
+    /// running `reuben play` writes it (it must be a place that server offers) and does not open
+    /// it; with none running, a temporary server writes it.
     NewInstrument {
         /// Where to create the document.
         path: PathBuf,
@@ -101,6 +116,8 @@ enum Command {
         /// Emit machine-readable JSON instead of a human summary.
         #[arg(long)]
         json: bool,
+        #[command(flatten)]
+        server: ServerFlags,
     },
 }
 
@@ -150,6 +167,7 @@ fn main() -> ExitCode {
             view,
             select,
             select_type,
+            server,
         } => cmd_describe(
             op.as_deref(),
             json,
@@ -157,54 +175,23 @@ fn main() -> ExitCode {
             view,
             select,
             select_type,
-            root.resolve(),
+            &|paths: &[&str]| connect(&server, root.clone().resolve(), paths),
         ),
-        Command::Validate { path, json } => cmd_validate(&path, json, root.resolve()),
+        Command::Validate { path, json, server } => {
+            cmd_validate(&path, json, &server, root.resolve())
+        }
         Command::ScaffoldOperator {
             spec,
             core_root,
             json,
         } => cmd_scaffold(&spec, &core_root, json),
-        Command::NewInstrument { path, name, json } => {
-            cmd_new_instrument(&path, name.as_deref(), json)
-        }
+        Command::NewInstrument {
+            path,
+            name,
+            json,
+            server,
+        } => cmd_new_instrument(&path, name.as_deref(), json, &server, root.resolve()),
     }
-}
-
-/// What a command needs of a referenced sample — the one axis on which two commands want different
-/// resolvers behind the same source.
-#[derive(Copy, Clone, PartialEq, Eq)]
-enum Samples {
-    /// Decode them. `validate` is the dry run of the load `play` will do for real, so a sample that
-    /// is present but undecodable has to surface here as the warning `play` would hit; stat-ing it
-    /// would report a document legal that cannot be heard.
-    Decode,
-    /// Check availability without decoding. The introspection reads report port metadata and never
-    /// touch audio, so decoding every referenced WAV to describe a boundary is pure waste.
-    Availability,
-}
-
-/// The CLI door's reading of an opaque document `source`: a filesystem path, with the library root
-/// as the fallback for anything it references.
-fn store(source: &str, root: Option<PathBuf>, samples: Samples) -> FsResolver {
-    let store = FsResolver::for_document(source);
-    let store = match root {
-        Some(root) => store.with_root(root),
-        None => store,
-    };
-    match samples {
-        Samples::Decode => store,
-        Samples::Availability => store.stat_only(),
-    }
-}
-
-/// A [`Refusal`] is the CLI's can't-do-the-job signal: the window's message on stderr and a
-/// non-zero exit — the same split the sidecar renders as `isError`. What is *not* here: a rejected
-/// edit and a failing validation come back as ordinary answers, and each command decides its own
-/// exit code from the report it was handed.
-fn refused(refusal: &Refusal) -> ExitCode {
-    eprintln!("error: {refusal}");
-    ExitCode::FAILURE
 }
 
 /// One `--json` payload on stdout. The shape is whatever the window answered with; the framing —
@@ -216,30 +203,97 @@ fn print_json<T: serde::Serialize>(value: &T) {
     );
 }
 
+/// The server a client subcommand asks, per `flags`: on failure the reason is on stderr and the
+/// exit code is returned. A temporary server is also offered the directory of each of `paths`, so a
+/// file named anywhere is read as before. When a running server answers, stderr says which: its
+/// operator set and its library are the ones that answer.
+fn connect(
+    flags: &ServerFlags,
+    root: Option<PathBuf>,
+    paths: &[&str],
+) -> Result<Reached, ExitCode> {
+    let target = flags.target().map_err(|e| {
+        eprintln!("error: {e}");
+        ExitCode::FAILURE
+    })?;
+    let offer = paths
+        .iter()
+        .filter_map(|path| lexical_absolute(Path::new(path)))
+        .filter_map(|path| path.parent().map(Path::to_path_buf))
+        .collect();
+    let reached = client::reach(
+        target,
+        Temporary {
+            instrument_root: root,
+            offer,
+        },
+    )
+    .map_err(|e| {
+        eprintln!("error: {e}");
+        ExitCode::FAILURE
+    })?;
+    if let Some(addr) = reached.running_at() {
+        eprintln!(
+            "note: answered by the reuben server at {addr} (--temporary-server to use a fresh one)"
+        );
+    }
+    Ok(reached)
+}
+
+/// Run `tool` on the server and read its output as `T`. A refusal is printed in the user's own
+/// spelling of the names it carries.
+fn ask<T: DeserializeOwned>(
+    reached: &Reached,
+    tool: &str,
+    args: &impl serde::Serialize,
+    names: &Names,
+) -> Result<T, ExitCode> {
+    let answer = call_tool(tool, args, reached.channel()).map_err(|refusal| {
+        eprintln!("error: {}", names.in_user_terms(&refusal.message));
+        ExitCode::FAILURE
+    })?;
+    serde_json::from_value(answer.output).map_err(|e| {
+        eprintln!("error: the server answered `{tool}` with something unexpected: {e}");
+        ExitCode::FAILURE
+    })
+}
+
 /// `new-instrument`: land a guaranteed-valid minimal instrument document **at a path** — the
 /// first-creation start move.
 ///
 /// The window's `new_instrument`, the very verb the sidecar calls, so both doors create a document
 /// by exactly one procedure and the result is validated and written by the same code.
-fn cmd_new_instrument(path: &Path, name: Option<&str>, json: bool) -> ExitCode {
+fn cmd_new_instrument(
+    path: &Path,
+    name: Option<&str>,
+    json: bool,
+    server: &ServerFlags,
+    root: Option<PathBuf>,
+) -> ExitCode {
     let source = path.display().to_string();
-    let answer = match authoring::new_instrument(
+    let reached = match connect(server, root, &[&source]) {
+        Ok(reached) => reached,
+        Err(code) => return code,
+    };
+    let mut spelled = Names::default();
+    let result: authoring::EditResult = match ask(
+        &reached,
+        names::NEW_INSTRUMENT,
         &authoring::NewInstrument {
-            source: source.clone(),
+            source: spelled.sent(&source),
             name: name.unwrap_or(SCAFFOLD_DEFAULT_NAME).to_string(),
         },
-        &store(&source, None, Samples::Availability),
+        &spelled,
     ) {
-        Ok(answer) => answer,
-        Err(refusal) => return refused(&refusal),
+        Ok(result) => result,
+        Err(code) => return code,
     };
-    let result = answer.output;
 
     if json {
         print_json(&result);
     } else {
         for e in &result.report.errors {
-            print_diag("error", e);
+            print_diag("error", e, &spelled);
         }
         if result.written {
             println!("created {source} (content_hash {})", result.hash);
@@ -332,7 +386,7 @@ fn cmd_describe(
     view: Option<InstrumentView>,
     select: Vec<String>,
     select_type: Option<String>,
-    root: Option<PathBuf>,
+    connect: &dyn Fn(&[&str]) -> Result<Reached, ExitCode>,
 ) -> ExitCode {
     // A path-shaped argument is an instrument: cut the asked-for view of it.
     if let Some(arg) = op {
@@ -350,10 +404,14 @@ fn cmd_describe(
             // go to `describe_instrument`, which refuses them in the window's own order — an
             // unreadable source before the selection.
             let has_terms = !select.is_empty() || select_type.is_some();
+            let reached = match connect(&[arg]) {
+                Ok(reached) => reached,
+                Err(code) => return code,
+            };
             if view == InstrumentView::Boundary && !has_terms {
-                return cmd_describe_boundary(arg, json, root);
+                return cmd_describe_boundary(&reached, arg, json);
             }
-            return cmd_project(arg, view, select, select_type, json, root);
+            return cmd_project(&reached, arg, view, select, select_type, json);
         }
     }
 
@@ -372,7 +430,10 @@ fn cmd_describe(
         return ExitCode::FAILURE;
     }
 
-    cmd_describe_operators(op, json, compact)
+    match connect(&[]) {
+        Ok(reached) => cmd_describe_operators(&reached, op, json, compact),
+        Err(code) => code,
+    }
 }
 
 /// `describe [op]`: the operator set, or one operator, off the window's `describe_operators`.
@@ -380,20 +441,30 @@ fn cmd_describe(
 /// The window answers both modes under one object because a tool result needs an object root; a
 /// shell consumer wants the bare list it can pipe, so the door unwraps the mode it asked for. The
 /// framing is the door's, the content is not.
-fn cmd_describe_operators(name: Option<&str>, json: bool, compact: bool) -> ExitCode {
-    let answer = match authoring::describe_operators(&authoring::DescribeOperators {
-        name: name.map(str::to_string),
-        compact,
-    }) {
-        Ok(answer) => answer,
-        Err(refusal) => return refused(&refusal),
+fn cmd_describe_operators(
+    reached: &Reached,
+    name: Option<&str>,
+    json: bool,
+    compact: bool,
+) -> ExitCode {
+    let operators: authoring::Operators = match ask(
+        reached,
+        names::DESCRIBE_OPERATORS,
+        &authoring::DescribeOperators {
+            name: name.map(str::to_string),
+            compact,
+        },
+        &Names::default(),
+    ) {
+        Ok(operators) => operators,
+        Err(code) => return code,
     };
 
     // Compact mode: one generated signature line per operator. Human output prints the notation
     // legend first, so the listing is a self-describing artifact a bundle can carry; `--json` emits
     // the bare line array for machine consumers that compose their own framing.
     if compact {
-        let signatures = answer.output.signatures.unwrap_or_default();
+        let signatures = operators.signatures.unwrap_or_default();
         if json {
             print_json(&signatures);
             return ExitCode::SUCCESS;
@@ -405,7 +476,7 @@ fn cmd_describe_operators(name: Option<&str>, json: bool, compact: bool) -> Exit
         return ExitCode::SUCCESS;
     }
 
-    let operators = answer.output.operators.unwrap_or_default();
+    let operators = operators.operators.unwrap_or_default();
     if json {
         print_json(&operators);
         return ExitCode::SUCCESS;
@@ -424,12 +495,13 @@ fn cmd_describe_operators(name: Option<&str>, json: bool, compact: bool) -> Exit
 /// One diagnostic on stderr, the loader's localization in brackets when it named one:
 /// `error [/osc freq]: …` / `warning [/voicer]: …` / `error: …`. Errors and warnings share
 /// this shape — warnings are localized Diags too.
-fn print_diag(level: &str, d: &Diag) {
+fn print_diag(level: &str, d: &Diag, names: &Names) {
+    let message = names.in_user_terms(&d.message);
     match (&d.node, &d.port) {
-        (Some(n), Some(p)) => eprintln!("{level} [{n} {p}]: {}", d.message),
-        (Some(n), None) => eprintln!("{level} [{n}]: {}", d.message),
-        (None, Some(p)) => eprintln!("{level} [{p}]: {}", d.message),
-        (None, None) => eprintln!("{level}: {}", d.message),
+        (Some(n), Some(p)) => eprintln!("{level} [{n} {p}]: {message}"),
+        (Some(n), None) => eprintln!("{level} [{n}]: {message}"),
+        (None, Some(p)) => eprintln!("{level} [{p}]: {message}"),
+        (None, None) => eprintln!("{level}: {message}"),
     }
 }
 
@@ -443,17 +515,19 @@ fn print_diag(level: &str, d: &Diag) {
 /// rendered line the sidecar shows a model: this emits the window's structured boundary, which the
 /// control-surface tooling consumes. Same question, two consumers — a program here, a model there —
 /// and one window verb behind both, so they cannot describe different pipes.
-fn cmd_describe_boundary(source: &str, json: bool, root: Option<PathBuf>) -> ExitCode {
-    let answer = match authoring::describe_boundary(
+fn cmd_describe_boundary(reached: &Reached, source: &str, json: bool) -> ExitCode {
+    let mut spelled = Names::default();
+    let boundary: authoring::Boundary = match ask(
+        reached,
+        names::DESCRIBE_BOUNDARY,
         &authoring::DescribeBoundary {
-            source: source.to_string(),
+            source: spelled.sent(source),
         },
-        &store(source, root, Samples::Availability),
+        &spelled,
     ) {
-        Ok(answer) => answer,
-        Err(refusal) => return refused(&refusal),
+        Ok(boundary) => boundary,
+        Err(code) => return code,
     };
-    let boundary = answer.output;
 
     if json {
         print_json(&boundary);
@@ -461,7 +535,7 @@ fn cmd_describe_boundary(source: &str, json: bool, root: Option<PathBuf>) -> Exi
     }
 
     for w in &boundary.warnings {
-        print_diag("warning", w);
+        print_diag("warning", w, &spelled);
     }
     println!("{} (instrument boundary)", boundary.instrument);
     if boundary.is_empty() {
@@ -490,33 +564,36 @@ fn cmd_describe_boundary(source: &str, json: bool, root: Option<PathBuf>) -> Exi
 /// the single authority on validity, and going blind is the worst way to report invalidity. So this
 /// exits 0 on an unloadable document — it answered the question it was asked.
 fn cmd_project(
+    reached: &Reached,
     source: &str,
     view: InstrumentView,
     select: Vec<String>,
     select_type: Option<String>,
     json: bool,
-    root: Option<PathBuf>,
 ) -> ExitCode {
     // `clap`'s `conflicts_with` refuses select-and-type-at-once first with a nicer message; the
     // window refuses it too, and that is the one that decides the grammar. Neither door reads the
     // terms for itself.
-    let answer = match authoring::describe_instrument(
+    let mut spelled = Names::default();
+    let projected: authoring::DocumentView = match ask(
+        reached,
+        names::DESCRIBE_INSTRUMENT,
         &authoring::DescribeInstrument {
-            source: source.to_string(),
+            source: spelled.sent(source),
             view: window_view(view),
             select,
             type_name: select_type,
         },
-        &store(source, root, Samples::Availability),
+        &spelled,
     ) {
-        Ok(answer) => answer,
-        Err(refusal) => return refused(&refusal),
+        Ok(projected) => projected,
+        Err(code) => return code,
     };
 
     if json {
-        print_json(&answer.output);
+        print_json(&projected);
     } else {
-        println!("{}", answer.output.text);
+        println!("{}", projected.text);
     }
     ExitCode::SUCCESS
 }
@@ -524,27 +601,33 @@ fn cmd_project(
 /// `validate`: report whether an instrument loads + plans cleanly, through the window's
 /// `validate_instrument` — the single authority every document verb re-validates through. Exit 1
 /// only on hard errors; warnings (e.g. an unresolved sample) are advisory and keep exit 0.
-fn cmd_validate(path: &Path, json: bool, root: Option<PathBuf>) -> ExitCode {
+fn cmd_validate(path: &Path, json: bool, server: &ServerFlags, root: Option<PathBuf>) -> ExitCode {
     let source = path.display().to_string();
-    let answer = match authoring::validate_instrument(
-        &authoring::ValidateInstrument {
-            source: source.clone(),
-        },
-        &store(&source, root, Samples::Decode),
-    ) {
-        Ok(answer) => answer,
-        Err(refusal) => return refused(&refusal),
+    let reached = match connect(server, root, &[&source]) {
+        Ok(reached) => reached,
+        Err(code) => return code,
     };
-    let report = answer.output;
+    let mut spelled = Names::default();
+    let report: authoring::Report = match ask(
+        &reached,
+        names::VALIDATE_INSTRUMENT,
+        &authoring::ValidateInstrument {
+            source: spelled.sent(&source),
+        },
+        &spelled,
+    ) {
+        Ok(report) => report,
+        Err(code) => return code,
+    };
 
     if json {
         print_json(&report);
     } else {
         for e in &report.errors {
-            print_diag("error", e);
+            print_diag("error", e, &spelled);
         }
         for w in &report.warnings {
-            print_diag("warning", w);
+            print_diag("warning", w, &spelled);
         }
         if report.ok {
             println!("ok ({} warning(s))", report.warnings.len());

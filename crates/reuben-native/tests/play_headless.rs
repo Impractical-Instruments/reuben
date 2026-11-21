@@ -1,12 +1,12 @@
 //! `reuben play --headless` as a client starts it: the built binary, no audio device, the
 //! structure channel and OSC-in on chosen loopback ports.
 
-use std::io::{BufRead, BufReader};
-use std::net::{TcpListener, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
-use std::time::Duration;
+
+mod common;
+
+use common::{announced_structure, free_tcp_port, free_udp_port};
 
 use reuben_api::authoring;
 use reuben_api::engine::{Channel, ListWhat, TcpTransport, DEFAULT_CONNECT_TIMEOUT};
@@ -15,9 +15,6 @@ use reuben_api::FsResolver;
 const DOC: &str = r#"{"format_version":3,"instrument":"headless",
     "interface":{"outputs":{"out":{"from":"/osc.audio"}}},
     "nodes":[{"type":"oscillator","address":"/osc"}]}"#;
-
-/// How long the binary may take to bind and announce its structure channel.
-const STARTUP: Duration = Duration::from_secs(30);
 
 /// Kills the child and removes the seeded directory however the test ends, so a failed assertion
 /// leaves no server holding ports and nothing in the temp dir.
@@ -36,45 +33,10 @@ impl Drop for Cleanup {
     }
 }
 
-fn free_tcp_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .and_then(|l| l.local_addr())
-        .expect("a free TCP port")
-        .port()
-}
-
-fn free_udp_port() -> u16 {
-    UdpSocket::bind("127.0.0.1:0")
-        .and_then(|s| s.local_addr())
-        .expect("a free UDP port")
-        .port()
-}
-
 fn hash(path: &Path) -> String {
     let source = path.display().to_string();
     let json = std::fs::read_to_string(path).expect("read the seeded document");
     authoring::hash_instrument(&json, &FsResolver::for_document(&source)).expect("a hash")
-}
-
-/// Collect `child`'s stdout lines on a thread and wait for its structure channel's announcement.
-fn announced_structure(child: &mut Child) -> String {
-    let stdout = child.stdout.take().expect("piped stdout");
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if tx.send(line).is_err() {
-                break;
-            }
-        }
-    });
-    loop {
-        let line = rx
-            .recv_timeout(STARTUP)
-            .expect("reuben play announced its structure channel");
-        if let Some(addr) = line.strip_prefix("structure channel on ") {
-            return addr.to_string();
-        }
-    }
 }
 
 #[test]

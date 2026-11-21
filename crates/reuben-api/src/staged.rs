@@ -155,6 +155,10 @@ impl<S: Resources> Resources for Staged<S> {
         self.shared.inner.read_samples(source)
     }
 
+    fn check_samples(&self, source: &str) -> Result<(), ResolveError> {
+        self.shared.inner.check_samples(source)
+    }
+
     fn read_text(&self, source: &str) -> Result<String, ResolveError> {
         let key = self.key(source);
         let pending = lock(&self.shared.pending)

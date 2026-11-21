@@ -10,7 +10,9 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
 
+use super::history::restore_instrument_through;
 use super::*;
+use crate::resources::{ScopedTo, Undecoded};
 use crate::tools::names;
 
 /// What the caller must do with a verb's result beyond relaying it.
@@ -136,7 +138,35 @@ pub fn call<R: Resources>(
     args: Value,
     store: &DocumentHistory<R>,
 ) -> Result<Called, Refusal> {
-    let res: &dyn Resources = store;
+    call_scoped(tool, args, store, None)
+}
+
+/// The documents a call acts on, as the caller spelled them, and where the first of them, the one
+/// whose references a load resolves, lives as the store resolves it.
+#[derive(Debug, Clone, Copy)]
+pub struct Scope<'a> {
+    pub documents: &'a [String],
+    pub origin: &'a str,
+}
+
+/// [`call`] over a store shared by many documents, scoped to the one `scope` names, so that
+/// document's own references resolve beside it rather than from wherever the store's base is.
+pub fn call_scoped<R: Resources>(
+    tool: &str,
+    args: Value,
+    store: &DocumentHistory<R>,
+    scope: Option<Scope<'_>>,
+) -> Result<Called, Refusal> {
+    let history: &dyn Resources = store;
+    let scoped = scope.map(|scope| ScopedTo {
+        store: history,
+        documents: scope.documents,
+        origin: scope.origin,
+    });
+    let res: &dyn Resources = match &scoped {
+        Some(scoped) => scoped,
+        None => history,
+    };
     macro_rules! edit {
         ($args:ident, $ty:ty, $verb:ident) => {
             run::<$ty, _>(
@@ -151,13 +181,13 @@ pub fn call<R: Resources>(
     match tool {
         names::DESCRIBE_OPERATORS => run::<DescribeOperators, _>(args, read, describe_operators),
         names::DESCRIBE_INSTRUMENT => {
-            run::<DescribeInstrument, _>(args, read, |a| describe_instrument(a, res))
+            run::<DescribeInstrument, _>(args, read, |a| describe_instrument(a, &Undecoded(res)))
         }
         names::VALIDATE_INSTRUMENT => {
             run::<ValidateInstrument, _>(args, read, |a| validate_instrument(a, res))
         }
         names::DESCRIBE_BOUNDARY => {
-            run::<DescribeBoundary, _>(args, read, |a| describe_boundary(a, res))
+            run::<DescribeBoundary, _>(args, read, |a| describe_boundary(a, &Undecoded(res)))
         }
         names::WIRE_COMPATIBILITY => {
             run::<WireCompatibility, _>(args, read, |a| wire_compatibility(a, res))
@@ -186,7 +216,7 @@ pub fn call<R: Resources>(
             |a| CallKind::Edit {
                 source: a.source.clone(),
             },
-            |a| restore_instrument(a, store),
+            |a| restore_instrument_through(a, store, res),
         ),
 
         names::SET_INSTRUMENT_NAME => edit!(args, SetInstrumentName, set_instrument_name),

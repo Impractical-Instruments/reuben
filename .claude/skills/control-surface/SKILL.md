@@ -220,7 +220,8 @@ Group rows size to their own width, so a 6-knob row and a 1-knob row share the s
 widget inference, range clamping, the skip table), the derived default surface, the doc
 resolution order, layout, the zlib/XML round-trip, the structural match against
 `fixtures/REUBEN_REF.tosc`, and a **live-engine boundary test** that runs
-the real `reuben describe` (via `cargo run`, so it tracks current source) on
+the real `reuben describe --temporary-server` (via `cargo run`, so it tracks current source and
+never asks a `reuben play` you have running) on
 `instruments/patches/space.json` — the guard that fails on an interface-format flip instead of
 letting the boundary path rot silently. It skips (loudly) if `cargo` isn't on `PATH`.
 
