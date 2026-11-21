@@ -357,9 +357,14 @@ pub enum PlanError {
         port: usize,
         declared: usize,
     },
+    /// A wire, master tap or `interface` entry names a [`NodeKey`] this graph does not hold: one
+    /// left over from a removed node, or minted by another `Graph`. The loader resolves names, so
+    /// only a hand-built graph reaches this.
+    UnknownNode { position: PortPosition },
 }
 
-/// Where a graph named an out-of-range port ([`PlanError::PortOutOfRange`]).
+/// Where a graph named an out-of-range port ([`PlanError::PortOutOfRange`]) or a missing node
+/// ([`PlanError::UnknownNode`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PortPosition {
     /// A wire's source: an index into the node's outputs.
@@ -464,7 +469,7 @@ impl Plan {
         // Validate the authored wires first (same error surface as before), then collapse
         // pass-through interface pipes out of the schedule (the pipe is a format
         // concept, not a mandatory rendered node) before ordering what actually executes.
-        check_port_ranges(&graph)?;
+        check_endpoints(&graph)?;
         check_wire_forms(&graph)?;
         let dissolved = dissolve_interface_pipes(&mut graph);
         // Index the (now final) wire list once; every per-node wire question below asks it
@@ -1237,17 +1242,17 @@ impl Wires {
     }
 }
 
-/// Refuse any wire endpoint, master tap or `interface` entry whose port index is past what its
-/// node declares. Checked in a fixed order — `connections`, then `outputs`, then the interface
-/// inputs and outputs in name order — so the first refusal is deterministic. Every later pass
-/// indexes per-node port lists by these numbers, so this runs before all of them.
-///
-/// A key naming no node is skipped, not refused: that is a different defect, and later passes
-/// still index it.
-fn check_port_ranges(graph: &Graph) -> Result<(), PlanError> {
+/// Refuse any wire endpoint, master tap or `interface` entry that names a node the graph does not
+/// hold, or a port index past what its node declares. Checked in a fixed order — `connections`,
+/// then `outputs`, then the interface inputs and outputs in name order — so the first refusal is
+/// deterministic. Every later pass indexes `graph.nodes` by these keys and per-node port lists by
+/// these numbers, so this runs before all of them.
+fn check_endpoints(graph: &Graph) -> Result<(), PlanError> {
     let check = |key: NodeKey, port: usize, position: &dyn Fn() -> PortPosition| {
         let Some(node) = graph.nodes.get(key) else {
-            return Ok(());
+            return Err(PlanError::UnknownNode {
+                position: position(),
+            });
         };
         let position = position();
         let declared = match position {

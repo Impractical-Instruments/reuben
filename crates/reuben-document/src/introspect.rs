@@ -725,6 +725,29 @@ fn faulted(
         // Unreachable from a document: the loader resolves port *names*, so every index it hands
         // Instantiate is a declared one. Kept as a backstop like the arm above. `port` stays
         // `None` because the refusal carries an index the descriptor has no name for.
+        // Unreachable from a document: the loader hands Instantiate only keys it minted. A backstop
+        // like the arms above, never attributed. No `node`: a missing node has no address.
+        Err(PlanError::UnknownNode { position }) => {
+            let role = match &position {
+                PortPosition::Source => "wire source".to_string(),
+                PortPosition::Destination => "wire destination".to_string(),
+                PortPosition::Tap => "master tap".to_string(),
+                PortPosition::InterfaceInput(name) => format!("interface input {name:?}"),
+                PortPosition::InterfaceOutput(name) => format!("interface output {name:?}"),
+            };
+            (
+                Report {
+                    ok: false,
+                    errors: vec![Diag {
+                        message: format!("{role} names a node the graph does not hold"),
+                        node: None,
+                        port: None,
+                    }],
+                    warnings,
+                },
+                vec![None],
+            )
+        }
         Err(PlanError::PortOutOfRange {
             node,
             position,
