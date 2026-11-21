@@ -444,7 +444,7 @@ impl NativeHost {
 
 /// `path` made absolute against the working directory with `.` and `..` resolved by text alone, so
 /// a name cannot climb out of a directory it starts under. `None` when it cannot be made absolute.
-pub(crate) fn lexical_absolute(path: &Path) -> Option<PathBuf> {
+pub fn lexical_absolute(path: &Path) -> Option<PathBuf> {
     let absolute = std::path::absolute(path).ok()?;
     let mut normal = PathBuf::new();
     for component in absolute.components() {

@@ -13,7 +13,7 @@ description = "Removable native layer for reuben: live audio (cpal) + OSC-in (UD
 # serves, the render pair `play` drives per block, and the reference filesystem resolver
 # (`FsResolver`, which brings `hound` with it) filling their resource seam. Both halves, so the
 # default feature set plus the resolver.
-reuben-api = { path = "../reuben-api", features = ["fs-resolver"] }
+reuben-api = { path = "../reuben-api", features = ["fs-resolver", "tcp"] }
 # Shared operator-contract spec types + validation, single-sourced with the macro.
 reuben-contract = { path = "../reuben-contract" }
 cpal.workspace = true

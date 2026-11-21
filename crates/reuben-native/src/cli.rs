@@ -7,6 +7,9 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use reuben_api::engine::STRUCTURE_ADDR_ENV;
+
+use crate::client::Target;
 use crate::engine::{EngineConfig, Instrument};
 use crate::profile::{DeviceProfile, ProfileError};
 
@@ -104,11 +107,7 @@ impl EngineFlags {
         instrument_root: Option<PathBuf>,
     ) -> Result<EngineConfig, FlagsError> {
         if let Some(addr) = &self.structure_addr {
-            // Parsed, never resolved: a host name could resolve to a routable interface.
-            let loopback = addr
-                .parse::<SocketAddr>()
-                .is_ok_and(|parsed| parsed.ip().is_loopback());
-            if !loopback {
+            if !loopback(addr) {
                 return Err(FlagsError::StructureNotLoopback(addr.clone()));
             }
         }
@@ -132,6 +131,45 @@ impl EngineFlags {
             log_osc: log_osc(),
             ..defaults
         })
+    }
+}
+
+/// Whether `addr` is a literal loopback IP and port. Parsed, never resolved: a host name could
+/// resolve to a routable interface.
+fn loopback(addr: &str) -> bool {
+    addr.parse::<SocketAddr>()
+        .is_ok_and(|parsed| parsed.ip().is_loopback())
+}
+
+/// Which server a client subcommand asks.
+#[derive(clap::Args, Debug, Clone, Default)]
+pub struct ServerFlags {
+    /// Ask the server at this loopback `ip:port` (else `REUBEN_STRUCTURE_ADDR`, else the running
+    /// `reuben play` at the default address, or a temporary one when none runs there).
+    #[arg(long, value_name = "HOST:PORT")]
+    pub structure_addr: Option<String>,
+    /// Start a temporary server in this process rather than ask a running `reuben play`.
+    #[arg(long, conflicts_with = "structure_addr")]
+    pub temporary_server: bool,
+}
+
+impl ServerFlags {
+    /// The flag, then [`STRUCTURE_ADDR_ENV`], then the default. A named address must be a literal
+    /// loopback IP.
+    pub fn target(&self) -> Result<Target, FlagsError> {
+        self.target_with_env(std::env::var(STRUCTURE_ADDR_ENV).ok())
+    }
+
+    /// [`target`](Self::target) with the environment variable's value passed in.
+    pub fn target_with_env(&self, env: Option<String>) -> Result<Target, FlagsError> {
+        if self.temporary_server {
+            return Ok(Target::Temporary);
+        }
+        match self.structure_addr.clone().or(env) {
+            None => Ok(Target::Default),
+            Some(addr) if loopback(&addr) => Ok(Target::Named(addr)),
+            Some(addr) => Err(FlagsError::StructureNotLoopback(addr)),
+        }
     }
 }
 
@@ -231,6 +269,68 @@ mod tests {
                 ),
             );
         }
+    }
+
+    #[derive(Parser)]
+    struct ClientProbe {
+        #[command(flatten)]
+        server: ServerFlags,
+    }
+
+    fn server(args: &[&str]) -> Result<ServerFlags, clap::Error> {
+        ClientProbe::try_parse_from(std::iter::once("probe").chain(args.iter().copied()))
+            .map(|probe| probe.server)
+    }
+
+    #[test]
+    fn server_flags_pick_the_flag_then_the_env_then_the_default() {
+        let flags = server(&["--structure-addr", "127.0.0.1:7000"]).expect("parse");
+        assert_eq!(
+            flags
+                .target_with_env(Some("127.0.0.1:8000".to_string()))
+                .expect("a target"),
+            Target::Named("127.0.0.1:7000".to_string())
+        );
+        let flags = server(&[]).expect("parse");
+        assert_eq!(
+            flags
+                .target_with_env(Some("127.0.0.1:8000".to_string()))
+                .expect("a target"),
+            Target::Named("127.0.0.1:8000".to_string())
+        );
+        assert_eq!(
+            flags.target_with_env(None).expect("a target"),
+            Target::Default
+        );
+        let flags = server(&["--temporary-server"]).expect("parse");
+        assert_eq!(
+            flags
+                .target_with_env(Some("127.0.0.1:8000".to_string()))
+                .expect("a target"),
+            Target::Temporary
+        );
+    }
+
+    #[test]
+    fn server_flags_refuse_a_non_loopback_address() {
+        for addr in ["0.0.0.0:9124", "192.168.1.2:9124", "localhost:9124"] {
+            let flags = server(&["--structure-addr", addr]).expect("parse");
+            assert!(matches!(
+                flags.target_with_env(None),
+                Err(FlagsError::StructureNotLoopback(refused)) if refused == addr
+            ));
+            let from_env = server(&[])
+                .expect("parse")
+                .target_with_env(Some(addr.to_string()));
+            assert!(matches!(from_env, Err(FlagsError::StructureNotLoopback(_))));
+        }
+    }
+
+    #[test]
+    fn temporary_server_conflicts_with_structure_addr() {
+        let conflict = server(&["--temporary-server", "--structure-addr", "127.0.0.1:7000"])
+            .expect_err("refused");
+        assert_eq!(conflict.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]

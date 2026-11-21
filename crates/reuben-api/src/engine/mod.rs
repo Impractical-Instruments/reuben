@@ -45,6 +45,10 @@ mod verbs;
 pub mod wire;
 
 pub use args::*;
+
+/// The environment variable a client reads the engine's structure address from when no flag names
+/// one. Unset, it dials [`DEFAULT_STRUCTURE_ADDR`].
+pub const STRUCTURE_ADDR_ENV: &str = "REUBEN_STRUCTURE_ADDR";
 pub use channel::{
     unanswered, CallOutcome, Channel, ChannelError, Events, SwapOutcome, Transport, Unanswered,
 };

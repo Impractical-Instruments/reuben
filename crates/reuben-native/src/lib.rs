@@ -18,6 +18,7 @@
 
 pub mod audio;
 pub mod cli;
+pub mod client;
 pub mod devices;
 pub mod diagnostics;
 pub mod engine;

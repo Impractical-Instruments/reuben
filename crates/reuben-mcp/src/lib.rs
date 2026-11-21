@@ -78,9 +78,7 @@ fn served_contracts() -> impl Iterator<Item = &'static reuben_api::tools::Contra
         .filter(|c| !NOT_SERVED.contains(&c.name))
 }
 
-/// The environment variable naming the engine's structure address, a loopback `ip:port`. Unset,
-/// the sidecar dials the window's `DEFAULT_STRUCTURE_ADDR`.
-pub const STRUCTURE_ADDR_ENV: &str = "REUBEN_STRUCTURE_ADDR";
+pub use reuben_api::engine::STRUCTURE_ADDR_ENV;
 
 /// The `reuben://guide/authoring` resource URI: the MCP lane's cut of the authoring guide,
 /// `docs/agents/authoring.md`.
