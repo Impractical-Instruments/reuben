@@ -175,7 +175,8 @@ impl Engine {
                     None
                 }
                 Change::Up { source: None, .. } => Some(
-                    "plays a document installed without a file, so there is no file to open"
+                    "plays the built-in default rig, started without a file, so there is no file \
+                     to open"
                         .to_string(),
                 ),
                 Change::Down(e) => {
@@ -382,7 +383,11 @@ impl Engine {
                     None if document.content_hash.is_empty() => {
                         config.instrument = Instrument::Silent;
                     }
-                    None => unsourced = Some("it was installed without a file".to_string()),
+                    None => {
+                        unsourced = Some(
+                            "it is the built-in default rig, started without a file".to_string(),
+                        )
+                    }
                 },
                 Err(e) => unsourced = Some(format!("the engine did not say what it is: {e}")),
             }

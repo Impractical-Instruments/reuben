@@ -205,7 +205,7 @@ impl Resources for Undecoded<'_> {
 }
 
 /// [`Adapter`] for a store the engine must **own** rather than borrow: the Coordinator holds its
-/// resolver for the session (a by-path swap resolves through it), so the borrowed form cannot
+/// resolver for the session (an open resolves through it), so the borrowed form cannot
 /// serve it.
 ///
 /// `Send` is the Coordinator's requirement, not this seam's: the handle it lives in crosses to

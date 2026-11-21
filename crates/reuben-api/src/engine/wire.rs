@@ -505,7 +505,7 @@ pub enum Event {
     Changed { hash: String, by: ChangedBy },
     /// Another instrument was opened and is playing. `name` is the host's
     /// [origin](crate::engine::EngineHost::document_origin) of the name it was opened by, the one
-    /// spelling every client hears; empty for one installed by value.
+    /// spelling every client hears.
     Opened { name: String, hash: String },
     /// The open instrument's documents no longer load; what played before keeps playing.
     Invalid { errors: Vec<Diag> },

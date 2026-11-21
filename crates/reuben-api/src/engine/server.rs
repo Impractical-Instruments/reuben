@@ -196,8 +196,8 @@ pub type ServerStore = DocumentHistory<Staged<Box<dyn Resources + Send + Sync>>>
 pub struct StructureState {
     coordinator: Arc<Mutex<Coordinator>>,
     host: Arc<dyn EngineHost>,
-    /// Where the playing document came from: the `source` of the last successful swap, or what the
-    /// host started on. `None` for an install by value and for a built-in default rig.
+    /// Where the playing document came from: the instrument last opened, or what the host started
+    /// on. `None` for a built-in default rig and while nothing is open.
     ///
     /// Door-side state, not the Coordinator's: the engine installs *document text* and has no
     /// notion of where it came from. Its own `Mutex` rather than a field behind the Coordinator's,
@@ -321,7 +321,7 @@ impl StructureState {
             return Ok(None);
         };
         // Reclaims a retiree that has come home, which ends its swap's flight and keeps the build
-        // below at live + new, as a by-path swap's does.
+        // below at live + new, as an open's does.
         if coordinator.swap_in_flight() {
             return Err(SwapInFlight);
         }
@@ -546,7 +546,7 @@ impl From<Poisoned> for Response {
 /// reports failure), so a malformed request still gets exactly one framed reply and the
 /// one-response-per-request invariant holds.
 ///
-/// This is a client's entry, so a by-path swap is offered to [`EngineHost::hold_swap`] first.
+/// This is a client's entry, so an open is offered to [`EngineHost::hold_swap`] first.
 /// [`InProcess`], the host's own transport, never is.
 pub fn dispatch(state: &StructureState, line: &str) -> Response {
     match Request::from_ndjson(line) {
@@ -567,7 +567,7 @@ fn unreadable(e: serde_json::Error) -> Response {
     }
 }
 
-/// Who sent a request: a client of the host's server, whose swap the host may hold, or the host
+/// Who sent a request: a client of the host's server, whose open the host may hold, or the host
 /// itself through [`InProcess`].
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Caller {
@@ -618,7 +618,7 @@ fn get_document(state: &StructureState) -> Result<Response, Poisoned> {
 /// The request still crosses the NDJSON envelope. That is the point, not an overhead to optimize
 /// away: the framing and the response classification are then the ones a socket client gets, so an
 /// in-process caller and the MCP sidecar cannot see different answers to the same request — with
-/// the one exception the host asks for: its own swaps are never held ([`EngineHost::hold_swap`]).
+/// the one exception the host asks for: its own opens are never held ([`EngineHost::hold_swap`]).
 ///
 /// `round_trip` fails in exactly the two cases a socket client would see a dead peer: the host has
 /// [closed](StructureState::close) the state (the engine is torn down), or the request panicked —

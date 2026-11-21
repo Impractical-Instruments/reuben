@@ -673,9 +673,9 @@ fn resolve_structure(addr: &str) -> Result<io::Result<Vec<SocketAddr>>, StartErr
 /// for the built-in rig and for silence, which have no source to name.
 ///
 /// The Coordinator owns the resolver for the session, and every swap resolves through it. Its base
-/// directory is the anchor for this document and for a swap by value; a by-path swap hands the
-/// swapped file's own path in as the referrer, so that document resolves from its own directory.
-/// The library root is the fallback for all three.
+/// directory is the anchor for this document; an open hands the opened file's own path in as the
+/// referrer, so that document resolves from its own directory. The library root is the fallback
+/// for both.
 fn read_instrument(
     instrument: Instrument,
     root: Option<PathBuf>,

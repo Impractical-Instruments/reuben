@@ -317,7 +317,7 @@ fn edit_or_refuse(
         );
     }
     let origin = state.host.document_origin(&top);
-    // As a by-path swap does, so the build peaks at live + new.
+    // As an open does, so the build peaks at live + new.
     drop(coordinator.try_reclaim());
     let unloadable =
         format!("the edit to {source} leaves {top} unable to load; nothing was written");

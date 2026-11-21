@@ -1,10 +1,10 @@
-//! A Swap `reuben-mcp` asks the embedded engine for, of an instrument other than the one open
-//! here: held rather than installed, so a background agent does not replace what the user is
-//! working on, and put to the user to accept or decline.
+//! An open another client (`reuben-mcp`, say) asks the embedded engine for, of an instrument other
+//! than the one open here: held rather than installed, so a background agent does not replace what
+//! the user is working on, and put to the user to accept or decline.
 //!
-//! A Swap of the open top-level file is not held: it installs what the file watcher would install
-//! anyway. Any other source is, a voice or subpatch file inside the open instrument's tree
-//! included, since installing it would replace the top-level instrument.
+//! An open of the open top-level file is not held: it reinstalls what already plays. Any other
+//! source is, a voice or subpatch file inside the open instrument's tree included, since opening
+//! it would replace the top-level instrument.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -17,15 +17,15 @@ use reuben_native::structure::SwapHold;
 /// changes, so a click the user aimed at what was there before does not answer it.
 const ARMING: Duration = Duration::from_millis(600);
 
-/// The open instrument and the one Swap waiting on the user, shared between the engine's
-/// structure server, which holds a Swap, and the UI thread, which asks about it.
+/// The open instrument and the one open waiting on the user, shared between the engine's
+/// structure server, which holds it, and the UI thread, which asks about it.
 #[derive(Clone)]
 pub struct HeldSwaps {
     inner: Arc<Inner>,
 }
 
 struct Inner {
-    /// One lock for both, so a Swap judged against one open file cannot leave a question about
+    /// One lock for both, so an open judged against one open file cannot leave a question about
     /// the file opened meanwhile.
     state: Mutex<State>,
     wake: Box<dyn Fn() + Send + Sync>,
@@ -36,11 +36,11 @@ struct State {
     /// The open top-level file, [`canonical`]. `None` while nothing is open, when nothing
     /// is held.
     open: Option<PathBuf>,
-    /// A later held Swap replaces it.
+    /// A later held open replaces it.
     pending: Option<Asked>,
 }
 
-/// A held Swap the user is being asked about.
+/// A held open the user is being asked about.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Asked {
     /// The engine's name for it, which it plays under once opened, so the agent sees the source
@@ -51,7 +51,7 @@ pub struct Asked {
 }
 
 impl HeldSwaps {
-    /// `wake` is called from the structure server's thread when a Swap is held, so the prompt is
+    /// `wake` is called from the structure server's thread when an open is held, so the prompt is
     /// drawn without waiting for input.
     pub fn new(wake: impl Fn() + Send + Sync + 'static) -> Self {
         Self {
@@ -79,18 +79,18 @@ impl HeldSwaps {
     }
 
     /// Nothing is open now, as after an open the server refused with nothing open before it: no
-    /// Swap is held.
+    /// open is held.
     pub fn closed(&self) {
         self.state().open = None;
     }
 
-    /// The Swap the user is being asked about, if any.
+    /// The open the user is being asked about, if any.
     pub fn pending(&self) -> Option<Asked> {
         self.state().pending.clone()
     }
 
     /// The user chose to open `shown`. Returns the name to open it by, as the client asked for
-    /// it, unless another held Swap has replaced the one they were shown.
+    /// it, unless another held open has replaced the one they were shown.
     pub fn accept(&self, shown: &Asked) -> Option<String> {
         let mut state = self.state();
         if state.pending.as_ref() != Some(shown) {
@@ -102,7 +102,7 @@ impl HeldSwaps {
             .map(|asked| asked.path.display().to_string())
     }
 
-    /// The user kept what is open rather than `shown`: nothing changes. A Swap held since they
+    /// The user kept what is open rather than `shown`: nothing changes. An open held since they
     /// were shown it is still asked about.
     pub fn decline(&self, shown: &Asked) {
         let mut state = self.state();
@@ -147,7 +147,7 @@ pub fn canonical(path: &Path) -> PathBuf {
     crate::names::lexical(path)
 }
 
-/// Draw the prompt while a Swap is held, floating over the bottom-right corner of `within` so
+/// Draw the prompt while an open is held, floating over the bottom-right corner of `within` so
 /// nothing under it moves when it appears. It takes no focus, and its buttons ignore clicks for [`ARMING`]
 /// after what it asks about changes, so a gesture under way carries on until the user turns to
 /// it. Returns the name the user chose to open.

@@ -290,11 +290,11 @@ pub struct NativeHost {
 /// How many directories, starting at an instrument's own, are searched for its surface document.
 const SURFACE_SEARCH_DEPTH: usize = 3;
 
-/// What decides whether a client's by-path swap is held for the host's user rather than
-/// installed: [`EngineHost::hold_swap`], as a value an
-/// [`EngineConfig`](crate::engine::EngineConfig) can carry. Called with the path as the client spelled it, which the engine reads against the
-/// working directory; `true` holds it. Runs under the Coordinator lock, so it must not wait on
-/// the user.
+/// What decides whether a client's open is held for the host's user rather than installed:
+/// [`EngineHost::hold_swap`], as a value an [`EngineConfig`](crate::engine::EngineConfig) can
+/// carry. Called with the name the client opened, made absolute against the working directory
+/// with `..` folded; `true` holds it. Runs under the Coordinator lock, so it must not wait on the
+/// user.
 #[derive(Clone)]
 pub struct SwapHold(Arc<dyn Fn(&str) -> bool + Send + Sync>);
 
@@ -427,7 +427,7 @@ impl NativeHost {
         self.probes.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Hold the client swaps `hold` says to. Without it none is held, as `reuben play` wants.
+    /// Hold the client opens `hold` says to. Without it none is held, as `reuben play` wants.
     pub fn with_swap_hold(mut self, hold: Option<SwapHold>) -> Self {
         self.hold = hold;
         self
