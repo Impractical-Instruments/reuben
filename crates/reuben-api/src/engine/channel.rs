@@ -248,6 +248,7 @@ impl Channel {
             })?;
         match answer {
             Response::Pong => Ok(()),
+            Response::Error { message } => Err(ChannelError::Channel(message)),
             other => Err(unexpected("ping", "pong", &other)),
         }
     }
@@ -452,6 +453,17 @@ mod tests {
             asked: asked.clone(),
         };
         (Channel::new(fake), asked)
+    }
+
+    #[test]
+    fn a_ping_the_server_refuses_carries_its_message() {
+        let (channel, _) =
+            answering(r#"{"reply":"error","message":"the engine refused this token"}"#);
+        let refused = channel.ping().expect_err("refused");
+        assert!(
+            matches!(&refused, ChannelError::Channel(m) if m == "the engine refused this token"),
+            "{refused:?}"
+        );
     }
 
     #[test]

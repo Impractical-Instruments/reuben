@@ -14,7 +14,7 @@ use std::process::{Child, Command, Output, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use reuben_api::engine::STRUCTURE_ADDR_ENV;
+use reuben_api::engine::{STRUCTURE_ADDR_ENV, STRUCTURE_TOKEN_ENV};
 use reuben_native::cli::INSTRUMENT_ROOT_ENV;
 
 /// How long the binary may take to bind and announce its structure channel.
@@ -104,7 +104,12 @@ impl Drop for Play {
 
 /// `reuben play --headless` in `cwd` with `args` after it, on free loopback ports.
 pub fn spawn_play(cwd: &Path, args: &[&str]) -> Play {
-    let structure = format!("127.0.0.1:{}", free_tcp_port());
+    spawn_play_on(cwd, "127.0.0.1", args)
+}
+
+/// [`spawn_play`] with the structure channel on a free port of `ip`.
+pub fn spawn_play_on(cwd: &Path, ip: &str, args: &[&str]) -> Play {
+    let structure = format!("{ip}:{}", free_tcp_port());
     let osc_in = format!("127.0.0.1:{}", free_udp_port());
     let mut child = Command::new(env!("CARGO_BIN_EXE_reuben"))
         .args(["play", "--headless", "--structure-addr", &structure])
@@ -112,6 +117,7 @@ pub fn spawn_play(cwd: &Path, args: &[&str]) -> Play {
         .args(args)
         .env_remove(INSTRUMENT_ROOT_ENV)
         .env_remove(STRUCTURE_ADDR_ENV)
+        .env_remove(STRUCTURE_TOKEN_ENV)
         .current_dir(cwd)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -127,6 +133,7 @@ pub fn reuben(cwd: &Path, args: &[&str]) -> Output {
         .args(args)
         .env_remove(INSTRUMENT_ROOT_ENV)
         .env_remove(STRUCTURE_ADDR_ENV)
+        .env_remove(STRUCTURE_TOKEN_ENV)
         .current_dir(cwd)
         .output()
         .expect("the reuben binary runs")
