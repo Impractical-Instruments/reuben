@@ -526,7 +526,7 @@ fn a_broken_document_opens_silent_and_one_call_repairs_it_into_playing() {
         let playing = snapshot(t);
         assert_eq!(serde_json::json!(playing.content_hash), repaired["hash"]);
         assert_eq!(playing.source.as_deref(), Some(broken_s.as_str()));
-        assert_ne!(playing.document, serde_json::Value::Null);
+        assert_ne!(playing.content_hash, "");
     });
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -619,7 +619,6 @@ fn a_silent_start_plays_nothing_then_opens_by_name() {
         let nothing = snapshot(&t);
         assert_eq!(nothing.content_hash, "");
         assert_eq!(nothing.source, None);
-        assert_eq!(nothing.document, serde_json::Value::Null);
 
         let refused = output(call(
             &t,

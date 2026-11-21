@@ -14,10 +14,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use reuben_core::Registry;
-use reuben_document::projection::Projector;
-
-use crate::authoring::{Answer, DocumentView, Refusal, Resources};
+use crate::authoring::{Answer, DocumentView, Refusal};
 
 use super::args::{ListInstruments, OpenInstrument, SendLiveControls};
 use super::channel::{CallOutcome, Channel, ChannelError, SwapOutcome};
@@ -202,10 +199,10 @@ pub fn call_tool<A: serde::Serialize>(
     }
 }
 
-/// What is the engine playing? As [`get_current_instrument`], except that the projection is the
-/// server's `describe_instrument` of the open `source` file, so the caller needs no store of its
-/// own. A projection that cannot be had is a note in its place, never an error: the hash is the
-/// load-bearing half.
+/// What is the engine playing? The source and hash the server names, and the server's
+/// `describe_instrument` index of that file, so the caller needs no store of its own and never
+/// holds the document. A projection that cannot be had is a note in its place, never an error: the
+/// hash is the load-bearing half.
 pub fn current_instrument(channel: &Channel) -> Result<Answer<CurrentInstrument>, Refusal> {
     let snapshot = channel
         .get_document()
@@ -237,45 +234,17 @@ pub fn current_instrument(channel: &Channel) -> Result<Answer<CurrentInstrument>
     })
 }
 
-/// What is the engine playing? Answered as a projection of the **installed** graph — the snapshot
-/// the channel hands back reaches the window and stops here, never a document in a model's context.
-///
-/// `store_for` opens the caller's store against the source the engine names, because which document
-/// is playing (and so what its relative references resolve against) is the answer, not the question.
-/// A projection failure degrades to a note in place of the view rather than failing the call: the
-/// hash is the load-bearing half.
-pub fn get_current_instrument<S: Resources>(
-    channel: &Channel,
-    store_for: impl Fn(Option<&str>) -> S,
-) -> Result<Answer<CurrentInstrument>, Refusal> {
-    let snapshot = channel
-        .get_document()
-        .map_err(|why| refuse("could not read the current instrument", why))?;
-    let summary = playing_summary(&snapshot);
-    let projection = match (&snapshot.source, snapshot.content_hash.is_empty()) {
-        (Some(source), true) => format!("(nothing plays: {source} does not load)"),
-        _ => project_installed(&snapshot, &store_for(snapshot.source.as_deref())),
-    };
-    Ok(Answer {
-        output: CurrentInstrument {
-            projection,
-            source: snapshot.source,
-            content_hash: snapshot.content_hash,
-        },
-        summary,
-    })
-}
-
-/// What `get_current_instrument` says plays. An empty content hash is the server's word that the
-/// open instrument does not load and nothing plays.
+/// What `get_current_instrument` says plays. An empty content hash is the server's word that
+/// nothing plays: the open instrument does not load, or nothing is open.
 fn playing_summary(snapshot: &DocumentSnapshot) -> String {
     match &snapshot.source {
         Some(source) if snapshot.content_hash.is_empty() => format!(
             "{source} is open but does not load, so nothing plays until an edit makes it load"
         ),
         Some(source) => format!("playing {source} (content_hash {})", snapshot.content_hash),
+        None if snapshot.content_hash.is_empty() => "nothing is open, so nothing plays".to_string(),
         None => format!(
-            "playing an instrument installed by value (content_hash {})",
+            "playing the built-in default rig, which has no file (content_hash {})",
             snapshot.content_hash
         ),
     }
@@ -376,23 +345,6 @@ fn control_args(args: &[serde_json::Value]) -> Result<Vec<ControlArg>, String> {
         .collect()
 }
 
-/// The node index of what the engine is actually playing, cut from the snapshot the channel handed
-/// back.
-fn project_installed(snapshot: &DocumentSnapshot, store: &dyn Resources) -> String {
-    let json = match serde_json::to_string(&snapshot.document) {
-        Ok(json) => json,
-        Err(e) => return format!("(projection unavailable: {e})"),
-    };
-    match Projector::new(
-        &json,
-        &Registry::builtin(),
-        &crate::resources::Adapter(store),
-    ) {
-        Ok(p) => p.index().render(),
-        Err(e) => format!("(projection unavailable: {e})"),
-    }
-}
-
 /// One-line gloss of an open's outcome: what installed (with diff counts) or why nothing did.
 fn open_summary(report: &SwapReport) -> String {
     if report.report.ok {
@@ -448,7 +400,6 @@ mod tests {
     use super::super::args::ControlSendMessage;
     use super::super::channel::Transport;
     use super::*;
-    use crate::authoring::{ResolveError, Resources, SampleBuffer};
     use std::io;
     use std::time::Duration;
 
@@ -466,15 +417,6 @@ mod tests {
 
         fn endpoint(&self) -> &str {
             "127.0.0.1:9124"
-        }
-    }
-
-    /// A store that holds nothing — `get_current_instrument` never reaches it against a dead engine.
-    struct NoStore;
-
-    impl Resources for NoStore {
-        fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
-            Err(ResolveError::NotFound(source.to_string()))
         }
     }
 
@@ -507,7 +449,7 @@ mod tests {
                 &channel,
             )
             .expect_err("no engine to install into"),
-            get_current_instrument(&channel, |_| NoStore).expect_err("nothing is playing"),
+            current_instrument(&channel).expect_err("nothing is playing"),
             get_engine_diagnostics(&channel).expect_err("no counters to read"),
             get_engine_meters(&channel).expect_err("no levels to read"),
         ];

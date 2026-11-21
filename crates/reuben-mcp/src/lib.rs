@@ -1922,15 +1922,8 @@ mod tests {
     #[test]
     fn get_current_instrument_projects_the_installed_graph_and_never_returns_it() {
         // The tool answers "what is playing?" with the engine's own projection of the source it
-        // installed, plus the source and hash to reconcile against — the document itself stops at
-        // this door.
-        let doc = serde_json::json!({
-            "format_version": 3,
-            "instrument": "warm",
-            "nodes": [{ "type": "oscillator", "address": "/osc", "inputs": { "freq": 220.0 } }],
-        });
+        // installed, plus the source and hash to reconcile against — no document reaches this door.
         let snapshot = DocumentSnapshot {
-            document: doc.clone(),
             content_hash: "00c0ffee".to_string(),
             source: Some("voices/warm.json".to_string()),
         };

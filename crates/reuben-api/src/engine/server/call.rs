@@ -1444,7 +1444,6 @@ mod tests {
         let snapshot = snapshot(&s);
         assert_eq!(snapshot.source.as_deref(), Some("bt.json"));
         assert_eq!(snapshot.content_hash, "");
-        assert_eq!(snapshot.document, Value::Null);
         assert_eq!(s.state.tree(), BTreeSet::from(["bt.json".to_string()]));
 
         assert_eq!(
@@ -1694,7 +1693,7 @@ mod tests {
         assert!(s.peak() > 0.0);
         let snapshot = snapshot(&s);
         assert_eq!(snapshot.content_hash, hash);
-        assert_ne!(snapshot.document, Value::Null);
+        assert_eq!(snapshot.source.as_deref(), Some("other.json"));
         assert_eq!(s.state.tree(), BTreeSet::from(["other.json".to_string()]));
     }
 

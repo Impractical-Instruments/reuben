@@ -309,39 +309,29 @@ pub struct HeldSwap {
     pub content_hash: String,
 }
 
-/// The document the engine is currently playing, paired with its content hash — the token to pass
-/// as a later swap's `expect` guard — and the `source` it was installed from.
+/// What the engine plays, by name and content hash: the token to pass as a later `expect` guard,
+/// and the `source` it was installed from. Never the document itself: a client reads structure
+/// through `call` (`describe_instrument`), so no client holds document text.
 ///
-/// The document is raw JSON, exactly as installed: the engine is the single validation authority,
-/// so nothing re-validates it on the way out.
-///
-/// **This is a channel type, not an agent-facing one.** Every arm that hands instrument
-/// JSON to a model has been retired, so the `document` here reaches a *door*, never a context: the MCP door projects
-/// it and returns the projection. The channel keeps carrying the whole document because its other
-/// consumers (a host embedding the engine, a test) are programs, and because `source` alone cannot
-/// answer "what is playing?" — the file may have moved on since the swap, which is precisely what
-/// pairing `source` with the installed `content_hash` lets the agent detect.
-// Only the FIELD docs below reach a model: schemars emits no root `description`, so
-// `get_current_instrument`'s outputSchema root description is null and this block ships nowhere.
-// (`Conflict` is the opposite case — it is referenced from `$defs`, so its block does ship.)
+/// `source` alone cannot answer "what is playing?" — the file may have moved on since the install,
+/// which is precisely what pairing `source` with the installed `content_hash` lets a client detect.
 //
-// The snapshot itself is advertised nowhere: `get_current_instrument` answers with a projection cut
-// from it, so this type reaches a door and stops there. Hence no schema derive.
+// The snapshot is advertised nowhere: `get_current_instrument` answers with a projection the
+// server describes for `source`, so this type reaches a door and stops there. Hence no schema
+// derive.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DocumentSnapshot {
-    /// The document the engine is currently playing, as raw JSON. `null` while the open
-    /// instrument does not load and nothing plays.
-    pub document: serde_json::Value,
-    /// Its content hash — the token a later swap's `expect` guard compares. Empty while the open
-    /// instrument does not load and nothing plays; `source` then names the open instrument.
+    /// The playing document's content hash — the token a later `expect` guard compares. Empty
+    /// while the open instrument does not load and nothing plays; `source` then names the open
+    /// instrument.
     pub content_hash: String,
-    /// Where the playing document was installed from, when the engine knows: the `source` of the
-    /// last successful swap, or the document `reuben play` started on. `None` after an install by
-    /// value (which has no source) and for the built-in default rig.
+    /// Where the playing document was installed from, when the engine knows: the instrument last
+    /// opened, or the document `reuben play` started on. `None` for the built-in default rig and
+    /// while nothing is open.
     ///
-    /// The drift signal lives in the *pair*: an agent that edits this source and does not swap sees
-    /// its own hash diverge from the installed one. Optional so a snapshot minted before this field
-    /// existed still deserializes.
+    /// The drift signal lives in the *pair*: a client that edits this source outside the engine
+    /// sees its own hash diverge from the installed one. Optional so a snapshot minted before this
+    /// field existed still deserializes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
 }
@@ -994,7 +984,6 @@ mod tests {
         assert_eq!(tag(&Response::SwapReport(swap_report())), "swap_report");
         assert_eq!(
             tag(&Response::Document(DocumentSnapshot {
-                document: serde_json::json!({}),
                 content_hash: String::new(),
                 source: None,
             })),
@@ -1058,11 +1047,6 @@ mod tests {
             Response::Pong,
             Response::SwapReport(swap_report()),
             Response::Document(DocumentSnapshot {
-                document: serde_json::json!({
-                    "format_version": 3,
-                    "instrument": "t",
-                    "nodes": []
-                }),
                 content_hash: "00c0ffee00c0ffee".to_string(),
                 source: Some("voices/lead.json".to_string()),
             }),
@@ -1339,14 +1323,13 @@ mod tests {
     }
 
     #[test]
-    fn document_response_pairs_the_doc_with_its_content_hash() {
+    fn document_response_names_what_plays_by_source_and_hash() {
         // Every get_document response carries the installed document's content
-        // hash, the token a later swap's expect guard compares.
+        // hash, the token a later expect guard compares, and never the document.
         let v: serde_json::Value = serde_json::from_str(
             &Response::Document(DocumentSnapshot {
-                document: serde_json::json!({ "instrument": "t" }),
                 content_hash: "00c0ffee00c0ffee".to_string(),
-                source: None,
+                source: Some("t.json".to_string()),
             })
             .to_ndjson(),
         )
@@ -1355,8 +1338,8 @@ mod tests {
             v,
             serde_json::json!({
                 "reply": "document",
-                "document": { "instrument": "t" },
-                "content_hash": "00c0ffee00c0ffee"
+                "content_hash": "00c0ffee00c0ffee",
+                "source": "t.json"
             })
         );
     }

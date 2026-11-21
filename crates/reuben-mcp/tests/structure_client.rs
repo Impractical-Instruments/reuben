@@ -195,12 +195,9 @@ fn open_conflict_is_a_reconcilable_outcome_not_an_error() {
 }
 
 #[test]
-fn get_document_round_trips_the_doc_and_hash() {
-    let document = serde_json::json!({ "format_version": 3, "instrument": "warm", "nodes": [] });
-    let returned = document.clone();
+fn get_document_round_trips_the_source_and_hash() {
     let stub = spawn_stub(move |_req| {
         Response::Document(DocumentSnapshot {
-            document: returned.clone(),
             content_hash: "00c0ffee00c0ffee".to_string(),
             source: Some("voices/warm.json".to_string()),
         })
@@ -212,7 +209,6 @@ fn get_document_round_trips_the_doc_and_hash() {
     assert_eq!(
         snapshot,
         DocumentSnapshot {
-            document,
             content_hash: "00c0ffee00c0ffee".to_string(),
             source: Some("voices/warm.json".to_string()),
         }

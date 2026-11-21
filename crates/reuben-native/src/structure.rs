@@ -1481,11 +1481,10 @@ mod tests {
     }
 
     #[test]
-    fn get_document_returns_the_coordinators_doc_and_hash() {
+    fn get_document_returns_the_coordinators_hash() {
         let (state, cb, base_hash) = swap_fixture(BASE_DOC, 0);
         match dispatch(&state, &Request::GetDocument.to_ndjson()) {
             Response::Document(snapshot) => {
-                assert_eq!(snapshot.document["instrument"], serde_json::json!("t"));
                 assert_eq!(snapshot.content_hash, base_hash);
             }
             other => panic!("expected Document, got {other:?}"),

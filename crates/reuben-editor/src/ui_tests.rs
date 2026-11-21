@@ -294,10 +294,29 @@ fn attached(addr: String, config: &TempConfig, session: Option<Session>) -> Edit
     }
 }
 
-/// The `level` resting value of the document `played` has installed.
+/// The `level` resting value of the document `played` has installed: its file, read through the
+/// server, and only while that file is what plays (its hash is the installed one). `Null` until
+/// then.
 fn installed_level(played: &reuben_native::engine::RunningEngine) -> serde_json::Value {
-    let installed = played.channel().get_document().unwrap().document;
-    installed["interface"]["inputs"]["level"]["default"].clone()
+    let channel = played.channel();
+    let playing = channel.get_document().unwrap();
+    let Some(source) = playing.source else {
+        return serde_json::Value::Null;
+    };
+    let read =
+        reuben_api::engine::call_tool("read_instrument", &json!({ "source": source }), &channel)
+            .expect("the server reads what it plays")
+            .output;
+    let read: reuben_api::authoring::InstrumentStructure =
+        serde_json::from_value(read).expect("a read_instrument answer");
+    if read.hash != playing.content_hash {
+        return serde_json::Value::Null;
+    }
+    read.inputs
+        .into_iter()
+        .find(|input| input.port.name == "level")
+        .and_then(|input| input.port.default)
+        .unwrap_or_default()
 }
 
 /// Step the harness until `done`, sleeping between steps so the link's thread and the session's

@@ -6,7 +6,7 @@
 //!
 //! The verbs:
 //! - [`Request::Ping`] → [`Response::Pong`] — liveness of the channel itself.
-//! - [`Request::GetDocument`] → the Coordinator's canonical document + its content hash. It changes
+//! - [`Request::GetDocument`] → what plays, by source and content hash, never its text. It changes
 //!   when an open, an accepted edit or an outside edit to the open instrument installs a new one.
 //! - [`Request::GetDiagnostics`] → the host's counters, snapshotted off-thread.
 //! - [`Request::GetMeters`] → the host's levels at the device, read the same way.
@@ -491,8 +491,8 @@ impl StructureState {
     }
 
     /// Start with nothing open and nothing playing, the Coordinator having been built from
-    /// [`SILENCE`]: every answer reports the empty content hash, `get_document` a `null` document
-    /// and no source, and an edit is refused until an `open` names an instrument.
+    /// [`SILENCE`]: every answer reports the empty content hash, `get_document` no source, and an
+    /// edit is refused until an `open` names an instrument.
     ///
     /// A builder step, like [`with_installed_source`](Self::with_installed_source), so the
     /// "only ever written under the Coordinator lock" invariant on the flag has no exception.
@@ -603,14 +603,7 @@ const UNSTREAMED_SUBSCRIBE: &str = "subscribe needs a connection that streams ev
 /// document is `null` and the hash [`NOTHING_PLAYS`]: [`SILENCE`] is no document's.
 fn get_document(state: &StructureState) -> Result<Response, Poisoned> {
     let coordinator = state.coordinator()?;
-    let document = if state.is_silent() {
-        serde_json::Value::Null
-    } else {
-        serde_json::to_value(&**coordinator.document())
-            .expect("canonical instrument document serializes to JSON")
-    };
     Ok(Response::Document(DocumentSnapshot {
-        document,
         content_hash: state.playing_hash(&coordinator),
         // Read under the Coordinator lock too, so the source and the hash a caller compares it
         // against can never come from different installs.
@@ -1391,6 +1384,28 @@ mod tests {
             Err(std::sync::mpsc::TryRecvError::Disconnected)
         );
         assert_eq!(state.subscribers(), 0);
+    }
+
+    /// `get_document` names what plays and its hash, and never hands a client the document.
+    #[test]
+    fn a_snapshot_carries_no_document() {
+        let fields = |state: &StructureState| {
+            let line = dispatch(state, &Request::GetDocument.to_ndjson()).to_ndjson();
+            let value: serde_json::Value = serde_json::from_str(&line).expect("a JSON object");
+            let mut keys: Vec<String> = value
+                .as_object()
+                .expect("an object")
+                .keys()
+                .cloned()
+                .collect();
+            keys.sort();
+            (keys, value)
+        };
+        let (keys, _) = fields(&state(false));
+        assert_eq!(keys, ["content_hash", "reply", "source"]);
+        let (keys, value) = fields(&state(false).with_nothing_open());
+        assert_eq!(keys, ["content_hash", "reply"]);
+        assert_eq!(value["content_hash"], "");
     }
 
     #[test]

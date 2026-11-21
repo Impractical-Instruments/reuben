@@ -223,21 +223,14 @@ fn serves_the_read_verbs_over_loopback_ndjson_in_order() {
     send(&mut writer, &Request::GetDocument);
     match read_response(&mut reader) {
         Response::Document(DocumentSnapshot {
-            document,
             content_hash: hash,
             source,
         }) => {
             assert_eq!(
                 source, None,
-                "this harness installs by value, which has no source to name"
+                "this harness starts on a document with no file to name"
             );
-            assert_eq!(document["instrument"], serde_json::json!("t"));
-            assert_eq!(hash, base_hash, "the served doc carries its content hash");
-            assert_eq!(
-                document["format_version"],
-                serde_json::json!(reuben_api::authoring::FORMAT_VERSION),
-                "the document is normalized to the current format version"
-            );
+            assert_eq!(hash, base_hash, "the snapshot carries the playing hash");
         }
         other => panic!("expected Document, got {other:?}"),
     }
