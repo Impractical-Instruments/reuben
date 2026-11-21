@@ -191,6 +191,12 @@ pub struct AddInstrumentNode {
     /// Optional `patch` resource id (subpatch only).
     #[serde(default)]
     pub patch: Option<String>,
+    /// Optional resource bindings (subpatch only): the child's resource id -> a resource id in
+    /// this document, e.g. {"sample": "kick2"}. The child plays this document's source for that id
+    /// instead of its own default, so one child is reused with a different sample per use. Every
+    /// key must be an id in the child's own resources.
+    #[serde(default)]
+    pub bind: BTreeMap<String, String>,
     #[serde(default)]
     pub expect: Option<String>,
 }

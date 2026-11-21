@@ -615,6 +615,7 @@ impl Fault {
                 LoadError::BadInputValue { surface, .. }
                 | LoadError::BadInputLiteral { surface, .. } => Some(surface.noun().to_string()),
                 LoadError::UnknownResource { slot, .. } => Some(slot.clone()),
+                LoadError::UnknownBinding { key, .. } => Some(key.clone()),
                 LoadError::InvalidAddress { rule, .. }
                 | LoadError::InvalidPipeName { rule, .. } => Some((*rule).to_string()),
                 LoadError::InputSetTwice { to, .. } => Some(to.clone()),

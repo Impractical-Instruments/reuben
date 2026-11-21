@@ -491,6 +491,17 @@ a host sees, with nested children loaded.)
 `instruments/patches/space.json` (nestable effect) + `instruments/mic-space.json` (its host,
 behind a live-input pipe) are the worked pair.
 
+A **`bind`** map on a `subpatch` node reuses one child with different resources per use: each key
+is an id in the **child's** `resources` table, each value an id in the **host's**, and wherever the
+child references that id it plays the host's source instead (resolved relative to the host, as any
+host resource is). `{"type": "subpatch", "address": "/g1", "patch": "grain", "bind": {"sample":
+"scrape"}}` and a second use binding `"sample": "hiss"` play different samples through one granulator
+child. The child declares its own default for every id a host may bind, so it stays a complete
+instrument on its own; a key it does not declare is a fatal `UnknownBinding`, `bind` on any node
+but a `subpatch` is a fatal `UnknownResource`, and a value missing from the host's table is a
+`MissingResource` warning that leaves that use silent (it does not fall back to the child's
+default). Uses binding the same sources share one build; each sample source still decodes once.
+
 The per-node **`control`** block is
 **retired**:
 a v2 document (or a v3 one still carrying leftovers) parses, but the block is dropped with a

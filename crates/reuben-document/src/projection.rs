@@ -396,6 +396,35 @@ impl ResourceRef {
     }
 }
 
+/// One entry of a `subpatch` node's `bind`: the child resource id it overrides, and the id in this
+/// document's own `resources` table the child plays instead.
+#[derive(Debug, Clone, Serialize)]
+pub struct Binding {
+    /// The id in the child document's `resources` table.
+    pub child: String,
+    /// The id in this document's `resources` table.
+    pub id: String,
+    /// This document's source for `id` — `None` when the id is not in the table.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Why the binding is dark, when it is. `None` is resolved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dark: Option<String>,
+}
+
+impl Binding {
+    fn render(&self) -> String {
+        let mut s = format!("{}={}", token(&self.child), token(&self.id));
+        if let Some(src) = &self.source {
+            s.push_str(&format!(" -> {}", token(src)));
+        }
+        if let Some(why) = &self.dark {
+            s.push_str(&format!(" DARK: {}", message(why)));
+        }
+        s
+    }
+}
+
 /// One node, zoomed.
 #[derive(Debug, Clone, Serialize)]
 pub struct NodeZoom {
@@ -417,6 +446,9 @@ pub struct NodeZoom {
     /// scans all three slots, so a zoom showing one could contradict it.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub resources: Vec<ResourceRef>,
+    /// A `subpatch` node's `bind`: which of the child's resources play this document's sources.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub bind: Vec<Binding>,
     /// A nested child's face — **never its internals**. The format is not recursive (a child is a
     /// resource id), so the projection mirrors the *document*: an opaque node plus the boundary it
     /// presents. The child's own nodes are reached by projecting the child document.
@@ -449,6 +481,7 @@ impl NodeZoom {
         line("in", render_list(&self.inputs, InputEdge::render));
         line("out", render_list(&self.consumers, OutEdge::render));
         line("res", render_list(&self.resources, ResourceRef::render));
+        line("bind", render_list(&self.bind, Binding::render));
         if let Some(b) = &self.boundary {
             line("boundary", render_boundary(b));
         }
@@ -829,8 +862,7 @@ impl<'a> Projector<'a> {
     /// The dark marker for one node: the first resource slot whose reference did not resolve, or
     /// the loader's own node-level darkness.
     fn dark_slot(&self, node: &NodeDoc) -> Option<String> {
-        for (slot, r) in node.resource_refs() {
-            let Some(id) = r else { continue };
+        for (slot, id) in uses(node) {
             if self.dark_reason(&node.address, slot, id).is_some() {
                 return Some(slot.to_string());
             }
@@ -1072,6 +1104,16 @@ impl<'a> Projector<'a> {
                 edges
             },
             resources,
+            bind: n
+                .bind
+                .iter()
+                .map(|(child, id)| Binding {
+                    child: child.clone(),
+                    id: id.clone(),
+                    source: self.doc.resources.get(id).cloned(),
+                    dark: self.dark_reason(&n.address, "bind", id),
+                })
+                .collect(),
             boundary,
             note,
         }
@@ -1129,8 +1171,7 @@ impl<'a> Projector<'a> {
         let mut dark: BTreeMap<&str, String> = BTreeMap::new();
         let mut dangling: Vec<ResourceRef> = Vec::new();
         for n in &self.doc.nodes {
-            for (slot, r) in n.resource_refs() {
-                let Some(id) = r else { continue };
+            for (slot, id) in uses(n) {
                 if self.doc.resources.contains_key(id) {
                     refs.entry(id).or_default().push(ResourceUse {
                         slot: slot.to_string(),
@@ -1269,6 +1310,15 @@ fn build_consumers(doc: &NormalizedDoc, registry: &Registry) -> BTreeMap<String,
         }
     }
     out
+}
+
+/// Every id a node names in this document's `resources` table, with the slot it names it through:
+/// its resource refs in the format's slot order, then each `bind` value under the slot `bind`.
+fn uses(n: &NodeDoc) -> impl Iterator<Item = (&'static str, &String)> {
+    n.resource_refs()
+        .into_iter()
+        .filter_map(|(slot, r)| r.as_ref().map(|id| (slot, id)))
+        .chain(n.bind.values().map(|id| ("bind", id)))
 }
 
 /// Fold one load warning into the dark tables. Only *this* document's own resource failures count
@@ -1447,6 +1497,7 @@ pub const FIELD_COVERAGE: &[(&str, &str)] = &[
     ("nodes[].sample", "node-zoom, resources-view"),
     ("nodes[].voice", "node-zoom, resources-view"),
     ("nodes[].patch", "node-zoom, resources-view"),
+    ("nodes[].bind{}", "node-zoom, resources-view"),
     (
         "nodes[].layout.x",
         "omit:editor-owned canvas position, no meaning to the engine or the agent",
@@ -1744,6 +1795,31 @@ mod tests {
             res.contains("dangling voice=missing-voice on /v DARK:"),
             "{res}"
         );
+    }
+
+    #[test]
+    fn a_subpatch_binding_shows_on_its_zoom_and_counts_as_a_use() {
+        const BOUND: &str = r#"{
+            "format_version": 4,
+            "instrument": "bound",
+            "resources": { "voice": "voice.json", "scrape": "scrape.wav" },
+            "nodes": [
+                {"type": "subpatch", "address": "/a", "patch": "voice",
+                 "bind": {"sample": "scrape"}},
+                {"type": "subpatch", "address": "/b", "patch": "voice",
+                 "bind": {"sample": "gone"}}
+            ]
+        }"#;
+        let p = projector(BOUND);
+        let zoom = p.zoom(&Selection::names(["/a", "/b"])).render();
+        assert!(zoom.contains("bind: sample=scrape -> scrape.wav"), "{zoom}");
+        assert!(zoom.contains("bind: sample=gone DARK:"), "{zoom}");
+        let res = p.resources().render();
+        assert!(
+            res.contains("bind:/a"),
+            "a bound id is referenced, not unused: {res}"
+        );
+        assert!(res.contains("dangling bind=gone on /b DARK:"), "{res}");
     }
 
     /// The projection is not a second validation authority: a document that will not load still

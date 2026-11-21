@@ -723,6 +723,7 @@ pub fn new_instrument(
         nodes: Vec::new(),
         outputs: Vec::new(),
         migration: Default::default(),
+        bound: BTreeMap::new(),
     };
     finish_at(
         source,
@@ -838,7 +839,7 @@ pub fn set_instrument_description(
 
 /// Add a node **fully formed in one call**, mirroring the shape a node zoom reads back: required
 /// `address` + `type`, plus inputs literal-or-wired, config constants,
-/// description, and any resource-slot reference). Atomic under write-iff-valid: a wire to a missing
+/// description, any resource-slot reference, and a `subpatch` node's `bind`). Atomic under write-iff-valid: a wire to a missing
 /// source, or a duplicate address, rejects the whole call.
 #[allow(clippy::too_many_arguments)]
 pub fn add_instrument_node(
@@ -851,6 +852,7 @@ pub fn add_instrument_node(
     sample: Option<&str>,
     voice: Option<&str>,
     patch: Option<&str>,
+    bind: BTreeMap<String, String>,
     registry: &Registry,
     resolver: &dyn ResourceResolver,
 ) -> Result<EditResult, EditError> {
@@ -878,6 +880,7 @@ pub fn add_instrument_node(
             sample: sample.map(str::to_string),
             voice: voice.map(str::to_string),
             patch: patch.map(str::to_string),
+            bind,
             layout: None,
             control: None,
         });

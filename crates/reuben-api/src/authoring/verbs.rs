@@ -328,6 +328,7 @@ pub fn add_instrument_node(
             args.sample.as_deref(),
             args.voice.as_deref(),
             args.patch.as_deref(),
+            args.bind.clone(),
             reg,
             res,
         )

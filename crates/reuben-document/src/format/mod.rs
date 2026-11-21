@@ -99,6 +99,13 @@ pub struct InstrumentDoc {
     /// native-v2 or cleanly migrated document.
     #[serde(skip)]
     pub(crate) migration: MigrationNotes,
+    /// Load-session state, never serialized: the sources a hosting `subpatch` node's
+    /// [`bind`](NodeDoc::bind) placed on this (child) document, child resource id → the
+    /// **canonical** source the host's table gives, or `None` where the host's table lacks the id
+    /// (the host already warned). Consulted ahead of `resources` by every resource pass. Empty on
+    /// every document not being built as a bound child.
+    #[serde(skip)]
+    pub(crate) bound: BTreeMap<String, Option<String>>,
 }
 
 /// See [`InstrumentDoc::migration`]: the non-fatal residue of a v1→v2 migration, carried from
@@ -474,6 +481,18 @@ pub struct NodeDoc {
     /// built graph is the explicit flatten/export path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub patch: Option<String>,
+    /// Resource bindings for a `subpatch` node: **child** resource id → **this** document's
+    /// resource id. Wherever the inlined child references a bound id (through any slot), it plays
+    /// the source this document's `resources` table gives instead of its own row — so one child
+    /// document is reused with a different sample per use. The child still declares its own
+    /// default for every id it lets a host bind, and stays a complete instrument on its own: a
+    /// key naming no row in the child's `resources` is the fatal [`LoadError::UnknownBinding`],
+    /// and the field on any other operator is [`LoadError::UnknownResource`] (slot `bind`). A
+    /// value missing from this document's table is the non-fatal
+    /// [`LoadWarning::MissingResource`]: the child's reference degrades as its own missing id
+    /// would.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bind: BTreeMap<String, String>,
     /// This node's editor canvas position; editor-owned, see [`Layout`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout: Option<Layout>,
@@ -679,6 +698,9 @@ pub enum LoadError {
     /// A node carries a `sample` reference but its operator declares no such resource slot
     /// — a structural misuse, fatal like the other wiring errors.
     UnknownResource { node: String, slot: String },
+    /// A `subpatch` node's `bind` names a `key` the child's `resources` table does not declare —
+    /// a binding can only override a default the child already has.
+    UnknownBinding { node: String, key: String },
     /// An instrument-resource `source` is referenced again while it is still being loaded — a
     /// `voice`/`patch` chain that (directly or transitively) contains itself.
     /// Loading it would recurse forever, so the cycle is a structural error, fatal like the
@@ -809,6 +831,11 @@ impl fmt::Display for LoadError {
             LoadError::UnknownResource { node, slot } => {
                 write!(f, "node {node:?} has no resource slot {slot:?}")
             }
+            LoadError::UnknownBinding { node, key } => write!(
+                f,
+                "node {node:?}: bind key {key:?} is not in the child's resources table — a \
+                 binding overrides a resource the child declares, so declare a default for it there"
+            ),
             LoadError::CyclicResource { source } => write!(
                 f,
                 "instrument resource {source:?} references itself (directly or transitively) — \
@@ -1241,12 +1268,20 @@ fn load_doc_guarded(
         if handles.contains_key(id) {
             continue; // dedup: already resolved by an earlier node
         }
-        let buffer = match lookup_source(doc, &n.address, "sample", id, &mut warnings) {
+        let source = lookup_source(
+            doc,
+            &n.address,
+            "sample",
+            id,
+            resolver,
+            referrer,
+            &mut warnings,
+        );
+        let buffer = match source {
             None => Arc::new(SampleBuffer::empty()),
-            Some(source) => {
-                // Canonical id is the cache key, so one sample spelled two ways still
-                // fetches + decodes once (the identity rule, applied to samples).
-                let canon = resolver.canonical(source, referrer);
+            // Canonical id is the cache key, so one sample spelled two ways still fetches +
+            // decodes once (the identity rule, applied to samples).
+            Some(canon) => {
                 match ctx.samples.get(&canon) {
                     Some(shared) => shared.clone(),
                     None => match resolver.resolve(&canon) {
@@ -1297,14 +1332,22 @@ fn load_doc_guarded(
         };
         let n_voices = voice_count(&graph.nodes[key]);
         let mut voices: Vec<Graph> = Vec::with_capacity(n_voices);
-        match lookup_source(doc, &n.address, "voice", id, &mut warnings) {
+        let source = lookup_source(
+            doc,
+            &n.address,
+            "voice",
+            id,
+            resolver,
+            referrer,
+            &mut warnings,
+        );
+        match source {
             None => {
                 for _ in 0..n_voices {
                     voices.push(Graph::new());
                 }
             }
-            Some(source) => {
-                let canon = resolver.canonical(source, referrer);
+            Some(canon) => {
                 for i in 0..n_voices {
                     let loaded =
                         resolve_instrument_slotted(&canon, "voice", registry, resolver, ctx)?;
@@ -1357,26 +1400,35 @@ fn load_doc_guarded(
     Ok(Loaded { graph, warnings })
 }
 
-/// Look up a node's resource `id` in the document's `resources` table — the shared first step of
-/// every resource pass (`sample`/`voice`/`patch`). A miss is the non-fatal
-/// [`LoadWarning::MissingResource`], pushed here so the policy lives in one place;
-/// each caller picks its degradation on `None` (empty buffer, silent voices, no sub-graph).
-fn lookup_source<'a>(
-    doc: &'a InstrumentDoc,
+/// The **canonical** source behind a node's resource `id` — the shared first step of every
+/// resource pass (`sample`/`voice`/`patch`) and of a `subpatch` node's `bind`. A binding the
+/// hosting `subpatch` placed on this document ([`InstrumentDoc::bound`]) answers first, already
+/// canonical; otherwise the document's own `resources` row, canonicalized relative to `referrer`.
+/// A miss in the table is the non-fatal [`LoadWarning::MissingResource`], pushed here so the
+/// policy lives in one place; a binding the host could not fill is `None` with no second
+/// warning (the host pushed it). Each caller picks its degradation on `None` (empty buffer, silent
+/// voices, no sub-graph).
+fn lookup_source(
+    doc: &InstrumentDoc,
     node: &str,
     slot: &'static str,
     id: &str,
+    resolver: &dyn ResourceResolver,
+    referrer: Option<&str>,
     warnings: &mut Vec<LoadWarning>,
-) -> Option<&'a String> {
-    let source = doc.resources.get(id);
-    if source.is_none() {
+) -> Option<String> {
+    if let Some(bound) = doc.bound.get(id) {
+        return bound.clone();
+    }
+    let Some(source) = doc.resources.get(id) else {
         warnings.push(LoadWarning::MissingResource {
             node: node.to_string(),
             slot,
             id: id.to_string(),
         });
-    }
-    source
+        return None;
+    };
+    Some(resolver.canonical(source, referrer))
 }
 
 /// The voice-pool size for a Voicer node: the node's **stored** value for the
@@ -1476,7 +1528,7 @@ fn try_resolve_instrument(
     // through a voice pool was read again by the next reference to it.
     if let Some(doc) = ctx.docs.get(source).cloned() {
         return Ok(Ok(load_child_cached(
-            &doc, source, registry, resolver, ctx,
+            &doc, source, source, registry, resolver, ctx,
         )?));
     }
     match resolver.resolve_text(source) {
@@ -1485,7 +1537,7 @@ fn try_resolve_instrument(
                 NormalizedDoc::parse_with(&text, registry, Some(resolver), ctx, Some(source))?;
             ctx.docs.insert(source.to_string(), doc.clone());
             Ok(Ok(load_child_cached(
-                &doc, source, registry, resolver, ctx,
+                &doc, source, source, registry, resolver, ctx,
             )?))
         }
         Err(e) => Ok(Err(LoadWarning::ResolveFailed {
@@ -1531,21 +1583,40 @@ fn load_child_guarded(
 /// guard honest: a child whose own reference was momentarily unresolvable would otherwise be
 /// cached in its dark form and later answer *past* the guard, turning a cyclic library into a
 /// silent instrument instead of a named error.
+///
+/// `key` is the cache entry: `source` itself for an unbound child, [`bound_build_key`] for one a
+/// `subpatch` node's `bind` rebinds, whose build is a function of the bindings as well.
 fn load_child_cached(
     doc: &NormalizedDoc,
     source: &str,
+    key: &str,
     registry: &Registry,
     resolver: &dyn ResourceResolver,
     ctx: &mut LoadCtx,
 ) -> Result<Loaded, LoadError> {
-    if !ctx.built.contains_key(source) {
+    if !ctx.built.contains_key(key) {
         let loaded = load_child_guarded(doc, source, registry, resolver, ctx)?;
         if !loaded.availability_held() {
             return Ok(loaded);
         }
-        ctx.built.insert(source.to_string(), loaded);
+        ctx.built.insert(key.to_string(), loaded);
     }
-    Ok(ctx.built[source].copy())
+    Ok(ctx.built[key].copy())
+}
+
+/// The [`LoadCtx::built`] key for the child at canonical `source` built under `bound`: `source`
+/// itself when nothing is bound, else `source` followed by every binding, NUL-separated — a byte
+/// no filesystem path holds, so a bound key does not spell a real source.
+fn bound_build_key(source: &str, bound: &BTreeMap<String, Option<String>>) -> String {
+    let mut key = source.to_string();
+    for (id, canon) in bound {
+        key.push('\0');
+        key.push_str(id);
+        key.push('\0');
+        // A binding the host could not fill builds differently from every filled one.
+        key.push_str(canon.as_deref().unwrap_or("\u{1}"));
+    }
+    key
 }
 
 /// Run `f` with `source` pushed on the cycle-guard stack: a chain that
@@ -1752,6 +1823,13 @@ impl InstrumentDoc {
             // A resource ref is only valid on an operator that declares that slot (a
             // `sample` on the sample player, a `voice` on the Voicer). Validate
             // data-driven against the node's refs, so a new slot needs no hand-written arm here.
+            // `bind` rebinds a nested child's resources, so only a nesting operator carries it.
+            if !n.bind.is_empty() && !descriptor.has_resource("patch") {
+                return Err(LoadError::UnknownResource {
+                    node: n.address.clone(),
+                    slot: "bind".to_string(),
+                });
+            }
             for (slot, provided) in n.resource_refs() {
                 if provided.is_some() && !descriptor.has_resource(slot) {
                     return Err(LoadError::UnknownResource {
@@ -1843,19 +1921,49 @@ impl InstrumentDoc {
                 dark.insert(n.address.clone());
                 continue;
             };
-            let Some(source) = lookup_source(self, &n.address, "patch", id, &mut warnings) else {
+            // Canonical id keys the fetch/parse dedup and the cycle guard: two
+            // ids spelling one source (`a.json` vs `./a.json`) share one parse and one identity.
+            let source = lookup_source(
+                self,
+                &n.address,
+                "patch",
+                id,
+                resolver,
+                referrer,
+                &mut warnings,
+            );
+            let Some(canon) = source else {
                 dark.insert(n.address.clone());
                 continue;
             };
-            // Canonical id keys the fetch/parse dedup and the cycle guard: two
-            // ids spelling one source (`a.json` vs `./a.json`) share one parse and one identity.
-            let canon = resolver.canonical(source, referrer);
             // A source this load already built is served from the cache without consulting the
             // resolver at all — the same short-circuit the voice pass takes, so both reference
             // paths agree on what a second reference costs and neither can degrade a source the
             // other already built. Taken here, after `lookup_source`, so a node naming an id this
             // document's `resources` table lacks still gets its own `MissingResource`.
-            let already_built = ctx.built.get(&canon).map(Loaded::copy);
+            //
+            // A `bind` makes the build a function of the bindings too, so a bound use is cached
+            // under its own key: two uses binding the same sources share a build, two binding
+            // different ones never do. Each value is looked up in *this* document's table here,
+            // so a missing one warns on this node.
+            let bound: BTreeMap<String, Option<String>> = n
+                .bind
+                .iter()
+                .map(|(key, id)| {
+                    let source = lookup_source(
+                        self,
+                        &n.address,
+                        "bind",
+                        id,
+                        resolver,
+                        referrer,
+                        &mut warnings,
+                    );
+                    (key.clone(), source)
+                })
+                .collect();
+            let built_key = bound_build_key(&canon, &bound);
+            let already_built = ctx.built.get(&built_key).map(Loaded::copy);
             let loaded = match already_built {
                 Some(loaded) => loaded,
                 None => {
@@ -1896,7 +2004,20 @@ impl InstrumentDoc {
                         dark.insert(n.address.clone());
                         continue;
                     };
-                    load_child_cached(child_doc, &canon, registry, resolver, ctx)?
+                    if bound.is_empty() {
+                        load_child_cached(child_doc, &canon, &canon, registry, resolver, ctx)?
+                    } else {
+                        if let Some(key) =
+                            bound.keys().find(|k| !child_doc.resources.contains_key(*k))
+                        {
+                            return Err(LoadError::UnknownBinding {
+                                node: n.address.clone(),
+                                key: key.clone(),
+                            });
+                        }
+                        let bound_doc = child_doc.with_bound(bound);
+                        load_child_cached(&bound_doc, &canon, &built_key, registry, resolver, ctx)?
+                    }
                 }
             };
             let renamed_inputs = renamed_pipes(&loaded.warnings);
@@ -2216,6 +2337,7 @@ impl InstrumentDoc {
                     // A subpatch dissolves at build, so from_graph only emits the inlined
                     // children, never the reference
                     patch: None,
+                    bind: BTreeMap::new(),
                     // A graph carries no canvas position; flattening starts the editor fresh.
                     layout: None,
                     // Presentation lives in a surface doc now, not the graph.
@@ -2298,6 +2420,7 @@ impl InstrumentDoc {
             // `interface.outputs` pipe above.
             outputs: Vec::new(),
             migration: MigrationNotes::default(),
+            bound: BTreeMap::new(),
         }
     }
 }
@@ -5711,6 +5834,171 @@ mod tests {
             counting.0.get(),
             1,
             "two reuses of one sample source must decode it once"
+        );
+    }
+
+    /// A reusable sampled voice: one sample player, gated open, whose `sample` id defaults to
+    /// `lib/default` in its own table — so it loads and plays on its own.
+    const BINDABLE_VOICE: &str = r#"{"format_version":4,"instrument":"voice",
+        "resources":{"sample":"lib/default"},
+        "interface":{"outputs":{"audio":{"from":"/s.audio"}}},
+        "nodes":[{"type":"sample","address":"/s","sample":"sample","inputs":{"gate":1}}]}"#;
+
+    /// A host reusing [`BINDABLE_VOICE`] four times: two uses bind distinct samples, one binds the
+    /// same as the first, one binds nothing. `tap` names the one use the instrument outputs.
+    fn binding_host(tap: &str) -> String {
+        format!(
+            r#"{{"format_version":4,"instrument":"host",
+            "resources":{{"voice":"lib/voice","scrape":"lib/scrape","hiss":"lib/hiss"}},
+            "interface":{{"outputs":{{"out":{{"from":"{tap}.audio"}}}}}},
+            "nodes":[
+                {{"type":"subpatch","address":"/a","patch":"voice","bind":{{"sample":"scrape"}}}},
+                {{"type":"subpatch","address":"/b","patch":"voice","bind":{{"sample":"hiss"}}}},
+                {{"type":"subpatch","address":"/c","patch":"voice"}},
+                {{"type":"subpatch","address":"/d","patch":"voice","bind":{{"sample":"scrape"}}}}]}}"#
+        )
+    }
+
+    /// A [`MemoryResolver`](crate::resources::MemoryResolver) holding [`BINDABLE_VOICE`] and three
+    /// constant samples, each a level no other one has, counting every decode by source.
+    struct Library {
+        inner: crate::resources::MemoryResolver,
+        decodes: std::cell::RefCell<BTreeMap<String, usize>>,
+    }
+
+    impl Library {
+        fn new() -> Self {
+            let mut inner = crate::resources::MemoryResolver::new();
+            inner.insert_text("lib/voice", BINDABLE_VOICE);
+            for (key, level) in [
+                ("lib/default", 0.1),
+                ("lib/scrape", 0.25),
+                ("lib/hiss", 0.5),
+            ] {
+                inner.insert_sample(key, SampleBuffer::new(vec![vec![level; 48_000]], 48_000.0));
+            }
+            Library {
+                inner,
+                decodes: Default::default(),
+            }
+        }
+    }
+
+    impl ResourceResolver for Library {
+        fn resolve(&self, s: &str) -> Result<SampleBuffer, crate::resources::ResolveError> {
+            *self.decodes.borrow_mut().entry(s.to_string()).or_default() += 1;
+            self.inner.resolve(s)
+        }
+        fn resolve_text(&self, s: &str) -> Result<String, crate::resources::ResolveError> {
+            self.inner.resolve_text(s)
+        }
+    }
+
+    /// The loudest sample `loaded` renders over a few blocks.
+    fn peak(loaded: Loaded) -> f32 {
+        use reuben_core::{plan::Plan, render::Renderer, signal::AudioSample, AudioConfig};
+        let cfg = AudioConfig::new(48_000.0, 64);
+        let mut plan = Plan::instantiate(loaded.graph, cfg).expect("plans");
+        let mut renderer = Renderer::new(&plan);
+        let mut block = vec![AudioSample::default(); cfg.block_size];
+        let mut peak = 0.0f32;
+        for _ in 0..4 {
+            renderer.render_block(&mut plan, &[], &mut block);
+            peak = block.iter().fold(peak, |m, s| m.max(s.abs()));
+        }
+        peak
+    }
+
+    #[test]
+    fn bind_swaps_the_sample_each_use_of_one_child_plays() {
+        let lib = Library::new();
+        let played = |tap: &str| {
+            let loaded = load_instrument(&binding_host(tap), &reg(), &lib).expect("load");
+            assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+            peak(loaded)
+        };
+        assert_eq!(played("/a"), 0.25, "/a binds scrape");
+        assert_eq!(
+            played("/b"),
+            0.5,
+            "/b binds hiss — a different build from /a"
+        );
+        assert_eq!(
+            played("/c"),
+            0.1,
+            "/c binds nothing and keeps the child's default"
+        );
+        assert_eq!(played("/d"), 0.25, "/d binds what /a binds");
+    }
+
+    #[test]
+    fn a_bound_child_still_decodes_each_sample_source_once() {
+        let lib = Library::new();
+        load_instrument(&binding_host("/a"), &reg(), &lib).expect("load");
+        let decodes = lib.decodes.borrow();
+        for source in ["lib/default", "lib/scrape", "lib/hiss"] {
+            assert_eq!(decodes.get(source), Some(&1), "{source}: {decodes:?}");
+        }
+    }
+
+    #[test]
+    fn a_bind_key_the_child_does_not_declare_is_fatal_naming_node_and_key() {
+        let json = r#"{"format_version":4,"instrument":"host",
+            "resources":{"voice":"lib/voice","scrape":"lib/scrape"},
+            "nodes":[{"type":"subpatch","address":"/a","patch":"voice",
+                      "bind":{"smaple":"scrape"}}]}"#;
+        match load_instrument(json, &reg(), &Library::new()) {
+            Err(LoadError::UnknownBinding { node, key }) => {
+                assert_eq!((node.as_str(), key.as_str()), ("/a", "smaple"));
+            }
+            other => panic!(
+                "expected UnknownBinding, got {:?}",
+                other.map(|l| l.warnings)
+            ),
+        }
+    }
+
+    #[test]
+    fn bind_on_a_non_subpatch_node_errors() {
+        // Like a `patch` ref on a non-subpatch: only a nesting operator has a child to rebind.
+        let json = r#"{"instrument":"p","resources":{"k":"k.wav"},"nodes":[
+            {"type":"sample","address":"/s","bind":{"sample":"k"}}]}"#;
+        assert!(matches!(
+            load(json, &reg()),
+            Err(LoadError::UnknownResource { slot, .. }) if slot == "bind"
+        ));
+    }
+
+    #[test]
+    fn a_bind_value_missing_from_the_host_table_warns_and_degrades_silent() {
+        // The host's own missing id: availability, not structure — the use plays silence like a
+        // child whose own `sample` id is missing, and does not fall back to the child's default.
+        let json = r#"{"format_version":4,"instrument":"host",
+            "resources":{"voice":"lib/voice"},
+            "interface":{"outputs":{"out":{"from":"/a.audio"}}},
+            "nodes":[{"type":"subpatch","address":"/a","patch":"voice",
+                      "bind":{"sample":"gone"}}]}"#;
+        let loaded = load_instrument(json, &reg(), &Library::new()).expect("loads");
+        assert!(
+            loaded.warnings.iter().any(|w| matches!(w,
+                LoadWarning::MissingResource { node, slot: "bind", id } if node == "/a" && id == "gone")),
+            "{:?}",
+            loaded.warnings
+        );
+        assert_eq!(peak(loaded), 0.0);
+    }
+
+    #[test]
+    fn bind_round_trips_through_the_document() {
+        let doc = NormalizedDoc::from_json(&binding_host("/a"), &reg(), None).expect("parse");
+        let reparsed =
+            NormalizedDoc::from_json(&doc.to_json_pretty(), &reg(), None).expect("reparse");
+        assert_eq!(doc, reparsed);
+        assert_eq!(reparsed.nodes[0].bind["sample"], "scrape");
+        assert!(reparsed.nodes[2].bind.is_empty());
+        assert!(
+            !doc.to_json_pretty().contains("\"bind\": {}"),
+            "an empty bind is not written"
         );
     }
 

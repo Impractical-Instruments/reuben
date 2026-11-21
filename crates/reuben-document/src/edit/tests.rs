@@ -800,6 +800,7 @@ fn add_node_at_an_address_breaking_the_rule_is_refused() {
             None,
             None,
             None,
+            BTreeMap::new(),
             &registry,
             resolver,
         )
@@ -1018,6 +1019,7 @@ fn add_node_lands_fully_formed_with_a_wire() {
         None,
         None,
         None,
+        BTreeMap::new(),
         &registry,
         &resolver,
     )
@@ -1037,6 +1039,96 @@ fn add_node_lands_fully_formed_with_a_wire() {
     assert_eq!(trim["doc"], json!("output trim"));
 }
 
+/// A host with a sampled child to nest and two sources to bind it to: `voice` is the child, whose
+/// own `sample` row defaults to `lib/default`.
+fn binding_library() -> MemoryResolver {
+    let mut r = resolver_with(
+        &json!({
+            "format_version": 4,
+            "instrument": "host",
+            "resources": { "voice": "lib/voice", "scrape": "lib/scrape" },
+            "nodes": []
+        })
+        .to_string(),
+    );
+    r.insert_text(
+        "lib/voice",
+        json!({
+            "format_version": 4,
+            "instrument": "voice",
+            "resources": { "sample": "lib/default" },
+            "interface": { "outputs": { "audio": { "from": "/s.audio" } } },
+            "nodes": [ { "type": "sample", "address": "/s", "sample": "sample" } ]
+        })
+        .to_string(),
+    );
+    for key in ["lib/default", "lib/scrape"] {
+        r.insert_sample(
+            key,
+            reuben_core::resources::SampleBuffer::new(vec![vec![0.5]], 48_000.0),
+        );
+    }
+    r
+}
+
+#[test]
+fn add_node_writes_a_subpatch_binding() {
+    let registry = Registry::builtin();
+    let resolver = binding_library();
+    let bind = BTreeMap::from([("sample".to_string(), "scrape".to_string())]);
+    let result = add_instrument_node(
+        SRC,
+        "/a",
+        "subpatch",
+        BTreeMap::new(),
+        BTreeMap::new(),
+        None,
+        None,
+        None,
+        Some("voice"),
+        bind,
+        &registry,
+        &resolver,
+    )
+    .expect("add");
+    assert!(result.report.ok, "{:?}", result.report);
+    assert!(result.written);
+    let after = readback(&resolver);
+    assert_eq!(after["nodes"][0]["bind"], json!({ "sample": "scrape" }));
+}
+
+#[test]
+fn add_node_binding_a_key_the_child_lacks_is_refused_unwritten() {
+    let registry = Registry::builtin();
+    let resolver = binding_library();
+    let before = readback(&resolver);
+    let bind = BTreeMap::from([("smaple".to_string(), "scrape".to_string())]);
+    let result = add_instrument_node(
+        SRC,
+        "/a",
+        "subpatch",
+        BTreeMap::new(),
+        BTreeMap::new(),
+        None,
+        None,
+        None,
+        Some("voice"),
+        bind,
+        &registry,
+        &resolver,
+    );
+    let refused = match &result {
+        Ok(r) => !r.written && !r.report.ok,
+        Err(_) => true,
+    };
+    assert!(refused, "{result:?}");
+    assert!(
+        format!("{result:?}").contains("smaple"),
+        "names the key: {result:?}"
+    );
+    assert_eq!(readback(&resolver), before);
+}
+
 #[test]
 fn add_node_at_a_taken_address_is_rejected() {
     let registry = Registry::builtin();
@@ -1051,6 +1143,7 @@ fn add_node_at_a_taken_address_is_rejected() {
         None,
         None,
         None,
+        BTreeMap::new(),
         &registry,
         &resolver,
     )
