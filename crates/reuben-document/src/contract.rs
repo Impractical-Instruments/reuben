@@ -99,6 +99,8 @@ impl Diag {
                 Some((node, port)) => (Some(node.to_string()), Some(port.to_string())),
                 None => (None, None),
             },
+            // The child's own addresses name nothing here: the error is the referencing node's.
+            LoadError::Nested { node, .. } => (Some(node.clone()), None),
             LoadError::Json(_)
             | LoadError::CyclicResource { .. }
             | LoadError::UnsupportedVersion { .. }

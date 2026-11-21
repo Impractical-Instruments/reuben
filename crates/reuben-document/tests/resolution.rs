@@ -94,8 +94,11 @@ fn cycle_across_spellings_is_caught_on_canonical_identity() {
         "nodes": [ { "type": "subpatch", "address": "/s", "patch": "s" } ]
     }"#;
 
-    match load_instrument(HOST, &Registry::builtin(), &StripDotSlash::new(SELF_REF)) {
-        Err(LoadError::CyclicResource { source }) => assert_eq!(source, "self.json"),
+    match load_instrument(HOST, &Registry::builtin(), &StripDotSlash::new(SELF_REF))
+        .map_err(|errors| errors.into_first())
+    {
+        Err(e) if matches!(e.innermost(), LoadError::CyclicResource { source } if source == "self.json") =>
+            {}
         Err(other) => panic!("expected CyclicResource, got {other:?}"),
         Ok(_) => panic!("self-cycle must be fatal"),
     }

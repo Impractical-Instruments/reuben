@@ -73,9 +73,11 @@ Why the steps are what they are:
   refused however unrelated it is. A
   rejection moves to `pre_existing` each error it can show the document already had — the same
   kind of error at the same node, port or field — and leaves the rest in `report.errors`. Fix the
-  `pre_existing` errors first. An error left in `report.errors` is not proof your edit made it:
-  validation reports one error at a time, so an error can sit unseen behind the one reported. When
-  the error the load used to stop at is not the one reported now, a note names it.
+  `pre_existing` errors first. Validation reports every error the document has, each one once:
+  a fault that leaves others meaningless (an unknown operator type, a nested child that does not
+  load) is reported alone, not with every wire that touches it. An error left in `report.errors`
+  is your edit's, unless it names no single slot (a cycle, an interface pipe): then it may have
+  been there already, and a note says so.
 - **A broken document still opens, with nothing playing.** Opening a document that does not
   load or plan opens it and unloads what was playing. The rule above still holds for the document
   an edit changes: the edit is refused if that document keeps its own errors. Any other edit is

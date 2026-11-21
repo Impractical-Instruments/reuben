@@ -766,7 +766,7 @@ fn a_node_at_a_minted_address_steps_aside_with_its_references() {
       "nodes": [ { "type": "filter", "address": "/filter" } ]
     }"#;
     assert!(matches!(
-        load_instrument(NATIVE, &reg, &none),
+        load_instrument(NATIVE, &reg, &none).map_err(reuben_document::LoadErrors::into_first),
         Err(reuben_document::format::LoadError::DuplicateAddress(a)) if a == "/filter"
     ));
 }

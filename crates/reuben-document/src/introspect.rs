@@ -8,7 +8,7 @@ use crate::contract::{Diag, Report};
 use crate::describe::{describe_boundary, BoundaryPortDesc};
 use crate::format::{
     doc_value, load_instrument, load_instrument_doc, pipe_descriptor, DocValue, InputPipeDoc,
-    LoadError, LoadWarning, Loaded, NormalizedDoc, PipeDefault,
+    LoadError, LoadErrors, LoadWarning, Loaded, NormalizedDoc, PipeDefault,
 };
 use crate::resources::ResourceResolver;
 use reuben_core::descriptor::{Curve, Descriptor, Port, PortType};
@@ -558,7 +558,7 @@ pub(crate) fn validate_doc_with(
 }
 
 fn report_of(
-    loaded: Result<Loaded, LoadError>,
+    loaded: Result<Loaded, LoadErrors>,
     warning: impl Fn(&LoadWarning) -> Vec<Diag>,
 ) -> Report {
     faulted(loaded, warning).0
@@ -589,6 +589,8 @@ pub(crate) struct Fault {
     port: Option<String>,
     /// The part of the locus a [`Diag`] does not carry.
     field: Option<String>,
+    /// A nested instrument's error: what it is inside the child, whose addresses are the child's.
+    inner: Option<Box<Fault>>,
 }
 
 impl Fault {
@@ -597,8 +599,20 @@ impl Fault {
     ///   of wires can name;
     /// - an interface pipe error names the pipe, and an input and an output pipe can share a name;
     /// - a document-level error (unparseable text, a version, a resource cycle, anonymous outputs)
-    ///   has no slot at all.
+    ///   has no slot at all;
+    /// - a nested instrument's error is the referencing node's only if the inner error has a fault
+    ///   of its own in the child.
     fn of_load(e: &LoadError, diag: &Diag) -> Option<Self> {
+        if let LoadError::Nested { error, .. } = e {
+            let inner = Fault::of_load(error, &Diag::from_load(error))?;
+            return Some(Fault {
+                kind: std::mem::discriminant(e),
+                node: diag.node.clone(),
+                port: diag.port.clone(),
+                field: None,
+                inner: Some(Box::new(inner)),
+            });
+        }
         let field =
             match e {
                 LoadError::UnknownNode { at: None, .. }
@@ -625,17 +639,20 @@ impl Fault {
                 | LoadError::UnknownType { .. }
                 | LoadError::DuplicateAddress(_)
                 | LoadError::UnknownInput { .. }
-                | LoadError::TypeMismatch { .. } => None,
+                | LoadError::TypeMismatch { .. }
+                | LoadError::Nested { .. } => None,
             };
         Some(Fault {
             kind: std::mem::discriminant(e),
             node: diag.node.clone(),
             port: diag.port.clone(),
             field,
+            inner: None,
         })
     }
 
-    /// This fault as it reads after its node is renamed from `from` to `to`.
+    /// This fault as it reads after its node is renamed from `from` to `to`. A nested fault's inner
+    /// locus is in the child, which the rename does not touch.
     pub(crate) fn renamed(mut self, from: &str, to: &str) -> Self {
         if self.node.as_deref() == Some(from) {
             self.node = Some(to.to_string());
@@ -645,21 +662,27 @@ impl Fault {
 }
 
 fn faulted(
-    loaded: Result<Loaded, LoadError>,
+    loaded: Result<Loaded, LoadErrors>,
     warning: impl Fn(&LoadWarning) -> Vec<Diag>,
 ) -> (Report, Vec<Option<Fault>>) {
     let loaded = match loaded {
         Ok(l) => l,
-        Err(e) => {
-            let diag = Diag::from_load(&e);
-            let fault = Fault::of_load(&e, &diag);
+        Err(errors) => {
+            let (errors, faults) = errors
+                .iter()
+                .map(|e| {
+                    let diag = Diag::from_load(e);
+                    let fault = Fault::of_load(e, &diag);
+                    (diag, fault)
+                })
+                .unzip();
             return (
                 Report {
                     ok: false,
-                    errors: vec![diag],
+                    errors,
                     warnings: Vec::new(),
                 },
-                vec![fault],
+                faults,
             );
         }
     };

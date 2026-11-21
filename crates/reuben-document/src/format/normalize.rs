@@ -125,7 +125,7 @@ impl NormalizedDoc {
     /// node dissolves *dark* — no child is spliced in, and wires/taps touching it are dropped
     /// (the same degradation an unavailable child gets on the full path). Use [`load_instrument`](super::load_instrument)
     /// to resolve and inline nested instruments.
-    pub fn build(&self, registry: &Registry) -> Result<Graph, LoadError> {
+    pub fn build(&self, registry: &Registry) -> Result<Graph, LoadErrors> {
         Ok(self
             .build_nested(registry, None, &mut LoadCtx::default(), None)?
             .graph)
@@ -1403,10 +1403,11 @@ mod tests {
         )
         .expect("parses");
         assert!(pipe_renames(&doc).is_empty());
-        assert!(matches!(
-            doc.build(&reg()),
-            Err(LoadError::InvalidPipeName { .. })
-        ));
+        let errors = doc.build(&reg()).err().expect("refused");
+        assert_eq!(errors.len(), 3, "{errors}");
+        assert!(errors
+            .iter()
+            .all(|e| matches!(e, LoadError::InvalidPipeName { .. })));
     }
 
     /// A refused node address whose `_` spelling an input pipe already mints moves past it, and
@@ -1437,9 +1438,15 @@ mod tests {
     fn a_current_document_with_a_refused_address_is_not_migrated() {
         let doc = NormalizedDoc::from_json(&bad_addresses_at(FORMAT_VERSION), &reg(), None)
             .expect("parses");
-        assert!(matches!(
-            doc.build(&reg()),
-            Err(LoadError::InvalidAddress { address, .. }) if address == "/a/osc"
-        ));
+        // Three refused addresses, three errors, and nothing else: the wires naming them are
+        // not checked.
+        let errors = doc.build(&reg()).err().expect("refused");
+        assert!(
+            matches!(errors.first(), LoadError::InvalidAddress { address, .. } if address == "/a/osc")
+        );
+        assert_eq!(errors.len(), 3, "{errors}");
+        assert!(errors
+            .iter()
+            .all(|e| matches!(e, LoadError::InvalidAddress { .. })));
     }
 }

@@ -726,9 +726,29 @@ pub enum LoadError {
     /// A v2 document carries the top-level anonymous `outputs` block, which is v1-only
     ///: master taps are declared as `interface.outputs` pipes now.
     AnonymousOutputs,
+    /// An error in a nested instrument — a `subpatch` node's child or a voicer's voice patch —
+    /// wrapped with the node of this document that references it. The inner error's addresses are
+    /// the child's own.
+    Nested { node: String, error: Box<LoadError> },
 }
 
 impl LoadError {
+    /// The error under every [`Nested`](Self::Nested) wrapping: what went wrong, wherever it was.
+    pub fn innermost(&self) -> &LoadError {
+        match self {
+            LoadError::Nested { error, .. } => error.innermost(),
+            e => e,
+        }
+    }
+
+    /// Wrap `self` with the node that references the nested instrument it arose in.
+    fn nested_in(self, node: &str) -> LoadError {
+        LoadError::Nested {
+            node: node.to_string(),
+            error: Box::new(self),
+        }
+    }
+
     /// Name the wire-ref a source-side error was raised resolving, so it is told apart from the
     /// same missing source named by another wire. Any other error passes through unchanged.
     fn at_wire(mut self, end: WireEnd) -> Self {
@@ -856,6 +876,7 @@ impl fmt::Display for LoadError {
                 "the top-level anonymous `outputs` block is format v1 — declare named \
                  `interface.outputs` pipes instead"
             ),
+            LoadError::Nested { node, error } => write!(f, "in {node:?}: {error}"),
         }
     }
 }
@@ -864,8 +885,144 @@ impl std::error::Error for LoadError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             LoadError::Json(e) => Some(e),
+            LoadError::Nested { error, .. } => Some(error),
             _ => None,
         }
+    }
+}
+
+/// Every error one load found — never empty. In document order: the `interface` inputs, then its
+/// outputs, then the nodes, each in the order the document holds them, and within one entry in the
+/// order the loader checks it. A nested child's errors stand at the node that references it, in the
+/// child's own order.
+///
+/// One root fault is one error. A check that would only restate it is skipped: nothing is checked
+/// against the ports of a node whose operator type is unknown, or of a `subpatch` whose child did
+/// not load, or of an interface input pipe that could not be minted, and a wire into an input that
+/// does not exist is not also checked at its source.
+#[derive(Debug)]
+pub struct LoadErrors(Vec<LoadError>);
+
+impl LoadErrors {
+    /// The error the document order puts first.
+    pub fn first(&self) -> &LoadError {
+        &self.0[0]
+    }
+
+    /// Never zero.
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn iter(&self) -> std::slice::Iter<'_, LoadError> {
+        self.0.iter()
+    }
+
+    pub fn into_first(self) -> LoadError {
+        self.0
+            .into_iter()
+            .next()
+            .expect("a LoadErrors is never empty")
+    }
+}
+
+impl From<LoadError> for LoadErrors {
+    fn from(e: LoadError) -> Self {
+        LoadErrors(vec![e])
+    }
+}
+
+impl IntoIterator for LoadErrors {
+    type Item = LoadError;
+    type IntoIter = std::vec::IntoIter<LoadError>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a LoadErrors {
+    type Item = &'a LoadError;
+    type IntoIter = std::slice::Iter<'a, LoadError>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+/// Every message, `; `-separated, so a caller that shows one line still shows each error.
+impl fmt::Display for LoadErrors {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, e) in self.0.iter().enumerate() {
+            if i > 0 {
+                f.write_str("; ")?;
+            }
+            write!(f, "{e}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for LoadErrors {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.first())
+    }
+}
+
+/// A test's one expected error: a load that finds more than one fails the test, so every
+/// single-fault fixture also holds that its fault raised nothing else.
+#[cfg(test)]
+fn sole<T>(loaded: Result<T, LoadErrors>) -> Result<T, LoadError> {
+    loaded.map_err(|errors| {
+        assert_eq!(errors.len(), 1, "one fault, one error: {errors}");
+        errors.into_first()
+    })
+}
+
+/// [`sole`], with the one error taken out of every [`LoadError::Nested`] wrapping.
+#[cfg(test)]
+fn sole_nested<T>(loaded: Result<T, LoadErrors>) -> Result<T, LoadError> {
+    sole(loaded).map_err(|mut e| loop {
+        match e {
+            LoadError::Nested { error, .. } => e = *error,
+            e => break e,
+        }
+    })
+}
+
+/// Where in a document an error is reported, in document order — the sort key of [`LoadErrors`].
+/// The derived order is the order the variants are declared in, then the index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Site {
+    /// The n-th `interface.inputs` entry.
+    Input(usize),
+    /// The n-th `interface.outputs` entry.
+    Output(usize),
+    /// The n-th node.
+    Node(usize),
+}
+
+/// The errors one document's load has found so far, each at its [`Site`].
+#[derive(Default)]
+struct Found(Vec<(Site, LoadError)>);
+
+impl Found {
+    fn push(&mut self, site: Site, e: LoadError) {
+        self.0.push((site, e));
+    }
+
+    /// Every error of the nested instrument `node` references, each wrapped with `node`.
+    fn nested(&mut self, site: Site, node: &str, errors: impl IntoIterator<Item = LoadError>) {
+        (self.0).extend(errors.into_iter().map(|e| (site, e.nested_in(node))));
+    }
+
+    /// `value` when nothing was found, else every error in document order. The sort is stable, so
+    /// errors at one site keep the order they were found in.
+    fn finish<T>(mut self, value: T) -> Result<T, LoadErrors> {
+        if self.0.is_empty() {
+            return Ok(value);
+        }
+        self.0.sort_by_key(|(site, _)| *site);
+        Err(LoadErrors(self.0.into_iter().map(|(_, e)| e).collect()))
     }
 }
 
@@ -875,7 +1032,7 @@ impl std::error::Error for LoadError {
 /// players to nothing (they play silence), and a nested `subpatch` reference dissolves dark
 /// (nothing spliced in; wires touching it dropped — see [`NormalizedDoc::build`]). Use
 /// [`load_instrument`] to resolve, bind, and inline.
-pub fn load(json: &str, registry: &Registry) -> Result<Graph, LoadError> {
+pub fn load(json: &str, registry: &Registry) -> Result<Graph, LoadErrors> {
     NormalizedDoc::from_json(json, registry, None)?.build(registry)
 }
 
@@ -1141,6 +1298,11 @@ struct LoadCtx {
     /// one, which used to re-read by omission. Availability is singled out above precisely
     /// because it was the one thing *both* paths re-evaluated per site.
     built: BTreeMap<String, Loaded>,
+    /// Children this load has already reported broken, by canonical id or [`bound_build_key`]: a
+    /// later reference to one is dark and reports nothing, so a broken child is one set of errors
+    /// however many nodes use it. A build that skipped one is not complete, but it can be cached in
+    /// `built` all the same: the error was reported, so this load fails whatever else it builds.
+    broken: BTreeSet<String>,
 }
 
 /// The node addresses minted during one load, deduped by value — the table and its own index in
@@ -1204,7 +1366,7 @@ pub fn load_instrument(
     json: &str,
     registry: &Registry,
     resolver: &dyn ResourceResolver,
-) -> Result<Loaded, LoadError> {
+) -> Result<Loaded, LoadErrors> {
     load_instrument_guarded(json, registry, resolver, &mut LoadCtx::default(), None)
 }
 
@@ -1218,7 +1380,7 @@ pub fn load_instrument_doc(
     doc: &NormalizedDoc,
     registry: &Registry,
     resolver: &dyn ResourceResolver,
-) -> Result<Loaded, LoadError> {
+) -> Result<Loaded, LoadErrors> {
     load_doc_guarded(doc, registry, resolver, &mut LoadCtx::default(), None)
 }
 
@@ -1235,7 +1397,7 @@ fn load_instrument_guarded(
     resolver: &dyn ResourceResolver,
     ctx: &mut LoadCtx,
     referrer: Option<&str>,
-) -> Result<Loaded, LoadError> {
+) -> Result<Loaded, LoadErrors> {
     let doc = NormalizedDoc::parse_with(json, registry, Some(resolver), ctx, referrer)?;
     load_doc_guarded(&doc, registry, resolver, ctx, referrer)
 }
@@ -1250,16 +1412,19 @@ fn load_doc_guarded(
     resolver: &dyn ResourceResolver,
     ctx: &mut LoadCtx,
     referrer: Option<&str>,
-) -> Result<Loaded, LoadError> {
+) -> Result<Loaded, LoadErrors> {
     // Build with the resolver threaded in (the resolution-ordering note): a `subpatch`
     // node's boundary face only exists once its child is resolved, and it must exist *during*
     // build pass 2 so the one wire type-checker covers boundary wires — so nested references
     // resolve and inline inside `build`, earlier than the pipeline resolves `sample`/
     // `voice` refs below.
+    // The passes below still run on a build that found errors, so a broken voice patch is reported
+    // in the same load as the document's own faults.
+    let mut found = Found::default();
     let Loaded {
         mut graph,
         mut warnings,
-    } = doc.build_nested(registry, Some(resolver), ctx, referrer)?;
+    } = doc.build_found(registry, Some(resolver), ctx, referrer, &mut found);
 
     // Resolve every referenced id once into the store; record id -> handle for binding. The
     // fetch + decode goes through the load-wide source cache (`LoadCtx::samples`), so N
@@ -1329,7 +1494,7 @@ fn load_doc_guarded(
     // `Plan::instantiate` consumes one Graph per voice) and bind them; the Voicer turns them into
     // per-voice sub-plans at `on_instantiate`. Structural errors in the patch are fatal; a missing id
     // or resolve failure degrades to silence (empty graphs) with a warning, like a sample.
-    for n in &doc.nodes {
+    'voicers: for (at, n) in doc.nodes.iter().enumerate() {
         let Some(id) = &n.voice else { continue };
         let Some(key) = graph.find(&n.address) else {
             continue;
@@ -1351,10 +1516,21 @@ fn load_doc_guarded(
                     voices.push(Graph::new());
                 }
             }
+            // A patch this load already reported broken is not reported again.
+            Some(canon) if ctx.broken.contains(&canon) => continue,
             Some(canon) => {
                 for i in 0..n_voices {
-                    let loaded =
-                        resolve_instrument_slotted(&canon, "voice", registry, resolver, ctx)?;
+                    // Every copy is the same build, so a broken patch is reported once.
+                    let loaded = match resolve_instrument_slotted(
+                        &canon, "voice", registry, resolver, ctx,
+                    ) {
+                        Ok(loaded) => loaded,
+                        Err(errors) => {
+                            found.nested(Site::Node(at), &n.address, errors);
+                            ctx.broken.insert(canon);
+                            continue 'voicers;
+                        }
+                    };
                     // One copy's warnings suffice — the N builds are identical. Wrapped with the
                     // hosting node so provenance survives the merge (see `LoadWarning::Nested`).
                     if i == 0 {
@@ -1401,7 +1577,7 @@ fn load_doc_guarded(
         graph.nodes[key].op.bind_voices(voices);
     }
 
-    Ok(Loaded { graph, warnings })
+    found.finish(Loaded { graph, warnings })
 }
 
 /// The **canonical** source behind a node's resource `id` — the shared first step of every
@@ -1536,7 +1712,7 @@ pub fn resolve_instrument(
     source: &str,
     registry: &Registry,
     resolver: &dyn ResourceResolver,
-) -> Result<Loaded, LoadError> {
+) -> Result<Loaded, LoadErrors> {
     let canon = resolver.canonical(source, None);
     resolve_instrument_slotted(&canon, "patch", registry, resolver, &mut LoadCtx::default())
 }
@@ -1552,7 +1728,7 @@ fn resolve_instrument_slotted(
     registry: &Registry,
     resolver: &dyn ResourceResolver,
     ctx: &mut LoadCtx,
-) -> Result<Loaded, LoadError> {
+) -> Result<Loaded, LoadErrors> {
     match try_resolve_instrument(source, slot, registry, resolver, ctx)? {
         Ok(loaded) => Ok(loaded),
         Err(warning) => Ok(Loaded {
@@ -1576,7 +1752,7 @@ fn try_resolve_instrument(
     registry: &Registry,
     resolver: &dyn ResourceResolver,
     ctx: &mut LoadCtx,
-) -> Result<Result<Loaded, LoadWarning>, LoadError> {
+) -> Result<Result<Loaded, LoadWarning>, LoadErrors> {
     // A source this load already built is served from the cache without touching the resolver:
     // no re-read, no re-parse, no rebuild.
     if let Some(built) = ctx.built.get(source) {
@@ -1620,7 +1796,7 @@ fn load_child_guarded(
     registry: &Registry,
     resolver: &dyn ResourceResolver,
     ctx: &mut LoadCtx,
-) -> Result<Loaded, LoadError> {
+) -> Result<Loaded, LoadErrors> {
     with_cycle_guard(ctx, source, |ctx| {
         load_doc_guarded(doc, registry, resolver, ctx, Some(source))
     })
@@ -1653,7 +1829,7 @@ fn load_child_cached(
     registry: &Registry,
     resolver: &dyn ResourceResolver,
     ctx: &mut LoadCtx,
-) -> Result<Loaded, LoadError> {
+) -> Result<Loaded, LoadErrors> {
     if !ctx.built.contains_key(key) {
         let loaded = load_child_guarded(doc, source, registry, resolver, ctx)?;
         if !loaded.availability_held() {
@@ -1684,15 +1860,16 @@ fn bound_build_key(source: &str, bound: &BTreeMap<String, Option<String>>) -> St
 /// transitively) contains itself — is the fatal [`LoadError::CyclicResource`] instead of
 /// infinite recursion. The one statement of the check/push/run/pop discipline, shared by the
 /// child-load and migration re-export paths. `source` must already be canonical.
-fn with_cycle_guard<T>(
+fn with_cycle_guard<T, E: From<LoadError>>(
     ctx: &mut LoadCtx,
     source: &str,
-    f: impl FnOnce(&mut LoadCtx) -> Result<T, LoadError>,
-) -> Result<T, LoadError> {
+    f: impl FnOnce(&mut LoadCtx) -> Result<T, E>,
+) -> Result<T, E> {
     if ctx.loading.iter().any(|s| s == source) {
         return Err(LoadError::CyclicResource {
             source: source.to_string(),
-        });
+        }
+        .into());
     }
     ctx.loading.push(source.to_string());
     let result = f(ctx);
@@ -1748,22 +1925,43 @@ impl InstrumentDoc {
         resolver: Option<&dyn ResourceResolver>,
         ctx: &mut LoadCtx,
         referrer: Option<&str>,
-    ) -> Result<Loaded, LoadError> {
-        let resolved = self.resolve_ports(registry, resolver, ctx, referrer)?;
-        self.wire_resolved(resolved)
+    ) -> Result<Loaded, LoadErrors> {
+        let mut found = Found::default();
+        let loaded = self.build_found(registry, resolver, ctx, referrer, &mut found);
+        found.finish(loaded)
+    }
+
+    /// [`build_nested`](Self::build_nested) with every error pushed onto `found` instead of
+    /// returned. The graph is whatever could be built around them, so it is only meaningful when
+    /// `found` stays empty.
+    fn build_found(
+        &self,
+        registry: &Registry,
+        resolver: Option<&dyn ResourceResolver>,
+        ctx: &mut LoadCtx,
+        referrer: Option<&str>,
+        found: &mut Found,
+    ) -> Loaded {
+        let resolved = self.resolve_ports(registry, resolver, ctx, referrer, found);
+        self.wire_resolved(resolved, found)
     }
 
     /// [`build_nested`](Self::build_nested) up to pass 2: every node minted, every `subpatch`
     /// child spliced and its face synthesized, no wire-ref resolved yet — the state every wire
     /// endpoint resolves against. [`wire_resolved`](Self::wire_resolved) finishes the build from it;
     /// [`WirePorts`] answers wire questions from it without wiring anything.
+    ///
+    /// Every error goes to `found`, and whatever depends on the entry that raised it is left out:
+    /// an address whose ports cannot be known joins the dark set, so every wire touching it is
+    /// dropped instead of reported again.
     fn resolve_ports(
         &self,
         registry: &Registry,
         resolver: Option<&dyn ResourceResolver>,
         ctx: &mut LoadCtx,
         referrer: Option<&str>,
-    ) -> Result<Resolved, LoadError> {
+        found: &mut Found,
+    ) -> Resolved {
         let mut graph = Graph::new();
         let mut warnings = Vec::new();
         // No anonymous-`outputs` re-check: every route here starts from a `NormalizedDoc`.
@@ -1789,6 +1987,8 @@ impl InstrumentDoc {
         // resolver on this path. Wires and taps touching them are dropped, so the instrument
         // still loads and the nest plays as silence, like a missing voice patch.
         let mut dark: BTreeSet<String> = BTreeSet::new();
+        // Nodes whose own wires are not checked: their address names another node.
+        let mut unchecked: BTreeSet<usize> = BTreeSet::new();
         // The resolved boundary, accumulated through the build: input pipes as they mint below,
         // outputs after pass 2 resolves the graph they feed from. Names migration dropped
         // start dark, so a host reference to one degrades like any other dark
@@ -1806,29 +2006,50 @@ impl InstrumentDoc {
         // like any source — and whatever feeds the boundary (a parent edge through the face, a
         // Voicer, external OSC, P3's input master) lands on its single `in` port.
         if let Some(iface) = &self.interface {
-            for (name, entry) in &iface.inputs {
-                check_pipe_name(name)?;
-                let pipe = entry.pipe().ok_or_else(|| LoadError::InterfacePipe {
-                    name: name.clone(),
-                    reason: "the target-pointing entry form is v1-only — declare the pipe's \
-                             type ({\"type\": …}); a v1 document migrates when parsed via \
-                             `NormalizedDoc::from_json`"
-                        .to_string(),
-                })?;
-                let MintedPipe {
-                    descriptor,
-                    kind,
-                    enum_default,
-                } = pipe_descriptor(name, pipe)?;
+            for (at, (name, entry)) in iface.inputs.iter().enumerate() {
+                let site = Site::Input(at);
+                if let Err(e) = check_pipe_name(name) {
+                    found.push(site, e);
+                    dark.insert(format!("/{name}"));
+                    continue;
+                }
+                // Claimed before the declaration is read, so a node at the same address is a
+                // duplicate whether or not the pipe's own entry is sound.
+                let address = ctx.addresses.intern_joined("/", name);
+                if !addresses.insert(Arc::clone(&address)) {
+                    found.push(site, LoadError::DuplicateAddress(address.to_string()));
+                    continue;
+                }
+                let minted = entry
+                    .pipe()
+                    .ok_or_else(|| LoadError::InterfacePipe {
+                        name: name.clone(),
+                        reason: "the target-pointing entry form is v1-only — declare the pipe's \
+                                 type ({\"type\": …}); a v1 document migrates when parsed via \
+                                 `NormalizedDoc::from_json`"
+                            .to_string(),
+                    })
+                    .and_then(|pipe| Ok((pipe, pipe_descriptor(name, pipe)?)));
+                let (
+                    pipe,
+                    MintedPipe {
+                        descriptor,
+                        kind,
+                        enum_default,
+                    },
+                ) = match minted {
+                    Ok(minted) => minted,
+                    Err(e) => {
+                        found.push(site, e);
+                        dark.insert(address.to_string());
+                        continue;
+                    }
+                };
                 // A pipe's ports are as immutable as an operator's, so its holders share one
                 // handle. Per *pipe*, though — the ports come from this entry's own declaration,
                 // so unlike an operator type there is nothing registry-wide to share.
                 let descriptor = Arc::new(descriptor);
                 let bare_signal = kind == PortKind::Signal && descriptor.inputs[0].meta.is_none();
-                let address = ctx.addresses.intern_joined("/", name);
-                if !addresses.insert(Arc::clone(&address)) {
-                    return Err(LoadError::DuplicateAddress(address.to_string()));
-                }
                 let key = graph.add_boxed(
                     Arc::clone(&address),
                     Box::new(Pipe::new(kind)),
@@ -1852,8 +2073,12 @@ impl InstrumentDoc {
                     // into an allocation of arbitrary size. A structural bound is a load
                     // error, not a degrade (degrade is for reality mismatches,
                     // not broken documents).
-                    check_logical_channel(name, ch)?;
-                    interface.input_channels.insert(name.clone(), ch);
+                    match check_logical_channel(name, ch) {
+                        Ok(()) => {
+                            interface.input_channels.insert(name.clone(), ch);
+                        }
+                        Err(e) => found.push(site, e),
+                    }
                 } else if referrer.is_none() && bare_signal {
                     // A top-level **bare signal** pipe with no channel binding renders
                     // silence forever: no parent edge exists at top level, and audio never
@@ -1867,35 +2092,60 @@ impl InstrumentDoc {
         }
 
         // Pass 1: nodes, config constants, literal inputs.
-        for n in &self.nodes {
-            check_node_address(&n.address)?;
-            let entry = registry
-                .get(&n.type_name)
-                .ok_or_else(|| LoadError::UnknownType {
-                    address: n.address.clone(),
-                    type_name: n.type_name.clone(),
-                })?;
-            let address = ctx.addresses.intern(&n.address);
-            if !addresses.insert(Arc::clone(&address)) {
-                return Err(LoadError::DuplicateAddress(n.address.clone()));
+        for (at, n) in self.nodes.iter().enumerate() {
+            let site = Site::Node(at);
+            // Whether this node holds its address. One that breaks the address rule, or repeats
+            // an address an earlier entry holds, is still checked against its own operator, but
+            // nothing resolves to it.
+            let mut claimed = true;
+            if let Err(e) = check_node_address(&n.address) {
+                found.push(site, e);
+                dark.insert(n.address.clone());
+                claimed = false;
             }
+            let address = ctx.addresses.intern(&n.address);
+            if claimed && !addresses.insert(Arc::clone(&address)) {
+                found.push(site, LoadError::DuplicateAddress(n.address.clone()));
+                unchecked.insert(at);
+                claimed = false;
+            }
+            let Some(entry) = registry.get(&n.type_name) else {
+                found.push(
+                    site,
+                    LoadError::UnknownType {
+                        address: n.address.clone(),
+                        type_name: n.type_name.clone(),
+                    },
+                );
+                unchecked.insert(at);
+                if claimed {
+                    dark.insert(n.address.clone());
+                }
+                continue;
+            };
             let descriptor = entry.descriptor.clone();
             // A resource ref is only valid on an operator that declares that slot (a
             // `sample` on the sample player, a `voice` on the Voicer). Validate
             // data-driven against the node's refs, so a new slot needs no hand-written arm here.
             // `bind` rebinds a nested child's resources, so only a nesting operator carries it.
             if !n.bind.is_empty() && !descriptor.has_resource("patch") {
-                return Err(LoadError::UnknownResource {
-                    node: n.address.clone(),
-                    slot: "bind".to_string(),
-                });
+                found.push(
+                    site,
+                    LoadError::UnknownResource {
+                        node: n.address.clone(),
+                        slot: "bind".to_string(),
+                    },
+                );
             }
             for (slot, provided) in n.resource_refs() {
                 if provided.is_some() && !descriptor.has_resource(slot) {
-                    return Err(LoadError::UnknownResource {
-                        node: n.address.clone(),
-                        slot: slot.to_string(),
-                    });
+                    found.push(
+                        site,
+                        LoadError::UnknownResource {
+                            node: n.address.clone(),
+                            slot: slot.to_string(),
+                        },
+                    );
                 }
             }
             if descriptor.has_resource("patch") {
@@ -1908,10 +2158,13 @@ impl InstrumentDoc {
                 // locks it.
                 for name in n.config.keys() {
                     if !descriptor.is_constant(name) {
-                        return Err(LoadError::UnknownConfig {
-                            node: n.address.clone(),
-                            name: name.clone(),
-                        });
+                        found.push(
+                            site,
+                            LoadError::UnknownConfig {
+                                node: n.address.clone(),
+                                name: name.clone(),
+                            },
+                        );
                     }
                 }
                 continue;
@@ -1926,24 +2179,34 @@ impl InstrumentDoc {
             // constant can read — `set_constant` coerces silently, so an unvalidated value would
             // leave the document saying one thing and the plan built on another.
             for (name, value) in &n.config {
-                let arg = config_literal(&descriptor, name, value, &n.address)?;
-                graph.set_constant(key, name, &arg);
+                match config_literal(&descriptor, name, value, &n.address) {
+                    Ok(arg) => graph.set_constant(key, name, &arg),
+                    Err(e) => found.push(site, e),
+                }
             }
 
             // `inputs`: a Constant here is an error; literals apply now, wire-refs in pass 2.
             for (name, value) in &n.inputs {
                 if descriptor.is_constant(name) {
-                    return Err(LoadError::ConstantInInputs {
-                        node: n.address.clone(),
-                        name: name.clone(),
-                    });
+                    found.push(
+                        site,
+                        LoadError::ConstantInInputs {
+                            node: n.address.clone(),
+                            name: name.clone(),
+                        },
+                    );
+                    continue;
                 }
-                if let Some(arg) = literal_arg(&descriptor, name, value, &n.address, name)? {
-                    graph.set_value(key, name, &arg);
+                match literal_arg(&descriptor, name, value, &n.address, name) {
+                    Ok(Some(arg)) => graph.set_value(key, name, &arg),
+                    Ok(None) => {}
+                    Err(e) => found.push(site, e),
                 }
             }
 
-            by_addr.insert(Arc::clone(&address), (key, descriptor));
+            if claimed {
+                by_addr.insert(Arc::clone(&address), (key, descriptor));
+            }
         }
 
         // Subpatch pass (nesting P4): resolve each nested reference, load the child
@@ -1957,11 +2220,12 @@ impl InstrumentDoc {
         // splice below re-stamps each copy's addresses, so the reuses still hold disjoint nodes,
         // addresses and state.
         let mut patch_docs: BTreeMap<String, Option<NormalizedDoc>> = BTreeMap::new();
-        for n in &self.nodes {
+        for (at, n) in self.nodes.iter().enumerate() {
+            let site = Site::Node(at);
             let nested = registry
                 .get(&n.type_name)
                 .is_some_and(|e| e.descriptor.has_resource("patch"));
-            if !nested {
+            if !nested || unchecked.contains(&at) || dark.contains(&n.address) {
                 continue;
             }
             let Some(id) = &n.patch else {
@@ -2023,6 +2287,11 @@ impl InstrumentDoc {
                 })
                 .collect();
             let built_key = bound_build_key(&canon, &bound);
+            // A child already reported broken in this load is not loaded, nor reported, again.
+            if ctx.broken.contains(&canon) || ctx.broken.contains(&built_key) {
+                dark.insert(n.address.clone());
+                continue;
+            }
             let already_built = ctx.built.get(&built_key).map(Loaded::copy);
             let loaded = match already_built {
                 Some(loaded) => loaded,
@@ -2035,17 +2304,24 @@ impl InstrumentDoc {
                             Some(cached.clone())
                         } else {
                             match resolver.resolve_text(&canon) {
-                                Ok(text) => {
-                                    let parsed = NormalizedDoc::parse_with(
-                                        &text,
-                                        registry,
-                                        Some(resolver),
-                                        ctx,
-                                        Some(&canon),
-                                    )?;
-                                    ctx.docs.insert(canon.clone(), parsed.clone());
-                                    Some(parsed)
-                                }
+                                Ok(text) => match NormalizedDoc::parse_with(
+                                    &text,
+                                    registry,
+                                    Some(resolver),
+                                    ctx,
+                                    Some(&canon),
+                                ) {
+                                    Ok(parsed) => {
+                                        ctx.docs.insert(canon.clone(), parsed.clone());
+                                        Some(parsed)
+                                    }
+                                    Err(e) => {
+                                        found.nested(site, &n.address, [e]);
+                                        ctx.broken.insert(canon.clone());
+                                        dark.insert(n.address.clone());
+                                        continue;
+                                    }
+                                },
                                 Err(e) => {
                                     let failed = LoadWarning::ResolveFailed {
                                         slot: "patch",
@@ -2064,19 +2340,33 @@ impl InstrumentDoc {
                         dark.insert(n.address.clone());
                         continue;
                     };
-                    if bound.is_empty() {
-                        load_child_cached(child_doc, &canon, &canon, registry, resolver, ctx)?
+                    let built = if bound.is_empty() {
+                        load_child_cached(child_doc, &canon, &canon, registry, resolver, ctx)
                     } else {
-                        if let Some(key) =
-                            bound.keys().find(|k| !child_doc.resources.contains_key(*k))
-                        {
-                            return Err(LoadError::UnknownBinding {
-                                node: n.address.clone(),
-                                key: key.clone(),
-                            });
+                        // A key the child does not declare binds nothing, so the child still
+                        // loads, and its face is still checked, without it.
+                        for key in bound.keys() {
+                            if !child_doc.resources.contains_key(key) {
+                                found.push(
+                                    site,
+                                    LoadError::UnknownBinding {
+                                        node: n.address.clone(),
+                                        key: key.clone(),
+                                    },
+                                );
+                            }
                         }
                         let bound_doc = child_doc.with_bound(bound);
-                        load_child_cached(&bound_doc, &canon, &built_key, registry, resolver, ctx)?
+                        load_child_cached(&bound_doc, &canon, &built_key, registry, resolver, ctx)
+                    };
+                    match built {
+                        Ok(loaded) => loaded,
+                        Err(errors) => {
+                            found.nested(site, &n.address, errors);
+                            ctx.broken.insert(built_key);
+                            dark.insert(n.address.clone());
+                            continue;
+                        }
                     }
                 }
             };
@@ -2090,23 +2380,33 @@ impl InstrumentDoc {
                     LoadWarning::InertChannelBinding { name: pipe.clone() }.nested_in(&n.address),
                 );
             }
-            let mut face = splice_subpatch(
+            let mut face = match splice_subpatch(
                 &mut graph,
                 loaded.graph,
                 &n.address,
                 &mut addresses,
                 &mut ctx.addresses,
-            )?;
+            ) {
+                Ok(face) => face,
+                Err(e) => {
+                    found.push(site, e);
+                    dark.insert(n.address.clone());
+                    continue;
+                }
+            };
             face.renamed_inputs = renamed_inputs;
             // Renames are one-to-one, so the only two keys that can reach one pipe are its new
             // name and the old one it replaced.
             for (from, to) in &face.renamed_inputs {
                 if n.inputs.contains_key(from) && n.inputs.contains_key(to) {
-                    return Err(LoadError::InputSetTwice {
-                        node: n.address.clone(),
-                        from: from.clone(),
-                        to: to.clone(),
-                    });
+                    found.push(
+                        site,
+                        LoadError::InputSetTwice {
+                            node: n.address.clone(),
+                            from: from.clone(),
+                            to: to.clone(),
+                        },
+                    );
                 }
             }
 
@@ -2119,20 +2419,25 @@ impl InstrumentDoc {
                     continue; // pass 2
                 }
                 let Some(fp) = face.input(name) else {
-                    if face.dark_input(name) {
-                        continue; // dark boundary port: the literal is dropped
+                    if !face.dark_input(name) {
+                        found.push(
+                            site,
+                            LoadError::UnknownInput {
+                                node: n.address.clone(),
+                                input: name.clone(),
+                            },
+                        );
                     }
-                    return Err(LoadError::UnknownInput {
-                        node: n.address.clone(),
-                        input: name.clone(),
-                    });
+                    continue;
                 };
                 // Pass 1's literal rules, checked against the *inner* port the interface names —
                 // the same `literal_arg` statement, labeled in boundary terms.
                 let d = &graph.nodes[fp.node].descriptor;
                 let inner_name = d.inputs[fp.port].name;
-                if let Some(arg) = literal_arg(d, inner_name, value, &n.address, name)? {
-                    graph.set_value(fp.node, inner_name, &arg);
+                match literal_arg(d, inner_name, value, &n.address, name) {
+                    Ok(Some(arg)) => graph.set_value(fp.node, inner_name, &arg),
+                    Ok(None) => {}
+                    Err(e) => found.push(site, e),
                 }
             }
             // An unfed **bare signal** input pipe renders silence — warn, never
@@ -2151,25 +2456,27 @@ impl InstrumentDoc {
             faces.insert(n.address.clone(), face);
         }
 
-        Ok(Resolved {
+        Resolved {
             graph,
             warnings,
             by_addr,
             faces,
             dark,
+            unchecked,
             interface,
-        })
+        }
     }
 
     /// Pass 2 and the output pipes: resolve every wire-ref and `interface.outputs` feed against
     /// `resolved`, type-checking each, and finish the build.
-    fn wire_resolved(&self, resolved: Resolved) -> Result<Loaded, LoadError> {
+    fn wire_resolved(&self, resolved: Resolved, found: &mut Found) -> Loaded {
         let Resolved {
             mut graph,
             mut warnings,
             by_addr,
             faces,
             dark,
+            unchecked,
             mut interface,
         } = resolved;
 
@@ -2180,9 +2487,12 @@ impl InstrumentDoc {
         // the face carries the inner port's type verbatim, checking against the face *is*
         // checking against the inner port. Errors name the boundary port (`/reverb.wet`), never
         // the prefixed internal address.
-        for n in &self.nodes {
-            if dark.contains(&n.address) {
-                continue; // unavailable nest: its boundary wires are dropped with the warning
+        for (at, n) in self.nodes.iter().enumerate() {
+            let site = Site::Node(at);
+            // An unavailable nest's boundary wires are dropped with its warning; the wires of a
+            // node whose ports are unknown, or whose address names another node, are not checked.
+            if dark.contains(&n.address) || unchecked.contains(&at) {
+                continue;
             }
             for (name, value) in &n.inputs {
                 let InputValue::Wire { from } = value else {
@@ -2190,36 +2500,50 @@ impl InstrumentDoc {
                 };
                 // Destination: this node's input port, or — on a subpatch — its face input.
                 // A dark boundary port drops the wire, like a dark nest.
-                let Some((dst_key, dst_port, to_ty)) =
-                    resolve_input(&faces, &by_addr, &n.address, name)?
-                else {
-                    continue;
-                };
+                // An input that does not exist is the wire's one fault: its source is not checked.
+                let (dst_key, dst_port, to_ty) =
+                    match resolve_input(&faces, &by_addr, &n.address, name) {
+                        Ok(Some(dst)) => dst,
+                        Ok(None) => continue,
+                        Err(e) => {
+                            found.push(site, e);
+                            continue;
+                        }
+                    };
                 // Source: a node's output port, or a subpatch's face output.
                 let (src_addr, src_port_name) = parse_wire(from);
-                if dark.contains(src_addr) {
+                // A source refused as a whole address (`/my.tone`) is dark under the whole
+                // reference, not under the node its last `.` would split off.
+                if dark.contains(src_addr) || dark.contains(from.as_str()) {
                     continue; // wire from an unavailable nest: dropped (the input keeps its default)
                 }
-                let Some((src_key, src_port, from_ty, from_label)) =
-                    resolve_output(&faces, &by_addr, src_addr, from, src_port_name).map_err(
-                        |e| {
-                            e.at_wire(WireEnd::Input {
-                                node: n.address.clone(),
-                                input: name.clone(),
-                            })
-                        },
-                    )?
-                else {
-                    continue;
-                };
+                let (src_key, src_port, from_ty, from_label) =
+                    match resolve_output(&faces, &by_addr, src_addr, from, src_port_name) {
+                        Ok(Some(src)) => src,
+                        Ok(None) => continue,
+                        Err(e) => {
+                            found.push(
+                                site,
+                                e.at_wire(WireEnd::Input {
+                                    node: n.address.clone(),
+                                    input: name.clone(),
+                                }),
+                            );
+                            continue;
+                        }
+                    };
 
                 if !wire_type_compatible(&from_ty, &to_ty) {
-                    return Err(LoadError::TypeMismatch {
-                        from: from_label,
-                        from_type: Box::new(from_ty),
-                        to: format!("{}.{}", n.address, name),
-                        to_type: Box::new(to_ty),
-                    });
+                    found.push(
+                        site,
+                        LoadError::TypeMismatch {
+                            from: from_label,
+                            from_type: Box::new(from_ty),
+                            to: format!("{}.{}", n.address, name),
+                            to_type: Box::new(to_ty),
+                        },
+                    );
+                    continue;
                 }
                 graph.connect(src_key, src_port, dst_key, dst_port);
             }
@@ -2236,20 +2560,32 @@ impl InstrumentDoc {
         // so a consumer one level up degrades the same way instead of hitting a fatal
         // unknown-port error (dark degradation is transitive).
         if let Some(iface) = &self.interface {
-            for (name, entry) in &iface.outputs {
-                let feed = entry.feed().ok_or_else(|| LoadError::InterfacePipe {
-                    name: name.clone(),
-                    reason: "the target-pointing entry form is v1-only — feed the pipe from an \
-                             internal port ({\"from\": …}); a v1 document migrates when parsed \
-                             via `NormalizedDoc::from_json`"
-                        .to_string(),
-                })?;
+            for (at, (name, entry)) in iface.outputs.iter().enumerate() {
+                let site = Site::Output(at);
+                let Some(feed) = entry.feed() else {
+                    found.push(
+                        site,
+                        LoadError::InterfacePipe {
+                            name: name.clone(),
+                            reason: "the target-pointing entry form is v1-only — feed the pipe \
+                                     from an internal port ({\"from\": …}); a v1 document \
+                                     migrates when parsed via `NormalizedDoc::from_json`"
+                                .to_string(),
+                        },
+                    );
+                    continue;
+                };
                 let (src_addr, port) = parse_wire(&feed.from);
-                let resolved = if dark.contains(src_addr) {
+                let resolved = if dark.contains(src_addr) || dark.contains(feed.from.as_str()) {
                     None
                 } else {
-                    resolve_output(&faces, &by_addr, src_addr, &feed.from, port)
-                        .map_err(|e| e.at_wire(WireEnd::Output(name.clone())))?
+                    match resolve_output(&faces, &by_addr, src_addr, &feed.from, port) {
+                        Ok(resolved) => resolved,
+                        Err(e) => {
+                            found.push(site, e.at_wire(WireEnd::Output(name.clone())));
+                            continue;
+                        }
+                    }
                 };
                 let Some((key, idx, ty, _)) = resolved else {
                     interface.dark_outputs.insert(name.clone());
@@ -2259,12 +2595,15 @@ impl InstrumentDoc {
                     });
                     continue;
                 };
-                check_output_feed(
+                if let Err(e) = check_output_feed(
                     name,
                     feed,
                     &feed.from,
                     &graph.nodes[key].descriptor.outputs[idx],
-                )?;
+                ) {
+                    found.push(site, e);
+                    continue;
+                }
                 match feed.channel {
                     Some(ch) => {
                         graph.tap_output_channel(key, idx, ch);
@@ -2280,9 +2619,8 @@ impl InstrumentDoc {
         }
         graph.interface = interface;
 
-        Ok(Loaded { graph, warnings })
+        Loaded { graph, warnings }
     }
-
     /// The flatten half of [`NormalizedDoc::from_graph`] — the one public export path, which
     /// routes this (current-shaped-by-construction) document through the mint. Kept here so the
     /// flatten stays next to its inverse ([`pipe_doc_from_descriptor`] / [`pipe_descriptor`]).
@@ -2624,8 +2962,12 @@ struct Resolved {
     /// wireable; the boundary face is the contract.
     by_addr: BTreeMap<Arc<str>, (reuben_core::graph::NodeKey, Arc<Descriptor>)>,
     faces: BTreeMap<String, BoundaryFace>,
-    /// Subpatch addresses that dissolved dark: a wire touching one is dropped, not checked.
+    /// Subpatch addresses that dissolved dark: a wire touching one is dropped, not checked. On a
+    /// load that found errors, also every address whose ports the error left unknown.
     dark: BTreeSet<String>,
+    /// Indices of document nodes whose own wires are not checked: an unknown operator type, or an
+    /// address an earlier entry already holds.
+    unchecked: BTreeSet<usize>,
     interface: Interface,
 }
 
@@ -3753,7 +4095,7 @@ mod tests {
     fn unknown_type_errors() {
         let json = r#"{"instrument":"t","nodes":[{"type":"nope","address":"/x"}]}"#;
         assert!(matches!(
-            load(json, &reg()),
+            sole(load(json, &reg())),
             Err(LoadError::UnknownType { .. })
         ));
     }
@@ -3764,7 +4106,7 @@ mod tests {
             {"type":"output","address":"/x"},
             {"type":"output","address":"/x"}]}"#;
         assert!(matches!(
-            load(json, &reg()),
+            sole(load(json, &reg())),
             Err(LoadError::DuplicateAddress(_))
         ));
     }
@@ -3810,7 +4152,7 @@ mod tests {
                 "nodes": [{ "type": "output", "address": bad }]
             })
             .to_string();
-            match load(&json, &reg()) {
+            match sole(load(&json, &reg())) {
                 Err(e @ LoadError::InvalidAddress { .. }) => {
                     let diag = crate::contract::Diag::from_load(&e);
                     assert_eq!(diag.node.as_deref(), Some(*bad), "{e}");
@@ -3854,7 +4196,7 @@ mod tests {
         const BAD_CHILD: &str = r#"{"format_version":4,"instrument":"c",
             "nodes":[{"type":"oscillator","address":"/o sc"}]}"#;
         assert!(matches!(
-            load_instrument(host, &reg(), &PatchResolver(BAD_CHILD)),
+            sole_nested(load_instrument(host, &reg(), &PatchResolver(BAD_CHILD))),
             Err(LoadError::InvalidAddress { address, .. }) if address == "/o sc"
         ));
     }
@@ -3890,7 +4232,7 @@ mod tests {
     #[test]
     fn an_input_pipe_name_minting_a_refused_address_is_refused_naming_the_pipe() {
         for bad in BAD_PIPE_NAMES {
-            match load(&one_pipe_doc(FORMAT_VERSION, bad), &reg()) {
+            match sole(load(&one_pipe_doc(FORMAT_VERSION, bad), &reg())) {
                 Err(e @ LoadError::InvalidPipeName { .. }) => {
                     let diag = crate::contract::Diag::from_load(&e);
                     assert_eq!(diag.port.as_deref(), Some(*bad), "{e}");
@@ -3925,7 +4267,7 @@ mod tests {
             {"type":"subpatch","address":"/sub","patch":"v"}]}"#;
         let child = one_pipe_doc(FORMAT_VERSION, "o sc");
         assert!(matches!(
-            load_instrument(host, &reg(), &PatchResolver(&child)),
+            sole_nested(load_instrument(host, &reg(), &PatchResolver(&child))),
             Err(LoadError::InvalidPipeName { name, .. }) if name == "o sc"
         ));
     }
@@ -3958,7 +4300,7 @@ mod tests {
 
         let saved_child = one_pipe_doc(FORMAT_VERSION, "my_tone");
         assert!(matches!(
-            load_instrument(host, &reg(), &PatchResolver(&saved_child)),
+            sole(load_instrument(host, &reg(), &PatchResolver(&saved_child))),
             Err(LoadError::UnknownInput { node, input }) if node == "/sub" && input == "my.tone"
         ));
     }
@@ -4010,7 +4352,11 @@ mod tests {
             (wire_t, "0.9"),
             ("0.2", wire_u),
         ] {
-            match load_instrument(&host(old, new), &reg(), &PatchResolver(TWICE_CHILD)) {
+            match sole(load_instrument(
+                &host(old, new),
+                &reg(),
+                &PatchResolver(TWICE_CHILD),
+            )) {
                 Err(e @ LoadError::InputSetTwice { .. }) => {
                     let diag = crate::contract::Diag::from_load(&e);
                     assert_eq!(diag.node.as_deref(), Some("/sub"), "{e}");
@@ -4058,7 +4404,7 @@ mod tests {
             "nodes":[{"type":"output","address":"/a"},
                      {"type":"output","address":"/b","inputs":{"audio":{"from":"/a.nope"}}}]}"#;
         assert!(matches!(
-            load(json, &reg()),
+            sole(load(json, &reg())),
             Err(LoadError::UnknownPort { .. })
         ));
     }
@@ -4068,7 +4414,7 @@ mod tests {
         let json = r#"{"instrument":"t",
             "nodes":[{"type":"filter","address":"/f","inputs":{"nope":1.0}}]}"#;
         assert!(matches!(
-            load(json, &reg()),
+            sole(load(json, &reg())),
             Err(LoadError::UnknownInput { .. })
         ));
     }
@@ -4080,7 +4426,7 @@ mod tests {
             "nodes":[{"type":"oscillator","address":"/osc"},
                      {"type":"voicer","address":"/v","inputs":{"notes":{"from":"/osc.audio"}}}]}"#;
         assert!(matches!(
-            load(json, &reg()),
+            sole(load(json, &reg())),
             Err(LoadError::TypeMismatch { .. })
         ));
     }
@@ -4107,7 +4453,7 @@ mod tests {
             "nodes":[{"type":"oscillator","address":"/osc"},
                      {"type":"osc_out","address":"/fb","inputs":{"in":{"from":"/osc.audio"}}}]}"#;
         assert!(matches!(
-            load(audio_src, &reg()),
+            sole(load(audio_src, &reg())),
             Err(LoadError::TypeMismatch { .. })
         ));
     }
@@ -4122,7 +4468,7 @@ mod tests {
             "nodes":[{"type":"harmony","address":"/h"},
                      {"type":"osc_out","address":"/fb","inputs":{"in":{"from":"/h.harmony"}}}]}"#;
         assert!(matches!(
-            load(harmony_src, &reg()),
+            sole(load(harmony_src, &reg())),
             Err(LoadError::TypeMismatch { .. })
         ));
     }
@@ -4132,7 +4478,7 @@ mod tests {
         let json = r#"{"instrument":"t","nodes":[
             {"type":"filter","address":"/f","inputs":{"mode":"Nope"}}]}"#;
         assert!(matches!(
-            load(json, &reg()),
+            sole(load(json, &reg())),
             Err(LoadError::BadInputValue { .. })
         ));
     }
@@ -4175,7 +4521,7 @@ mod tests {
         let json = r#"{"instrument":"t","nodes":[
             {"type":"voicer","address":"/v","inputs":{"voices":4}}]}"#;
         assert!(matches!(
-            load(json, &reg()),
+            sole(load(json, &reg())),
             Err(LoadError::ConstantInInputs { .. })
         ));
     }
@@ -4185,7 +4531,7 @@ mod tests {
         let json = r#"{"instrument":"t","nodes":[
             {"type":"filter","address":"/f","config":{"cutoff":1000}}]}"#;
         assert!(matches!(
-            load(json, &reg()),
+            sole(load(json, &reg())),
             Err(LoadError::UnknownConfig { .. })
         ));
     }
@@ -4285,7 +4631,7 @@ mod tests {
             "resources": { "f": "future.json" },
             "nodes": [ { "type": "subpatch", "address": "/f", "patch": "f" } ]
         }"#;
-        match load_instrument(HOST, &Registry::builtin(), &future_child) {
+        match sole_nested(load_instrument(HOST, &Registry::builtin(), &future_child)) {
             Err(LoadError::UnsupportedVersion { found: 99, .. }) => {}
             Err(other) => panic!("expected UnsupportedVersion, got {other:?}"),
             Ok(_) => panic!("a too-new child must be fatal"),
@@ -4378,7 +4724,7 @@ mod tests {
             {"type":"add_f32_value","address":"/a","inputs":{"a":8.0,"b":8.0}},
             {"type":"euclid","address":"/e","inputs":{"steps":{"from":"/a.out"}}}]}"#;
         assert!(matches!(
-            load(f32_src, &reg()),
+            sole(load(f32_src, &reg())),
             Err(LoadError::TypeMismatch { .. })
         ));
         // An `i32` source wires straight in — the sanctioned integer path (`i32 -> i32`).
@@ -4410,7 +4756,7 @@ mod tests {
         let nonesuch = r#"{"instrument":"t","nodes":[
             {"type":"add_i32_value","address":"/k","inputs":{"nope":1}}]}"#;
         assert!(matches!(
-            load(nonesuch, &reg()),
+            sole(load(nonesuch, &reg())),
             Err(LoadError::UnknownInput { .. })
         ));
     }
@@ -4556,7 +4902,7 @@ mod tests {
             "inputs":{"in":{"type":"f32_buffer"}}},
             "nodes":[{"type":"output","address":"/in"}]}"#;
         assert!(matches!(
-            load(json, &reg()),
+            sole(load(json, &reg())),
             Err(LoadError::DuplicateAddress(a)) if a == "/in"
         ));
     }
@@ -4597,7 +4943,9 @@ mod tests {
             let json = format!(
                 r#"{{"format_version":2,"instrument":"t","interface":{{{iface}}},"nodes":[]}}"#
             );
-            let err = load(&json, &reg()).err().expect("channel on message pipe");
+            let err = sole(load(&json, &reg()))
+                .err()
+                .expect("channel on message pipe");
             assert!(matches!(&err, LoadError::InterfacePipe { .. }), "{err:?}");
             assert!(err.to_string().contains("channel"), "{err}");
         }
@@ -4605,7 +4953,9 @@ mod tests {
         let json = r#"{"format_version":2,"instrument":"t","interface":{
             "outputs":{"act":{"from":"/env.active","channel":0}}},
             "nodes":[{"type":"envelope","address":"/env"}]}"#;
-        let err = load(json, &reg()).err().expect("channel on message feed");
+        let err = sole(load(json, &reg()))
+            .err()
+            .expect("channel on message feed");
         assert!(matches!(&err, LoadError::InterfacePipe { .. }), "{err:?}");
     }
 
@@ -4640,7 +4990,7 @@ mod tests {
     fn unknown_pipe_type_is_a_pointed_error() {
         let json = r#"{"format_version":2,"instrument":"t","interface":{
             "inputs":{"in":{"type":"f32buffer"}}},"nodes":[]}"#;
-        let err = load(json, &reg()).err().expect("unknown type");
+        let err = sole(load(json, &reg())).err().expect("unknown type");
         assert!(err.to_string().contains("unknown pipe type"), "{err}");
     }
 
@@ -4702,7 +5052,10 @@ mod tests {
             "nodes":[
               {"type":"add_i32_value","address":"/n","inputs":{"a":{"from":"/amount"}}}]}"#;
         assert!(
-            matches!(load(direct, &reg()), Err(LoadError::TypeMismatch { .. })),
+            matches!(
+                sole(load(direct, &reg())),
+                Err(LoadError::TypeMismatch { .. })
+            ),
             "a bare f32 -> i32 wire must stay a hard error"
         );
 
@@ -4726,7 +5079,7 @@ mod tests {
     fn int_pipe_rejects_a_fractional_default() {
         let json = r#"{"format_version":2,"instrument":"t","interface":{
             "inputs":{"steps":{"type":"i32","min":1,"max":16,"default":8.5}}},"nodes":[]}"#;
-        let err = load(json, &reg()).err().expect("fractional default");
+        let err = sole(load(json, &reg())).err().expect("fractional default");
         assert!(err.to_string().contains("whole number"), "{err}");
     }
 
@@ -4735,7 +5088,7 @@ mod tests {
     fn int_pipe_rejects_a_curve() {
         let json = r#"{"format_version":2,"instrument":"t","interface":{
             "inputs":{"steps":{"type":"i32","min":1,"max":16,"curve":"exp"}}},"nodes":[]}"#;
-        let err = load(json, &reg()).err().expect("curve on int");
+        let err = sole(load(json, &reg())).err().expect("curve on int");
         assert!(err.to_string().contains("curve"), "{err}");
     }
 
@@ -4763,14 +5116,14 @@ mod tests {
             "inputs":{"freq":"/osc.freq"}},
             "nodes":[{"type":"oscillator","address":"/osc"}]}"#;
         assert!(matches!(
-            load(target, &reg()),
+            sole(load(target, &reg())),
             Err(LoadError::InterfacePipe { name, .. }) if name == "freq"
         ));
         let anon = r#"{"format_version":2,"instrument":"t",
             "nodes":[{"type":"oscillator","address":"/osc"}],
             "outputs":[{"node":"/osc","port":"audio"}]}"#;
         assert!(matches!(
-            load(anon, &reg()),
+            sole(load(anon, &reg())),
             Err(LoadError::AnonymousOutputs)
         ));
     }
@@ -4780,7 +5133,7 @@ mod tests {
         let json = r#"{"instrument":"t","interface":{"inputs":{"freq":"/nope.freq"}},
             "nodes":[{"type":"oscillator","address":"/osc"}]}"#;
         assert!(matches!(
-            load(json, &reg()),
+            sole(load(json, &reg())),
             Err(LoadError::UnknownNode { .. })
         ));
     }
@@ -4793,7 +5146,7 @@ mod tests {
         let json = r#"{"instrument":"t","interface":{"inputs":{"gate":"/osc.gate"}},
             "nodes":[{"type":"oscillator","address":"/osc"}]}"#;
         assert!(matches!(
-            load(json, &reg()),
+            sole(load(json, &reg())),
             Err(LoadError::UnknownInput { node, input }) if node == "/osc" && input == "gate"
         ));
     }
@@ -4871,7 +5224,7 @@ mod tests {
         let json = r#"{"instrument":"t","interface":{
             "inputs":{"freq":{"target":"/osc.freq","type":"note"}}},
             "nodes":[{"type":"oscillator","address":"/osc"}]}"#;
-        let err = match load(json, &reg()) {
+        let err = match sole(load(json, &reg())) {
             Err(e @ LoadError::Json(_)) => e,
             Err(e) => panic!("expected Json error, got {e:?}"),
             Ok(_) => panic!("mixed entry must not load"),
@@ -4906,7 +5259,7 @@ mod tests {
             (r#"{"type":"f32","chanel":0}"#, "unknown field `chanel`"),
             (r#"true"#, "target string"),
         ] {
-            let err = load(&entry(body), &reg())
+            let err = sole(load(&entry(body), &reg()))
                 .err()
                 .unwrap_or_else(|| panic!("{body} must not load"));
             assert!(
@@ -4918,7 +5271,7 @@ mod tests {
 
     /// `load` unwrapped to its error (Graph is not Debug, so no `expect_err`).
     fn load_err(json: &str, why: &str) -> LoadError {
-        match load(json, &reg()) {
+        match sole(load(json, &reg())) {
             Err(e) => e,
             Ok(_) => panic!("{why}"),
         }
@@ -4993,7 +5346,7 @@ mod tests {
         let json = r#"{"instrument":"t","interface":{"inputs":{"freq":"/osc"}},
             "nodes":[{"type":"oscillator","address":"/osc"}]}"#;
         assert!(matches!(
-            load(json, &reg()),
+            sole(load(json, &reg())),
             Err(LoadError::UnknownPort { .. })
         ));
     }
@@ -5087,7 +5440,7 @@ mod tests {
         // availability problems warn, wiring problems error.
         const BROKEN: &str = r#"{"instrument":"v","nodes":[{"type":"nope","address":"/x"}]}"#;
         assert!(matches!(
-            resolve_instrument("v.json", &reg(), &PatchResolver(BROKEN)),
+            sole(resolve_instrument("v.json", &reg(), &PatchResolver(BROKEN))),
             Err(LoadError::UnknownType { .. })
         ));
     }
@@ -5222,7 +5575,7 @@ mod tests {
             {"type":"subpatch","address":"/sub","patch":"v"},
             {"type":"output","address":"/out","inputs":{"audio":{"from":"/sub"}}}]}"#;
         assert!(matches!(
-            load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE)),
+            sole(load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE))),
             Err(LoadError::AmbiguousWire { .. })
         ));
     }
@@ -5254,7 +5607,7 @@ mod tests {
             {"type":"subpatch","address":"/sub","patch":"v"},
             {"type":"output","address":"/out","inputs":{"audio":{"from":"/sub"}}}]}"#;
         assert!(matches!(
-            load_instrument(json, &reg(), &PatchResolver(INPUT_ONLY_CHILD)),
+            sole(load_instrument(json, &reg(), &PatchResolver(INPUT_ONLY_CHILD))),
             Err(LoadError::UnknownPort { node, .. }) if node == "/sub"
         ));
     }
@@ -5269,14 +5622,14 @@ mod tests {
             {"type":"subpatch","address":"/sub","patch":"v",
              "inputs":{"nope":{"from":"/osc.audio"}}}]}"#;
         assert!(matches!(
-            load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE)),
+            sole(load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE))),
             Err(LoadError::UnknownInput { node, input }) if node == "/sub" && input == "nope"
         ));
         // A literal onto the same missing boundary input answers identically.
         let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
             {"type":"subpatch","address":"/sub","patch":"v","inputs":{"nope":1.0}}]}"#;
         assert!(matches!(
-            load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE)),
+            sole(load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE))),
             Err(LoadError::UnknownInput { node, input }) if node == "/sub" && input == "nope"
         ));
     }
@@ -5296,7 +5649,7 @@ mod tests {
             {"type":"subpatch","address":"/sub","patch":"v",
              "inputs":{"notes":{"from":"/osc.audio"}}}]}"#;
         assert!(matches!(
-            load_instrument(json, &reg(), &PatchResolver(NOTE_CHILD)),
+            sole(load_instrument(json, &reg(), &PatchResolver(NOTE_CHILD))),
             Err(LoadError::TypeMismatch { to, .. }) if to == "/sub.notes"
         ));
     }
@@ -5309,7 +5662,7 @@ mod tests {
         let json = r#"{"instrument":"t","nodes":[
             {"type":"oscillator","address":"/osc"},
             {"type":"add_f32_value","address":"/sum","inputs":{"a":{"from":"/osc.audio"}}}]}"#;
-        let Err(err) = load(json, &reg()) else {
+        let Err(err) = sole(load(json, &reg())) else {
             panic!("Buffer -> F32 must fail at load");
         };
         assert!(matches!(
@@ -5352,7 +5705,7 @@ mod tests {
             {"type":"oscillator","address":"/mod"},
             {"type":"subpatch","address":"/sub","patch":"k",
              "inputs":{"gain":{"from":"/mod.audio"}}}]}"#;
-        let Err(err) = load_instrument(json, &reg(), &PatchResolver(KINDS_CHILD)) else {
+        let Err(err) = sole(load_instrument(json, &reg(), &PatchResolver(KINDS_CHILD))) else {
             panic!("audio into an F32 boundary input must fail at load");
         };
         assert!(matches!(
@@ -5371,7 +5724,7 @@ mod tests {
             {"type":"oscillator","address":"/mod"},
             {"type":"subpatch","address":"/sub","patch":"k",
              "inputs":{"waveform":{"from":"/mod.audio"}}}]}"#;
-        let Err(err) = load_instrument(json, &reg(), &PatchResolver(KINDS_CHILD)) else {
+        let Err(err) = sole(load_instrument(json, &reg(), &PatchResolver(KINDS_CHILD))) else {
             panic!("audio into an enum boundary input must fail at load");
         };
         assert!(
@@ -5391,7 +5744,7 @@ mod tests {
             {"type":"subpatch","address":"/sub","patch":"k"},
             {"type":"add_f32_value","address":"/sum",
              "inputs":{"a":{"from":"/sub.audio"}}}]}"#;
-        let Err(err) = load_instrument(json, &reg(), &PatchResolver(KINDS_CHILD)) else {
+        let Err(err) = sole(load_instrument(json, &reg(), &PatchResolver(KINDS_CHILD))) else {
             panic!("boundary audio into a parent F32 input must fail at load");
         };
         assert!(matches!(
@@ -5411,7 +5764,7 @@ mod tests {
             {"type":"subpatch","address":"/b","patch":"k",
              "inputs":{"gain":{"from":"/mod.audio"}}}]}"#;
         assert!(matches!(
-            load_instrument(json, &reg(), &PatchResolver(KINDS_CHILD)),
+            sole(load_instrument(json, &reg(), &PatchResolver(KINDS_CHILD))),
             Err(LoadError::TypeMismatch { to, .. }) if to == "/b.gain"
         ));
     }
@@ -5442,7 +5795,7 @@ mod tests {
             {"type":"oscillator","address":"/mod"},
             {"type":"subpatch","address":"/outer","patch":"m",
              "inputs":{"gain":{"from":"/mod.audio"}}}]}"#;
-        let Err(err) = load_instrument(json, &reg(), &Chain) else {
+        let Err(err) = sole(load_instrument(json, &reg(), &Chain)) else {
             panic!("mistyped wire into a re-exported boundary port must fail at load");
         };
         assert!(
@@ -5472,7 +5825,7 @@ mod tests {
         let bad = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
             {"type":"subpatch","address":"/sub","patch":"v","inputs":{"mode":"Nope"}}]}"#;
         assert!(matches!(
-            load_instrument(bad, &reg(), &PatchResolver(FILTER_CHILD)),
+            sole(load_instrument(bad, &reg(), &PatchResolver(FILTER_CHILD))),
             Err(LoadError::BadInputValue { node, name, .. })
                 if node == "/sub" && name == "mode"
         ));
@@ -5572,7 +5925,7 @@ mod tests {
             {"type":"oscillator","address":"/sub/osc"},
             {"type":"subpatch","address":"/sub","patch":"v"}]}"#;
         assert!(matches!(
-            load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE)),
+            sole(load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE))),
             Err(LoadError::InvalidAddress { address, .. }) if address == "/sub/osc"
         ));
     }
@@ -5589,7 +5942,7 @@ mod tests {
             )
         };
         assert!(matches!(
-            load_instrument(&at(FORMAT_VERSION), &reg(), &PatchResolver(VOICE_IFACE)),
+            sole(load_instrument(&at(FORMAT_VERSION), &reg(), &PatchResolver(VOICE_IFACE))),
             Err(LoadError::InvalidPipeName { name, .. }) if name == "sub/osc"
         ));
         let migrated =
@@ -5784,7 +6137,7 @@ mod tests {
         let typo = r#"{"instrument":"p","resources":{"m":"mid.json"},"nodes":[
             {"type":"subpatch","address":"/outer","patch":"m","inputs":{"nope":220.0}}]}"#;
         assert!(matches!(
-            load_instrument(typo, &reg(), &MissingLeaf),
+            sole(load_instrument(typo, &reg(), &MissingLeaf)),
             Err(LoadError::UnknownInput { node, input }) if node == "/outer" && input == "nope"
         ));
     }
@@ -6007,7 +6360,7 @@ mod tests {
             "resources":{"voice":"lib/voice","scrape":"lib/scrape"},
             "nodes":[{"type":"subpatch","address":"/a","patch":"voice",
                       "bind":{"smaple":"scrape"}}]}"#;
-        match load_instrument(json, &reg(), &Library::new()) {
+        match sole(load_instrument(json, &reg(), &Library::new())) {
             Err(LoadError::UnknownBinding { node, key }) => {
                 assert_eq!((node.as_str(), key.as_str()), ("/a", "smaple"));
             }
@@ -6030,7 +6383,7 @@ mod tests {
             .expect("a dark child validates no keys");
         assert!(!dark.availability_held(), "{:?}", dark.warnings);
         assert!(matches!(
-            load_instrument(json, &reg(), &Library::new()),
+            sole(load_instrument(json, &reg(), &Library::new())),
             Err(LoadError::UnknownBinding { .. })
         ));
     }
@@ -6041,7 +6394,7 @@ mod tests {
         let json = r#"{"instrument":"p","resources":{"k":"k.wav"},"nodes":[
             {"type":"sample","address":"/s","bind":{"sample":"k"}}]}"#;
         assert!(matches!(
-            load(json, &reg()),
+            sole(load(json, &reg())),
             Err(LoadError::UnknownResource { slot, .. }) if slot == "bind"
         ));
     }
@@ -6087,7 +6440,7 @@ mod tests {
         let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
             {"type":"subpatch","address":"/sub","patch":"v","config":{"voices":4}}]}"#;
         assert!(matches!(
-            load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE)),
+            sole(load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE))),
             Err(LoadError::UnknownConfig { node, name }) if node == "/sub" && name == "voices"
         ));
     }
@@ -6225,7 +6578,7 @@ mod tests {
         let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
             {"type":"subpatch","address":"/sub","patch":"v"}]}"#;
         assert!(matches!(
-            load_instrument(json, &reg(), &PatchResolver(BROKEN)),
+            sole_nested(load_instrument(json, &reg(), &PatchResolver(BROKEN))),
             Err(LoadError::UnknownType { .. })
         ));
     }
@@ -6238,7 +6591,7 @@ mod tests {
         let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
             {"type":"subpatch","address":"/sub","patch":"v"}]}"#;
         assert!(matches!(
-            load_instrument(json, &reg(), &PatchResolver("{not json")),
+            sole_nested(load_instrument(json, &reg(), &PatchResolver("{not json"))),
             Err(LoadError::Json(_))
         ));
     }
@@ -6254,7 +6607,7 @@ mod tests {
         // Leak the parent text so the resolver can hand it back as the child (test-only).
         let resolver = PatchResolver(String::leak(json.to_string()));
         assert!(matches!(
-            load_instrument(json, &reg(), &resolver),
+            sole_nested(load_instrument(json, &reg(), &resolver)),
             Err(LoadError::CyclicResource { source }) if source == "self.json"
         ));
     }
@@ -6284,7 +6637,7 @@ mod tests {
             }
         }
         assert!(matches!(
-            resolve_instrument("a.json", &reg(), &TwoDocs),
+            sole_nested(resolve_instrument("a.json", &reg(), &TwoDocs)),
             Err(LoadError::CyclicResource { source }) if source == "a.json"
         ));
     }
@@ -6331,7 +6684,7 @@ mod tests {
         };
         assert!(
             matches!(
-                load_instrument(json, &reg(), &resolver),
+                sole_nested(load_instrument(json, &reg(), &resolver)),
                 Err(LoadError::CyclicResource { .. })
             ),
             "a cycle must stay fatal however the availability fell out"
@@ -6346,7 +6699,7 @@ mod tests {
             {"type":"voicer","address":"/voicer","voice":"me"}]}"#;
         let resolver = PatchResolver(String::leak(json.to_string()));
         assert!(matches!(
-            load_instrument(json, &reg(), &resolver),
+            sole_nested(load_instrument(json, &reg(), &resolver)),
             Err(LoadError::CyclicResource { source }) if source == "self.json"
         ));
     }
@@ -6372,7 +6725,7 @@ mod tests {
         let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
             {"type":"oscillator","address":"/osc","patch":"v"}]}"#;
         assert!(matches!(
-            load(json, &reg()),
+            sole(load(json, &reg())),
             Err(LoadError::UnknownResource { .. })
         ));
     }
@@ -6679,7 +7032,7 @@ mod tests {
                 r#"{{"instrument":"t","nodes":[
                     {{"type":"{op}","address":"/n"{inputs}}}]}}"#
             );
-            load(&json, &reg())
+            sole(load(&json, &reg()))
         }
 
         /// Load a parent whose `/sub` subpatch is a child exposing one boundary input `p`
@@ -6694,7 +7047,7 @@ mod tests {
                 r#"{{"instrument":"p","resources":{{"v":"v.json"}},"nodes":[
                     {{"type":"subpatch","address":"/sub","patch":"v"{inputs}}}]}}"#
             );
-            load_instrument(&parent, &reg(), &Child(child)).map(|l| l.graph)
+            sole(load_instrument(&parent, &reg(), &Child(child)).map(|l| l.graph))
         }
 
         /// Load a document declaring one input pipe of type `ty`, with `default` declared on it
@@ -6705,7 +7058,7 @@ mod tests {
                 r#"{{"format_version":2,"instrument":"t",
                     "interface":{{"inputs":{{"p":{{"type":{ty:?}{d}}}}}}},"nodes":[]}}"#
             );
-            load(&json, &reg())
+            sole(load(&json, &reg()))
         }
 
         /// What one node records about its port defaults: the stored value-overrides, and the
@@ -6901,7 +7254,7 @@ mod tests {
                         r#"{{"instrument":"t","nodes":[
                             {{"type":"{op}","address":"/n","config":{{"{name}":{literal}}}}}]}}"#
                     );
-                    let why = match load(&json, &reg()) {
+                    let why = match sole(load(&json, &reg())) {
                         Ok(_) if *owed != Owed::Accepted => {
                             Err(format!("owed {owed:?}, loaded clean"))
                         }
@@ -7073,7 +7426,8 @@ mod tests {
                         {{"type":"subpatch","address":"/sub","patch":"v",
                           "inputs":{{"nope":{literal}}}}}]}}"#
                 );
-                let Err(err) = load_instrument(&parent, &reg(), &Child(child.to_string())) else {
+                let Err(err) = sole(load_instrument(&parent, &reg(), &Child(child.to_string())))
+                else {
                     panic!("{literal}: an absent boundary input name must not load");
                 };
                 failures.extend(owed(&format!("boundary, {literal}"), "/sub", err));

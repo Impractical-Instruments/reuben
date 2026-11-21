@@ -45,8 +45,8 @@ mod intent;
 pub struct EditResult {
     /// The whole-document validation report. `ok` is the write decision: `true` means the edit
     /// passed and was persisted; `false` means nothing was written. On a rejection, the errors
-    /// proven to predate the edit are moved to `pre_existing`; `errors` keeps the rest, which is not
-    /// proof the edit made them, since the load reports only its first error.
+    /// proven to predate the edit are moved to `pre_existing`; `errors` keeps the rest: the edit's
+    /// own, and any error whose locus is too coarse to tell an old one from a new one.
     pub report: Report,
     /// The errors of a rejected edit proven to be ones the document already had before it: the same
     /// kind of error at the same slot. Every edit to a document that does not validate is rejected,
@@ -270,19 +270,14 @@ fn finish_at(
                     .collect();
             }
             let split = split_pre_existing(&mut report.errors, faults, prior.errors, found);
-            // The load stops at its first error, so when the prior error is not the one the result
-            // reports, the result's may have been behind it all along, or the edit cleared the
-            // prior one, or put its own ahead of it — and nothing here can say which.
-            if !report.errors.is_empty() {
-                notes.extend(split.displaced.iter().map(|d| {
-                    format!(
-                        "before this edit the load stopped first at {}; it reports only its first \
-                         error, so the one reported now may have been there all along behind that \
-                         one, or this edit cleared that one, or added an error ahead of it",
-                        located(d)
-                    )
-                }));
-            }
+            notes.extend(split.unmatchable.iter().map(|d| {
+                format!(
+                    "before this edit the document already had an error that names no single \
+                     slot — {} — so an error like it reported now may be that one, not this \
+                     edit's",
+                    located(d)
+                )
+            }));
             split.pre_existing
         }
         _ => Vec::new(),
@@ -325,14 +320,16 @@ fn finish_at(
 struct Split {
     /// What the document already carried, moved out of the edit's errors.
     pre_existing: Vec<Diag>,
-    /// What the document carried that the edit's result does not report.
-    displaced: Vec<Diag>,
+    /// What the document carried with no fault to match it by, when the edit's errors also hold
+    /// one with none: either may be the other, and nothing here can say.
+    unmatchable: Vec<Diag>,
 }
 
 /// Move out of `errors` each one whose fault `found` also holds. `faults[i]` is `errors[i]`'s, and
 /// `found[i]` is `prior[i]`'s; a `None` fault matches nothing, so its error stays the edit's. A
 /// multiset match: each fault in `found` accounts for one error at most, so an edit that
-/// duplicates a fault the document already had is charged with the copy.
+/// duplicates a fault the document already had is charged with the copy. Both sides hold every
+/// error their load found, so a fault left unmatched in `found` is one the edit cleared.
 ///
 /// Both sides are validated from text through the same parse, so each has had the same migration
 /// applied and an address the migration renames is spelled the same way in both.
@@ -342,12 +339,20 @@ fn split_pre_existing(
     prior: Vec<Diag>,
     found: Vec<Option<Fault>>,
 ) -> Split {
-    let mut unmatched: Vec<_> = prior.into_iter().zip(found).collect();
+    let mut unmatched = Vec::new();
+    let mut unmatchable = Vec::new();
+    for (error, fault) in prior.into_iter().zip(found) {
+        match fault {
+            Some(fault) => unmatched.push(fault),
+            None => unmatchable.push(error),
+        }
+    }
     let mut pre_existing = Vec::new();
     let mut introduced = Vec::new();
+    let mut coarse = false;
     for (error, fault) in errors.drain(..).zip(faults) {
-        let matched = fault
-            .and_then(|fault| (unmatched.iter()).position(|(_, f)| f.as_ref() == Some(&fault)));
+        coarse |= fault.is_none();
+        let matched = fault.and_then(|fault| unmatched.iter().position(|f| *f == fault));
         match matched {
             Some(i) => {
                 unmatched.swap_remove(i);
@@ -357,9 +362,12 @@ fn split_pre_existing(
         }
     }
     *errors = introduced;
+    if !coarse {
+        unmatchable.clear();
+    }
     Split {
         pre_existing,
-        displaced: unmatched.into_iter().map(|(d, _)| d).collect(),
+        unmatchable,
     }
 }
 

@@ -8,8 +8,8 @@
 use std::fmt;
 
 use super::{
-    check_output_feed, parse_wire, resolve_input, resolve_output, wire_type_compatible, LoadCtx,
-    LoadError, NormalizedDoc, Registry, Resolved,
+    check_output_feed, parse_wire, resolve_input, resolve_output, wire_type_compatible, Found,
+    LoadCtx, LoadError, LoadErrors, NormalizedDoc, Registry, Resolved,
 };
 use crate::resources::ResourceResolver;
 use reuben_core::descriptor::PortType;
@@ -65,14 +65,21 @@ pub struct WirePorts<'d> {
 
 impl<'d> WirePorts<'d> {
     /// Resolve `doc`'s endpoints the way a load does — `resolver` loads its `subpatch` children.
-    /// Fails with whatever a load would fail with before it reaches the first wire.
+    /// Fails with the first error a load finds before it reaches the wires.
     pub fn resolve(
         doc: &'d NormalizedDoc,
         registry: &Registry,
         resolver: &dyn ResourceResolver,
     ) -> Result<Self, LoadError> {
-        let resolved =
-            doc.resolve_ports(registry, Some(resolver), &mut LoadCtx::default(), None)?;
+        let mut found = Found::default();
+        let resolved = doc.resolve_ports(
+            registry,
+            Some(resolver),
+            &mut LoadCtx::default(),
+            None,
+            &mut found,
+        );
+        found.finish(()).map_err(LoadErrors::into_first)?;
         Ok(WirePorts { doc, resolved })
     }
 
