@@ -15,6 +15,7 @@ use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use super::channel::{unanswered, Transport};
+use super::token::{credential_line, Token};
 use super::wire::{read_ndjson_line, Event, Request, Response, MAX_LINE_BYTES};
 
 /// How long to wait for the loopback connect before declaring the engine unreachable. Loopback
@@ -29,6 +30,8 @@ pub struct TcpTransport {
     /// What `addr` resolved to once, up front; `None` resolves it afresh on every exchange.
     resolved: Option<Vec<SocketAddr>>,
     connect_timeout: Duration,
+    /// Sent as each connection's first line, ahead of its request.
+    token: Option<Token>,
 }
 
 impl TcpTransport {
@@ -38,6 +41,21 @@ impl TcpTransport {
             addr: addr.into(),
             resolved: None,
             connect_timeout,
+            token: None,
+        }
+    }
+
+    /// This transport, opening every connection with `token`'s credential line. A server on
+    /// another machine serves nothing without it; a loopback one needs none and accepts it.
+    pub fn with_token(self, token: Option<Token>) -> Self {
+        Self { token, ..self }
+    }
+
+    /// `line` behind the credential line, when this transport has a token.
+    fn framed(&self, line: &str) -> String {
+        match &self.token {
+            Some(token) => credential_line(token) + line,
+            None => line.into(),
         }
     }
 
@@ -50,6 +68,7 @@ impl TcpTransport {
             addr,
             resolved: Some(resolved),
             connect_timeout,
+            token: None,
         })
     }
 
@@ -63,7 +82,7 @@ impl TcpTransport {
         let stream = self.connect()?;
         stream.set_read_timeout(Some(self.connect_timeout))?;
         stream.set_write_timeout(Some(self.connect_timeout))?;
-        (&stream).write_all(Request::Subscribe.to_ndjson().as_bytes())?;
+        (&stream).write_all(self.framed(&Request::Subscribe.to_ndjson()).as_bytes())?;
         (&stream).flush()?;
 
         let mut reader = BufReader::new(stream);
@@ -167,7 +186,7 @@ impl Transport for TcpTransport {
 
         // Write the one request line. `&TcpStream: Write`, so no try_clone is needed to split the
         // socket — the reader below borrows the same stream.
-        (&stream).write_all(line.as_bytes())?;
+        (&stream).write_all(self.framed(line).as_bytes())?;
         (&stream).flush()?;
 
         // Read exactly one response line (one response per request), no longer than the cap. The
@@ -272,6 +291,40 @@ mod tests {
             !err.get_ref()
                 .is_some_and(|cause| cause.is::<super::super::channel::Unanswered>()),
             "{err:?}"
+        );
+    }
+
+    #[test]
+    fn a_transport_with_a_token_sends_it_first() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr").to_string();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            let mut reader = BufReader::new(&stream);
+            let (mut first, mut second) = (String::new(), String::new());
+            std::io::BufRead::read_line(&mut reader, &mut first).expect("first");
+            std::io::BufRead::read_line(&mut reader, &mut second).expect("second");
+            (&stream)
+                .write_all(Response::Pong.to_ndjson().as_bytes())
+                .expect("answer");
+            (first, second)
+        });
+        let token = Token::new("s3cret").expect("a token");
+        let transport =
+            TcpTransport::new(&addr, DEFAULT_CONNECT_TIMEOUT).with_token(Some(token.clone()));
+        let reply = transport
+            .round_trip(&Request::Ping.to_ndjson(), Duration::from_secs(1))
+            .expect("answered");
+        assert_eq!(
+            Response::from_ndjson(&reply).expect("a reply"),
+            Response::Pong
+        );
+        let (first, second) = server.join().expect("server");
+        assert_eq!(first, credential_line(&token));
+        assert_eq!(second, Request::Ping.to_ndjson());
+        assert!(
+            !format!("{transport:?}").contains("s3cret"),
+            "a transport's Debug must not print its token"
         );
     }
 

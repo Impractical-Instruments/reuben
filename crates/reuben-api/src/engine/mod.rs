@@ -42,6 +42,7 @@ mod result;
 pub mod server;
 #[cfg(feature = "tcp")]
 mod tcp;
+mod token;
 mod verbs;
 pub mod wire;
 
@@ -79,6 +80,10 @@ pub use reuben_document::format::LoadWarning;
 pub use reuben_document::FromDocumentError;
 #[cfg(feature = "tcp")]
 pub use tcp::{TcpTransport, DEFAULT_CONNECT_TIMEOUT};
+pub use token::{
+    admit, credential_line, Admit, EmptyToken, Token, REFUSED_TOKEN, STRUCTURE_TOKEN_ENV,
+    TOKEN_REQUIRED,
+};
 pub use verbs::*;
 pub use wire::{
     read_ndjson_line, ChangedBy, ChannelLevel, Conflict, ControlArg, ControlMessage,
