@@ -26,9 +26,9 @@ pub const GET_ENGINE_STATUS: &str =
 
 pub const GET_CURRENT_INSTRUMENT: &str =
     "Report what the engine is playing: the source of the open instrument, its content hash, \
-     and the node index of that instrument. An empty content hash means the open instrument does \
-     not load and nothing plays until an edit makes it load. Fails fast if no engine is \
-     reachable.";
+     and the node index of that instrument. An empty content hash means nothing plays: with a \
+     source, the open instrument does not load until an edit makes it load; with none, no \
+     instrument is open, so open one. Fails fast if no engine is reachable.";
 
 pub const GET_ENGINE_DIAGNOSTICS: &str =
     "Return the engine's running diagnostics counters since start: output_xruns (events) plus \

@@ -32,7 +32,7 @@ pub struct SendOutput {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct StatusEndpoints {
     /// The structure channel address — every engine tool speaks it
-    /// (`ping`/`send`/`swap`/`get_document`/`get_diagnostics`).
+    /// (`ping`/`send`/`open`/`call`/`get_document`/`get_diagnostics`).
     pub structure: String,
 }
 
@@ -61,7 +61,7 @@ pub struct EngineStatus {
     pub guidance: Option<String>,
 }
 
-/// Output for `swap`: the shared swap report (ok, errors, warnings, content_hash, and on success
+/// Output for `open_instrument`: the shared swap report (ok, errors, warnings, content_hash, and on success
 /// the diff summary) plus, on an `expect`-guard miss, `conflict`, or, when the editor's user was
 /// asked first, `held`.
 ///
@@ -77,14 +77,14 @@ pub struct SwapResult {
     /// Present only on an `expect`-guard miss: nothing was installed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conflict: Option<Conflict>,
-    /// Present only when the swap was held for the editor's user to accept: nothing was installed
+    /// Present only when the open was held for the editor's user to accept: nothing was installed
     /// yet. Not a failure to retry; check `get_current_instrument` later.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held: Option<HeldSwap>,
 }
 
 impl SwapResult {
-    /// The engine processed the swap (success or `ok: false` load failure): the report is the whole
+    /// The engine processed the open (success or `ok: false` load failure): the report is the whole
     /// story, no conflict.
     pub fn installed(report: SwapReport) -> Self {
         Self {
@@ -105,7 +105,7 @@ impl SwapResult {
         }
     }
 
-    /// The host held the swap to ask its user: nothing installed, and the report is the rejected
+    /// The host held the open to ask its user: nothing installed, and the report is the rejected
     /// one naming what keeps playing.
     pub fn held(held: HeldSwap) -> Self {
         Self {
@@ -118,17 +118,17 @@ impl SwapResult {
 
 /// Output for `get_current_instrument`: what the engine is playing, without the document.
 ///
-// The tool's question — "what is the engine playing?" — is not answerable by `{ source, hash }`
-// alone: `swap` installs *from* a source, and the agent may have edited that source since, so
-// re-reading it would answer a different question. The projection here is cut from what is actually
-// installed — the document the channel handed back, which reaches a door and stops there.
+// The tool's question — "what is the engine playing?" — is answered by `{ source, hash }` plus the
+// server's `describe_instrument` index of `source`. The file may have moved on since it was
+// installed; pairing `source` with the installed hash is what lets the agent see that.
 //
 // The drift signal then comes free: compare `content_hash` against the hash any document verb
 // returns for `source`.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CurrentInstrument {
     /// Where the playing document was installed from, when the engine knows it. Absent for
-    /// `reuben play`'s built-in default rig.
+    /// `reuben play`'s built-in default rig, and while nothing is open (the content hash is then
+    /// empty).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     /// The installed document's content hash — the token a later `expect` guard compares, and the

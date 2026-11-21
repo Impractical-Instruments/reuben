@@ -310,7 +310,7 @@ impl Channel {
         }
     }
 
-    /// Read the canonical installed document and its content hash.
+    /// Read what plays, by source and content hash. Never the document itself.
     pub fn get_document(&self) -> Result<DocumentSnapshot, ChannelError> {
         match self.exchange(&Request::GetDocument)? {
             Response::Document(snapshot) => Ok(snapshot),

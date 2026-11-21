@@ -35,8 +35,8 @@ pub const VALIDATE_INSTRUMENT: &str =
 
 pub const NEW_INSTRUMENT: &str =
     "Create a new valid minimal instrument document at `source` and write it. The from-scratch \
-     start move; refuses to overwrite an existing document. Then edit it with the other \
-     document tools and swap it.";
+     start move; refuses to overwrite an existing document. Then open it and edit it with the \
+     other document tools; each accepted edit is live.";
 
 pub const SET_INSTRUMENT_NAME: &str = "Set the instrument's top-level name.";
 

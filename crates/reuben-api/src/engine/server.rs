@@ -598,9 +598,9 @@ fn serve(state: &StructureState, request: Request, caller: Caller) -> Response {
 const UNSTREAMED_SUBSCRIBE: &str = "subscribe needs a connection that streams events; this one \
      answers one response per request";
 
-/// The Coordinator owns the canonical document; serialize it + its hash under the lock so
-/// `get_document` never sees a half-installed pair. While the open instrument does not load, the
-/// document is `null` and the hash [`NOTHING_PLAYS`]: [`SILENCE`] is no document's.
+/// What plays, by source and hash, both read under the Coordinator lock so `get_document` never
+/// pairs a source with another install's hash. While the open instrument does not load, the hash
+/// is [`NOTHING_PLAYS`]: [`SILENCE`] is no document's.
 fn get_document(state: &StructureState) -> Result<Response, Poisoned> {
     let coordinator = state.coordinator()?;
     Ok(Response::Document(DocumentSnapshot {

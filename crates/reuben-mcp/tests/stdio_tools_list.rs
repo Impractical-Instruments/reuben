@@ -521,7 +521,23 @@ fn every_advertised_property_constrains_its_value() {
 /// shapes are each a single scan.
 type Detector = (&'static str, fn(&str) -> bool);
 
-const BANNED: [Detector; 3] = [
+const BANNED: [Detector; 4] = [
+    // The engine still swaps inside an open or an edit, so "a swap" stays a fair word; these are the
+    // spellings that name a swap the model would do itself, which no tool offers.
+    (
+        "a swap the model does itself, e.g. `swap` or \"swap it\"",
+        |s| {
+            [
+                "`swap`",
+                "/swap/",
+                "swap it",
+                "swap was held",
+                "swap_instrument",
+            ]
+            .iter()
+            .any(|p| s.contains(p))
+        },
+    ),
     ("rustdoc link syntax, e.g. [`Foo`] or [`x`](path)", |s| {
         s.match_indices("[`")
             .any(|(i, _)| s[i + 2..].contains("`]"))

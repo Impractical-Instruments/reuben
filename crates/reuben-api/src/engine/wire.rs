@@ -141,8 +141,8 @@ pub enum Request {
     /// Liveness — the structure channel's own probe: it proves the structure channel
     /// itself, which an OSC ping does not.
     Ping,
-    /// Read the currently installed document — the Coordinator owns the canonical doc,
-    /// so a fresh conversation attaches in one call.
+    /// Read what plays, by source and content hash, so a fresh client attaches in one call. The
+    /// document itself is read through [`Call`](Self::Call), never handed over.
     GetDocument,
     /// Read the diagnostics counters, exposed past log-only (this channel is their
     /// vehicle).
@@ -414,12 +414,12 @@ impl SwapReport {
 pub enum Response {
     /// `Ping`'s answer: the channel itself is alive.
     Pong,
-    /// `Swap`'s answer, success or rejection alike: the contract's [`SwapReport`]
+    /// `Open`'s answer, success or rejection alike: the contract's [`SwapReport`]
     /// — `ok`, diagnostics, the **installed** document's content hash,
     /// and on success the diff summary.
     SwapReport(SwapReport),
-    /// `GetDocument`'s answer: the [`DocumentSnapshot`] — the canonical installed document with
-    /// its content hash. A newtype variant, so the payload's fields ride *flat* next to the
+    /// `GetDocument`'s answer: the [`DocumentSnapshot`] — what plays, by source and content hash.
+    /// A newtype variant, so the payload's fields ride *flat* next to the
     /// `reply` tag exactly as they did when this variant spelled them out inline.
     Document(DocumentSnapshot),
     /// `GetDiagnostics`' answer: the diagnostics counters.
@@ -431,12 +431,12 @@ pub enum Response {
     /// than were asked means the rest named no node with a Signal output, or repeated a path
     /// already given.
     Probes { resolved: Vec<Vec<String>> },
-    /// A `Swap` whose `expect` guard missed: nothing installed — the [`Conflict`] names both
+    /// An `Open` whose `expect` guard missed: nothing installed — the [`Conflict`] names both
     /// hashes so the client re-reads via `GetDocument` and reconciles. A newtype variant, so both
     /// hashes ride the wire flat next to the `reply` tag under the user-facing field names (the
     /// tool schema is `conflict: {expected, actual}` — the same struct, not a re-wrap).
     Conflict(Conflict),
-    /// A `Swap` the host held rather than installed, so its user can be asked first: nothing
+    /// An `Open` the host held rather than installed, so its user can be asked first: nothing
     /// installed, and the [`HeldSwap`] names what keeps playing. Flat next to the `reply` tag.
     Held(HeldSwap),
     /// `Send`'s ack: the engine **received** the whole batch and queued it for the next rendered
