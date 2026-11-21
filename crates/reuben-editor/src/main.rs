@@ -20,6 +20,8 @@ mod link;
 mod meter_strip;
 mod names;
 mod pick;
+#[cfg(test)]
+mod reaches_no_files;
 mod sends;
 mod session;
 mod start;

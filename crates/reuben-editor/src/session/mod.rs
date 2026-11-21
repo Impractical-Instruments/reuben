@@ -1333,4 +1333,105 @@ mod tests {
             assert_eq!(std::fs::read(&top).unwrap(), before);
         });
     }
+
+    /// The engine's library root is a directory the editor is never told: not its cwd, not an
+    /// argument, not a path it is handed. Every name the editor uses below came from the server.
+    #[test]
+    fn an_attached_editor_edits_an_engine_rooted_where_it_cannot_see() {
+        within(HANG_SECS, || {
+            let root = Scratch::new("rooted_elsewhere");
+            let library = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instruments");
+            let voices = root.path("voices");
+            std::fs::create_dir_all(&voices).unwrap();
+            for file in ["default.json", "voices/default-voice.json"] {
+                std::fs::copy(library.join(file), root.path(file)).unwrap();
+            }
+            let played = start_headless(EngineConfig {
+                osc_in: None,
+                structure: Some("127.0.0.1:0".to_string()),
+                instrument_root: voices.parent().map(Path::to_path_buf),
+                ..EngineConfig::new(reuben_native::engine::Instrument::Silent)
+            })
+            .expect("the engine starts");
+            let addr = played.structure_addr().expect("bound").to_string();
+
+            let mut engine = crate::engine::Engine::attach(addr, || {});
+            let channel = || engine.channel();
+            let listed = channel().expect("attached").library().expect("the library");
+            let top = (listed.instruments.iter())
+                .map(|entry| entry.name.clone())
+                .find(|name| name.ends_with("default.json"))
+                .unwrap_or_else(|| panic!("the instrument is listed: {listed:?}"));
+            let opened = channel().unwrap().open(top.clone(), None).expect("open");
+            assert!(
+                matches!(opened, reuben_api::engine::SwapOutcome::Installed(_)),
+                "{opened:?}"
+            );
+
+            let (follow, latest) = crate::follower(channel(), || {});
+            let mut session = Session::open(&top, &channel);
+            assert_eq!(session.status(), &Status::Current);
+            let first = session.tree().top().hash().expect("read").to_string();
+            let voice = session.tree().documents()[1].source.clone();
+
+            edit::write(&mut session, &channel, &top, |expect| {
+                Verb::of(
+                    names::SET_INSTRUMENT_DESCRIPTION,
+                    &SetInstrumentDescription {
+                        source: top.clone(),
+                        description: Some("edited from afar".to_string()),
+                        expect,
+                    },
+                )
+            })
+            .expect("the edit ran");
+            let read = session.tree().top().read.as_ref().expect("read");
+            assert_eq!(read.description.as_deref(), Some("edited from afar"));
+            assert_ne!(session.tree().top().hash(), Some(first.as_str()));
+
+            // Changed by another program, as an outside editor would.
+            let before = session
+                .tree()
+                .document(&voice)
+                .unwrap()
+                .hash()
+                .map(str::to_string);
+            let file = root.path("voices/default-voice.json");
+            let text = std::fs::read_to_string(&file).unwrap();
+            std::fs::write(&file, text.replace("3000.0", "900.0")).unwrap();
+            let deadline = Instant::now() + SEEN;
+            while session
+                .tree()
+                .document(&voice)
+                .unwrap()
+                .hash()
+                .map(str::to_string)
+                == before
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "the outside change was never followed"
+                );
+                *latest.lock().unwrap() = channel();
+                session.poll(&follow.drain(), &channel);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+
+            let undone = edit::restore(&mut session, &channel, Direction::Undo);
+            assert!(matches!(undone, edit::Restored::Landed), "{undone:?}");
+            let answer = channel()
+                .unwrap()
+                .call(names::READ_INSTRUMENT_TREE, json!({ "source": top }))
+                .expect("the server answers");
+            let reuben_api::engine::CallOutcome::Called { output, .. } = answer else {
+                panic!("refused: {answer:?}");
+            };
+            assert_eq!(output["documents"][0]["structure"]["hash"], json!(first));
+            assert_eq!(session.tree().top().hash(), Some(first.as_str()));
+
+            drop(follow);
+            engine.shutdown();
+            reuben_native::diagnostics::log_snapshot(&played.shutdown());
+        });
+    }
 }

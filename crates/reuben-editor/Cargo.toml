@@ -15,7 +15,7 @@ clap.workspace = true
 reuben-native = { path = "../reuben-native" }
 # The controls panel reads an instrument's interface and sends live control values through the
 # window. `tcp` is the transport an editor attached to a running `reuben play` dials it with.
-reuben-api = { path = "../reuben-api", features = ["fs-resolver", "tcp"] }
+reuben-api = { path = "../reuben-api", features = ["tcp"] }
 # The per-user state under the config directory (the stored audio device choice) and the
 # surface-doc reader are both JSON.
 serde = { workspace = true, features = ["std"] }
@@ -26,6 +26,8 @@ rfd.workspace = true
 # The tests reach the embedded engine the way the sidecar does: reuben-mcp's own link over the
 # loopback socket.
 reuben-mcp = { path = "../reuben-mcp" }
+# The tests seed and read their fixture documents through the reference store directly.
+reuben-api = { path = "../reuben-api", features = ["fs-resolver"] }
 egui_kittest.workspace = true
 
 [[bin]]

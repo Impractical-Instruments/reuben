@@ -129,9 +129,10 @@ Without a path it opens on a start screen: play an instrument from the library (
 `--instrument-root` you name, else `instruments/` in the working directory or beside the
 `reuben-editor` binary), create a new one, or reopen a recent file.
 
-The editor follows the files: a change to the instrument, or to any voice or subpatch file it
-references — from `reuben-mcp`, a text editor, anything — is swapped in as it is saved. A change
-that does not load is shown, and the last instrument that loaded keeps playing.
+The engine follows the files: a change to the instrument, or to any voice or subpatch file it
+references — from `reuben-mcp`, a text editor, anything — is swapped in as it is saved, and the
+editor shows it. A change that does not load is shown, and the last instrument that loaded keeps
+playing.
 
 #### Attaching to a running engine
 
@@ -144,11 +145,9 @@ cargo reuben-play instruments/groovebox.json  # elsewhere, already running
 cargo run -p reuben-editor -- --attach 127.0.0.1:9124
 ```
 
-The editor opens the file the engine plays, so its controls play the engine live, and a save is
-swapped in as usual. If the instrument's file changed since the engine read it, the editor swaps
-it in when it attaches. That check covers the instrument's own file, not the voice and subpatch
-files it references: save the instrument again to swap those in. The audio device and the engine
-flags (`--io-map`, `--osc-out`) stay the ones `reuben play` was started with.
+The editor opens the instrument the engine plays, so its controls play the engine live, and an
+edit is swapped in as usual. The audio device and the engine flags (`--io-map`, `--osc-out`) stay
+the ones `reuben play` was started with.
 
 The editor checks the engine once a second. If another client has it play a different file, or it
 is restarted on one, the editor opens that file rather than swapping its own over it. A file
@@ -169,9 +168,8 @@ ssh -N -L 9124:127.0.0.1:9124 show-machine
 cargo run -p reuben-editor -- --attach 127.0.0.1:9124
 ```
 
-The editor reads the instrument's files, controls included, from its own disk, and a swap names
-the file by path for the engine to read from its disk. So for a remote engine, the files must be
-at the same paths on both machines (a shared mount, for example).
+The editor reads and edits the instrument's files, controls included, only through the engine,
+so a remote engine's files need not be on the editor's machine.
 
 The editor is in progress: editing the instrument's graph on a canvas is not there yet.
 
