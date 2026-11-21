@@ -51,7 +51,7 @@ fn tidy(v: f64) -> f64 {
 ///
 /// The finiteness check is not defensive tidiness. JSON has no spelling for an infinity, so serde
 /// writes one as `null`: an unguarded `inf` would *erase* the slot on the way to disk, and a null
-/// seed is legal, so write-iff-valid would report the erasure as a successful edit.
+/// seed is legal, so the write rule would report the erasure as a successful edit.
 fn land(moved: f64, min: f64, max: f64) -> Result<Scalar, String> {
     if !(moved.is_finite() && min.is_finite() && max.is_finite() && min <= max) {
         return Err(format!(

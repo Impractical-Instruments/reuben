@@ -253,7 +253,8 @@ fn in_client_terms(mut message: String, named: &[(String, String)]) -> String {
 /// While the open instrument does not load and nothing plays, an edit that leaves it unable to
 /// load is written anyway, with [`Event::Invalid`](super::Event::Invalid) for what is still
 /// wrong: that is how a broken document is repaired. The edit that makes it load starts it
-/// playing.
+/// playing. A verb's repair, which leaves its own document still invalid, is written only here and
+/// never swapped: a swap takes only an instrument that loads and plans.
 fn edit_or_refuse(
     state: &StructureState,
     coordinator: &mut Coordinator,
@@ -1520,6 +1521,99 @@ mod tests {
         assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
         assert_eq!(installed_hash(&s.state), "");
         assert_eq!(s.peak(), 0.0);
+    }
+
+    /// Two independent faults: `/amp.a` and `/amp2.a` each wired from a node that is not there.
+    const TWO_FAULTS: &str = r#"{"format_version":3,"instrument":"tf",
+        "interface":{"outputs":{"out":{"from":"/amp"}}},
+        "nodes":[{"type":"oscillator","address":"/osc"},
+            {"type":"mul_f32_signal","address":"/amp","inputs":{"a":{"from":"/gone"},"b":0.5}},
+            {"type":"mul_f32_signal","address":"/amp2","inputs":{"a":{"from":"/lost"},"b":0.5}}]}"#;
+
+    fn rewire(address: &str) -> Value {
+        json!({"source": "tf.json", "address": address, "input": "a", "from": "/osc"})
+    }
+
+    /// A repair is written while the document is still invalid, and nothing swaps until the
+    /// repair that makes it load.
+    #[test]
+    fn a_repair_that_leaves_the_open_document_invalid_is_written_and_nothing_plays() {
+        let s = serving();
+        s.files.write_text("tf.json", TWO_FAULTS).unwrap();
+        let opened = open_report(&s, "tf.json", None);
+        assert_eq!(opened.report.errors.len(), 2, "{opened:?}");
+        let events = s.state.subscribe();
+
+        let (first, summary) = call(&s, "wire_instrument_input", rewire("/amp"));
+
+        assert_eq!(first["written"], true, "{first}");
+        assert_eq!(first["report"]["ok"], false, "{first}");
+        assert!(summary.contains("still invalid"), "{summary}");
+        assert!(s.files.get("tf.json").unwrap().contains("/osc"));
+        assert_eq!(
+            installed_hash(&s.state),
+            "",
+            "a still-invalid document never swaps"
+        );
+        assert_eq!(s.peak(), 0.0);
+        assert!(matches!(events.try_recv(), Ok(Event::Changed { hash, .. }) if hash.is_empty()));
+        assert!(
+            matches!(events.try_recv(), Ok(Event::Invalid { errors }) if errors.len() == 1),
+            "what is still wrong is published"
+        );
+
+        let (second, _) = call(&s, "wire_instrument_input", rewire("/amp2"));
+
+        assert_eq!(second["written"], true, "{second}");
+        assert_eq!(second["report"]["ok"], true, "{second}");
+        assert_eq!(json!(installed_hash(&s.state)), second["hash"]);
+        assert!(
+            s.peak() > 0.0,
+            "the repair that makes it load starts it playing"
+        );
+    }
+
+    /// A repair another writer makes to the files of what plays reaches the file watcher's reload,
+    /// which keeps playing what played until the document loads.
+    #[test]
+    fn a_still_invalid_repair_on_disk_never_swaps_on_reload() {
+        let s = serving();
+        let playing = installed_hash(&s.state);
+        s.files.write_text("top.json", TWO_FAULTS).unwrap();
+        assert!(matches!(s.state.reload(), Some(Event::Invalid { .. })));
+        let fix = |address: &str| crate::authoring::WireInstrumentInput {
+            source: "top.json".to_string(),
+            address: address.to_string(),
+            input: "a".to_string(),
+            from: "/osc".to_string(),
+            expect: None,
+        };
+
+        let first =
+            crate::authoring::wire_instrument_input(&fix("/amp"), &*s.files).expect("the verb ran");
+        assert!(first.output.written && !first.output.report.ok, "{first:?}");
+
+        assert!(
+            matches!(s.state.reload(), Some(Event::Invalid { errors }) if errors.len() == 1),
+            "a still-invalid file is reported, not swapped"
+        );
+        assert_eq!(installed_hash(&s.state), playing);
+        assert!(s.peak() > 0.0, "what played keeps playing");
+
+        let second = crate::authoring::wire_instrument_input(&fix("/amp2"), &*s.files)
+            .expect("the verb ran");
+        assert!(
+            second.output.written && second.output.report.ok,
+            "{second:?}"
+        );
+        assert!(matches!(
+            s.state.reload(),
+            Some(Event::Changed {
+                by: ChangedBy::Outside,
+                ..
+            })
+        ));
+        assert_eq!(installed_hash(&s.state), second.output.hash);
     }
 
     #[test]

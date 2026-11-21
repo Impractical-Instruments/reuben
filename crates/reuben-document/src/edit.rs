@@ -1,9 +1,19 @@
 //! The closed document-manipulation vocabulary: the finite set of verbs an agent uses to author an
 //! instrument document without ever touching its bytes. Each verb is a pure
 //! `(source, …) -> EditResult` function that funnels through `edit_existing`/`finish`: read,
-//! apply one surgical edit, re-validate the whole document, write iff valid, and echo back the
-//! post-write hash plus the [`projection`](crate::projection) of what the verb touched. All
-//! engine-free — always-available pure tools, never reaching a live engine.
+//! apply one surgical edit, re-validate the whole document, write it under the write rule, and
+//! echo back the post-write hash plus the [`projection`](crate::projection) of what the verb
+//! touched. All engine-free — always-available pure tools, never reaching a live engine.
+//!
+//! **The write rule.** A valid result is written. So is a *repair*: an invalid result that adds no
+//! error and fixes at least one of the errors the document already had, compared as multisets of
+//! faults (an error's kind and locus). An error whose locus is too coarse to have a fault — a
+//! cycle, an interface pipe's — never counts as fixed, and its presence in the result never counts
+//! as nothing added, so a repair holds only errors proven to be ones the document had. Every other
+//! result is refused and nothing is written. A repair's report keeps `ok: false` and every error
+//! still left, and its notes say the document is still invalid. The rule is what lets two
+//! independent faults be fixed one verb at a time; a verb that makes a document
+//! ([`new_instrument`], [`copy_instrument`]) has nothing before it, so it writes only a valid one.
 //!
 //! There are no transactions: a lone unwired node loads clean and renders silence, so
 //! `new → add → add → wire → wire` is valid at every step. [`remove_instrument_node`] and
@@ -43,19 +53,21 @@ mod intent;
 /// advertises: the window declares its own, and only that one is serialized onto a wire.
 #[derive(Debug, Clone, Serialize)]
 pub struct EditResult {
-    /// The whole-document validation report. `ok` is the write decision: `true` means the edit
-    /// passed and was persisted; `false` means nothing was written. On a rejection, the errors
-    /// proven to predate the edit are moved to `pre_existing`; `errors` keeps the rest: the edit's
-    /// own, and any error whose locus is too coarse to tell an old one from a new one.
+    /// The whole-document validation report of the edit's result. `ok` says whether that result is
+    /// valid; [`written`](Self::written) says whether it was persisted, which a repair is while
+    /// still invalid. A written repair keeps every error left in `errors`. On a rejection, the
+    /// errors proven to predate the edit are moved to `pre_existing`; `errors` keeps the rest: the
+    /// edit's own, and any error whose locus is too coarse to tell an old one from a new one.
     pub report: Report,
     /// The errors of a rejected edit proven to be ones the document already had before it: the same
-    /// kind of error at the same slot. Every edit to a document that does not validate is rejected,
-    /// however unrelated, so these are what to fix first. Empty when the edit was written, or when
-    /// nothing was at the source before it.
+    /// kind of error at the same slot. An edit to a document that does not validate is rejected
+    /// unless it fixes one of these and adds none, so these are what to fix first. Empty when the
+    /// edit was written, or when nothing was at the source before it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pre_existing: Vec<Diag>,
-    /// Whether the edit was actually written to the source. Equals `report.ok` — surfaced
-    /// explicitly so a small model never has to infer "did my change land?" from the report shape.
+    /// Whether the edit was actually written to the source: `report.ok`, or a repair that left the
+    /// document still invalid. Surfaced explicitly so a small model never has to infer "did my
+    /// change land?" from the report shape.
     pub written: bool,
     /// The content hash of what is **now persisted** at the source: the new document on a
     /// successful write, the unchanged prior document on a rejected one. The token a later
@@ -73,8 +85,8 @@ pub struct EditResult {
     pub zoom: String,
 }
 
-/// A verb could not do its job — distinct from a *rejected* edit (an invalid result, which is an
-/// ordinary [`EditResult`] with `report.ok == false`). These are the can't-even-try cases: the
+/// A verb could not do its job — distinct from a *rejected* edit (a result the write rule refused,
+/// which is an ordinary [`EditResult`] with `written == false`). These are the can't-even-try cases: the
 /// source is unreadable or unwritable, its bytes are not a document, or the edit's precondition
 /// (the addressed node/pipe/resource must exist, or must not already) does not hold.
 #[derive(Debug)]
@@ -171,9 +183,9 @@ impl Applied {
 
 // --- the shared pipeline ------------------------------------------------------------------------
 
-/// Read the current document, apply `mutate`, then finish (re-normalize · validate · write-iff-valid
-/// · hash · project). The one place every existing-document verb funnels through, so write-iff-valid,
-/// the hash contract, and the projection echo cannot drift verb to verb.
+/// Read the current document, apply `mutate`, then finish (re-normalize · validate · write under
+/// the write rule · hash · project). The one place every existing-document verb funnels through, so
+/// the write rule, the hash contract, and the projection echo cannot drift verb to verb.
 fn edit_existing(
     source: &str,
     registry: &Registry,
@@ -198,9 +210,9 @@ fn edit_existing(
     )
 }
 
-/// Re-normalize the edited document, validate it whole, write iff valid, and build the result. The
-/// hash is the post-write content hash: the new document's when written, the prior document's when
-/// rejected. The zoom always projects the *attempted* document, so a rejected edit still shows the
+/// Re-normalize the edited document, validate it whole, write it under the write rule, and build the
+/// result. The hash is the post-write content hash: the new document's when written, the prior
+/// document's when rejected. The zoom always projects the *attempted* document, so a rejected edit still shows the
 /// author what they tried alongside the errors that stopped it. `before` is the text the edit was
 /// made to, which a rejection is validated against to tell its own errors from the ones it found.
 fn finish(
@@ -260,7 +272,8 @@ fn finish_at(
     let new_json = normalized.to_document_text();
     let (mut report, faults) = validate_faulted(&new_json, registry, resolver);
     let mut notes = applied.notes;
-    // Only a rejection pays for the second validation; a written edit has nothing to attribute.
+    let mut repair = false;
+    // Only an invalid result pays for the second validation; a valid one has nothing to attribute.
     let pre_existing = match before {
         Some(before) if !report.ok => {
             let (prior, mut found) = validate_faulted(before, registry, resolver);
@@ -278,17 +291,34 @@ fn finish_at(
                     located(d)
                 )
             }));
-            split.pre_existing
+            // A repair: every error left is one the document already had, and at least one it
+            // had is gone. Both counts are of faults alone, so an error with no fault on either
+            // side can neither clear the way nor be the one cleared.
+            if report.errors.is_empty() && split.cleared > 0 {
+                repair = true;
+                report.errors = split.pre_existing;
+                notes.push(format!(
+                    "written, but the document is still invalid: this edit fixed {} of its errors \
+                     and added none, and the {} under `errors` remain; it does not load until \
+                     every one is fixed",
+                    split.cleared,
+                    report.errors.len()
+                ));
+                Vec::new()
+            } else {
+                split.pre_existing
+            }
         }
         _ => Vec::new(),
     };
-    if report.ok {
+    let write = report.ok || repair;
+    if write {
         // The text validated is already current, so the renames and strips the parse made reach
         // the caller only from here — on the edit that writes them, and never again.
         let migrated = normalized.migration.warnings.iter().map(Diag::from_warning);
         report.warnings.splice(0..0, migrated);
     }
-    let (written, hash) = if report.ok {
+    let (written, hash) = if write {
         match place {
             Place::Replace => resolver
                 .write_text(source, &new_json)
@@ -323,6 +353,8 @@ struct Split {
     /// What the document carried with no fault to match it by, when the edit's errors also hold
     /// one with none: either may be the other, and nothing here can say.
     unmatchable: Vec<Diag>,
+    /// How many of the document's faults the edit's result no longer holds.
+    cleared: usize,
 }
 
 /// Move out of `errors` each one whose fault `found` also holds. `faults[i]` is `errors[i]`'s, and
@@ -368,6 +400,7 @@ fn split_pre_existing(
     Split {
         pre_existing,
         unmatchable,
+        cleared: unmatched.len(),
     }
 }
 
@@ -412,13 +445,17 @@ fn render_echo(
 // --- whole-document restore ---------------------------------------------------------------------
 
 /// Put `source` back to `prior`, an earlier text of the same document whose content hash was `to`,
-/// through the gate every other verb passes: re-normalize, validate whole, write iff valid.
+/// through the gate every other verb passes: re-normalize, validate whole, write under the write
+/// rule.
 ///
 /// `None` when what is at `source` no longer hashes to `expect`. The caller has already compared
 /// `expect` against its own read; this compares it against the read the restore replaces, so a
 /// write landing between the two is not overwritten whole.
 ///
-/// `prior` validated when it was written, but against the files it referenced *then*. One that no
+/// `prior` passed the write rule when it was written, but against the document before it and the
+/// files it referenced *then*; it is judged again here against what is at `source` now. So a prior
+/// that is still invalid is written back only as a repair of what is there now, and restoring the
+/// state before a repair — which adds back the error the repair fixed — is refused. One that no
 /// longer loads, or that no longer normalizes to `to`, is a rejected edit carrying the reason, never
 /// an [`EditError`] — the verb ran. What is at `source` now must still parse: a rejected restore
 /// reports the hash of what stays persisted, and an unparseable file has none.
@@ -847,7 +884,7 @@ pub fn set_instrument_description(
 
 /// Add a node **fully formed in one call**, mirroring the shape a node zoom reads back: required
 /// `address` + `type`, plus inputs literal-or-wired, config constants, description, any
-/// resource-slot reference, and a `subpatch` node's `bind`). Atomic under write-iff-valid: a wire
+/// resource-slot reference, and a `subpatch` node's `bind`). Atomic under the write rule: a wire
 /// to a missing source, or a duplicate address, rejects the whole call.
 #[allow(clippy::too_many_arguments)]
 pub fn add_instrument_node(

@@ -1,6 +1,9 @@
-//! Why the editor's last edit did not land, held until one does, and the banner that says so.
+//! Why the editor's last edit did not land, or landed leaving the document still invalid, held
+//! until the next edit, and the banner that says so.
 //!
-//! An edit that writes nothing is one of three things. The `expect` guard turned it away because
+//! An edit to a document that already has errors is written when it fixes one and adds none, and
+//! the document is then still invalid: that is [`Feedback::StillInvalid`], so a write is never
+//! read as a valid document. An edit that writes nothing is one of three things. The `expect` guard turned it away because
 //! the file changed since the editor read it — `reuben-mcp`, a text editor — and the answer's hash
 //! is what is on disk now, not the one passed. The verb rejected it as leaving the document
 //! invalid, and the hash is the one passed. Or the verb could not run at all.
@@ -29,11 +32,20 @@ pub enum Feedback {
     },
     /// The verb could not run on `source`.
     Refused { source: String, message: String },
+    /// The edit was written as a repair: it fixed at least one of `source`'s errors and added none,
+    /// and `errors` are the ones left. `hash` is what was written, which they describe only while
+    /// it is on disk.
+    StillInvalid {
+        source: String,
+        hash: String,
+        errors: Vec<Diag>,
+        notes: Vec<String>,
+    },
 }
 
 impl Feedback {
     /// What to hold after an edit of `source` written against `expect` answered `result`: `None`
-    /// when it landed.
+    /// when it landed and left the document valid.
     pub fn of(
         source: &str,
         expect: Option<&str>,
@@ -41,7 +53,13 @@ impl Feedback {
     ) -> Option<Self> {
         let source = source.to_string();
         match result {
-            Ok(edit) if edit.written => None,
+            Ok(edit) if edit.written && edit.report.ok => None,
+            Ok(edit) if edit.written => Some(Self::StillInvalid {
+                source,
+                hash: edit.hash.clone(),
+                errors: edit.report.errors.clone(),
+                notes: edit.notes.clone(),
+            }),
             Ok(edit) if expect.is_some_and(|expect| expect != edit.hash) => {
                 Some(Self::Conflict { source })
             }
@@ -72,11 +90,14 @@ impl Feedback {
         }
     }
 
-    /// Whether this is a rejection of a document that has changed since, `hash_of` giving each
-    /// source's content hash as read now: its errors may name nodes that are gone or fixed.
+    /// Whether this is a rejection or a repair of a document that has changed since, `hash_of`
+    /// giving each source's content hash as read now: its errors may name nodes that are gone or
+    /// fixed.
     pub fn outlived<'a>(&self, hash_of: impl Fn(&str) -> Option<&'a str>) -> bool {
         match self {
-            Self::Rejected { source, hash, .. } => hash_of(source) != Some(hash.as_str()),
+            Self::Rejected { source, hash, .. } | Self::StillInvalid { source, hash, .. } => {
+                hash_of(source) != Some(hash.as_str())
+            }
             Self::Conflict { .. } | Self::Refused { .. } => false,
         }
     }
@@ -95,8 +116,9 @@ impl Feedback {
                 pre_existing,
                 ..
             } if *pre_existing > 0 && *pre_existing == errors.len() => format!(
-                "Your edit was not written: {} was already invalid before it, and no edit is \
-                 written until it is valid. Fix what is below first. The file is unchanged.",
+                "Your edit was not written: {} was already invalid before it, and until it is \
+                 valid only an edit that fixes an error and adds none is written. Fix what is \
+                 below first. The file is unchanged.",
                 file_name(source)
             ),
             Self::Rejected { source, .. } => format!(
@@ -109,20 +131,28 @@ impl Feedback {
                     file_name(source)
                 )
             }
+            Self::StillInvalid { source, errors, .. } => format!(
+                "Your edit was written, but {} is still invalid: it fixed an error and added \
+                 none, and {} error(s) still keep it from loading. Fix what is below next.",
+                file_name(source),
+                errors.len()
+            ),
         }
     }
 
-    /// The lines under the headline: each error of a rejected edit, at the node and port it names
-    /// and marked when the document already had it, then what the verb noted.
+    /// The lines under the headline: each error of a rejected edit, or each one a repair left, at
+    /// the node and port it names and marked when a rejected edit's document already had it, then
+    /// what the verb noted.
     pub fn details(&self) -> Vec<String> {
-        let Self::Rejected {
-            errors,
-            pre_existing,
-            notes,
-            ..
-        } = self
-        else {
-            return Vec::new();
+        let (errors, pre_existing, notes) = match self {
+            Self::Rejected {
+                errors,
+                pre_existing,
+                notes,
+                ..
+            } => (errors, *pre_existing, notes),
+            Self::StillInvalid { errors, notes, .. } => (errors, 0, notes),
+            Self::Conflict { .. } | Self::Refused { .. } => return Vec::new(),
         };
         let (own, already) = errors.split_at(errors.len() - pre_existing);
         (own.iter().map(located))
@@ -158,7 +188,7 @@ pub fn show(ui: &mut egui::Ui, feedback: &mut Option<Feedback>) {
         return;
     };
     let color = match shown {
-        Feedback::Conflict { .. } => ui.visuals().warn_fg_color,
+        Feedback::Conflict { .. } | Feedback::StillInvalid { .. } => ui.visuals().warn_fg_color,
         Feedback::Rejected { .. } | Feedback::Refused { .. } => ui.visuals().error_fg_color,
     };
     let mut dismissed = false;
@@ -306,6 +336,29 @@ mod tests {
             ]
         );
         assert_eq!(both.rejected("a.json").len(), 2);
+    }
+
+    #[test]
+    fn a_repair_written_while_still_invalid_says_so_and_lists_what_is_left() {
+        let mut repaired = answered(true, "h2", vec![diag("/amp2", "a")]);
+        if let Ok(edit) = &mut repaired {
+            edit.report.ok = false;
+        }
+        let held = Feedback::of("a.json", Some("h1"), &repaired).expect("held");
+        assert!(matches!(held, Feedback::StillInvalid { .. }), "{held:?}");
+        assert!(
+            held.headline()
+                .contains("written, but a.json is still invalid"),
+            "{}",
+            held.headline()
+        );
+        assert_eq!(held.details(), vec!["/amp2.a: no".to_string()]);
+        assert!(held.rejected("a.json").is_empty());
+        assert!(
+            !held.outlived(|_| Some("h2")),
+            "the write it describes is on disk"
+        );
+        assert!(held.outlived(|_| Some("h3")));
     }
 
     #[test]

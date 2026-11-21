@@ -70,7 +70,7 @@ fn readback(resolver: &MemoryResolver) -> serde_json::Value {
     serde_json::from_str(&resolver.resolve_text(SRC).expect("read back")).expect("parse")
 }
 
-// --- write-iff-valid -----------------------------------------------------------------------------
+// --- the write rule ------------------------------------------------------------------------------
 
 #[test]
 fn set_input_writes_a_valid_edit_and_returns_a_new_hash() {
@@ -101,7 +101,7 @@ fn an_invalid_edit_is_rejected_and_nothing_is_written() {
     let resolver = resolver_with(&seed());
     let before = readback(&resolver);
 
-    // Wiring an input from a node that does not exist is a load error: write-iff-valid refuses it.
+    // Wiring an input from a node that does not exist is a load error: the write rule refuses it.
     let result = wire_instrument_input(SRC, "/amp", "a", "/nope", &registry, &resolver)
         .expect("call succeeds; the *edit* is what's rejected");
 
@@ -271,40 +271,219 @@ fn a_fault_at_a_migrated_address_is_matched_after_the_migration() {
     assert_eq!(result.pre_existing[0].node.as_deref(), Some("/my_osc"));
 }
 
-/// With a second dangling reference the document cannot be repaired one wire at a time: each fix
-/// leaves the other fault, so each is refused, and write-iff-valid holds the file where it was.
-///
-/// Each fix is refused for the fault it leaves, which the load sees before the edit too, so it is
-/// pre-existing and the edit is charged with nothing.
+/// [`seed`] with two dangling wires on different nodes: `/amp.a ← /gone` and `/amp2.a ← /lost`.
+fn seed_two_faults() -> String {
+    json!({
+        "format_version": 3,
+        "instrument": "test",
+        "nodes": [
+            { "type": "oscillator", "address": "/osc", "inputs": { "freq": 220.0 } },
+            { "type": "mul_f32_signal", "address": "/amp", "inputs": { "a": { "from": "/gone" }, "b": 0.5 } },
+            { "type": "mul_f32_signal", "address": "/amp2", "inputs": { "a": { "from": "/lost" }, "b": 0.5 } }
+        ],
+        "interface": { "outputs": { "main": { "from": "/amp" } } }
+    })
+    .to_string()
+}
+
+/// Two independent faults are repaired one verb at a time: the first fix is written though the
+/// other fault remains, and says so; the second leaves the document valid.
 #[test]
-fn two_independent_faults_refuse_each_single_fix() {
+fn two_independent_faults_are_repaired_one_verb_at_a_time() {
     let registry = Registry::builtin();
-    let resolver = resolver_with(
-        &json!({
-            "format_version": 3,
-            "instrument": "test",
-            "nodes": [
-                { "type": "oscillator", "address": "/osc", "inputs": { "freq": 220.0 } },
-                { "type": "mul_f32_signal", "address": "/amp", "inputs": { "a": { "from": "/gone" }, "b": 0.5 } },
-                { "type": "mul_f32_signal", "address": "/amp2", "inputs": { "a": { "from": "/lost" }, "b": 0.5 } }
-            ],
-            "interface": { "outputs": { "main": { "from": "/amp" } } }
-        })
-        .to_string(),
-    );
+    let resolver = resolver_with(&seed_two_faults());
 
     let first = wire_instrument_input(SRC, "/amp", "a", "/osc", &registry, &resolver)
         .expect("the verb ran");
+
+    assert!(first.written && !first.report.ok, "{first:?}");
+    assert_eq!(
+        first.hash,
+        hash_at(&resolver, SRC),
+        "the hash is what is on disk"
+    );
+    assert_eq!(first.report.errors.len(), 1, "{first:?}");
+    assert_eq!(first.report.errors[0].node.as_deref(), Some("/amp2"));
+    assert!(first.pre_existing.is_empty(), "{first:?}");
+    assert!(
+        first.notes.iter().any(|n| n.contains("still invalid")),
+        "{first:?}"
+    );
+    assert_eq!(
+        readback(&resolver)["nodes"][1]["inputs"]["a"]["from"],
+        "/osc"
+    );
+
     let second = wire_instrument_input(SRC, "/amp2", "a", "/osc", &registry, &resolver)
         .expect("the verb ran");
 
-    assert!(!first.written && !second.written, "{first:?} {second:?}");
-    for (result, left) in [(&first, "/amp2"), (&second, "/amp")] {
+    assert!(second.written && second.report.ok, "{second:?}");
+    assert!(second.notes.is_empty(), "{second:?}");
+}
+
+/// The same repair, the other way round: either fault can go first.
+#[test]
+fn either_of_two_independent_faults_can_be_fixed_first() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_two_faults());
+
+    let first =
+        unwire_instrument_input(SRC, "/amp2", "a", &registry, &resolver).expect("the verb ran");
+
+    assert!(first.written && !first.report.ok, "{first:?}");
+    assert_eq!(first.report.errors.len(), 1, "{first:?}");
+    assert_eq!(first.report.errors[0].node.as_deref(), Some("/amp"));
+}
+
+/// A fix that adds a fault elsewhere is refused, even though the count of errors is unchanged.
+#[test]
+fn a_fix_that_adds_another_fault_is_refused() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_two_faults());
+    let before = readback(&resolver);
+    let current = hash_at(&resolver, SRC);
+    let traded = seed_two_faults()
+        .replace(r#""from":"/gone""#, r#""from":"/osc""#)
+        .replace(r#""freq":220.0"#, r#""freq":220.0,"bogus":1.0"#);
+    let to = content_hash(&NormalizedDoc::from_json(&traded, &registry, Some(&resolver)).unwrap());
+
+    let result = restore_instrument(SRC, &traded, &to, &current, &registry, &resolver)
+        .expect("the verb ran")
+        .expect("the guard held");
+
+    assert!(!result.written, "{result:?}");
+    assert_eq!(result.report.errors.len(), 1, "{result:?}");
+    assert_eq!(result.report.errors[0].node.as_deref(), Some("/osc"));
+    assert_eq!(result.pre_existing.len(), 1, "{result:?}");
+    assert_eq!(result.pre_existing[0].node.as_deref(), Some("/amp2"));
+    assert_eq!(before, readback(&resolver));
+}
+
+/// An edit that leaves the errors as they were is refused, whether it touches them or not.
+#[test]
+fn an_edit_that_leaves_the_errors_as_they_were_is_refused() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_two_faults());
+    let before = readback(&resolver);
+
+    let unrelated =
+        set_instrument_node_description(SRC, "/osc", Some("the tone"), &registry, &resolver)
+            .expect("the verb ran");
+    // Swaps one missing source for another at the same input: the same fault.
+    let same = wire_instrument_input(SRC, "/amp", "a", "/nope", &registry, &resolver)
+        .expect("the verb ran");
+
+    for result in [&unrelated, &same] {
+        assert!(!result.written, "{result:?}");
         assert!(result.report.errors.is_empty(), "{result:?}");
-        assert_eq!(result.pre_existing.len(), 1, "{result:?}");
-        assert_eq!(result.pre_existing[0].node.as_deref(), Some(left));
-        assert!(result.notes.is_empty(), "{result:?}");
+        assert_eq!(result.pre_existing.len(), 2, "{result:?}");
     }
+    assert_eq!(before, readback(&resolver));
+}
+
+/// Restoring the state before a repair puts back the error it fixed, which the write rule refuses
+/// like any other edit that adds one.
+#[test]
+fn restoring_the_state_before_a_repair_is_refused() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_two_faults());
+    let broken = resolver.resolve_text(SRC).expect("read");
+    let broken_hash = hash_at(&resolver, SRC);
+    let repaired = wire_instrument_input(SRC, "/amp", "a", "/osc", &registry, &resolver)
+        .expect("the verb ran");
+    assert!(repaired.written, "{repaired:?}");
+
+    let undone = restore_instrument(
+        SRC,
+        &broken,
+        &broken_hash,
+        &repaired.hash,
+        &registry,
+        &resolver,
+    )
+    .expect("the verb ran")
+    .expect("the guard held");
+
+    assert!(!undone.written, "{undone:?}");
+    assert_eq!(undone.report.errors.len(), 1, "{undone:?}");
+    assert_eq!(undone.report.errors[0].node.as_deref(), Some("/amp"));
+    assert_eq!(hash_at(&resolver, SRC), repaired.hash);
+}
+
+/// [`seed_dangling`] with the interface output bound to a channel out of range too: an interface
+/// pipe error, which an input and an output pipe of one name could both raise, so it has no fault
+/// to be matched by.
+fn seed_dangling_with_coarse() -> String {
+    seed_dangling().replace(
+        r#""main":{"from":"/amp"}"#,
+        r#""main":{"from":"/amp","channel":5000}"#,
+    )
+}
+
+/// An error with no fault is never counted as removed: fixing only it leaves the fine fault, and
+/// nothing proven removed, so the edit is refused.
+#[test]
+fn a_coarse_error_cleared_does_not_count_as_a_fault_removed() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_dangling_with_coarse());
+    let (prior, faults) = validate_faulted(&seed_dangling_with_coarse(), &registry, &resolver);
+    assert_eq!(prior.errors.len(), 2, "{prior:?}");
+    assert_eq!(
+        faults.iter().filter(|f| f.is_none()).count(),
+        1,
+        "{prior:?}"
+    );
+    let before = readback(&resolver);
+
+    let result = set_instrument_interface_output_meta(
+        SRC,
+        "main",
+        Some(0),
+        None,
+        None,
+        None,
+        &registry,
+        &resolver,
+    )
+    .expect("the verb ran");
+
+    assert!(!result.written, "{result:?}");
+    assert_eq!(before, readback(&resolver));
+}
+
+/// An error with no fault is never counted as not added: a fix that leaves one behind cannot prove
+/// it was already there, so the edit is refused.
+#[test]
+fn a_coarse_error_left_behind_does_not_count_as_not_added() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_dangling_with_coarse());
+    let before = readback(&resolver);
+
+    let result = wire_instrument_input(SRC, "/amp", "a", "/osc", &registry, &resolver)
+        .expect("the verb ran");
+
+    assert!(!result.written, "{result:?}");
+    assert_eq!(result.report.errors.len(), 1, "{result:?}");
+    assert_eq!(before, readback(&resolver));
+}
+
+/// A whole-document restore is held to the same rule: back to a state with fewer faults and no new
+/// one is written, still invalid.
+#[test]
+fn a_restore_that_removes_a_fault_and_adds_none_is_written() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_two_faults());
+    let current = hash_at(&resolver, SRC);
+    let fewer = seed_two_faults().replace(r#""from":"/gone""#, r#""from":"/osc""#);
+    let to = content_hash(&NormalizedDoc::from_json(&fewer, &registry, Some(&resolver)).unwrap());
+
+    let result = restore_instrument(SRC, &fewer, &to, &current, &registry, &resolver)
+        .expect("the verb ran")
+        .expect("the guard held");
+
+    assert!(result.written && !result.report.ok, "{result:?}");
+    assert_eq!(result.hash, to);
+    assert_eq!(result.report.errors.len(), 1, "{result:?}");
 }
 
 /// A nested child's error is the referencing node's, matched by that node and by what it is inside
@@ -353,9 +532,9 @@ fn a_nested_childs_error_is_matched_at_the_node_that_holds_it() {
 }
 
 /// Removing one of two nodes that use the same broken child leaves the other's error where it was:
-/// it is the document's, not the edit's.
+/// it is the document's, not the edit's, so the removal is a repair and is written.
 #[test]
-fn removing_one_use_of_a_broken_child_leaves_the_others_error_pre_existing() {
+fn removing_one_use_of_a_broken_child_leaves_the_others_error_where_it_was() {
     let registry = Registry::builtin();
     let mut resolver = resolver_with(
         &json!({
@@ -376,10 +555,10 @@ fn removing_one_use_of_a_broken_child_leaves_the_others_error_pre_existing() {
 
     let result = remove_instrument_node(SRC, "/fx1", &registry, &resolver).expect("the verb ran");
 
-    assert!(!result.written);
-    assert!(result.report.errors.is_empty(), "{result:?}");
-    assert_eq!(result.pre_existing.len(), 1, "{result:?}");
-    assert_eq!(result.pre_existing[0].node.as_deref(), Some("/fx2"));
+    assert!(result.written && !result.report.ok, "{result:?}");
+    assert!(result.pre_existing.is_empty(), "{result:?}");
+    assert_eq!(result.report.errors.len(), 1, "{result:?}");
+    assert_eq!(result.report.errors[0].node.as_deref(), Some("/fx2"));
 }
 
 /// A child too broken to name a slot of its own — here, not JSON at all — is still one fault of the

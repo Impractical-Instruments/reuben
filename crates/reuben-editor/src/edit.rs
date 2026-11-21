@@ -128,8 +128,9 @@ pub enum Restored {
     /// left it. Nothing was written, and the step stays: it lands again if the file returns to
     /// the state the step expects.
     Conflict { step: Step },
-    /// The server would not write the state the step names: it no longer validates, a file it
-    /// references having changed since, or the file could not be written. Nothing was written, and
+    /// The server would not write the state the step names: it is invalid and repairs nothing the
+    /// file has now — a file it references having changed since, or the step undoing a repair,
+    /// which puts back the error that repair fixed — or the file could not be written. Nothing was written, and
     /// the step stays: it lands again once that is put right.
     Rejected { step: Step, result: EditResult },
     /// The server refused the restore, saying `why`: the state the step names is no longer held,
@@ -226,7 +227,8 @@ pub fn restore(
             match serde_json::from_value::<EditResult>(output) {
                 Ok(result) if result.written => {
                     session.undo_mut().crossed(direction);
-                    *session.feedback_mut() = None;
+                    // A state that is itself a repair lands still invalid, and says so.
+                    *session.feedback_mut() = Feedback::of(&step.source, None, &Ok(result));
                     Restored::Landed
                 }
                 Ok(result) if result.hash != expect => Restored::Conflict { step },

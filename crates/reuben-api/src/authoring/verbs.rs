@@ -1053,7 +1053,13 @@ fn validate_summary(report: &Report) -> String {
 /// One-line gloss of a document-verb result.
 pub(crate) fn edit_summary(result: &EditResult) -> String {
     if result.written {
-        let base = format!("written (content_hash {})", result.hash);
+        let mut base = format!("written (content_hash {})", result.hash);
+        if !result.report.ok {
+            base.push_str(&format!(
+                ", but the document is still invalid: {} error(s) remain",
+                result.report.errors.len()
+            ));
+        }
         match result.notes.len() {
             0 => base,
             n => format!("{base}; {n} note(s)"),
@@ -1062,12 +1068,14 @@ pub(crate) fn edit_summary(result: &EditResult) -> String {
         let errors = match (result.pre_existing.len(), result.report.errors.len()) {
             (0, n) => format!("{n} error(s)"),
             (p, 0) => format!(
-                "the document already had {p} error(s) before this edit (pre_existing); no edit is \
-                 written until it validates, so fix those first"
+                "the document already had {p} error(s) before this edit (pre_existing); until it \
+                 validates, an edit is written only if it fixes one and adds none, so fix those \
+                 first"
             ),
             (p, n) => format!(
                 "{n} error(s), and the document already had {p} more before this edit \
-                 (pre_existing); no edit is written until it validates, so fix those first"
+                 (pre_existing); until it validates, an edit is written only if it fixes one and \
+                 adds none, so fix those first"
             ),
         };
         let notes = match result.notes.len() {
@@ -1277,6 +1285,53 @@ mod tests {
             "{}",
             added.summary
         );
+    }
+
+    /// A repair is written while the document is still invalid, and its one-line gloss says so
+    /// beside what remains, so "written" is never read as "valid".
+    #[test]
+    fn a_repair_is_written_and_said_to_leave_the_document_invalid() {
+        let two_faults = DANGLING.replace(
+            r#"{ "type": "oscillator", "address": "/osc", "inputs": { "freq": 220.0 } },"#,
+            r#"{ "type": "oscillator", "address": "/osc", "inputs": { "freq": 220.0 } },
+            { "type": "mul_f32_signal", "address": "/amp2", "inputs": { "a": { "from": "/lost" } } },"#,
+        );
+        let store = MemoryStore::with("inst.json", &two_faults);
+        let fix = |address: &str| WireInstrumentInput {
+            source: "inst.json".to_string(),
+            address: address.to_string(),
+            input: "a".to_string(),
+            from: "/osc".to_string(),
+            expect: None,
+        };
+
+        let first = wire_instrument_input(&fix("/amp"), &store).expect("the verb ran");
+
+        assert!(first.output.written && !first.output.report.ok, "{first:?}");
+        assert_eq!(first.output.report.errors.len(), 1, "{first:?}");
+        assert!(
+            first
+                .summary
+                .contains("but the document is still invalid: 1 error(s) remain"),
+            "{}",
+            first.summary
+        );
+        assert!(
+            first
+                .output
+                .notes
+                .iter()
+                .any(|n| n.contains("still invalid")),
+            "{first:?}"
+        );
+
+        let second = wire_instrument_input(&fix("/amp2"), &store).expect("the verb ran");
+
+        assert!(
+            second.output.written && second.output.report.ok,
+            "{second:?}"
+        );
+        assert!(!second.summary.contains("invalid"), "{}", second.summary);
     }
 
     /// A rejected edit to a valid document carries nothing as pre-existing, and its wire shape

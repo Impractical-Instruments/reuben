@@ -68,21 +68,27 @@ Why the steps are what they are:
   single validation authority — and **writes only if it still loads and plans**, except while
   nothing plays (below); a rejected edit leaves every file exactly as it was and the instrument
   playing as it was.
-- **A broken document refuses every edit until it is fixed**, except while nothing plays (below).
-  Write-iff-valid holds for every verb, so an edit to a document that was already invalid is
-  refused however unrelated it is. A
-  rejection moves to `pre_existing` each error it can show the document already had — the same
-  kind of error at the same node, port or field — and leaves the rest in `report.errors`. Fix the
-  `pre_existing` errors first. Validation reports every error the document has, each one once:
-  a fault that leaves others meaningless (an unknown operator type, a nested child that does not
-  load) is reported alone, not with every wire that touches it. An error left in `report.errors`
-  is your edit's, unless it names no single slot (a cycle, an interface pipe): then it may have
-  been there already, and a note says so.
+- **A broken document takes only repairs until it is fixed.** An edit to a document that already
+  has errors is written only if it **fixes at least one of them and adds none** — a *repair* —
+  and is refused otherwise, however unrelated it is. Errors are compared by kind and slot: the
+  same kind of error at the same node, port or field is the same error. An error that names no
+  single slot (a cycle, an interface pipe) never counts as fixed, and an edit whose result still
+  has one is refused. A written repair answers `written: true` with `report.ok: false`: **the
+  document is still invalid**, `report.errors` lists every error left, and a note says so. Fix
+  the next one; two independent faults take two edits. A
+  rejection moves to `pre_existing` each error it can show the document already had and leaves
+  the rest in `report.errors`. Fix the `pre_existing` errors first. Validation reports every
+  error the document has, each one once: a fault that leaves others meaningless (an unknown
+  operator type, a nested child that does not load) is reported alone, not with every wire that
+  touches it. An error a rejection leaves in `report.errors` is your edit's, unless it names no
+  single slot: then it may have been there already, and a note says so. An undo that would put
+  back an error a repair fixed is refused like any other edit that adds one.
 - **A broken document still opens, with nothing playing.** Opening a document that does not
   load or plan opens it and unloads what was playing. The rule above still holds for the document
-  an edit changes: the edit is refused if that document keeps its own errors. Any other edit is
-  written even though the whole instrument does not plan yet, and nothing plays until the edit
-  that makes it load and plan — that edit starts it playing.
+  an edit changes. An edit it accepts is written even though the whole instrument does not plan
+  yet, and nothing plays until the edit that makes it load and plan — that edit starts it
+  playing. A still-invalid document never plays: the engine swaps in only an instrument that
+  loads and plans, and a file that changes on disk without loading leaves what plays playing.
 - **Sending is ephemeral audition.** A live control message (`/filt/cutoff 1500`) changes
   render state only — sweep a cutoff, try a tempo. The next edit re-reads inputs from the
   document, so an un-folded tweak is **reset by design**. (The MCP tool is

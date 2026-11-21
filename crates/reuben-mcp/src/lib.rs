@@ -114,9 +114,10 @@ const INSTRUCTIONS: &str = "reuben authoring sidecar. The instrument document is
      guaranteed-valid seed at a new one); `open_instrument` opens one, and you must open an \
      instrument before editing it; then each accepted edit is live at once — there is no separate \
      step to make it heard. Every edit re-validates the whole instrument and is refused, with \
-     nothing written, if it would break it — so while a document has errors, every edit that \
-     leaves them is refused. A document that does not load still opens, with nothing playing: an \
-     edit it accepts is written, and playing starts once it loads. A rejection lists under \
+     nothing written, if it would break it. While a document has errors, an edit is written only \
+     if it fixes one and adds none, and then `report.ok` is still false: the document is still \
+     invalid, and `report.errors` lists what remains. A document that does not load still opens, \
+     with nothing playing, and playing starts once an edit makes it load. A rejection lists under \
      `pre_existing` the errors it can show were already there; fix those first. Validation \
      reports every error at once. \
      `send_live_controls` auditions a value without committing it, and the next edit resets it, \
@@ -472,7 +473,7 @@ impl ReubenServer {
 
     // --- Document edits: a `call` to the engine, which owns the files -----------------------------
     //
-    // One roster entry per window verb, and nothing else. The `expect` guard, the write-iff-valid
+    // One roster entry per window verb, and nothing else. The `expect` guard, the write-rule
     // pipeline, the swap of an accepted edit, the projection echo and the one-line gloss all run on
     // the engine's side, and the advertised sentence lives behind `authoring`. What the door still
     // owns is the roster spelling, the advertised schema, and the isError decision.

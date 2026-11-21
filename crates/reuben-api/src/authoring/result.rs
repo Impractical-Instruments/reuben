@@ -46,16 +46,16 @@ pub struct Report {
 /// The shape every document verb returns.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct EditResult {
-    /// The whole-document validation report. `ok` is the write decision: `true` means the edit
-    /// passed and was persisted; `false` means nothing was written and `errors` says why.
+    /// The whole-document validation report of the edited document: `ok` means it is valid.
     pub report: Report,
     // The errors of a rejected edit that the document already had before it; `report.errors` then
     // holds only the rest. A `//`, not a `///`: a field doc ships once per verb's output schema, and
     // the server instructions already say what this is.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pre_existing: Vec<Diag>,
-    /// Whether the edit was actually written to the source. Equals `report.ok` — surfaced
-    /// explicitly so a small model never has to infer "did my change land?" from the report shape.
+    /// Whether the edit was actually written to the source; a repair is written with `report.ok`
+    /// still false. Surfaced explicitly so a small model never has to infer "did my change land?"
+    /// from the report shape.
     pub written: bool,
     /// The content hash of what is **now persisted** at the source: the new document on a
     /// successful write, the unchanged prior document on a rejected one. The token a later

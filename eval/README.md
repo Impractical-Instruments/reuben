@@ -82,7 +82,7 @@ claim is invisible. Adding a task rather than re-pointing one keeps the frozen f
 across the whole trend.
 
 `repair_and_note` is another new series, for the trap the first live runs met on `repair`: an edit
-unrelated to the defect, tried on a document that refuses every edit until the defect is fixed. Its
+unrelated to the defect, tried on a document that refuses every edit but a repair until the defect is fixed. Its
 prompt asks for a node's note first and the fix second; the reference does them in the only order
 that writes. Its floor is the surface's price for telling the two apart — on the live tier, a model
 that tries the note first is refused with the dangling edge under `pre_existing`, not as its own
