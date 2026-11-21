@@ -262,7 +262,7 @@ mod tests {
                 .running()
                 .and_then(RunningEngine::structure_addr)
                 .expect("the structure server bound");
-            editor.link = EngineLink::new(structure.to_string()).expect("a loopback address");
+            editor.link = EngineLink::new(structure.to_string(), None);
             editor
         }
 

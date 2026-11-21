@@ -1,5 +1,5 @@
 //! The link to an engine the editor attached to rather than started: a `reuben play` already
-//! running, reached over its loopback structure channel.
+//! running, reached over its structure channel, on this machine or, with its token, another.
 //!
 //! The editor owns nothing behind the link — no device, no port, no process — so losing it stops
 //! nothing. A thread pings the engine every [`PROBE_EVERY`] and, while it answers, asks what it
@@ -11,11 +11,11 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use eframe::egui;
-use reuben_api::engine::{Channel, TcpTransport, DEFAULT_CONNECT_TIMEOUT};
+use reuben_api::engine::{Channel, ChannelError, TcpTransport, Token, DEFAULT_CONNECT_TIMEOUT};
 
 use crate::sends::{Live, Sends};
 
@@ -54,19 +54,27 @@ pub struct Link {
     /// Set to have the probe report what the engine plays next time even if it reported the same
     /// last time.
     forget: Arc<AtomicBool>,
+    /// What the engine said when it last refused the probe, as it does a missing or wrong token;
+    /// cleared when it answers.
+    refusal: Arc<Mutex<Option<String>>>,
     /// Dropped with the link, which ends the probe thread at its next wait.
     _stop: Sender<()>,
 }
 
 impl Link {
-    /// Start probing the engine at `addr`. `wake` is called from another thread on each
-    /// [`Change`], and each time a send is answered.
-    pub fn dial(addr: impl Into<String>, wake: impl Fn() + Send + Sync + 'static) -> Self {
+    /// Start probing the engine at `addr`, opening every connection with `token` when given. `wake`
+    /// is called from another thread on each [`Change`], and each time a send is answered.
+    pub fn dial(
+        addr: impl Into<String>,
+        token: Option<Token>,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
         let addr = addr.into();
         // A name that does not resolve now is looked up again on each exchange, which fails as
         // the engine not answering until it does.
         let transport = TcpTransport::resolved(&addr, DEFAULT_CONNECT_TIMEOUT)
-            .unwrap_or_else(|_| TcpTransport::new(&addr, DEFAULT_CONNECT_TIMEOUT));
+            .unwrap_or_else(|_| TcpTransport::new(&addr, DEFAULT_CONNECT_TIMEOUT))
+            .with_token(token);
         let wake = Arc::new(wake);
         let sends = Sends::start(
             Channel::with_read_timeout(transport.clone(), SEND_READ_TIMEOUT),
@@ -79,16 +87,24 @@ impl Link {
         let (changed, changes) = mpsc::channel();
         let (stop, stopped) = mpsc::channel();
         let forget = Arc::new(AtomicBool::new(false));
+        let refusal = Arc::new(Mutex::new(None));
         // Not joined on drop: a probe waiting on a wedged engine would hold the window's close for
         // up to a read budget, and the thread holds nothing that outlives it.
         std::thread::spawn({
             let channel = Channel::new(transport.clone());
             let state = Arc::clone(&state);
             let forget = Arc::clone(&forget);
+            let refusal = Arc::clone(&refusal);
             move || {
-                probe(&channel, &state, &forget, &changed, &stopped, move || {
-                    wake()
-                })
+                probe(
+                    &channel,
+                    &state,
+                    &forget,
+                    &refusal,
+                    &changed,
+                    &stopped,
+                    move || wake(),
+                )
             }
         });
         Self {
@@ -98,8 +114,14 @@ impl Link {
             state,
             changes,
             forget,
+            refusal,
             _stop: stop,
         }
+    }
+
+    /// What the engine said when it refused the last probe: it answers, but not this editor.
+    pub fn refusal(&self) -> Option<String> {
+        self.refusal.lock().ok()?.clone()
     }
 
     pub fn addr(&self) -> &str {
@@ -150,10 +172,11 @@ pub fn show(ui: &mut egui::Ui, link: &Link) {
             ui.label(format!("Reaching the engine on {addr}…"));
         }
         Some(false) => {
-            ui.colored_label(
-                ui.visuals().warn_fg_color,
-                format!("The engine on {addr} is not answering; trying again"),
-            );
+            let said = match link.refusal() {
+                Some(message) => format!("The engine on {addr} refused this editor: {message}"),
+                None => format!("The engine on {addr} is not answering; trying again"),
+            };
+            ui.colored_label(ui.visuals().warn_fg_color, said);
         }
     }
 }
@@ -162,6 +185,7 @@ fn probe(
     channel: &Channel,
     state: &AtomicU8,
     forget: &AtomicBool,
+    refusal: &Mutex<Option<String>>,
     changed: &Sender<Change>,
     stopped: &Receiver<()>,
     wake: impl Fn(),
@@ -171,7 +195,14 @@ fn probe(
         if forget.swap(false, Ordering::AcqRel) {
             last = None;
         }
-        let change = match channel.ping() {
+        let pinged = channel.ping();
+        if let Ok(mut said) = refusal.lock() {
+            *said = match &pinged {
+                Err(ChannelError::Channel(message)) => Some(message.clone()),
+                _ => None,
+            };
+        }
+        let change = match pinged {
             Err(e) => {
                 last = None;
                 let was = state.swap(DOWN, Ordering::AcqRel);

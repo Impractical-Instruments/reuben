@@ -162,17 +162,40 @@ Control values from the editor and from any other OSC sender reach the same inpu
 last one written wins. The editor does not hold a swap from another client to ask first, as it
 does for an engine it started: whoever writes last wins.
 
-The structure channel listens on loopback only. To attach to an engine on another machine,
-tunnel the port over SSH and attach to your end. Every control move then waits on a round trip
-through the tunnel, so expect some lag:
+The structure channel listens on loopback unless told otherwise. To attach from another machine,
+start the engine on an address that machine can reach, with a token. The engine refuses to
+listen beyond loopback without one, and serves a client from another machine only when the
+client sends it:
+
+```sh
+# on the show machine
+export REUBEN_STRUCTURE_TOKEN=$(openssl rand -hex 16)
+cargo reuben-play instruments/groovebox.json --structure-addr 100.64.0.5:9124
+
+# on the editing machine, with the same token
+REUBEN_STRUCTURE_TOKEN=… cargo run -p reuben-editor -- --attach show-machine:9124
+```
+
+`--structure-addr` takes a literal IP: the machine's Tailscale or LAN address, or `0.0.0.0` for
+every interface. `--token` works too, but anyone on the machine can read a flag in the process
+list. `reuben-mcp` and the `reuben` CLI's `describe`, `validate` and `new-instrument` take the
+same `REUBEN_STRUCTURE_TOKEN` (the CLI also takes `--token`), and `REUBEN_STRUCTURE_ADDR` or
+`--structure-addr` to name the engine. A client on the engine's own machine needs no token.
+
+The token travels in clear: the channel has no TLS. Tailscale encrypts the link. A plain LAN
+does not, so use it only on a network you trust. An SSH tunnel still works too, and needs no
+token, since the engine sees a loopback client:
 
 ```sh
 ssh -N -L 9124:127.0.0.1:9124 show-machine
 cargo run -p reuben-editor -- --attach 127.0.0.1:9124
 ```
 
+Every control move waits on a round trip to the other machine, so expect some lag.
+
 The editor reads and edits the instrument's files, controls included, only through the engine,
-so a remote engine's files need not be on the editor's machine.
+so a remote engine's files need not be on the editor's machine. The CLI sends a name to a remote
+engine as you typed it, for the engine to resolve against what it offers.
 
 The editor is in progress: editing the instrument's graph on a canvas is not there yet.
 

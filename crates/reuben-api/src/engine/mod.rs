@@ -18,8 +18,9 @@
 //! - [`wire`] — what both ends serialize. Neither door owns it, so neither can move it alone.
 //! - [`verbs`](self) over a [`Channel`] — the client side. A door supplies a [`Transport`]
 //!   (sockets, timeouts, its own reconnect policy) and gets the framing, the response
-//!   classification, the result shapes and the glosses. The loopback TCP one a process outside the
-//!   engine dials with is `TcpTransport`, behind the `tcp` feature.
+//!   classification, the result shapes and the glosses. The TCP one a process outside the engine
+//!   dials with is `TcpTransport`, behind the `tcp` feature; it carries the token an engine on
+//!   another machine asks for (`token`).
 //! - [`server`] — the serving side, over an [`EngineHost`] seam. A host supplies its device map,
 //!   its control ingress, its counters and the clock its deferred free waits on; the window
 //!   decides what each verb *means*, the expect guard included. [`InProcess`] is the transport a
@@ -42,6 +43,7 @@ mod result;
 pub mod server;
 #[cfg(feature = "tcp")]
 mod tcp;
+mod token;
 mod verbs;
 pub mod wire;
 
@@ -79,6 +81,10 @@ pub use reuben_document::format::LoadWarning;
 pub use reuben_document::FromDocumentError;
 #[cfg(feature = "tcp")]
 pub use tcp::{TcpTransport, DEFAULT_CONNECT_TIMEOUT};
+pub use token::{
+    admit, credential_line, Admit, EmptyToken, Token, REFUSED_TOKEN, STRUCTURE_TOKEN_ENV,
+    TOKEN_REQUIRED,
+};
 pub use verbs::*;
 pub use wire::{
     read_ndjson_line, ChangedBy, ChannelLevel, Conflict, ControlArg, ControlMessage,

@@ -8,7 +8,7 @@ use std::time::Duration;
 use std::net::{SocketAddr, TcpStream};
 
 use reuben_api::engine::{
-    Channel, TcpTransport, DEFAULT_CONNECT_TIMEOUT, DEFAULT_STRUCTURE_ADDR,
+    Channel, ChannelError, TcpTransport, Token, DEFAULT_CONNECT_TIMEOUT, DEFAULT_STRUCTURE_ADDR,
     ENGINE_UNREACHABLE_GUIDANCE,
 };
 
@@ -23,8 +23,9 @@ pub const CLI_READ_TIMEOUT: Duration = Duration::from_secs(30);
 pub enum Target {
     /// The default structure address; a temporary server when nothing listens there.
     Default,
-    /// An address the user named. Nothing answering there is an error, never a fallback.
-    Named(String),
+    /// An address the user named, and the token to open each connection with. Nothing answering
+    /// there is an error, never a fallback.
+    Named { addr: String, token: Option<Token> },
     /// A temporary server, without dialing anything.
     Temporary,
 }
@@ -55,13 +56,36 @@ impl Reached {
     pub fn running_at(&self) -> Option<&str> {
         self.running_at.as_deref()
     }
+
+    /// Whether the server may be on another machine, where this one's paths mean nothing.
+    pub fn remote(&self) -> bool {
+        self.running_at.as_deref().is_some_and(is_remote)
+    }
+}
+
+/// Whether `addr` may name another machine: anything but a literal loopback IP and port. A name is
+/// never assumed local, since it may resolve anywhere.
+pub fn is_remote(addr: &str) -> bool {
+    !addr
+        .parse::<SocketAddr>()
+        .is_ok_and(|parsed| parsed.ip().to_canonical().is_loopback())
 }
 
 /// Why no server could be asked.
 #[derive(Debug)]
 pub enum ReachError {
-    Unreachable { addr: String },
-    NotAServer { addr: String, why: String },
+    Unreachable {
+        addr: String,
+    },
+    NotAServer {
+        addr: String,
+        why: String,
+    },
+    /// A server answered and refused this client, as one does a missing or wrong token.
+    Refused {
+        addr: String,
+        message: String,
+    },
     Start(StartError),
 }
 
@@ -79,6 +103,9 @@ impl fmt::Display for ReachError {
                 "something at {addr} did not answer as a reuben server ({why}); pass \
                  --temporary-server to start a fresh one"
             ),
+            ReachError::Refused { addr, message } => {
+                write!(f, "the reuben server at {addr} refused: {message}")
+            }
             ReachError::Start(e) => write!(f, "could not start a temporary server: {e}"),
         }
     }
@@ -122,15 +149,19 @@ pub(crate) fn reach_with(
                     addr: default_addr.to_string(),
                     why: e.to_string(),
                 }),
-                Ok(_) => running(default_addr, read_timeout, |why| ReachError::NotAServer {
-                    addr: default_addr.to_string(),
-                    why,
+                Ok(_) => running(default_addr, None, read_timeout, |why| {
+                    ReachError::NotAServer {
+                        addr: default_addr.to_string(),
+                        why,
+                    }
                 }),
             }
         }
-        Target::Named(addr) => running(&addr, read_timeout, |why| ReachError::Unreachable {
-            addr: format!("{addr}: {why}"),
-        }),
+        Target::Named { addr, token } => {
+            running(&addr, token, read_timeout, |why| ReachError::Unreachable {
+                addr: format!("{addr}: {why}"),
+            })
+        }
     }
 }
 
@@ -147,11 +178,12 @@ fn nobody_listening(kind: std::io::ErrorKind) -> bool {
 /// The server at `addr`, if it answers a ping; `unanswered` says why not otherwise.
 fn running(
     addr: &str,
+    token: Option<Token>,
     read_timeout: Duration,
     unanswered: impl FnOnce(String) -> ReachError,
 ) -> Result<Reached, ReachError> {
     let channel = Channel::with_read_timeout(
-        TcpTransport::new(addr, DEFAULT_CONNECT_TIMEOUT),
+        TcpTransport::new(addr, DEFAULT_CONNECT_TIMEOUT).with_token(token),
         read_timeout,
     );
     match channel.ping() {
@@ -161,6 +193,10 @@ fn running(
             temporary: None,
         }),
         Err(e) if e.is_unreachable() => Err(unanswered("no answer to a ping".to_string())),
+        Err(ChannelError::Channel(message)) => Err(ReachError::Refused {
+            addr: addr.to_string(),
+            message,
+        }),
         Err(e) => Err(ReachError::NotAServer {
             addr: addr.to_string(),
             why: e.to_string(),
@@ -197,12 +233,26 @@ fn start_temporary(temporary: Temporary) -> Result<Reached, ReachError> {
 #[derive(Debug, Default)]
 pub struct Names {
     typed: Vec<(String, String)>,
+    /// The server may be on another machine: a name goes as typed, for it to resolve.
+    remote: bool,
 }
 
 impl Names {
+    /// The names a command sends to a server that is [`remote`](Reached::remote) or not.
+    pub fn for_target(remote: bool) -> Self {
+        Self {
+            typed: Vec::new(),
+            remote,
+        }
+    }
+
     /// `arg` absolute and lexically normalized against this process's working directory, so a
-    /// server started elsewhere reads the file the user meant.
+    /// server started elsewhere on this machine reads the file the user meant. Unchanged for a
+    /// remote server, which resolves the name against what it offers.
     pub fn sent(&mut self, arg: &str) -> String {
+        if self.remote {
+            return arg.to_string();
+        }
         let sent = lexical_absolute(std::path::Path::new(arg))
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| arg.to_string());
@@ -362,10 +412,31 @@ mod tests {
     }
 
     #[test]
+    fn names_for_a_remote_server_go_as_typed() {
+        let mut remote = Names::for_target(true);
+        assert_eq!(remote.sent("./a.json"), "./a.json");
+        assert_eq!(remote.in_user_terms("`./a.json`"), "`./a.json`");
+        let mut local = Names::for_target(false);
+        assert!(Path::new(&local.sent("./a.json")).is_absolute());
+    }
+
+    #[test]
+    fn only_a_loopback_server_shares_this_machines_paths() {
+        assert!(!is_remote("127.0.0.1:9124"));
+        assert!(!is_remote("[::1]:9124"));
+        assert!(is_remote("192.168.1.2:9124"));
+        assert!(is_remote("studio.tail:9124"));
+        assert!(is_remote("localhost:9124"), "a name is never assumed local");
+    }
+
+    #[test]
     fn a_named_unreachable_address_is_an_error_not_a_fallback() {
         let addr = dead_addr();
         let err = reach_with(
-            Target::Named(addr.clone()),
+            Target::Named {
+                addr: addr.clone(),
+                token: None,
+            },
             Temporary::default(),
             &dead_addr(),
             CLI_READ_TIMEOUT,

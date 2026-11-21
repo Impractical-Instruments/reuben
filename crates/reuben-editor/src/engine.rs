@@ -15,7 +15,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use reuben_api::authoring::{Report, ValidateInstrument};
-use reuben_api::engine::{call_tool, Channel, Installed, SwapOutcome};
+use reuben_api::engine::{call_tool, Channel, Installed, SwapOutcome, Token};
 use reuben_api::tools::names;
 use reuben_native::engine::{self, EngineConfig, Instrument, RunningEngine, StartError};
 use reuben_native::profile::DeviceProfile;
@@ -114,11 +114,15 @@ impl Engine {
         }
     }
 
-    /// Attach to the `reuben play` whose structure channel is at `addr`, starting nothing. `wake`
-    /// is called from another thread whenever [`follow_link`](Self::follow_link) has news, and when
-    /// a live send to it is answered.
-    pub fn attach(addr: impl Into<String>, wake: impl Fn() + Send + Sync + 'static) -> Self {
-        let link = Link::dial(addr, wake);
+    /// Attach to the `reuben play` whose structure channel is at `addr`, starting nothing, opening
+    /// every connection with `token` when given. `wake` is called from another thread whenever
+    /// [`follow_link`](Self::follow_link) has news, and when a live send to it is answered.
+    pub fn attach(
+        addr: impl Into<String>,
+        token: Option<Token>,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        let link = Link::dial(addr, token, wake);
         let line = Line::new(
             Level::Info,
             format!("attached to the engine on {}", link.addr()),
@@ -831,7 +835,7 @@ mod tests {
         let mut asked = None;
         let _ = Engine::start_with(config(library("acid-techno.json")), |config| {
             asked = Some(config.follow_files);
-            Err(StartError::StructureNotLoopback(String::new()))
+            Err(StartError::StructureNeedsToken(String::new()))
         });
         assert_eq!(asked, Some(true));
     }
@@ -875,7 +879,7 @@ mod tests {
                 .expect("the structure server bound");
 
             // The link `reuben-mcp` builds for its engine tools, over the loopback socket.
-            let link = EngineLink::new(structure.to_string()).expect("a loopback address");
+            let link = EngineLink::new(structure.to_string(), None);
             let status = get_engine_status(link.structure(), env!("CARGO_PKG_VERSION"));
             assert!(status.output.reachable, "{}", status.summary);
 
@@ -1145,7 +1149,7 @@ mod tests {
                     .running()
                     .and_then(RunningEngine::structure_addr)
                     .expect("the structure server bound");
-                EngineLink::new(addr.to_string()).expect("a loopback address")
+                EngineLink::new(addr.to_string(), None)
             };
 
             let target = library("groovebox.json").display().to_string();
@@ -1270,7 +1274,7 @@ mod tests {
             .expect("the engine starts");
             let addr = played.structure_addr().expect("the structure server bound");
 
-            let mut engine = Engine::attach(addr.to_string(), || {});
+            let mut engine = Engine::attach(addr.to_string(), None, || {});
             let playing = await_playing(&mut engine);
             assert_eq!(playing.source, instrument.display().to_string());
             assert_eq!(
@@ -1306,7 +1310,7 @@ mod tests {
             played.channel().ping().expect("letting go stopped nothing");
 
             // Losing the engine closes the channel until it answers again.
-            let mut engine = Engine::attach(addr.to_string(), || {});
+            let mut engine = Engine::attach(addr.to_string(), None, || {});
             await_link(&engine, true);
             reuben_native::diagnostics::log_snapshot(&played.shutdown());
             await_link(&engine, false);
@@ -1325,7 +1329,7 @@ mod tests {
             let played =
                 start_headless(config(PathBuf::from(relative))).expect("the engine starts");
             let addr = played.structure_addr().expect("bound");
-            let mut engine = Engine::attach(addr.to_string(), || {});
+            let mut engine = Engine::attach(addr.to_string(), None, || {});
             let source = PathBuf::from(await_playing(&mut engine).source);
             assert!(source.is_absolute(), "{}", source.display());
             assert!(source.is_file(), "{}", source.display());
