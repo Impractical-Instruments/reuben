@@ -27,7 +27,7 @@
 //! reuben-native stays **tokio-free** (the async runtime is fenced to reuben-mcp): the server is a
 //! dedicated std thread doing blocking line I/O, never an async runtime.
 
-use std::io::{BufReader, Write};
+use std::io::{BufReader, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -848,7 +848,7 @@ fn handle_connection(
             let refused = Response::Error {
                 message: TOKEN_REQUIRED.to_string(),
             };
-            let _ = write_line(&mut writer, &refused.to_ndjson());
+            refuse(&mut writer, &mut reader, &refused);
             break;
         }
         match read_ndjson_line(&mut reader, &mut line) {
@@ -867,7 +867,7 @@ fn handle_connection(
                             continue;
                         }
                         Admit::Refused(response) => {
-                            let _ = write_line(&mut writer, &response.to_ndjson());
+                            refuse(&mut writer, &mut reader, &response);
                             break;
                         }
                         Admit::Request => {}
@@ -942,6 +942,33 @@ impl Admission {
         }
     }
 }
+
+/// Answer a connection being refused, then close it so the answer arrives. A client writes its
+/// credential and its request together, so the request is usually still unread here; closing over
+/// unread bytes resets the connection, and on Windows the reset discards the answer before the
+/// client reads it. So the write half is shut first and what the peer sent is read off until it
+/// closes, for at most [`REFUSAL_LINGER`].
+fn refuse(writer: &mut TcpStream, reader: &mut BufReader<TcpStream>, response: &Response) {
+    if !write_line(writer, &response.to_ndjson()) || writer.shutdown(Shutdown::Write).is_err() {
+        return;
+    }
+    let until = Instant::now() + REFUSAL_LINGER;
+    let mut sink = [0u8; 1024];
+    while Instant::now() < until {
+        match reader.get_mut().read(&mut sink) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(_) => break,
+        }
+    }
+}
+
+/// How long a refused connection is read off before it is closed regardless. A client closes as
+/// soon as it has read its answer, so this only bounds a peer that keeps the connection open.
+const REFUSAL_LINGER: Duration = Duration::from_secs(1);
 
 /// How long a peer on another machine has to send its first line. A client sends its credential
 /// in the same write as its first request, so any real one is far inside this.
