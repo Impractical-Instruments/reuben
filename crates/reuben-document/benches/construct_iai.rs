@@ -28,7 +28,7 @@
 mod common;
 
 use common::construct::{construct, deep_doc, nest_doc, wide_doc};
-use iai_callgrind::{library_benchmark, library_benchmark_group, main};
+use gungraun::{library_benchmark, library_benchmark_group, main};
 use std::hint::black_box;
 
 /// Each setup returns the document *and* the graph size it is supposed to build, so the measured

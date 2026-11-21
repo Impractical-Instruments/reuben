@@ -28,13 +28,13 @@ git switch main && cargo bench -p reuben-document --bench macro_criterion -- --s
 git switch -    && cargo bench -p reuben-document --bench macro_criterion -- --baseline main
 ```
 
-## CI gate — instruction counts (iai-callgrind)
+## CI gate — instruction counts (gungraun)
 
 Deterministic; this is what gates PRs. Requires `valgrind` and the matching runner:
 
 ```sh
 sudo apt-get install valgrind
-cargo install iai-callgrind-runner --version 0.16.1   # must match the dev-dependency
+cargo install gungraun-runner --version "$(awk '$0 == "name = \"gungraun\"" { getline; gsub(/"/, "", $3); print $3 }' Cargo.lock)"  # must match the locked gungraun
 cargo bench -p reuben-document --bench macro_iai
 ```
 

@@ -2,7 +2,7 @@
 //!
 //! Both bench harnesses — `macro_criterion` (wall-clock, local) and `macro_iai`
 //! (instruction-count, CI gate) — drive the *same* `BenchState` so the two layers
-//! measure identical work. The workload touches no clock and no RNG, so iai
+//! measure identical work. The workload touches no clock and no RNG, so gungraun
 //! instruction counts are byte-stable across runs.
 //!
 //! Each bench binary compiles this module independently and uses only a subset of
@@ -133,7 +133,7 @@ pub struct BenchState {
 /// `resolve_text` reads a voice patch's JSON; `resolve` decodes a WAV (mirrors
 /// `reuben-native`'s `FsResolver`, using the `hound` dev-dependency) so `sampler-arp`'s sample player
 /// reads real data instead of idling on an empty buffer. Setup-only IO — the timed `render` reads
-/// none of it — and the decoded bytes are fixed, so iai instruction counts stay byte-stable.
+/// none of it — and the decoded bytes are fixed, so gungraun instruction counts stay byte-stable.
 struct FixturesDir;
 impl ResourceResolver for FixturesDir {
     fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
