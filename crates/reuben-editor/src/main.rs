@@ -189,7 +189,11 @@ fn launched(
 ) -> Result<Session, String> {
     let name = start::offer_file(path, engine);
     held.opened(std::path::Path::new(&name));
-    start::open(&name, engine, wake)
+    let session = start::open(&name, engine, wake);
+    if session.is_err() {
+        held.closed();
+    }
+    session
 }
 
 /// Draw the document `session` views. A canvas drawing another document, and the inspector with
@@ -263,9 +267,10 @@ impl Editor {
         match start::open(name, &self.engine, move || ctx.request_repaint()) {
             Ok(session) => self.show(session),
             Err(why) => {
-                // Nothing was opened: what the server has open is still the session's.
-                if let Some(session) = &self.session {
-                    self.held.opened(std::path::Path::new(session.top()));
+                // Nothing was opened: what the server has open is still the session's, if any.
+                match &self.session {
+                    Some(session) => self.held.opened(std::path::Path::new(session.top())),
+                    None => self.held.closed(),
                 }
                 self.start.refused(why);
             }
@@ -527,6 +532,49 @@ mod tests {
         let hold = reuben_native::structure::SwapHold::new(|_| true);
         let (config, _) = started(&["reuben-editor", "instrument.json"], Some(hold));
         assert!(config.expect("an engine starts").swap_hold.is_some());
+    }
+
+    #[test]
+    fn a_launch_open_the_server_refuses_holds_nothing() {
+        use reuben_api::engine::{swap_instrument, SwapInstrument};
+        use reuben_mcp::EngineLink;
+        use reuben_native::engine::RunningEngine;
+        use reuben_native::test_support::{start_headless, within};
+
+        use crate::engine::test_support::{silent, HANG_SECS};
+        use crate::session::test_support::Scratch;
+
+        within(HANG_SECS, || {
+            let scratch = Scratch::new("main_launch_refused");
+            let lib = scratch.library();
+            let held = HeldSwaps::new(|| {});
+            let mut engine = Engine::start_with(
+                EngineConfig {
+                    swap_hold: Some(held.swap_hold()),
+                    ..silent(&lib)
+                },
+                start_headless,
+            );
+            let missing = lib.join("missing.json");
+            assert!(launched(&missing, &mut engine, &held, || {}).is_err());
+
+            let addr = (engine.running())
+                .and_then(RunningEngine::structure_addr)
+                .expect("the structure server bound");
+            let link = EngineLink::new(addr.to_string()).expect("a loopback address");
+            let swapped = swap_instrument(
+                &SwapInstrument {
+                    path: lib.join("groovebox.json").display().to_string(),
+                    expect: None,
+                },
+                link.structure(),
+            )
+            .expect("the swap reached the engine")
+            .output;
+            assert_eq!(swapped.held, None, "nothing is open to hold it for");
+            assert_eq!(held.pending(), None);
+            engine.shutdown();
+        });
     }
 
     #[test]

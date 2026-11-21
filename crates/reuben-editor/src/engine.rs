@@ -15,7 +15,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use reuben_api::authoring::{validate_instrument, ValidateInstrument};
-use reuben_api::engine::{Channel, Installed};
+use reuben_api::engine::{Channel, Installed, SwapOutcome};
 use reuben_api::FsResolver;
 use reuben_native::engine::{self, EngineConfig, Instrument, RunningEngine, StartError};
 use reuben_native::profile::DeviceProfile;
@@ -346,9 +346,16 @@ impl Engine {
             return false;
         };
         let mut unsourced = None;
+        // Open but playing nothing, as a document that does not load is: there is no input width
+        // to keep, so the restart starts on nothing and opens it again.
+        let mut reopen = None;
         if let Some(running) = &self.running {
             match running.channel().get_document() {
                 Ok(document) => match document.source {
+                    Some(source) if document.content_hash.is_empty() => {
+                        config.instrument = Instrument::Silent;
+                        reopen = Some(source);
+                    }
                     Some(source) => config.instrument = Instrument::Path(source.into()),
                     None if document.content_hash.is_empty() => {
                         config.instrument = Instrument::Silent;
@@ -374,12 +381,16 @@ impl Engine {
         let offered = std::mem::take(&mut self.offered);
         self.shutdown();
         // Started on the open instrument rather than on nothing and then opened: the input stream's
-        // width is fixed by what the engine starts on.
-        *self = Self::start_with(config, start);
+        // width is fixed by what the engine starts on. A device that no longer opens falls back to
+        // none, as at launch, so the server is not lost with it.
+        *self = Self::start_or_headless(config, start, engine::start_headless);
         for dir in &offered {
             self.offer_dir(dir);
         }
         self.restarted = true;
+        if let Some(name) = reopen {
+            self.reopen(name);
+        }
         if let Some(why) = unsourced {
             self.push(Line::new(
                 Level::Warning,
@@ -390,6 +401,29 @@ impl Engine {
             ));
         }
         true
+    }
+
+    /// Have the restarted server open `name` again, which played nothing before the restart.
+    fn reopen(&mut self, name: String) {
+        let Some(channel) = self.channel() else {
+            return;
+        };
+        let opened = match channel.open(name.clone(), None) {
+            Ok(SwapOutcome::Installed(_)) => (channel.get_document())
+                .is_ok_and(|document| document.source.as_deref() == Some(name.as_str())),
+            _ => false,
+        };
+        if !opened {
+            self.push(Line::new(
+                Level::Warning,
+                format!("{name} was not opened again after the restart"),
+            ));
+            return;
+        }
+        if let Some(config) = &mut self.config {
+            config.instrument = Instrument::Path(name.clone().into());
+        }
+        self.name_instrument(&name);
     }
 
     /// Offer `dir` to the server from now on, and to the server of every restart: what it holds

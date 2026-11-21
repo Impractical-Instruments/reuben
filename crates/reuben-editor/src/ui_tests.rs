@@ -1000,3 +1000,16 @@ fn an_open_by_another_client_reopens_the_embedded_session_on_it() {
         harness.state_mut().engine.shutdown();
     });
 }
+
+#[test]
+fn with_no_engine_the_start_screen_says_so_rather_than_reading() {
+    let scratch = Scratch::new("ui_start_no_engine");
+    let config = TempConfig::new();
+    let top = instrument(&scratch);
+    let mut editor = editor(&top, &config);
+    editor.engine = Engine::not_started("io-map does-not-exist.json: no such file");
+    editor.session = None;
+    let harness = harness(editor);
+    harness.get_by_label(start::NO_ENGINE);
+    assert!(harness.query_by_label("Reading the library…").is_none());
+}

@@ -27,6 +27,9 @@ pub struct Launch {
     pub root: Option<PathBuf>,
 }
 
+/// What the start screen says while there is no server to list the library.
+pub const NO_ENGINE: &str = "No engine is running, so there is no library to list.";
+
 /// What the undo history says after a restart dropped it.
 pub const RESTARTED: &str = "Undo history cleared: the engine restarted.";
 
@@ -186,6 +189,8 @@ pub struct Start {
     error: Option<String>,
     /// Drawn in place of the open instrument.
     shown: bool,
+    /// Whether an engine answered when the screen was last drawn: with none, nothing is fetched.
+    engine: bool,
     /// The new instrument's name as typed, and which of the library's dirs it goes in.
     new_name: String,
     new_dir: usize,
@@ -201,6 +206,7 @@ impl Start {
             recent: Recent::load(dir),
             error: None,
             shown: false,
+            engine: false,
             new_name: String::new(),
             new_dir: 0,
         }
@@ -234,6 +240,7 @@ impl Start {
 
     /// Take in what the server answered, and ask it whatever is not known yet.
     fn fetch(&mut self, channel: &dyn Fn() -> Option<Channel>, ctx: &egui::Context) {
+        self.engine = channel().is_some();
         if let Some(answer) = self.fetching.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.fetching = None;
             self.library = Some(answer);
@@ -353,6 +360,10 @@ impl Start {
                 ui.colored_label(ui.visuals().error_fg_color, e.as_str());
                 return;
             }
+            None if !self.engine => {
+                ui.weak(NO_ENGINE);
+                return;
+            }
             None => {
                 ui.weak("Reading the library…");
                 return;
@@ -461,36 +472,6 @@ mod tests {
     fn swapped_in(session: &mut Session, engine: &Engine) {
         session.refresh(&|| engine.channel());
         assert_eq!(session.status(), &Status::Current);
-    }
-
-    /// Another program's write of a file the server just opened. The server aims its watch at an
-    /// instrument after the open answers, so a write made at once can go unseen: it is made again
-    /// every [`Rewrites::EVERY`] until the test sees what it waits for.
-    struct Rewrites {
-        last: Option<Instant>,
-        deadline: Instant,
-    }
-
-    impl Rewrites {
-        const EVERY: Duration = Duration::from_millis(250);
-
-        fn new() -> Self {
-            Self {
-                last: None,
-                deadline: Instant::now() + Duration::from_secs(HANG_SECS),
-            }
-        }
-
-        /// Write `text` to `path` unless it was written within [`EVERY`](Self::EVERY), then wait
-        /// a moment. Fails with `what` past the deadline.
-        fn again(&mut self, path: &Path, text: &[u8], what: &str) {
-            assert!(Instant::now() < self.deadline, "{what}");
-            if self.last.is_none_or(|last| last.elapsed() >= Self::EVERY) {
-                std::fs::write(path, text).unwrap();
-                self.last = Some(Instant::now());
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
     }
 
     fn library_of(engine: &Engine) -> Library {
@@ -649,8 +630,9 @@ mod tests {
             let mut session = opened(&path, &engine);
 
             // Another program rewrites the open file as an instrument reading input channel 0.
-            let text = std::fs::read(lib.join("mic-space.json")).unwrap();
-            let mut writes = Rewrites::new();
+            let text = std::fs::read_to_string(lib.join("mic-space.json")).unwrap();
+            std::fs::write(&path, text).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(HANG_SECS);
             loop {
                 session.refresh(&|| engine.channel());
                 let reread = (session.tree().top().read.as_ref())
@@ -660,8 +642,8 @@ mod tests {
                 if reread && installed && session.status() == &Status::Current {
                     break;
                 }
-                let status = format!("{:?}", session.status());
-                writes.again(&path, &text, &status);
+                assert!(Instant::now() < deadline, "{:?}", session.status());
+                std::thread::sleep(Duration::from_millis(5));
             }
 
             follow(&mut session, &mut engine, false, headless);
@@ -911,6 +893,49 @@ mod tests {
     }
 
     #[test]
+    fn a_restart_with_a_document_that_does_not_load_open_opens_it_again() {
+        within(HANG_SECS, || {
+            let scratch = Scratch::new("start_restart_broken");
+            let lib = scratch.library();
+            let broken = lib.join("broken.json");
+            std::fs::write(&broken, BROKEN).unwrap();
+            let mut engine = launched(&lib);
+            let _session = opened(&broken, &engine);
+
+            engine.restart_with(DeviceProfile::default(), headless);
+            assert!(engine.running().is_some(), "{:?}", engine.report());
+            assert_eq!(errors(&engine), Vec::<String>::new());
+            assert_eq!(playing(&engine), (Some(name(&broken)), String::new()));
+            engine.shutdown();
+        });
+    }
+
+    #[test]
+    fn an_engine_started_without_its_device_survives_an_input_refit() {
+        within(HANG_SECS, || {
+            let scratch = Scratch::new("start_refit_no_device");
+            let lib = scratch.library();
+            let no_device = |_: EngineConfig| -> Result<RunningEngine, StartError> {
+                Err(StartError::Audio(
+                    reuben_native::audio::AudioError::NoDevice,
+                ))
+            };
+            let mut engine = Engine::start_or_headless(silent(&lib), no_device, headless);
+            assert!(engine.running().is_some());
+            let mic = lib.join("mic-space.json");
+            let mut session = opened(&mic, &engine);
+            swapped_in(&mut session, &engine);
+            assert_eq!(engine.input_fits(), Some(false));
+
+            follow(&mut session, &mut engine, false, no_device);
+            assert!(engine.channel().is_some(), "{:?}", engine.report());
+            assert_eq!(plays(&engine), Some(name(&mic)));
+            assert!(library_of(&engine).instruments.len() > 1);
+            engine.shutdown();
+        });
+    }
+
+    #[test]
     fn a_name_typed_for_a_new_instrument_stays_in_the_dir_chosen() {
         assert_eq!(
             new_source("/lib", "pad"),
@@ -1006,10 +1031,11 @@ mod tests {
             assert_eq!(playing(&engine), (Some(name(&path)), String::new()));
 
             // Fixed outside the editor: the server follows the write and plays it.
-            let fixed = std::fs::read(lib.join("default.json")).unwrap();
-            let mut writes = Rewrites::new();
+            std::fs::copy(lib.join("default.json"), &path).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(HANG_SECS);
             while plays(&engine).is_none() {
-                writes.again(&path, &fixed, "the fixed file never played");
+                assert!(Instant::now() < deadline, "the fixed file never played");
+                std::thread::sleep(Duration::from_millis(5));
             }
             assert_eq!(plays(&engine), Some(name(&path)));
             swapped_in(&mut session, &engine);

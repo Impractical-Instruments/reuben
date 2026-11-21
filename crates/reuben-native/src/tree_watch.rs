@@ -85,7 +85,7 @@ pub fn spawn(state: StructureState) -> TreeWatch {
                 files,
                 directories: BTreeSet::new(),
             };
-            watch.set(&state.tree());
+            let _ = watch.set(&state.tree());
             Some((watch, state.subscription()))
         }
         Err(e) => {
@@ -149,8 +149,11 @@ fn follow(
                 Err(TryRecvError::Disconnected) => return,
             }
         }
-        if aim {
-            watch.set(&state.tree());
+        // A file newly in the tree may have been written between the install that read it and
+        // the watch reaching it, which no touch reports: read the tree once more to see.
+        if aim && watch.set(&state.tree()) && due.is_none() {
+            first = Some(Instant::now());
+            due = Some(Instant::now() + QUIET);
         }
     }
 }
@@ -171,8 +174,9 @@ struct Watch {
 
 impl Watch {
     /// Watch exactly `sources`, the canonical sources of the open instrument. A source that is not
-    /// an absolute path names no file this host can watch, and is skipped.
-    fn set(&mut self, sources: &BTreeSet<String>) {
+    /// an absolute path names no file this host can watch, and is skipped. Returns whether a file
+    /// is watched now that was not before.
+    fn set(&mut self, sources: &BTreeSet<String>) -> bool {
         let mut files = BTreeSet::new();
         let mut directories = BTreeSet::new();
         for path in sources.iter().map(Path::new).filter(|p| p.is_absolute()) {
@@ -189,7 +193,12 @@ impl Watch {
                 directories.insert(there.to_path_buf());
             }
         }
-        *self.files.lock().unwrap_or_else(|e| e.into_inner()) = files;
+        let added = {
+            let mut watched = self.files.lock().unwrap_or_else(|e| e.into_inner());
+            let added = !files.is_subset(&watched);
+            *watched = files;
+            added
+        };
 
         for gone in self.directories.difference(&directories) {
             let _ = self.watcher.unwatch(gone);
@@ -206,6 +215,7 @@ impl Watch {
             }
         }
         self.directories = watching;
+        added
     }
 }
 
@@ -387,6 +397,77 @@ mod tests {
             }
         };
         let followed = followed.expect("the outside write followed within 2 s");
+        assert_eq!(installed_hash(&state), followed);
+
+        drop(watch);
+        state.close();
+        cb.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An instrument opened a moment ago is not watched until the watcher hears of the open; a
+    /// write to it in that moment is followed all the same.
+    #[test]
+    fn a_write_right_after_an_open_is_followed() {
+        let dir = std::env::temp_dir().join(format!(
+            "reuben_tree_watch_after_open_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("case dir");
+        let top_path = dir.join("top.json");
+        std::fs::write(&top_path, TOP).expect("seed the open instrument");
+        let other = dir.join("other.json");
+        std::fs::write(&other, TOP).expect("seed the instrument to open");
+
+        let staged: Staged<Box<dyn Resources + Send + Sync>> =
+            Staged::new(Box::new(FsResolver::for_instrument(&top_path)));
+        let (coordinator, side, _warnings) = reuben_api::engine::install_initial(
+            TOP,
+            staged.clone(),
+            AudioConfig::new(48_000.0, 128),
+        )
+        .expect("initial install");
+        let (control_tx, control_rx) = mpsc::channel::<ControlBatch>();
+        let host = NativeHost::new(Diagnostics::new(), control_tx).with_render_config(Arc::new(
+            HeadlessRenderConfig {
+                opened_input_channels: 0,
+            },
+        ));
+        let state = StructureState::new(
+            coordinator,
+            Arc::new(host),
+            Arc::new(DocumentHistory::new(staged)),
+        )
+        .with_installed_source(Some(top_path.display().to_string()));
+        let cb = FakeCallback::spawn(side, control_rx);
+        let events = InProcess::new(state.clone()).subscribe();
+        let watch = spawn(state.clone());
+
+        let opened = reuben_api::engine::dispatch_request(
+            &state,
+            reuben_api::engine::Request::Open {
+                name: other.display().to_string(),
+                expect: None,
+            },
+        );
+        assert!(
+            matches!(&opened, reuben_api::engine::Response::SwapReport(r) if r.report.ok),
+            "{opened:?}"
+        );
+        let temp = other.with_extension("json.tmp");
+        std::fs::write(&temp, TOP.replace(r#""top""#, r#""theirs""#)).expect("write");
+        std::fs::rename(&temp, &other).expect("rename over");
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let followed = loop {
+            match changed_within(&events, deadline.saturating_duration_since(Instant::now())) {
+                Some((hash, ChangedBy::Outside)) => break Some(hash),
+                Some(_) => continue,
+                None => break None,
+            }
+        };
+        let followed = followed.expect("the write followed within 2 s");
         assert_eq!(installed_hash(&state), followed);
 
         drop(watch);

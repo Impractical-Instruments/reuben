@@ -77,6 +77,12 @@ impl HeldSwaps {
         state.open = Some(top);
     }
 
+    /// Nothing is open now, as after an open the server refused with nothing open before it: no
+    /// Swap is held.
+    pub fn closed(&self) {
+        self.state().open = None;
+    }
+
     /// The Swap the user is being asked about, if any.
     pub fn pending(&self) -> Option<Asked> {
         self.state().pending.clone()
