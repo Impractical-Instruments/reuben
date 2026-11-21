@@ -23,9 +23,8 @@ use std::time::Duration;
 
 use super::prose::ENGINE_UNREACHABLE_GUIDANCE;
 use super::wire::{
-    over_long_probe_set_refusal, Conflict, ControlMessage, DiagnosticsReport, DocSource,
-    DocumentSnapshot, Event, HeldSwap, Library, ListWhat, MetersReport, Request, Response,
-    SwapReport, MAX_PROBES,
+    over_long_probe_set_refusal, Conflict, ControlMessage, DiagnosticsReport, DocumentSnapshot,
+    Event, HeldSwap, Library, ListWhat, MetersReport, Request, Response, SwapReport, MAX_PROBES,
 };
 
 /// How long to wait for the one response line before giving up on a *wedged* server (connected but
@@ -33,15 +32,14 @@ use super::wire::{
 /// fail-fast rather than a stalled tool call.
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The read budget for a request that may load and plan a whole instrument tree: `swap`, `open`,
-/// and `call` (an edit re-plans and installs the open instrument). Each decodes every sample the
+/// The read budget for a request that may load and plan a whole instrument tree: `open` and `call` (an edit re-plans and installs the open instrument). Each decodes every sample the
 /// tree references, and may first wait for the Coordinator behind another such request, so a
 /// large sample set on a cold disk takes several times [`DEFAULT_READ_TIMEOUT`]. Past this the
 /// answer is [`ChannelError::NoAnswer`], not a dead engine: the request may still be applied.
 const DEFAULT_WORK_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The read budget for `ping` specifically. A pong is **immediate** — the structure server answers
-/// `Ping` with `Pong` doing no work, unlike a `swap`'s off-thread engine rebuild — so
+/// `Ping` with `Pong` doing no work, unlike an `open`'s off-thread engine rebuild — so
 /// the liveness probe (`engine_status`) need not inherit the generous
 /// [`DEFAULT_READ_TIMEOUT`]: a wedged engine surfaces as unreachable ~5× sooner. Still comfortably
 /// above loopback + scheduler jitter, so a live-but-momentarily-busy engine is never misjudged dead.
@@ -98,15 +96,15 @@ impl fmt::Display for ChannelError {
 
 impl std::error::Error for ChannelError {}
 
-/// The outcome of a `swap` that reached the engine — every arm is an answer, not a failure
+/// The outcome of an `open` that reached the engine — every arm is an answer, not a failure
 /// (transport failures are [`ChannelError`]).
 #[derive(Debug, Clone, PartialEq)]
 pub enum SwapOutcome {
-    /// The engine processed the swap and returned its [`SwapReport`] (success or load-failure).
+    /// The engine processed the open and returned its [`SwapReport`] (success or load-failure).
     Installed(SwapReport),
     /// The `expect` guard missed: nothing installed; the [`Conflict`] names what keeps playing.
     Conflict(Conflict),
-    /// The host held the swap to ask its user first: nothing installed; the [`HeldSwap`] names
+    /// The host held the open to ask its user first: nothing installed; the [`HeldSwap`] names
     /// what keeps playing.
     Held(HeldSwap),
     /// The server would not install it (a name it does not offer, say): nothing installed. The
@@ -192,7 +190,7 @@ pub struct Channel {
     /// The tighter read budget `ping` uses (its pong is immediate) — never longer than the general
     /// `read_timeout`, and capped at [`DEFAULT_PING_READ_TIMEOUT`]. See [`Self::ping`].
     ping_read_timeout: Duration,
-    /// The longer read budget of `swap`, `open` and `call`, which may plan a whole tree.
+    /// The longer read budget of `open` and `call`, which may plan a whole tree.
     work_read_timeout: Duration,
 }
 
@@ -254,29 +252,8 @@ impl Channel {
         }
     }
 
-    /// Install a document, by value or by path. An optional `expect` content-hash guard rejects
-    /// the swap on mismatch.
-    pub fn swap(
-        &self,
-        source: DocSource,
-        expect: Option<String>,
-    ) -> Result<SwapOutcome, ChannelError> {
-        match self.exchange_with(&Request::Swap { source, expect }, self.work_read_timeout)? {
-            Response::SwapReport(report) => Ok(SwapOutcome::Installed(report)),
-            Response::Conflict(conflict) => Ok(SwapOutcome::Conflict(conflict)),
-            Response::Held(held) => Ok(SwapOutcome::Held(held)),
-            Response::Refused { message } => Ok(SwapOutcome::Refused(message)),
-            Response::Error { message } => Err(ChannelError::Channel(message)),
-            other => Err(unexpected(
-                "swap",
-                "swap_report/conflict/held/refused",
-                &other,
-            )),
-        }
-    }
-
     /// Unload the open instrument and play the one `name` names, read through the server's store.
-    /// Answers as [`swap`](Self::swap) does.
+    /// An optional `expect` content-hash guard rejects the open on mismatch.
     pub fn open(&self, name: String, expect: Option<String>) -> Result<SwapOutcome, ChannelError> {
         match self.exchange_with(&Request::Open { name, expect }, self.work_read_timeout)? {
             Response::SwapReport(report) => Ok(SwapOutcome::Installed(report)),
@@ -545,13 +522,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn swap_maps_a_refusal_the_same_way() {
-        let (channel, _) = answering(r#"{"reply":"refused","message":"m"}"#);
-        let outcome = channel.swap(DocSource::Path("a.json".to_string()), None);
-        assert_eq!(outcome.unwrap(), SwapOutcome::Refused("m".to_string()));
-    }
-
     /// A transport whose every exchange fails with what `fail` makes, recording each read budget.
     #[derive(Debug)]
     struct Failing {
@@ -591,9 +561,6 @@ mod tests {
         let errors = [
             channel.call("add_instrument_node", json!({})).unwrap_err(),
             channel.open("a.json".to_string(), None).unwrap_err(),
-            channel
-                .swap(DocSource::Path("a.json".to_string()), None)
-                .unwrap_err(),
             channel.send(Vec::new()).unwrap_err(),
         ];
         for err in errors {
@@ -619,19 +586,17 @@ mod tests {
     }
 
     #[test]
-    fn swap_open_and_call_wait_longer_than_the_verbs_that_only_read() {
+    fn open_and_call_wait_longer_than_the_verbs_that_only_read() {
         let (channel, budgets) = failing(read_timed_out);
         let _ = channel.ping();
         let _ = channel.get_document();
         let _ = channel.call("describe_instrument", json!({}));
         let _ = channel.open("a.json".to_string(), None);
-        let _ = channel.swap(DocSource::Path("a.json".to_string()), None);
         assert_eq!(
             budgets.lock().unwrap().as_slice(),
             [
                 DEFAULT_PING_READ_TIMEOUT,
                 DEFAULT_READ_TIMEOUT,
-                DEFAULT_WORK_READ_TIMEOUT,
                 DEFAULT_WORK_READ_TIMEOUT,
                 DEFAULT_WORK_READ_TIMEOUT,
             ]

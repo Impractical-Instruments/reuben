@@ -127,12 +127,12 @@ impl SwapResult {
 // returns for `source`.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CurrentInstrument {
-    /// Where the playing document was installed from, when the engine knows it. Absent after an
-    /// install by value and for `reuben play`'s built-in default rig.
+    /// Where the playing document was installed from, when the engine knows it. Absent for
+    /// `reuben play`'s built-in default rig.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
-    /// The installed document's content hash — the token a later `swap_instrument`'s `expect` guard
-    /// compares, and the drift signal against `source`'s current hash.
+    /// The installed document's content hash — the token a later `expect` guard compares, and the
+    /// drift signal against `source`'s current hash.
     pub content_hash: String,
     /// The node index of the **installed** graph, rendered in the projection's line grammar.
     pub projection: String,

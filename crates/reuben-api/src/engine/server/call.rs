@@ -528,9 +528,6 @@ mod tests {
     }
 
     impl EngineHost for Host {
-        fn read_document(&self, path: &str) -> Result<String, String> {
-            Err(format!("no file {path}"))
-        }
         fn hold_swap(&self, _path: &str) -> bool {
             self.hold
         }

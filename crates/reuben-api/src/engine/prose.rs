@@ -24,19 +24,6 @@ pub const GET_ENGINE_STATUS: &str =
      sidecar version + supported instrument format_version. Never an error — a dead engine is \
      reported as reachable:false with guidance to start it.";
 
-pub const SWAP_INSTRUMENT: &str =
-    "Install an instrument document from disk as the playing engine (path-only). A gapless \
-     mailbox swap: the new Engine is built and validated off-thread, then \
-     installed under a ~20ms master-gain duck — no silent gap. A node at the same \
-     address with the same operator type survives with its live state, so the diff summary \
-     reports how many survived and which reset. Returns the validation report + content_hash \
-     + (on success) that diff summary; ok:false installs nothing and the old sound keeps \
-     playing. Pass `expect` (a content_hash) to guard against a stale swap — a mismatch \
-     returns a conflict, no install. When the engine runs inside reuben-editor and the path is \
-     not the instrument its user has open, the swap returns `held` instead: nothing installs \
-     yet and the user is asked. That is not a failure — don't retry; check \
-     get_current_instrument later.";
-
 pub const GET_CURRENT_INSTRUMENT: &str =
     "Report what the engine is playing: the source of the open instrument, its content hash, \
      and the node index of that instrument. An empty content hash means the open instrument does \

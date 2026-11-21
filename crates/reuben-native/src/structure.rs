@@ -502,26 +502,17 @@ fn locate_surface(instrument: &Path) -> Option<PathBuf> {
 }
 
 impl EngineHost for NativeHost {
-    /// A by-path swap reads the file its [origin](Self::document_origin) names. Resource paths
-    /// *inside* the document resolve from the file's own directory, then the library root
-    /// ([`document_origin`](Self::document_origin)); one that resolves in neither dark-degrades to
-    /// a load warning rather than a crash.
-    fn read_document(&self, path: &str) -> Result<String, String> {
-        // Read at its origin, which folds `..` by text, so the file read is the one the store
-        // knows by that name even where a symlinked directory precedes the `..`.
-        std::fs::read_to_string(self.document_origin(path)).map_err(|e| format!("read {path}: {e}"))
-    }
-
     /// Absolute, because the session's `FsResolver` joins a relative source onto the launch
-    /// instrument's directory while [`read_document`](Self::read_document) read `path` against the
-    /// working directory: only an absolute spelling names the same file to both. Normalized as
-    /// [`library`](EngineHost::library) and [`offered`](EngineHost::offered) spell their names, so
-    /// a client that opened one of them hears it back by the name it opened.
+    /// instrument's directory while a client means `path` from the working directory: only an
+    /// absolute spelling names the same file to both. `..` folds by text, so the file read is the
+    /// one the store knows by that name even where a symlinked directory precedes the `..`.
+    /// Normalized as [`library`](EngineHost::library) and [`offered`](EngineHost::offered) spell
+    /// their names, so a client that opened one of them hears it back by the name it opened.
     fn document_origin(&self, path: &str) -> String {
         match lexical_absolute(Path::new(path)) {
             Some(absolute) => absolute.display().to_string(),
-            // Fails for an empty path, or a relative one with no working directory. The read
-            // fails on both, so the swap is rejected before this value is used.
+            // Fails for an empty path, or a relative one with no working directory. Neither is
+            // within what the host offers, so the open is refused before this value is read.
             None => path.to_string(),
         }
     }

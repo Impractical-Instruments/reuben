@@ -5,7 +5,7 @@
 //! sidecar dials it — so the envelope is the window's, and neither door can move it alone.
 //!
 //! Every payload here is declared rather than borrowed from the engine, [`SwapReport`] included:
-//! the swap's report is the flat object a model reads out of the `swap` tool, and the engine's own
+//! the swap's report is the flat object a model reads out of `open_instrument`, and the engine's own
 //! is the shape its Coordinator finds convenient. The two are converted at
 //! [`SwapReport::from_core`], once per swap and never on a block.
 //!
@@ -35,23 +35,6 @@ pub const DEFAULT_STRUCTURE_ADDR: &str = "127.0.0.1:9124";
 /// folds a probed node's output once per block, and a path inside a voice once per voice per
 /// block, so the choice is bounded for the same reason a `send` batch is.
 pub const MAX_PROBES: usize = 512;
-
-/// Where a swap's document comes from (accepted **by value or by path**, both
-/// resolver-loaded engine-side; both branches deliberately stay open, and the
-/// channel keeps both — which to *expose* is the tool surface's call). Field
-/// names match that tool contract: `document` for inline JSON, `path` for a
-/// resolver-anchored location.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DocSource {
-    /// The whole document inline, as raw JSON. Raw [`serde_json::Value`] — not a parsed doc
-    /// type — because validation is the engine side's job (the loader is the single
-    /// validation authority); the envelope never pre-judges a document.
-    Document(serde_json::Value),
-    /// A path the engine side loads through its resolver (near-zero tokens for the
-    /// dev-with-checkout persona).
-    Path(String),
-}
 
 /// The most messages one [`Request::Send`] may carry.
 ///
@@ -143,8 +126,11 @@ pub struct ControlMessage {
     pub args: Vec<ControlArg>,
 }
 
-/// One structure-channel request (its thirteen verbs), serialized as a single JSON
-/// object tagged by `verb`: `{"verb": "ping"}`, `{"verb": "swap", "source": …}`, ….
+/// One structure-channel request (its twelve verbs), serialized as a single JSON
+/// object tagged by `verb`: `{"verb": "ping"}`, `{"verb": "open", "name": …}`, ….
+///
+/// No request carries a document: a client changes what plays only by
+/// [`Open`](Self::Open) or an edit through [`Call`](Self::Call).
 ///
 /// Four of them make the engine the server of a client's authoring: [`Call`](Self::Call) edits
 /// and reads the open instrument, [`Open`](Self::Open) plays another, [`List`](Self::List) says
@@ -155,17 +141,6 @@ pub enum Request {
     /// Liveness — the structure channel's own probe: it proves the structure channel
     /// itself, which an OSC ping does not.
     Ping,
-    /// Install a document (whole-document edit contract).
-    Swap {
-        /// The document, by value or by path.
-        source: DocSource,
-        /// The opt-in concurrency guard: the [`content_hash`](reuben_document::content_hash)
-        /// the client believes is installed. A mismatch rejects the swap with
-        /// `Response::Conflict` — no sessions, no leases, one off-thread hash compare.
-        /// `None` is last-write-wins, the default arbitration.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        expect: Option<String>,
-    },
     /// Read the currently installed document — the Coordinator owns the canonical doc,
     /// so a fresh conversation attaches in one call.
     GetDocument,
@@ -212,13 +187,15 @@ pub enum Request {
         /// The verb's arguments, as its argument struct deserializes them.
         args: serde_json::Value,
     },
-    /// Unload the open instrument and load, and play, the one `name` names — a swap by path, read
-    /// through the engine's store. Answers as a swap does: a report, [`Response::Held`] or
-    /// [`Response::Conflict`].
+    /// Unload the open instrument and load, and play, the one `name` names, read through the
+    /// engine's store. The one way a client changes which document plays. Answers with a
+    /// [`Response::SwapReport`], [`Response::Held`] or [`Response::Conflict`].
     Open {
         /// One of the names [`List`](Self::List) offers.
         name: String,
-        /// The opt-in concurrency guard, as for [`Swap`](Self::Swap).
+        /// The opt-in concurrency guard: the [`content_hash`](reuben_document::content_hash) the
+        /// client believes plays. A mismatch answers [`Response::Conflict`] and installs nothing.
+        /// `None` is last-write-wins.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expect: Option<String>,
     },
@@ -292,38 +269,38 @@ impl Request {
     }
 }
 
-/// An `expect`-guard miss: the swap was rejected and **nothing was installed** — the engine is
+/// An `expect`-guard miss: the request was rejected and **nothing was installed** — the engine is
 /// still playing what it was playing before. Re-read the installed document, then retry against
 /// the hash that is actually installed.
 ///
-// Everything above ships to models — it becomes the `$defs.Conflict` description in the `swap`
-// tool's advertised outputSchema — so it stays about what the model should DO. Notes for humans go
-// below this line, where schemars will not pick them up.
+// Everything above ships to models — it becomes the `$defs.Conflict` description in
+// `open_instrument`'s advertised outputSchema — so it stays about what the model should DO. Notes
+// for humans go below this line, where schemars will not pick them up.
 //
 // One type, three doors: `Response::Conflict`, the channel client's `SwapOutcome::Conflict`, and
-// the `swap` tool's `conflict` field all carry this struct, so the shapes cannot drift.
+// `open_instrument`'s `conflict` field all carry this struct, so the shapes cannot drift.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Conflict {
     /// The content hash the client asserted was installed.
     pub expected: String,
     /// The content hash actually still playing — re-read with `get_current_instrument` to
-    /// reconcile, then retry the swap with this as `expect`.
+    /// reconcile, then retry with this as `expect`.
     pub actual: String,
 }
 
-/// The swap was held, not installed: the engine is embedded in reuben-editor, whose user has a
+/// The open was held, not installed: the engine is embedded in reuben-editor, whose user has a
 /// different file open, and they have been asked whether to open this one instead. Nothing changed and
 /// `playing` keeps playing. Not a failure: retrying asks them again. Check
 /// `get_current_instrument` later: its `source` becomes `requested` if they accept.
 ///
-// Everything above ships to models as the `$defs.HeldSwap` description in the `swap` tool's
+// Everything above ships to models as the `$defs.HeldSwap` description in `open_instrument`'s
 // advertised outputSchema. Notes for humans go below this line.
 //
-// One type, three doors, as for `Conflict`: `Response::Held`, `SwapOutcome::Held`, and the `swap`
-// tool's `held` field.
+// One type, three doors, as for `Conflict`: `Response::Held`, `SwapOutcome::Held`, and
+// `open_instrument`'s `held` field.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct HeldSwap {
-    /// The source this swap asked to install, which the editor's user has been asked to open.
+    /// The source this open asked to install, which the editor's user has been asked to open.
     pub requested: String,
     /// The source still playing, when the engine knows it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -376,7 +353,7 @@ pub struct DocumentSnapshot {
 /// `removed: ["/voice1"]` means the address was mistyped. A door that rebuilds every node reports
 /// `survived: 0`.
 ///
-// Everything above ships to models as the `$defs.DiffSummary` description in the `swap` tool's
+// Everything above ships to models as the `$defs.DiffSummary` description in `open_instrument`'s
 // advertised outputSchema, so it stays about what the fields mean. Notes for humans go below this
 // line, where schemars will not pick them up.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -387,7 +364,7 @@ pub struct DiffSummary {
     pub removed: Vec<String>,
 }
 
-/// What a `swap` returns: the validation report, the **installed** document's content hash (on
+/// What an `open` returns: the validation report, the **installed** document's content hash (on
 /// `ok: false` nothing installed — the hash still names what keeps playing), and, on success, the
 /// diff summary. The report flattens so the wire shape is one flat object.
 ///
@@ -398,15 +375,15 @@ pub struct SwapReport {
     #[serde(flatten)]
     pub report: Report,
     pub content_hash: String,
-    /// Present on a successful install; a rejected swap (`ok: false`) has no old-vs-new to
-    /// summarize, and neither has an ok swap of what already plays, which installs nothing.
+    /// Present on a successful install; a rejected one (`ok: false`) has no old-vs-new to
+    /// summarize.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff: Option<DiffSummary>,
 }
 
 impl SwapReport {
     /// The nothing-was-installed report, defined once. A door needs this shape even when it
-    /// rejects a swap before the loader runs.
+    /// rejects an open before the loader runs.
     ///
     /// `content_hash` is **what keeps playing** — the conflict's `actual`, never the `expected` the
     /// client asked for.
@@ -439,7 +416,7 @@ impl SwapReport {
 
 /// One structure-channel response (one per request, in order), serialized as
 /// a single JSON object tagged by `reply`. The tag rides *inside* the payload object
-/// (`{"reply": "swap_report", "ok": …}`), so a swap's wire shape stays the flat
+/// (`{"reply": "swap_report", "ok": …}`), so an open's wire shape stays the flat
 /// `SwapReport` object the MCP tool also serializes (the shapes must not
 /// drift) — the envelope adds a discriminant, never a nesting level.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -673,8 +650,8 @@ pub const METER_CEILING_DBFS: f32 = 60.0;
 pub use reuben_core::meter::{PEAK_FALL_DB_PER_SEC, RMS_WINDOW_SECS};
 
 /// The longest line either end of the structure channel reads, newline included. A line is one
-/// request or one response, and the largest is a whole document, inline in a `swap` or read back by
-/// `get_document`: tens of kilobytes for the largest instruments in the library, so this leaves two
+/// request or one response, and the largest is a `call`'s answer describing a whole document: tens
+/// of kilobytes for the largest instruments in the library, so this leaves two
 /// orders of magnitude of headroom while bounding what a peer that never sends a newline can make
 /// the reader buffer.
 pub const MAX_LINE_BYTES: usize = 4 << 20;
@@ -877,22 +854,10 @@ mod tests {
 
     #[test]
     fn every_request_variant_round_trips_as_one_ndjson_line() {
-        // The verbs: ping, swap (by value or by path, with the optional
-        // expect guard), open, list, get_document, get_diagnostics, get_meters, set_probes, send, call.
+        // The verbs: ping, open (with the optional expect guard), list, get_document,
+        // get_diagnostics, get_meters, set_probes, send, call.
         let requests = [
             Request::Ping,
-            Request::Swap {
-                source: DocSource::Path("instruments/warm-pad.json".to_string()),
-                expect: None,
-            },
-            Request::Swap {
-                source: DocSource::Document(serde_json::json!({
-                    "format_version": 3,
-                    "instrument": "t",
-                    "nodes": []
-                })),
-                expect: Some("00c0ffee00c0ffee".to_string()),
-            },
             Request::Open {
                 name: "pad.json".to_string(),
                 expect: Some("00c0ffee00c0ffee".to_string()),
@@ -1398,15 +1363,12 @@ mod tests {
 
     #[test]
     fn embedded_newlines_escape_instead_of_breaking_the_framing() {
-        // The framing survives hostile content: a document whose strings contain raw
+        // The framing survives hostile content: arguments whose strings contain raw
         // newlines must still serialize to one line (serde_json escapes to \n), or a
         // netcat/read_line peer would split one message into garbage twice over.
-        let req = Request::Swap {
-            source: DocSource::Document(serde_json::json!({
-                "instrument": "line\nbreak",
-                "nodes": []
-            })),
-            expect: None,
+        let req = Request::Call {
+            tool: "set_instrument_name".to_string(),
+            args: serde_json::json!({ "source": "a.json", "name": "line\nbreak" }),
         };
         assert_one_line_round_trip(&req);
     }
@@ -1436,39 +1398,12 @@ mod tests {
     }
 
     #[test]
-    fn swap_carries_its_source_by_path_or_by_value() {
-        // Both branches stay open and the channel keeps both:
-        // `source` is either `{"path": ...}` (resolver-loaded engine-side) or
-        // `{"document": {...}}` (inline JSON). Field names match the tool contract.
-        let by_path = Request::Swap {
-            source: DocSource::Path("instruments/warm-pad.json".to_string()),
-            expect: None,
-        };
-        let v: serde_json::Value = serde_json::from_str(&by_path.to_ndjson()).expect("as value");
-        assert_eq!(
-            v,
-            serde_json::json!({
-                "verb": "swap",
-                "source": { "path": "instruments/warm-pad.json" }
-            })
-        );
-        assert!(
-            v.as_object().is_some_and(|s| !s.contains_key("expect")),
-            "a swap without a guard omits expect entirely: {v}"
-        );
-
-        let by_value = Request::Swap {
-            source: DocSource::Document(serde_json::json!({ "instrument": "t" })),
-            expect: Some("00c0ffee00c0ffee".to_string()),
-        };
-        let v: serde_json::Value = serde_json::from_str(&by_value.to_ndjson()).expect("as value");
-        assert_eq!(
-            v,
-            serde_json::json!({
-                "verb": "swap",
-                "source": { "document": { "instrument": "t" } },
-                "expect": "00c0ffee00c0ffee"
-            })
-        );
+    fn a_client_cannot_ask_to_swap_a_document_in() {
+        for line in [
+            r#"{"verb":"swap","source":{"path":"instruments/warm-pad.json"}}"#,
+            r#"{"verb":"swap","source":{"document":{"instrument":"t"}},"expect":"00c0ffee"}"#,
+        ] {
+            assert!(Request::from_ndjson(line).is_err(), "{line}");
+        }
     }
 }

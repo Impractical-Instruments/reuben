@@ -1,12 +1,12 @@
-//! The five engine verbs: audition a control gesture, ask whether the engine is there, install a
-//! document, read what is playing, read the counters.
+//! The engine verbs: audition a control gesture, ask whether the engine is there, open an
+//! instrument, list what can be opened, read what is playing, read the counters.
 //!
 //! Each is act-then-map — the exchange itself reports a dead engine, so there is no separate probe
 //! and no window between checking and acting. What a door still owns is its transport and how it
 //! renders an [`Answer`] or a [`Refusal`]; the classification between them is decided here, once.
 //!
 //! The split is the same one the authoring half draws: a verb that *ran* and reported a problem is
-//! an [`Answer`] (a rejected swap, an `expect` conflict — the guard guarding), and only a verb that
+//! an [`Answer`] (a rejected open, an `expect` conflict — the guard guarding), and only a verb that
 //! could not do its job at all is a [`Refusal`]. [`get_engine_status`] cannot refuse, because
 //! answering "is it there?" is its whole job.
 
@@ -19,7 +19,7 @@ use reuben_document::projection::Projector;
 
 use crate::authoring::{Answer, DocumentView, Refusal, Resources};
 
-use super::args::{ListInstruments, OpenInstrument, SendLiveControls, SwapInstrument};
+use super::args::{ListInstruments, OpenInstrument, SendLiveControls};
 use super::channel::{CallOutcome, Channel, ChannelError, SwapOutcome};
 use super::prose::ENGINE_UNREACHABLE_GUIDANCE;
 use super::result::{
@@ -28,8 +28,7 @@ use super::result::{
 };
 use super::wire::{
     over_long_batch_refusal, ChannelLevel, ControlArg, ControlMessage, DiagnosticsReport,
-    DocSource, DocumentSnapshot, ListWhat, MetersReport, SwapReport, EMPTY_BATCH_REFUSAL,
-    MAX_SEND_BATCH,
+    DocumentSnapshot, ListWhat, MetersReport, SwapReport, EMPTY_BATCH_REFUSAL, MAX_SEND_BATCH,
 };
 
 /// Audition a batch of control values on the running engine.
@@ -106,30 +105,16 @@ pub fn get_engine_status(channel: &Channel, door_version: &str) -> Answer<Engine
     Answer { output, summary }
 }
 
-/// Install a document from a path as the playing engine.
-///
-/// An `ok: false` load report, an `expect` conflict and a held swap are all ordinary answers: the
-/// channel worked, and the report is the deliverable.
-pub fn swap_instrument(
-    args: &SwapInstrument,
-    channel: &Channel,
-) -> Result<Answer<SwapResult>, Refusal> {
-    swap_answer(
-        channel.swap(DocSource::Path(args.path.clone()), args.expect.clone()),
-        Verb::Swap,
-    )
-}
-
 /// Stop playing the current instrument and play the one `name` names, read through the engine's
-/// store. Answers exactly as [`swap_instrument`] does.
+/// store.
+///
+/// An `ok: false` load report, an `expect` conflict and a held open are all ordinary answers: the
+/// channel worked, and the report is the deliverable.
 pub fn open_instrument(
     args: &OpenInstrument,
     channel: &Channel,
 ) -> Result<Answer<SwapResult>, Refusal> {
-    swap_answer(
-        channel.open(args.name.clone(), args.expect.clone()),
-        Verb::Open,
-    )
+    open_answer(channel.open(args.name.clone(), args.expect.clone()))
 }
 
 /// List the instrument or sample names the engine offers.
@@ -153,37 +138,11 @@ pub fn list_instruments(
     })
 }
 
-/// The two verbs that install a document, so a summary names the one the model called.
-#[derive(Clone, Copy)]
-enum Verb {
-    Swap,
-    Open,
-}
-
-impl Verb {
-    fn noun(self) -> &'static str {
-        match self {
-            Verb::Swap => "swap",
-            Verb::Open => "open",
-        }
-    }
-
-    fn past(self) -> &'static str {
-        match self {
-            Verb::Swap => "swapped",
-            Verb::Open => "opened",
-        }
-    }
-}
-
-/// Map a swap-shaped channel outcome to the verb's answer.
-fn swap_answer(
-    outcome: Result<SwapOutcome, ChannelError>,
-    verb: Verb,
-) -> Result<Answer<SwapResult>, Refusal> {
+/// Map an open's channel outcome to the verb's answer.
+fn open_answer(outcome: Result<SwapOutcome, ChannelError>) -> Result<Answer<SwapResult>, Refusal> {
     match outcome {
         Ok(SwapOutcome::Installed(report)) => {
-            let summary = swap_summary(&report, verb);
+            let summary = open_summary(&report);
             Ok(Answer {
                 output: SwapResult::installed(report),
                 summary,
@@ -196,9 +155,8 @@ fn swap_answer(
                 conflict.actual.clone()
             };
             let summary = format!(
-                "{} rejected by the expect guard: the engine is playing {playing}, not the \
+                "open rejected by the expect guard: the engine is playing {playing}, not the \
                  expected {} — re-read with get_current_instrument and reconcile",
-                verb.noun(),
                 conflict.expected
             );
             Ok(Answer {
@@ -224,10 +182,7 @@ fn swap_answer(
             })
         }
         Ok(SwapOutcome::Refused(message)) => Err(Refusal::new(message)),
-        Err(why) => Err(refuse(
-            &format!("the {} could not be completed", verb.noun()),
-            why,
-        )),
+        Err(why) => Err(refuse("the open could not be completed", why)),
     }
 }
 
@@ -438,20 +393,19 @@ fn project_installed(snapshot: &DocumentSnapshot, store: &dyn Resources) -> Stri
     }
 }
 
-/// One-line gloss of a swap outcome: what installed (with diff counts) or why nothing did.
-fn swap_summary(report: &SwapReport, verb: Verb) -> String {
+/// One-line gloss of an open's outcome: what installed (with diff counts) or why nothing did.
+fn open_summary(report: &SwapReport) -> String {
     if report.report.ok {
         match &report.diff {
             Some(diff) => format!(
-                "{} (content_hash {}): {} survived, {} state-reset, {} added, {} removed",
-                verb.past(),
+                "opened (content_hash {}): {} survived, {} state-reset, {} added, {} removed",
                 report.content_hash,
                 diff.survived,
                 diff.state_reset.len(),
                 diff.added.len(),
                 diff.removed.len()
             ),
-            None => format!("{} (content_hash {})", verb.past(), report.content_hash),
+            None => format!("opened (content_hash {})", report.content_hash),
         }
     } else if report.content_hash.is_empty() {
         // Nothing plays. The server's warnings say which instrument is open and whether this
@@ -474,14 +428,12 @@ fn swap_summary(report: &SwapReport, verb: Verb) -> String {
             open
         };
         format!(
-            "{} did not install: {} error(s), the first: {first} — {open}",
-            verb.noun(),
+            "open did not install: {} error(s), the first: {first} — {open}",
             report.report.errors.len(),
         )
     } else {
         format!(
-            "{} rejected: {} error(s), {} warning(s) — nothing installed; {} keeps playing",
-            verb.noun(),
+            "open rejected: {} error(s), {} warning(s) — nothing installed; {} keeps playing",
             report.report.errors.len(),
             report.report.warnings.len(),
             report.content_hash
@@ -547,9 +499,9 @@ mod tests {
                 &channel,
             )
             .expect_err("no engine to send to"),
-            swap_instrument(
-                &SwapInstrument {
-                    path: "inst.json".to_string(),
+            open_instrument(
+                &OpenInstrument {
+                    name: "inst.json".to_string(),
                     expect: None,
                 },
                 &channel,

@@ -10,9 +10,9 @@
 //! In-process and over the socket are the same channel, not two paths: [`RunningEngine::channel`]
 //! is a [`Channel`] over [`InProcess`], which dispatches into the very [`StructureState`] the
 //! [`StructureServer`] serves. A caller drives it with the window's engine verbs
-//! ([`swap_instrument`](reuben_api::engine::swap_instrument),
+//! ([`open_instrument`](reuben_api::engine::open_instrument),
 //! [`send_live_controls`](reuben_api::engine::send_live_controls),
-//! [`get_engine_status`](reuben_api::engine::get_engine_status), …), and a swap made in-process is
+//! [`get_engine_status`](reuben_api::engine::get_engine_status), …), and an open made in-process is
 //! the document the sidecar reads next, because there is one Coordinator behind both.
 
 use std::fmt;

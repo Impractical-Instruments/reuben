@@ -695,3 +695,47 @@ fn a_request_line_past_the_cap_is_answered_with_an_error_and_the_connection_clos
     server.shutdown();
     cb.stop();
 }
+
+/// What a client built before `swap` was removed gets for one: the line is an unreadable request,
+/// nothing installs, and the connection goes on answering.
+#[test]
+fn a_swap_line_is_unreadable_and_the_connection_keeps_serving() {
+    let (state, cb, base_hash, library) = wired_library(BASE_DOC, "old_swap");
+    std::fs::write(library.0.join("x.json"), envelope_doc("/eg")).expect("seed the target");
+    let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
+    let client = TcpStream::connect(server.local_addr()).expect("connect");
+    let mut writer = client.try_clone().unwrap();
+    let mut reader = BufReader::new(client);
+
+    let old = serde_json::json!({
+        "verb": "swap",
+        "source": { "path": library.name("x.json") }
+    });
+    writer
+        .write_all(format!("{old}\n").as_bytes())
+        .expect("send the old line");
+    match read_response(&mut reader) {
+        Response::Error { message } => {
+            assert!(message.starts_with("unreadable request"), "{message}")
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
+
+    send(&mut writer, &Request::Ping);
+    assert_eq!(read_response(&mut reader), Response::Pong);
+    let fresh = TcpStream::connect(server.local_addr()).expect("connect again");
+    let mut fresh_writer = fresh.try_clone().unwrap();
+    send(&mut fresh_writer, &Request::Ping);
+    assert_eq!(read_response(&mut BufReader::new(fresh)), Response::Pong);
+
+    send(&mut writer, &Request::GetDocument);
+    match read_response(&mut reader) {
+        Response::Document(DocumentSnapshot { content_hash, .. }) => {
+            assert_eq!(content_hash, base_hash, "nothing installed")
+        }
+        other => panic!("expected Document, got {other:?}"),
+    }
+
+    server.shutdown();
+    cb.stop();
+}
