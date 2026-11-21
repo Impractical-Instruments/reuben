@@ -2,7 +2,7 @@
 
 Deterministic CI performance trend: callgrind **instruction counts (Ir)** for rendering **1 s of audio** (375 × 128-frame blocks @ 48 kHz), recorded on every direct push to `dev`. Instruction counts don't jitter — every visible move is a real code change (or a toolchain bump).
 
-**204 commits** · 2026-07-12 → 2026-11-20 · 16833 data points · last: `8a01822` (2026-11-20T21:06:41-05:00)
+**205 commits** · 2026-07-12 → 2026-11-20 · 16930 data points · last: `f92297a` (2026-11-20T22:12:44-05:00)
 
 *Companion trend: the **main** series lives on the [`bench-history`](https://github.com/Impractical-Instruments/reuben/tree/bench-history) branch.*
 
@@ -208,10 +208,10 @@ The deterministic tier of the eval harness: each task's **reference solution** (
 | `nudge` | grounding tokens | 19,324 | ±0.0% | **+207.6%** | 2026-07-22 |
 | `nudge` | fixed grounding | 17,808 | ±0.0% | **+273.6%** | 2026-07-22 |
 | `nudge` | document chars | 2,098 | ±0.0% | ±0.0% | 2026-07-22 |
-| `repair` | grounding tokens | 22,692 | +0.1% | **+370.6%** | 2026-07-22 |
+| `repair` | grounding tokens | 22,694 | ±0.0% | **+370.6%** | 2026-07-22 |
 | `repair` | fixed grounding | 22,341 | ±0.0% | **+368.7%** | 2026-07-22 |
 | `repair` | document chars | 0 | — | **-100.0%** | 2026-07-22 |
-| `repair_and_note` | grounding tokens | 22,769 | +0.2% | **+6.2%** | 2026-11-19 |
+| `repair_and_note` | grounding tokens | 22,765 | ±0.0% | **+6.2%** | 2026-11-19 |
 | `repair_and_note` | fixed grounding | 22,341 | ±0.0% | **+5.7%** | 2026-11-19 |
 | `repair_and_note` | document chars | 0 | — | — | 2026-11-19 |
 | `tweak` | grounding tokens | 22,498 | ±0.0% | **+370.7%** | 2026-07-22 |
