@@ -126,18 +126,22 @@ fn normalize(p: &Path) -> PathBuf {
 
 impl Resources for FsResolver {
     fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
-        let path = self.base_dir.join(source);
         if self.stat_only {
-            return match std::fs::metadata(&path) {
-                Ok(m) if m.is_file() => Ok(SampleBuffer::empty()),
-                Ok(_) => Err(ResolveError::NotFound(format!(
-                    "{}: not a file",
-                    path.display()
-                ))),
-                Err(e) => Err(ResolveError::NotFound(format!("{}: {e}", path.display()))),
-            };
+            return self.check_samples(source).map(|()| SampleBuffer::empty());
         }
-        decode_wav(&path)
+        decode_wav(&self.base_dir.join(source))
+    }
+
+    fn check_samples(&self, source: &str) -> Result<(), ResolveError> {
+        let path = self.base_dir.join(source);
+        match std::fs::metadata(&path) {
+            Ok(m) if m.is_file() => Ok(()),
+            Ok(_) => Err(ResolveError::NotFound(format!(
+                "{}: not a file",
+                path.display()
+            ))),
+            Err(e) => Err(ResolveError::NotFound(format!("{}: {e}", path.display()))),
+        }
     }
 
     /// Read a patch path (an instrument-kind resource) to its JSON text, relative to

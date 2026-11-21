@@ -117,9 +117,7 @@ pub(crate) fn reach_with(
                 })
                 .map(|parsed| TcpStream::connect_timeout(&parsed, DEFAULT_CONNECT_TIMEOUT))?;
             match refused {
-                Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
-                    start_temporary(temporary)
-                }
+                Err(e) if nobody_listening(e.kind()) => start_temporary(temporary),
                 Err(e) => Err(ReachError::NotAServer {
                     addr: default_addr.to_string(),
                     why: e.to_string(),
@@ -134,6 +132,16 @@ pub(crate) fn reach_with(
             addr: format!("{addr}: {why}"),
         }),
     }
+}
+
+/// Whether a failed connect to the loopback default address means nothing listens there. Windows
+/// retries a SYN the closed port resets and reports the refusal only after the connect budget, so a
+/// timeout counts too; a hung server still completes the handshake and is never mistaken for none.
+fn nobody_listening(kind: std::io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::TimedOut
+    )
 }
 
 /// The server at `addr`, if it answers a ping; `unanswered` says why not otherwise.
@@ -424,6 +432,17 @@ mod tests {
         let shown = err.to_string();
         assert!(shown.contains(&addr), "{shown}");
         assert!(shown.contains("--temporary-server"), "{shown}");
+    }
+
+    /// A loopback port with nothing on it is refused, or on Windows, which retries the SYN, times
+    /// out first. A hung server completes the handshake, so neither is a server not answering.
+    #[test]
+    fn a_refused_or_timed_out_loopback_connect_means_nobody_listens() {
+        use std::io::ErrorKind;
+        assert!(nobody_listening(ErrorKind::ConnectionRefused));
+        assert!(nobody_listening(ErrorKind::TimedOut));
+        assert!(!nobody_listening(ErrorKind::PermissionDenied));
+        assert!(!nobody_listening(ErrorKind::AddrNotAvailable));
     }
 
     #[test]

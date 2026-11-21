@@ -36,6 +36,15 @@ pub trait Resources {
     /// Decode `source` to audio.
     fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError>;
 
+    /// Whether `source` is there to decode, without decoding it: `Ok` when it is. A read that
+    /// reports port metadata asks this instead of [`read_samples`](Self::read_samples).
+    ///
+    /// Defaults to a decode, which is right for a store that cannot tell otherwise; a store that
+    /// can stat overrides it, and a store that wraps another forwards it.
+    fn check_samples(&self, source: &str) -> Result<(), ResolveError> {
+        self.read_samples(source).map(|_| ())
+    }
+
     /// Read `source` as text: an instrument document, its own or a nested child's.
     ///
     /// Defaults to [`NotFound`](ResolveError::NotFound) so a sample-only store need not
@@ -105,6 +114,10 @@ impl Resources for Anchored<'_> {
         self.store.read_samples(source)
     }
 
+    fn check_samples(&self, source: &str) -> Result<(), ResolveError> {
+        self.store.check_samples(source)
+    }
+
     fn read_text(&self, source: &str) -> Result<String, ResolveError> {
         self.store.read_text(source)
     }
@@ -117,12 +130,12 @@ impl Resources for Anchored<'_> {
 
 /// `store` scoped to one document, as a filesystem door scopes a store with
 /// `FsResolver::for_document`: a reference with no referrer, which is how a load resolves the top
-/// document's own references, resolves beside `origin`, while the document itself still answers to
-/// `document`, the name the caller spelled. Writes pass through.
+/// document's own references, resolves beside `origin`, while each of `documents`, the names the
+/// caller spelled for the documents it acts on, still answers to itself. Writes pass through.
 #[cfg(any(feature = "authoring", test))]
 pub(crate) struct ScopedTo<'a> {
     pub store: &'a dyn Resources,
-    pub document: &'a str,
+    pub documents: &'a [String],
     pub origin: &'a str,
 }
 
@@ -130,6 +143,10 @@ pub(crate) struct ScopedTo<'a> {
 impl Resources for ScopedTo<'_> {
     fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
         self.store.read_samples(source)
+    }
+
+    fn check_samples(&self, source: &str) -> Result<(), ResolveError> {
+        self.store.check_samples(source)
     }
 
     fn read_text(&self, source: &str) -> Result<String, ResolveError> {
@@ -147,9 +164,43 @@ impl Resources for ScopedTo<'_> {
     fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
         match referrer {
             Some(referrer) => self.store.canonical(source, Some(referrer)),
-            None if source == self.document => self.store.canonical(source, None),
+            None if self.documents.iter().any(|d| d == source) => {
+                self.store.canonical(source, None)
+            }
             None => self.store.canonical(source, Some(self.origin)),
         }
+    }
+}
+
+/// `store` with every sample read only checked, never decoded: a present sample reads as an empty
+/// buffer. For the reads that report port metadata and never touch audio.
+#[cfg(any(feature = "authoring", test))]
+pub(crate) struct Undecoded<'a>(pub &'a dyn Resources);
+
+#[cfg(any(feature = "authoring", test))]
+impl Resources for Undecoded<'_> {
+    fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+        self.0.check_samples(source).map(|()| SampleBuffer::empty())
+    }
+
+    fn check_samples(&self, source: &str) -> Result<(), ResolveError> {
+        self.0.check_samples(source)
+    }
+
+    fn read_text(&self, source: &str) -> Result<String, ResolveError> {
+        self.0.read_text(source)
+    }
+
+    fn write_text(&self, source: &str, text: &str) -> Result<(), ResolveError> {
+        self.0.write_text(source, text)
+    }
+
+    fn create_text(&self, source: &str, text: &str) -> Result<Created, ResolveError> {
+        self.0.create_text(source, text)
+    }
+
+    fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
+        self.0.canonical(source, referrer)
     }
 }
 
@@ -213,6 +264,10 @@ impl<R: Resources + ?Sized> Resources for alloc::sync::Arc<R> {
         (**self).read_samples(source)
     }
 
+    fn check_samples(&self, source: &str) -> Result<(), ResolveError> {
+        (**self).check_samples(source)
+    }
+
     fn read_text(&self, source: &str) -> Result<String, ResolveError> {
         (**self).read_text(source)
     }
@@ -233,6 +288,10 @@ impl<R: Resources + ?Sized> Resources for alloc::sync::Arc<R> {
 impl<R: Resources + ?Sized> Resources for alloc::boxed::Box<R> {
     fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
         (**self).read_samples(source)
+    }
+
+    fn check_samples(&self, source: &str) -> Result<(), ResolveError> {
+        (**self).check_samples(source)
     }
 
     fn read_text(&self, source: &str) -> Result<String, ResolveError> {

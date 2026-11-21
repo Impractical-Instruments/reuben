@@ -267,3 +267,45 @@ fn new_instrument_with_no_server_writes_in_cwd() {
         stdout(&out)
     );
 }
+
+/// `describe` reports port metadata: a sample that is there is no warning, whether or not it
+/// decodes. `validate` is the one that decodes.
+#[test]
+fn describe_does_not_decode_samples() {
+    let a = TempDir::new("cli_describe_undecoded");
+    std::fs::write(a.0.join("hit.wav"), b"not a wav at all").expect("write the decoy sample");
+    std::fs::write(
+        a.0.join("inst.json"),
+        r#"{"format_version":3,"instrument":"decode-check",
+            "resources":{"hit":"hit.wav"},
+            "nodes":[{"type":"sample","address":"/s","sample":"hit"}]}"#,
+    )
+    .expect("write the document");
+
+    let boundary = reuben(
+        &a.0,
+        &[
+            "describe",
+            "inst.json",
+            "--view",
+            "boundary",
+            "--temporary-server",
+        ],
+    );
+    assert!(boundary.status.success(), "{}", stderr(&boundary));
+    assert!(
+        !stderr(&boundary).contains("warning"),
+        "{}",
+        stderr(&boundary)
+    );
+    let index = reuben(&a.0, &["describe", "inst.json", "--temporary-server"]);
+    assert!(index.status.success(), "{}", stderr(&index));
+    assert!(!stdout(&index).contains("dark"), "{}", stdout(&index));
+    let validate = reuben(&a.0, &["validate", "inst.json", "--temporary-server"]);
+    assert!(validate.status.success(), "{}", stderr(&validate));
+    assert!(
+        stderr(&validate).contains("warning"),
+        "{}",
+        stderr(&validate)
+    );
+}

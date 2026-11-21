@@ -795,6 +795,20 @@ class LiveEngineBoundaryTest(unittest.TestCase):
         self.assertEqual(by_addr, {"/space/in", "/tone/in"})
 
 
+class RunDescribeTest(unittest.TestCase):
+    """`run_describe` reads the instrument file it is handed through a temporary server, never a
+    `reuben play` that happens to be running: that one may not offer the file, and may have been
+    built before the operators the file uses."""
+
+    def test_run_describe_asks_a_temporary_server(self):
+        from unittest import mock
+        done = subprocess.CompletedProcess([], 0, stdout='{"inputs": [], "outputs": []}', stderr="")
+        with mock.patch.object(g.subprocess, "run", return_value=done) as run:
+            g.run_describe("reuben", Path("inst.json"))
+        argv = run.call_args.args[0]
+        self.assertIn("--temporary-server", argv)
+
+
 class FixtureMatchTest(unittest.TestCase):
     """Lock the emitter to the known-good export: for each control type, our property *key set*
     must match the reference's. Catches format drift (a renamed/missing property) that unit

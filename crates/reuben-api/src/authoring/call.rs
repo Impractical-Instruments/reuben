@@ -10,8 +10,9 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
 
+use super::history::restore_instrument_through;
 use super::*;
-use crate::resources::ScopedTo;
+use crate::resources::{ScopedTo, Undecoded};
 use crate::tools::names;
 
 /// What the caller must do with a verb's result beyond relaying it.
@@ -140,10 +141,11 @@ pub fn call<R: Resources>(
     call_scoped(tool, args, store, None)
 }
 
-/// The document a call acts on: as the caller spelled it, and as the store resolves it.
+/// The documents a call acts on, as the caller spelled them, and where the first of them, the one
+/// whose references a load resolves, lives as the store resolves it.
 #[derive(Debug, Clone, Copy)]
 pub struct Scope<'a> {
-    pub document: &'a str,
+    pub documents: &'a [String],
     pub origin: &'a str,
 }
 
@@ -158,7 +160,7 @@ pub fn call_scoped<R: Resources>(
     let history: &dyn Resources = store;
     let scoped = scope.map(|scope| ScopedTo {
         store: history,
-        document: scope.document,
+        documents: scope.documents,
         origin: scope.origin,
     });
     let res: &dyn Resources = match &scoped {
@@ -179,13 +181,13 @@ pub fn call_scoped<R: Resources>(
     match tool {
         names::DESCRIBE_OPERATORS => run::<DescribeOperators, _>(args, read, describe_operators),
         names::DESCRIBE_INSTRUMENT => {
-            run::<DescribeInstrument, _>(args, read, |a| describe_instrument(a, res))
+            run::<DescribeInstrument, _>(args, read, |a| describe_instrument(a, &Undecoded(res)))
         }
         names::VALIDATE_INSTRUMENT => {
             run::<ValidateInstrument, _>(args, read, |a| validate_instrument(a, res))
         }
         names::DESCRIBE_BOUNDARY => {
-            run::<DescribeBoundary, _>(args, read, |a| describe_boundary(a, res))
+            run::<DescribeBoundary, _>(args, read, |a| describe_boundary(a, &Undecoded(res)))
         }
         names::WIRE_COMPATIBILITY => {
             run::<WireCompatibility, _>(args, read, |a| wire_compatibility(a, res))
@@ -214,7 +216,7 @@ pub fn call_scoped<R: Resources>(
             |a| CallKind::Edit {
                 source: a.source.clone(),
             },
-            |a| restore_instrument(a, store),
+            |a| restore_instrument_through(a, store, res),
         ),
 
         names::SET_INSTRUMENT_NAME => edit!(args, SetInstrumentName, set_instrument_name),

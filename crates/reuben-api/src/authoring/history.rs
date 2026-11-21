@@ -136,6 +136,10 @@ impl<R: Resources> Resources for DocumentHistory<R> {
         self.inner.read_samples(source)
     }
 
+    fn check_samples(&self, source: &str) -> Result<(), ResolveError> {
+        self.inner.check_samples(source)
+    }
+
     fn read_text(&self, source: &str) -> Result<String, ResolveError> {
         self.inner.read_text(source)
     }
@@ -193,7 +197,18 @@ pub fn restore_instrument<R: Resources>(
     args: &RestoreInstrument,
     resources: &DocumentHistory<R>,
 ) -> Result<Answer<EditResult>, Refusal> {
-    let prior = resources.text_at(&args.source, &args.to).ok_or_else(|| {
+    restore_instrument_through(args, resources, resources)
+}
+
+/// [`restore_instrument`] with the prior text taken from `history` and everything else — the guard,
+/// the validation, the write — done through `resources`, a store scoped to the document as an edit
+/// to it is.
+pub(crate) fn restore_instrument_through<R: Resources>(
+    args: &RestoreInstrument,
+    history: &DocumentHistory<R>,
+    resources: &dyn Resources,
+) -> Result<Answer<EditResult>, Refusal> {
+    let prior = history.text_at(&args.source, &args.to).ok_or_else(|| {
         Refusal::new(format!(
             "no document with content hash {} is held for `{}`: it was never written there \
              through this store, or it has been evicted",

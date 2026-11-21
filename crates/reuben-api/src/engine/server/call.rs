@@ -144,10 +144,19 @@ pub(super) fn handle_call(state: &StructureState, tool: &str, args: Value) -> Re
         Err(poisoned) => return poisoned.into(),
     }
     let staged = state.store.inner();
-    // The first name a verb takes is the document it acts on.
-    let scope = named
-        .first()
-        .map(|(document, origin)| Scope { document, origin });
+    // The first name a verb takes is the document whose references a load resolves.
+    let documents: Vec<String> = authoring::named_sources(tool, &args)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|named| match named {
+            Named::Document(name) => Some(name),
+            Named::Reference { .. } => None,
+        })
+        .collect();
+    let scope = named.first().map(|(_, origin)| Scope {
+        documents: &documents,
+        origin,
+    });
     let Called {
         output,
         summary,
@@ -584,6 +593,13 @@ mod tests {
             Ok(())
         }
 
+        /// Present iff a text is stored under `source`, counting no decode.
+        fn check_samples(&self, source: &str) -> Result<(), ResolveError> {
+            self.get(source)
+                .map(|_| ())
+                .ok_or_else(|| ResolveError::NotFound(source.to_string()))
+        }
+
         /// Path-shaped, as a filesystem store is: a reference resolves beside its referrer.
         fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
             match referrer.and_then(|r| r.rsplit_once('/')) {
@@ -999,6 +1015,31 @@ mod tests {
         assert_eq!(s.files.1.load(Ordering::SeqCst), 0, "a sample was read");
     }
 
+    /// The describe reads report port metadata: they check a sample is there and decode none, so a
+    /// present sample is no warning however its bytes read.
+    #[test]
+    fn a_describe_checks_samples_and_decodes_none() {
+        let s = serving();
+        let sampled = r#"{"format_version":3,"instrument":"sampled",
+            "resources":{"k":"k.wav"},
+            "interface":{"outputs":{"out":{"from":"/g.audio"}}},
+            "nodes":[{"type":"granulator","address":"/g","sample":"k"}]}"#;
+        s.files.write_text("sampled.json", sampled).unwrap();
+        s.files.write_text("k.wav", "not audio").unwrap();
+
+        let (boundary, _) = call(&s, "describe_boundary", json!({"source": "sampled.json"}));
+        assert!(
+            boundary["warnings"].as_array().is_none_or(Vec::is_empty),
+            "{boundary}"
+        );
+        let (index, _) = call(&s, "describe_instrument", json!({"source": "sampled.json"}));
+        assert!(
+            !index["text"].as_str().unwrap_or_default().contains("dark"),
+            "{index}"
+        );
+        assert_eq!(s.files.1.load(Ordering::SeqCst), 0, "a sample was decoded");
+    }
+
     #[test]
     fn library_reports_the_hosts_dirs() {
         let s = serving();
@@ -1078,15 +1119,7 @@ mod tests {
     #[test]
     fn a_read_of_another_document_resolves_its_references_beside_it() {
         let s = serving();
-        s.files
-            .write_text(
-                "sub/w.json",
-                r#"{"format_version":3,"instrument":"w",
-                    "resources":{"v":"x.json"},
-                    "interface":{"outputs":{"out":{"from":"/voice.out"}}},
-                    "nodes":[{"type":"subpatch","address":"/voice","patch":"v"}]}"#,
-            )
-            .unwrap();
+        s.files.write_text("sub/w.json", SUB_W).unwrap();
         s.files.write_text("sub/x.json", V).unwrap();
 
         let (report, _) = call(&s, "validate_instrument", json!({"source": "sub/w.json"}));
@@ -1094,6 +1127,53 @@ mod tests {
         assert_eq!(report["warnings"], json!([]), "{report}");
         let (boundary, _) = call(&s, "describe_boundary", json!({"source": "sub/w.json"}));
         assert_eq!(boundary["outputs"][0]["name"], "out", "{boundary}");
+    }
+
+    /// `sub/w.json`: nests `x.json`, which lives beside it in `sub/`.
+    const SUB_W: &str = r#"{"format_version":3,"instrument":"w",
+        "resources":{"v":"x.json"},
+        "interface":{"outputs":{"out":{"from":"/voice.out"}}},
+        "nodes":[{"type":"subpatch","address":"/voice","patch":"v"}]}"#;
+
+    /// A copy names two documents; each answers to its own name, so `to` is not read as a
+    /// reference of `from`.
+    #[test]
+    fn a_copy_between_two_relative_names_in_one_directory_is_written() {
+        let s = serving();
+        s.files.write_text("sub/a.json", V).unwrap();
+        let (output, _) = call(
+            &s,
+            "copy_instrument",
+            json!({"from": "sub/a.json", "to": "sub/b.json"}),
+        );
+        assert_eq!(output["written"], true, "{output}");
+        let copied = s.files.get("sub/b.json").expect("the copy is written");
+        assert!(copied.contains(r#""instrument": "v""#), "{copied}");
+    }
+
+    /// Undoing an edit to a document in a subdirectory resolves its references as the edit did.
+    #[test]
+    fn a_restore_of_a_document_in_a_subdirectory_resolves_its_references_beside_it() {
+        let s = serving();
+        s.files.write_text("sub/w.json", SUB_W).unwrap();
+        s.files.write_text("sub/x.json", V).unwrap();
+        let before = open_report(&s, "sub/w.json", None).content_hash;
+
+        let (edited, _) = call(
+            &s,
+            "set_instrument_name",
+            json!({"source": "sub/w.json", "name": "renamed"}),
+        );
+        assert_eq!(edited["written"], true, "{edited}");
+        assert_eq!(edited["report"]["warnings"], json!([]), "{edited}");
+
+        let (restored, _) = call(
+            &s,
+            "restore_instrument",
+            json!({"source": "sub/w.json", "to": before, "expect": edited["hash"]}),
+        );
+        assert_eq!(restored["written"], true, "{restored}");
+        assert_eq!(restored["report"]["warnings"], json!([]), "{restored}");
     }
 
     #[test]

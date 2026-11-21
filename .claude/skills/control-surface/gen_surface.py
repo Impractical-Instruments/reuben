@@ -334,7 +334,10 @@ def run_describe(reuben_bin: str, inst_path: Path) -> dict:
     """
     try:
         proc = subprocess.run(
-            [reuben_bin, "describe", str(inst_path), "--view", "boundary", "--json"],
+            # A temporary server: a running `reuben play` may not offer this file, and may have been
+            # built before the operators it uses.
+            [reuben_bin, "describe", str(inst_path), "--view", "boundary", "--json",
+             "--temporary-server"],
             capture_output=True, text=True,
         )
     except FileNotFoundError:
