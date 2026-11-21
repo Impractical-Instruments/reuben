@@ -834,3 +834,32 @@ fn a_server_without_a_token_ignores_a_credential() {
     server.shutdown();
     cb.stop();
 }
+
+/// A refused client whose request reaches the server after it answered still reads the refusal:
+/// the server does not reset the connection under it.
+#[test]
+fn a_refusal_survives_a_request_that_arrives_after_it() {
+    let (state, cb, _) = wired(BASE_DOC, 0);
+    let server = StructureServer::bind_with_token("0.0.0.0:0", state, Some(token("good")))
+        .expect("bind with a token");
+    let client = TcpStream::connect(on_loopback(&server)).expect("connect");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("a read timeout");
+    let mut writer = client.try_clone().expect("clone");
+    writer
+        .write_all(credential_line(&token("bad")).as_bytes())
+        .expect("write the credential");
+    std::thread::sleep(Duration::from_millis(300));
+    let _ = writer.write_all(Request::Ping.to_ndjson().as_bytes());
+    std::thread::sleep(Duration::from_millis(300));
+    let mut reader = BufReader::new(client);
+    assert_eq!(
+        read_response(&mut reader),
+        Response::Error {
+            message: REFUSED_TOKEN.to_string()
+        }
+    );
+    server.shutdown();
+    cb.stop();
+}
