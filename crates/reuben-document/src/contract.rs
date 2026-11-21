@@ -87,7 +87,8 @@ impl Diag {
             LoadError::UnknownConfig { node, .. }
             | LoadError::ConstantInInputs { node, .. }
             | LoadError::AmbiguousWire { node, .. }
-            | LoadError::UnknownResource { node, .. } => (Some(node.clone()), None),
+            | LoadError::UnknownResource { node, .. }
+            | LoadError::UnknownBinding { node, .. } => (Some(node.clone()), None),
             // A boundary-named problem: the offending "node" is the interface entry itself.
             LoadError::InterfaceOverride { name, .. }
             | LoadError::InterfacePipe { name, .. }

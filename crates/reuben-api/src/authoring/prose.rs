@@ -45,8 +45,10 @@ pub const SET_INSTRUMENT_DESCRIPTION: &str =
 
 pub const ADD_INSTRUMENT_NODE: &str =
     "Add a node in one call: required `address` and `type`, plus optional inputs (literal or \
-     wire-ref), config constants, description, and a sample/voice/patch resource id. Atomic — \
-     a wire to a missing source or a duplicate address rejects the whole call.";
+     wire-ref), config constants, description, a sample/voice/patch resource id, and for a \
+     subpatch a `bind` map (child resource id -> this document's resource id) that reuses one \
+     child with a different sample per use. Atomic — a wire to a missing source or a duplicate \
+     address rejects the whole call.";
 
 pub const REMOVE_INSTRUMENT_NODE: &str =
     "Remove a node. Cascades: auto-unwires every consumer wired from it and drops every \

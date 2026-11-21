@@ -688,6 +688,54 @@ mod tests {
         );
     }
 
+    #[test]
+    fn rebinding_a_subpatch_sample_is_heard_after_the_swap() {
+        // The bound sample is resolved at Instantiate, so a swap that rebinds it must not
+        // transplant the old operator: the new sample is what plays.
+        const CHILD: &str = r#"{ "format_version": 4, "instrument": "voice",
+            "resources": { "sample": "lib/default" },
+            "interface": { "outputs": { "audio": { "from": "/s.audio" } } },
+            "nodes": [ { "type": "sample", "address": "/s", "sample": "sample",
+                         "inputs": { "gate": 1, "loop": 1 } } ] }"#;
+        let host = |bound: &str| {
+            format!(
+                r#"{{ "format_version": 4, "instrument": "host",
+                     "resources": {{ "voice": "lib/voice", "scrape": "lib/scrape",
+                                     "hiss": "lib/hiss" }},
+                     "interface": {{ "outputs": {{ "out": {{ "from": "/a.audio" }} }} }},
+                     "nodes": [ {{ "type": "subpatch", "address": "/a", "patch": "voice",
+                                   "bind": {{ "sample": "{bound}" }} }} ] }}"#
+            )
+        };
+        let mut lib = MemoryResolver::new();
+        lib.insert_text("lib/voice", CHILD);
+        for (key, level) in [
+            ("lib/default", 0.1),
+            ("lib/scrape", 0.25),
+            ("lib/hiss", 0.5),
+        ] {
+            lib.insert_sample(key, SampleBuffer::new(vec![vec![level; 48_000]], 48_000.0));
+        }
+        let (mut coord, side, _w) = Coordinator::install_initial(
+            &host("scrape"),
+            Registry::builtin(),
+            Box::new(lib),
+            cfg(),
+        )
+        .expect("initial install");
+        let mut rig = RenderRig::new(side);
+        assert_eq!(rig.render_peak(1_024), 0.25);
+        let report = coord.swap_document(&host("hiss"));
+        assert!(report.report.ok, "{:?}", report.report);
+        assert_eq!(
+            report.diff.as_ref().unwrap().state_reset,
+            vec!["/a/s".to_string()]
+        );
+        rig.poll_install();
+        coord.try_reclaim();
+        assert_eq!(rig.render_peak(1_024), 0.5, "the rebound sample plays");
+    }
+
     // ---- Voicer: a changed config constant (`voices`) resets the hosted pool ----
 
     fn voice_resolver() -> MemoryResolver {

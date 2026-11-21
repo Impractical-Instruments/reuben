@@ -55,6 +55,15 @@ impl NormalizedDoc {
         self.0
     }
 
+    /// This document as the child a `subpatch` node's `bind` rebinds: `bound` (child resource id
+    /// → canonical source, see [`InstrumentDoc::bound`]) answers ahead of its `resources` table.
+    /// Load-session state only — the shape is untouched, so the invariant still holds.
+    pub(crate) fn with_bound(&self, bound: BTreeMap<String, Option<String>>) -> Self {
+        let mut doc = self.0.clone();
+        doc.bound = bound;
+        NormalizedDoc(doc)
+    }
+
     /// [`from_json`](Self::from_json) with the nested-load machinery threaded through, so a v1
     /// entry re-exporting a nested child's boundary port can parse the child (recursively,
     /// cycle-guarded via `ctx`) and copy its pipe's declared type. `referrer` is the canonical

@@ -396,6 +396,35 @@ impl ResourceRef {
     }
 }
 
+/// One entry of a `subpatch` node's `bind`: the child resource id it overrides, and the id in this
+/// document's own `resources` table the child plays instead.
+#[derive(Debug, Clone, Serialize)]
+pub struct Binding {
+    /// The id in the child document's `resources` table.
+    pub child: String,
+    /// The id in this document's `resources` table.
+    pub id: String,
+    /// This document's source for `id` — `None` when the id is not in the table.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Why the binding is dark, when it is. `None` is resolved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dark: Option<String>,
+}
+
+impl Binding {
+    fn render(&self) -> String {
+        let mut s = format!("{}={}", token(&self.child), token(&self.id));
+        if let Some(src) = &self.source {
+            s.push_str(&format!(" -> {}", token(src)));
+        }
+        if let Some(why) = &self.dark {
+            s.push_str(&format!(" DARK: {}", message(why)));
+        }
+        s
+    }
+}
+
 /// One node, zoomed.
 #[derive(Debug, Clone, Serialize)]
 pub struct NodeZoom {
@@ -417,6 +446,9 @@ pub struct NodeZoom {
     /// scans all three slots, so a zoom showing one could contradict it.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub resources: Vec<ResourceRef>,
+    /// A `subpatch` node's `bind`: which of the child's resources play this document's sources.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub bind: Vec<Binding>,
     /// A nested child's face — **never its internals**. The format is not recursive (a child is a
     /// resource id), so the projection mirrors the *document*: an opaque node plus the boundary it
     /// presents. The child's own nodes are reached by projecting the child document.
@@ -449,6 +481,7 @@ impl NodeZoom {
         line("in", render_list(&self.inputs, InputEdge::render));
         line("out", render_list(&self.consumers, OutEdge::render));
         line("res", render_list(&self.resources, ResourceRef::render));
+        line("bind", render_list(&self.bind, Binding::render));
         if let Some(b) = &self.boundary {
             line("boundary", render_boundary(b));
         }
@@ -749,6 +782,10 @@ struct LoadFacts {
     /// Node address → `(slot, why)`, for darkness with **no id to blame at all** — today only a
     /// `subpatch` carrying no `patch` reference.
     dark_nodes: BTreeMap<String, (String, String)>,
+    /// Canonical source → why, for every fetch that failed inside a nested child, at any depth.
+    /// A `bind` hands the child one of *this* document's sources, and the loader reports that
+    /// fetch from inside the child it binds, so this is where a binding's darkness is found.
+    nested_failures: BTreeMap<String, String>,
 }
 
 /// The projection source: one mint, at most one load, from which every view is cut. Doors hold this
@@ -829,8 +866,7 @@ impl<'a> Projector<'a> {
     /// The dark marker for one node: the first resource slot whose reference did not resolve, or
     /// the loader's own node-level darkness.
     fn dark_slot(&self, node: &NodeDoc) -> Option<String> {
-        for (slot, r) in node.resource_refs() {
-            let Some(id) = r else { continue };
+        for (slot, id) in uses(node) {
             if self.dark_reason(&node.address, slot, id).is_some() {
                 return Some(slot.to_string());
             }
@@ -865,11 +901,14 @@ impl<'a> Projector<'a> {
         }
         // The loader canonicalizes a source before fetching it and reports the canonical form, so
         // the lookup has to canonicalize too — the same call `boundary_of` makes.
-        if let Some(why) = facts
-            .dark_sources
-            .get(&(slot.to_string(), self.resolver.canonical(source, None)))
-        {
+        let canon = self.resolver.canonical(source, None);
+        if let Some(why) = facts.dark_sources.get(&(slot.to_string(), canon.clone())) {
             return Some(why.clone());
+        }
+        if slot == "bind" {
+            if let Some(why) = facts.nested_failures.get(&canon) {
+                return Some(why.clone());
+            }
         }
         match facts.dark_nodes.get(node) {
             Some((s, why)) if s == slot => Some(why.clone()),
@@ -1072,6 +1111,16 @@ impl<'a> Projector<'a> {
                 edges
             },
             resources,
+            bind: n
+                .bind
+                .iter()
+                .map(|(child, id)| Binding {
+                    child: child.clone(),
+                    id: id.clone(),
+                    source: self.doc.resources.get(id).cloned(),
+                    dark: self.dark_reason(&n.address, "bind", id),
+                })
+                .collect(),
             boundary,
             note,
         }
@@ -1129,8 +1178,7 @@ impl<'a> Projector<'a> {
         let mut dark: BTreeMap<&str, String> = BTreeMap::new();
         let mut dangling: Vec<ResourceRef> = Vec::new();
         for n in &self.doc.nodes {
-            for (slot, r) in n.resource_refs() {
-                let Some(id) = r else { continue };
+            for (slot, id) in uses(n) {
                 if self.doc.resources.contains_key(id) {
                     refs.entry(id).or_default().push(ResourceUse {
                         slot: slot.to_string(),
@@ -1271,6 +1319,15 @@ fn build_consumers(doc: &NormalizedDoc, registry: &Registry) -> BTreeMap<String,
     out
 }
 
+/// Every id a node names in this document's `resources` table, with the slot it names it through:
+/// its resource refs in the format's slot order, then each `bind` value under the slot `bind`.
+fn uses(n: &NodeDoc) -> impl Iterator<Item = (&'static str, &String)> {
+    n.resource_refs()
+        .into_iter()
+        .filter_map(|(slot, r)| r.as_ref().map(|id| (slot, id)))
+        .chain(n.bind.values().map(|id| ("bind", id)))
+}
+
 /// Fold one load warning into the dark tables. Only *this* document's own resource failures count
 /// — a genuinely nested one is the child's problem, surfaced when the child is projected, and the
 /// remaining warnings are `validate`'s business, not the projection's.
@@ -1299,6 +1356,7 @@ fn collect_dark(w: &LoadWarning, facts: &mut LoadFacts) {
                 .or_insert_with(|| ("patch".to_string(), w.to_string()));
         }
         LoadWarning::Nested { warning, .. } => {
+            collect_nested_failures(warning, facts);
             if let LoadWarning::ResolveFailed { slot, source, .. } = warning.as_ref() {
                 if matches!(*slot, "voice" | "patch") {
                     // By SOURCE, not by the node the wrapper names or the inner `id`: the loader
@@ -1313,6 +1371,21 @@ fn collect_dark(w: &LoadWarning, facts: &mut LoadFacts) {
                 }
             }
         }
+        _ => {}
+    }
+}
+
+/// File every fetch failure under `w`, however deeply nested, by its canonical source — see
+/// [`LoadFacts::nested_failures`].
+fn collect_nested_failures(w: &LoadWarning, facts: &mut LoadFacts) {
+    match w {
+        LoadWarning::ResolveFailed { source, .. } => {
+            facts
+                .nested_failures
+                .entry(source.clone())
+                .or_insert_with(|| w.to_string());
+        }
+        LoadWarning::Nested { warning, .. } => collect_nested_failures(warning, facts),
         _ => {}
     }
 }
@@ -1447,6 +1520,7 @@ pub const FIELD_COVERAGE: &[(&str, &str)] = &[
     ("nodes[].sample", "node-zoom, resources-view"),
     ("nodes[].voice", "node-zoom, resources-view"),
     ("nodes[].patch", "node-zoom, resources-view"),
+    ("nodes[].bind{}", "node-zoom, resources-view"),
     (
         "nodes[].layout.x",
         "omit:editor-owned canvas position, no meaning to the engine or the agent",
@@ -1744,6 +1818,31 @@ mod tests {
             res.contains("dangling voice=missing-voice on /v DARK:"),
             "{res}"
         );
+    }
+
+    #[test]
+    fn a_subpatch_binding_shows_on_its_zoom_and_counts_as_a_use() {
+        const BOUND: &str = r#"{
+            "format_version": 4,
+            "instrument": "bound",
+            "resources": { "voice": "voice.json", "scrape": "scrape.wav" },
+            "nodes": [
+                {"type": "subpatch", "address": "/a", "patch": "voice",
+                 "bind": {"sample": "scrape"}},
+                {"type": "subpatch", "address": "/b", "patch": "voice",
+                 "bind": {"sample": "gone"}}
+            ]
+        }"#;
+        let p = projector(BOUND);
+        let zoom = p.zoom(&Selection::names(["/a", "/b"])).render();
+        assert!(zoom.contains("bind: sample=scrape -> scrape.wav"), "{zoom}");
+        assert!(zoom.contains("bind: sample=gone DARK:"), "{zoom}");
+        let res = p.resources().render();
+        assert!(
+            res.contains("bind:/a"),
+            "a bound id is referenced, not unused: {res}"
+        );
+        assert!(res.contains("dangling bind=gone on /b DARK:"), "{res}");
     }
 
     /// The projection is not a second validation authority: a document that will not load still
@@ -2322,6 +2421,57 @@ mod tests {
         assert!(!zoom.contains("DARK:"), "{zoom}");
         // The parent's reference is sound, so the child's face still describes.
         assert!(zoom.contains("boundary: child"), "{zoom}");
+    }
+
+    /// A binding is the host's reference, so a host row that names an unreadable file is the
+    /// host's darkness — even though the loader reports the failed fetch from inside the child.
+    #[test]
+    fn a_bound_source_that_fails_to_resolve_is_dark_on_the_binding() {
+        const HOST: &str = r#"{
+            "format_version": 4,
+            "instrument": "host",
+            "resources": { "c": "child.json", "scrape": "typo.wav", "hiss": "hiss.wav" },
+            "nodes": [
+                {"type": "subpatch", "address": "/a", "patch": "c", "bind": {"sample": "scrape"}},
+                {"type": "subpatch", "address": "/b", "patch": "c", "bind": {"sample": "hiss"}}
+            ]
+        }"#;
+        const CHILD: &str = r#"{
+            "format_version": 4,
+            "instrument": "child",
+            "resources": { "sample": "default.wav" },
+            "interface": { "outputs": { "audio": {"from": "/sp.audio"} } },
+            "nodes": [ {"type": "sample", "address": "/sp", "sample": "sample"} ]
+        }"#;
+        struct OnlyHiss;
+        impl ResourceResolver for OnlyHiss {
+            fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+                match source {
+                    "hiss.wav" => Ok(SampleBuffer::new(vec![vec![0.5]], 48_000.0)),
+                    _ => Err(ResolveError::NotFound(source.to_string())),
+                }
+            }
+            fn resolve_text(&self, _: &str) -> Result<String, ResolveError> {
+                Ok(CHILD.to_string())
+            }
+        }
+        let registry = Registry::builtin();
+        let p = Projector::new(HOST, &registry, &OnlyHiss).expect("mints");
+        let index = p.index().render();
+        assert!(index.contains("/a subpatch dark:bind"), "{index}");
+        assert!(!index.contains("/b subpatch dark"), "{index}");
+        let zoom = p.zoom(&Selection::names(["/a", "/b"])).render();
+        assert!(
+            zoom.contains("bind: sample=scrape -> typo.wav DARK:"),
+            "{zoom}"
+        );
+        assert!(
+            zoom.contains("bind: sample=hiss -> hiss.wav\n") || zoom.ends_with("hiss.wav"),
+            "{zoom}"
+        );
+        let res = p.resources().render();
+        let typo = res.lines().find(|l| l.contains("typo.wav")).expect("row");
+        assert!(typo.contains("DARK"), "{res}");
     }
 
     /// A `subpatch` declares no outputs of its own — its ports are its child's face — so sugar

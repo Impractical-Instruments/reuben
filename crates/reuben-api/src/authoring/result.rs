@@ -274,6 +274,9 @@ pub struct StructureNode {
     /// The resources the node references, by slot.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resources: Vec<NodeResource>,
+    /// A `subpatch` node's bindings: which of its child's resources read this document's instead.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bind: Vec<NodeBinding>,
     /// The ports a wire can name on this node: the operator's own, or for a `subpatch` node its
     /// child's interface. Empty when the type is unknown or a `subpatch` child did not load.
     pub ports: NodePorts,
@@ -334,6 +337,15 @@ pub struct NodeResource {
     /// `sample`, `voice` or `patch`.
     pub slot: String,
     /// The id of a `resources` entry.
+    pub id: String,
+}
+
+/// One entry of a `subpatch` node's `bind`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct NodeBinding {
+    /// The id in the child document's `resources` table.
+    pub child: String,
+    /// The id in this document's `resources` table the child reads instead.
     pub id: String,
 }
 
@@ -588,6 +600,14 @@ impl StructureNode {
                 .iter()
                 .map(|(slot, id)| NodeResource {
                     slot: slot.to_string(),
+                    id: id.clone(),
+                })
+                .collect(),
+            bind: n
+                .bind
+                .iter()
+                .map(|(child, id)| NodeBinding {
+                    child: child.clone(),
                     id: id.clone(),
                 })
                 .collect(),

@@ -51,6 +51,8 @@ pub struct Node {
     pub inputs: Vec<(String, Input)>,
     /// `(slot, resource id)` for each resource reference the node carries.
     pub resources: Vec<(&'static str, String)>,
+    /// A `subpatch` node's `bind` as written: `(child resource id, resource id here)`.
+    pub bind: Vec<(String, String)>,
     /// The ports a wire can name on this node: the registry's for an operator, the child's
     /// interface for a `subpatch`. Empty for a type the registry lacks and for a `subpatch` whose
     /// child did not load.
@@ -192,6 +194,11 @@ pub fn read(
                 .resource_refs()
                 .into_iter()
                 .filter_map(|(slot, id)| id.clone().map(|id| (slot, id)))
+                .collect(),
+            bind: n
+                .bind
+                .iter()
+                .map(|(child, id)| (child.clone(), id.clone()))
                 .collect(),
             ports: face.ports.clone(),
             child: face.child.clone(),
