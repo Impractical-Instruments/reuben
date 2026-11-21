@@ -9,6 +9,7 @@ use alloc::vec::Vec;
 
 use reuben_core::Registry;
 use reuben_document::coordinator::Coordinator;
+use reuben_document::edit as core_edit;
 use reuben_document::format::load_instrument;
 use serde_json::Value;
 
@@ -253,8 +254,13 @@ fn in_client_terms(mut message: String, named: &[(String, String)]) -> String {
 /// While the open instrument does not load and nothing plays, an edit that leaves it unable to
 /// load is written anyway, with [`Event::Invalid`](super::Event::Invalid) for what is still
 /// wrong: that is how a broken document is repaired. The edit that makes it load starts it
-/// playing. A verb's repair, which leaves its own document still invalid, is written only here and
-/// never swapped: a swap takes only an instrument that loads and plans.
+/// playing.
+///
+/// While the version that last loaded plays and the files on disk already do not load, an edit
+/// that adds nothing to what keeps them from loading is written without a Swap, and the old
+/// version keeps playing; one that adds to it is refused, charged only with what it added. An edit
+/// that would break files that load is refused. A swap takes only an instrument that loads and
+/// plans, so a still-invalid document never plays.
 fn edit_or_refuse(
     state: &StructureState,
     coordinator: &mut Coordinator,
@@ -341,12 +347,12 @@ fn edit_or_refuse(
             return written_while_silent(state, result, source, &top, tree, errors);
         }
         Err(rejected) => {
-            return not_written(
-                state,
-                source,
-                SwapReport::from_core(rejected).report.errors,
-                vec![unloadable],
-            );
+            let errors = SwapReport::from_core(rejected).report.errors;
+            let attributed = attribute_top(state, &origin, &text);
+            if !attributed.before_ok && attributed.errors.is_empty() {
+                return written_while_stale(state, result, source, &top, errors);
+            }
+            return refused_at_load(state, source, &top, attributed);
         }
     };
     if coordinator.swap_in_flight() {
@@ -447,6 +453,113 @@ fn written_while_silent(
         by: ChangedBy::Client,
     });
     state.publish_invalid(errors);
+    Response::Called {
+        output: edit_output(&result),
+        summary: edit_summary(&result),
+    }
+}
+
+/// The open instrument's errors with the staged edit (`text` is its top document as staged), split
+/// against its files before the edit. Neither side decodes a sample: whether it loads does not
+/// depend on one.
+fn attribute_top(state: &StructureState, origin: &str, text: &str) -> core_edit::Attributed {
+    let staged = NoSamples(&*state.store);
+    let committed = NoSamples(&**state.store.inner().committed());
+    let before = committed
+        .read_text(&committed.canonical(origin, None))
+        .unwrap_or_default();
+    let anchored = |store| Anchored {
+        store,
+        referrer: state.store.canonical(origin, None),
+    };
+    let (before_store, after_store) = (anchored(&committed), anchored(&staged));
+    core_edit::attribute(
+        &before,
+        &Adapter(&before_store),
+        text,
+        &Adapter(&after_store),
+        &Registry::builtin(),
+    )
+}
+
+/// Write an edit to an open instrument whose files already did not load, while the version that
+/// last loaded keeps playing: nothing is swapped, and `errors`, what still keeps `top` from
+/// loading, are published and noted. The edit that makes it load swaps through the ordinary path.
+fn written_while_stale(
+    state: &StructureState,
+    mut result: EditResult,
+    source: &str,
+    top: &str,
+    errors: Vec<Diag>,
+) -> Response {
+    if let Err(e) = state.store.inner().commit() {
+        return not_written(
+            state,
+            source,
+            vec![diag(e.to_string())],
+            vec![format!("{source} could not be written")],
+        );
+    }
+    let still = errors
+        .iter()
+        .map(|e| e.message.as_str())
+        .collect::<Vec<_>>()
+        .join("; ");
+    result.notes.push(format!(
+        "written, but {top} still does not load, so the version of it that last loaded keeps \
+         playing until it does: {still}"
+    ));
+    state.publish_invalid(errors);
+    Response::Called {
+        output: edit_output(&result),
+        summary: edit_summary(&result),
+    }
+}
+
+/// An edit the open instrument cannot load with: nothing is written, and the errors are told apart
+/// from those its files already had, so the edit is charged only with its own.
+fn refused_at_load(
+    state: &StructureState,
+    source: &str,
+    top: &str,
+    attributed: core_edit::Attributed,
+) -> Response {
+    state.store.inner().discard();
+    let hash = state
+        .store
+        .read_text(source)
+        .ok()
+        .and_then(|text| hash_instrument(&text, &*state.store).ok())
+        .unwrap_or_default();
+    let mut notes = attributed.notes;
+    notes.push(if attributed.before_ok {
+        format!(
+            "the edit to {source} leaves {top} unable to load; nothing was written and {}",
+            still_playing(state, top)
+        )
+    } else {
+        format!(
+            "{top} already did not load, and the edit to {source} adds to what keeps it from \
+             loading; nothing was written and {}",
+            still_playing(state, top)
+        )
+    });
+    let result = EditResult {
+        report: Report {
+            ok: false,
+            errors: attributed.errors.iter().map(Diag::from_core).collect(),
+            warnings: Vec::new(),
+        },
+        pre_existing: attributed
+            .pre_existing
+            .iter()
+            .map(Diag::from_core)
+            .collect(),
+        written: false,
+        hash,
+        notes,
+        zoom: String::new(),
+    };
     Response::Called {
         output: edit_output(&result),
         summary: edit_summary(&result),
@@ -1573,6 +1686,98 @@ mod tests {
         );
     }
 
+    /// The last version that loaded keeps playing while the file on disk is invalid, and a client
+    /// repairs it through the engine: each repair is written without a Swap, and the one that makes
+    /// it load Swaps.
+    #[test]
+    fn a_repair_through_the_engine_while_the_last_good_version_plays() {
+        let s = serving();
+        let playing = installed_hash(&s.state);
+        s.files.write_text("top.json", TWO_FAULTS).unwrap();
+        assert!(matches!(s.state.reload(), Some(Event::Invalid { .. })));
+        let events = s.state.subscribe();
+        let fix = |address: &str| json!({"source": "top.json", "address": address, "input": "a", "from": "/osc"});
+
+        let (first, summary) = call(&s, "wire_instrument_input", fix("/amp"));
+
+        assert_eq!(first["written"], true, "{first}");
+        assert_eq!(first["report"]["ok"], false, "{first}");
+        assert!(summary.contains("still invalid"), "{summary}");
+        assert!(
+            first["notes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|n| n.as_str().unwrap().contains("keeps playing")),
+            "{first}"
+        );
+        assert!(s.files.get("top.json").unwrap().contains("/osc"));
+        assert_eq!(
+            installed_hash(&s.state),
+            playing,
+            "no Swap of an invalid document"
+        );
+        assert!(s.peak() > 0.0, "the last good version keeps playing");
+        assert!(
+            matches!(events.try_recv(), Ok(Event::Invalid { errors }) if errors.len() == 1),
+            "what is still wrong is published"
+        );
+
+        let (second, _) = call(&s, "wire_instrument_input", fix("/amp2"));
+
+        assert_eq!(second["written"], true, "{second}");
+        assert_eq!(second["report"]["ok"], true, "{second}");
+        assert_eq!(
+            json!(installed_hash(&s.state)),
+            second["hash"],
+            "the valid file Swaps"
+        );
+        assert!(s.peak() > 0.0);
+    }
+
+    /// While the file on disk is already invalid, an engine refusal names the edit's own errors and
+    /// keeps what the file already had apart.
+    #[test]
+    fn an_engine_refusal_does_not_blame_the_edit_for_what_the_file_already_had() {
+        let s = serving();
+        let playing = installed_hash(&s.state);
+        // Valid on its own, with `/voice.out` still the face `top.json` reads; then broken
+        // elsewhere by another writer.
+        let broken_top = TOP.replace(
+            r#""nodes":[{"type":"subpatch","address":"/voice","patch":"v"}]"#,
+            r#""nodes":[{"type":"subpatch","address":"/voice","patch":"v"},
+                {"type":"mul_f32_signal","address":"/amp","inputs":{"a":{"from":"/gone"}}}]"#,
+        );
+        assert_ne!(broken_top, TOP);
+        s.files.write_text("top.json", &broken_top).unwrap();
+        let written = s.files.get("v.json").unwrap();
+
+        // Valid for `v.json`, but takes away the `out` that `top.json` wires from.
+        let (removed, _) = call(
+            &s,
+            "remove_instrument_interface_output",
+            json!({"source": "v.json", "name": "out"}),
+        );
+
+        assert_eq!(removed["written"], false, "{removed}");
+        let errors = removed["report"]["errors"].as_array().unwrap();
+        assert!(
+            !errors
+                .iter()
+                .any(|e| e["message"].as_str().unwrap().contains("/gone")),
+            "{removed}"
+        );
+        assert!(!errors.is_empty(), "{removed}");
+        let pre = removed["pre_existing"].as_array().expect("pre_existing");
+        assert!(
+            pre.iter()
+                .any(|e| e["message"].as_str().unwrap().contains("/gone")),
+            "{removed}"
+        );
+        assert_eq!(s.files.get("v.json").unwrap(), written);
+        assert_eq!(installed_hash(&s.state), playing);
+    }
+
     /// A repair another writer makes to the files of what plays reaches the file watcher's reload,
     /// which keeps playing what played until the document loads.
     #[test]
@@ -1662,8 +1867,9 @@ mod tests {
         ));
     }
 
+    /// An edit that would break a valid document that plays has nothing to repair: it is refused.
     #[test]
-    fn once_playing_the_strict_rule_is_back() {
+    fn an_edit_that_breaks_the_valid_playing_document_is_refused() {
         let s = serving();
         open_report(&s, "nt.json", None);
         let (fixed, _) = call(

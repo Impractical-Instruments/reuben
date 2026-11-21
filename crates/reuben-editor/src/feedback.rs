@@ -3,10 +3,11 @@
 //!
 //! An edit to a document that already has errors is written when it fixes one and adds none, and
 //! the document is then still invalid: that is [`Feedback::StillInvalid`], so a write is never
-//! read as a valid document. An edit that writes nothing is one of three things. The `expect` guard turned it away because
-//! the file changed since the editor read it — `reuben-mcp`, a text editor — and the answer's hash
-//! is what is on disk now, not the one passed. The verb rejected it as leaving the document
-//! invalid, and the hash is the one passed. Or the verb could not run at all.
+//! read as a valid document. An edit that writes nothing is one of three things. The `expect`
+//! guard turned it away because the file changed since the editor read it — `reuben-mcp`, a text
+//! editor — and the answer's hash is what is on disk now, not the one passed. The verb rejected it
+//! as leaving the document invalid, and the hash is the one passed. Or the verb could not run at
+//! all.
 
 use std::path::Path;
 
@@ -119,6 +120,16 @@ impl Feedback {
                 "Your edit was not written: {} was already invalid before it, and until it is \
                  valid only an edit that fixes an error and adds none is written. Fix what is \
                  below first. The file is unchanged.",
+                file_name(source)
+            ),
+            Self::Rejected {
+                source,
+                pre_existing,
+                ..
+            } if *pre_existing > 0 => format!(
+                "Your edit was not written: {} is already invalid, and the edit adds to what is \
+                 wrong, or writes a wire that cannot be checked until a node loads. The file is \
+                 unchanged.",
                 file_name(source)
             ),
             Self::Rejected { source, .. } => format!(
@@ -324,7 +335,8 @@ mod tests {
         )
         .expect("held");
         assert!(
-            both.headline().contains("it would leave a.json invalid"),
+            both.headline()
+                .contains("a.json is already invalid, and the edit adds"),
             "{}",
             both.headline()
         );

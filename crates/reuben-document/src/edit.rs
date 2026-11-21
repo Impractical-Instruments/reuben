@@ -7,13 +7,19 @@
 //!
 //! **The write rule.** A valid result is written. So is a *repair*: an invalid result that adds no
 //! error and fixes at least one of the errors the document already had, compared as multisets of
-//! faults (an error's kind and locus). An error whose locus is too coarse to have a fault — a
-//! cycle, an interface pipe's — never counts as fixed, and its presence in the result never counts
-//! as nothing added, so a repair holds only errors proven to be ones the document had. Every other
-//! result is refused and nothing is written. A repair's report keeps `ok: false` and every error
-//! still left, and its notes say the document is still invalid. The rule is what lets two
-//! independent faults be fixed one verb at a time; a verb that makes a document
-//! ([`new_instrument`], [`copy_instrument`]) has nothing before it, so it writes only a valid one.
+//! faults (an error's kind and locus). An error whose locus is too coarse to have a fault — an
+//! interface pipe's — never counts as fixed, and its presence in the result never counts as nothing
+//! added, so a repair holds only errors proven to be ones the document had. Every other result is
+//! refused and nothing is written. A repair's report keeps `ok: false` and every error still left,
+//! and its notes say the document is still invalid. The rule is what lets two independent faults
+//! be fixed one verb at a time; a verb that makes a document ([`new_instrument`],
+//! [`copy_instrument`]) has nothing before it, so it writes only a valid one.
+//!
+//! The comparison sees only what the load reports, so the load must not hide an error behind the
+//! one that stops it. It reports a cycle from whichever wires resolve, located on the nodes it runs
+//! through. A wire with a node that does not load at either end is the one thing it cannot check:
+//! a repair whose result writes such a wire, where the document before it did not, is refused with
+//! an error naming the node to fix first.
 //!
 //! There are no transactions: a lone unwired node loads clean and renders silence, so
 //! `new → add → add → wire → wire` is valid at every step. [`remove_instrument_node`] and
@@ -38,8 +44,9 @@ use serde_json::Value;
 
 use crate::contract::{content_hash, Diag, Report};
 use crate::format::{
-    ConfigValue, CurveDoc, InputPipeDoc, InputValue, InstrumentDoc, InterfaceDoc, InterfaceEntry,
-    Layout, NodeDoc, NormalizedDoc, OutputPipeDoc, PipeDefault, FORMAT_VERSION, PIPE_INPUT_PORT,
+    unchecked_wires, wires, ConfigValue, CurveDoc, InputPipeDoc, InputValue, InstrumentDoc,
+    InterfaceDoc, InterfaceEntry, Layout, NodeDoc, NormalizedDoc, OutputPipeDoc, PipeDefault, Wire,
+    WireTarget, FORMAT_VERSION, PIPE_INPUT_PORT,
 };
 use crate::introspect::{validate_faulted, Fault};
 use crate::projection::{Projector, Rebased, Scalar, Selection};
@@ -86,9 +93,9 @@ pub struct EditResult {
 }
 
 /// A verb could not do its job — distinct from a *rejected* edit (a result the write rule refused,
-/// which is an ordinary [`EditResult`] with `written == false`). These are the can't-even-try cases: the
-/// source is unreadable or unwritable, its bytes are not a document, or the edit's precondition
-/// (the addressed node/pipe/resource must exist, or must not already) does not hold.
+/// which is an ordinary [`EditResult`] with `written == false`). These are the can't-even-try
+/// cases: the source is unreadable or unwritable, its bytes are not a document, or the edit's
+/// precondition (the addressed node/pipe/resource must exist, or must not already) does not hold.
 #[derive(Debug)]
 pub enum EditError {
     /// The source could not be read through the resolver.
@@ -210,11 +217,12 @@ fn edit_existing(
     )
 }
 
-/// Re-normalize the edited document, validate it whole, write it under the write rule, and build the
-/// result. The hash is the post-write content hash: the new document's when written, the prior
-/// document's when rejected. The zoom always projects the *attempted* document, so a rejected edit still shows the
-/// author what they tried alongside the errors that stopped it. `before` is the text the edit was
-/// made to, which a rejection is validated against to tell its own errors from the ones it found.
+/// Re-normalize the edited document, validate it whole, write it under the write rule, and build
+/// the result. The hash is the post-write content hash: the new document's when written, the prior
+/// document's when rejected. The zoom always projects the *attempted* document, so a rejected edit
+/// still shows the author what they tried alongside the errors that stopped it. `before` is the
+/// text the edit was made to: an invalid result is validated against it, to tell its own errors
+/// from the ones it found and to judge whether it is a repair.
 fn finish(
     source: &str,
     registry: &Registry,
@@ -283,18 +291,25 @@ fn finish_at(
                     .collect();
             }
             let split = split_pre_existing(&mut report.errors, faults, prior.errors, found);
-            notes.extend(split.unmatchable.iter().map(|d| {
-                format!(
-                    "before this edit the document already had an error that names no single \
-                     slot — {} — so an error like it reported now may be that one, not this \
-                     edit's",
-                    located(d)
-                )
-            }));
+            notes.extend(split.unmatchable.iter().map(unmatchable_note));
             // A repair: every error left is one the document already had, and at least one it
             // had is gone. Both counts are of faults alone, so an error with no fault on either
             // side can neither clear the way nor be the one cleared.
-            if report.errors.is_empty() && split.cleared > 0 {
+            let blind = if report.errors.is_empty() && split.cleared > 0 {
+                unchecked_new_wires(
+                    &normalized,
+                    before,
+                    applied.renamed.as_ref(),
+                    registry,
+                    resolver,
+                )
+            } else {
+                Vec::new()
+            };
+            if !blind.is_empty() {
+                report.errors = blind;
+                split.pre_existing
+            } else if report.errors.is_empty() && split.cleared > 0 {
                 repair = true;
                 report.errors = split.pre_existing;
                 notes.push(format!(
@@ -402,6 +417,108 @@ fn split_pre_existing(
         unmatchable,
         cleared: unmatched.len(),
     }
+}
+
+fn unmatchable_note(diag: &Diag) -> String {
+    format!(
+        "before this edit the document already had an error that names no single slot — {} — so \
+         an error like it reported now may be that one, not this edit's",
+        located(diag)
+    )
+}
+
+/// One document's errors after an edit, told apart from those it had before. The edit may have
+/// changed another document the load reaches, which is why each side is read through its own
+/// resolver.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Attributed {
+    /// Whether the document loaded and planned before the edit.
+    pub before_ok: bool,
+    /// The errors the edit's result has that the document did not have before: the edit's own,
+    /// and any whose locus is too coarse to tell an old one from a new one.
+    pub errors: Vec<Diag>,
+    /// The errors the result has that the document already had: the same kind at the same slot.
+    pub pre_existing: Vec<Diag>,
+    /// What could not be told apart, as an edit's notes say it.
+    pub notes: Vec<String>,
+}
+
+/// Validate `before` through `before_resolver` and `after` through `after_resolver`, and split the
+/// errors of `after` by whether `before` already had them, by kind and locus as a verb's own report
+/// does.
+pub fn attribute(
+    before: &str,
+    before_resolver: &dyn ResourceResolver,
+    after: &str,
+    after_resolver: &dyn ResourceResolver,
+    registry: &Registry,
+) -> Attributed {
+    let (prior, found) = validate_faulted(before, registry, before_resolver);
+    let (mut report, faults) = validate_faulted(after, registry, after_resolver);
+    let before_ok = prior.ok;
+    let split = split_pre_existing(&mut report.errors, faults, prior.errors, found);
+    Attributed {
+        before_ok,
+        errors: report.errors,
+        pre_existing: split.pre_existing,
+        notes: split.unmatchable.iter().map(unmatchable_note).collect(),
+    }
+}
+
+/// An error for each wire `after` writes that its load cannot check — an end of it does not load —
+/// and that `before` did not already write. Such a wire can hide an error no load reports yet, so
+/// an edit that writes one cannot be shown to add none. `renamed` is the node the edit moved, by
+/// which `before`'s wires are read as they would stand after it.
+fn unchecked_new_wires(
+    after: &NormalizedDoc,
+    before: &str,
+    renamed: Option<&(String, String)>,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+) -> Vec<Diag> {
+    let unchecked = unchecked_wires(after, registry, resolver);
+    if unchecked.is_empty() {
+        return Vec::new();
+    }
+    let Ok(before) = NormalizedDoc::from_json(before, registry, Some(resolver)) else {
+        return Vec::new();
+    };
+    let had: std::collections::BTreeSet<Wire> = wires(&before)
+        .into_iter()
+        .map(|(target, from)| match renamed {
+            None => (target, from),
+            Some((old, new)) => {
+                let target = match target {
+                    WireTarget::Input { node, port } if node == *old => WireTarget::Input {
+                        node: new.clone(),
+                        port,
+                    },
+                    other => other,
+                };
+                let from = rewrite_wire(&from, old, new).unwrap_or(from);
+                (target, from)
+            }
+        })
+        .collect();
+    unchecked
+        .into_iter()
+        .filter(|(wire, _)| !had.contains(wire))
+        .map(|((target, from), dark)| {
+            let (node, port) = match &target {
+                WireTarget::Input { node, port } => (Some(node.clone()), Some(port.clone())),
+                WireTarget::InterfaceOutput(name) => (None, Some(name.clone())),
+            };
+            Diag {
+                node,
+                port,
+                message: format!(
+                    "the wire {target} <- {from} cannot be checked, because {dark} does not \
+                     load; while the document has errors an edit is written only if it can be \
+                     shown to add none, so fix {dark} first"
+                ),
+            }
+        })
+        .collect()
 }
 
 /// `diag`'s message, led by the node and port it names.

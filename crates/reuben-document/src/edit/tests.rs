@@ -638,10 +638,10 @@ fn faults_match_as_a_multiset() {
     );
 }
 
-/// A cycle names no node, so a new one cannot be proven to be the one already there: it stays the
-/// edit's.
+/// A cycle is located on the nodes it runs through, so one that replaces another through different
+/// nodes is a new error, not the one already there.
 #[test]
-fn a_new_cycle_is_never_passed_off_as_an_old_one() {
+fn a_new_cycle_is_never_passed_off_as_the_one_it_replaced() {
     let registry = Registry::builtin();
     let mul = |address: &str, from: &str| json!({ "type": "mul_f32_signal", "address": address, "inputs": { "a": { "from": from } } });
     let resolver = resolver_with(
@@ -2957,4 +2957,156 @@ fn removing_a_constant_from_no_node_is_refused_and_writes_nothing() {
     assert!(matches!(err, EditError::Target(_)), "{err:?}");
     assert!(err.to_string().contains("/ghost"), "{err}");
     assert_eq!(before, readback(&resolver));
+}
+
+// --- errors a failing load could hide ------------------------------------------------------------
+
+/// [`seed_two_faults`] with `/amp2.b` fed from `/amp`, so re-pointing `/amp.a` at `/amp2` closes a
+/// cycle.
+fn seed_two_faults_and_a_feed() -> String {
+    seed_two_faults().replace(
+        r#""a":{"from":"/lost"},"b":0.5"#,
+        r#""a":{"from":"/lost"},"b":{"from":"/amp"}"#,
+    )
+}
+
+/// A cycle is found from the wires even while another fault keeps the document from loading, so a
+/// fix that closes one adds an error and is refused.
+#[test]
+fn a_fix_that_closes_a_cycle_is_refused_though_the_document_still_does_not_load() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_two_faults_and_a_feed());
+    assert!(
+        readback(&resolver)["nodes"][2]["inputs"]["b"]["from"] == "/amp",
+        "{}",
+        readback(&resolver)
+    );
+    let before = readback(&resolver);
+
+    let result = wire_instrument_input(SRC, "/amp", "a", "/amp2", &registry, &resolver)
+        .expect("the verb ran");
+
+    assert!(!result.written, "{result:?}");
+    assert_eq!(result.report.errors.len(), 1, "{result:?}");
+    assert!(
+        result.report.errors[0]
+            .message
+            .contains("cycle through /amp, /amp2"),
+        "{result:?}"
+    );
+    assert_eq!(result.pre_existing.len(), 1, "{result:?}");
+    assert_eq!(before, readback(&resolver));
+}
+
+/// A cycle already there is an error with a locus like any other: breaking it is a repair even
+/// while another fault remains.
+#[test]
+fn breaking_a_cycle_while_another_fault_remains_is_a_repair() {
+    let registry = Registry::builtin();
+    let mul = |address: &str, from: &str| json!({ "type": "mul_f32_signal", "address": address, "inputs": { "a": { "from": from } } });
+    let resolver = resolver_with(
+        &json!({
+            "format_version": 3,
+            "instrument": "test",
+            "nodes": [mul("/a", "/b"), mul("/b", "/a"), mul("/c", "/gone")]
+        })
+        .to_string(),
+    );
+
+    let result =
+        unwire_instrument_input(SRC, "/a", "a", &registry, &resolver).expect("the verb ran");
+
+    assert!(result.written && !result.report.ok, "{result:?}");
+    assert_eq!(result.report.errors.len(), 1, "{result:?}");
+    assert_eq!(result.report.errors[0].node.as_deref(), Some("/c"));
+}
+
+/// [`seed_two_faults`] plus `/x`, a node of a type the registry does not hold, which `/amp2.b`
+/// already reads from.
+fn seed_with_a_dark_node() -> String {
+    let mut doc: serde_json::Value = serde_json::from_str(&seed_two_faults()).unwrap();
+    let nodes = doc["nodes"].as_array_mut().unwrap();
+    nodes.push(json!({ "type": "nope_not_a_type", "address": "/x", "inputs": { "in": { "from": "/ghost" } } }));
+    nodes[2]["inputs"]["b"] = json!({ "from": "/x.out" });
+    doc.to_string()
+}
+
+/// A wire from a node that does not load cannot be checked, so a fix that writes one is not a
+/// repair: it is refused, naming the node to fix first.
+#[test]
+fn a_fix_that_wires_from_a_node_that_does_not_load_is_refused() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_with_a_dark_node());
+    let before = readback(&resolver);
+
+    let result = wire_instrument_input(SRC, "/amp", "a", "/x.no_such_port", &registry, &resolver)
+        .expect("the verb ran");
+
+    assert!(!result.written, "{result:?}");
+    assert_eq!(result.report.errors.len(), 1, "{result:?}");
+    let at = &result.report.errors[0];
+    assert_eq!(
+        (at.node.as_deref(), at.port.as_deref()),
+        (Some("/amp"), Some("a"))
+    );
+    assert!(at.message.contains("fix /x first"), "{at:?}");
+    assert_eq!(before, readback(&resolver));
+}
+
+/// The same for a wire into such a node: its input cannot be checked either, so a fix there is
+/// refused too.
+#[test]
+fn a_fix_that_wires_into_a_node_that_does_not_load_is_refused() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_with_a_dark_node());
+
+    let result =
+        wire_instrument_input(SRC, "/x", "in", "/osc", &registry, &resolver).expect("the verb ran");
+
+    assert!(!result.written, "{result:?}");
+    assert!(
+        result
+            .report
+            .errors
+            .iter()
+            .any(|d| d.message.contains("fix /x first")),
+        "{result:?}"
+    );
+}
+
+/// A wire on such a node that the edit leaves as it was does not stand in the way of a repair
+/// elsewhere.
+#[test]
+fn a_wire_on_a_node_that_does_not_load_left_alone_does_not_block_a_repair() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_with_a_dark_node());
+
+    let result = wire_instrument_input(SRC, "/amp", "a", "/osc", &registry, &resolver)
+        .expect("the verb ran");
+
+    assert!(result.written && !result.report.ok, "{result:?}");
+}
+
+/// A rename carries the wires on a node that does not load with it: they are the ones already
+/// there, under the new address, not new ones.
+#[test]
+fn renaming_the_node_a_dark_wire_is_on_is_not_a_new_wire() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_with_a_dark_node());
+
+    let fixed = wire_instrument_input(SRC, "/amp", "a", "/osc", &registry, &resolver)
+        .expect("the verb ran");
+    assert!(fixed.written, "{fixed:?}");
+    let renamed =
+        rename_instrument_node(SRC, "/amp2", "/gain", &registry, &resolver).expect("the verb ran");
+
+    assert!(!renamed.written, "fixes nothing: {renamed:?}");
+    assert!(
+        !renamed
+            .report
+            .errors
+            .iter()
+            .any(|d| d.message.contains("first")),
+        "{renamed:?}"
+    );
 }

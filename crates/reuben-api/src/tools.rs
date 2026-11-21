@@ -33,8 +33,9 @@ pub enum ContractKind {
     Engine,
     /// A **document-manipulation** contract: a pure, engine-free *mutator* over an
     /// instrument document through the resolver seam — read, apply one surgical edit, re-validate
-    /// the whole document, write under the write rule (valid, or a repair). Distinct from [`Pure`](Self::Pure), which is read-only
-    /// introspection: a door hosts both in-process, but only these write.
+    /// the whole document, write under the write rule (valid, or a repair). Distinct from
+    /// [`Pure`](Self::Pure), which is read-only introspection: a door hosts both in-process, but
+    /// only these write.
     Document,
     /// A verb served only by a host's `call` dispatcher — never listed as a tool by a
     /// model-facing door. Door code that advertises or routes the roster skips these.

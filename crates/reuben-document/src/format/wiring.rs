@@ -5,11 +5,12 @@
 //! Only the type rule is answered. A wire that would close a cycle, or anything else a whole-
 //! document validation rejects for reasons other than port types, is the edit's to report.
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use super::{
     check_output_feed, parse_wire, resolve_input, resolve_output, wire_type_compatible, Found,
-    LoadCtx, LoadError, LoadErrors, NormalizedDoc, Registry, Resolved,
+    InputValue, LoadCtx, LoadError, LoadErrors, NormalizedDoc, Registry, Resolved,
 };
 use crate::resources::ResourceResolver;
 use reuben_core::descriptor::PortType;
@@ -223,4 +224,96 @@ impl<'d> WirePorts<'d> {
         }
         resolve_output(&r.faces, &r.by_addr, addr, reference, port)
     }
+}
+
+/// One wire as a document writes it: where it lands, and the wire-ref it is fed from.
+pub(crate) type Wire = (WireTarget, String);
+
+/// Every wire `doc` writes: each wire-ref in a node's `inputs`, and each interface output's feed.
+pub(crate) fn wires(doc: &NormalizedDoc) -> Vec<Wire> {
+    let mut out = Vec::new();
+    for n in &doc.nodes {
+        for (name, value) in &n.inputs {
+            if let InputValue::Wire { from } = value {
+                let target = WireTarget::Input {
+                    node: n.address.clone(),
+                    port: name.clone(),
+                };
+                out.push((target, from.clone()));
+            }
+        }
+    }
+    if let Some(iface) = &doc.interface {
+        for (name, entry) in &iface.outputs {
+            if let Some(feed) = entry.feed() {
+                out.push((WireTarget::InterfaceOutput(name.clone()), feed.from.clone()));
+            }
+        }
+    }
+    out
+}
+
+/// Each wire of `doc` a load passes over without checking it whole, with the address at either end
+/// that made it: a node whose ports the load cannot know (an unknown operator type, a `subpatch`
+/// whose child does not load or is missing, an address the rule refuses or another node holds), or
+/// a dark port of a live child. No error can be reported for such a wire until that address loads.
+pub(crate) fn unchecked_wires(
+    doc: &NormalizedDoc,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+) -> BTreeMap<Wire, String> {
+    let r = doc.resolve_ports(
+        registry,
+        Some(resolver),
+        &mut LoadCtx::default(),
+        None,
+        &mut Found::default(),
+    );
+    let source_dark = |from: &str| -> Option<String> {
+        let (addr, port) = parse_wire(from);
+        if r.dark.contains(addr) || r.dark.contains(from) {
+            return Some(addr.to_string());
+        }
+        match resolve_output(&r.faces, &r.by_addr, addr, from, port) {
+            Ok(None) => Some(addr.to_string()),
+            Ok(Some(_)) | Err(_) => None,
+        }
+    };
+    let mut out = BTreeMap::new();
+    for (at, n) in doc.nodes.iter().enumerate() {
+        let destination_dark = r.dark.contains(&n.address) || r.unchecked.contains(&at);
+        for (name, value) in &n.inputs {
+            let InputValue::Wire { from } = value else {
+                continue;
+            };
+            let dark = if destination_dark
+                || matches!(
+                    resolve_input(&r.faces, &r.by_addr, &n.address, name),
+                    Ok(None)
+                ) {
+                Some(n.address.clone())
+            } else {
+                source_dark(from)
+            };
+            if let Some(dark) = dark {
+                let target = WireTarget::Input {
+                    node: n.address.clone(),
+                    port: name.clone(),
+                };
+                out.insert((target, from.clone()), dark);
+            }
+        }
+    }
+    if let Some(iface) = &doc.interface {
+        for (name, entry) in &iface.outputs {
+            let Some(feed) = entry.feed() else { continue };
+            if let Some(dark) = source_dark(&feed.from) {
+                out.insert(
+                    (WireTarget::InterfaceOutput(name.clone()), feed.from.clone()),
+                    dark,
+                );
+            }
+        }
+    }
+    out
 }

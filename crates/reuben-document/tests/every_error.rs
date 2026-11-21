@@ -371,3 +371,76 @@ fn the_structure_read_pins_a_broken_child_on_a_node_that_has_other_errors_too() 
     let on_a = (read.report.errors.iter()).filter(|d| d.node.as_deref() == Some("/a"));
     assert_eq!(on_a.count(), 1, "{:#?}", read.report.errors);
 }
+
+fn mul(address: &str, from: &str) -> Value {
+    json!({ "type": "mul_f32_signal", "address": address, "inputs": { "a": { "from": from } } })
+}
+
+/// A cycle is found from the wires that resolve even when the load fails for another reason, and
+/// is located on the nodes it runs through.
+#[test]
+fn a_cycle_is_reported_beside_another_fault_on_the_nodes_it_runs_through() {
+    let doc = instrument(
+        json!([mul("/a", "/b"), mul("/b", "/a"), mul("/c", "/ghost")]),
+        json!({}),
+    );
+    let errors = errors(&doc, &MemoryResolver::new());
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert_eq!(loci(&errors)[0], (Some("/c"), Some("a")), "{errors:?}");
+    assert_eq!(errors[1].node.as_deref(), Some("/a"), "{errors:?}");
+    assert!(
+        errors[1].message.contains("cycle") && errors[1].message.contains("/a, /b"),
+        "{errors:?}"
+    );
+}
+
+/// Two separate cycles are two errors, each naming only its own nodes; a node downstream of a
+/// cycle is on none.
+#[test]
+fn each_cycle_is_its_own_error_and_names_only_its_own_nodes() {
+    let doc = instrument(
+        json!([
+            mul("/a", "/b"),
+            mul("/b", "/a"),
+            mul("/tail", "/a"),
+            mul("/x", "/x")
+        ]),
+        json!({}),
+    );
+    let errors = errors(&doc, &MemoryResolver::new());
+    let messages: Vec<&str> = errors.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert!(
+        messages[0].contains("/a, /b") && !messages[0].contains("/tail"),
+        "{messages:?}"
+    );
+    assert!(messages[1].contains("/x"), "{messages:?}");
+}
+
+/// A cycle through a `subpatch` is located on the node that holds the child, never on the child's
+/// own addresses.
+#[test]
+fn a_cycle_through_a_subpatch_is_located_on_the_node_that_holds_it() {
+    let resolver = with_child(
+        &json!({
+            "format_version": 3, "instrument": "c",
+            "interface": {
+                "inputs": { "in": { "type": "f32_buffer" } },
+                "outputs": { "out": { "from": "/g" } }
+            },
+            "nodes": [mul("/g", "/in")]
+        })
+        .to_string(),
+    );
+    let doc = json!({
+        "format_version": 3, "instrument": "t",
+        "resources": { "c": "c.json" },
+        "nodes": [
+            { "type": "subpatch", "address": "/fx", "patch": "c", "inputs": { "in": { "from": "/a" } } },
+            mul("/a", "/fx.out")
+        ]
+    });
+    let errors = errors(&doc, &resolver);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].message.contains("/a, /fx"), "{errors:?}");
+}

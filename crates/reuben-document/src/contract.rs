@@ -101,6 +101,7 @@ impl Diag {
             },
             // The child's own addresses name nothing here: the error is the referencing node's.
             LoadError::Nested { node, .. } => (Some(node.clone()), None),
+            LoadError::Cycle { nodes } => (nodes.first().cloned(), None),
             LoadError::Json(_)
             | LoadError::CyclicResource { .. }
             | LoadError::UnsupportedVersion { .. }

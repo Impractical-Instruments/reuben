@@ -16,8 +16,10 @@
 //! - [`Request::Call`] → one non-engine roster verb against the engine's store. A read answers
 //!   directly. An edit waits in memory while the whole open instrument loads and plans with it;
 //!   only then is it written and the new Plan swapped in, and otherwise nothing is written and the
-//!   answer says why. The exception is an open instrument that does not load: nothing plays, and
-//!   an edit is written whether or not it makes the instrument load.
+//!   answer says why. The exceptions are an open instrument whose files do not load. While nothing
+//!   plays, an edit is written whether or not it makes the instrument load. While the version
+//!   that last loaded plays, an edit is written without a Swap if it adds nothing to what keeps
+//!   the files from loading. Either way, the edit that makes it load swaps it in.
 //! - [`Request::Open`] → unload what plays and play the named document, by a **mailbox swap**: the
 //!   Coordinator validates and builds a whole new Engine off-thread, fills the install mailbox, and
 //!   returns a real report with survivor/reset stats. The `expect` guard is applied inside the

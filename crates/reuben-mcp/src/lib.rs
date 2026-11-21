@@ -116,8 +116,10 @@ const INSTRUCTIONS: &str = "reuben authoring sidecar. The instrument document is
      step to make it heard. Every edit re-validates the whole instrument and is refused, with \
      nothing written, if it would break it. While a document has errors, an edit is written only \
      if it fixes one and adds none, and then `report.ok` is still false: the document is still \
-     invalid, and `report.errors` lists what remains. A document that does not load still opens, \
-     with nothing playing, and playing starts once an edit makes it load. A rejection lists under \
+     invalid, and `report.errors` lists what remains. An edit that wires to or from a node that \
+     does not load is refused while errors remain: fix that node first. A document that does not \
+     load still opens, with nothing playing; one that breaks while playing keeps its last good \
+     version playing. Either way, playing starts once an edit makes it load. A rejection lists under \
      `pre_existing` the errors it can show were already there; fix those first. Validation \
      reports every error at once. \
      `send_live_controls` auditions a value without committing it, and the next edit resets it, \

@@ -8,10 +8,12 @@
 //! single authority on what a legal document is, and [`NormalizedDoc::from_graph`] goes the
 //! other way.
 
+mod cycles;
 mod normalize;
 mod wiring;
 
 pub use normalize::NormalizedDoc;
+pub(crate) use wiring::{unchecked_wires, wires, Wire};
 pub use wiring::{WirePorts, WireSource, WireTarget};
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -730,6 +732,9 @@ pub enum LoadError {
     /// wrapped with the node of this document that references it. The inner error's addresses are
     /// the child's own.
     Nested { node: String, error: Box<LoadError> },
+    /// The wires run in a circle through `nodes` (sorted; a spliced child's nodes named by the node
+    /// that holds it), so no node on it can render before the others.
+    Cycle { nodes: Vec<String> },
 }
 
 impl LoadError {
@@ -877,6 +882,11 @@ impl fmt::Display for LoadError {
                  `interface.outputs` pipes instead"
             ),
             LoadError::Nested { node, error } => write!(f, "in {node:?}: {error}"),
+            LoadError::Cycle { nodes } => write!(
+                f,
+                "graph has a cycle through {} (no valid execution order)",
+                nodes.join(", ")
+            ),
         }
     }
 }
@@ -1001,6 +1011,8 @@ enum Site {
     Output(usize),
     /// The n-th node.
     Node(usize),
+    /// The graph as a whole: a cycle, which runs through several entries.
+    Graph,
 }
 
 /// The errors one document's load has found so far, each at its [`Site`].
@@ -2622,6 +2634,9 @@ impl InstrumentDoc {
                 }
                 interface.outputs.insert(name.clone(), (key, idx));
             }
+        }
+        for nodes in cycles::cycles(&graph) {
+            found.push(Site::Graph, LoadError::Cycle { nodes });
         }
         graph.interface = interface;
 

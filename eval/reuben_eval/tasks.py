@@ -550,8 +550,9 @@ TASKS: list[Task] = [
         key="repair_and_note",
         shape="unrelated edit to a broken document",
         # The note is asked for first, as the trap was met: an edit unrelated to the defect, on a
-        # document that refuses every edit but a repair until the defect is fixed. A model that tries the note
-        # first is refused with the dangling edge named as pre-existing, not as its own.
+        # document that refuses every edit but a repair until the defect is fixed. A model that
+        # tries the note first is refused with the dangling edge named as pre-existing, not as its
+        # own.
         prompt=(
             f"In `instrument.json`, set the `/osc` node's description to \"{OSC_NOTE}\". The "
             "document does not load at the moment, so fix that as well, keeping every node that is "
@@ -559,8 +560,8 @@ TASKS: list[Task] = [
         ),
         seed={DOCUMENT: BROKEN},
         # The fix lands before the note: the note fixes no error, so it is refused until the
-        # document validates, and the ideal order is the repair's calls, then the one the task asked for
-        # first.
+        # document validates, and the ideal order is the repair's calls, then the one the task
+        # asked for first.
         reference=[
             _open(DOCUMENT),
             Step("mcp", "validate_instrument", {"source": DOCUMENT}),

@@ -131,6 +131,12 @@ impl<S: Resources> Staged<S> {
         Ok(())
     }
 
+    /// The inner store, which holds nothing still pending: the files as they were before what is
+    /// staged now.
+    pub fn committed(&self) -> &S {
+        &self.shared.inner
+    }
+
     /// Drop every pending write.
     pub fn discard(&self) {
         lock(&self.shared.pending).clear();

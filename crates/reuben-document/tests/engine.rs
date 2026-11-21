@@ -48,7 +48,7 @@ fn default_rig_makes_a_tone() {
 }
 
 #[test]
-fn from_document_surfaces_load_and_plan_errors() {
+fn from_document_refuses_a_malformed_or_cyclic_document_at_load() {
     let cfg = AudioConfig::new(48_000.0, 256);
     let result = from_document(
         "{ not json",
@@ -62,8 +62,8 @@ fn from_document_surfaces_load_and_plan_errors() {
         Ok(_) => panic!("malformed document must not construct"),
     }
 
-    // The Plan arm: a document that loads fine but whose graph cannot instantiate (a
-    // wire cycle with no explicit unit-delay).
+    // A wire cycle (no explicit unit-delay) is found by the load, from the wires, before the
+    // Plan arm's own cycle check could run: that arm is a backstop for a graph built by hand.
     const CYCLIC: &str = r#"{
       "format_version": 2,
       "instrument": "cycle",
@@ -75,8 +75,11 @@ fn from_document_surfaces_load_and_plan_errors() {
     }"#;
     let result = from_document(CYCLIC, &Registry::builtin(), &MemoryResolver::new(), cfg);
     match result {
-        Err(FromDocumentError::Plan(_)) => {}
-        Err(other) => panic!("expected a plan error, got {other:?}"),
+        Err(FromDocumentError::Load(errors)) => assert!(
+            errors.to_string().contains("cycle through /a, /b"),
+            "{errors}"
+        ),
+        Err(other) => panic!("expected a load error, got {other:?}"),
         Ok(_) => panic!("cyclic graph must not instantiate"),
     }
 }

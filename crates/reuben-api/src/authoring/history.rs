@@ -185,9 +185,9 @@ impl<R: Resources> Resources for DocumentHistory<R> {
 /// The same pipeline as every document verb — re-normalize, validate whole, write under the write
 /// rule — so a prior document that is valid no more (a file it references has changed since)
 /// answers `written: false` with its report, unless it repairs what is there now; there is no
-/// forcing it. Restoring the state before a repair adds back the error it fixed, so it is refused. `expect` is mandatory, and a miss is
-/// the ordinary answer every guarded verb gives. The write is recorded like any other, so the state
-/// restored *from* can be restored to.
+/// forcing it. Restoring the state before a repair adds back the error it fixed, so it is refused.
+/// `expect` is mandatory, and a miss is the ordinary answer every guarded verb gives. The write is
+/// recorded like any other, so the state restored *from* can be restored to.
 ///
 /// Refuses a `to` that `resources` does not hold for this source — never written through it there,
 /// or evicted — and a source whose current text is not a document, which has no hash for `expect`

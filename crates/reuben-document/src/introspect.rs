@@ -651,6 +651,7 @@ impl Fault {
                 LoadError::InvalidAddress { rule, .. }
                 | LoadError::InvalidPipeName { rule, .. } => Some((*rule).to_string()),
                 LoadError::InputSetTwice { to, .. } => Some(to.clone()),
+                LoadError::Cycle { nodes } => Some(nodes.join(" ")),
                 LoadError::UnknownNode { .. }
                 | LoadError::UnknownPort { .. }
                 | LoadError::AmbiguousWire { .. }
@@ -722,7 +723,8 @@ fn faulted(
                 port: None,
                 message: "graph has a cycle (no valid execution order)".to_string(),
             };
-            // A cycle names no node, so a new one cannot be told from one already there.
+            // Unreachable from a document, whose load reports each cycle on its nodes first: a
+            // backstop for a graph built by hand. It names no node, so it is never attributed.
             let fault = None;
             (
                 Report {
@@ -927,9 +929,9 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_a_cycle_that_loads_cleanly() {
-        // Two maps feeding each other: every port/kind is legal, so `load` accepts it — only the
-        // plan's topological sort catches the loop. This is why validate instantiates a plan.
+    fn validate_rejects_a_cycle_whose_every_wire_is_legal() {
+        // Two maps feeding each other: every port and kind is legal, and the loop alone is wrong.
+        // The load finds it from the wires; the plan's topological sort is the backstop.
         let json = r#"{
           "instrument": "loop",
           "nodes": [

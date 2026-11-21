@@ -130,8 +130,8 @@ pub enum Restored {
     Conflict { step: Step },
     /// The server would not write the state the step names: it is invalid and repairs nothing the
     /// file has now — a file it references having changed since, or the step undoing a repair,
-    /// which puts back the error that repair fixed — or the file could not be written. Nothing was written, and
-    /// the step stays: it lands again once that is put right.
+    /// which puts back the error that repair fixed — or the file could not be written. Nothing was
+    /// written, and the step stays: it lands again once that is put right.
     Rejected { step: Step, result: EditResult },
     /// The server refused the restore, saying `why`: the state the step names is no longer held,
     /// or the file no longer reads as a document. It, and every step behind it in the same

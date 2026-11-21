@@ -66,16 +66,20 @@ Why the steps are what they are:
   time (`add_instrument_node`, `wire_instrument_input`, `set_instrument_input`…). Every verb
   re-validates the **whole** open instrument through the engine's own load path — still the
   single validation authority — and **writes only if it still loads and plans**, except while
-  nothing plays (below); a rejected edit leaves every file exactly as it was and the instrument
-  playing as it was.
+  its files do not load (below); a rejected edit leaves every file exactly as it was and the
+  instrument playing as it was.
 - **A broken document takes only repairs until it is fixed.** An edit to a document that already
   has errors is written only if it **fixes at least one of them and adds none** — a *repair* —
   and is refused otherwise, however unrelated it is. Errors are compared by kind and slot: the
-  same kind of error at the same node, port or field is the same error. An error that names no
-  single slot (a cycle, an interface pipe) never counts as fixed, and an edit whose result still
-  has one is refused. A written repair answers `written: true` with `report.ok: false`: **the
-  document is still invalid**, `report.errors` lists every error left, and a note says so. Fix
-  the next one; two independent faults take two edits. A
+  same kind of error at the same node, port or field is the same error; a cycle is located on
+  the nodes it runs through, and is reported even while another error stops the load. An error
+  that names no single slot (an interface pipe) never counts as fixed, and an edit whose result
+  still has one is refused. A wire to or from a node that does not load (an unknown operator
+  type, a nested child that does not load) cannot be checked, so an edit that writes one is
+  refused until the document validates, with an error saying to **fix that node first**; wires
+  it already had are no obstacle. A written repair answers `written: true` with
+  `report.ok: false`: **the document is still invalid**, `report.errors` lists every error left,
+  and a note says so. Fix the next one; two independent faults take two edits. A
   rejection moves to `pre_existing` each error it can show the document already had and leaves
   the rest in `report.errors`. Fix the `pre_existing` errors first. Validation reports every
   error the document has, each one once: a fault that leaves others meaningless (an unknown
@@ -87,8 +91,14 @@ Why the steps are what they are:
   load or plan opens it and unloads what was playing. The rule above still holds for the document
   an edit changes. An edit it accepts is written even though the whole instrument does not plan
   yet, and nothing plays until the edit that makes it load and plan — that edit starts it
-  playing. A still-invalid document never plays: the engine swaps in only an instrument that
-  loads and plans, and a file that changes on disk without loading leaves what plays playing.
+  playing.
+- **A document that breaks while it plays keeps its last good version playing.** When another
+  program writes the playing instrument's files so that they no longer load, the engine keeps
+  playing the version that last loaded. An edit the rule above accepts is then written without
+  changing what plays, as long as it adds nothing to what keeps the instrument from loading; the
+  edit that makes it load swaps it in. An edit that would break a valid, playing instrument is
+  still refused. A still-invalid document never plays: the engine swaps in only an instrument
+  that loads and plans.
 - **Sending is ephemeral audition.** A live control message (`/filt/cutoff 1500`) changes
   render state only — sweep a cutoff, try a tempo. The next edit re-reads inputs from the
   document, so an un-folded tweak is **reset by design**. (The MCP tool is
