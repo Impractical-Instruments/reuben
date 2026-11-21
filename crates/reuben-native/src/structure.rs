@@ -1,9 +1,11 @@
-//! The structure channel's **host side**: a loopback-TCP / NDJSON server, and the native seams the
+//! The structure channel's **host side**: a TCP / NDJSON server, and the native seams the
 //! window's verbs are served over.
 //!
-//! **TCP on `127.0.0.1`** (loopback-only — structure edits are more powerful than control, unlike
-//! OSC's `0.0.0.0:9000`), carrying **newline-delimited JSON**, one response per request in order.
-//! A thread in `reuben play` owns it.
+//! **TCP on `127.0.0.1`** by default, carrying **newline-delimited JSON**, one response per request
+//! in order. A thread in `reuben play` owns it. It listens beyond loopback only when bound there
+//! with a token, and then serves a peer on another machine only after that peer's first line
+//! carries the token (see [`admit`]): structure edits are more powerful than control, unlike OSC's
+//! open `0.0.0.0:9000`.
 //!
 //! What each verb *means* is not here: the envelope, the dispatch, the `expect` guard and the
 //! retain-prior report are the window's, so this door and the sidecar cannot disagree about them.
@@ -664,7 +666,7 @@ pub fn diagnostics_report(snapshot: &Snapshot) -> DiagnosticsReport {
     }
 }
 
-/// A running loopback structure server: a std thread accepting connections, one handler thread
+/// A running structure server: a std thread accepting connections, one handler thread
 /// per connection, all joined on [`shutdown`](Self::shutdown) (or `Drop`). Holds no audio state
 /// — it only reads the shared [`StructureState`] — so it starts and stops independently of the
 /// audio device, which is what lets it be exercised end-to-end in tests.

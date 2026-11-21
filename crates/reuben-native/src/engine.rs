@@ -2,7 +2,7 @@
 //!
 //! [`start`] loads the instrument, opens the audio device (and the input device when the
 //! instrument binds input channels) per the [`DeviceProfile`], binds the OSC-in UDP listener and
-//! the optional OSC-out sender, serves the loopback structure channel the MCP sidecar dials, and
+//! the optional OSC-out sender, serves the structure channel every client dials, and
 //! (unless [`EngineConfig::follow_files`] is off) follows outside edits to the instrument's files.
 //! The [`RunningEngine`] it returns is the whole session: it reaches the engine in-process through
 //! the window's own [`Channel`], and dropping it stops every thread and frees every port.

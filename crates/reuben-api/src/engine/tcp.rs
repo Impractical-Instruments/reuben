@@ -1,5 +1,6 @@
-//! The loopback TCP [`Transport`]: what a process outside the engine dials `reuben play`'s
-//! structure channel with — the MCP sidecar, and the editor attached to an engine it did not start.
+//! The TCP [`Transport`]: what a process outside the engine dials `reuben play`'s structure
+//! channel with — the MCP sidecar, the CLI, and the editor attached to an engine it did not start,
+//! on this machine or, with the engine's token, another.
 //!
 //! A fresh, bounded, blocking connection per exchange, retaining nothing between calls, so a
 //! client survives the engine restarting under it. A subscription is the one connection kept open:
@@ -23,7 +24,7 @@ use super::wire::{read_ndjson_line, Event, Request, Response, MAX_LINE_BYTES};
 /// firewalled/unresponsive case so a probe never blocks its caller.
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// A [`Transport`] over loopback TCP: one short-lived connection per exchange.
+/// A [`Transport`] over TCP: one short-lived connection per exchange.
 #[derive(Debug, Clone)]
 pub struct TcpTransport {
     addr: String,

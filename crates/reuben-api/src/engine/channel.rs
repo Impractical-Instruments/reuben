@@ -7,7 +7,7 @@
 //! start-the-engine guidance, unless the request reached the engine and only its answer is
 //! missing ([`NoAnswer`](ChannelError::NoAnswer)) — so this module never hangs and never panics.
 //!
-//! What is *not* here is the socket. A door supplies the [`Transport`]: loopback TCP for a process
+//! What is *not* here is the socket. A door supplies the [`Transport`]: TCP for a process
 //! dialing `reuben play` (the `tcp` feature's), whatever an in-process host has instead. The
 //! framing, the timeout policy and the response classification are the window's, so two doors
 //! cannot disagree about what a reply means.
@@ -153,7 +153,7 @@ pub fn unanswered(cause: io::Error) -> io::Error {
 ///
 /// **The injectable seam**, and deliberately the lowest one: everything above it — framing,
 /// parsing, the unreachable/protocol split — is exercised rather than replaced by a test double.
-/// Below it live the socket mechanics, which are the door's — the loopback TCP one is behind the
+/// Below it live the socket mechanics, which are the door's — the TCP one is behind the
 /// `tcp` feature, and `reuben-mcp`'s tests drive it over a real socket.
 pub trait Transport: Send + Sync + fmt::Debug {
     /// One request line out, one response line back. `read_timeout` is per-call because `ping`
