@@ -12,11 +12,11 @@
 
 use std::fmt;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use reuben_api::authoring::{validate_instrument, ValidateInstrument};
-use reuben_api::engine::{Channel, Installed};
-use reuben_api::FsResolver;
+use reuben_api::authoring::{Report, ValidateInstrument};
+use reuben_api::engine::{call_tool, Channel, Installed, SwapOutcome};
+use reuben_api::tools::names;
 use reuben_native::engine::{self, EngineConfig, Instrument, RunningEngine, StartError};
 use reuben_native::profile::DeviceProfile;
 use reuben_native::structure::input_stream_fits;
@@ -73,7 +73,7 @@ pub struct Playing {
 pub struct Engine {
     running: Option<RunningEngine>,
     /// Set only by [`attach`](Self::attach), and then `running` and `config` stay `None` for good:
-    /// what restarts, refits or resumes an embedded engine finds nothing to act on.
+    /// what restarts or refits an embedded engine finds nothing to act on.
     attached: Option<Link>,
     /// What the attached engine was last seen to play, until the editor follows it.
     unfollowed: Option<Playing>,
@@ -89,11 +89,18 @@ pub struct Engine {
     /// it: kept through a Swap that holds it, and `None` while that is not known or the document
     /// has no file.
     plays: Option<Playing>,
+    /// The directories offered to the server beyond its own, offered again to the server a
+    /// restart starts.
+    offered: Vec<PathBuf>,
+    /// The engine was stopped and started again since [`take_restarted`](Self::take_restarted):
+    /// the new server's history holds none of the old one's states.
+    restarted: bool,
 }
 
 impl Engine {
-    /// No instrument was named: nothing runs and no port is bound.
-    pub fn idle() -> Self {
+    /// No engine: nothing runs and no port is bound.
+    #[cfg(test)]
+    pub(crate) fn idle() -> Self {
         Self {
             running: None,
             attached: None,
@@ -102,6 +109,8 @@ impl Engine {
             report: Vec::new(),
             refit_tried: None,
             plays: None,
+            offered: Vec::new(),
+            restarted: false,
         }
     }
 
@@ -200,9 +209,55 @@ impl Engine {
         Self::reported(None, None, vec![Line::new(Level::Error, error.to_string())])
     }
 
-    /// Start the engine on the audio device `config.profile` selects.
+    /// Start the engine on the audio device `config.profile` selects, or, when that device does
+    /// not open, with no device at all; and when the OSC-in port is taken, with no OSC-in. Either
+    /// way the server still lists, opens and edits, and the report says what is missing and why.
+    /// A structure socket that does not bind is already left out by the start itself.
     pub fn start(config: EngineConfig) -> Self {
-        Self::start_with(config, engine::start)
+        Self::start_or_headless(config, engine::start, engine::start_headless)
+    }
+
+    /// [`start`](Self::start) through `start`, falling back to `headless` on an audio device
+    /// error and to no OSC-in on an OSC-in error: the seams a test puts its stand-ins in. The kept
+    /// config still names the OSC-in address, so a restart asks for it again.
+    pub(crate) fn start_or_headless(
+        config: EngineConfig,
+        mut start: impl FnMut(EngineConfig) -> Result<RunningEngine, StartError>,
+        headless: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
+    ) -> Self {
+        let mut osc_in = None;
+        let mut device = None;
+        let mut engine = Self::start_with(config, |mut config| {
+            let mut started = start(config.clone());
+            if let Err(e @ StartError::OscIn { .. }) = &started {
+                osc_in = Some(start_error(e));
+                config.osc_in = None;
+                started = start(config.clone());
+            }
+            match started {
+                Err(StartError::Audio(e)) => {
+                    device = Some(e);
+                    headless(config)
+                }
+                started => started,
+            }
+        });
+        if let Some(why) = osc_in {
+            engine.push(Line::new(
+                Level::Error,
+                format!("OSC-in is off ({why}); instruments still open and edit"),
+            ));
+        }
+        if let Some(e) = device {
+            engine.push(Line::new(
+                Level::Error,
+                format!(
+                    "the audio device did not open ({e}); nothing is heard, but instruments \
+                     still open and edit"
+                ),
+            ));
+        }
+        engine
     }
 
     /// [`start`](Self::start) through `start`, the seam a test puts the headless engine in.
@@ -210,10 +265,10 @@ impl Engine {
         config: EngineConfig,
         start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
     ) -> Self {
-        // The editor's user decides what plays: a reload after an outside write would install
-        // without the held-swap prompt.
+        // The server follows outside writes to the open instrument's documents, and the session
+        // hears them as events: the editor has no watcher of its own.
         let config = EngineConfig {
-            follow_files: false,
+            follow_files: true,
             ..config
         };
         let kept = Some(config.clone());
@@ -223,6 +278,7 @@ impl Engine {
             match &config.instrument {
                 Instrument::Path(path) => format!("instrument: {}", path.display()),
                 Instrument::Default => "instrument: <default>".to_string(),
+                Instrument::Silent => "instrument: none".to_string(),
             },
         )];
         let running = match start(config) {
@@ -290,7 +346,7 @@ impl Engine {
     pub fn restart_with(
         &mut self,
         profile: DeviceProfile,
-        start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
+        start: impl FnMut(EngineConfig) -> Result<RunningEngine, StartError>,
     ) {
         self.restart(profile, start, "audio output not changed");
     }
@@ -300,37 +356,60 @@ impl Engine {
     fn restart(
         &mut self,
         profile: DeviceProfile,
-        start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
+        start: impl FnMut(EngineConfig) -> Result<RunningEngine, StartError>,
         refused: &str,
     ) -> bool {
         let Some(mut config) = self.config.clone() else {
             return false;
         };
         let mut unsourced = None;
+        // Open but playing nothing, as a document that does not load is: there is no input width
+        // to keep, so the restart starts on nothing and opens it again.
+        let mut reopen = None;
+        // What the server plays, by the name it plays it under: the file the new start reads.
+        let mut playing = None;
         if let Some(running) = &self.running {
             match running.channel().get_document() {
                 Ok(document) => match document.source {
-                    Some(source) => config.instrument = Instrument::Path(source.into()),
+                    Some(source) if document.content_hash.is_empty() => {
+                        config.instrument = Instrument::Silent;
+                        reopen = Some(source);
+                    }
+                    Some(source) => {
+                        config.instrument = Instrument::Path(source.clone().into());
+                        playing = Some(source);
+                    }
+                    None if document.content_hash.is_empty() => {
+                        config.instrument = Instrument::Silent;
+                    }
                     None => unsourced = Some("it was installed without a file".to_string()),
                 },
                 Err(e) => unsourced = Some(format!("the engine did not say what it is: {e}")),
             }
         }
-        if let Instrument::Path(path) = &config.instrument {
-            if let Err(why) = loads(path, config.instrument_root.as_deref()) {
+        if let (Some(source), Some(running)) = (&playing, &self.running) {
+            if let Err(why) = loads(&running.channel(), source) {
                 self.push(Line::new(
                     Level::Error,
-                    format!(
-                        "{refused}: {} does not load to start again from: {why}",
-                        path.display()
-                    ),
+                    format!("{refused}: {source} does not load to start again from: {why}"),
                 ));
                 return false;
             }
         }
         config.profile = profile;
+        let offered = std::mem::take(&mut self.offered);
         self.shutdown();
-        *self = Self::start_with(config, start);
+        // Started on the open instrument rather than on nothing and then opened: the input stream's
+        // width is fixed by what the engine starts on. A device that no longer opens falls back to
+        // none, as at launch, so the server is not lost with it.
+        *self = Self::start_or_headless(config, start, engine::start_headless);
+        for dir in &offered {
+            self.offer_dir(dir);
+        }
+        self.restarted = true;
+        if let Some(name) = reopen {
+            self.reopen(name);
+        }
         if let Some(why) = unsourced {
             self.push(Line::new(
                 Level::Warning,
@@ -343,23 +422,47 @@ impl Engine {
         true
     }
 
-    /// Start the engine as it was last asked to start, when none is running. Does nothing when
-    /// one is, or when no start was ever attempted.
-    pub fn resume(&mut self) {
-        self.resume_with(engine::start);
-    }
-
-    /// [`resume`](Self::resume) through `start`, the seam a test puts the headless engine in.
-    pub(crate) fn resume_with(
-        &mut self,
-        start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
-    ) {
-        if self.running.is_some() {
+    /// Have the restarted server open `name` again, which played nothing before the restart.
+    fn reopen(&mut self, name: String) {
+        let Some(channel) = self.channel() else {
+            return;
+        };
+        let opened = match channel.open(name.clone(), None) {
+            Ok(SwapOutcome::Installed(_)) => (channel.get_document())
+                .is_ok_and(|document| document.source.as_deref() == Some(name.as_str())),
+            _ => false,
+        };
+        if !opened {
+            self.push(Line::new(
+                Level::Warning,
+                format!("{name} was not opened again after the restart"),
+            ));
             return;
         }
-        if let Some(config) = self.config.clone() {
-            *self = Self::start_with(config, start);
+        if let Some(config) = &mut self.config {
+            config.instrument = Instrument::Path(name.clone().into());
         }
+        self.name_instrument(&name);
+    }
+
+    /// Offer `dir` to the server from now on, and to the server of every restart: what it holds
+    /// lists, opens and edits as the library does. Does nothing for an attached engine, whose
+    /// offers are its own.
+    pub fn offer_dir(&mut self, dir: &Path) {
+        if self.attached.is_some() {
+            return;
+        }
+        if !self.offered.iter().any(|offered| offered == dir) {
+            self.offered.push(dir.to_path_buf());
+        }
+        if let Some(running) = &self.running {
+            running.offer_dir(dir);
+        }
+    }
+
+    /// Whether the engine restarted since the last call.
+    pub fn take_restarted(&mut self) -> bool {
+        std::mem::take(&mut self.restarted)
     }
 
     fn push(&mut self, line: Line) {
@@ -377,7 +480,7 @@ impl Engine {
 
     /// Bring the report and the config up to the instrument the engine has installed now, which a
     /// Swap — the editor's or `reuben-mcp`'s — may have changed since it started: the report names
-    /// it, and a [`resume`](Self::resume) after a stop starts on it. Never waits.
+    /// it, and a restart starts on it. Never waits.
     pub fn follow_installed(&mut self) {
         if self.attached.is_none() {
             match self.installed() {
@@ -476,7 +579,7 @@ impl Engine {
     /// document until [`retry_fit`](Self::retry_fit). Never waits unless it restarts.
     pub fn fit_input(
         &mut self,
-        start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
+        start: impl FnMut(EngineConfig) -> Result<RunningEngine, StartError>,
     ) -> bool {
         let Some(running) = &self.running else {
             return false;
@@ -558,6 +661,8 @@ impl Engine {
             report,
             refit_tried: None,
             plays: None,
+            offered: Vec::new(),
+            restarted: false,
         }
     }
 
@@ -605,17 +710,17 @@ impl Engine {
     }
 }
 
-/// Whether the instrument at `path` loads, through the window's own validation; `Err` says why
-/// not.
-fn loads(path: &Path, root: Option<&Path>) -> Result<(), String> {
-    let source = path.display().to_string();
-    let mut store = FsResolver::for_document(&source).stat_only();
-    if let Some(root) = root {
-        store = store.with_root(root);
-    }
-    let report = validate_instrument(&ValidateInstrument { source }, &store)
-        .map_err(|refusal| refusal.message)?
-        .output;
+/// Whether the instrument the server names `source` loads, as the server validates it; `Err` says
+/// why not. Asked before the engine stops: the file may have stopped loading since it was
+/// installed, and a start on it would leave no server at all.
+fn loads(channel: &Channel, source: &str) -> Result<(), String> {
+    let args = ValidateInstrument {
+        source: source.to_string(),
+    };
+    let answer =
+        call_tool(names::VALIDATE_INSTRUMENT, &args, channel).map_err(|refusal| refusal.message)?;
+    let report: Report = serde_json::from_value(answer.output)
+        .map_err(|e| format!("the server's report could not be read: {e}"))?;
     if report.ok {
         return Ok(());
     }
@@ -651,10 +756,13 @@ pub(crate) mod test_support {
 
     pub const HANG_SECS: u64 = 10;
 
+    /// The repo's instrument `name`, spelled as the server names it.
     pub fn library(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../instruments")
-            .join(name)
+        crate::names::lexical(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../instruments")
+                .join(name),
+        )
     }
 
     /// `reuben play`'s config with ephemeral loopback ports, so parallel tests and a `reuben play`
@@ -664,6 +772,17 @@ pub(crate) mod test_support {
             osc_in: Some("127.0.0.1:0".to_string()),
             structure: Some("127.0.0.1:0".to_string()),
             ..EngineConfig::new(Instrument::Path(instrument))
+        }
+    }
+
+    /// [`config`] starting on nothing, the library rooted at `root`: what the standalone editor
+    /// starts at launch.
+    pub fn silent(root: &std::path::Path) -> EngineConfig {
+        EngineConfig {
+            osc_in: Some("127.0.0.1:0".to_string()),
+            structure: Some("127.0.0.1:0".to_string()),
+            instrument_root: Some(root.to_path_buf()),
+            ..EngineConfig::new(Instrument::Silent)
         }
     }
 }
@@ -706,13 +825,40 @@ mod tests {
     }
 
     #[test]
-    fn the_embedded_engine_does_not_follow_outside_writes() {
+    fn the_embedded_engine_follows_outside_writes() {
         let mut asked = None;
         let _ = Engine::start_with(config(library("acid-techno.json")), |config| {
             asked = Some(config.follow_files);
             Err(StartError::StructureNotLoopback(String::new()))
         });
-        assert_eq!(asked, Some(false));
+        assert_eq!(asked, Some(true));
+    }
+
+    #[test]
+    fn a_device_that_does_not_open_starts_headless_and_says_why() {
+        within(HANG_SECS, || {
+            let mut engine = Engine::start_or_headless(
+                super::test_support::silent(&library("")),
+                |_| {
+                    Err(StartError::Audio(
+                        reuben_native::audio::AudioError::NoDevice,
+                    ))
+                },
+                start_headless,
+            );
+            let said = errors(&engine);
+            assert_eq!(said.len(), 1, "{said:?}");
+            assert!(
+                said[0].starts_with("the audio device did not open"),
+                "{}",
+                said[0]
+            );
+            let library = (engine.channel().expect("the server runs"))
+                .library()
+                .expect("the library lists without a device");
+            assert!(!library.instruments.is_empty());
+            engine.shutdown();
+        });
     }
 
     #[test]
@@ -874,6 +1020,102 @@ mod tests {
         });
     }
 
+    /// What the standalone editor starts on a machine where `reuben play`, another editor or
+    /// another OSC app already holds the port: a server without that listener, and a line saying so.
+    #[test]
+    fn a_taken_osc_port_still_starts_a_server_and_says_why() {
+        within(HANG_SECS, || {
+            let taken = UdpSocket::bind("127.0.0.1:0").expect("hold a port");
+            let addr = taken.local_addr().expect("bound").to_string();
+            let mut engine = Engine::start_or_headless(
+                EngineConfig {
+                    osc_in: Some(addr.clone()),
+                    ..super::test_support::silent(&library(""))
+                },
+                start_headless,
+                |_| panic!("the headless start is only for a device that does not open"),
+            );
+            let running = engine.running().expect("a server runs");
+            assert_eq!(running.osc_in_addr(), None);
+            let said = errors(&engine);
+            assert_eq!(said.len(), 1, "{said:?}");
+            assert!(
+                said[0].contains("OSC-in") && said[0].contains(&addr),
+                "{}",
+                said[0]
+            );
+            let library = (engine.channel().expect("the server runs"))
+                .library()
+                .expect("the library lists without OSC-in");
+            assert!(!library.instruments.is_empty());
+            assert_eq!(
+                engine.config.as_ref().and_then(|c| c.osc_in.clone()),
+                Some(addr),
+                "a restart asks for the port again"
+            );
+            engine.shutdown();
+            drop(taken);
+        });
+    }
+
+    #[test]
+    fn a_taken_osc_port_and_no_device_still_start_a_server() {
+        within(HANG_SECS, || {
+            let taken = UdpSocket::bind("127.0.0.1:0").expect("hold a port");
+            let addr = taken.local_addr().expect("bound").to_string();
+            let mut engine = Engine::start_or_headless(
+                EngineConfig {
+                    osc_in: Some(addr),
+                    ..super::test_support::silent(&library(""))
+                },
+                |config| match config.osc_in {
+                    Some(addr) => Err(StartError::OscIn {
+                        addr,
+                        error: io::Error::from(io::ErrorKind::AddrInUse),
+                    }),
+                    None => Err(StartError::Audio(
+                        reuben_native::audio::AudioError::NoDevice,
+                    )),
+                },
+                start_headless,
+            );
+            assert!(engine.running().is_some());
+            assert_eq!(errors(&engine).len(), 2, "{:?}", engine.report());
+            engine.shutdown();
+            drop(taken);
+        });
+    }
+
+    #[test]
+    fn a_taken_structure_port_still_starts_a_server_and_says_why() {
+        within(HANG_SECS, || {
+            let taken = TcpListener::bind("127.0.0.1:0").expect("hold a port");
+            let addr = taken.local_addr().expect("bound").to_string();
+            let mut engine = Engine::start_or_headless(
+                EngineConfig {
+                    structure: Some(addr.clone()),
+                    ..super::test_support::silent(&library(""))
+                },
+                start_headless,
+                |_| panic!("the headless start is only for a device that does not open"),
+            );
+            assert!(engine
+                .running()
+                .is_some_and(|r| r.structure_addr().is_none()));
+            assert!(
+                (engine.report().iter())
+                    .any(|l| l.text.contains("structure channel") && l.text.contains(&addr)),
+                "{:?}",
+                engine.report()
+            );
+            let library = (engine.channel().expect("the server runs"))
+                .library()
+                .expect("the in-process channel serves the editor");
+            assert!(!library.instruments.is_empty());
+            engine.shutdown();
+        });
+    }
+
     #[test]
     fn shutdown_frees_every_port() {
         let (osc_in, structure): (SocketAddr, SocketAddr) = within(HANG_SECS, || {
@@ -939,32 +1181,6 @@ mod tests {
             assert_eq!(after.content_hash, before.content_hash);
             engine.shutdown();
         });
-    }
-
-    #[test]
-    fn an_engine_that_did_not_start_is_started_once_its_file_loads() {
-        let path = seed(
-            "resume",
-            r#"{"format_version":3,"instrument":"t","nodes":[{"#,
-        );
-        within(HANG_SECS, {
-            let path = path.clone();
-            move || {
-                let mut engine = Engine::start_with(config(path.clone()), start_headless);
-                assert!(engine.running().is_none());
-                engine.resume_with(start_headless);
-                assert!(engine.running().is_none(), "the file still does not load");
-
-                std::fs::copy(library("default.json"), &path).unwrap();
-                engine.resume_with(start_headless);
-                assert!(engine.running().is_some());
-                assert_eq!(errors(&engine), Vec::<&str>::new());
-
-                engine.resume_with(|_| panic!("a running engine is not started again"));
-                engine.shutdown();
-            }
-        });
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -1076,12 +1292,11 @@ mod tests {
             let echoed = osc::decode(&buf[..n]).expect("decode");
             assert_eq!(echoed[0].args, vec![Arg::F32(0.5)]);
 
-            // Nothing here owns the device, so nothing here restarts or resumes it.
+            // Nothing here owns the device, so nothing here restarts it.
             assert_eq!(engine.profile(), None);
             engine.restart_with(DeviceProfile::default(), |_| {
                 panic!("an attached engine is not restarted")
             });
-            engine.resume_with(|_| panic!("an attached engine is not started"));
             assert!(!engine.fit_input(|_| panic!("an attached engine is not refit")));
 
             engine.shutdown();
@@ -1101,7 +1316,7 @@ mod tests {
     }
 
     #[test]
-    fn a_relative_path_is_named_absolute_and_one_swapped_in_by_another_client_is_not_opened() {
+    fn a_relative_path_is_named_absolute_and_one_swapped_in_by_another_client_is_followed() {
         within(HANG_SECS, || {
             // Relative to the test's working directory, the crate's own.
             let relative = "../../instruments/default.json";
@@ -1113,7 +1328,8 @@ mod tests {
             assert!(source.is_absolute(), "{}", source.display());
             assert!(source.is_file(), "{}", source.display());
 
-            // A by-path Swap names the file as the client spelled it, relative to the engine.
+            // A by-path Swap spelled relative to the engine is published by the server's own
+            // absolute name, so the editor can follow it.
             let swapped = played
                 .channel()
                 .swap(
@@ -1127,18 +1343,16 @@ mod tests {
                 swapped,
                 reuben_api::engine::SwapOutcome::Installed(_)
             ));
-            let warned = loop {
-                engine.follow_link();
-                assert_eq!(engine.unfollowed(), None);
-                let warnings: Vec<_> = (engine.report().iter())
-                    .filter(|l| l.level == Level::Warning)
-                    .collect();
-                if let [line] = warnings.as_slice() {
-                    break line.text.clone();
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            };
-            assert!(warned.contains("absolute path"), "{warned}");
+            let followed = await_playing(&mut engine);
+            assert_eq!(
+                followed.source,
+                library("groovebox.json").display().to_string()
+            );
+            assert!(
+                !(engine.report().iter()).any(|l| l.level == Level::Warning),
+                "{:?}",
+                engine.report()
+            );
             engine.shutdown();
             reuben_native::diagnostics::log_snapshot(&played.shutdown());
         });

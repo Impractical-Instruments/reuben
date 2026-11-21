@@ -9,21 +9,18 @@
 
 use eframe::egui;
 use reuben_api::authoring::{
-    add_instrument_interface_input, add_instrument_interface_output,
-    clear_instrument_interface_meta, remove_instrument_interface_input,
-    remove_instrument_interface_output, set_instrument_interface_input_meta,
-    set_instrument_interface_output_meta, wire_instrument_interface_output,
-    AddInstrumentInterfaceInput, AddInstrumentInterfaceOutput, Answer,
-    ClearInstrumentInterfaceMeta, EditResult, InstrumentStructure, InterfaceInput, InterfaceOutput,
-    MetaField, PipeDirection, Refusal, RemoveInstrumentInterfacePipe, Resources,
-    SetInstrumentInterfaceInputMeta, SetInstrumentInterfaceOutputMeta,
-    WireInstrumentInterfaceOutput,
+    AddInstrumentInterfaceInput, AddInstrumentInterfaceOutput, ClearInstrumentInterfaceMeta,
+    InstrumentStructure, InterfaceInput, InterfaceOutput, MetaField, PipeDirection,
+    RemoveInstrumentInterfacePipe, SetInstrumentInterfaceInputMeta,
+    SetInstrumentInterfaceOutputMeta, WireInstrumentInterfaceOutput,
 };
+use reuben_api::tools::names;
 use serde_json::Value;
 
 use super::model::{pipe_field, wire_source};
 use super::view::{labelled_row, listed, text, Ask, Current, Problem};
 use super::{Edit, Inspector};
+use crate::edit::Verb;
 
 /// The types an interface input pipe can be declared as, besides an enum type's name.
 const PIPE_TYPES: [&str; 6] = ["f32", "f32_buffer", "i32", "note", "harmony", "pitch"];
@@ -75,18 +72,14 @@ pub struct Meta {
 }
 
 impl PipeEdit {
-    pub fn run(
-        self,
-        source: String,
-        store: &dyn Resources,
-        expect: Option<String>,
-    ) -> Result<Answer<EditResult>, Refusal> {
+    pub fn verb(self, source: String, expect: Option<String>) -> Verb {
         match self {
             PipeEdit::AddInput {
                 name,
                 type_name,
                 value,
-            } => add_instrument_interface_input(
+            } => Verb::of(
+                names::ADD_INSTRUMENT_INTERFACE_INPUT,
                 &AddInstrumentInterfaceInput {
                     source,
                     name,
@@ -95,9 +88,9 @@ impl PipeEdit {
                     expect,
                     ..Default::default()
                 },
-                store,
             ),
-            PipeEdit::AddOutput { name, from } => add_instrument_interface_output(
+            PipeEdit::AddOutput { name, from } => Verb::of(
+                names::ADD_INSTRUMENT_INTERFACE_OUTPUT,
                 &AddInstrumentInterfaceOutput {
                     source,
                     name,
@@ -105,25 +98,25 @@ impl PipeEdit {
                     expect,
                     ..Default::default()
                 },
-                store,
             ),
-            PipeEdit::RemoveInput(name) => remove_instrument_interface_input(
+            PipeEdit::RemoveInput(name) => Verb::of(
+                names::REMOVE_INSTRUMENT_INTERFACE_INPUT,
                 &RemoveInstrumentInterfacePipe {
                     source,
                     name,
                     expect,
                 },
-                store,
             ),
-            PipeEdit::RemoveOutput(name) => remove_instrument_interface_output(
+            PipeEdit::RemoveOutput(name) => Verb::of(
+                names::REMOVE_INSTRUMENT_INTERFACE_OUTPUT,
                 &RemoveInstrumentInterfacePipe {
                     source,
                     name,
                     expect,
                 },
-                store,
             ),
-            PipeEdit::InputMeta { name, meta } => set_instrument_interface_input_meta(
+            PipeEdit::InputMeta { name, meta } => Verb::of(
+                names::SET_INSTRUMENT_INTERFACE_INPUT_META,
                 &SetInstrumentInterfaceInputMeta {
                     source,
                     name,
@@ -134,9 +127,9 @@ impl PipeEdit {
                     unit: meta.unit,
                     expect,
                 },
-                store,
             ),
-            PipeEdit::OutputMeta { name, meta } => set_instrument_interface_output_meta(
+            PipeEdit::OutputMeta { name, meta } => Verb::of(
+                names::SET_INSTRUMENT_INTERFACE_OUTPUT_META,
                 &SetInstrumentInterfaceOutputMeta {
                     source,
                     name,
@@ -146,13 +139,13 @@ impl PipeEdit {
                     unit: meta.unit,
                     expect,
                 },
-                store,
             ),
             PipeEdit::ClearMeta {
                 name,
                 direction,
                 fields,
-            } => clear_instrument_interface_meta(
+            } => Verb::of(
+                names::CLEAR_INSTRUMENT_INTERFACE_META,
                 &ClearInstrumentInterfaceMeta {
                     source,
                     name,
@@ -160,16 +153,15 @@ impl PipeEdit {
                     fields,
                     expect,
                 },
-                store,
             ),
-            PipeEdit::Feed { name, from } => wire_instrument_interface_output(
+            PipeEdit::Feed { name, from } => Verb::of(
+                names::WIRE_INSTRUMENT_INTERFACE_OUTPUT,
                 &WireInstrumentInterfaceOutput {
                     source,
                     name,
                     from,
                     expect,
                 },
-                store,
             ),
         }
     }

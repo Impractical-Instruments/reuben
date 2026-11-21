@@ -14,21 +14,21 @@ mod resources;
 mod view;
 
 use reuben_api::authoring::{
-    remove_instrument_constant, set_instrument_constant, set_instrument_description,
-    set_instrument_input, set_instrument_name, set_instrument_node_description, Answer, EditResult,
-    Refusal, RemoveInstrumentConstant, Resources, SetInstrumentConstant, SetInstrumentDescription,
-    SetInstrumentInput, SetInstrumentName, SetInstrumentNodeDescription,
+    RemoveInstrumentConstant, SetInstrumentConstant, SetInstrumentDescription, SetInstrumentInput,
+    SetInstrumentName, SetInstrumentNodeDescription,
 };
 use reuben_api::engine::{Channel, ControlSendMessage};
+use reuben_api::tools::names;
 use serde_json::Value;
 
 use self::interface::{Adding, PipeEdit};
 use self::model::{fields, pipe_field, Control, Drafts, Holds, Step, Target};
 use self::resources::ResourceEdit;
-use crate::edit;
+use crate::edit::{self, Verb};
 use crate::sends::{Live, Replies};
 use crate::session::Session;
 
+pub(crate) use self::resources::relative_source;
 pub use self::view::show;
 
 /// One change to the document.
@@ -54,17 +54,13 @@ enum Edit {
 }
 
 impl Edit {
-    /// Run this edit's verb on the document `source`. Empty text clears a description.
-    fn run(
-        self,
-        source: &str,
-        store: &dyn Resources,
-        expect: Option<String>,
-    ) -> Result<Answer<EditResult>, Refusal> {
+    /// This edit's verb on the document `source`. Empty text clears a description.
+    fn verb(self, source: &str, expect: Option<String>) -> Verb {
         let source = source.to_string();
         let cleared = |text: String| (!text.trim().is_empty()).then_some(text);
         match self {
-            Edit::Value { target, value } if target.constant => set_instrument_constant(
+            Edit::Value { target, value } if target.constant => Verb::of(
+                names::SET_INSTRUMENT_CONSTANT,
                 &SetInstrumentConstant {
                     source,
                     address: target.address,
@@ -72,9 +68,9 @@ impl Edit {
                     value,
                     expect,
                 },
-                store,
             ),
-            Edit::Value { target, value } => set_instrument_input(
+            Edit::Value { target, value } => Verb::of(
+                names::SET_INSTRUMENT_INPUT,
                 &SetInstrumentInput {
                     source,
                     address: target.address,
@@ -82,44 +78,43 @@ impl Edit {
                     value,
                     expect,
                 },
-                store,
             ),
-            Edit::RemoveConstant { address, name } => remove_instrument_constant(
+            Edit::RemoveConstant { address, name } => Verb::of(
+                names::REMOVE_INSTRUMENT_CONSTANT,
                 &RemoveInstrumentConstant {
                     source,
                     address,
                     name,
                     expect,
                 },
-                store,
             ),
-            Edit::NodeDescription { address, text } => set_instrument_node_description(
+            Edit::NodeDescription { address, text } => Verb::of(
+                names::SET_INSTRUMENT_NODE_DESCRIPTION,
                 &SetInstrumentNodeDescription {
                     source,
                     address,
                     description: cleared(text),
                     expect,
                 },
-                store,
             ),
-            Edit::Name(name) => set_instrument_name(
+            Edit::Name(name) => Verb::of(
+                names::SET_INSTRUMENT_NAME,
                 &SetInstrumentName {
                     source,
                     name,
                     expect,
                 },
-                store,
             ),
-            Edit::Description(text) => set_instrument_description(
+            Edit::Description(text) => Verb::of(
+                names::SET_INSTRUMENT_DESCRIPTION,
                 &SetInstrumentDescription {
                     source,
                     description: cleared(text),
                     expect,
                 },
-                store,
             ),
-            Edit::Pipe(edit) => edit.run(source, store, expect),
-            Edit::Resource(edit) => edit.run(source, store, expect),
+            Edit::Pipe(edit) => edit.verb(source, expect),
+            Edit::Resource(edit) => edit.verb(source, expect),
         }
     }
 }
@@ -244,7 +239,7 @@ impl Inspector {
         }
         let source = session.viewed().source.clone();
         let added = edit.clone();
-        let verb = |store: &dyn Resources, expect| edit.run(&source, store, expect);
+        let verb = |expect| edit.verb(&source, expect);
         let result = match expect {
             Some(expect) => edit::write_against(session, channel, &source, expect, verb),
             None => edit::write(session, channel, &source, verb),
@@ -267,8 +262,8 @@ mod tests {
     use std::time::Duration;
 
     use reuben_api::authoring::{
-        read_instrument, rename_instrument_node, InputValue, PortInfo, ReadInstrument,
-        RenameInstrumentNode, StructureNode, WireSource,
+        read_instrument, rename_instrument_node, set_instrument_input, InputValue, PortInfo,
+        ReadInstrument, RenameInstrumentNode, StructureNode, WireSource,
     };
     use reuben_api::render::Arg;
     use reuben_api::FsResolver;
@@ -385,7 +380,6 @@ mod tests {
                 frame(&mut rig, &mut inspector, &cutoff, value, true);
                 assert_eq!(inspector.error, None);
                 assert_eq!(inspector.writes, 0, "a held value is never written");
-                assert_eq!(rig.swaps(), 0);
                 assert_eq!(rig.session.tree().top().hash(), before.as_deref());
             }
             let received = rig.live_received(values.len());
@@ -405,9 +399,7 @@ mod tests {
             assert_eq!(inspector.writes, 1, "letting go writes once");
             assert_ne!(rig.session.tree().top().hash(), before.as_deref());
             assert_eq!(literal(&rig, "/map_cutoff", "out_max"), json!(10350.0));
-            rig.poll_until("the Swap of the write", |rig| rig.swaps() == 1);
             rig.settle();
-            assert_eq!(rig.swaps(), 1, "one write, one Swap");
             assert_eq!(rig.status(), &Status::Current);
             assert_eq!(
                 Some(rig.playing().as_str()),
@@ -428,7 +420,10 @@ mod tests {
                 .enter("/kick_v")
                 .expect("/kick_v voices kick-voice");
             let voice = rig.lib.join("voices").join("kick-voice.json");
-            assert_eq!(rig.session.viewed().path, voice);
+            assert!(crate::session::test_support::names(
+                &rig.session.viewed().source,
+                &voice
+            ));
             let top = rig.session.tree().top().hash().map(str::to_string);
             let before = rig.session.viewed().hash().map(str::to_string);
             let mut inspector = Inspector::default();
@@ -445,9 +440,11 @@ mod tests {
             assert_eq!(inspector.writes, 1);
             assert_eq!(rig.live_received(1), [], "nothing was sent live");
             assert_ne!(rig.session.viewed().hash(), before.as_deref());
-            assert_eq!(rig.session.viewed().path, voice);
+            assert!(crate::session::test_support::names(
+                &rig.session.viewed().source,
+                &voice
+            ));
             assert_eq!(rig.session.tree().top().hash(), top.as_deref());
-            rig.poll_until("the Swap of the write", |rig| rig.swaps() == 1);
             rig.settle();
             assert_eq!(rig.status(), &Status::Current);
         });
@@ -467,9 +464,7 @@ mod tests {
             assert_eq!(inspector.error, None);
             assert_eq!(inspector.writes, 1);
             assert_eq!(literal(&rig, "/voicer", "voices").as_f64(), Some(4.0));
-            rig.poll_until("the Swap of the write", |rig| rig.swaps() == 1);
             rig.settle();
-            assert_eq!(rig.swaps(), 1);
             assert_eq!(rig.live_received(1), [], "a constant is never sent live");
         });
     }
@@ -517,7 +512,6 @@ mod tests {
                 None,
                 "an input is not a constant"
             );
-            rig.poll_until("the Swap of the write", |rig| rig.swaps() == 1);
         });
     }
 
@@ -606,7 +600,7 @@ mod tests {
             let mut rig = Rig::open("inspector_unreadable", INSTRUMENT);
             let mut inspector = Inspector::default();
             let cutoff = target(&rig, "/map_cutoff", "out_max");
-            let path = rig.session.tree().top().path.clone();
+            let path = rig.top.clone();
             let text = std::fs::read_to_string(&path).expect("the instrument");
             let channel = rig.channel_source();
 
@@ -730,7 +724,6 @@ mod tests {
             );
             assert_eq!(rig.session.tree(), &before);
             rig.settle();
-            assert_eq!(rig.swaps(), 0);
         });
     }
 
@@ -913,7 +906,10 @@ mod tests {
             assert_eq!((port.min, port.max), (Some(20.0), Some(2000.0)));
             assert_eq!(port.curve.as_deref(), Some("exponential"));
             assert_eq!(port.unit, "Hz");
-            assert_eq!(Controls::open(Some(&rig.top), None).binds(), ["pitch"]);
+            assert_eq!(
+                Controls::open(Some(&rig.top_source()), &rig.channel_source()).binds(),
+                ["pitch"]
+            );
 
             // A field the set-meta verb writes is cleared through its own verb, the rest kept. The
             // port reports the effective curve, the one the oscillator's `freq` input sweeps by;
@@ -1068,7 +1064,7 @@ mod tests {
             let after = top(&rig);
             assert!(after.inputs.is_empty() && after.outputs.is_empty());
             assert_eq!(
-                Controls::open(Some(&rig.top), None).binds(),
+                Controls::open(Some(&rig.top_source()), &rig.channel_source()).binds(),
                 [] as [&str; 0]
             );
         });
@@ -1082,7 +1078,10 @@ mod tests {
                 .enter("/space")
                 .expect("/space nests space.json");
             let child = rig.lib.join("patches").join("space.json");
-            assert_eq!(rig.session.viewed().path, child);
+            assert!(crate::session::test_support::names(
+                &rig.session.viewed().source,
+                &child
+            ));
             let face = |rig: &Rig| -> Vec<String> {
                 let top = (rig.session.tree().top().read.as_ref()).expect("the top reads");
                 let space = (top.nodes.iter())
@@ -1107,7 +1106,10 @@ mod tests {
                 &channel,
             );
             assert!(wrote, "{:?}", rig.session.feedback());
-            assert_eq!(rig.session.viewed().path, child);
+            assert!(crate::session::test_support::names(
+                &rig.session.viewed().source,
+                &child
+            ));
             let viewed = (rig.session.viewed().read.clone()).expect("the child reads");
             assert!(viewed.inputs.iter().any(|p| p.port.name == "width"));
             assert!(face(&rig).iter().any(|p| p == "width"), "{:?}", face(&rig));
@@ -1120,7 +1122,6 @@ mod tests {
             );
             assert!(wrote, "{:?}", rig.session.feedback());
             assert!(!face(&rig).iter().any(|p| p == "width"));
-            rig.poll_until("the Swap of the writes", |rig| rig.swaps() >= 1);
             rig.settle();
             assert_eq!(rig.status(), &Status::Current);
         });

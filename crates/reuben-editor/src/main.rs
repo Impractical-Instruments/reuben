@@ -7,16 +7,21 @@
 
 mod audio;
 mod canvas;
+mod chooser;
 mod config;
 mod controls;
 mod edit;
 mod engine;
 mod feedback;
+mod follow;
 mod held_swap;
 mod inspector;
 mod link;
 mod meter_strip;
+mod names;
 mod pick;
+#[cfg(test)]
+mod reaches_no_files;
 mod sends;
 mod session;
 mod start;
@@ -25,23 +30,27 @@ mod theme;
 mod ui_tests;
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use clap::{CommandFactory, Parser};
 use eframe::egui;
+use reuben_api::engine::{Channel, Event};
 use reuben_native::cli::{EngineFlags, InstrumentRoot};
 use reuben_native::engine::{EngineConfig, Instrument};
+use reuben_native::structure::SwapHold;
 
 use crate::audio::AudioSettings;
 use crate::canvas::Canvas;
 use crate::config::ConfigDir;
 use crate::controls::Controls;
 use crate::engine::{Engine, Level};
+use crate::follow::Follow;
 use crate::held_swap::HeldSwaps;
 use crate::inspector::Inspector;
 use crate::meter_strip::MeterStrip;
 use crate::session::{Session, Status, TrailAsk};
-use crate::start::{Launch, Start};
+use crate::start::{Choice, Start};
 
 #[derive(Parser)]
 #[command(name = "reuben-editor", about = "Edit and play reuben instruments.")]
@@ -99,41 +108,42 @@ fn main() -> eframe::Result {
         // opens never takes the audio device or the ports.
         Box::new(|cc| {
             theme::install(&cc.egui_ctx);
-            let root = args.instrument_root.clone().resolve();
-            let controls = Controls::open(args.path.as_deref(), root.as_deref());
-            let session = args.path.as_deref().map(|path| {
-                let ctx = cc.egui_ctx.clone();
-                Session::open(path, root.as_deref(), move || ctx.request_repaint())
-            });
-            let mut canvas = Canvas::open(None, None);
-            let mut inspector = Inspector::default();
-            if let Some(session) = &session {
-                view(&mut canvas, &mut inspector, session);
-            }
-            let mut start_screen = Start::new(ConfigDir::user(), root.as_deref());
-            if let Some(path) = args.path.as_deref().filter(|p| p.is_file()) {
-                start_screen.opened(path);
-            }
-            let held = HeldSwaps::new({
+            let wake = {
                 let ctx = cc.egui_ctx.clone();
                 move || ctx.request_repaint()
-            });
-            if let Some(path) = args.path.as_deref() {
-                held.opened(path);
-            }
-            let launch = Launch {
-                root,
-                flags: args.engine.clone(),
-                swap_hold: Some(held.swap_hold()),
             };
+            let root = args.instrument_root.clone().resolve_or_default();
+            let mut start_screen = Start::new(ConfigDir::user());
+            let held = HeldSwaps::new(wake.clone());
             let mut audio = AudioSettings::load(ConfigDir::user());
-            let engine = match args.attach.clone() {
-                Some(addr) => Engine::attach(addr, {
-                    let ctx = cc.egui_ctx.clone();
-                    move || ctx.request_repaint()
-                }),
-                None => start(args, &mut audio, &launch, Engine::start),
+            let mut engine = match args.attach.clone() {
+                Some(addr) => Engine::attach(addr, wake.clone()),
+                None => start(
+                    &args,
+                    root,
+                    &mut audio,
+                    Some(held.swap_hold()),
+                    Engine::start,
+                ),
             };
+            let session = (args.path.as_deref()).and_then(|path| {
+                match launched(path, &mut engine, &held, wake.clone()) {
+                    Ok(session) => Some(session),
+                    Err(why) => {
+                        start_screen.refused(why);
+                        None
+                    }
+                }
+            });
+            let mut canvas = Canvas::empty();
+            let mut inspector = Inspector::default();
+            let top = session.as_ref().map(Session::top);
+            let controls = Controls::open(top, &|| engine.channel());
+            if let Some(session) = &session {
+                start_screen.opened(session.top());
+                view(&mut canvas, &mut inspector, session);
+            }
+            let (follow, latest) = follower(engine.channel(), wake.clone());
             Ok(Box::new(Editor {
                 engine,
                 audio,
@@ -142,50 +152,83 @@ fn main() -> eframe::Result {
                 inspector,
                 session,
                 start: start_screen,
-                launch,
                 held,
-                meters: MeterStrip::new({
-                    let ctx = cc.egui_ctx.clone();
-                    move || ctx.request_repaint()
-                }),
-                same_file: None,
+                meters: MeterStrip::new(wake),
+                follow,
+                latest,
             }))
         }),
     )
 }
 
-/// The engine `args` ask for, on the stored audio choice unless `args` name an `--io-map`.
-/// `start_engine` is [`Engine::start`], or a test's stand-in that opens no device.
+/// The standalone editor's own engine, which `args` configure, on the stored audio choice unless
+/// `args` name an `--io-map`: started with nothing open, its library rooted at `root`, so the
+/// start screen lists it and an instrument is opened on it by name. `start_engine` is
+/// [`Engine::start`], or a test's stand-in that opens no device.
 fn start(
-    args: Args,
+    args: &Args,
+    root: Option<PathBuf>,
     audio: &mut AudioSettings,
-    launch: &Launch,
+    swap_hold: Option<SwapHold>,
     start_engine: impl FnOnce(EngineConfig) -> Engine,
 ) -> Engine {
-    let Some(path) = args.path else {
-        return Engine::idle();
-    };
-    let root = args.instrument_root.resolve();
-    match audio.engine_config(&args.engine, Instrument::Path(path), root) {
+    match audio.engine_config(&args.engine, Instrument::Silent, root) {
         Ok(config) => start_engine(EngineConfig {
-            swap_hold: launch.swap_hold.clone(),
+            swap_hold,
             ..config
         }),
         Err(e) => Engine::not_started(e),
     }
 }
 
+/// Open the instrument at `path`, named on the command line, on `engine`: its directory offered
+/// to the server, and the session opened on the server's name for it.
+fn launched(
+    path: &std::path::Path,
+    engine: &mut Engine,
+    held: &HeldSwaps,
+    wake: impl Fn() + Send + Sync + 'static,
+) -> Result<Session, String> {
+    let name = start::offer_file(path, engine);
+    held.opened(std::path::Path::new(&name));
+    let session = start::open(&name, engine, wake);
+    if session.is_err() {
+        held.closed();
+    }
+    session
+}
+
 /// Draw the document `session` views. A canvas drawing another document, and the inspector with
 /// it, start over on this one: their view, selection and held values belong to the one they drew.
 fn view(canvas: &mut Canvas, inspector: &mut Inspector, session: &Session) {
     let viewed = session.viewed();
-    let source = std::path::Path::new(&viewed.source);
-    if canvas.instrument().is_some_and(|drawn| drawn != source) {
-        *canvas = Canvas::open(None, None);
+    if canvas
+        .instrument()
+        .is_some_and(|drawn| drawn != viewed.source)
+    {
+        *canvas = Canvas::empty();
         *inspector = Inspector::default();
     }
-    canvas.reload(source, session.root(), &viewed.read);
+    canvas.reload(&viewed.source, &viewed.read);
     canvas.tap(session);
+}
+
+/// The engine's channel as of the last frame, for [`Follow`]'s thread to subscribe through: the
+/// engine itself lives on the UI thread, and is replaced when it restarts.
+type Latest = Arc<Mutex<Option<Channel>>>;
+
+/// A [`Follow`] of whichever engine the editor has, starting on `channel`, and the cell each frame
+/// puts its channel in. `wake` is called whenever the follow has events.
+fn follower(channel: Option<Channel>, wake: impl Fn() + Send + Sync + 'static) -> (Follow, Latest) {
+    let latest = Arc::new(Mutex::new(channel));
+    let follow = Follow::start(
+        {
+            let latest = Arc::clone(&latest);
+            move || latest.lock().unwrap_or_else(PoisonError::into_inner).take()
+        },
+        wake,
+    );
+    (follow, latest)
 }
 
 struct Editor {
@@ -196,120 +239,111 @@ struct Editor {
     inspector: Inspector,
     session: Option<Session>,
     start: Start,
-    launch: Launch,
     held: HeldSwaps,
     meters: MeterStrip,
-    /// The file the engine plays and the session's top-level file, as spelled when they were last
-    /// compared, and whether they are one file: resolving them stats the disk, so it is done again
-    /// only when a spelling changes.
-    same_file: Option<(String, PathBuf, bool)>,
+    follow: Follow,
+    latest: Latest,
 }
 
 impl Editor {
-    /// Whether the engine plays the open session's top-level file, so a node path the canvas
-    /// resolves names a node of what is drawn. Another file's Plan can have the same addresses —
-    /// while a Swap onto this one runs or was refused, or before an attached editor opens what the
-    /// engine plays — and its levels must not show on these boxes.
-    ///
-    /// Of the same file, the Plan installed must be of what the session read, unless a Swap of it
-    /// is running: that Plan is the one about to be replaced, and blanking every meter for each
-    /// edit's Swap would flicker the canvas. A Swap that was refused leaves the older Plan playing
-    /// for good, so it does not meter.
+    /// Whether the engine plays the open session's top-level document as the session read it, so
+    /// a node path the canvas resolves names a node of what is drawn. Another document's Plan can
+    /// have the same addresses — before an attached editor opens what the engine plays, or while
+    /// the server holds what it read back — and its levels must not show on these boxes.
     fn metered(&mut self) -> bool {
         let (Some(session), Some(plays)) = (&self.session, self.engine.plays()) else {
             return false;
         };
-        let top = session.top();
-        let same = match &self.same_file {
-            Some((source, file, same)) if *source == plays.source && file == top => *same,
-            _ => {
-                let same = held_swap::canonical(std::path::Path::new(&plays.source))
-                    == held_swap::canonical(top);
-                self.same_file = Some((plays.source.clone(), top.to_path_buf(), same));
-                same
-            }
-        };
         let read = session.tree().documents().first().and_then(|d| d.hash());
-        same && (session.status() == &Status::Swapping || read == Some(plays.content_hash.as_str()))
+        plays.source == session.top() && read == Some(plays.content_hash.as_str())
     }
 
-    /// Open the instrument at `path` in place of whatever is open. The canvas and the inspector
-    /// start over from the new session's read, and its undo history is its own.
-    fn open(&mut self, path: &std::path::Path, ctx: &egui::Context) {
-        // Before the Swap starts, so a client asking for the file being opened is not held.
-        self.held.opened(path);
+    /// Have the server open the instrument it names `name` in place of whatever is open. The
+    /// canvas and the inspector start over from the new session's read, and its undo history is
+    /// its own. One the server does not open is said on the start screen.
+    fn open(&mut self, name: &str, ctx: &egui::Context) {
+        // Before the open starts, so a client asking for the instrument being opened is not held.
+        self.held.opened(std::path::Path::new(name));
         let ctx = ctx.clone();
-        let session = start::open(
-            path,
-            &self.launch,
-            &mut self.audio,
-            &mut self.engine,
-            move || ctx.request_repaint(),
-            reuben_native::engine::start,
-        );
-        let panel = start::panel_follows(&session, &self.engine);
-        self.show(session, path, panel);
+        match start::open(name, &self.engine, move || ctx.request_repaint()) {
+            Ok(session) => self.show(session),
+            Err(why) => {
+                // Nothing was opened: what the server has open is still the session's, if any.
+                match &self.session {
+                    Some(session) => self.held.opened(std::path::Path::new(session.top())),
+                    None => self.held.closed(),
+                }
+                self.start.refused(why);
+            }
+        }
     }
 
-    /// Show `session`, open on `path`, in place of whatever is shown; `panel` is whether the
-    /// controls panel is rebuilt for it too.
-    fn show(&mut self, session: Session, path: &std::path::Path, panel: bool) {
-        self.canvas = Canvas::open(None, None);
+    /// Show `session`, and the controls panel for it, in place of whatever is shown.
+    fn show(&mut self, session: Session) {
+        let top = PathBuf::from(session.top());
+        self.held.opened(&top);
+        self.canvas = Canvas::empty();
         self.inspector = Inspector::default();
         view(&mut self.canvas, &mut self.inspector, &session);
-        if panel {
-            self.controls = Controls::open(Some(path), self.launch.root.as_deref());
-        }
+        self.controls = Controls::open(Some(session.top()), &|| self.engine.channel());
+        self.start.opened(session.top());
         self.session = Some(session);
-        self.start.opened(path);
     }
 
-    /// Follow what the attached engine plays, as it changes: open the file it names, with no Swap,
-    /// since it plays it already. Its files are Swapped in where they are not what the engine
-    /// installed from them — they changed while it was not answering, or before the editor
-    /// attached — or where the session is not sure the engine plays them; a file the engine plays is
-    /// opened rather than another Swapped over it.
+    /// Follow what the attached engine plays, as it changes: open the document it names, with no
+    /// Swap, since it plays it already.
     fn follow_attached(&mut self, ctx: &egui::Context) {
         self.engine.follow_link();
-        // Followed once the Swap lands, whatever it installed.
-        if self
-            .session
-            .as_ref()
-            .is_some_and(|session| session.status() == &Status::Swapping)
-        {
-            return;
-        }
         let Some(playing) = self.engine.unfollowed() else {
             return;
         };
-        let path = PathBuf::from(&playing.source);
-        if self.session.as_ref().is_none_or(|s| s.top() != path) {
-            let wake = {
-                let ctx = ctx.clone();
-                move || ctx.request_repaint()
-            };
-            let session = Session::open(&path, self.launch.root.as_deref(), wake);
-            self.show(session, &path, true);
-        }
-        let Some(session) = &mut self.session else {
-            return;
-        };
-        let on_disk = session.tree().documents().first().and_then(|d| d.hash());
-        if on_disk != Some(playing.content_hash.as_str()) || session.status() != &Status::Current {
-            session.reinstall(&|| self.engine.channel());
+        if self
+            .session
+            .as_ref()
+            .is_none_or(|s| s.top() != playing.source)
+        {
+            self.follow_open(&playing.source, ctx);
         }
     }
 
-    /// Take in what the session saw change on disk, and rebuild what is drawn from the files.
+    /// Show a session on the instrument the server names `name`, which it plays already.
+    fn follow_open(&mut self, name: &str, ctx: &egui::Context) {
+        let wake = {
+            let ctx = ctx.clone();
+            move || ctx.request_repaint()
+        };
+        let session = Session::open(name, &|| self.engine.channel()).with_wake(wake);
+        self.show(session);
+    }
+
+    /// Take in what the server said changed, and rebuild what is drawn from the tree it reads.
     fn follow_files(&mut self, ui: &egui::Ui) {
+        *self.latest.lock().unwrap_or_else(PoisonError::into_inner) = self.engine.channel();
         self.follow_attached(ui.ctx());
+        let events = self.follow.drain();
         let Some(session) = &mut self.session else {
             return;
         };
-        let poll = session.poll(Instant::now(), &|| self.engine.channel());
-        if let Some(content_hash) = session.take_installed() {
-            self.engine
-                .note_installed(session.top().display().to_string(), content_hash);
+        let poll = session.poll(&events, &|| self.engine.channel());
+        // What the server says plays is known the moment it says so, where an attached engine's
+        // probe waits on its next round.
+        for event in &events {
+            match event {
+                Event::Changed { hash, .. } if !hash.is_empty() => {
+                    self.engine
+                        .note_installed(session.top().to_string(), hash.clone());
+                }
+                Event::Opened { name, hash } if !name.is_empty() => {
+                    self.engine.note_installed(name.clone(), hash.clone());
+                }
+                _ => {}
+            }
+        }
+        // Another instrument opened in this one's place — by another client, or by a held open
+        // the user let through — is what the canvas shows from now on.
+        if let Some(name) = &poll.opened {
+            self.follow_open(name, ui.ctx());
+            return;
         }
         start::follow(
             session,
@@ -323,21 +357,15 @@ impl Editor {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(50));
         }
+        if let Some(wait) = poll.wait {
+            ui.ctx().request_repaint_after(wait);
+        }
         if poll.reloaded {
             view(&mut self.canvas, &mut self.inspector, session);
         }
-        // The files load and nothing plays them: the engine stopped, or never started, on a
-        // tree that did not load.
-        if poll.reloaded && session.status() == &Status::NoEngine {
-            self.engine.resume();
-            session.reinstall(&|| self.engine.channel());
-        }
         // A tree that does not load keeps the panel of the instrument still playing.
         if poll.reloaded && !matches!(session.status(), Status::Held(_)) {
-            self.controls = Controls::open(Some(session.top()), session.root());
-        }
-        if let Some(wait) = poll.wait {
-            ui.ctx().request_repaint_after(wait);
+            self.controls = Controls::open(Some(session.top()), &|| self.engine.channel());
         }
     }
 }
@@ -401,9 +429,17 @@ impl eframe::App for Editor {
         // frame paints the theme's fill instead.
         let gestures = egui::Frame::central_panel(ui.style()).show(ui, |ui| {
             if self.session.is_none() || self.start.shown() {
-                let chosen = self.start.show(ui, self.session.is_some());
-                if let Some(path) = chosen {
-                    self.open(&path, ui.ctx());
+                let engine = &self.engine;
+                let embedded = engine.link().is_none();
+                let chosen =
+                    (self.start).show(ui, self.session.is_some(), embedded, &|| engine.channel());
+                match chosen {
+                    Some(Choice::Open(name)) => self.open(&name, ui.ctx()),
+                    Some(Choice::OpenFile(path)) => {
+                        let name = start::offer_file(&path, &mut self.engine);
+                        self.open(&name, ui.ctx());
+                    }
+                    None => {}
                 }
                 return Vec::new();
             }
@@ -411,7 +447,7 @@ impl eframe::App for Editor {
                 self.start.show_again();
             }
             if let Some(session) = &mut self.session {
-                if let Some(asked) = session::trail(ui, session) {
+                if let Some(asked) = session::trail(ui, session, &|| self.engine.channel()) {
                     match asked {
                         TrailAsk::Leave(depth) => session.leave(depth),
                         TrailAsk::LocalCopy => {
@@ -441,7 +477,8 @@ impl eframe::App for Editor {
                 true => self.meters.node_levels(),
                 false => &[],
             };
-            self.canvas.show(ui, rejected, levels)
+            self.canvas
+                .show(ui, rejected, levels, &|| self.engine.channel())
         });
         for gesture in gestures.inner {
             let Some(session) = &mut self.session else {
@@ -462,8 +499,8 @@ impl eframe::App for Editor {
         }
         // Over the canvas's lower corner: the feedback banner sits at the top of the same panel,
         // and the controls and inspector panels stay uncovered.
-        if let Some(path) = held_swap::show(ui.ctx(), &self.held, gestures.response.rect) {
-            self.open(&path, ui.ctx());
+        if let Some(name) = held_swap::show(ui.ctx(), &self.held, gestures.response.rect) {
+            self.open(&name, ui.ctx());
         }
     }
 
@@ -478,35 +515,67 @@ mod tests {
     use crate::audio::tests::two_devices;
     use crate::config::test_support::TempConfig;
 
-    fn start_nothing(args: Args) -> Engine {
+    /// The config `main` starts its engine with for `args`, or the engine it reports instead.
+    fn started(args: &[&str], swap_hold: Option<SwapHold>) -> (Option<EngineConfig>, Engine) {
+        let args = Args::parse_from(args);
         let temp = TempConfig::new();
         let mut audio = AudioSettings::load_with(temp.dir(), two_devices);
-        let launch = Launch {
-            root: None,
-            flags: args.engine.clone(),
-            swap_hold: None,
-        };
-        start(args, &mut audio, &launch, |_| {
-            panic!("these arguments describe no engine to start")
-        })
+        let mut config = None;
+        let engine = start(&args, None, &mut audio, swap_hold, |asked| {
+            config = Some(asked);
+            Engine::idle()
+        });
+        (config, engine)
     }
 
     #[test]
     fn the_engine_started_at_launch_holds_what_the_launch_says() {
-        let temp = TempConfig::new();
-        let mut audio = AudioSettings::load_with(temp.dir(), two_devices);
-        let args = Args::parse_from(["reuben-editor", "instrument.json"]);
-        let launch = Launch {
-            root: None,
-            flags: args.engine.clone(),
-            swap_hold: Some(reuben_native::structure::SwapHold::new(|_| true)),
-        };
-        let mut held = None;
-        start(args, &mut audio, &launch, |config| {
-            held = config.swap_hold;
-            Engine::idle()
+        let hold = reuben_native::structure::SwapHold::new(|_| true);
+        let (config, _) = started(&["reuben-editor", "instrument.json"], Some(hold));
+        assert!(config.expect("an engine starts").swap_hold.is_some());
+    }
+
+    #[test]
+    fn a_launch_open_the_server_refuses_holds_nothing() {
+        use reuben_api::engine::{swap_instrument, SwapInstrument};
+        use reuben_mcp::EngineLink;
+        use reuben_native::engine::RunningEngine;
+        use reuben_native::test_support::{start_headless, within};
+
+        use crate::engine::test_support::{silent, HANG_SECS};
+        use crate::session::test_support::Scratch;
+
+        within(HANG_SECS, || {
+            let scratch = Scratch::new("main_launch_refused");
+            let lib = scratch.library();
+            let held = HeldSwaps::new(|| {});
+            let mut engine = Engine::start_with(
+                EngineConfig {
+                    swap_hold: Some(held.swap_hold()),
+                    ..silent(&lib)
+                },
+                start_headless,
+            );
+            let missing = lib.join("missing.json");
+            assert!(launched(&missing, &mut engine, &held, || {}).is_err());
+
+            let addr = (engine.running())
+                .and_then(RunningEngine::structure_addr)
+                .expect("the structure server bound");
+            let link = EngineLink::new(addr.to_string()).expect("a loopback address");
+            let swapped = swap_instrument(
+                &SwapInstrument {
+                    path: lib.join("groovebox.json").display().to_string(),
+                    expect: None,
+                },
+                link.structure(),
+            )
+            .expect("the swap reached the engine")
+            .output;
+            assert_eq!(swapped.held, None, "nothing is open to hold it for");
+            assert_eq!(held.pending(), None);
+            engine.shutdown();
         });
-        assert!(held.is_some());
     }
 
     #[test]
@@ -526,19 +595,28 @@ mod tests {
     }
 
     #[test]
-    fn no_instrument_starts_no_engine() {
-        let engine = start_nothing(Args::parse_from(["reuben-editor"]));
-        assert!(engine.report().is_empty());
+    fn no_instrument_starts_a_silent_engine() {
+        for args in [
+            &["reuben-editor"][..],
+            &["reuben-editor", "instrument.json"],
+        ] {
+            let (config, engine) = started(args, None);
+            let config = config.expect("an engine starts");
+            assert_eq!(config.instrument, Instrument::Silent, "{args:?}");
+            assert!(engine.report().is_empty());
+        }
     }
 
     #[test]
     fn a_bad_io_map_is_reported_not_started() {
-        let engine = start_nothing(Args::parse_from([
+        let args = [
             "reuben-editor",
             "--io-map",
             "does-not-exist.json",
             "instrument.json",
-        ]));
+        ];
+        let (config, engine) = started(&args, None);
+        assert!(config.is_none());
         assert_eq!(engine.report().len(), 1);
         assert_eq!(engine.report()[0].level, Level::Error);
         assert!(engine.report()[0]

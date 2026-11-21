@@ -15,9 +15,9 @@ use serde_json::Value;
 use crate::authoring::{
     self, edit_summary, hash_instrument, CallKind, Called, Diag, EditResult, Named, Report,
 };
-use crate::resources::{Adapter, ResolveError, Resources, SampleBuffer};
+use crate::resources::{Adapter, Anchored, ResolveError, Resources, SampleBuffer};
 
-use super::super::wire::{Response, SwapReport};
+use super::super::wire::{ChangedBy, Event, Library, LibraryEntry, Response, SwapReport};
 use super::{prepare_recording, went_live, Poisoned, ServerStore, StructureState, Tree, Went};
 
 /// What the document at `origin` reaches, itself included: one load through `store`, building no
@@ -34,25 +34,85 @@ pub(super) fn read_tree(store: &ServerStore, origin: &str) -> Tree {
     Tree::new(log.finish(), store.canonical(origin, None))
 }
 
-/// `store` with the top document's references resolved from `referrer`, as the Coordinator's
-/// `prepare_document_from` resolves them, so a read pass and a prepare record the same sources.
-struct Anchored<'a> {
-    store: &'a dyn Resources,
-    referrer: String,
+/// The instruments the host offers, each read through the store, and the directories it lets a
+/// client create in. Each entry is read under the Coordinator lock of its own, as [`handle_call`]
+/// reads, so a long library never holds an edit back for longer than one entry takes; each leaves
+/// nothing staged. A document that does not read is an entry with `error` set.
+pub(super) fn handle_library(state: &StructureState) -> Response {
+    let open = match state.installed_source() {
+        Ok(source) => source.clone(),
+        Err(poisoned) => return poisoned.into(),
+    };
+    let open = open.as_deref();
+    let mut instruments = Vec::new();
+    for name in state.host.library(open) {
+        match library_entry(state, name) {
+            Ok(entry) => instruments.push(entry),
+            Err(poisoned) => return poisoned.into(),
+        }
+    }
+    Response::Library(Library {
+        instruments,
+        dirs: state.host.creatable(open),
+    })
 }
 
-impl Resources for Anchored<'_> {
-    fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
-        self.store.read_samples(source)
+/// The library entry for `name`, read under the Coordinator lock. No sample is decoded: the entry
+/// carries only the documents its tree reads.
+fn library_entry(state: &StructureState, name: String) -> Result<LibraryEntry, Poisoned> {
+    let _coordinator = state.coordinator()?;
+    let store = NoSamples(&*state.store);
+    let log = state.store.inner().record_reads();
+    if let Ok(text) = store.read_text(&name) {
+        let anchored = Anchored {
+            store: &store,
+            referrer: store.canonical(&name, None),
+        };
+        let _ = load_instrument(&text, &Registry::builtin(), &Adapter(&anchored));
+    }
+    let reads = Tree::new(log.finish(), store.canonical(&name, None))
+        .sources
+        .into_iter()
+        .collect();
+    let read = authoring::read_instrument(
+        &authoring::ReadInstrument {
+            source: name.clone(),
+        },
+        &store,
+    );
+    state.store.inner().discard();
+    let (title, description, error) = match read {
+        Ok(answer) => (
+            Some(answer.output.instrument),
+            answer.output.description,
+            None,
+        ),
+        Err(refusal) => (None, None, Some(refusal.message)),
+    };
+    Ok(LibraryEntry {
+        name,
+        title,
+        description,
+        error,
+        reads,
+    })
+}
+
+/// A store that serves every sample as empty and decodes none: for reading a document only for
+/// what it says of itself and the documents it reaches.
+struct NoSamples<'a>(&'a dyn Resources);
+
+impl Resources for NoSamples<'_> {
+    fn read_samples(&self, _source: &str) -> Result<SampleBuffer, ResolveError> {
+        Ok(SampleBuffer::empty())
     }
 
     fn read_text(&self, source: &str) -> Result<String, ResolveError> {
-        self.store.read_text(source)
+        self.0.read_text(source)
     }
 
     fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
-        self.store
-            .canonical(source, referrer.or(Some(&self.referrer)))
+        self.0.canonical(source, referrer)
     }
 }
 
@@ -368,6 +428,10 @@ fn written_while_silent(
     result.notes.push(format!(
         "written, but {top} still does not load, so nothing plays until it does: {still}"
     ));
+    state.events.publish(Event::Changed {
+        hash: String::new(),
+        by: ChangedBy::Client,
+    });
     state.publish_invalid(errors);
     Response::Called {
         output: edit_output(&result),
@@ -425,12 +489,14 @@ mod tests {
     use alloc::collections::{BTreeMap, BTreeSet};
     use alloc::sync::Arc;
     use core::cell::RefCell;
+    use core::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
     use serde_json::json;
 
     use super::*;
     use crate::authoring::DocumentHistory;
+    use crate::resources::{ResolveError, SampleBuffer};
     use std::sync::mpsc::TryRecvError;
 
     use crate::engine::server::{
@@ -464,6 +530,15 @@ mod tests {
         fn offered(&self, _what: crate::engine::ListWhat, open: Option<&str>) -> Vec<String> {
             vec![open.unwrap_or("<none>").to_string()]
         }
+        fn library(&self, _open: Option<&str>) -> Vec<String> {
+            vec!["top.json".to_string(), "missing.json".to_string()]
+        }
+        fn creatable(&self, _open: Option<&str>) -> Vec<String> {
+            vec!["lib/".to_string()]
+        }
+        fn surface(&self, open: &str) -> Result<Option<String>, String> {
+            Ok(Some(format!("surface of {open}")))
+        }
         fn deliver_control(&self, _: Vec<ControlMessage>) -> Result<(), IngressClosed> {
             Ok(())
         }
@@ -480,7 +555,7 @@ mod tests {
 
     /// An in-memory store whose texts a test reads back to see what was written.
     #[derive(Default)]
-    struct Files(Mutex<BTreeMap<String, String>>);
+    struct Files(Mutex<BTreeMap<String, String>>, AtomicUsize);
 
     impl Files {
         fn get(&self, source: &str) -> Option<String> {
@@ -490,6 +565,7 @@ mod tests {
 
     impl Resources for Files {
         fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+            self.1.fetch_add(1, Ordering::SeqCst);
             Err(ResolveError::NotFound(source.to_string()))
         }
         fn read_text(&self, source: &str) -> Result<String, ResolveError> {
@@ -747,6 +823,29 @@ mod tests {
         assert_eq!(s.files.get("fresh.json"), None);
     }
 
+    #[test]
+    fn a_referenced_document_that_is_missing_is_in_the_tree_and_may_be_created() {
+        let s = confined();
+        // `/extra` references a file that is not there: the load warns and plans without it.
+        let referencing = r#"{"format_version":3,"instrument":"top",
+            "resources":{"v":"v.json","g":"gone.json"},
+            "interface":{"outputs":{"out":{"from":"/voice.out"}}},
+            "nodes":[{"type":"subpatch","address":"/voice","patch":"v"},
+                     {"type":"subpatch","address":"/extra","patch":"g"}]}"#;
+        s.files.write_text("top.json", referencing).unwrap();
+        assert!(s.state.reload().is_some(), "the outside write went live");
+        s.render();
+        assert!(s.state.tree().contains("gone.json"), "{:?}", s.state.tree());
+
+        let (output, _) = call(
+            &s,
+            "new_instrument",
+            json!({"source": "gone.json", "name": "gone"}),
+        );
+        assert_eq!(output["written"], true, "{output}");
+        assert!(s.files.get("gone.json").is_some());
+    }
+
     /// Offers only names starting with `k`, besides the open tree.
     fn offering_only_k() -> Served {
         serving_with(Host {
@@ -851,6 +950,98 @@ mod tests {
     }
 
     #[test]
+    fn library_reads_each_offered_instrument() {
+        let s = serving();
+        let Response::Library(library) = dispatch(&s.state, &Request::Library.to_ndjson()) else {
+            panic!("expected a library");
+        };
+        assert_eq!(library.instruments.len(), 2);
+        let good = &library.instruments[0];
+        assert_eq!(good.name, "top.json");
+        assert!(good.title.is_some() && good.error.is_none(), "{good:?}");
+        assert!(good.reads.iter().any(|r| r.ends_with("v.json")), "{good:?}");
+        assert!(good.reads.iter().any(|r| r == "top.json"), "{good:?}");
+        let broken = &library.instruments[1];
+        assert_eq!(broken.name, "missing.json");
+        assert!(
+            broken.error.is_some() && broken.title.is_none(),
+            "{broken:?}"
+        );
+    }
+
+    #[test]
+    fn a_library_read_decodes_no_sample() {
+        let s = serving();
+        let sampled = r#"{"format_version":3,"instrument":"sampled",
+            "resources":{"k":"k.wav","v":"v.json"},
+            "interface":{"outputs":{"out":{"from":"/voice.out"}}},
+            "nodes":[{"type":"granulator","address":"/g","sample":"k"},
+                     {"type":"subpatch","address":"/voice","patch":"v"}]}"#;
+        s.files.write_text("top.json", sampled).unwrap();
+        let Response::Library(library) = dispatch(&s.state, &Request::Library.to_ndjson()) else {
+            panic!("expected a library");
+        };
+        let entry = &library.instruments[0];
+        assert_eq!(entry.title.as_deref(), Some("sampled"), "{entry:?}");
+        assert!(entry.reads.iter().any(|r| r == "v.json"), "{entry:?}");
+        assert_eq!(s.files.1.load(Ordering::SeqCst), 0, "a sample was read");
+    }
+
+    #[test]
+    fn library_reports_the_hosts_dirs() {
+        let s = serving();
+        let Response::Library(library) = dispatch(&s.state, &Request::Library.to_ndjson()) else {
+            panic!("expected a library");
+        };
+        assert_eq!(library.dirs, ["lib/"]);
+    }
+
+    #[test]
+    fn surface_with_nothing_open_is_none() {
+        let s = serving();
+        let state = s.state.clone().with_installed_source(None);
+        assert_eq!(
+            dispatch(&state, &Request::Surface.to_ndjson()),
+            Response::Surface { text: None }
+        );
+    }
+
+    #[test]
+    fn surface_answers_the_hosts_text() {
+        let s = serving();
+        assert_eq!(
+            dispatch(&s.state, &Request::Surface.to_ndjson()),
+            Response::Surface {
+                text: Some("surface of top.json".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn library_and_surface_round_trip_ndjson() {
+        assert_eq!(Request::Library.to_ndjson(), "{\"verb\":\"library\"}\n");
+        assert_eq!(Request::Surface.to_ndjson(), "{\"verb\":\"surface\"}\n");
+        let line = serde_json::to_string(&Response::Surface { text: None }).unwrap();
+        assert_eq!(line, r#"{"reply":"surface","text":null}"#);
+        let library = Response::Library(crate::engine::Library {
+            instruments: vec![crate::engine::LibraryEntry {
+                name: "a.json".to_string(),
+                title: Some("A".to_string()),
+                description: None,
+                error: None,
+                reads: vec!["a.json".to_string()],
+            }],
+            dirs: vec!["lib/".to_string()],
+        });
+        let line = serde_json::to_string(&library).unwrap();
+        assert_eq!(
+            line,
+            r#"{"reply":"library","instruments":[{"name":"a.json","title":"A","reads":["a.json"]}],"dirs":["lib/"]}"#
+        );
+        assert_eq!(serde_json::from_str::<Response>(&line).unwrap(), library);
+    }
+
+    #[test]
     fn the_initial_install_records_the_open_tree() {
         let s = serving();
         let state = &s.state;
@@ -867,6 +1058,19 @@ mod tests {
         let before = installed_hash(state);
         let (output, _) = call(&s, "describe_instrument", json!({"source": "top.json"}));
         assert!(!output.is_null());
+        assert_eq!(installed_hash(state), before);
+    }
+
+    #[test]
+    fn read_instrument_tree_is_a_read_and_swaps_nothing() {
+        let s = serving();
+        let state = &s.state;
+        let before = installed_hash(state);
+        let (output, _) = call(&s, "read_instrument_tree", json!({"source": "top.json"}));
+        let documents = output["documents"].as_array().expect("documents");
+        assert_eq!(documents.len(), 2, "{output}");
+        assert_eq!(documents[0]["source"], "top.json");
+        assert!(documents[1]["source"].as_str().unwrap().ends_with("v.json"));
         assert_eq!(installed_hash(state), before);
     }
 
@@ -1199,6 +1403,7 @@ mod tests {
             "{output}"
         );
         assert!(s.files.get("nv.json").unwrap().contains("renamed"));
+        assert!(matches!(events.try_recv(), Ok(Event::Changed { .. })));
         assert!(
             matches!(events.try_recv(), Ok(Event::Invalid { errors }) if !errors.is_empty()),
             "an edit that leaves it broken says what is still wrong"
@@ -1206,6 +1411,52 @@ mod tests {
         assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
         assert_eq!(installed_hash(&s.state), "");
         assert_eq!(s.peak(), 0.0);
+    }
+
+    #[test]
+    fn a_write_while_nothing_plays_publishes_changed_then_invalid() {
+        let s = serving();
+        open_report(&s, "nt.json", None);
+        let events = s.state.subscribe();
+        call(
+            &s,
+            "set_instrument_name",
+            json!({"source": "nv.json", "name": "renamed"}),
+        );
+        assert_eq!(
+            events.try_recv(),
+            Ok(Event::Changed {
+                hash: String::new(),
+                by: ChangedBy::Client
+            })
+        );
+        assert!(matches!(events.try_recv(), Ok(Event::Invalid { .. })));
+        assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn a_channel_subscription_over_in_process_sees_an_edit() {
+        let s = serving();
+        let channel = crate::engine::Channel::new(InProcess::new(s.state.clone()));
+        let mut events = channel.subscribe().expect("subscribe");
+        let edited = channel
+            .call(
+                "set_instrument_name",
+                json!({"source": "top.json", "name": "renamed"}),
+            )
+            .expect("call");
+        s.render();
+        assert!(
+            matches!(&edited, crate::engine::CallOutcome::Called { output, .. } if output["written"] == true),
+            "{edited:?}"
+        );
+        assert!(matches!(
+            events.next(),
+            Some(Event::Changed {
+                by: ChangedBy::Client,
+                ..
+            })
+        ));
     }
 
     #[test]

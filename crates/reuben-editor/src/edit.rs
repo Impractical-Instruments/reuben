@@ -6,39 +6,78 @@ pub mod local_copy;
 
 use std::path::Path;
 
-use reuben_api::authoring::{restore_instrument, Answer, EditResult, Refusal, Resources};
-use reuben_api::engine::Channel;
+use reuben_api::authoring::{EditResult, Refusal};
+use reuben_api::engine::{call_tool, CallOutcome, Channel};
+use reuben_api::tools::names;
+use serde::Serialize;
 
 use crate::feedback::Feedback;
 use crate::session::{Direction, Session, Step};
 
-/// Run one authoring verb on the document `source` of the open instrument.
+/// One authoring verb as the server's `call` takes it: the roster name and its arguments.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Verb {
+    pub tool: &'static str,
+    pub args: serde_json::Value,
+}
+
+impl Verb {
+    /// `tool`, named from [`mod@names`], with `args`.
+    pub fn of<A: Serialize>(tool: &'static str, args: &A) -> Verb {
+        Verb {
+            tool,
+            // Every verb's arguments are plain structs with string keys, which always encode.
+            args: serde_json::to_value(args).expect("a verb's arguments encode as JSON"),
+        }
+    }
+}
+
+/// What every edit answers while no engine is running: the server owns the files.
+const NO_ENGINE: &str = "no engine is running, so nothing can be edited";
+
+/// Run one authoring verb on the document `source` of the open instrument, through the running
+/// engine's `call`.
 ///
-/// `verb` is handed the store scoped to that document and the `expect` to pass: the content hash
-/// the session last read for it, so a write made against a view that `reuben-mcp` has since
-/// changed is answered as a conflict instead of landing on a document the user was not looking at.
+/// `verb` is handed the `expect` to pass: the content hash the session last read for the document,
+/// so a write made against a view that `reuben-mcp` has since changed is answered as a conflict
+/// instead of landing on a document the user was not looking at.
 ///
 /// `source` is a document's `source` as the session's tree spells it; any other is refused
-/// without running `verb`, there being no hash to guard the write with.
+/// without running `verb`, there being no hash to guard the write with. With no engine running,
+/// or one that cannot be reached, the edit is refused.
 ///
 /// A change that is written is one undo step, and clears what could be redone.
 ///
-/// The session reads the files again before this returns, so its tree is what the verb left on
-/// disk, written or not, and a written change is already on its way to the engine. The next
-/// [`Session::poll`] reports the reload. An `Ok` whose `written` is false is a rejected edit or a
-/// conflict; its report says which, on the node and port at fault. Either way, and for a verb
-/// that could not run, the session holds the [`Feedback`] until an edit lands.
+/// The session reads the tree from the server again before this returns, so it is what the server
+/// left, written or not. The next [`Session::poll`] reports the reload. An `Ok` whose `written` is
+/// false is a rejected edit or a conflict; its report says which, on the node and port at fault.
+/// Either way, and for a verb that could not run, the session holds the [`Feedback`] until an edit
+/// lands.
 pub fn write(
     session: &mut Session,
     channel: &dyn Fn() -> Option<Channel>,
     source: &str,
-    verb: impl FnOnce(&dyn Resources, Option<String>) -> Result<Answer<EditResult>, Refusal>,
+    verb: impl FnOnce(Option<String>) -> Verb,
 ) -> Result<EditResult, Refusal> {
     let Some(document) = session.tree().document(source) else {
         return not_a_file(session, source);
     };
     let expect = document.hash().map(str::to_string);
     run(session, channel, source, expect, verb)
+}
+
+/// Call `verb` on the running engine's server and read its answer as an edit, recording no undo
+/// step and leaving the session as it is.
+pub fn call(channel: &dyn Fn() -> Option<Channel>, verb: Verb) -> Result<EditResult, Refusal> {
+    let Some(channel) = channel() else {
+        return Err(Refusal {
+            message: NO_ENGINE.to_string(),
+        });
+    };
+    let answer = call_tool(verb.tool, &verb.args, &channel)?;
+    serde_json::from_value(answer.output).map_err(|e| Refusal {
+        message: format!("`{}` answered something other than an edit: {e}", verb.tool),
+    })
 }
 
 fn not_a_file(session: &mut Session, source: &str) -> Result<EditResult, Refusal> {
@@ -49,21 +88,20 @@ fn not_a_file(session: &mut Session, source: &str) -> Result<EditResult, Refusal
     refused
 }
 
-/// Run `verb` on `source` through the session's history store, guarded by `expect`, and record a
-/// written change as one undo step from `expect`.
+/// Call `verb` on the server, guarded by `expect`, and record a written change as one undo step
+/// from `expect`.
 fn run(
     session: &mut Session,
     channel: &dyn Fn() -> Option<Channel>,
     source: &str,
     expect: Option<String>,
-    verb: impl FnOnce(&dyn Resources, Option<String>) -> Result<Answer<EditResult>, Refusal>,
+    verb: impl FnOnce(Option<String>) -> Verb,
 ) -> Result<EditResult, Refusal> {
-    let store: &dyn Resources = session.history(source);
+    let result = call(channel, verb(expect.clone()));
     #[cfg(test)]
-    let counted = test_support::Counted(store);
-    #[cfg(test)]
-    let store: &dyn Resources = &counted;
-    let result = verb(store, expect.clone()).map(|answer| answer.output);
+    if matches!(&result, Ok(edit) if edit.written) {
+        test_support::wrote();
+    }
     *session.feedback_mut() = Feedback::of(source, expect.as_deref(), &result);
     // A written edit landed on `expect`: the guard refuses any other.
     if let (Ok(edit), Some(before)) = (&result, expect) {
@@ -90,14 +128,20 @@ pub enum Restored {
     /// left it. Nothing was written, and the step stays: it lands again if the file returns to
     /// the state the step expects.
     Conflict { step: Step },
-    /// The state the step names no longer validates, a file it references having changed since.
-    /// Nothing was written, and the step stays: it lands again once that file is put back.
+    /// The server would not write the state the step names: it no longer validates, a file it
+    /// references having changed since, or the file could not be written. Nothing was written, and
+    /// the step stays: it lands again once that is put right.
     Rejected { step: Step, result: EditResult },
-    /// The state the step names is no longer held. It, and every step behind it in the same
+    /// The server refused the restore, saying `why`: the state the step names is no longer held,
+    /// or the file no longer reads as a document. It, and every step behind it in the same
     /// direction — `dropped` in all — are gone.
-    Forgotten { step: Step, dropped: usize },
-    /// The restore could not run: the file does not read as a document, or it could not be read
-    /// or written. The step stays, to land once that is put right.
+    Forgotten {
+        step: Step,
+        dropped: usize,
+        why: String,
+    },
+    /// The restore could not reach the server: no engine is running, or it did not answer. The
+    /// step stays, to land once it does.
     Refused { step: Step, why: String },
 }
 
@@ -115,11 +159,15 @@ impl Restored {
                 file_name(&step.source)
             )),
             Restored::Rejected { step, result } => {
-                let mut note = format!(
-                    "Cannot {verb}: {} would not load in that state:",
-                    file_name(&step.source)
-                );
-                for error in result.report.errors.iter().chain(&result.pre_existing) {
+                let errors: Vec<_> = (result.report.errors.iter())
+                    .chain(&result.pre_existing)
+                    .collect();
+                let file = file_name(&step.source);
+                let mut note = match errors.is_empty() {
+                    true => format!("Cannot {verb}: {file} was not written in that state."),
+                    false => format!("Cannot {verb}: {file} would not load in that state:"),
+                };
+                for error in errors {
                     note.push('\n');
                     for at in [&error.node, &error.port].into_iter().flatten() {
                         note.push_str(at);
@@ -127,11 +175,16 @@ impl Restored {
                     }
                     note.push_str(&error.message);
                 }
+                for said in &result.notes {
+                    note.push('\n');
+                    note.push_str(said);
+                }
                 Some(note)
             }
-            Restored::Forgotten { step, dropped } => Some(format!(
-                "Cannot {verb}: that state of {} is no longer kept. {dropped} step(s) dropped.",
-                file_name(&step.source)
+            Restored::Forgotten { step, dropped, why } => Some(format!(
+                "Cannot {verb} {}: {}. {dropped} step(s) dropped.",
+                file_name(&step.source),
+                why.trim_end_matches('.')
             )),
             Restored::Refused { step, why } => {
                 Some(format!("Cannot {verb} {}: {why}", file_name(&step.source)))
@@ -148,9 +201,9 @@ fn file_name(source: &str) -> String {
 }
 
 /// Undo or redo the editor's next step in `direction`: return its file to the state on the far
-/// side of it, guarded by the hash on this side.
+/// side of it, guarded by the hash on this side, through the server's `restore_instrument`.
 ///
-/// The session reads the files again before this returns, as after [`write`](fn@write), and holds
+/// The session reads the tree again before this returns, as after [`write`](fn@write), and holds
 /// the outcome's [`note`](Restored::note) for the window to show.
 pub fn restore(
     session: &mut Session,
@@ -161,32 +214,34 @@ pub fn restore(
         return Restored::Nothing;
     };
     let expect = step.expect(direction).to_string();
-    let restored = match restore_instrument(&step.restore(direction), session.history(&step.source))
-    {
-        Ok(answer) if answer.output.written => {
-            session.undo_mut().crossed(direction);
-            *session.feedback_mut() = None;
-            Restored::Landed
-        }
-        Ok(answer) if answer.output.hash != expect => Restored::Conflict { step },
-        Ok(answer) => Restored::Rejected {
-            step,
-            result: answer.output,
-        },
-        // Only a state the store no longer holds is gone for good; a file that would not read
-        // or write refuses the same way and is worth trying again.
-        Err(refusal) => {
-            let to = step.restore(direction).to;
-            if session.history(&step.source).holds(&step.source, &to) {
-                Restored::Refused {
-                    step,
-                    why: refusal.message,
+    let verb = Verb::of(names::RESTORE_INSTRUMENT, &step.restore(direction));
+    let called = match channel() {
+        None => Err(NO_ENGINE.to_string()),
+        Some(channel) => channel
+            .call(verb.tool, verb.args)
+            .map_err(|why| why.to_string()),
+    };
+    let restored = match called {
+        Ok(CallOutcome::Called { output, .. }) => {
+            match serde_json::from_value::<EditResult>(output) {
+                Ok(result) if result.written => {
+                    session.undo_mut().crossed(direction);
+                    *session.feedback_mut() = None;
+                    Restored::Landed
                 }
-            } else {
-                let dropped = session.undo_mut().forget(direction);
-                Restored::Forgotten { step, dropped }
+                Ok(result) if result.hash != expect => Restored::Conflict { step },
+                Ok(result) => Restored::Rejected { step, result },
+                Err(e) => Restored::Refused {
+                    step,
+                    why: format!("the engine answered something other than an edit: {e}"),
+                },
             }
         }
+        Ok(CallOutcome::Refused(why)) => {
+            let dropped = session.undo_mut().forget(direction);
+            Restored::Forgotten { step, dropped, why }
+        }
+        Err(why) => Restored::Refused { step, why },
     };
     let note = restored.note(direction);
     session.undo_mut().set_note(note);
@@ -202,7 +257,7 @@ pub fn write_against(
     channel: &dyn Fn() -> Option<Channel>,
     source: &str,
     expect: String,
-    verb: impl FnOnce(&dyn Resources, Option<String>) -> Result<Answer<EditResult>, Refusal>,
+    verb: impl FnOnce(Option<String>) -> Verb,
 ) -> Result<EditResult, Refusal> {
     if session.tree().document(source).is_none() {
         return not_a_file(session, source);
@@ -214,59 +269,28 @@ pub fn write_against(
 pub(crate) mod test_support {
     use std::cell::Cell;
 
-    use reuben_api::authoring::{Created, ResolveError, Resources, SampleBuffer};
-
     thread_local! {
         static WRITES: Cell<usize> = const { Cell::new(0) };
     }
 
-    /// How many documents [`write`](super::write) has written on this thread: one per verb call
-    /// that lands, so a gesture making two verb calls shows as two.
+    /// How many edit verbs called through [`write`](super::write) on this thread came back
+    /// written: one per call that lands, so a gesture making two calls shows as two.
     pub fn writes() -> usize {
         WRITES.with(Cell::get)
     }
 
-    /// The session's store, counting what is written through it.
-    pub struct Counted<'a>(pub &'a dyn Resources);
-
-    impl Resources for Counted<'_> {
-        fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
-            self.0.read_samples(source)
-        }
-
-        fn read_text(&self, source: &str) -> Result<String, ResolveError> {
-            self.0.read_text(source)
-        }
-
-        fn write_text(&self, source: &str, text: &str) -> Result<(), ResolveError> {
-            let written = self.0.write_text(source, text);
-            if written.is_ok() {
-                WRITES.with(|w| w.set(w.get() + 1));
-            }
-            written
-        }
-
-        fn create_text(&self, source: &str, text: &str) -> Result<Created, ResolveError> {
-            let created = self.0.create_text(source, text);
-            if matches!(created, Ok(Created::Written)) {
-                WRITES.with(|w| w.set(w.get() + 1));
-            }
-            created
-        }
-
-        fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
-            self.0.canonical(source, referrer)
-        }
+    pub(super) fn wrote() {
+        WRITES.with(|w| w.set(w.get() + 1));
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use reuben_api::authoring::ReadInstrument;
     use reuben_api::authoring::{
-        add_instrument_interface_input, remove_instrument_interface_input,
-        set_instrument_description, set_instrument_input, set_instrument_name,
-        wire_instrument_input, AddInstrumentInterfaceInput, RemoveInstrumentInterfacePipe,
-        SetInstrumentDescription, SetInstrumentInput, SetInstrumentName, WireInstrumentInput,
+        remove_instrument_interface_input, set_instrument_description, set_instrument_name,
+        AddInstrumentInterfaceInput, RemoveInstrumentInterfacePipe, SetInstrumentDescription,
+        SetInstrumentInput, SetInstrumentName, WireInstrumentInput,
     };
     use reuben_api::FsResolver;
     use reuben_native::test_support::within;
@@ -280,8 +304,9 @@ mod tests {
 
     fn set_cutoff(rig: &mut Rig, source: &str, cutoff: f64) -> EditResult {
         let channel = rig.channel_source();
-        write(&mut rig.session, &channel, source, |store, expect| {
-            set_instrument_input(
+        write(&mut rig.session, &channel, source, |expect| {
+            Verb::of(
+                names::SET_INSTRUMENT_INPUT,
                 &SetInstrumentInput {
                     source: source.to_string(),
                     address: "/filter".to_string(),
@@ -289,7 +314,6 @@ mod tests {
                     value: json!(cutoff),
                     expect,
                 },
-                store,
             )
         })
         .expect("the verb ran")
@@ -315,8 +339,9 @@ mod tests {
                 &channel,
                 &voice,
                 before.clone(),
-                |store, expect| {
-                    set_instrument_input(
+                |expect| {
+                    Verb::of(
+                        names::SET_INSTRUMENT_INPUT,
                         &SetInstrumentInput {
                             source: voice.clone(),
                             address: "/filter".to_string(),
@@ -324,7 +349,6 @@ mod tests {
                             value: json!(1500.0),
                             expect,
                         },
-                        store,
                     )
                 },
             )
@@ -341,7 +365,7 @@ mod tests {
     }
 
     #[test]
-    fn an_editor_write_to_a_voice_file_swaps_once_and_not_again_when_the_watcher_reports_it() {
+    fn an_editor_write_to_a_voice_file_is_read_back_before_the_server_says_anything() {
         within(HANG_SECS, || {
             let mut rig = Rig::open("edit_once", "default.json");
             let voice = voice_source(&rig);
@@ -351,14 +375,14 @@ mod tests {
             assert_eq!(
                 rig.session.tree().document(&voice).and_then(|d| d.hash()),
                 Some(edit.hash.as_str()),
-                "the session holds what the verb wrote before the watcher says anything"
+                "the session holds what the verb wrote before the server says anything"
             );
 
-            rig.poll_until("the watcher reporting the editor's own write", |rig| {
-                rig.touches() > 0
-            });
             rig.settle();
-            assert_eq!(rig.swaps(), 1);
+            assert_eq!(
+                rig.session.tree().document(&voice).and_then(|d| d.hash()),
+                Some(edit.hash.as_str()),
+            );
             assert_eq!(rig.status(), &Status::Current);
         });
     }
@@ -406,7 +430,7 @@ mod tests {
             let respelled = voice.replace("default-voice.json", "../voices/default-voice.json");
             assert_ne!(respelled, voice);
             let channel = rig.channel_source();
-            let edit = write(&mut rig.session, &channel, &respelled, |_, _| {
+            let edit = write(&mut rig.session, &channel, &respelled, |_| {
                 panic!("the verb ran with nothing to guard it")
             });
             assert!(edit.is_err(), "{edit:?}");
@@ -421,8 +445,9 @@ mod tests {
             let before = rig.session.tree().clone();
 
             let channel = rig.channel_source();
-            let edit = write(&mut rig.session, &channel, &voice, |store, expect| {
-                set_instrument_input(
+            let edit = write(&mut rig.session, &channel, &voice, |expect| {
+                Verb::of(
+                    names::SET_INSTRUMENT_INPUT,
                     &SetInstrumentInput {
                         source: voice.clone(),
                         address: "/no-such-node".to_string(),
@@ -430,12 +455,10 @@ mod tests {
                         value: json!(1.0),
                         expect,
                     },
-                    store,
                 )
             });
             assert!(!matches!(&edit, Ok(result) if result.written), "{edit:?}");
             rig.settle();
-            assert_eq!(rig.swaps(), 0);
             assert_eq!(rig.session.tree(), &before);
         });
     }
@@ -447,8 +470,9 @@ mod tests {
             let top = rig.session.tree().top().source.clone();
             let channel = rig.channel_source();
             // A note pipe into an audio input: the wire's types do not match.
-            let rejected = write(&mut rig.session, &channel, &top, |store, expect| {
-                wire_instrument_input(
+            let rejected = write(&mut rig.session, &channel, &top, |expect| {
+                Verb::of(
+                    names::WIRE_INSTRUMENT_INPUT,
                     &WireInstrumentInput {
                         source: top.clone(),
                         address: "/out".to_string(),
@@ -456,7 +480,6 @@ mod tests {
                         from: "/notes".to_string(),
                         expect,
                     },
-                    store,
                 )
             });
             assert!(!matches!(&rejected, Ok(result) if result.written));
@@ -484,7 +507,7 @@ mod tests {
             .tree()
             .documents()
             .iter()
-            .find(|d| d.path.ends_with("patches/dj-strip.json"))
+            .find(|d| Path::new(&d.source).ends_with("patches/dj-strip.json"))
             .expect("the subpatch file is in the tree")
             .source
             .clone();
@@ -500,19 +523,16 @@ mod tests {
             .to_string()
     }
 
-    fn edit(
-        rig: &mut Rig,
-        source: &str,
-        verb: impl FnOnce(&dyn Resources, Option<String>) -> Result<Answer<EditResult>, Refusal>,
-    ) {
+    fn edit(rig: &mut Rig, source: &str, verb: impl FnOnce(Option<String>) -> Verb) {
         let channel = rig.channel_source();
         let result = write(&mut rig.session, &channel, source, verb).expect("the verb ran");
         assert!(result.written, "{:?}", result.report);
     }
 
     fn set_trim(rig: &mut Rig, top: &str, trim: f64) {
-        edit(rig, top, |store, expect| {
-            set_instrument_input(
+        edit(rig, top, |expect| {
+            Verb::of(
+                names::SET_INSTRUMENT_INPUT,
                 &SetInstrumentInput {
                     source: top.to_string(),
                     address: "/trim_cv".to_string(),
@@ -520,33 +540,32 @@ mod tests {
                     value: json!(trim),
                     expect,
                 },
-                store,
             )
         });
     }
 
     fn rename(rig: &mut Rig, source: &str, name: &str) {
-        edit(rig, source, |store, expect| {
-            set_instrument_name(
+        edit(rig, source, |expect| {
+            Verb::of(
+                names::SET_INSTRUMENT_NAME,
                 &SetInstrumentName {
                     source: source.to_string(),
                     name: name.to_string(),
                     expect,
                 },
-                store,
             )
         });
     }
 
     fn describe(rig: &mut Rig, source: &str, description: &str) {
-        edit(rig, source, |store, expect| {
-            set_instrument_description(
+        edit(rig, source, |expect| {
+            Verb::of(
+                names::SET_INSTRUMENT_DESCRIPTION,
                 &SetInstrumentDescription {
                     source: source.to_string(),
                     description: Some(description.to_string()),
                     expect,
                 },
-                store,
             )
         });
     }
@@ -561,9 +580,26 @@ mod tests {
         restore(&mut rig.session, &channel, Direction::Redo)
     }
 
-    /// The hashes of the top-level file and the subpatch file, as the session last read them.
+    /// The hashes of the top-level file and the subpatch file, as the session last read them,
+    /// once the server reads each the same.
     fn both(rig: &Rig, top: &str, strip: &str) -> (String, String) {
-        (hash(rig, top), hash(rig, strip))
+        let both = (hash(rig, top), hash(rig, strip));
+        assert_eq!((served(rig, top), served(rig, strip)), both);
+        both
+    }
+
+    /// The content hash of `source` as the server reads it.
+    fn served(rig: &Rig, source: &str) -> String {
+        let read = call_tool(
+            names::READ_INSTRUMENT,
+            &ReadInstrument {
+                source: source.to_string(),
+            },
+            &rig.channel(),
+        )
+        .expect("the server reads it")
+        .output;
+        read["hash"].as_str().expect("a hash").to_string()
     }
 
     #[test]
@@ -598,7 +634,12 @@ mod tests {
 
             rig.settle();
             assert_eq!(rig.status(), &Status::Current);
-            assert_eq!(rig.playing(), hash(&rig, &top), "the engine plays the file");
+            let playing = rig.channel().get_document().expect("the engine answers");
+            assert_eq!(
+                playing.content_hash,
+                hash(&rig, &top),
+                "the engine plays the file"
+            );
         });
     }
 
@@ -622,8 +663,9 @@ mod tests {
             let mut rig = Rig::open("undo_rejected_write", "default.json");
             let voice = voice_source(&rig);
             let channel = rig.channel_source();
-            let rejected = write(&mut rig.session, &channel, &voice, |store, expect| {
-                set_instrument_input(
+            let rejected = write(&mut rig.session, &channel, &voice, |expect| {
+                Verb::of(
+                    names::SET_INSTRUMENT_INPUT,
                     &SetInstrumentInput {
                         source: voice.clone(),
                         address: "/no-such-node".to_string(),
@@ -631,7 +673,6 @@ mod tests {
                         value: json!(1.0),
                         expect,
                     },
-                    store,
                 )
             });
             assert!(!matches!(&rejected, Ok(result) if result.written));
@@ -660,14 +701,14 @@ mod tests {
             let (mut rig, top, _) = drums("undo_guarded_write");
             let theirs = sidecar_describes(&top, "the sidecar's");
             let channel = rig.channel_source();
-            let ours = write(&mut rig.session, &channel, &top, |store, expect| {
-                set_instrument_name(
+            let ours = write(&mut rig.session, &channel, &top, |expect| {
+                Verb::of(
+                    names::SET_INSTRUMENT_NAME,
                     &SetInstrumentName {
                         source: top.clone(),
                         name: "ours".to_string(),
                         expect,
                     },
-                    store,
                 )
             })
             .expect("the verb ran");
@@ -731,8 +772,9 @@ mod tests {
     fn undoing_past_a_conflict_never_strands_the_parent_on_a_subpatch_it_does_not_fit() {
         within(HANG_SECS, || {
             let (mut rig, top, strip) = drums("undo_conflict_parent");
-            edit(&mut rig, &strip, |store, expect| {
-                add_instrument_interface_input(
+            edit(&mut rig, &strip, |expect| {
+                Verb::of(
+                    names::ADD_INSTRUMENT_INTERFACE_INPUT,
                     &AddInstrumentInterfaceInput {
                         source: strip.clone(),
                         name: "drive".to_string(),
@@ -741,12 +783,12 @@ mod tests {
                         expect,
                         ..Default::default()
                     },
-                    store,
                 )
             });
             let strip_with_drive = hash(&rig, &strip);
-            edit(&mut rig, &top, |store, expect| {
-                set_instrument_input(
+            edit(&mut rig, &top, |expect| {
+                Verb::of(
+                    names::SET_INSTRUMENT_INPUT,
                     &SetInstrumentInput {
                         source: top.clone(),
                         address: "/kick_strip".to_string(),
@@ -754,7 +796,6 @@ mod tests {
                         value: json!(0.5),
                         expect,
                     },
-                    store,
                 )
             });
             sidecar_describes(&top, "the sidecar's");
@@ -764,17 +805,16 @@ mod tests {
             assert_eq!(hash(&rig, &strip), strip_with_drive);
             let parent = rig.session.tree().top().read.as_ref().expect("reads");
             assert!(parent.report.ok, "{:?}", parent.report.errors);
-            assert_eq!(rig.session.tree().blocked(), Vec::<String>::new());
+            assert_eq!(rig.session.tree().faults(), Vec::<String>::new());
         });
     }
 
-    /// Four writes to a store that keeps four states: by the last undo, the state before the
-    /// first write has been pushed out.
+    /// Four writes to a server whose history keeps four states: by the last undo, the state
+    /// before the first write has been pushed out.
     #[test]
     fn a_state_evicted_from_the_store_drops_its_step_and_every_step_behind_it() {
         within(HANG_SECS, || {
-            let mut rig = Rig::open("undo_evicted", "default.json");
-            rig.session.keep_states(4);
+            let mut rig = Rig::keeping("undo_evicted", "default.json", 4);
             let voice = voice_source(&rig);
             let mut states = vec![hash(&rig, &voice)];
             for cutoff in [900.0, 1000.0, 1100.0, 1200.0] {
@@ -787,10 +827,14 @@ mod tests {
                 assert_eq!(&hash(&rig, &voice), state);
             }
             let refused = undo(&mut rig);
-            assert!(
-                matches!(&refused, Restored::Forgotten { dropped: 1, .. }),
-                "{refused:?}"
-            );
+            let Restored::Forgotten {
+                dropped: 1, why, ..
+            } = &refused
+            else {
+                panic!("{refused:?}");
+            };
+            assert!(!why.is_empty());
+            assert!(rig.session.undo().note().unwrap().contains(why.as_str()));
             assert_eq!(hash(&rig, &voice), states[1], "nothing written");
             assert!(matches!(undo(&mut rig), Restored::Nothing));
             assert!(rig.session.undo().note().is_some());
@@ -816,8 +860,8 @@ mod tests {
                 .session
                 .tree()
                 .document(&strip)
+                .map(|d| Path::new(&d.source))
                 .unwrap()
-                .path
                 .parent()
                 .unwrap()
                 .to_path_buf();
@@ -826,9 +870,14 @@ mod tests {
             mode(0o555).unwrap();
             let refused = undo(&mut rig);
             mode(0o755).unwrap();
-            assert!(matches!(&refused, Restored::Refused { .. }), "{refused:?}");
+            assert!(matches!(&refused, Restored::Rejected { .. }), "{refused:?}");
             assert_eq!(hash(&rig, &strip), renamed);
-            assert!(rig.session.undo().note().is_some());
+            let note = rig.session.undo().note().expect("a note");
+            assert!(!note.trim_end().ends_with(':'), "{note:?} {refused:?}");
+            assert!(
+                note.contains("could not be written"),
+                "{note:?} {refused:?}"
+            );
 
             assert!(matches!(undo(&mut rig), Restored::Landed));
             assert_eq!(hash(&rig, &strip), original);
@@ -837,6 +886,68 @@ mod tests {
                 "the step behind it is kept"
             );
         });
+    }
+
+    #[test]
+    fn a_rejected_restore_with_no_errors_still_says_why() {
+        let step = Step {
+            source: "/lib/pad.json".to_string(),
+            before: "a".to_string(),
+            after: "b".to_string(),
+        };
+        let result = EditResult {
+            report: reuben_api::authoring::Report {
+                ok: false,
+                errors: Vec::new(),
+                warnings: Vec::new(),
+            },
+            pre_existing: Vec::new(),
+            written: false,
+            hash: "b".to_string(),
+            notes: vec!["pad.json could not be written; nothing was written".to_string()],
+            zoom: String::new(),
+        };
+        let note = (Restored::Rejected {
+            step: step.clone(),
+            result: result.clone(),
+        })
+        .note(Direction::Undo)
+        .expect("a note");
+        assert_eq!(
+            note,
+            "Cannot undo: pad.json was not written in that state.\n\
+             pad.json could not be written; nothing was written"
+        );
+        let silent = EditResult {
+            notes: Vec::new(),
+            ..result
+        };
+        let note = (Restored::Rejected {
+            step,
+            result: silent,
+        })
+        .note(Direction::Redo)
+        .expect("a note");
+        assert_eq!(note, "Cannot redo: pad.json was not written in that state.");
+    }
+
+    #[test]
+    fn a_forgotten_step_says_what_the_server_said() {
+        let note = (Restored::Forgotten {
+            step: Step {
+                source: "/lib/pad.json".to_string(),
+                before: "a".to_string(),
+                after: "b".to_string(),
+            },
+            dropped: 2,
+            why: "pad.json is not a document".to_string(),
+        })
+        .note(Direction::Undo)
+        .expect("a note");
+        assert_eq!(
+            note,
+            "Cannot undo pad.json: pad.json is not a document. 2 step(s) dropped."
+        );
     }
 
     #[test]
@@ -874,23 +985,139 @@ mod tests {
         });
     }
 
+    /// The server refuses to restore a file that no longer reads as a document, and a refused
+    /// restore forgets the stack behind it.
     #[test]
-    fn a_file_that_does_not_read_keeps_its_step_until_it_is_repaired() {
+    fn a_file_that_does_not_read_refuses_the_undo_and_forgets_the_stack() {
         within(HANG_SECS, || {
-            let (mut rig, _, strip) = drums("undo_unreadable");
-            let original = hash(&rig, &strip);
+            let (mut rig, top, strip) = drums("undo_unreadable");
+            set_trim(&mut rig, &top, 0.5);
             rename(&mut rig, &strip, "renamed-strip");
-            let path = rig.session.tree().document(&strip).unwrap().path.clone();
-            let good = std::fs::read_to_string(&path).unwrap();
+            let path = std::path::PathBuf::from(&strip);
 
             std::fs::write(&path, "{ not an instrument").unwrap();
             let refused = undo(&mut rig);
-            assert!(matches!(&refused, Restored::Refused { .. }), "{refused:?}");
-            assert!(rig.session.undo().next(Direction::Undo).is_some());
+            let Restored::Forgotten {
+                dropped: 2, why, ..
+            } = &refused
+            else {
+                panic!("{refused:?}");
+            };
+            let note = rig.session.undo().note().expect("a note");
+            assert!(!why.is_empty() && note.contains(why.as_str()), "{note}");
+            assert!(!note.contains("no longer kept"), "{note}");
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                "{ not an instrument",
+                "nothing written"
+            );
+            assert!(matches!(undo(&mut rig), Restored::Nothing));
+        });
+    }
 
-            std::fs::write(&path, good).unwrap();
+    #[test]
+    fn an_edit_with_no_engine_is_refused_and_writes_nothing() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("edit_no_engine", "default.json");
+            let voice = voice_source(&rig);
+            let before = hash(&rig, &voice);
+            let edit = write(&mut rig.session, &|| None, &voice, |expect| {
+                Verb::of(
+                    names::SET_INSTRUMENT_NAME,
+                    &SetInstrumentName {
+                        source: voice.clone(),
+                        name: "unwritten".to_string(),
+                        expect,
+                    },
+                )
+            });
+            let refusal = edit.expect_err("nothing can be edited");
+            assert_eq!(refusal.message, NO_ENGINE);
+            assert!(
+                matches!(rig.session.feedback(), Some(Feedback::Refused { .. })),
+                "{:?}",
+                rig.session.feedback()
+            );
+            assert_eq!(served(&rig, &voice), before, "nothing written");
+            assert!(matches!(undo(&mut rig), Restored::Nothing));
+        });
+    }
+
+    #[test]
+    fn an_edit_against_a_stale_view_is_a_conflict() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("edit_stale_view", "default.json");
+            let voice = voice_source(&rig);
+            let viewed = hash(&rig, &voice);
+
+            // Another client of the same server, which the session has not heard from.
+            let theirs = call_tool(
+                names::SET_INSTRUMENT_NAME,
+                &SetInstrumentName {
+                    source: voice.clone(),
+                    name: "renamed-by-another-client".to_string(),
+                    expect: None,
+                },
+                &rig.channel(),
+            )
+            .expect("the server ran it")
+            .output;
+            let theirs: EditResult = serde_json::from_value(theirs).expect("an edit");
+            assert!(theirs.written, "{:?}", theirs.report);
+            assert_eq!(hash(&rig, &voice), viewed, "the view is stale");
+
+            let ours = set_cutoff(&mut rig, &voice, 1200.0);
+            assert!(!ours.written, "{:?}", ours.report);
+            assert_eq!(ours.hash, theirs.hash, "nothing of ours landed");
+            assert_eq!(served(&rig, &voice), theirs.hash);
+            assert_eq!(
+                rig.session.feedback(),
+                Some(&Feedback::Conflict {
+                    source: voice.clone()
+                })
+            );
+            assert_eq!(hash(&rig, &voice), theirs.hash, "the view catches up");
+            assert!(matches!(undo(&mut rig), Restored::Nothing));
+        });
+    }
+
+    /// A server whose history keeps one state holds only the newest side of an edit, so the state
+    /// an undo returns to is already gone.
+    #[test]
+    fn undo_of_an_evicted_state_forgets_the_stack() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::keeping("undo_evicted_one", "default.json", 1);
+            let voice = voice_source(&rig);
+            assert!(set_cutoff(&mut rig, &voice, 900.0).written);
+            assert!(set_cutoff(&mut rig, &voice, 1000.0).written);
+            let after = hash(&rig, &voice);
+
+            let refused = undo(&mut rig);
+            let Restored::Forgotten {
+                dropped: 2, why, ..
+            } = &refused
+            else {
+                panic!("{refused:?}");
+            };
+            assert!(!why.is_empty());
+            assert!(rig.session.undo().note().unwrap().contains(why.as_str()));
+            assert_eq!(served(&rig, &voice), after, "nothing written");
+            assert!(matches!(undo(&mut rig), Restored::Nothing));
+        });
+    }
+
+    #[test]
+    fn an_undo_with_no_engine_keeps_every_step() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("undo_no_engine", "default.json");
+            let voice = voice_source(&rig);
+            assert!(set_cutoff(&mut rig, &voice, 900.0).written);
+            let after = hash(&rig, &voice);
+
+            let refused = restore(&mut rig.session, &|| None, Direction::Undo);
+            assert!(matches!(&refused, Restored::Refused { .. }), "{refused:?}");
+            assert_eq!(served(&rig, &voice), after, "nothing written");
             assert!(matches!(undo(&mut rig), Restored::Landed));
-            assert_eq!(hash(&rig, &strip), original);
         });
     }
 }

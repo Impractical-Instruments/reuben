@@ -57,7 +57,7 @@ use super::channel::Transport;
 use super::events::{Bus, Subscription};
 
 mod call;
-use call::{diag, handle_call, read_tree};
+use call::{diag, handle_call, handle_library, read_tree};
 
 use super::wire::{
     over_long_batch_refusal, over_long_probe_set_refusal, ChangedBy, Conflict, ControlMessage,
@@ -109,9 +109,30 @@ pub trait EngineHost: Send + Sync {
         Vec::new()
     }
 
+    /// The instruments a start screen offers, for [`Request::Library`]: names a [`Request::Open`]
+    /// accepts. `open` is the source of the instrument now playing, when there is one. Defaults to
+    /// nothing.
+    fn library(&self, _open: Option<&str>) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// The directories [`Library::dirs`](super::wire::Library::dirs) reports, where a client may create an instrument. `open`
+    /// is as for [`library`](Self::library). Defaults to nothing.
+    fn creatable(&self, _open: Option<&str>) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// The text of the surface document of `open`, the source of the instrument now playing, or
+    /// `None` when it has none. `Err` is a surface that exists and cannot be read. Defaults to
+    /// `Ok(None)`.
+    fn surface(&self, _open: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+
     /// Whether a client may name `name`, a source as the store reads it, in `open` or in a `call`
     /// that reads or creates it. `open` is the source of the instrument now playing, when there is
-    /// one. A document in the open instrument's own tree is always nameable; this decides the rest.
+    /// one. A document in the open instrument's own tree is always nameable, one it references and
+    /// could not read included; this decides the rest.
     ///
     /// Defaults to `true`: a store that is not a filesystem has nothing to confine. A host over a
     /// filesystem overrides it to keep a client to what [`offered`](Self::offered) lists.
@@ -189,8 +210,8 @@ pub struct StructureState {
     /// together) and read beside it — no path takes this lock first, so the ordering cannot invert.
     installed_source: Arc<Mutex<Option<String>>>,
     store: Arc<ServerStore>,
-    /// What the last successful install read: the documents an edit may touch. Written only under
-    /// the Coordinator lock, as `installed_source` is.
+    /// What the last successful install read or referenced: the documents an edit may touch.
+    /// Written only under the Coordinator lock, as `installed_source` is.
     tree: Arc<Mutex<Tree>>,
     /// Set by [`close`](StructureState::close) when the host tears the engine down.
     closed: Arc<AtomicBool>,
@@ -204,9 +225,11 @@ pub struct StructureState {
     silent: Arc<AtomicBool>,
 }
 
-/// What plays while the open instrument does not load: one output channel that is always zero.
-/// Installed by value through the ordinary swap, so the render side sees nothing new.
-const SILENCE: &str = r#"{"format_version":3,"instrument":"silence",
+/// What plays while the open instrument does not load, or while nothing is open: one output
+/// channel that is always zero. Installed by value through the ordinary swap, so the render side
+/// sees nothing new. A host starting with nothing open builds its Coordinator from it and marks the
+/// state [`with_nothing_open`](StructureState::with_nothing_open).
+pub const SILENCE: &str = r#"{"format_version":3,"instrument":"silence",
     "interface":{"outputs":{"out":{"from":"/silence.audio"}}},
     "nodes":[{"type":"output","address":"/silence"}]}"#;
 
@@ -397,8 +420,9 @@ impl StructureState {
         self.events.subscribers()
     }
 
-    /// The canonical sources the last successful install read, the top document's included. An
-    /// edit to any other source is refused.
+    /// The canonical sources the last successful install asked its store for, the top document's
+    /// included: those it read, and those it referenced and could not read, so a document that is
+    /// missing stays one of the instrument's. An edit to any other source is refused.
     pub fn tree(&self) -> BTreeSet<String> {
         self.tree
             .lock()
@@ -468,6 +492,19 @@ impl StructureState {
         };
         self.tree = Arc::new(Mutex::new(tree));
         self.installed_source = Arc::new(Mutex::new(source));
+        self
+    }
+
+    /// Start with nothing open and nothing playing, the Coordinator having been built from
+    /// [`SILENCE`]: every answer reports the empty content hash, `get_document` a `null` document
+    /// and no source, and an edit is refused until an `open` names an instrument.
+    ///
+    /// A builder step, like [`with_installed_source`](Self::with_installed_source), so the
+    /// "only ever written under the Coordinator lock" invariant on the flag has no exception.
+    pub fn with_nothing_open(mut self) -> Self {
+        self.silent = Arc::new(AtomicBool::new(true));
+        self.installed_source = Arc::new(Mutex::new(None));
+        self.tree = Arc::new(Mutex::new(Tree::default()));
         self
     }
 }
@@ -555,6 +592,8 @@ fn serve(state: &StructureState, request: Request, caller: Caller) -> Response {
         Request::Call { tool, args } => handle_call(state, &tool, args),
         Request::Open { name, expect } => handle_open(state, name, expect, caller),
         Request::List { what } => handle_list(state, what),
+        Request::Library => handle_library(state),
+        Request::Surface => handle_surface(state),
         Request::Subscribe => Response::Error {
             message: UNSTREAMED_SUBSCRIBE.to_string(),
         },
@@ -647,6 +686,12 @@ impl Transport for InProcess {
     fn endpoint(&self) -> &str {
         IN_PROCESS_ENDPOINT
     }
+
+    fn subscribe(
+        &self,
+    ) -> std::io::Result<Box<dyn Iterator<Item = std::io::Result<Event>> + Send>> {
+        Ok(Box::new(self.state.subscribe().into_iter().map(Ok)))
+    }
 }
 
 /// What [`InProcess::endpoint`] reports: not an address, since nothing is dialed.
@@ -727,10 +772,11 @@ fn handle_swap(
     caller: Caller,
 ) -> Response {
     // Name the source before resolving consumes it — recorded only if the install below succeeds, so
-    // a rejected swap leaves `get_document` still naming what is actually playing. An install by
-    // value has no source to name.
+    // a rejected swap leaves `get_document` still naming what is actually playing. Named by its
+    // origin, not the client's spelling, so every client that hears of it names the same document.
+    // An install by value has no source to name.
     let installed_from = match &source {
-        DocSource::Path(path) => Some(path.clone()),
+        DocSource::Path(path) => Some(state.host.document_origin(path)),
         DocSource::Document(_) => None,
     };
 
@@ -977,11 +1023,12 @@ fn handle_open(
             )
         }
     };
+    // By its origin, as a swap is, so the `Opened` every client hears names one spelling.
     install_from(
         state,
         &mut coordinator,
         &json,
-        Some(name),
+        Some(origin),
         expect,
         caller,
         Went::Opened,
@@ -1009,10 +1056,26 @@ fn handle_list(state: &StructureState, what: ListWhat) -> Response {
     }
 }
 
-/// The documents an install read.
+/// The open instrument's surface document, as the host reads it.
+fn handle_surface(state: &StructureState) -> Response {
+    let open = match state.installed_source() {
+        Ok(source) => source.clone(),
+        Err(poisoned) => return poisoned.into(),
+    };
+    let Some(open) = open else {
+        return Response::Surface { text: None };
+    };
+    match state.host.surface(&open) {
+        Ok(text) => Response::Surface { text },
+        Err(message) => Response::Error { message },
+    }
+}
+
+/// The documents an install read, or referenced and could not read.
 #[derive(Default)]
 struct Tree {
-    /// Every canonical source the load read, the top document's included.
+    /// Every canonical source the load asked for, the top document's included, whether or not it
+    /// could be read.
     sources: BTreeSet<String>,
     /// The texts of the documents the top one reaches, without the top one's: the installed
     /// content hash already says whether that one changed, and leaving it out keeps a top document
@@ -1173,7 +1236,7 @@ fn rejected_report(
 }
 
 /// Make `report`, which installed nothing, name what plays: the playing hash and, while nothing
-/// plays, a warning naming the instrument still open, so a reader does not take the empty hash
+/// plays, a warning naming the instrument still open (or saying none is), so a reader does not take the empty hash
 /// for the refused request's own load failing. `went` is the request that installed nothing.
 /// Called under the Coordinator lock.
 fn installed_nothing(
@@ -1186,22 +1249,21 @@ fn installed_nothing(
     if !state.is_silent() {
         return;
     }
-    let open = state
-        .installed_source()
-        .ok()
-        .and_then(|open| open.clone())
-        .unwrap_or_default();
+    let what = match went {
+        Went::Opened | Went::OpenedSilent => "opened",
+        Went::Swapped => "swapped in",
+        Went::Edited | Went::Outside => "installed",
+    };
+    let message = match state.installed_source().ok().and_then(|open| open.clone()) {
+        Some(open) => {
+            format!("nothing was {what}; {open} is still open but does not load, so nothing plays")
+        }
+        None => format!("nothing was {what}; nothing is open, so nothing plays"),
+    };
     report.report.warnings.push(Diag {
         node: None,
         port: None,
-        message: format!(
-            "nothing was {}; {open} is still open but does not load, so nothing plays",
-            match went {
-                Went::Opened | Went::OpenedSilent => "opened",
-                Went::Swapped => "swapped in",
-                Went::Edited | Went::Outside => "installed",
-            }
-        ),
+        message,
     });
 }
 

@@ -3272,7 +3272,6 @@ dependencies = [
  "clap",
  "eframe",
  "egui_kittest",
- "notify",
  "reuben-api",
  "reuben-mcp",
  "reuben-native",

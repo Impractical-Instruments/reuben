@@ -121,7 +121,7 @@ impl AudioSettings {
         &mut self,
         choice: AudioChoice,
         engine: &mut Engine,
-        start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
+        start: impl FnMut(EngineConfig) -> Result<RunningEngine, StartError>,
     ) {
         self.warnings.clear();
         self.io_map = None;
@@ -179,7 +179,7 @@ impl AudioSettings {
     fn refresh_with(
         &mut self,
         engine: &mut Engine,
-        start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
+        start: impl FnMut(EngineConfig) -> Result<RunningEngine, StartError>,
     ) {
         self.refresh();
         let back = self.fell_back
@@ -618,7 +618,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_switch_whose_restart_cannot_rebind_a_port_is_reported_and_the_next_switch_recovers() {
+    fn a_switch_whose_restart_cannot_rebind_a_port_runs_without_it_says_why_and_the_next_recovers()
+    {
         within(HANG_SECS, || {
             let temp = TempConfig::new();
             let mut settings = AudioSettings::load_with(temp.dir(), two_devices);
@@ -638,10 +639,14 @@ pub(crate) mod tests {
             // process taking it in the gap.
             let mut squatter = None;
             settings.select_with(usb_audio(), &mut engine, |config| {
-                squatter = Some(UdpSocket::bind(addr.as_str()).expect("the port was freed"));
+                squatter.get_or_insert_with(|| {
+                    UdpSocket::bind(addr.as_str()).expect("the port was freed")
+                });
                 start_headless(config)
             });
-            assert!(engine.running().is_none());
+            let running = engine.running().expect("the server runs without OSC-in");
+            assert_eq!(running.osc_in_addr(), None);
+            assert_eq!(playing(&engine), before);
             let errors: Vec<_> = engine
                 .report()
                 .iter()
@@ -655,6 +660,11 @@ pub(crate) mod tests {
             settings.select_with(AudioChoice::default(), &mut engine, start_headless);
             assert_eq!(engine.profile(), Some(&DeviceProfile::default()));
             assert_eq!(playing(&engine), before);
+            assert_eq!(
+                (engine.running()).and_then(|running| running.osc_in_addr()),
+                Some(addr.parse().unwrap()),
+                "OSC-in is asked for again"
+            );
             engine.shutdown();
         });
     }

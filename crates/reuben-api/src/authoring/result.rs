@@ -234,6 +234,27 @@ pub struct InstrumentStructure {
     pub report: Report,
 }
 
+/// One document of an instrument's tree, as `read_instrument_tree` found it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TreeDocument {
+    /// What names this document to a verb: the `source` asked for, for the top document, and the
+    /// referencing resource's `canonical` for every other.
+    pub source: String,
+    /// The document as read; absent when it could not be read, with `error` saying why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structure: Option<InstrumentStructure>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// What `read_instrument_tree` answers: the top document and every document it reaches through a
+/// `voice` or `patch` resource, the top first, then breadth-first, each source once. A document
+/// that cannot be read is an entry with `error` set, and nothing is read beneath it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct InstrumentTree {
+    pub documents: Vec<TreeDocument>,
+}
+
 /// One node of a document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct StructureNode {

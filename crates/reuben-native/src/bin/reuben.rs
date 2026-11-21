@@ -585,6 +585,7 @@ fn play(path: Option<PathBuf>, flags: EngineFlags, root: Option<PathBuf>) -> Exi
     match &config.instrument {
         Instrument::Path(path) => println!("instrument: {}", path.display()),
         Instrument::Default => println!("instrument: <default> (pass a path to load your own)"),
+        Instrument::Silent => println!("instrument: none"),
     }
     match &config.instrument_root {
         Some(root) => println!("library: {}", root.display()),

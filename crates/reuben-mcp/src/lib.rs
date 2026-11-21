@@ -1101,6 +1101,8 @@ mod tests {
                 Request::SetProbes { .. }
                 | Request::Swap { .. }
                 | Request::List { .. }
+                | Request::Library
+                | Request::Surface
                 | Request::Subscribe => {
                     unreachable!("no tool sends it")
                 }

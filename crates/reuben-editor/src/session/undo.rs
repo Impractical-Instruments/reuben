@@ -1,6 +1,6 @@
 //! The editor's undo and redo stacks: each entry is one write the editor made, named by the file it
 //! went to and the content hashes on either side of it. No document text is held here; the texts
-//! behind the hashes stay in the store `reuben-api` keeps for each file.
+//! behind the hashes stay in the engine server's history.
 
 use reuben_api::authoring::RestoreInstrument;
 

@@ -46,7 +46,7 @@ pub mod wire;
 
 pub use args::*;
 pub use channel::{
-    unanswered, CallOutcome, Channel, ChannelError, SwapOutcome, Transport, Unanswered,
+    unanswered, CallOutcome, Channel, ChannelError, Events, SwapOutcome, Transport, Unanswered,
 };
 pub use events::{Bus, Subscription};
 pub use prose::ENGINE_UNREACHABLE_GUIDANCE;
@@ -56,7 +56,7 @@ pub use result::{
 };
 pub use server::{
     dispatch, dispatch_request, EngineHost, InProcess, IngressClosed, Installed, ServerStore,
-    StructureState, SwapInFlight, COORDINATOR_POISONED, IN_PROCESS_ENDPOINT,
+    StructureState, SwapInFlight, COORDINATOR_POISONED, IN_PROCESS_ENDPOINT, SILENCE,
 };
 
 /// The single-writer graph owner an [`StructureState`] serves. The engine's type, re-exported because
@@ -77,10 +77,10 @@ pub use tcp::{TcpTransport, DEFAULT_CONNECT_TIMEOUT};
 pub use verbs::*;
 pub use wire::{
     read_ndjson_line, ChangedBy, ChannelLevel, Conflict, ControlArg, ControlMessage,
-    DiagnosticsReport, DiffSummary, DocSource, DocumentSnapshot, Event, HeldSwap, ListWhat,
-    MetersReport, PortLevel, ProbeLevels, Request, Response, SwapReport, DEFAULT_STRUCTURE_ADDR,
-    MAX_LINE_BYTES, MAX_PROBES, MAX_SEND_BATCH, METER_CEILING_DBFS, METER_FLOOR_DBFS,
-    PEAK_FALL_DB_PER_SEC, RMS_WINDOW_SECS,
+    DiagnosticsReport, DiffSummary, DocSource, DocumentSnapshot, Event, HeldSwap, Library,
+    LibraryEntry, ListWhat, MetersReport, PortLevel, ProbeLevels, Request, Response, SwapReport,
+    DEFAULT_STRUCTURE_ADDR, MAX_LINE_BYTES, MAX_PROBES, MAX_SEND_BATCH, METER_CEILING_DBFS,
+    METER_FLOOR_DBFS, PEAK_FALL_DB_PER_SEC, RMS_WINDOW_SECS,
 };
 
 /// Build the [`Coordinator`] + [`RenderSide`](crate::render::RenderSide) pair for `doc_json`, at

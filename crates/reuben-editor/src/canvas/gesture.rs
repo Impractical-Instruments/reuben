@@ -1,17 +1,16 @@
 //! What a finished gesture on the canvas asks of the document, and the one authoring verb each is.
 
 use reuben_api::authoring::{
-    add_instrument_node, remove_instrument_interface_input, remove_instrument_interface_output,
-    remove_instrument_node, rename_instrument_node, set_instrument_layout, unwire_instrument_input,
-    wire_instrument_input, wire_instrument_interface_output, AddInstrumentNode, EditResult,
-    LayoutPosition, LayoutTarget, OutputTarget, Refusal, RemoveInstrumentInterfacePipe,
-    RemoveInstrumentNode, RenameInstrumentNode, SetInstrumentLayout, UnwireInstrumentInput,
-    WireInstrumentInput, WireInstrumentInterfaceOutput, WireSource, WireTarget,
+    AddInstrumentNode, EditResult, LayoutPosition, LayoutTarget, OutputTarget, Refusal,
+    RemoveInstrumentInterfacePipe, RemoveInstrumentNode, RenameInstrumentNode, SetInstrumentLayout,
+    UnwireInstrumentInput, WireInstrumentInput, WireInstrumentInterfaceOutput, WireSource,
+    WireTarget,
 };
 use reuben_api::engine::Channel;
+use reuben_api::tools::names;
 
 use super::graph::{Graph, Item, PortRef};
-use crate::edit;
+use crate::edit::{self, Verb};
 use crate::session::Session;
 
 /// One edit of the document the session views.
@@ -62,18 +61,19 @@ impl Gesture {
         channel: &dyn Fn() -> Option<Channel>,
     ) -> Result<EditResult, Refusal> {
         let source = session.viewed().source.clone();
-        edit::write(session, channel, &source, |store, expect| {
+        edit::write(session, channel, &source, |expect| {
             let source = source.clone();
             match self.clone() {
-                Gesture::Move(positions) => set_instrument_layout(
+                Gesture::Move(positions) => Verb::of(
+                    names::SET_INSTRUMENT_LAYOUT,
                     &SetInstrumentLayout {
                         source,
                         positions,
                         expect,
                     },
-                    store,
                 ),
-                Gesture::Add { address, type_name } => add_instrument_node(
+                Gesture::Add { address, type_name } => Verb::of(
+                    names::ADD_INSTRUMENT_NODE,
                     &AddInstrumentNode {
                         source,
                         address,
@@ -81,30 +81,30 @@ impl Gesture {
                         expect,
                         ..Default::default()
                     },
-                    store,
                 ),
-                Gesture::Remove { address } => remove_instrument_node(
+                Gesture::Remove { address } => Verb::of(
+                    names::REMOVE_INSTRUMENT_NODE,
                     &RemoveInstrumentNode {
                         source,
                         address,
                         expect,
                     },
-                    store,
                 ),
-                Gesture::Rename { from, to } => rename_instrument_node(
+                Gesture::Rename { from, to } => Verb::of(
+                    names::RENAME_INSTRUMENT_NODE,
                     &RenameInstrumentNode {
                         source,
                         from,
                         to,
                         expect,
                     },
-                    store,
                 ),
                 Gesture::Wire {
                     address,
                     input,
                     from,
-                } => wire_instrument_input(
+                } => Verb::of(
+                    names::WIRE_INSTRUMENT_INPUT,
                     &WireInstrumentInput {
                         source,
                         address,
@@ -112,41 +112,40 @@ impl Gesture {
                         from,
                         expect,
                     },
-                    store,
                 ),
-                Gesture::Unwire { address, input } => unwire_instrument_input(
+                Gesture::Unwire { address, input } => Verb::of(
+                    names::UNWIRE_INSTRUMENT_INPUT,
                     &UnwireInstrumentInput {
                         source,
                         address,
                         input,
                         expect,
                     },
-                    store,
                 ),
-                Gesture::Feed { name, from } => wire_instrument_interface_output(
+                Gesture::Feed { name, from } => Verb::of(
+                    names::WIRE_INSTRUMENT_INTERFACE_OUTPUT,
                     &WireInstrumentInterfaceOutput {
                         source,
                         name,
                         from,
                         expect,
                     },
-                    store,
                 ),
-                Gesture::RemoveInput { name } => remove_instrument_interface_input(
+                Gesture::RemoveInput { name } => Verb::of(
+                    names::REMOVE_INSTRUMENT_INTERFACE_INPUT,
                     &RemoveInstrumentInterfacePipe {
                         source,
                         name,
                         expect,
                     },
-                    store,
                 ),
-                Gesture::RemoveOutput { name } => remove_instrument_interface_output(
+                Gesture::RemoveOutput { name } => Verb::of(
+                    names::REMOVE_INSTRUMENT_INTERFACE_OUTPUT,
                     &RemoveInstrumentInterfacePipe {
                         source,
                         name,
                         expect,
                     },
-                    store,
                 ),
             }
         })
@@ -271,9 +270,8 @@ pub fn typed_address(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use reuben_api::authoring::{
-        set_instrument_name, validate_instrument, SetInstrumentName, ValidateInstrument,
-    };
+    use reuben_api::authoring::{set_instrument_name, SetInstrumentName, ValidateInstrument};
+    use reuben_api::engine::call_tool;
     use reuben_api::FsResolver;
     use reuben_native::test_support::within;
 
@@ -335,7 +333,6 @@ mod tests {
     /// Make `gesture` and wait until the engine plays what it wrote: one write, one Swap, and a
     /// file that validates.
     fn step(rig: &mut Rig, gesture: Gesture) {
-        let before = rig.swaps();
         let written_before = writes();
         let channel = rig.channel_source();
         let result = gesture
@@ -344,19 +341,17 @@ mod tests {
         assert!(result.written, "{gesture:?}: {:?}", result.report);
         assert_eq!(writes() - written_before, 1, "{gesture:?} made one write");
         let source = rig.top.display().to_string();
-        let valid = validate_instrument(
-            &ValidateInstrument {
-                source: source.clone(),
-            },
-            rig.session.history(&source),
+        let valid = call_tool(
+            names::VALIDATE_INSTRUMENT,
+            &ValidateInstrument { source },
+            &rig.channel(),
         )
-        .expect("the file reads")
+        .expect("the server reads the file")
         .output;
-        assert!(valid.ok, "{gesture:?} left {valid:?}");
+        assert_eq!(valid["ok"], true, "{gesture:?} left {valid}");
         let hash = result.hash.clone();
         rig.poll_until("the engine playing the edit", |rig| rig.playing() == hash);
         rig.settle();
-        assert_eq!(rig.swaps(), before + 1, "{gesture:?}");
         assert_eq!(rig.status(), &Status::Current, "{gesture:?}");
     }
 
@@ -435,14 +430,18 @@ mod tests {
             rig.session
                 .enter("/kick_v")
                 .expect("/kick_v voices kick-voice");
-            assert_eq!(rig.session.viewed().path, voice);
+            assert!(crate::session::test_support::names(
+                &rig.session.viewed().source,
+                &voice
+            ));
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-            while rig.session.users() == Some(&Listing::Checking) {
+            let channel = rig.channel_source();
+            while rig.session.users(&channel) == Some(&Listing::Checking) {
                 assert!(std::time::Instant::now() < deadline, "never listed");
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
             assert_eq!(
-                rig.session.users(),
+                rig.session.users(&channel),
                 Some(&Listing::Listed(Ok(vec![
                     "acid-techno".to_string(),
                     "euclidean-drums".to_string(),
@@ -450,23 +449,19 @@ mod tests {
                 ])))
             );
 
-            let channel = rig.channel_source();
             let result = Gesture::Remove {
                 address: "/sweep_cv".into(),
             }
             .apply(&mut rig.session, &channel)
             .expect("the verb ran");
             assert!(result.written, "{:?}", result.report);
-            assert_eq!(
-                rig.session.viewed().path,
-                voice,
+            assert!(
+                crate::session::test_support::names(&rig.session.viewed().source, &voice),
                 "the view stays in the voice"
             );
             assert_eq!(rig.session.viewed().hash(), Some(result.hash.as_str()));
             assert_eq!(rig.session.tree().top().hash(), top.as_deref());
-            rig.poll_until("the Swap of the write", |rig| rig.swaps() == 1);
             rig.settle();
-            assert_eq!(rig.swaps(), 1);
             assert_eq!(rig.status(), &Status::Current);
             assert_eq!(
                 rig.playing(),
@@ -533,7 +528,6 @@ mod tests {
             assert!(!result.written);
             assert!(!result.report.errors.is_empty());
             rig.settle();
-            assert_eq!(rig.swaps(), 0);
             assert_eq!(rig.session.tree(), &before);
 
             // What the verb said lands on the box and the port the edit was made at.

@@ -1,65 +1,58 @@
-//! The open instrument as it is on disk: its [`Tree`] of files, the watcher over them, and the
-//! Swap that follows every change to any of them.
+//! The open instrument as the server has it: its [`Tree`] of documents, read in one call, and read
+//! again whenever the server says something changed.
 //!
-//! Nothing here holds a document that differs from its file. A change — the editor's own write,
-//! `reuben-mcp`'s, a text editor's — is seen by the watcher, the whole tree is read again, and the
-//! top-level instrument is swapped in. A tree that does not load is shown and not swapped: the
-//! engine keeps playing the last one that did, until the files load again.
+//! Nothing here holds a document that differs from what the server read. A change — the editor's
+//! own edit, `reuben-mcp`'s, a text editor's write the server followed — arrives as an [`Event`],
+//! and the whole tree is read again. The server plays what loads; a tree that does not is shown
+//! held, with why.
 
 mod tree;
 mod undo;
 mod users;
 mod view;
-mod watch;
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::panic::AssertUnwindSafe;
-use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::collections::BTreeSet;
+use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use reuben_api::authoring::DocumentHistory;
-use reuben_api::engine::{swap_instrument, Channel, SwapInstrument, SwapResult};
-use reuben_api::FsResolver;
+use reuben_api::engine::{Channel, Event};
+use reuben_native::tree_watch::LONGEST_WAIT;
 
 pub use self::tree::{nested, Document, Tree};
 pub use self::undo::{Direction, Step, Undo};
 use self::users::users;
 pub use self::view::{bar, shortcut, trail, TrailAsk};
-use self::watch::Watch;
 use crate::feedback::Feedback;
 
-/// How long the tree's files must go untouched before they are read again. One write is several
-/// events — a temp file, a rename, sometimes a truncate before the bytes — and a program saving
-/// two files touches them a few milliseconds apart; reading on the first event would Swap a state
-/// that is gone by the time the Swap lands.
-const QUIET: Duration = Duration::from_millis(50);
+/// How long after a read that no event set off, and that found the tree held, it is read once
+/// more: past the server's longest debounce of an outside write, plus its reload. A read made
+/// inside that debounce can see a write the server then finds was undone, and publishes nothing
+/// for.
+const RECHECK_AFTER: Duration = Duration::from_millis(LONGEST_WAIT.as_millis() as u64 + 250);
 
-/// The longest a touch waits to be read while later touches keep arriving, so files written
-/// without a pause — a script sweeping a value — are still followed.
-const LONGEST_WAIT: Duration = Duration::from_millis(500);
-
-/// Whether the engine plays what is on disk.
+/// What the session last read of the open instrument's tree from the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Status {
+    /// Every document of the tree reads, and none reports an error. Whether the engine has
+    /// installed it yet is not part of this.
     Current,
-    /// No engine is running, so nothing plays.
+    /// No engine is running, so there is no server to read from and nothing plays.
     NoEngine,
-    /// A Swap of what is on disk is running.
-    Swapping,
-    /// It does not, and why: the files do not load, or the engine refused the Swap. The engine
-    /// keeps playing what it had.
+    /// The tree does not play as it is, and why: a document does not read, or its load reports
+    /// errors, or the server could not be asked.
     Held(Vec<String>),
 }
 
 /// What one [`Session::poll`] did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Poll {
     /// The tree was read since the last poll, by it or by [`Session::refresh`], and differed
     /// from the one before.
     pub reloaded: bool,
-    /// Call again no later than this, a touch being inside its quiet period.
+    /// The name of an instrument the server opened in place of this session's, when one was.
+    pub opened: Option<String>,
+    /// Poll again no later than this, for a read that is due then even if no event comes.
     pub wait: Option<Duration>,
 }
 
@@ -83,108 +76,68 @@ pub struct Crumb {
 }
 
 pub struct Session {
-    top: PathBuf,
-    root: Option<PathBuf>,
+    top: String,
     tree: Tree,
     /// The way from the top-level document down to the one being viewed; empty while the
     /// top-level document is.
     trail: Vec<Crumb>,
-    /// `Err` when the platform gave no watcher: the tree is then read only after the editor's own
-    /// writes.
-    watch: Result<Watch, String>,
-    /// The paths of the nested documents that read in the last tree that loaded. One of these
-    /// going missing holds the Swap, where a reference that never resolved does not.
-    loaded: BTreeSet<PathBuf>,
-    /// When the touched files are due to be read.
-    due: Option<Instant>,
-    /// When the first touch not yet read was seen.
-    touched_at: Option<Instant>,
     /// The tree changed since [`poll`](Self::poll) last said so.
     changed: bool,
     status: Status,
-    swapping: bool,
-    /// The tree changed while a Swap was running, so what that Swap installs is already stale.
-    swap_again: bool,
-    results: (Sender<SwapOutcome>, Receiver<SwapOutcome>),
+    /// When to read the tree once more, a read having found it held. See [`RECHECK_AFTER`].
+    recheck: Option<Instant>,
     wake: Wake,
     undo: Undo,
     /// Why the last edit did not land, until one does: kept here so the canvas and the inspector,
     /// which both write, show the same one.
     feedback: Option<Feedback>,
-    /// The store each document is written through, kept for the session's life so the states a
-    /// step names stay held for a restore.
-    histories: BTreeMap<String, DocumentHistory<FsResolver>>,
-    /// How many states each of `histories` keeps.
-    states: usize,
-    /// The file `users` is about, and the instruments that play it, as last listed.
-    users: Option<(PathBuf, Listing)>,
+    /// The document `users` is about, and the instruments that play it, as last listed.
+    users: Option<(String, Listing)>,
+    /// A listing is due: the view moved or the tree changed since the last one was asked for.
+    relist: bool,
     /// Where a listing under way will arrive. Replaced, and so let go, by the next listing.
     listing: Option<Receiver<Result<Vec<String>, String>>>,
-    /// The content hash the last of this session's Swaps installed, until taken.
-    installed: Option<String>,
-    #[cfg(test)]
-    touches: usize,
+    /// The viewed document and the tree's documents the last listing was asked for. Who plays the
+    /// viewed document changes only with another instrument's files, which the server sends no
+    /// event for, or with which documents the open tree reads: an edit that leaves both alone asks
+    /// for nothing, since each listing reads the server's whole library.
+    listed_for: Option<(String, BTreeSet<String>)>,
 }
 
-type SwapOutcome = Result<SwapResult, String>;
-
 impl Session {
-    /// Open the instrument at `top`, which the engine is taken to have started on. `root` is the
-    /// library root a reference falls back to, as for the engine.
-    ///
-    /// `wake` is called from another thread whenever [`poll`](Self::poll) has something to do.
-    pub fn open(top: &Path, root: Option<&Path>, wake: impl Fn() + Send + Sync + 'static) -> Self {
-        let wake: Wake = Arc::new(wake);
-        let tree = Tree::resolve(top, root);
-        let mut watch = Watch::new({
-            let wake = Arc::clone(&wake);
-            move || wake()
-        });
-        if let Ok(watch) = &mut watch {
-            watch.set(tree.documents().iter().map(|d| d.path.as_path()));
-        }
-        let blocked = tree.blocked();
-        Self {
-            top: top.to_path_buf(),
-            root: root.map(Path::to_path_buf),
-            loaded: if blocked.is_empty() {
-                read_paths(&tree)
-            } else {
-                BTreeSet::new()
-            },
-            tree,
+    /// Open the instrument the server names `top`, reading its tree through `channel` now.
+    pub fn open(top: &str, channel: &dyn Fn() -> Option<Channel>) -> Self {
+        let mut session = Self {
+            top: top.to_string(),
+            tree: Tree::unread(top, "not read yet".to_string()),
             trail: Vec::new(),
-            watch,
-            due: None,
-            touched_at: None,
             changed: false,
-            status: if blocked.is_empty() {
-                Status::Current
-            } else {
-                Status::Held(blocked)
-            },
-            swapping: false,
-            swap_again: false,
-            results: mpsc::channel(),
-            wake,
+            status: Status::NoEngine,
+            recheck: None,
+            wake: Arc::new(|| {}),
             undo: Undo::default(),
             feedback: None,
-            histories: BTreeMap::new(),
-            states: DocumentHistory::<FsResolver>::DEFAULT_CAPACITY,
             users: None,
+            relist: false,
             listing: None,
-            installed: None,
-            #[cfg(test)]
-            touches: 0,
+            listed_for: None,
+        };
+        if channel().is_none() {
+            session.tree = Tree::unread(top, "no engine is running to read it".to_string());
         }
+        session.refresh(channel);
+        session.changed = false;
+        session
     }
 
-    pub fn top(&self) -> &Path {
+    /// `wake` is called from another thread whenever a listing of [`users`](Self::users) arrives.
+    pub fn with_wake(mut self, wake: impl Fn() + Send + Sync + 'static) -> Self {
+        self.wake = Arc::new(wake);
+        self
+    }
+
+    pub fn top(&self) -> &str {
         &self.top
-    }
-
-    pub fn root(&self) -> Option<&Path> {
-        self.root.as_deref()
     }
 
     pub fn tree(&self) -> &Tree {
@@ -210,7 +163,7 @@ impl Session {
         };
         let source = source.to_string();
         if self.tree.document(&source).is_none() {
-            return Err(format!("{source} is not a file of the open instrument"));
+            return Err(format!("{source} is not a document of the open instrument"));
         }
         self.trail.push(Crumb {
             address: address.to_string(),
@@ -248,11 +201,18 @@ impl Session {
         self.list_users();
     }
 
-    /// The instruments that play the viewed document: those beside the top-level file and those
-    /// directly in the library root. `None` while the top-level document is viewed.
-    pub fn users(&mut self) -> Option<&Listing> {
+    /// The instruments of the server's library that play the viewed document, asked through
+    /// `channel` when a listing is due. `None` while the top-level document is viewed.
+    pub fn users(&mut self, channel: &dyn Fn() -> Option<Channel>) -> Option<&Listing> {
+        if std::mem::take(&mut self.relist) {
+            self.ask_users(channel());
+        }
         if let Some(listed) = self.listing.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.listing = None;
+            if listed.is_err() {
+                // Asked again at the next change, whatever it is.
+                self.listed_for = None;
+            }
             if let Some((_, listing)) = &mut self.users {
                 *listing = Listing::Listed(listed);
             }
@@ -260,79 +220,71 @@ impl Session {
         self.users.as_ref().map(|(_, listing)| listing)
     }
 
-    /// List again who plays the viewed document, off the UI thread: it reads every instrument
-    /// beside the top-level file and in the root. Every time the view moves or the files change,
-    /// since another instrument may have taken up or let go of the file meanwhile. The last answer
-    /// for the same file stands until the new one arrives.
+    /// Have who plays the viewed document listed again, on the next [`users`](Self::users), when
+    /// the view moved to another document or the tree reads other documents than at the last
+    /// listing (see [`listed_for`](Self::listed_for)). The last answer for the same document stands
+    /// until the new one arrives.
     fn list_users(&mut self) {
-        self.listing = None;
         if self.trail.is_empty() {
+            self.listing = None;
             self.users = None;
+            self.relist = false;
+            self.listed_for = None;
             return;
         }
-        let path = self.viewed().path.clone();
-        let beside = self.tree.top().path.parent().map(Path::to_path_buf);
-        let root = self.root.clone();
+        let source = self.viewed().source.clone();
+        let documents = (self.tree.documents().iter())
+            .map(|document| document.source.clone())
+            .collect();
+        let asked = (source.clone(), documents);
+        if self.listed_for.as_ref() == Some(&asked) {
+            return;
+        }
+        self.listed_for = Some(asked);
+        self.listing = None;
+        if (self.users.as_ref()).is_none_or(|(listed, _)| *listed != source) {
+            self.users = Some((source, Listing::Checking));
+        }
+        self.relist = true;
+    }
+
+    /// Ask the server's library, off the UI thread, which instruments read the viewed document.
+    fn ask_users(&mut self, channel: Option<Channel>) {
+        let Some((source, _)) = &self.users else {
+            return;
+        };
+        let source = source.clone();
         let (done, listing) = mpsc::channel();
-        let scanned = path.clone();
         let wake = Arc::clone(&self.wake);
         std::thread::spawn(move || {
-            let libraries: Vec<&Path> = beside
-                .as_deref()
-                .into_iter()
-                .chain(root.as_deref())
-                .collect();
-            if done
-                .send(users(&libraries, root.as_deref(), &scanned))
-                .is_ok()
-            {
+            let listed = match channel {
+                Some(channel) => (channel.library())
+                    .map(|library| users(&library, &source))
+                    .map_err(|e| e.to_string()),
+                None => Err("no engine is running to list the library".to_string()),
+            };
+            if done.send(listed).is_ok() {
                 wake();
             }
         });
         self.listing = Some(listing);
-        if self
-            .users
-            .as_ref()
-            .is_none_or(|(listed, _)| *listed != path)
-        {
-            self.users = Some((path, Listing::Checking));
-        }
     }
 
     pub fn status(&self) -> &Status {
         &self.status
     }
 
-    /// Why the files, or some of them, are not being watched, when they are not.
-    pub fn watch_error(&self) -> Option<String> {
-        match &self.watch {
-            Err(e) => Some(e.clone()),
-            Ok(watch) if watch.unwatched().is_empty() => None,
-            Ok(watch) => Some(watch.unwatched().join("; ")),
-        }
-    }
-
-    /// The store to hand a `reuben-api` verb for the document `source`: the one the tree reads it
-    /// through, wrapped in the history a restore returns it to an earlier state from. The same one
-    /// for every call on `source`, for as long as the session is open, so the states its writes
-    /// left stay held.
-    pub fn history(&mut self, source: &str) -> &DocumentHistory<FsResolver> {
-        let root = self.root.as_deref();
-        let states = self.states;
-        self.histories
-            .entry(source.to_string())
-            .or_insert_with(|| DocumentHistory::with_capacity(tree::store(source, root), states))
-    }
-
-    /// Keep `states` states per document from here on, so a test can push one out of the store.
-    #[cfg(test)]
-    pub fn keep_states(&mut self, states: usize) {
-        self.states = states;
-        self.histories.clear();
-    }
-
     pub fn undo(&self) -> &Undo {
         &self.undo
+    }
+
+    /// Drop the undo and redo stacks, the note saying `why` when there was a step to drop.
+    pub fn forget_undo(&mut self, why: &str) {
+        if self.undo.next(Direction::Undo).is_none() && self.undo.next(Direction::Redo).is_none() {
+            return;
+        }
+        self.undo = Undo::default();
+        self.undo.set_note(Some(why.to_string()));
     }
 
     pub fn undo_mut(&mut self) -> &mut Undo {
@@ -347,60 +299,60 @@ impl Session {
         &mut self.feedback
     }
 
-    /// Take in what happened since the last call: a finished Swap, and files touched long enough
-    /// ago to read. `channel` is asked for the running engine's channel only when a Swap starts.
-    pub fn poll(&mut self, now: Instant, channel: &dyn Fn() -> Option<Channel>) -> Poll {
-        if let Ok(outcome) = self.results.1.try_recv() {
-            self.swapped(outcome, channel);
+    /// Take in the server's `events` since the last call: any at all, of whatever kind, is one
+    /// read of the tree, since an event does not say which document changed. With none, a read
+    /// that came due is made.
+    pub fn poll(&mut self, events: &[Event], channel: &dyn Fn() -> Option<Channel>) -> Poll {
+        let opened = (events.iter().rev())
+            .find_map(|event| match event {
+                Event::Opened { name, .. } => Some(name),
+                _ => None,
+            })
+            .filter(|name| !name.is_empty() && **name != self.top)
+            .cloned();
+        let now = Instant::now();
+        if !events.is_empty() {
+            self.refresh(channel);
+        } else if self.recheck.is_some_and(|due| now >= due) {
+            self.recheck = None;
+            self.read(channel);
         }
-        if self.watch.as_ref().is_ok_and(Watch::touched) {
-            let first = *self.touched_at.get_or_insert(now);
-            self.due = Some((now + QUIET).min(first + LONGEST_WAIT));
-        }
-        let wait = match self.due {
-            Some(due) if now >= due => {
-                self.due = None;
-                self.touched_at = None;
-                #[cfg(test)]
-                {
-                    self.touches += 1;
-                }
-                self.refresh(channel);
-                None
-            }
-            due => due.map(|due| due - now),
-        };
         Poll {
             reloaded: std::mem::take(&mut self.changed),
-            wait,
+            opened,
+            wait: self.recheck.map(|due| due.saturating_duration_since(now)),
         }
     }
 
-    /// The content hash of the top-level file one of this session's Swaps installed since the last
-    /// call: known the moment the Swap answers, where asking the engine what it plays waits on its
-    /// next answer.
-    pub fn take_installed(&mut self) -> Option<String> {
-        self.installed.take()
-    }
-
-    /// Offer what is on disk to the engine again, as after a start that the files have moved on
-    /// from.
-    pub fn reinstall(&mut self, channel: &dyn Fn() -> Option<Channel>) {
-        self.install(channel);
-    }
-
-    /// Read the tree from disk now and, when it differs from the one held, Swap it in. Returns
-    /// whether it differed.
+    /// Read the tree from the server now. Returns whether it differed from the one held.
     ///
-    /// Reading the same files twice Swaps once: this is what keeps the editor's own write, which
-    /// calls this and then arrives again through the watcher, from being two Swaps.
+    /// With no engine running the tree is kept, and the status says nothing plays. A read the
+    /// server refused, or that did not reach it, keeps the tree too, and holds with why. A read
+    /// that holds has another come due after [`RECHECK_AFTER`], which [`poll`](Self::poll) makes.
     pub fn refresh(&mut self, channel: &dyn Fn() -> Option<Channel>) -> bool {
-        let tree = Tree::resolve(&self.top, self.root.as_deref());
-        // Even for an unchanged tree: a directory that came back holds no file yet, so the tree
-        // reads as it did, and only a fresh watch sees the file arrive.
-        if let Ok(watch) = &mut self.watch {
-            watch.set(tree.documents().iter().map(|d| d.path.as_path()));
-        }
+        let changed = self.read(channel);
+        self.recheck =
+            matches!(self.status, Status::Held(_)).then(|| Instant::now() + RECHECK_AFTER);
+        changed
+    }
+
+    fn read(&mut self, channel: &dyn Fn() -> Option<Channel>) -> bool {
+        let Some(channel) = channel() else {
+            self.status = Status::NoEngine;
+            return false;
+        };
+        let tree = match Tree::read(&self.top, &channel) {
+            Ok(tree) => tree,
+            Err(why) => {
+                self.status = Status::Held(vec![why]);
+                return false;
+            }
+        };
+        let faults = tree.faults();
+        self.status = match faults.is_empty() {
+            true => Status::Current,
+            false => Status::Held(faults),
+        };
         if tree == self.tree {
             return false;
         }
@@ -413,104 +365,7 @@ impl Session {
         if self.feedback.as_ref().is_some_and(|f| f.outlived(hash_of)) {
             self.feedback = None;
         }
-        self.install(channel);
         true
-    }
-
-    /// Why the tree must not be swapped in; empty when it may be.
-    fn blocked(&self) -> Vec<String> {
-        let mut why = self.tree.blocked();
-        for document in &self.tree.documents()[1..] {
-            if document.read.is_err()
-                && self.loaded.contains(&document.path)
-                && !document.path.exists()
-            {
-                why.push(format!(
-                    "{}: was part of the instrument and is gone",
-                    document.path.display()
-                ));
-            }
-        }
-        why
-    }
-
-    fn install(&mut self, channel: &dyn Fn() -> Option<Channel>) {
-        let blocked = self.blocked();
-        if !blocked.is_empty() {
-            self.status = Status::Held(blocked);
-            self.swap_again = false;
-            return;
-        }
-        self.loaded = read_paths(&self.tree);
-        if self.swapping {
-            self.status = Status::Swapping;
-            self.swap_again = true;
-            return;
-        }
-        let Some(channel) = channel() else {
-            self.status = Status::NoEngine;
-            return;
-        };
-        let args = SwapInstrument {
-            path: self.top.display().to_string(),
-            expect: None,
-        };
-        let done = self.results.0.clone();
-        let wake = Arc::clone(&self.wake);
-        // Off the UI thread: a Swap builds the whole new Engine before it returns.
-        std::thread::spawn(move || {
-            // A panic that took this thread down unreported would leave the session waiting on
-            // this Swap for good.
-            let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                swap_instrument(&args, &channel)
-                    .map(|answer| answer.output)
-                    .map_err(|refusal| refusal.message)
-            }))
-            .unwrap_or_else(|_| Err("the Swap panicked".to_string()));
-            if done.send(outcome).is_ok() {
-                wake();
-            }
-        });
-        self.swapping = true;
-        self.status = Status::Swapping;
-    }
-
-    fn swapped(&mut self, outcome: SwapOutcome, channel: &dyn Fn() -> Option<Channel>) {
-        self.swapping = false;
-        if let Ok(result) = &outcome {
-            if result.report.report.ok && result.conflict.is_none() && result.held.is_none() {
-                self.installed = Some(result.report.content_hash.clone());
-            }
-        }
-        if self.swap_again {
-            self.swap_again = false;
-            self.install(channel);
-            return;
-        }
-        // Anything else means the tree stopped loading while this Swap ran, and that is the news.
-        if self.status != Status::Swapping {
-            return;
-        }
-        self.status = match outcome {
-            Ok(result) if result.report.report.ok => Status::Current,
-            Ok(result) => Status::Held(match result.conflict {
-                Some(conflict) => vec![format!(
-                    "the engine is playing {}, not the expected {}",
-                    conflict.actual, conflict.expected
-                )],
-                None => result
-                    .report
-                    .report
-                    .errors
-                    .into_iter()
-                    .map(|e| match e.node {
-                        Some(node) => format!("{node}: {}", e.message),
-                        None => e.message,
-                    })
-                    .collect(),
-            }),
-            Err(e) => Status::Held(vec![e]),
-        };
     }
 }
 
@@ -531,26 +386,18 @@ fn followed(tree: &Tree, trail: Vec<Crumb>) -> Vec<Crumb> {
     kept
 }
 
-/// The paths of the nested documents of `tree` that read.
-fn read_paths(tree: &Tree) -> BTreeSet<PathBuf> {
-    (tree.documents()[1..].iter())
-        .filter(|document| document.read.is_ok())
-        .map(|document| document.path.clone())
-        .collect()
-}
-
 #[cfg(test)]
 pub(crate) mod test_support {
+    use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use std::sync::mpsc::{self};
-    use std::sync::Arc;
+    use std::sync::mpsc;
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     use reuben_api::authoring::{new_instrument, DocumentHistory, NewInstrument, Resources};
     use reuben_api::engine::{
-        get_current_instrument, install_initial, Channel, InProcess, Request, StructureState,
-        Transport,
+        get_current_instrument, install_initial, Channel, Event, InProcess, Request,
+        StructureState, Transport,
     };
     use reuben_api::render::AudioConfig;
     use reuben_api::staged::Staged;
@@ -559,8 +406,12 @@ pub(crate) mod test_support {
     use reuben_native::osc::ControlBatch;
     use reuben_native::structure::NativeHost;
     use reuben_native::test_support::FakeCallback;
+    use reuben_native::tree_watch::{self, TreeWatch};
 
     use super::{Session, Status};
+    use crate::follow::Follow;
+
+    type Store = Staged<Box<dyn Resources + Send + Sync>>;
 
     /// A scratch directory removed on drop, so a failed assertion leaves nothing behind.
     pub struct Scratch(PathBuf);
@@ -665,6 +516,12 @@ pub(crate) mod test_support {
         )
     }
 
+    /// Whether the server's name `source` names the file at `path`, however either is spelled.
+    pub fn names(source: &str, path: &Path) -> bool {
+        let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        canonical(Path::new(source)) == canonical(path)
+    }
+
     fn copy_dir(from: &Path, to: &Path) {
         std::fs::create_dir_all(to).expect("create the copy's directory");
         for entry in std::fs::read_dir(from).expect("list a library directory") {
@@ -678,32 +535,32 @@ pub(crate) mod test_support {
         }
     }
 
-    /// What a test makes the next Swap requests do on their way to the engine.
-    #[derive(Debug, Default)]
-    pub struct Fault {
-        /// How long each Swap request is held before it reaches the engine, in milliseconds.
-        pub delay_ms: AtomicUsize,
-        /// The next Swap request panics instead of reaching the engine.
-        pub panic_once: AtomicBool,
-    }
+    /// What [`Rig::calls`] counts `library` requests under.
+    pub const LIBRARY: &str = "<library>";
 
-    /// The engine's own transport, counting the Swap requests that cross it.
+    /// How many `call`s of each tool, and `library` requests, have crossed a [`Counting`]
+    /// transport.
+    type Calls = Arc<Mutex<BTreeMap<String, usize>>>;
+
+    /// The engine's own transport, counting the `call`s that cross it by tool name.
     #[derive(Debug)]
     struct Counting {
         inner: InProcess,
-        swaps: Arc<AtomicUsize>,
-        fault: Arc<Fault>,
+        calls: Calls,
     }
 
     impl Transport for Counting {
         fn round_trip(&self, line: &str, read_timeout: Duration) -> std::io::Result<String> {
-            if matches!(Request::from_ndjson(line), Ok(Request::Swap { .. })) {
-                self.swaps.fetch_add(1, Ordering::SeqCst);
-                if self.fault.panic_once.swap(false, Ordering::SeqCst) {
-                    panic!("a test asked this Swap to panic");
+            match Request::from_ndjson(line) {
+                Ok(Request::Call { tool, .. }) => {
+                    *self.calls.lock().unwrap().entry(tool).or_default() += 1;
                 }
-                let delay = self.fault.delay_ms.load(Ordering::SeqCst);
-                std::thread::sleep(Duration::from_millis(delay as u64));
+                Ok(Request::Library) => {
+                    *(self.calls.lock().unwrap())
+                        .entry(LIBRARY.to_string())
+                        .or_default() += 1;
+                }
+                _ => {}
             }
             self.inner.round_trip(line, read_timeout)
         }
@@ -711,34 +568,61 @@ pub(crate) mod test_support {
         fn endpoint(&self) -> &str {
             self.inner.endpoint()
         }
+
+        fn subscribe(
+            &self,
+        ) -> std::io::Result<Box<dyn Iterator<Item = std::io::Result<Event>> + Send>> {
+            Transport::subscribe(&self.inner)
+        }
     }
 
     /// A session on a scratch copy of a library instrument, and an engine playing that copy with
-    /// no audio device: the Coordinator, host and window are the ones `reuben play` wires up, and a
-    /// [`FakeCallback`] renders in place of the device.
+    /// no audio device: the Coordinator, host, window and file watcher are the ones `reuben play`
+    /// wires up, and a [`FakeCallback`] renders in place of the device. Built from parts rather
+    /// than started, so the transport the session reaches it through can count its calls, and the
+    /// server's history can be sized. Every edit the session makes is a `call` to this server, and
+    /// every write from outside is followed by the server and heard through [`Follow`].
     pub struct Rig {
         pub lib: PathBuf,
         pub top: PathBuf,
         pub session: Session,
-        engine: InProcess,
-        swaps: Arc<AtomicUsize>,
-        pub fault: Arc<Fault>,
+        state: StructureState,
+        calls: Calls,
+        follow: Follow,
+        _watch: TreeWatch,
         _callback: FakeCallback,
         _scratch: Scratch,
     }
 
     /// How long a change may take to reach the engine before a test calls it lost.
     pub const SEEN: Duration = Duration::from_secs(10);
-    /// How long a test keeps polling for a Swap that must not come. Many times the session's quiet
-    /// period plus the watcher's latency.
+    /// How long a test keeps polling for a change that must not come. Many times the server's
+    /// quiet period plus the watcher's latency.
     pub const SETTLED: Duration = Duration::from_millis(600);
 
     impl Rig {
         pub fn open(test: &str, instrument: &str) -> Self {
+            Self::keeping(test, instrument, DocumentHistory::<Store>::DEFAULT_CAPACITY)
+        }
+
+        /// [`open`](Self::open), on a server whose history holds `states` documents, so a test
+        /// can push a state out of it.
+        pub fn keeping(test: &str, instrument: &str, states: usize) -> Self {
             let scratch = Scratch::new(test);
             let lib = scratch.library();
             let top = lib.join(instrument);
-            Self::started(scratch, lib, top)
+            Self::started(scratch, lib, top, states)
+        }
+
+        /// A rig on the instrument at `top`, which `scratch` holds, written by the test.
+        pub fn on(scratch: Scratch, top: PathBuf) -> Self {
+            let lib = top.parent().expect("a file in a directory").to_path_buf();
+            Self::started(
+                scratch,
+                lib,
+                top,
+                DocumentHistory::<Store>::DEFAULT_CAPACITY,
+            )
         }
 
         /// A rig on a new instrument, as `new_instrument` seeds it, at `lib/<name>.json`.
@@ -758,13 +642,17 @@ pub(crate) mod test_support {
             .expect("the seed is written")
             .output;
             assert!(seeded.written, "{:?}", seeded.report);
-            Self::started(scratch, lib, top)
+            Self::started(
+                scratch,
+                lib,
+                top,
+                DocumentHistory::<Store>::DEFAULT_CAPACITY,
+            )
         }
 
-        fn started(scratch: Scratch, lib: PathBuf, top: PathBuf) -> Self {
+        fn started(scratch: Scratch, lib: PathBuf, top: PathBuf, states: usize) -> Self {
             let text = std::fs::read_to_string(&top).expect("read the fixture");
-            let staged: Staged<Box<dyn Resources + Send + Sync>> =
-                Staged::new(Box::new(FsResolver::for_instrument(&top)));
+            let staged: Store = Staged::new(Box::new(FsResolver::for_instrument(&top)));
             let (coordinator, side, _warnings) =
                 install_initial(&text, staged.clone(), AudioConfig::new(48_000.0, 128))
                     .expect("install the fixture");
@@ -773,35 +661,48 @@ pub(crate) mod test_support {
             let state = StructureState::new(
                 coordinator,
                 Arc::new(host),
-                Arc::new(DocumentHistory::new(staged)),
+                Arc::new(DocumentHistory::with_capacity(staged, states)),
             )
             .with_installed_source(Some(top.display().to_string()));
+            let calls = Calls::default();
+            let channel = channel_of(&state, &calls);
+            let follow = Follow::start(channel.clone(), || {});
+            // Subscribed before the rig is handed over, so no write a test makes goes unheard. The
+            // event a new subscription starts with is let go: the session has just read the tree,
+            // and a read it set off later would see a test's write before the server had.
+            let deadline = Instant::now() + SEEN;
+            while follow.drain().is_empty() {
+                assert!(Instant::now() < deadline, "the follow never subscribed");
+                std::thread::sleep(Duration::from_millis(1));
+            }
             Rig {
-                session: Session::open(&top, None, || {}),
+                session: Session::open(&top.display().to_string(), &channel),
                 lib,
                 top,
-                engine: InProcess::new(state),
-                swaps: Arc::new(AtomicUsize::new(0)),
-                fault: Arc::new(Fault::default()),
+                _watch: tree_watch::spawn(state.clone()),
+                state,
+                calls,
+                follow,
                 _callback: FakeCallback::spawn(side, control_rx),
                 _scratch: scratch,
             }
         }
 
         pub fn channel(&self) -> Channel {
-            Channel::new(Counting {
-                inner: self.engine.clone(),
-                swaps: Arc::clone(&self.swaps),
-                fault: Arc::clone(&self.fault),
-            })
+            channel_of(&self.state, &self.calls)().expect("the rig's engine runs")
         }
 
-        /// How many Swap requests have reached the engine.
-        pub fn swaps(&self) -> usize {
-            self.swaps.load(Ordering::SeqCst)
+        /// The server's name for the top-level document.
+        pub fn top_source(&self) -> String {
+            self.top.display().to_string()
         }
 
-        /// The content hash of what the engine is playing.
+        /// How many `call`s of `tool` have reached the engine through this rig's channels.
+        pub fn calls(&self, tool: &str) -> usize {
+            self.calls.lock().unwrap().get(tool).copied().unwrap_or(0)
+        }
+
+        /// The content hash of what the engine is playing; empty while nothing does.
         pub fn playing(&self) -> String {
             get_current_instrument(&self.channel(), |source: Option<&str>| {
                 FsResolver::for_document(source.expect("installed from a file")).stat_only()
@@ -812,22 +713,33 @@ pub(crate) mod test_support {
         }
 
         /// What the session asks for the engine's channel.
-        pub fn channel_source(&self) -> impl Fn() -> Option<Channel> {
-            let engine = self.engine.clone();
-            let swaps = Arc::clone(&self.swaps);
-            let fault = Arc::clone(&self.fault);
-            move || {
-                Some(Channel::new(Counting {
-                    inner: engine.clone(),
-                    swaps: Arc::clone(&swaps),
-                    fault: Arc::clone(&fault),
-                }))
-            }
+        pub fn channel_source(&self) -> impl Fn() -> Option<Channel> + Send + Clone + 'static {
+            channel_of(&self.state, &self.calls)
         }
 
+        /// Take in the events the server sent since the last poll. Returns whether the tree was
+        /// read again and differed.
         pub fn poll(&mut self) -> bool {
             let channel = self.channel_source();
-            self.session.poll(Instant::now(), &channel).reloaded
+            let events = self.follow.drain();
+            self.session.poll(&events, &channel).reloaded
+        }
+
+        /// Wait until the server has sent `n` events since the last poll, and return them
+        /// without taking them in.
+        pub fn events(&self, n: usize) -> Vec<Event> {
+            let deadline = Instant::now() + SEEN;
+            let mut events = Vec::new();
+            while events.len() < n {
+                assert!(
+                    Instant::now() < deadline,
+                    "{} of {n} events came",
+                    events.len()
+                );
+                events.extend(self.follow.drain());
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            events
         }
 
         /// Poll until `done`, failing after [`SEEN`].
@@ -847,10 +759,6 @@ pub(crate) mod test_support {
                 self.poll();
                 std::thread::sleep(Duration::from_millis(5));
             }
-            assert!(
-                self.session.due.is_none() && !self.session.swapping,
-                "still busy"
-            );
         }
 
         /// Wait for `n` live control messages to reach the render side, and return every one
@@ -859,13 +767,29 @@ pub(crate) mod test_support {
             self._callback.await_queued(n)
         }
 
-        /// How many times touched files came due and were read.
-        pub fn touches(&self) -> usize {
-            self.session.touches
-        }
-
         pub fn status(&self) -> &Status {
             self.session.status()
+        }
+    }
+
+    impl Drop for Rig {
+        /// Ends every subscription, so the rig's [`Follow`] thread goes with it.
+        fn drop(&mut self) {
+            self.state.close();
+        }
+    }
+
+    fn channel_of(
+        state: &StructureState,
+        calls: &Calls,
+    ) -> impl Fn() -> Option<Channel> + Send + Clone + 'static {
+        let engine = InProcess::new(state.clone());
+        let calls = Arc::clone(calls);
+        move || {
+            Some(Channel::new(Counting {
+                inner: engine.clone(),
+                calls: Arc::clone(&calls),
+            }))
         }
     }
 }
@@ -873,106 +797,107 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::time::{Duration, Instant};
 
     use reuben_api::authoring::{
-        rename_instrument_node, set_instrument_constant, set_instrument_description,
-        set_instrument_input, RenameInstrumentNode, SetInstrumentConstant,
-        SetInstrumentDescription, SetInstrumentInput,
+        EditResult, LayoutPosition, LayoutTarget, RenameInstrumentNode, SetInstrumentDescription,
+        SetInstrumentInput, SetInstrumentLayout, WireInstrumentInput,
     };
-    use reuben_api::FsResolver;
-    use reuben_native::test_support::within;
+    use reuben_api::engine::{call_tool, TcpTransport, DEFAULT_CONNECT_TIMEOUT};
+    use reuben_api::tools::names;
+    use reuben_native::engine::{EngineConfig, RunningEngine};
+    use reuben_native::test_support::{start_headless, within};
     use serde_json::json;
 
-    use std::sync::atomic::Ordering;
-
-    use super::test_support::Rig;
+    use super::test_support::{Rig, Scratch, SEEN};
     use super::*;
+    use crate::edit::{self, Verb};
+    use crate::follow::Follow;
 
     const HANG_SECS: u64 = 60;
 
-    fn spelled(path: &Path) -> String {
-        path.display().to_string()
-    }
-
-    /// The write `reuben-mcp` makes for `set_instrument_input`: the same verb, through a store of
-    /// its own scoped to the document. Returns the hash of what it wrote.
-    fn sidecar_sets_cutoff(voice: &Path, cutoff: f64) -> String {
-        let source = spelled(voice);
-        let edit = set_instrument_input(
-            &SetInstrumentInput {
-                source: source.clone(),
-                address: "/filter".to_string(),
-                input: "cutoff".to_string(),
-                value: json!(cutoff),
-                expect: None,
-            },
-            &FsResolver::for_document(&source).stat_only(),
-        )
-        .expect("the verb ran")
-        .output;
+    /// A write another client of the server makes, as `reuben-mcp` does: `tool` with `args`,
+    /// through its own channel. Returns what it wrote.
+    fn client_writes(rig: &Rig, tool: &str, args: serde_json::Value) -> EditResult {
+        let answer = call_tool(tool, &args, &rig.channel()).expect("the verb ran");
+        let edit: EditResult = serde_json::from_value(answer.output).expect("an edit");
         assert!(edit.written, "{:?}", edit.report);
-        edit.hash
+        edit
     }
 
-    fn voice_of(rig: &Rig) -> std::path::PathBuf {
-        rig.lib.join("voices").join("default-voice.json")
+    fn client_sets_cutoff(rig: &Rig, source: &str, cutoff: f64) -> String {
+        let args = SetInstrumentInput {
+            source: source.to_string(),
+            address: "/filter".to_string(),
+            input: "cutoff".to_string(),
+            value: json!(cutoff),
+            expect: None,
+        };
+        client_writes(rig, names::SET_INSTRUMENT_INPUT, json!(args)).hash
     }
 
-    fn hash_of(rig: &Rig, path: &Path) -> Option<String> {
-        rig.session
-            .tree()
-            .documents()
-            .iter()
-            .find(|d| d.path == path)
-            .and_then(|d| d.hash().map(str::to_string))
+    /// The server's name for the document of the session's tree whose file ends with `file`.
+    fn source_of(rig: &Rig, file: &str) -> String {
+        (rig.session.tree().documents().iter())
+            .find(|d| Path::new(&d.source).ends_with(file))
+            .unwrap_or_else(|| panic!("{file} is in the tree"))
+            .source
+            .clone()
     }
+
+    fn hash_of(rig: &Rig, source: &str) -> Option<String> {
+        (rig.session.tree().document(source)).and_then(|d| d.hash().map(str::to_string))
+    }
+
+    /// A document cut off mid-node: it does not parse.
+    const BROKEN: &str = r#"{"format_version":3,"instrument":"t","nodes":[{"#;
+
+    const VOICE: &str = "voices/default-voice.json";
 
     #[test]
     fn the_trail_goes_down_through_a_voice_into_its_patch_and_back_up() {
-        let scratch = test_support::Scratch::new("trail");
-        let lib = scratch.library();
-        let mut session = Session::open(&lib.join("acid-techno.json"), None, || {});
-        assert_eq!(session.users(), None, "the top-level document is viewed");
-        assert!(session.enter("/tempo").is_err(), "no voice or patch there");
-        assert!(session.trail().is_empty());
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("trail", "acid-techno.json");
+            let session = &mut rig.session;
+            assert_eq!(
+                session.users(&|| None),
+                None,
+                "the top-level document is viewed"
+            );
+            assert!(session.enter("/tempo").is_err(), "no voice or patch there");
+            assert!(session.trail().is_empty());
 
-        session.enter("/kick_v").expect("a voicer");
-        session.enter("/vca").expect("a subpatch inside the voice");
-        assert_eq!(
-            session.viewed().path,
-            lib.join("voices").join("shaped-vca.json")
-        );
-        let addresses: Vec<&str> = session.trail().iter().map(|c| c.address.as_str()).collect();
-        assert_eq!(addresses, ["/kick_v", "/vca"]);
+            session.enter("/kick_v").expect("a voicer");
+            session.enter("/vca").expect("a subpatch inside the voice");
+            assert!(Path::new(&session.viewed().source).ends_with("voices/shaped-vca.json"));
+            let addresses: Vec<&str> = session.trail().iter().map(|c| c.address.as_str()).collect();
+            assert_eq!(addresses, ["/kick_v", "/vca"]);
 
-        session.leave(1);
-        assert_eq!(
-            session.viewed().path,
-            lib.join("voices").join("kick-voice.json")
-        );
-        session.leave(0);
-        assert_eq!(session.viewed().path, session.tree().top().path);
+            session.leave(1);
+            assert!(Path::new(&session.viewed().source).ends_with("voices/kick-voice.json"));
+            session.leave(0);
+            assert_eq!(session.viewed().source, session.top());
+        });
     }
 
     #[test]
     fn a_probe_path_carries_the_subpatch_prefix_and_splits_at_a_voicer() {
-        use reuben_native::test_support::start_headless;
+        within(HANG_SECS, || {
+            let scratch = Scratch::new("probe_path");
+            let top = test_support::probed(&scratch);
+            let mut rig = Rig::on(scratch, top.clone());
+            let session = &mut rig.session;
+            let top_level = session.probe_path("/osc");
+            session.enter("/bass").expect("a subpatch");
+            let in_patch = session.probe_path("/filter");
+            session.leave(0);
+            session.enter("/kick_v").expect("a voicer");
+            let in_voice = session.probe_path("/osc");
+            assert_eq!(top_level, ["/osc"]);
+            assert_eq!(in_patch, ["/bass/filter"]);
+            assert_eq!(in_voice, ["/kick_v", "/osc"]);
 
-        let scratch = test_support::Scratch::new("probe_path");
-        let top = test_support::probed(&scratch);
-        let mut session = Session::open(&top, None, || {});
-        let top_level = session.probe_path("/osc");
-        session.enter("/bass").expect("a subpatch");
-        let in_patch = session.probe_path("/filter");
-        session.leave(0);
-        session.enter("/kick_v").expect("a voicer");
-        let in_voice = session.probe_path("/osc");
-        assert_eq!(top_level, ["/osc"]);
-        assert_eq!(in_patch, ["/bass/filter"]);
-        assert_eq!(in_voice, ["/kick_v", "/osc"]);
-
-        // Each names a node of the Plan the engine built from these files.
-        within(HANG_SECS, move || {
+            // Each names a node of the Plan the engine built from these files.
             let played = start_headless(crate::engine::test_support::config(top))
                 .expect("the engine starts");
             let paths = vec![top_level, in_patch, in_voice];
@@ -983,62 +908,49 @@ mod tests {
     }
 
     #[test]
-    fn the_trail_goes_back_up_to_what_the_files_still_reach() {
-        let scratch = test_support::Scratch::new("trail_follows");
-        let lib = scratch.library();
-        let top = lib.join("acid-techno.json");
-        let mut session = Session::open(&top, None, || {});
-        session.enter("/kick_v").expect("a voicer");
-        session.enter("/vca").expect("a subpatch");
+    fn the_trail_goes_back_up_to_what_the_tree_still_reaches() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("trail_follows", "acid-techno.json");
+            rig.session.enter("/kick_v").expect("a voicer");
+            rig.session.enter("/vca").expect("a subpatch");
+            let source = rig.top_source();
+            let channel = rig.channel_source();
 
-        let source = spelled(&top);
-        let store = || FsResolver::for_document(&source).stat_only();
-        // An edit that leaves the way down as it was keeps the view.
-        let described = set_instrument_description(
-            &SetInstrumentDescription {
+            // An edit that leaves the way down as it was keeps the view.
+            let described = SetInstrumentDescription {
                 source: source.clone(),
                 description: Some("moved".to_string()),
                 expect: None,
-            },
-            &store(),
-        )
-        .expect("the verb ran")
-        .output;
-        assert!(described.written, "{:?}", described.report);
-        assert!(session.refresh(&|| None));
-        assert_eq!(session.trail().len(), 2);
+            };
+            client_writes(&rig, names::SET_INSTRUMENT_DESCRIPTION, json!(described));
+            assert!(rig.session.refresh(&channel));
+            assert_eq!(rig.session.trail().len(), 2);
 
-        let renamed = rename_instrument_node(
-            &RenameInstrumentNode {
+            let renamed = RenameInstrumentNode {
                 source: source.clone(),
                 from: "/kick_v".to_string(),
                 to: "/kick_drum".to_string(),
                 expect: None,
-            },
-            &store(),
-        )
-        .expect("the verb ran")
-        .output;
-        assert!(renamed.written, "{:?}", renamed.report);
-        assert!(session.refresh(&|| None));
-        assert!(session.trail().is_empty());
-        assert_eq!(session.viewed().path, session.tree().top().path);
+            };
+            client_writes(&rig, names::RENAME_INSTRUMENT_NODE, json!(renamed));
+            assert!(rig.session.refresh(&channel));
+            assert!(rig.session.trail().is_empty());
+            assert_eq!(rig.session.viewed().source, rig.session.top());
+        });
     }
 
     #[test]
-    fn a_sidecar_write_to_a_voice_file_swaps_exactly_once() {
+    fn a_client_write_to_a_voice_is_followed_and_the_top_level_plays_on() {
         within(HANG_SECS, || {
             let mut rig = Rig::open("voice_write", "default.json");
-            let voice = voice_of(&rig);
+            let voice = source_of(&rig, VOICE);
             let playing = rig.playing();
 
-            let written = sidecar_sets_cutoff(&voice, 1200.0);
-            rig.poll_until("the Swap", |rig| rig.swaps() == 1);
-            rig.settle();
-
-            assert_eq!(rig.swaps(), 1);
+            let written = client_sets_cutoff(&rig, &voice, 1200.0);
+            rig.poll_until("the voice read again", |rig| {
+                hash_of(rig, &voice).as_deref() == Some(written.as_str())
+            });
             assert_eq!(rig.status(), &Status::Current);
-            assert_eq!(hash_of(&rig, &voice), Some(written), "the view is the file");
             assert_eq!(
                 rig.playing(),
                 playing,
@@ -1047,72 +959,215 @@ mod tests {
         });
     }
 
+    /// Listed once, then not again for an edit that leaves the tree reading the same documents:
+    /// who plays the viewed one cannot have changed. Listed again once the tree reads another.
     #[test]
-    fn a_sidecar_write_to_the_top_level_file_swaps_once_and_the_engine_plays_it() {
+    fn who_plays_a_viewed_document_is_listed_again_only_when_the_trees_documents_change() {
         within(HANG_SECS, || {
-            let mut rig = Rig::open("top_write", "default.json");
-            let before = rig.playing();
-            let source = spelled(&rig.top);
+            let mut rig = Rig::open("users_coalesced", "default.json");
+            let voice = source_of(&rig, VOICE);
+            let channel = rig.channel_source();
+            rig.session.enter("/voicer").expect("a voicer");
+            let deadline = Instant::now() + SEEN;
+            while rig.session.users(&channel) == Some(&Listing::Checking) {
+                assert!(Instant::now() < deadline, "never listed");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert_eq!(rig.calls(test_support::LIBRARY), 1);
 
-            let edit = set_instrument_constant(
-                &SetInstrumentConstant {
-                    source: source.clone(),
-                    address: "/voicer".to_string(),
-                    name: "voices".to_string(),
-                    value: json!(4),
-                    expect: None,
-                },
-                &FsResolver::for_document(&source).stat_only(),
-            )
-            .expect("the verb ran")
-            .output;
-            assert!(edit.written, "{:?}", edit.report);
-            rig.poll_until("the Swap", |rig| rig.swaps() == 1);
+            let written = client_sets_cutoff(&rig, &voice, 1200.0);
+            rig.poll_until("the voice read again", |rig| {
+                hash_of(rig, &voice).as_deref() == Some(written.as_str())
+            });
+            rig.session.users(&channel);
             rig.settle();
+            rig.session.users(&channel);
+            assert_eq!(rig.calls(test_support::LIBRARY), 1, "listed again");
 
-            assert_eq!(rig.swaps(), 1);
-            assert_eq!(rig.status(), &Status::Current);
-            assert_ne!(edit.hash, before);
-            assert_eq!(rig.playing(), edit.hash);
-            assert_eq!(rig.session.tree().top().hash(), Some(edit.hash.as_str()));
+            // From outside, as a text editor writes: one more document in the tree.
+            let mut doc: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&rig.top).unwrap()).unwrap();
+            doc["resources"]["space"] = json!("patches/space.json");
+            (doc["nodes"].as_array_mut().unwrap())
+                .push(json!({"type": "subpatch", "address": "/space", "patch": "space"}));
+            let staged = rig.top.with_extension("json.tmp");
+            std::fs::write(&staged, doc.to_string()).unwrap();
+            std::fs::rename(&staged, &rig.top).unwrap();
+            rig.poll_until("the new resource read", |rig| {
+                rig.session.tree().documents().len() > 2
+            });
+            rig.session.users(&channel);
+            let deadline = Instant::now() + SEEN;
+            while rig.calls(test_support::LIBRARY) < 2 {
+                assert!(Instant::now() < deadline, "not listed again");
+                std::thread::sleep(Duration::from_millis(5));
+            }
         });
     }
 
     #[test]
-    fn an_invalid_write_leaves_the_previous_instrument_installed_until_the_file_loads_again() {
+    fn a_client_write_to_the_top_level_document_is_followed_and_plays() {
         within(HANG_SECS, || {
-            let mut rig = Rig::open("invalid_write", "default.json");
-            let voice = voice_of(&rig);
+            let mut rig = Rig::open("top_write", "default.json");
+            let before = rig.playing();
+            let source = rig.top_source();
+            let edit = client_writes(
+                &rig,
+                names::SET_INSTRUMENT_CONSTANT,
+                json!({"source": source, "address": "/voicer", "name": "voices", "value": 4}),
+            );
+            rig.poll_until("the top read again", |rig| {
+                rig.session.tree().top().hash() == Some(edit.hash.as_str())
+            });
+            assert_eq!(rig.status(), &Status::Current);
+            assert_ne!(edit.hash, before);
+            assert_eq!(rig.playing(), edit.hash);
+        });
+    }
+
+    #[test]
+    fn an_outside_write_to_a_nested_document_is_followed() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("outside_voice", "default.json");
+            let voice = source_of(&rig, VOICE);
+            let before = hash_of(&rig, &voice);
+            let file = rig.lib.join(VOICE);
+            let text = std::fs::read_to_string(&file).unwrap();
+            let changed = text.replace("\"cutoff\": 3000.0", "\"cutoff\": 1234.0");
+            assert_ne!(changed, text, "the voice has the cutoff to change");
+            std::fs::write(&file, changed).unwrap();
+
+            rig.poll_until("the voice read again", |rig| hash_of(rig, &voice) != before);
+            assert_eq!(rig.status(), &Status::Current);
+        });
+    }
+
+    #[test]
+    fn an_outside_break_holds_and_its_fix_plays() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("outside_break", "default.json");
             let playing = rig.playing();
-            let good = std::fs::read_to_string(&voice).unwrap();
-
-            for (file, what) in [(&voice, "the voice"), (&rig.top.clone(), "the instrument")] {
-                let was = std::fs::read_to_string(file).unwrap();
-                let before = rig.swaps();
-                std::fs::write(file, r#"{"format_version":3,"instrument":"t","nodes":[{"#).unwrap();
+            for (file, what) in [
+                (rig.lib.join(VOICE), "the voice"),
+                (rig.top.clone(), "the top"),
+            ] {
+                let was = std::fs::read_to_string(&file).unwrap();
+                std::fs::write(&file, BROKEN).unwrap();
                 rig.poll_until(what, |rig| matches!(rig.status(), Status::Held(_)));
-                rig.settle();
-                assert_eq!(
-                    rig.swaps(),
-                    before,
-                    "{what}: nothing was offered to the engine"
-                );
-                assert_eq!(rig.playing(), playing, "{what}");
-                let Status::Held(why) = rig.status() else {
-                    unreachable!()
-                };
-                assert_eq!(why.len(), 1, "{why:?}");
+                assert_eq!(rig.playing(), playing, "{what}: what played plays on");
 
-                // Back as it was, which is not the tree last read: it loads, so it is swapped in.
-                let swaps = rig.swaps();
-                std::fs::write(file, was).unwrap();
-                rig.poll_until("the Swap once it loads", |rig| rig.swaps() == swaps + 1);
-                rig.settle();
-                assert_eq!(rig.status(), &Status::Current, "{what}");
-                assert_eq!(rig.swaps(), swaps + 1, "{what}");
+                std::fs::write(&file, was).unwrap();
+                rig.poll_until(what, |rig| rig.status() == &Status::Current);
+                assert_eq!(rig.playing(), playing, "{what}");
             }
-            assert_eq!(std::fs::read_to_string(&voice).unwrap(), good);
-            assert_eq!(rig.playing(), playing);
+        });
+    }
+
+    #[test]
+    fn opening_a_broken_document_shows_it_held_and_the_fixing_edit_plays() {
+        within(HANG_SECS, || {
+            let rig = Rig::open("open_broken", "default.json");
+            let broken = rig.lib.join("broken.json");
+            let text = std::fs::read_to_string(&rig.top)
+                .unwrap()
+                .replace("/voicer.audio", "/nothing.audio");
+            std::fs::write(&broken, text).unwrap();
+            let name = broken.display().to_string();
+            rig.channel()
+                .open(name.clone(), None)
+                .expect("the open reached the server");
+
+            let channel = rig.channel_source();
+            let mut session = Session::open(&name, &channel);
+            let Status::Held(why) = session.status() else {
+                panic!("{:?}", session.status());
+            };
+            assert!(why.iter().any(|w| w.contains("/out")), "{why:?}");
+            assert_eq!(rig.playing(), "", "nothing plays");
+
+            let fixed = edit::write(&mut session, &channel, &name, |expect| {
+                Verb::of(
+                    names::WIRE_INSTRUMENT_INPUT,
+                    &WireInstrumentInput {
+                        source: name.clone(),
+                        address: "/out".to_string(),
+                        input: "audio".to_string(),
+                        from: "/voicer.audio".to_string(),
+                        expect,
+                    },
+                )
+            })
+            .expect("the verb ran");
+            assert!(fixed.written, "{:?}", fixed.report);
+            assert_eq!(session.status(), &Status::Current);
+            assert_eq!(rig.playing(), fixed.hash);
+        });
+    }
+
+    #[test]
+    fn a_burst_of_events_is_one_tree_read() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("burst", "default.json");
+            rig.settle();
+            let source = rig.top_source();
+            let mut last = String::new();
+            for x in [10.0, 20.0, 30.0] {
+                let layout = SetInstrumentLayout {
+                    source: source.clone(),
+                    positions: vec![LayoutPosition {
+                        target: LayoutTarget::Node("/voicer".to_string()),
+                        x,
+                        y: 0.0,
+                    }],
+                    expect: None,
+                };
+                last = client_writes(&rig, names::SET_INSTRUMENT_LAYOUT, json!(layout)).hash;
+            }
+            let events = rig.events(3);
+            assert_eq!(events.len(), 3, "{events:?}");
+            let reads = rig.calls(names::READ_INSTRUMENT_TREE);
+            let channel = rig.channel_source();
+            assert!(
+                rig.session.poll(&events, &channel).reloaded,
+                "the tree changed"
+            );
+            assert_eq!(rig.calls(names::READ_INSTRUMENT_TREE), reads + 1);
+            assert_eq!(rig.session.tree().top().hash(), Some(last.as_str()));
+        });
+    }
+
+    /// The server debounces a write undone at once into no change, and says nothing. A read made
+    /// between the two writes saw the first, and is read again once the debounce is past.
+    #[test]
+    fn a_held_read_of_a_write_the_server_never_reports_is_read_again() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("transient", "default.json");
+            let channel = rig.channel_source();
+            let file = rig.lib.join(VOICE);
+            let was = std::fs::read_to_string(&file).unwrap();
+            std::fs::write(&file, BROKEN).unwrap();
+            rig.session.refresh(&channel);
+            std::fs::write(&file, was).unwrap();
+            assert!(
+                matches!(rig.status(), Status::Held(_)),
+                "{:?}",
+                rig.status()
+            );
+            let poll = rig.session.poll(&[], &channel);
+            assert!(poll.wait.is_some(), "a read is due");
+            rig.poll_until("read again", |rig| rig.status() == &Status::Current);
+        });
+    }
+
+    #[test]
+    fn nothing_is_read_while_nothing_changes() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("idle", "acid-techno.json");
+            rig.settle();
+            let reads = rig.calls(names::READ_INSTRUMENT_TREE);
+            rig.settle();
+            assert_eq!(rig.calls(names::READ_INSTRUMENT_TREE), reads);
+            assert_eq!(rig.status(), &Status::Current);
         });
     }
 
@@ -1127,8 +1182,6 @@ mod tests {
             std::fs::write(&rig.top, text).unwrap();
 
             rig.poll_until("held", |rig| matches!(rig.status(), Status::Held(_)));
-            rig.settle();
-            assert_eq!(rig.swaps(), 0);
             assert_eq!(rig.playing(), playing);
             let Status::Held(why) = rig.status() else {
                 unreachable!()
@@ -1141,7 +1194,7 @@ mod tests {
     fn the_tree_follows_a_change_to_resources() {
         within(HANG_SECS, || {
             let mut rig = Rig::open("resources", "default.json");
-            let old = voice_of(&rig);
+            let old = rig.lib.join(VOICE);
             let new = rig.lib.join("elsewhere").join("moved-voice.json");
             std::fs::create_dir_all(new.parent().unwrap()).unwrap();
             std::fs::copy(&old, &new).unwrap();
@@ -1150,90 +1203,41 @@ mod tests {
                 .unwrap()
                 .replace("voices/default-voice.json", "elsewhere/moved-voice.json");
             std::fs::write(&rig.top, text).unwrap();
-            rig.poll_until("the Swap", |rig| rig.swaps() == 1);
+            rig.poll_until("the new voice in the tree", |rig| {
+                (rig.session.tree().documents().iter())
+                    .any(|d| Path::new(&d.source).ends_with("elsewhere/moved-voice.json"))
+            });
+            assert_eq!(rig.session.tree().documents().len(), 2);
             rig.settle();
-            let files: Vec<&Path> = rig
-                .session
-                .tree()
-                .documents()
-                .iter()
-                .map(|d| d.path.as_path())
-                .collect();
-            assert_eq!(files, [rig.top.as_path(), new.as_path()]);
 
-            // The file that left the tree is no longer the instrument's, and the one that joined,
-            // in a directory nothing watched before, is.
-            sidecar_sets_cutoff(&old, 900.0);
+            // The document that left the tree is no longer the instrument's: the server follows
+            // the one that joined, in a directory nothing watched before.
+            let reads = rig.calls(names::READ_INSTRUMENT_TREE);
+            let text = std::fs::read_to_string(&old).unwrap();
+            std::fs::write(&old, text.replace("3000.0", "900.0")).unwrap();
             rig.settle();
-            assert_eq!(rig.swaps(), 1);
-            sidecar_sets_cutoff(&new, 900.0);
-            rig.poll_until("the Swap", |rig| rig.swaps() == 2);
-            rig.settle();
-            assert_eq!(rig.swaps(), 2);
+            assert_eq!(rig.calls(names::READ_INSTRUMENT_TREE), reads);
+            let moved = source_of(&rig, "elsewhere/moved-voice.json");
+            let before = hash_of(&rig, &moved);
+            let text = std::fs::read_to_string(&new).unwrap();
+            std::fs::write(&new, text.replace("3000.0", "900.0")).unwrap();
+            rig.poll_until("the moved voice read again", |rig| {
+                hash_of(rig, &moved) != before
+            });
         });
-    }
-
-    #[test]
-    fn two_writes_inside_the_quiet_period_are_one_swap_of_the_last() {
-        within(HANG_SECS, || {
-            let mut rig = Rig::open("burst", "default.json");
-            let voice = voice_of(&rig);
-            sidecar_sets_cutoff(&voice, 1200.0);
-            let last = sidecar_sets_cutoff(&voice, 800.0);
-            rig.poll_until("the Swap", |rig| rig.swaps() == 1);
-            rig.settle();
-            assert_eq!(rig.swaps(), 1);
-            assert_eq!(hash_of(&rig, &voice), Some(last));
-        });
-    }
-
-    #[test]
-    fn nothing_is_read_or_swapped_while_nothing_changes() {
-        within(HANG_SECS, || {
-            let mut rig = Rig::open("idle", "acid-techno.json");
-            // A refresh reads every file of the tree; the watcher must not take that for a change.
-            assert!(!rig.session.refresh(&|| None));
-            rig.settle();
-            assert_eq!(rig.touches(), 0);
-            assert_eq!(rig.swaps(), 0);
-            assert_eq!(rig.status(), &Status::Current);
-        });
-    }
-
-    #[test]
-    fn with_no_engine_running_the_tree_still_follows_the_files() {
-        let scratch = test_support::Scratch::new("no_engine");
-        let lib = scratch.library();
-        let voice = lib.join("voices").join("default-voice.json");
-        let mut session = Session::open(&lib.join("default.json"), None, || {});
-        let written = sidecar_sets_cutoff(&voice, 1200.0);
-        assert!(session.refresh(&|| None));
-        assert_eq!(session.status(), &Status::NoEngine);
-        assert_eq!(session.tree().documents()[1].hash(), Some(written.as_str()));
     }
 
     #[test]
     fn a_voice_file_that_goes_missing_is_held_until_it_is_back() {
         within(HANG_SECS, || {
             let mut rig = Rig::open("voice_gone", "default.json");
-            let voice = voice_of(&rig);
-            let playing = rig.playing();
+            let voice = rig.lib.join(VOICE);
             let kept = rig.lib.join("kept.json");
             std::fs::rename(&voice, &kept).unwrap();
-
             rig.poll_until("held", |rig| matches!(rig.status(), Status::Held(_)));
-            rig.settle();
-            assert_eq!(
-                rig.swaps(),
-                0,
-                "an instrument with no voice was not offered"
-            );
-            assert_eq!(rig.playing(), playing);
 
             std::fs::rename(&kept, &voice).unwrap();
-            rig.poll_until("the Swap once it is back", |rig| rig.swaps() == 1);
-            rig.settle();
-            assert_eq!(rig.status(), &Status::Current);
+            rig.poll_until("back", |rig| rig.status() == &Status::Current);
         });
     }
 
@@ -1241,13 +1245,11 @@ mod tests {
     fn a_directory_removed_and_made_again_is_followed_afterwards() {
         within(HANG_SECS, || {
             let mut rig = Rig::open("dir_gone", "default.json");
-            let voice = voice_of(&rig);
+            let voice = rig.lib.join(VOICE);
             let voices = voice.parent().unwrap().to_path_buf();
             let kept = rig.lib.join("kept-voices");
             std::fs::rename(&voices, &kept).unwrap();
             rig.poll_until("held", |rig| matches!(rig.status(), Status::Held(_)));
-            rig.settle();
-            assert_eq!(rig.swaps(), 0);
 
             // A new directory with the same files, as a checkout or a sync leaves.
             std::fs::create_dir(&voices).unwrap();
@@ -1255,59 +1257,28 @@ mod tests {
                 let entry = entry.unwrap();
                 std::fs::copy(entry.path(), voices.join(entry.file_name())).unwrap();
             }
-            rig.poll_until("the Swap once it is back", |rig| rig.swaps() == 1);
-            rig.settle();
-            assert_eq!(rig.status(), &Status::Current);
+            rig.poll_until("back", |rig| rig.status() == &Status::Current);
 
-            sidecar_sets_cutoff(&voice, 900.0);
-            rig.poll_until("a write in the new directory", |rig| rig.swaps() == 2);
-        });
-    }
-
-    #[test]
-    fn a_change_while_a_swap_is_running_is_swapped_once_more_when_it_lands() {
-        within(HANG_SECS, || {
-            let mut rig = Rig::open("mid_swap", "default.json");
-            let voice = voice_of(&rig);
-            rig.fault.delay_ms.store(300, Ordering::SeqCst);
-
-            sidecar_sets_cutoff(&voice, 1200.0);
-            rig.poll_until("the first Swap leaving", |rig| rig.swaps() == 1);
-            let last = sidecar_sets_cutoff(&voice, 800.0);
-            rig.poll_until("the second Swap", |rig| rig.swaps() == 2);
-            rig.poll_until("it landing", |rig| rig.status() == &Status::Current);
-            rig.settle();
-
-            assert_eq!(rig.swaps(), 2);
-            assert_eq!(hash_of(&rig, &voice), Some(last));
-        });
-    }
-
-    #[test]
-    fn a_swap_that_panics_is_reported_and_the_next_change_still_swaps() {
-        within(HANG_SECS, || {
-            let mut rig = Rig::open("swap_panic", "default.json");
-            let voice = voice_of(&rig);
-            rig.fault.panic_once.store(true, Ordering::SeqCst);
-
-            sidecar_sets_cutoff(&voice, 1200.0);
-            rig.poll_until("the panic reported", |rig| {
-                matches!(rig.status(), Status::Held(_))
+            let source = source_of(&rig, VOICE);
+            let before = hash_of(&rig, &source);
+            let text = std::fs::read_to_string(&voice).unwrap();
+            std::fs::write(&voice, text.replace("3000.0", "900.0")).unwrap();
+            rig.poll_until("a write in the new directory", |rig| {
+                hash_of(rig, &source) != before
             });
-            rig.settle();
-
-            sidecar_sets_cutoff(&voice, 800.0);
-            rig.poll_until("the next Swap", |rig| rig.swaps() == 2);
-            rig.poll_until("it landing", |rig| rig.status() == &Status::Current);
         });
     }
 
     #[test]
-    fn a_swap_the_engine_cannot_be_reached_for_is_held() {
-        let scratch = test_support::Scratch::new("unreachable");
-        let lib = scratch.library();
-        let voice = lib.join("voices").join("default-voice.json");
-        let mut session = Session::open(&lib.join("default.json"), None, || {});
+    fn with_no_engine_the_session_says_nothing_plays() {
+        let session = Session::open("/nowhere/default.json", &|| None);
+        assert_eq!(session.status(), &Status::NoEngine);
+        assert!(session.tree().top().read.is_err());
+        assert_eq!(session.tree().top().name(), "default");
+    }
+
+    #[test]
+    fn a_tree_the_engine_cannot_be_reached_for_is_held() {
         #[derive(Debug)]
         struct Unreachable;
         impl reuben_api::engine::Transport for Unreachable {
@@ -1319,49 +1290,227 @@ mod tests {
             }
         }
         let gone = || Some(Channel::new(Unreachable));
-        sidecar_sets_cutoff(&voice, 1200.0);
-        assert!(session.refresh(&gone));
-        let deadline = Instant::now() + test_support::SEEN;
-        while session.status() == &Status::Swapping {
-            assert!(Instant::now() < deadline, "the Swap never came back");
-            session.poll(Instant::now(), &gone);
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        let session = Session::open("/nowhere/default.json", &gone);
         assert!(matches!(session.status(), Status::Held(_)));
     }
 
     #[test]
-    fn files_written_without_a_pause_are_still_read() {
+    fn a_reload_made_by_refresh_is_reported_by_the_next_poll_once() {
         within(HANG_SECS, || {
-            let mut rig = Rig::open("no_pause", "default.json");
-            let voice = voice_of(&rig);
-            let until = Instant::now() + Duration::from_secs(2);
-            let mut cutoff = 500.0;
-            while Instant::now() < until {
-                cutoff += 1.0;
-                sidecar_sets_cutoff(&voice, cutoff);
-                let pause = Instant::now() + QUIET / 3;
-                while Instant::now() < pause {
-                    rig.poll();
-                    std::thread::sleep(Duration::from_millis(2));
-                }
-            }
-            assert!(
-                rig.touches() > 0,
-                "nothing was read while the writes kept coming"
-            );
+            let mut rig = Rig::open("sticky", "default.json");
+            let voice = source_of(&rig, VOICE);
+            let channel = rig.channel_source();
+            client_sets_cutoff(&rig, &voice, 1200.0);
+            assert!(rig.session.refresh(&channel));
+            assert!(rig.session.poll(&[], &channel).reloaded);
+            assert!(!rig.session.poll(&[], &channel).reloaded);
         });
     }
 
     #[test]
-    fn a_reload_made_by_refresh_is_reported_by_the_next_poll_once() {
-        let scratch = test_support::Scratch::new("sticky");
-        let lib = scratch.library();
-        let voice = lib.join("voices").join("default-voice.json");
-        let mut session = Session::open(&lib.join("default.json"), None, || {});
-        sidecar_sets_cutoff(&voice, 1200.0);
-        assert!(session.refresh(&|| None));
-        assert!(session.poll(Instant::now(), &|| None).reloaded);
-        assert!(!session.poll(Instant::now(), &|| None).reloaded);
+    fn an_opened_event_for_another_instrument_is_reported() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("opened", "default.json");
+            let channel = rig.channel_source();
+            let top = rig.top_source();
+            let other = Event::Opened {
+                name: "/elsewhere/other.json".to_string(),
+                hash: String::new(),
+            };
+            let same = Event::Opened {
+                name: top,
+                hash: String::new(),
+            };
+            let poll = rig.session.poll(&[other], &channel);
+            assert_eq!(poll.opened.as_deref(), Some("/elsewhere/other.json"));
+            assert_eq!(rig.session.poll(&[same], &channel).opened, None);
+        });
+    }
+
+    /// An engine serving `top` over TCP on `addr`, as `reuben play` does.
+    fn served(top: &Path, addr: &str) -> RunningEngine {
+        start_headless(EngineConfig {
+            structure: Some(addr.to_string()),
+            ..crate::engine::test_support::config(top.to_path_buf())
+        })
+        .expect("the engine starts")
+    }
+
+    fn dialed(addr: String) -> impl Fn() -> Option<Channel> + Send + Clone + 'static {
+        move || {
+            Some(Channel::new(TcpTransport::new(
+                &addr,
+                DEFAULT_CONNECT_TIMEOUT,
+            )))
+        }
+    }
+
+    #[test]
+    fn follow_reconnects_after_the_engine_returns() {
+        within(HANG_SECS, || {
+            let scratch = Scratch::new("follow_reconnects");
+            let lib = scratch.library();
+            let top = lib.join("default.json");
+            let played = served(&top, "127.0.0.1:0");
+            let addr = played.structure_addr().expect("bound").to_string();
+            let channel = dialed(addr.clone());
+            let follow = Follow::start(channel.clone(), || {});
+            let mut session = Session::open(&top.display().to_string(), &channel);
+            let before = session.tree().top().hash().map(str::to_string);
+
+            reuben_native::diagnostics::log_snapshot(&played.shutdown());
+            // Changed while nothing serves it, so no event says so.
+            let text = std::fs::read_to_string(&top).unwrap();
+            std::fs::write(&top, text.replace("\"default\"", "\"returned\"")).unwrap();
+            let played = served(&top, &addr);
+
+            let deadline = Instant::now() + SEEN;
+            while session.tree().top().hash().map(str::to_string) == before {
+                assert!(Instant::now() < deadline, "never read again");
+                session.poll(&follow.drain(), &channel);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert_eq!(session.tree().top().name(), "returned");
+            assert_eq!(session.status(), &Status::Current);
+            reuben_native::diagnostics::log_snapshot(&played.shutdown());
+        });
+    }
+
+    #[test]
+    fn an_edit_while_the_engine_is_gone_is_refused_promptly() {
+        within(HANG_SECS, || {
+            let scratch = Scratch::new("edit_engine_gone");
+            let lib = scratch.library();
+            let top = lib.join("default.json");
+            let played = served(&top, "127.0.0.1:0");
+            let addr = played.structure_addr().expect("bound").to_string();
+            let channel = dialed(addr);
+            let source = top.display().to_string();
+            let mut session = Session::open(&source, &channel);
+            let before = std::fs::read(&top).unwrap();
+            reuben_native::diagnostics::log_snapshot(&played.shutdown());
+
+            let asked = Instant::now();
+            let edit = edit::write(&mut session, &channel, &source, |expect| {
+                Verb::of(
+                    names::SET_INSTRUMENT_DESCRIPTION,
+                    &SetInstrumentDescription {
+                        source: source.clone(),
+                        description: Some("lost".to_string()),
+                        expect,
+                    },
+                )
+            });
+            assert!(edit.is_err(), "{edit:?}");
+            assert!(
+                asked.elapsed() < Duration::from_secs(3),
+                "refused after {:?}",
+                asked.elapsed()
+            );
+            assert!(session.feedback().is_some());
+            assert!(matches!(session.status(), Status::Held(_)));
+            assert_eq!(std::fs::read(&top).unwrap(), before);
+        });
+    }
+
+    /// The engine's library root is a directory the editor is never told: not its cwd, not an
+    /// argument, not a path it is handed. Every name the editor uses below came from the server.
+    #[test]
+    fn an_attached_editor_edits_an_engine_rooted_where_it_cannot_see() {
+        within(HANG_SECS, || {
+            let root = Scratch::new("rooted_elsewhere");
+            let library = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instruments");
+            let voices = root.path("voices");
+            std::fs::create_dir_all(&voices).unwrap();
+            for file in ["default.json", "voices/default-voice.json"] {
+                std::fs::copy(library.join(file), root.path(file)).unwrap();
+            }
+            let played = start_headless(EngineConfig {
+                osc_in: None,
+                structure: Some("127.0.0.1:0".to_string()),
+                instrument_root: voices.parent().map(Path::to_path_buf),
+                ..EngineConfig::new(reuben_native::engine::Instrument::Silent)
+            })
+            .expect("the engine starts");
+            let addr = played.structure_addr().expect("bound").to_string();
+
+            let mut engine = crate::engine::Engine::attach(addr, || {});
+            let channel = || engine.channel();
+            let listed = channel().expect("attached").library().expect("the library");
+            let top = (listed.instruments.iter())
+                .map(|entry| entry.name.clone())
+                .find(|name| name.ends_with("default.json"))
+                .unwrap_or_else(|| panic!("the instrument is listed: {listed:?}"));
+            let opened = channel().unwrap().open(top.clone(), None).expect("open");
+            assert!(
+                matches!(opened, reuben_api::engine::SwapOutcome::Installed(_)),
+                "{opened:?}"
+            );
+
+            let (follow, latest) = crate::follower(channel(), || {});
+            let mut session = Session::open(&top, &channel);
+            assert_eq!(session.status(), &Status::Current);
+            let first = session.tree().top().hash().expect("read").to_string();
+            let voice = session.tree().documents()[1].source.clone();
+
+            edit::write(&mut session, &channel, &top, |expect| {
+                Verb::of(
+                    names::SET_INSTRUMENT_DESCRIPTION,
+                    &SetInstrumentDescription {
+                        source: top.clone(),
+                        description: Some("edited from afar".to_string()),
+                        expect,
+                    },
+                )
+            })
+            .expect("the edit ran");
+            let read = session.tree().top().read.as_ref().expect("read");
+            assert_eq!(read.description.as_deref(), Some("edited from afar"));
+            assert_ne!(session.tree().top().hash(), Some(first.as_str()));
+
+            // Changed by another program, as an outside editor would.
+            let before = session
+                .tree()
+                .document(&voice)
+                .unwrap()
+                .hash()
+                .map(str::to_string);
+            let file = root.path("voices/default-voice.json");
+            let text = std::fs::read_to_string(&file).unwrap();
+            std::fs::write(&file, text.replace("3000.0", "900.0")).unwrap();
+            let deadline = Instant::now() + SEEN;
+            while session
+                .tree()
+                .document(&voice)
+                .unwrap()
+                .hash()
+                .map(str::to_string)
+                == before
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "the outside change was never followed"
+                );
+                *latest.lock().unwrap() = channel();
+                session.poll(&follow.drain(), &channel);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+
+            let undone = edit::restore(&mut session, &channel, Direction::Undo);
+            assert!(matches!(undone, edit::Restored::Landed), "{undone:?}");
+            let answer = channel()
+                .unwrap()
+                .call(names::READ_INSTRUMENT_TREE, json!({ "source": top }))
+                .expect("the server answers");
+            let reuben_api::engine::CallOutcome::Called { output, .. } = answer else {
+                panic!("refused: {answer:?}");
+            };
+            assert_eq!(output["documents"][0]["structure"]["hash"], json!(first));
+            assert_eq!(session.tree().top().hash(), Some(first.as_str()));
+
+            drop(follow);
+            engine.shutdown();
+            reuben_native::diagnostics::log_snapshot(&played.shutdown());
+        });
     }
 }

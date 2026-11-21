@@ -1,7 +1,7 @@
 //! The playing panel: one control per interface input of the open instrument, and an on-screen
 //! keyboard for its note inputs.
 //!
-//! The panel comes from the instrument's surface doc when [`surface::locate`] finds one, and is
+//! The panel comes from the open instrument's surface doc when the server has one for it, and is
 //! generated from the interface inputs otherwise. A surface doc that cannot be used falls back to
 //! the generated panel and says why.
 //!
@@ -12,11 +12,12 @@ mod model;
 mod surface;
 mod view;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use eframe::egui;
-use reuben_api::authoring::{describe_boundary, DescribeBoundary};
-use reuben_api::FsResolver;
+use reuben_api::authoring::{Boundary, DescribeBoundary};
+use reuben_api::engine::{call_tool, Channel};
+use reuben_api::tools::names;
 
 use self::model::{Control, Kind, Panel};
 use crate::engine::Engine;
@@ -29,50 +30,57 @@ const DEFAULT_LOW_KEY: u8 = 48;
 #[derive(Debug)]
 struct Loaded {
     panel: Panel,
-    /// The surface doc the panel was resolved from; `None` for a generated panel.
-    surface: Option<PathBuf>,
+    /// Whether the panel was resolved from a surface doc; a generated panel was not.
+    from_surface: bool,
 }
 
-/// Build the panel for the instrument file at `instrument`. `root` is the library root its nested
-/// references fall back to, as for the engine.
+/// Build the panel for the instrument the server names `top`, which it has open, asking the server
+/// through `channel` for its boundary and its surface doc.
 ///
 /// `Err` is the instrument itself failing to load: it has no interface to build a panel from.
-fn load(instrument: &Path, root: Option<&Path>) -> Result<Loaded, String> {
-    let source = instrument.display().to_string();
-    // Only port metadata is read, so samples are checked for presence rather than decoded.
-    let mut store = FsResolver::for_document(&source).stat_only();
-    if let Some(root) = root {
-        store = store.with_root(root);
-    }
-    let boundary = describe_boundary(&DescribeBoundary { source }, &store)
-        .map_err(|refusal| refusal.message)?
-        .output;
-
-    let Some(path) = surface::locate(instrument) else {
-        return Ok(Loaded {
-            panel: Panel::generated(&boundary),
-            surface: None,
-        });
+fn load(channel: &Channel, top: &str) -> Result<Loaded, String> {
+    let args = DescribeBoundary {
+        source: top.to_string(),
     };
-    match surface::SurfaceDoc::read(&path) {
-        Ok(doc) => Ok(Loaded {
-            panel: Panel::from_surface(&doc, &boundary),
-            surface: Some(path),
+    let answer =
+        call_tool(names::DESCRIBE_BOUNDARY, &args, channel).map_err(|refusal| refusal.message)?;
+    let boundary: Boundary = serde_json::from_value(answer.output)
+        .map_err(|e| format!("the server's boundary could not be read: {e}"))?;
+
+    let unusable = |why: String| {
+        let mut panel = Panel::generated(&boundary);
+        let file = Path::new(top).file_name().unwrap_or_default();
+        panel.warnings.insert(
+            0,
+            format!(
+                "the surface doc of {} {why} — showing the generated panel instead",
+                file.to_string_lossy()
+            ),
+        );
+        Ok(Loaded {
+            panel,
+            from_surface: false,
+        })
+    };
+    match channel.surface() {
+        Ok(None) => Ok(Loaded {
+            panel: Panel::generated(&boundary),
+            from_surface: false,
         }),
-        Err(e) => {
-            let mut panel = Panel::generated(&boundary);
-            panel.warnings.insert(
-                0,
-                format!(
-                    "surface doc {} {e} — showing the generated panel instead",
-                    path.display()
-                ),
-            );
-            Ok(Loaded {
-                panel,
-                surface: None,
-            })
-        }
+        Ok(Some(text)) => match surface::SurfaceDoc::parse(&text) {
+            // The server answers for the instrument it has open, which an attached engine can
+            // change between the two reads.
+            Ok(doc) if doc.instrument != boundary.instrument => unusable(format!(
+                "is for instrument `{}`, not `{}`",
+                doc.instrument, boundary.instrument
+            )),
+            Ok(doc) => Ok(Loaded {
+                panel: Panel::from_surface(&doc, &boundary),
+                from_surface: true,
+            }),
+            Err(e) => unusable(e.to_string()),
+        },
+        Err(e) => unusable(format!("could not be read: {e}")),
     }
 }
 
@@ -110,9 +118,10 @@ pub struct Controls {
 }
 
 impl Controls {
-    /// The panel for `instrument`, or no panel when no instrument is open.
-    pub fn open(instrument: Option<&Path>, root: Option<&Path>) -> Self {
-        let loaded = instrument.map(|path| load(path, root));
+    /// The panel for the open instrument the server names `top`, read through `channel`; no panel
+    /// when no instrument is open or no engine is running.
+    pub fn open(top: Option<&str>, channel: &dyn Fn() -> Option<Channel>) -> Self {
+        let loaded = top.and_then(|top| channel().map(|channel| load(&channel, top)));
         let settings = match &loaded {
             Some(Ok(loaded)) => loaded.panel.controls.iter().map(Setting::at_rest).collect(),
             _ => Vec::new(),
@@ -182,7 +191,7 @@ impl Controls {
                         return;
                     }
                 };
-                view::header(ui, loaded.surface.as_deref(), live.is_some());
+                view::header(ui, loaded.from_surface, live.is_some());
                 if let Some(e) = &self.send_error {
                     ui.colored_label(ui.visuals().error_fg_color, format!("send failed: {e}"));
                 }
@@ -215,9 +224,12 @@ impl Controls {
 #[cfg(test)]
 mod tests {
     use std::net::UdpSocket;
+    use std::path::PathBuf;
     use std::time::Duration;
 
+    use reuben_api::authoring::describe_boundary;
     use reuben_api::render::Arg;
+    use reuben_api::FsResolver;
     use reuben_native::engine::{EngineConfig, Instrument};
     use reuben_native::osc;
     use reuben_native::test_support::{start_headless, within};
@@ -255,16 +267,24 @@ mod tests {
                  {"type":"osc_out","address":"/level_echo","inputs":{"in":{"from":"/level"}}},
                  {"type":"osc_out","address":"/note_echo","inputs":{"in":{"from":"/notes"}}}]}"#;
 
-    fn headless(instrument: PathBuf, osc_out: Option<String>) -> Engine {
+    fn headless(instrument: &Path, osc_out: Option<String>) -> Engine {
         Engine::start_with(
             EngineConfig {
                 osc_in: None,
                 osc_out,
                 structure: None,
-                ..EngineConfig::new(Instrument::Path(instrument))
+                ..EngineConfig::new(Instrument::Path(instrument.to_path_buf()))
             },
             start_headless,
         )
+    }
+
+    /// The panel `instrument` has on an engine started on it, and that engine.
+    fn served(instrument: &Path, osc_out: Option<String>) -> (Result<Loaded, String>, Engine) {
+        let engine = headless(instrument, osc_out);
+        let channel = (engine.channel())
+            .unwrap_or_else(|| panic!("{}: {:?}", instrument.display(), engine.report()));
+        (load(&channel, &instrument.display().to_string()), engine)
     }
 
     fn control<'a>(panel: &'a Panel, bind: &str) -> &'a Control {
@@ -300,15 +320,14 @@ mod tests {
         std::fs::write(&instrument, PROBE).expect("the probe instrument");
 
         within(HANG_SECS, move || {
-            let loaded = load(&instrument, None).expect("the probe loads");
-            assert_eq!(loaded.surface, None);
-            assert_eq!(loaded.panel.warnings, Vec::<String>::new());
-
             let sink = UdpSocket::bind("127.0.0.1:0").expect("an OSC-out sink");
             sink.set_read_timeout(Some(Duration::from_secs(5)))
                 .expect("a read timeout");
             let target = sink.local_addr().expect("bound").to_string();
-            let mut engine = headless(instrument, Some(target));
+            let (loaded, mut engine) = served(&instrument, Some(target));
+            let loaded = loaded.expect("the probe loads");
+            assert!(!loaded.from_surface);
+            assert_eq!(loaded.panel.warnings, Vec::<String>::new());
             let channel = engine.channel().expect("the engine is running");
 
             let fader = control(&loaded.panel, "level");
@@ -382,10 +401,31 @@ mod tests {
                 .expect("a file name")
                 .to_string_lossy()
                 .into_owned();
-            let loaded = load(&instrument, None).unwrap_or_else(|e| panic!("{name}: {e}"));
+            // Every message the panel can send, sent to the engine it was read from.
+            let loaded = within(HANG_SECS, {
+                let (instrument, name) = (instrument.clone(), name.clone());
+                move || {
+                    let (loaded, mut engine) = served(&instrument, None);
+                    let messages: Vec<ControlSendMessage> = (loaded.iter())
+                        .flat_map(|loaded| &loaded.panel.controls)
+                        .flat_map(|control| {
+                            rest_gestures(control)
+                                .into_iter()
+                                .map(|gesture| control.message(gesture).expect("a message"))
+                        })
+                        .collect();
+                    if !messages.is_empty() {
+                        let channel = engine.channel().expect("the engine is running");
+                        send(&channel, messages).unwrap_or_else(|e| panic!("{name}: {e}"));
+                    }
+                    engine.shutdown();
+                    loaded
+                }
+            });
+            let loaded = loaded.unwrap_or_else(|e| panic!("{name}: {e}"));
             let surface = repo().join("surfaces").join(format!("{name}.json"));
             assert_eq!(
-                loaded.surface.is_some(),
+                loaded.from_surface,
                 surface.is_file(),
                 "{name}: a panel comes from the surface doc exactly when there is one"
             );
@@ -402,7 +442,7 @@ mod tests {
             let left_out = described
                 .inputs
                 .iter()
-                .filter(|port| port.channel.is_some() && loaded.surface.is_none())
+                .filter(|port| port.channel.is_some() && !loaded.from_surface)
                 .count();
             assert_eq!(
                 loaded.panel.warnings.len(),
@@ -429,34 +469,22 @@ mod tests {
             }
             let rows: Vec<usize> = loaded.panel.rows().into_iter().flatten().collect();
             assert_eq!(rows, (0..loaded.panel.controls.len()).collect::<Vec<_>>());
-
-            let messages: Vec<ControlSendMessage> = loaded
-                .panel
-                .controls
-                .iter()
-                .flat_map(|control| {
-                    rest_gestures(control)
-                        .into_iter()
-                        .map(|gesture| control.message(gesture).expect("a message"))
-                })
-                .collect();
-            if messages.is_empty() {
-                continue;
-            }
-            within(HANG_SECS, move || {
-                let mut engine = headless(instrument, None);
-                let channel = engine
-                    .channel()
-                    .unwrap_or_else(|| panic!("{name}: {:?}", engine.report()));
-                send(&channel, messages).unwrap_or_else(|e| panic!("{name}: {e}"));
-                engine.shutdown();
-            });
         }
+    }
+
+    /// The panel of the library instrument `name`, as the server it is open on has it.
+    fn library_panel(name: &str) -> Loaded {
+        let instrument = repo().join("instruments").join(format!("{name}.json"));
+        within(HANG_SECS, move || {
+            let (loaded, mut engine) = served(&instrument, None);
+            engine.shutdown();
+            loaded.expect("loads")
+        })
     }
 
     #[test]
     fn the_library_surfaces_resolve_to_the_widgets_they_name() {
-        let chord = load(&repo().join("instruments/chord-player.json"), None).expect("loads");
+        let chord = library_panel("chord-player");
         let degrees: Vec<i32> = chord
             .panel
             .controls
@@ -468,7 +496,7 @@ mod tests {
             .collect();
         assert_eq!(degrees, (0..7).collect::<Vec<i32>>());
 
-        let groovebox = load(&repo().join("instruments/groovebox.json"), None).expect("loads");
+        let groovebox = library_panel("groovebox");
         let steps = groovebox
             .panel
             .controls
@@ -478,65 +506,125 @@ mod tests {
         assert_eq!(steps, 48);
         assert!(groovebox.panel.rows().iter().any(|row| row.len() == 16));
 
-        let generated = load(&repo().join("instruments/mic-space.json"), None).expect("loads");
-        assert_eq!(generated.surface, None);
+        let generated = library_panel("mic-space");
+        assert!(!generated.from_surface);
         assert_eq!(generated.panel.controls, Vec::new());
     }
 
     #[test]
-    fn an_unusable_surface_doc_falls_back_to_the_generated_panel_with_a_warning() {
+    fn the_controls_panel_reads_its_surface_from_the_server() {
+        let dir = scratch("from_server");
+        let instrument = dir.join("instruments/probe.json");
+        std::fs::write(&instrument, PROBE).expect("the probe instrument");
+        std::fs::write(
+            dir.join("surfaces/probe.json"),
+            r#"{"surface_version":1,"instrument":"probe",
+                "controls":[{"bind":"level","label":"Loudness","widget":"radial"}]}"#,
+        )
+        .expect("a surface doc");
+        within(HANG_SECS, move || {
+            let engine = headless(&instrument, None);
+            let top = instrument.display().to_string();
+            let controls = Controls::open(Some(&top), &|| engine.channel());
+            let Some(Ok(loaded)) = &controls.loaded else {
+                panic!("no panel: {:?}", controls.loaded)
+            };
+            assert!(loaded.from_surface);
+            assert_eq!(loaded.panel.warnings, Vec::<String>::new());
+            assert_eq!(controls.binds(), ["level"]);
+            assert_eq!(loaded.panel.controls[0].label, "Loudness");
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_broken_surface_doc_is_reported_and_the_default_panel_shown() {
         let dir = scratch("fallback");
         let instrument = dir.join("instruments/probe.json");
         std::fs::write(&instrument, PROBE).expect("the probe instrument");
         let surface = dir.join("surfaces/probe.json");
+        within(HANG_SECS, move || {
+            let mut engine = headless(&instrument, None);
+            let channel = engine.channel().expect("the engine is running");
+            let top = instrument.display().to_string();
+            for (text, why) in [
+                ("{ not json", "is not a surface doc"),
+                (
+                    r#"{"surface_version":2,"instrument":"probe","controls":[]}"#,
+                    "surface_version 2",
+                ),
+            ] {
+                std::fs::write(&surface, text).expect("a broken surface doc");
+                let loaded = load(&channel, &top).expect("the instrument still loads");
+                assert!(!loaded.from_surface);
+                assert_eq!(loaded.panel.controls.len(), 2, "the generated panel");
+                assert_eq!(
+                    loaded.panel.warnings.len(),
+                    1,
+                    "{:?}",
+                    loaded.panel.warnings
+                );
+                let warning = &loaded.panel.warnings[0];
+                assert!(warning.contains(why), "{warning}");
+                assert!(warning.contains("probe.json"), "{warning}");
+                assert!(warning.contains("generated panel"), "{warning}");
+            }
+            engine.shutdown();
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
-        for (text, why) in [
-            ("{ not json", "is not a surface doc"),
-            (
-                r#"{"surface_version":2,"instrument":"probe","controls":[]}"#,
-                "surface_version 2",
-            ),
-        ] {
-            std::fs::write(&surface, text).expect("a broken surface doc");
-            let loaded = load(&instrument, None).expect("the instrument still loads");
-            assert_eq!(loaded.surface, None);
-            assert_eq!(loaded.panel.controls.len(), 2, "the generated panel");
-            assert_eq!(
-                loaded.panel.warnings.len(),
-                1,
-                "{:?}",
-                loaded.panel.warnings
-            );
-            let warning = &loaded.panel.warnings[0];
-            assert!(warning.contains(why), "{warning}");
-            assert!(warning.contains("probe.json"), "{warning}");
-            assert!(warning.contains("generated panel"), "{warning}");
-        }
-
+    /// The server's surface doc is the open instrument's: read for another instrument, it is not
+    /// that one's panel.
+    #[test]
+    fn a_surface_doc_for_another_instrument_is_not_used() {
+        let dir = scratch("other_surface");
+        let instrument = dir.join("instruments/probe.json");
+        std::fs::write(&instrument, PROBE).expect("the probe instrument");
         std::fs::write(
-            &surface,
+            dir.join("surfaces/probe.json"),
             r#"{"surface_version":1,"instrument":"probe",
-                "controls":[{"bind":"level","label":"Loudness","widget":"radial"}]}"#,
+                "controls":[{"bind":"level","label":"Loudness"}]}"#,
         )
-        .expect("a good surface doc");
-        let loaded = load(&instrument, None).expect("loads");
-        assert_eq!(loaded.surface, Some(surface));
-        assert_eq!(loaded.panel.controls.len(), 1);
-        assert_eq!(loaded.panel.controls[0].label, "Loudness");
+        .expect("a surface doc");
+        let other = dir.join("instruments/other.json");
+        std::fs::write(&other, PROBE.replace(r#""probe""#, r#""other""#)).expect("another");
+        within(HANG_SECS, move || {
+            let mut engine = headless(&instrument, None);
+            let channel = engine.channel().expect("the engine is running");
+            let loaded = load(&channel, &other.display().to_string()).expect("it loads");
+            assert!(!loaded.from_surface);
+            assert_eq!(loaded.panel.controls.len(), 2, "the generated panel");
+            let warning = &loaded.panel.warnings[0];
+            assert!(warning.contains("`probe`, not `other`"), "{warning}");
+            assert!(warning.contains("generated panel"), "{warning}");
+            engine.shutdown();
+        });
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn an_instrument_that_does_not_load_has_no_panel() {
         let dir = scratch("unloadable");
-        let instrument = dir.join("instruments/broken.json");
-        std::fs::write(&instrument, r#"{"format_version":3,"nodes":[{"#).expect("a broken doc");
-        assert!(load(&instrument, None).is_err());
-        assert!(load(&dir.join("instruments/missing.json"), None).is_err());
+        let instrument = dir.join("instruments/probe.json");
+        std::fs::write(&instrument, PROBE).expect("the probe instrument");
+        let broken = dir.join("instruments/broken.json");
+        std::fs::write(&broken, r#"{"format_version":3,"nodes":[{"#).expect("a broken doc");
+        let missing = dir.join("instruments/missing.json");
+        within(HANG_SECS, move || {
+            let mut engine = headless(&instrument, None);
+            let channel = engine.channel().expect("the engine is running");
+            let name = |path: &Path| path.display().to_string();
+            assert!(load(&channel, &name(&broken)).is_err());
+            assert!(load(&channel, &name(&missing)).is_err());
 
-        let controls = Controls::open(Some(&instrument), None);
-        assert!(matches!(controls.loaded, Some(Err(_))));
-        assert!(Controls::open(None, None).loaded.is_none());
+            let controls = Controls::open(Some(&name(&broken)), &|| engine.channel());
+            assert!(matches!(controls.loaded, Some(Err(_))));
+            assert!(Controls::open(None, &|| engine.channel()).loaded.is_none());
+            let no_engine = Controls::open(Some(&name(&instrument)), &|| None);
+            assert!(no_engine.loaded.is_none(), "no engine, no panel");
+            engine.shutdown();
+        });
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -546,10 +634,10 @@ mod tests {
         let instrument = dir.join("instruments/probe.json");
         std::fs::write(&instrument, PROBE).expect("the probe instrument");
         within(HANG_SECS, move || {
-            let loaded = load(&instrument, None).expect("loads");
+            let (loaded, mut engine) = served(&instrument, None);
+            let loaded = loaded.expect("loads");
             let fader = control(&loaded.panel, "level");
             let messages = vec![fader.message(Gesture::Set(0.5)).unwrap(); MAX_SEND_BATCH + 1];
-            let mut engine = headless(instrument, None);
             send(&engine.channel().expect("running"), messages).expect("sent");
             engine.shutdown();
         });

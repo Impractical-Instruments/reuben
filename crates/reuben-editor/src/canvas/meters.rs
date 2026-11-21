@@ -238,7 +238,7 @@ mod tests {
     use reuben_native::test_support::{start_headless, within};
 
     use super::*;
-    use crate::session::test_support::{probed, Scratch};
+    use crate::session::test_support::{probed, Rig, Scratch};
 
     fn path(segments: &[&str]) -> Vec<String> {
         segments.iter().map(|s| s.to_string()).collect()
@@ -258,13 +258,14 @@ mod tests {
     fn a_subpatch_box_meters_the_inner_node_feeding_each_signal_output() {
         let scratch = Scratch::new("node_taps");
         let top = probed(&scratch);
-        let mut session = Session::open(&top, None, || {});
+        let mut rig = Rig::on(scratch, top.clone());
+        let session = &mut rig.session;
         let tap = |p: &[&str], port: &str, output: &str| Tap {
             path: path(p),
             port: port.to_string(),
             output: output.to_string(),
         };
-        let top_level = tapped(&session);
+        let top_level = tapped(session);
         assert_eq!(
             top_level,
             [
@@ -287,7 +288,7 @@ mod tests {
         );
         session.enter("/kick_v").expect("a voicer");
         assert_eq!(
-            tapped(&session),
+            tapped(session),
             [(
                 "/osc".to_string(),
                 vec![tap(&["/kick_v", "/osc"], "audio", "audio")]
@@ -338,8 +339,8 @@ mod tests {
     fn a_playing_voicer_and_subpatch_report_a_level_on_the_port_their_bar_reads() {
         let scratch = Scratch::new("node_taps_levels");
         let top = probed(&scratch);
-        let session = Session::open(&top, None, || {});
-        let taps: Vec<(String, Vec<Tap>)> = (tapped(&session).into_iter())
+        let rig = Rig::on(scratch, top.clone());
+        let taps: Vec<(String, Vec<Tap>)> = (tapped(&rig.session).into_iter())
             .filter(|(title, _)| ["/kick_v", "/bass", "/wrap"].contains(&title.as_str()))
             .collect();
         assert_eq!(taps.len(), 3);

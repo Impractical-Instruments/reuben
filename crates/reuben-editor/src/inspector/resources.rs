@@ -1,25 +1,30 @@
 //! The viewed document's `resources` table in the inspector, with nothing selected: each id and the
-//! source it names, added and repointed through the native file picker, and removed. With a node
-//! selected, the id each of its resource slots reads, picked from the table.
+//! source it names, added and repointed by picking one of the samples or instruments the server
+//! offers, and removed. With a node selected, the id each of its resource slots reads, picked from
+//! the table.
 //!
 //! A picked file is stored relative to the viewed document's directory, which is where that
 //! document's references resolve from, so the table survives the instrument being moved whole.
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::OnceLock;
 
 use eframe::egui;
 use reuben_api::authoring::{
-    add_instrument_resource, describe_operators, remove_instrument_resource,
-    set_instrument_node_resource, set_instrument_resource, AddInstrumentResource, Answer,
-    DescribeOperators, EditResult, InstrumentStructure, Refusal, RemoveInstrumentResource,
-    ResourceEntry, Resources, SetInstrumentNodeResource, SetInstrumentResource, StructureNode,
+    describe_operators, AddInstrumentResource, DescribeOperators, InstrumentStructure,
+    RemoveInstrumentResource, ResourceEntry, SetInstrumentNodeResource, SetInstrumentResource,
+    StructureNode,
 };
+use reuben_api::engine::{Channel, ListWhat};
+use reuben_api::tools::names;
 
 use super::view::Ask;
 use super::{Edit, Inspector};
-use crate::pick;
+use crate::chooser;
+use crate::edit::Verb;
+use crate::names::lexical;
 
 /// One change to the resources table, or to what a node reads from it.
 #[derive(Debug, Clone, PartialEq)]
@@ -45,35 +50,32 @@ pub enum ResourceEdit {
 }
 
 impl ResourceEdit {
-    pub fn run(
-        self,
-        source: String,
-        store: &dyn Resources,
-        expect: Option<String>,
-    ) -> Result<Answer<EditResult>, Refusal> {
+    pub fn verb(self, source: String, expect: Option<String>) -> Verb {
         match self {
-            ResourceEdit::Add { id, source: named } => add_instrument_resource(
+            ResourceEdit::Add { id, source: named } => Verb::of(
+                names::ADD_INSTRUMENT_RESOURCE,
                 &AddInstrumentResource {
                     source,
                     id,
                     resource_source: named,
                     expect,
                 },
-                store,
             ),
-            ResourceEdit::Remove(id) => {
-                remove_instrument_resource(&RemoveInstrumentResource { source, id, expect }, store)
-            }
-            ResourceEdit::Repoint { id, source: named } => set_instrument_resource(
+            ResourceEdit::Remove(id) => Verb::of(
+                names::REMOVE_INSTRUMENT_RESOURCE,
+                &RemoveInstrumentResource { source, id, expect },
+            ),
+            ResourceEdit::Repoint { id, source: named } => Verb::of(
+                names::SET_INSTRUMENT_RESOURCE,
                 &SetInstrumentResource {
                     source,
                     id,
                     resource_source: named,
                     expect,
                 },
-                store,
             ),
-            ResourceEdit::Slot { address, slot, id } => set_instrument_node_resource(
+            ResourceEdit::Slot { address, slot, id } => Verb::of(
+                names::SET_INSTRUMENT_NODE_RESOURCE,
                 &SetInstrumentNodeResource {
                     source,
                     address,
@@ -81,14 +83,13 @@ impl ResourceEdit {
                     id,
                     expect,
                 },
-                store,
             ),
         }
     }
 }
 
 /// What a picked file is named as: a sample is a WAV, anything else here an instrument document.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash)]
 enum Kind {
     Sample,
     Document,
@@ -103,10 +104,11 @@ impl Kind {
         }
     }
 
-    fn pick(self, dir: Option<&Path>) -> Option<PathBuf> {
+    /// The names of this kind the server offers.
+    fn listed(self) -> ListWhat {
         match self {
-            Kind::Sample => pick::sample(dir),
-            Kind::Document => pick::instrument_to_open(dir),
+            Kind::Sample => ListWhat::Samples,
+            Kind::Document => ListWhat::Instruments,
         }
     }
 
@@ -120,20 +122,66 @@ impl Kind {
     }
 }
 
-/// The id typed into the "add a resource" row, held between frames for the document it was typed
-/// in: viewing another document starts the row empty.
-#[derive(Debug, Clone, Default, PartialEq)]
+/// The id typed into the "add a resource" row, and the chooser a button opened, held between frames
+/// for the document they were made in: viewing another document starts the row empty and closes
+/// the chooser.
+#[derive(Debug, Default)]
 pub struct Draft {
     id: String,
     document: PathBuf,
+    choosing: Option<Choosing>,
+}
+
+/// A chooser open for what a button asked, over the names the server offers of its kind.
+#[derive(Debug)]
+struct Choosing {
+    want: Want,
+    offered: Offered,
+}
+
+/// The names a chooser offers: being listed off the UI thread, or listed, or why not.
+#[derive(Debug)]
+enum Offered {
+    Listing(Receiver<Result<Vec<String>, String>>),
+    Listed(Result<Vec<String>, String>),
+}
+
+impl Choosing {
+    /// Open a chooser for `want`, its names asked of the server through `channel` on a thread of
+    /// their own; `ctx` is repainted when they arrive.
+    fn ask(want: Want, channel: Option<Channel>, ctx: egui::Context) -> Self {
+        let what = want.kind().listed();
+        let (done, listing) = mpsc::channel();
+        std::thread::spawn(move || {
+            let listed = match channel {
+                Some(channel) => channel.list(what).map_err(|e| e.to_string()),
+                None => Err("no engine is running to list them".to_string()),
+            };
+            if done.send(listed).is_ok() {
+                ctx.request_repaint();
+            }
+        });
+        Self {
+            want,
+            offered: Offered::Listing(listing),
+        }
+    }
+
+    fn heard(&mut self) {
+        if let Offered::Listing(listing) = &self.offered {
+            if let Ok(listed) = listing.try_recv() {
+                self.offered = Offered::Listed(listed);
+            }
+        }
+    }
 }
 
 impl Draft {
     fn viewing(&mut self, document: &Path) {
         if self.document != document {
             *self = Draft {
-                id: String::new(),
                 document: document.to_path_buf(),
+                ..Draft::default()
             };
         }
     }
@@ -193,22 +241,6 @@ pub fn relative_source(dir: &Path, picked: &Path) -> Result<String, String> {
     Ok(parts.ok_or_else(unnamed)?.join("/"))
 }
 
-/// `path` made absolute, with each `.` dropped and each `..` folded into the component before it.
-fn lexical(path: &Path) -> PathBuf {
-    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-    let mut folded = PathBuf::new();
-    for component in absolute.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                folded.pop();
-            }
-            other => folded.push(other),
-        }
-    }
-    folded
-}
-
 /// The file's name without its extension, as an id `top` does not have: `testvox`, else
 /// `testvox_2`, `testvox_3`, ….
 fn free_id(top: &InstrumentStructure, picked: &Path) -> String {
@@ -241,17 +273,28 @@ fn readers<'a>(top: &'a InstrumentStructure, id: &str) -> Vec<&'a str> {
 }
 
 /// What a button in the table asked to pick a file for.
+#[derive(Debug, Hash)]
 enum Want {
     Add(Kind),
     Repoint(String, Kind),
 }
 
-/// The resources table of `top`, the document at `document`, with a row to add an entry.
+impl Want {
+    fn kind(&self) -> Kind {
+        match self {
+            Want::Add(kind) | Want::Repoint(_, kind) => *kind,
+        }
+    }
+}
+
+/// The resources table of `top`, the document at `document`, with a row to add an entry. What an
+/// entry names is picked from what the server offers, listed through `channel`.
 pub fn list(
     ui: &mut egui::Ui,
     inspector: &mut Inspector,
     top: &InstrumentStructure,
     document: &Path,
+    channel: &dyn Fn() -> Option<Channel>,
     asks: &mut Vec<Ask>,
 ) {
     inspector.resource.viewing(document);
@@ -298,26 +341,57 @@ pub fn list(
             want = Some(Want::Add(Kind::Document));
         }
     });
-    let Some(want) = want else { return };
+    if let Some(want) = want {
+        let ask = Choosing::ask(want, channel(), ui.ctx().clone());
+        inspector.resource.choosing = Some(ask);
+    }
+    let Some(choosing) = &mut inspector.resource.choosing else {
+        return;
+    };
+    choosing.heard();
     let Some(dir) = dir else {
+        inspector.resource.choosing = None;
         asks.push(Ask::Refuse(
             "The document has no directory to name a file from.".to_string(),
         ));
         return;
     };
+    ui.separator();
+    ui.label(match (&choosing.want, choosing.want.kind()) {
+        (Want::Add(_), Kind::Sample) => "Add which sample?".to_string(),
+        (Want::Add(_), Kind::Document) => "Add which instrument?".to_string(),
+        (Want::Repoint(id, _), _) => format!("Point {id} at which file?"),
+    });
+    let picked = match &choosing.offered {
+        Offered::Listing(_) => {
+            ui.weak("Listing what the server offers…");
+            None
+        }
+        Offered::Listed(Err(e)) => {
+            ui.colored_label(
+                ui.visuals().error_fg_color,
+                format!("The server could not list them: {e}"),
+            );
+            None
+        }
+        Offered::Listed(Ok(names)) => {
+            // Per ask, so what was typed to filter one chooser is not the next one's filter.
+            let id = ui.id().with(("resource chooser", &choosing.want));
+            chooser::show(ui, id, names, &dir.display().to_string())
+        }
+    };
+    let cancelled = ui.button("Cancel").clicked();
+    if picked.is_none() && !cancelled {
+        return;
+    }
+    let Some(Choosing { want, .. }) = inspector.resource.choosing.take() else {
+        return;
+    };
+    let Some(picked) = picked else { return };
+    let picked = Path::new(&picked);
     let edit = match want {
-        Want::Add(kind) => {
-            let Some(picked) = kind.pick(Some(dir)) else {
-                return;
-            };
-            inspector.resource.add(top, dir, &picked)
-        }
-        Want::Repoint(id, kind) => {
-            let Some(picked) = kind.pick(Some(dir)) else {
-                return;
-            };
-            repoint(&id, dir, &picked)
-        }
+        Want::Add(_) => inspector.resource.add(top, dir, picked),
+        Want::Repoint(id, _) => repoint(&id, dir, picked),
     };
     asks.push(match edit {
         Ok(edit) => Ask::Edit(Edit::Resource(edit), None),
@@ -412,6 +486,7 @@ pub fn slots(
 
 #[cfg(test)]
 mod tests {
+    use reuben_api::authoring::Resources;
     use reuben_api::FsResolver;
     use reuben_native::test_support::within;
     use serde_json::json;
@@ -585,6 +660,23 @@ mod tests {
     }
 
     #[test]
+    fn each_ask_keeps_a_filter_of_its_own() {
+        let id = |want: &Want| egui::Id::new(("resource chooser", want));
+        let asks = [
+            Want::Add(Kind::Sample),
+            Want::Add(Kind::Document),
+            Want::Repoint("a".into(), Kind::Sample),
+            Want::Repoint("b".into(), Kind::Sample),
+        ];
+        for (i, one) in asks.iter().enumerate() {
+            for other in &asks[i + 1..] {
+                assert_ne!(id(one), id(other), "{one:?} {other:?}");
+            }
+        }
+        assert_eq!(id(&Want::Add(Kind::Sample)), id(&asks[0]));
+    }
+
+    #[test]
     fn the_picker_offers_the_kind_of_file_an_entry_already_names() {
         assert_eq!(Kind::of("patches/space.json"), Kind::Document);
         assert_eq!(Kind::of("samples/testvox.wav"), Kind::Sample);
@@ -615,7 +707,7 @@ mod tests {
     }
 
     fn dir(rig: &Rig) -> PathBuf {
-        let path = &rig.session.viewed().path;
+        let path = Path::new(&rig.session.viewed().source);
         path.parent()
             .expect("a document has a directory")
             .to_path_buf()
@@ -692,7 +784,10 @@ mod tests {
             let mut rig = Rig::open("resources_patch", "granular-cloud.json");
             rig.session.enter("/verb").expect("/verb patches space");
             let space = rig.lib.join("patches").join("space.json");
-            assert_eq!(rig.session.viewed().path, space);
+            assert!(crate::session::test_support::names(
+                &rig.session.viewed().source,
+                &space
+            ));
             let mut inspector = Inspector::default();
             let sample = rig.lib.join("samples/testvox.wav");
 

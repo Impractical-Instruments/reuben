@@ -27,6 +27,7 @@ client, so authoring runs in the client's process, on the client's disk:
   Swaps by `DocSource::Path`. The start screen, recent files, library listing (`session/users.rs`)
   and the sample picker (`inspector/resources.rs`) browse the local disk. By default the editor
   embeds a server (`engine.rs` starts what `reuben play` starts); `--attach` reaches one instead.
+  Moved onto the server in part 4.
 - **CLI** `describe`, `validate`, `new-instrument` work on local files with no server.
 - **The structure channel** (`reuben-api/src/engine/{wire,server,channel}.rs`) has seven
   requests: `ping`, `swap`, `get_document`, `get_diagnostics`, `get_meters`, `set_probes`, `send`.

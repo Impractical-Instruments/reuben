@@ -33,7 +33,8 @@ struct Inner {
 
 #[derive(Default)]
 struct State {
-    /// The open top-level file, canonical. `None` while nothing is open, when nothing is held.
+    /// The open top-level file, [`canonical`]. `None` while nothing is open, when nothing
+    /// is held.
     open: Option<PathBuf>,
     /// A later held Swap replaces it.
     pending: Option<Asked>,
@@ -42,8 +43,8 @@ struct State {
 /// A held Swap the user is being asked about.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Asked {
-    /// As the client spelled it, which is how the engine names it once it is opened, so the
-    /// agent sees the source it asked for.
+    /// The engine's name for it, which it plays under once opened, so the agent sees the source
+    /// it asked for.
     pub path: PathBuf,
     canonical: PathBuf,
     at: Instant,
@@ -77,19 +78,28 @@ impl HeldSwaps {
         state.open = Some(top);
     }
 
+    /// Nothing is open now, as after an open the server refused with nothing open before it: no
+    /// Swap is held.
+    pub fn closed(&self) {
+        self.state().open = None;
+    }
+
     /// The Swap the user is being asked about, if any.
     pub fn pending(&self) -> Option<Asked> {
         self.state().pending.clone()
     }
 
-    /// The user chose to open `shown`. Returns the path to open, unless another held Swap has
-    /// replaced the one they were shown.
-    pub fn accept(&self, shown: &Asked) -> Option<PathBuf> {
+    /// The user chose to open `shown`. Returns the name to open it by, as the client asked for
+    /// it, unless another held Swap has replaced the one they were shown.
+    pub fn accept(&self, shown: &Asked) -> Option<String> {
         let mut state = self.state();
         if state.pending.as_ref() != Some(shown) {
             return None;
         }
-        state.pending.take().map(|asked| asked.path)
+        state
+            .pending
+            .take()
+            .map(|asked| asked.path.display().to_string())
     }
 
     /// The user kept what is open rather than `shown`: nothing changes. A Swap held since they
@@ -130,20 +140,18 @@ impl HeldSwaps {
     }
 }
 
-/// `path` with links and `..` resolved, so two spellings of one file compare equal. A path that
-/// does not resolve is compared made absolute against the working directory, which is where the
-/// engine reads a Swap's path from.
+/// `path` as the server names it: absolute, with `.` and `..` folded by text, so two spellings of
+/// one name compare equal without asking the filesystem, which for an attached editor is not the
+/// server's.
 pub fn canonical(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path)
-        .or_else(|_| std::path::absolute(path))
-        .unwrap_or_else(|_| path.to_path_buf())
+    crate::names::lexical(path)
 }
 
 /// Draw the prompt while a Swap is held, floating over the bottom-right corner of `within` so
 /// nothing under it moves when it appears. It takes no focus, and its buttons ignore clicks for [`ARMING`]
 /// after what it asks about changes, so a gesture under way carries on until the user turns to
-/// it. Returns the source the user chose to open.
-pub fn show(ctx: &egui::Context, held: &HeldSwaps, within: egui::Rect) -> Option<PathBuf> {
+/// it. Returns the name the user chose to open.
+pub fn show(ctx: &egui::Context, held: &HeldSwaps, within: egui::Rect) -> Option<String> {
     let asked = held.pending()?;
     let armed = asked.at.elapsed() >= ARMING;
     if !armed {
@@ -197,14 +205,11 @@ mod tests {
     use reuben_native::test_support::{start_headless, within};
 
     use super::*;
-    use crate::audio::tests::two_devices;
-    use crate::audio::AudioSettings;
-    use crate::config::test_support::TempConfig;
-    use crate::engine::test_support::HANG_SECS;
+    use crate::engine::test_support::{silent, HANG_SECS};
     use crate::engine::Engine;
     use crate::session::test_support::Scratch;
     use crate::session::{Session, Status};
-    use crate::start::{self, Launch};
+    use crate::start;
 
     fn headless(mut config: EngineConfig) -> Result<RunningEngine, StartError> {
         config.osc_in = Some("127.0.0.1:0".to_string());
@@ -218,19 +223,14 @@ mod tests {
         lib: PathBuf,
         held: HeldSwaps,
         wakes: Arc<AtomicUsize>,
-        launch: Launch,
-        audio: AudioSettings,
         engine: Engine,
         session: Session,
         link: EngineLink,
-        _temp: TempConfig,
         _scratch: Scratch,
     }
 
     impl Editor {
         fn open(test: &str, instrument: &str) -> Self {
-            let temp = TempConfig::new();
-            let audio = AudioSettings::load_with(temp.dir(), two_devices);
             let scratch = Scratch::new(test);
             let lib = scratch.library();
             let wakes = Arc::new(AtomicUsize::new(0));
@@ -240,25 +240,24 @@ mod tests {
                     wakes.fetch_add(1, Ordering::SeqCst);
                 }
             });
-            let launch = Launch {
-                root: None,
-                flags: Default::default(),
-                swap_hold: Some(held.swap_hold()),
-            };
-            let top = lib.join(instrument);
+            let engine = Engine::start_with(
+                EngineConfig {
+                    swap_hold: Some(held.swap_hold()),
+                    ..silent(&lib)
+                },
+                headless,
+            );
+            let top = lib.join(instrument).display().to_string();
             let mut editor = Self {
                 lib,
                 held,
                 wakes,
-                launch,
-                audio,
-                engine: Engine::idle(),
-                session: Session::open(&top, None, || {}),
+                engine,
+                session: Session::open(&top, &|| None),
                 link: EngineLink::default(),
-                _temp: temp,
                 _scratch: scratch,
             };
-            editor.open_file(&top, headless);
+            editor.open_file(&top);
             let structure = editor
                 .engine
                 .running()
@@ -268,33 +267,17 @@ mod tests {
             editor
         }
 
-        /// What the editor does to open a file, from the start screen or from the prompt, in the
-        /// order it does it, then waits for the Swap to land.
-        fn open_file(
-            &mut self,
-            path: &Path,
-            start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
-        ) {
-            self.held.opened(path);
-            self.session = start::open(
-                path,
-                &self.launch,
-                &mut self.audio,
-                &mut self.engine,
-                || {},
-                start,
-            );
-            let deadline = Instant::now() + Duration::from_secs(HANG_SECS);
-            while self.session.status() != &Status::Current {
-                assert!(Instant::now() < deadline, "{:?}", self.session.status());
-                self.session.poll(Instant::now(), &|| self.engine.channel());
-                std::thread::sleep(Duration::from_millis(5));
-            }
+        /// What the editor does to open an instrument by name, from the start screen or from the
+        /// prompt, in the order it does it.
+        fn open_file(&mut self, name: &str) {
+            self.held.opened(Path::new(name));
+            self.session = start::open(name, &self.engine, || {}).expect("the server opens it");
+            assert_eq!(self.session.status(), &Status::Current);
         }
 
         fn accept(&mut self, shown: &Asked) {
-            let path = self.held.accept(shown).expect("the prompt still asks this");
-            self.open_file(&path, |_| panic!("a running engine is not started again"));
+            let name = self.held.accept(shown).expect("the prompt still asks this");
+            self.open_file(&name);
         }
 
         /// `reuben-mcp`'s `swap_instrument` of `path`.
@@ -324,6 +307,16 @@ mod tests {
         fn spelled(&self, relative: &str) -> String {
             self.lib.join(relative).display().to_string()
         }
+    }
+
+    /// Compared by text alone, as the server names files: `..` folded, no file looked at, so a
+    /// remote server's names compare the same as the editor's own.
+    #[test]
+    fn two_spellings_compare_by_text_alone() {
+        let held = HeldSwaps::new(|| {});
+        held.opened(Path::new("/no/such/dir/../pad.json"));
+        assert!(!held.hold(Path::new("/no/such/./pad.json")));
+        assert!(held.hold(Path::new("/no/such/dir/pad.json")));
     }
 
     #[test]
@@ -374,7 +367,7 @@ mod tests {
 
             editor.accept(&asked);
             assert_eq!(editor.held.pending(), None);
-            assert_eq!(editor.session.top(), Path::new(&groovebox));
+            assert_eq!(editor.session.top(), groovebox);
             assert_eq!(
                 editor.playing(),
                 groovebox,
@@ -400,7 +393,7 @@ mod tests {
             let asked = editor.held.pending().expect("the user is asked");
             editor.held.decline(&asked);
             assert_eq!(editor.held.pending(), None);
-            assert_eq!(editor.session.top(), Path::new(&acid));
+            assert_eq!(editor.session.top(), acid);
             assert_eq!(editor.playing(), acid);
             editor.engine.shutdown();
         });
@@ -517,9 +510,7 @@ mod tests {
             let mut editor = Editor::open("held_opened", "acid-techno.json");
             let groovebox = editor.spelled("groovebox.json");
             assert!(editor.mcp_swaps(&groovebox).held.is_some());
-            editor.open_file(Path::new(&groovebox), |_| {
-                panic!("a running engine is not started again")
-            });
+            editor.open_file(&groovebox);
             assert_eq!(editor.held.pending(), None);
             assert_eq!(editor.playing(), groovebox);
             editor.engine.shutdown();

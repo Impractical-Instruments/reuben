@@ -6,6 +6,7 @@
 //! reported a problem* (an ordinary [`Answer`] carrying `ok: false`) and one that could not do the
 //! job at all (a [`Refusal`]).
 
+use alloc::collections::{BTreeSet, VecDeque};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -25,10 +26,10 @@ use reuben_document::{content_hash, LoadError, NormalizedDoc};
 
 use super::args::*;
 use super::result::{
-    Boundary, Diag, DocumentView, EditResult, InstrumentStructure, OperatorInfo, Operators, Report,
-    WireVerdict, WireVerdicts,
+    Boundary, Diag, DocumentView, EditResult, InstrumentStructure, InstrumentTree, OperatorInfo,
+    Operators, Report, TreeDocument, WireVerdict, WireVerdicts,
 };
-use crate::resources::{Adapter, Resources};
+use crate::resources::{Adapter, Anchored, Resources};
 
 /// A verb's answer: the payload a door advertises to its caller, and the one-line gloss it shows a
 /// human reading the transcript.
@@ -768,6 +769,70 @@ pub fn read_instrument(
         validate_summary(&output.report)
     );
     Ok(Answer { output, summary })
+}
+
+/// The node slots whose resource is a document rather than a sample: a voice runs as a Plan of
+/// its own, a patch is spliced in.
+const DOCUMENT_SLOTS: [&str; 2] = ["voice", "patch"];
+
+/// Read the document at `args.source` and every document it reaches through a `voice` or `patch`
+/// resource: the top first, then breadth-first, each source once.
+///
+/// Each document is read through `resources` scoped to it, so its references resolve from where
+/// it lives. A document that cannot be read is an entry with `error` set and nothing beneath it;
+/// the verb never refuses for one.
+pub fn read_instrument_tree(
+    args: &ReadInstrumentTree,
+    resources: &dyn Resources,
+) -> Result<Answer<InstrumentTree>, Refusal> {
+    let mut seen = BTreeSet::from([resources.canonical(&args.source, None)]);
+    let mut documents: Vec<TreeDocument> = Vec::new();
+    let mut queue = VecDeque::from([args.source.clone()]);
+    while let Some(source) = queue.pop_front() {
+        let anchored = Anchored {
+            store: resources,
+            referrer: resources.canonical(&source, None),
+        };
+        let read = read_instrument(
+            &ReadInstrument {
+                source: source.clone(),
+            },
+            &anchored,
+        );
+        match read {
+            Ok(answer) => {
+                let structure = answer.output;
+                for node in &structure.nodes {
+                    let Some(slot) = (node.resources.iter())
+                        .find(|slot| DOCUMENT_SLOTS.contains(&slot.slot.as_str()))
+                    else {
+                        continue;
+                    };
+                    let Some(entry) = (structure.resources.iter()).find(|e| e.id == slot.id) else {
+                        continue;
+                    };
+                    if seen.insert(resources.canonical(&entry.canonical, None)) {
+                        queue.push_back(entry.canonical.clone());
+                    }
+                }
+                documents.push(TreeDocument {
+                    source,
+                    structure: Some(structure),
+                    error: None,
+                });
+            }
+            Err(refusal) => documents.push(TreeDocument {
+                source,
+                structure: None,
+                error: Some(refusal.message),
+            }),
+        }
+    }
+    let summary = format!("{} document(s)", documents.len());
+    Ok(Answer {
+        output: InstrumentTree { documents },
+        summary,
+    })
 }
 
 // --- the shared edit pipeline ---------------------------------------------------------------------
@@ -1949,6 +2014,58 @@ mod tests {
         read_instrument(&args, store)
             .expect("a document that parses is read")
             .output
+    }
+
+    fn tree_store() -> MemoryStore {
+        let store = MemoryStore::with(
+            "inst.json",
+            r#"{ "format_version": 3, "instrument": "poly",
+                 "resources": { "v": "fx.json" },
+                 "interface": { "outputs": { "main": { "from": "/a.audio" } } },
+                 "nodes": [ { "type": "voicer", "address": "/a", "voice": "v" },
+                            { "type": "voicer", "address": "/b", "voice": "v" } ] }"#,
+        );
+        store
+            .texts
+            .borrow_mut()
+            .insert("fx.json".to_string(), WIRE_CHILD.to_string());
+        store
+    }
+
+    fn read_tree(source: &str, store: &dyn Resources) -> InstrumentTree {
+        let args = ReadInstrumentTree {
+            source: source.to_string(),
+        };
+        read_instrument_tree(&args, store)
+            .expect("a tree read never refuses")
+            .output
+    }
+
+    #[test]
+    fn a_tree_lists_the_top_then_each_nested_document_once() {
+        let tree = read_tree("inst.json", &tree_store());
+        assert_eq!(tree.documents.len(), 2);
+        assert_eq!(tree.documents[0].source, "inst.json");
+        assert!(tree.documents[1].source.ends_with("fx.json"));
+        assert!(tree.documents.iter().all(|d| d.structure.is_some()));
+    }
+
+    #[test]
+    fn a_missing_nested_document_is_an_entry_with_an_error() {
+        let store = tree_store();
+        store.texts.borrow_mut().remove("fx.json");
+        let tree = read_tree("inst.json", &store);
+        assert_eq!(tree.documents.len(), 2);
+        let missing = &tree.documents[1];
+        assert!(missing.structure.is_none());
+        assert!(missing.error.is_some());
+    }
+
+    #[test]
+    fn a_missing_top_document_is_an_entry_with_an_error() {
+        let tree = read_tree("none.json", &MemoryStore::default());
+        assert_eq!(tree.documents.len(), 1);
+        assert!(tree.documents[0].error.is_some());
     }
 
     fn node<'a>(doc: &'a InstrumentStructure, address: &str) -> &'a StructureNode {

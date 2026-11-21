@@ -18,7 +18,7 @@
 use std::fmt;
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use reuben_api::authoring::{DocumentHistory, Resources};
 use reuben_api::engine::{
     Channel, FromDocumentError, InProcess, Installed, LoadWarning, StructureState,
-    DEFAULT_STRUCTURE_ADDR,
+    DEFAULT_STRUCTURE_ADDR, SILENCE,
 };
 use reuben_api::render::{self, AudioConfig, Message, RenderSide, RenderSlot};
 use reuben_api::staged::Staged;
@@ -76,6 +76,11 @@ pub enum Instrument {
     Default,
     /// An instrument document on disk. Its relative resources resolve against its own directory.
     Path(PathBuf),
+    /// Nothing open and nothing playing, as an `open` of a document that does not load leaves the
+    /// engine, but with no open instrument: `get_document` answers no source and an empty content
+    /// hash, and an edit is refused until an `open` names an instrument. An `open` resolves against
+    /// the current directory, then the library root.
+    Silent,
 }
 
 /// Everything [`start`] needs. [`EngineConfig::new`] is `reuben play` with no flags.
@@ -193,6 +198,7 @@ impl std::error::Error for StartError {
 /// hand [`channel`](Self::channel)s to any other.
 pub struct RunningEngine {
     state: Option<StructureState>,
+    host: Arc<NativeHost>,
     tree_watch: Option<TreeWatch>,
     structure: Option<StructureServer>,
     structure_error: Option<io::Error>,
@@ -283,6 +289,13 @@ impl RunningEngine {
             Some(state) => state.try_installed(),
             None => Installed::Poisoned,
         }
+    }
+
+    /// Offer `dir` to clients from now on, beside the library root and the open instrument's
+    /// directory: what it holds is listed, opened and edited as theirs are, and a client may create
+    /// an instrument in it.
+    pub fn offer_dir(&self, dir: &Path) {
+        self.host.offer_dir(dir);
     }
 
     /// The running counters.
@@ -504,6 +517,7 @@ pub(crate) fn start_with(
         None => None,
     };
     let library_root = instrument_root.clone();
+    let nothing_open = instrument == Instrument::Silent;
     let (instrument_json, resolver, initial_source) = read_instrument(instrument, instrument_root)?;
 
     // The one control ingress into the render callback. Two producers — the UDP listener (the
@@ -596,13 +610,20 @@ pub(crate) fn start_with(
 
     // The structure channel owns the Coordinator — the single writer of graph structure — and
     // publishes each swap's device output map through `render_config`.
-    let host = NativeHost::new(Arc::clone(&diagnostics), osc_tx)
-        .with_meters(meters)
-        .with_render_config(render_config)
-        .with_swap_hold(swap_hold)
-        .with_library_root(library_root);
-    let state = StructureState::new(coordinator, Arc::new(host), store)
-        .with_installed_source(initial_source);
+    let host = Arc::new(
+        NativeHost::new(Arc::clone(&diagnostics), osc_tx)
+            .with_meters(meters)
+            .with_render_config(render_config)
+            .with_swap_hold(swap_hold)
+            .with_library_root(library_root),
+    );
+    let state =
+        StructureState::new(coordinator, host.clone(), store).with_installed_source(initial_source);
+    let state = if nothing_open {
+        state.with_nothing_open()
+    } else {
+        state
+    };
     let (structure, structure_error) = match structure {
         Some(Ok(addrs)) => match StructureServer::bind(&addrs[..], state.clone()) {
             Ok(server) => (Some(server), None),
@@ -615,6 +636,7 @@ pub(crate) fn start_with(
 
     Ok(RunningEngine {
         state: Some(state),
+        host,
         tree_watch,
         structure,
         structure_error,
@@ -648,7 +670,7 @@ fn resolve_structure(addr: &str) -> Result<io::Result<Vec<SocketAddr>>, StartErr
 
 /// The instrument's JSON, the resolver its references resolve through, and the source name
 /// `get_document` reports for it: the path made absolute against the working directory, `None`
-/// for the built-in rig, which has no source to name.
+/// for the built-in rig and for silence, which have no source to name.
 ///
 /// The Coordinator owns the resolver for the session, and every swap resolves through it. Its base
 /// directory is the anchor for this document and for a swap by value; a by-path swap hands the
@@ -665,14 +687,16 @@ fn read_instrument(
                     path: path.clone(),
                     error,
                 })?;
-            // Absolute, because a client reading it back may run in another directory.
-            let source = std::path::absolute(&path)
-                .unwrap_or_else(|_| path.clone())
+            // Absolute, because a client reading it back may run in another directory, and
+            // normalized as every name the server publishes is.
+            let source = crate::structure::lexical_absolute(&path)
+                .unwrap_or_else(|| path.clone())
                 .display()
                 .to_string();
             (json, FsResolver::for_instrument(&path), Some(source))
         }
         Instrument::Default => (DEFAULT_JSON.to_string(), FsResolver::new("."), None),
+        Instrument::Silent => (SILENCE.to_string(), FsResolver::new("."), None),
     };
     let resolver = match root {
         Some(root) => resolver.with_root(root),

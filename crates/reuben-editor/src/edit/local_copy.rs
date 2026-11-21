@@ -6,16 +6,15 @@
 //! repoint is an undo step. Undoing it puts the entry back on the original; the copy stays on disk,
 //! unreferenced, and a redo points the entry at it again.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use reuben_api::authoring::{
-    copy_instrument, set_instrument_resource, CopyInstrument, EditResult, Refusal,
-    SetInstrumentResource,
-};
-use reuben_api::engine::Channel;
+use reuben_api::authoring::{CopyInstrument, EditResult, Refusal, SetInstrumentResource};
+use reuben_api::engine::{Channel, ListWhat};
+use reuben_api::tools::names;
 
-use super::write;
+use super::{call, write, Verb};
 use crate::feedback::Feedback;
+use crate::names::lexical;
 use crate::session::Session;
 
 /// Copy the viewed document beside itself, repoint the document one step up the trail at the
@@ -47,44 +46,52 @@ pub fn make(session: &mut Session, channel: &dyn Fn() -> Option<Channel>) -> Opt
         return None;
     };
     let parent_source = parent.source.clone();
-    let from = PathBuf::from(&crumb.source);
-    let beside_parent = parent.path.parent().map(Path::to_path_buf);
-    let owner = parent_stem(&parent.path);
-    let Some((to, repointed)) = free_name(&from, &owner, |name| {
-        let reference = renamed(&entry.source, name);
-        // The reference must land on the copy: a file of that name beside the referencing
-        // document would be found before the one beside the original.
-        let taken = from.with_file_name(name).exists()
-            || (beside_parent.as_ref()).is_some_and(|dir| dir.join(&reference).exists());
-        (!taken).then_some(reference)
-    }) else {
+    let Some(server) = channel() else {
+        refuse(
+            session,
+            &crumb.source,
+            "no engine is running to name a copy",
+        );
+        return None;
+    };
+    let offered = match server.list(ListWhat::Instruments) {
+        Ok(offered) => offered,
+        Err(e) => {
+            let why = format!("the server could not list its instruments: {e}");
+            refuse(session, &crumb.source, &why);
+            return None;
+        }
+    };
+    let taken = shadowing(&crumb.source, &parent_source, &entry.source, offered);
+    let owner = parent_stem(&parent_source);
+    let names = free_names(&crumb.source, &owner, &taken);
+    let copied = copy_to_free(names, |to| {
+        let verb = CopyInstrument {
+            from: crumb.source.clone(),
+            to: to.to_string(),
+        };
+        call(channel, Verb::of(names::COPY_INSTRUMENT, &verb))
+    });
+    let Some((to, copied)) = copied else {
         refuse(session, &crumb.source, "no free name beside it for a copy");
         return None;
     };
-
-    let to = to.display().to_string();
-    let copied = copy_instrument(
-        &CopyInstrument {
-            from: crumb.source.clone(),
-            to: to.clone(),
-        },
-        session.history(&to),
-    )
-    .map(|answer| answer.output);
     if let Some(feedback) = Feedback::of(&to, None, &copied) {
         *session.feedback_mut() = Some(feedback);
         return None;
     }
+    let copy_file = Path::new(&to).file_name().unwrap_or_default();
+    let repointed = renamed(&entry.source, &copy_file.to_string_lossy());
 
-    let landed = write(session, channel, &parent_source, |store, expect| {
-        set_instrument_resource(
+    let landed = write(session, channel, &parent_source, |expect| {
+        Verb::of(
+            names::SET_INSTRUMENT_RESOURCE,
             &SetInstrumentResource {
                 source: parent_source.clone(),
                 id: entry.id,
                 resource_source: repointed,
                 expect,
             },
-            store,
         )
     })
     .is_ok_and(|result| result.written);
@@ -107,37 +114,77 @@ fn refuse(session: &mut Session, source: &str, why: &str) {
     *session.feedback_mut() = Feedback::of(source, None, &refused);
 }
 
+/// How many names a local copy tries before it gives up: enough to step past every copy a person
+/// would make by hand; past it something is wrong.
+const MOST_NAMES: usize = 100;
+
 /// The referencing document's file stem, which names whose copy it is.
-fn parent_stem(parent: &Path) -> String {
-    parent
-        .file_stem()
+fn parent_stem(parent: &str) -> String {
+    (Path::new(parent).file_stem())
         .map_or_else(|| "local".to_string(), |s| s.to_string_lossy().into_owned())
 }
 
-/// The first of `<stem>-<owner>.json`, `<stem>-<owner>-2.json`, … that `free` accepts, beside
-/// `from`, with what `free` answered for it.
-fn free_name<T>(
-    from: &Path,
+/// `<stem>-<owner>.json`, `<stem>-<owner>-2.json`, … beside `source`, as many as
+/// [`MOST_NAMES`], leaving out each that is one of `offered`.
+pub fn free_names<'a>(
+    source: &str,
     owner: &str,
-    mut free: impl FnMut(&str) -> Option<T>,
-) -> Option<(PathBuf, T)> {
-    let stem = from.file_stem()?.to_string_lossy();
-    let extension = from
-        .extension()
-        .map_or_else(String::new, |e| format!(".{}", e.to_string_lossy()));
-    // Enough to step past every copy a person would make by hand; past it something is wrong.
-    for n in 1..=100 {
-        let suffix = if n == 1 {
-            String::new()
-        } else {
-            format!("-{n}")
-        };
-        let name = format!("{stem}-{owner}{suffix}{extension}");
-        if let Some(answer) = free(&name) {
-            return Some((from.with_file_name(&name), answer));
+    offered: &'a [String],
+) -> impl Iterator<Item = String> + 'a {
+    let path = Path::new(source);
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    let extension =
+        (path.extension()).map_or_else(String::new, |e| format!(".{}", e.to_string_lossy()));
+    let beside = path.to_path_buf();
+    let base = format!("{stem}-{owner}");
+    (1..=MOST_NAMES)
+        .map(move |n| match n {
+            1 => format!("{base}{extension}"),
+            n => format!("{base}-{n}{extension}"),
+        })
+        .map(move |name| beside.with_file_name(name).display().to_string())
+        .filter(move |name| !offered.contains(name))
+}
+
+/// Copy through `copy` to the first of `names` the server takes, stepping past each it refuses as
+/// already holding a document: a name the server's list did not show, spelled another way or in a
+/// directory it does not list, is only found taken when the copy is refused. Returns the name
+/// last tried and what the copy to it answered; `None` when every name was refused so.
+fn copy_to_free<T>(
+    names: impl Iterator<Item = String>,
+    mut copy: impl FnMut(&str) -> Result<T, Refusal>,
+) -> Option<(String, Result<T, Refusal>)> {
+    for to in names {
+        let copied = copy(&to);
+        match &copied {
+            Err(refusal) if refusal.message.contains("a document already exists") => continue,
+            _ => return Some((to, copied)),
         }
     }
     None
+}
+
+/// `offered`, with every name beside `source` whose reference from `parent` would be found first
+/// somewhere else: a reference resolves from the referencing document's directory, so a copy
+/// named `x` beside `source` is only reached through `reference` when nothing named `x` sits
+/// where `reference`'s directory lands from `parent`.
+fn shadowing(source: &str, parent: &str, reference: &str, mut offered: Vec<String>) -> Vec<String> {
+    let beside = Path::new(source).parent().map(lexical);
+    let reached = Path::new(parent)
+        .parent()
+        .map(|dir| lexical(&dir.join(reference)))
+        .and_then(|path| path.parent().map(Path::to_path_buf));
+    if let (Some(beside), Some(reached)) = (beside, reached) {
+        if beside != reached {
+            let shadows: Vec<String> = (offered.iter())
+                .filter(|name| Path::new(name.as_str()).parent() == Some(reached.as_path()))
+                .filter_map(|name| Path::new(name).file_name())
+                .map(|file| beside.join(file).display().to_string())
+                .collect();
+            offered.extend(shadows);
+        }
+    }
+    offered
 }
 
 /// `reference` with its last path segment replaced by `name`, every other segment kept as the
@@ -176,7 +223,7 @@ mod tests {
 
     fn kick_entry(rig: &Rig, top: &Path) -> String {
         let document = (rig.session.tree().documents().iter())
-            .find(|d| d.path == top)
+            .find(|d| crate::session::test_support::names(&d.source, top))
             .expect("the top-level document is in the tree");
         let structure = document.read.as_ref().expect("it reads");
         (structure.resources.iter())
@@ -195,13 +242,109 @@ mod tests {
 
     #[test]
     fn the_first_free_name_is_taken() {
-        let from = Path::new("voices").join("kick-voice.json");
-        let (path, n) = free_name(&from, "acid", |name| {
-            (name != "kick-voice-acid.json").then(|| name.to_string())
+        let source = "/l/voices/kick-voice.json";
+        let first = |offered: &[String]| free_names(source, "acid", offered).next();
+        assert_eq!(
+            first(&[]).as_deref(),
+            Some("/l/voices/kick-voice-acid.json")
+        );
+        let offered = [
+            "/l/voices/kick-voice.json".to_string(),
+            "/l/voices/kick-voice-acid.json".to_string(),
+            "/l/kick-voice-acid-2.json".to_string(),
+        ];
+        assert_eq!(
+            first(&offered).as_deref(),
+            Some("/l/voices/kick-voice-acid-2.json"),
+            "a name elsewhere is not beside the source"
+        );
+        let all: Vec<String> = free_names(source, "acid", &[]).collect();
+        assert_eq!(all.len(), MOST_NAMES);
+        assert_eq!(first(&all), None);
+    }
+
+    #[test]
+    fn a_name_the_server_refuses_as_taken_is_stepped_past() {
+        let names = free_names("/l/voices/kick-voice.json", "acid", &[]);
+        let mut tried = Vec::new();
+        let (to, copied) = copy_to_free(names, |to| {
+            tried.push(to.to_string());
+            match tried.len() {
+                1 => Err(Refusal {
+                    message: format!(
+                        "a document already exists at `{to}`; choose a new source for the copy"
+                    ),
+                }),
+                _ => Ok(()),
+            }
         })
-        .expect("a free name");
-        assert_eq!(path, Path::new("voices").join("kick-voice-acid-2.json"));
-        assert_eq!(n, "kick-voice-acid-2.json");
+        .expect("a name the server takes");
+        assert_eq!(to, "/l/voices/kick-voice-acid-2.json");
+        assert!(copied.is_ok());
+        assert_eq!(tried.len(), 2);
+
+        let other = Refusal {
+            message: "no engine is running".to_string(),
+        };
+        let names = free_names("/l/voices/kick-voice.json", "acid", &[]);
+        let (to, copied) = copy_to_free(names, |_| Err::<(), _>(other.clone())).expect("an answer");
+        assert_eq!(
+            to, "/l/voices/kick-voice-acid.json",
+            "any other refusal stands"
+        );
+        assert!(copied.is_err());
+
+        let names = free_names("/l/voices/kick-voice.json", "acid", &[]);
+        let taken = |to: &str| {
+            Err::<(), _>(Refusal {
+                message: format!("a document already exists at `{to}`"),
+            })
+        };
+        assert!(copy_to_free(names, taken).is_none(), "every name refused");
+    }
+
+    /// The refusal [`copy_to_free`] steps past is the one the server answers a copy onto a
+    /// document with.
+    #[test]
+    fn the_server_refuses_a_copy_onto_a_document_as_taken() {
+        within(HANG_SECS, || {
+            let rig = Rig::open("local_copy_taken", "acid-techno.json");
+            let voices = rig.lib.join("voices");
+            let verb = CopyInstrument {
+                from: voices.join("kick-voice.json").display().to_string(),
+                to: voices.join("shaped-vca.json").display().to_string(),
+            };
+            let channel = rig.channel_source();
+            let refused = call(&channel, Verb::of(names::COPY_INSTRUMENT, &verb))
+                .expect_err("the copy is refused");
+            assert!(
+                refused.message.contains("a document already exists"),
+                "{}",
+                refused.message
+            );
+        });
+    }
+
+    #[test]
+    fn a_name_the_reference_would_find_first_elsewhere_is_taken() {
+        let offered = vec!["/top/voices/kick-voice-mine.json".to_string()];
+        let taken = shadowing(
+            "/lib/voices/kick-voice.json",
+            "/top/mine.json",
+            "voices/kick-voice.json",
+            offered,
+        );
+        assert_eq!(
+            free_names("/lib/voices/kick-voice.json", "mine", &taken).next(),
+            Some("/lib/voices/kick-voice-mine-2.json".to_string())
+        );
+        let beside = shadowing(
+            "/lib/voices/kick-voice.json",
+            "/lib/acid.json",
+            "./voices/../voices/kick-voice.json",
+            Vec::new(),
+        );
+        assert!(beside.is_empty(), "{beside:?}");
     }
 
     /// The issue's acceptance: after a local copy, editing the voice changes this instrument only.
@@ -222,9 +365,8 @@ mod tests {
             assert_eq!(rig.session.feedback(), None);
             let copy_path = rig.lib.join("voices").join("kick-voice-acid-techno.json");
             assert_eq!(copy, copy_path.display().to_string());
-            assert_eq!(
-                rig.session.viewed().path,
-                copy_path,
+            assert!(
+                crate::session::test_support::names(&rig.session.viewed().source, &copy_path),
                 "the view is on the copy"
             );
             assert_eq!(rig.session.trail().len(), 1);
@@ -235,14 +377,14 @@ mod tests {
             assert_eq!(hash_on_disk(&copy_path), original_hash);
 
             let source = rig.session.viewed().source.clone();
-            let edited = write(&mut rig.session, &channel, &source, |store, expect| {
-                set_instrument_description(
+            let edited = write(&mut rig.session, &channel, &source, |expect| {
+                Verb::of(
+                    names::SET_INSTRUMENT_DESCRIPTION,
                     &SetInstrumentDescription {
                         source: source.clone(),
                         description: Some("acid-techno's own kick".to_string()),
                         expect,
                     },
-                    store,
                 )
             })
             .expect("the verb ran");
@@ -253,9 +395,6 @@ mod tests {
             for (name, hash) in &others {
                 assert_eq!(&hash_on_disk(&rig.lib.join(name)), hash, "{name}");
             }
-            rig.poll_until("the Swap of the edits", |rig| {
-                rig.status() == &Status::Current && rig.swaps() >= 1
-            });
             rig.settle();
             assert_eq!(rig.status(), &Status::Current);
         });
@@ -307,7 +446,10 @@ mod tests {
             assert_ne!(first, second);
             let second_path = rig.lib.join("voices").join("kick-voice-acid-techno-2.json");
             assert_eq!(second, second_path.display().to_string());
-            assert_eq!(rig.session.viewed().path, second_path);
+            assert!(crate::session::test_support::names(
+                &rig.session.viewed().source,
+                &second_path
+            ));
             assert_eq!(
                 kick_entry(&rig, &rig.top.clone()),
                 "voices/kick-voice-acid-techno-2.json"
@@ -334,10 +476,15 @@ mod tests {
             let copy = make(&mut rig.session, &channel).expect("the copy is made");
             let copy_path = voices.join("shaped-vca-kick-voice.json");
             assert_eq!(copy, copy_path.display().to_string());
-            assert_eq!(rig.session.viewed().path, copy_path);
+            assert!(crate::session::test_support::names(
+                &rig.session.viewed().source,
+                &copy_path
+            ));
             assert_eq!(rig.session.trail().len(), 2);
             let kick = (rig.session.tree().documents().iter())
-                .find(|d| d.path == voices.join("kick-voice.json"))
+                .find(|d| {
+                    crate::session::test_support::names(&d.source, &voices.join("kick-voice.json"))
+                })
                 .expect("the kick voice is in the tree");
             let entry = kick.reference("/vca").expect("/vca references a patch");
             assert_eq!(entry.source, "shaped-vca-kick-voice.json");
@@ -379,10 +526,10 @@ mod tests {
             let copy_path = rig.lib.join("voices").join("kick-voice-acid-techno.json");
             assert!(copy_path.exists(), "the copy is left on disk");
             assert_eq!(kick_entry(&rig, &rig.top.clone()), "voices/kick-voice.json");
-            assert_eq!(
-                rig.session.viewed().path,
-                rig.lib.join("voices").join("kick-voice.json")
-            );
+            assert!(crate::session::test_support::names(
+                &rig.session.viewed().source,
+                &rig.lib.join("voices").join("kick-voice.json")
+            ));
             assert_eq!(rig.session.undo().next(Direction::Undo), None);
         });
     }

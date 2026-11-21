@@ -10,7 +10,8 @@ use std::sync::mpsc::{channel, Receiver};
 use std::time::Duration;
 
 use reuben_api::engine::{
-    ChangedBy, Event, ListWhat, Request, Response, TcpTransport, Transport, DEFAULT_CONNECT_TIMEOUT,
+    ChangedBy, Event, ListWhat, Request, Response, TcpTransport, Transport,
+    DEFAULT_CONNECT_TIMEOUT, METER_FLOOR_DBFS,
 };
 use reuben_native::engine::{EngineConfig, Instrument};
 use reuben_native::test_support::{start_headless, timed_teardown, within};
@@ -616,4 +617,209 @@ fn an_outside_repair_of_the_open_broken_document_starts_it_playing() {
         }
     });
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_channel_subscription_over_tcp_sees_an_edit() {
+    let dir = scratch("server_calls_channel_subscription");
+    let library = dir.join("lib");
+    let open = dir.join("first.json");
+    write(&open, DOC);
+    let open_s = open.display().to_string();
+    serving(&open, &library, move |t| {
+        let channel = reuben_api::engine::Channel::new(TcpTransport::new(
+            t.endpoint().to_string(),
+            DEFAULT_CONNECT_TIMEOUT,
+        ));
+        let mut events = channel.subscribe().expect("subscribed");
+        let edited = output(call(
+            t,
+            "set_instrument_name",
+            serde_json::json!({"source": open_s, "name": "renamed"}),
+        ));
+        assert_eq!(edited["written"], true, "{edited}");
+        assert!(matches!(
+            events.next(),
+            Some(Event::Changed {
+                by: ChangedBy::Client,
+                ..
+            })
+        ));
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_silent_start_plays_nothing_then_opens_by_name() {
+    let dir = scratch("server_calls_silent_start");
+    let library = dir.join("lib");
+    let first = library.join("first.json");
+    write(&first, DOC);
+    let first_s = first.display().to_string();
+    let config = EngineConfig {
+        osc_in: None,
+        structure: Some("127.0.0.1:0".to_string()),
+        instrument_root: Some(library.clone()),
+        ..EngineConfig::new(Instrument::Silent)
+    };
+    within(HANG_SECS, move || {
+        let engine = start_headless(config).expect("the engine starts");
+        let addr = engine.structure_addr().expect("a structure socket");
+        let t = TcpTransport::new(addr.to_string(), DEFAULT_CONNECT_TIMEOUT);
+        let channel = engine.channel();
+
+        let nothing = snapshot(&t);
+        assert_eq!(nothing.content_hash, "");
+        assert_eq!(nothing.source, None);
+        assert_eq!(nothing.document, serde_json::Value::Null);
+
+        let refused = output(call(
+            &t,
+            "set_instrument_name",
+            serde_json::json!({"source": first_s, "name": "renamed"}),
+        ));
+        assert_eq!(refused["written"], false, "nothing is open: {refused}");
+        assert_eq!(std::fs::read_to_string(&first_s).unwrap(), DOC);
+
+        match ask(
+            &t,
+            &Request::Open {
+                name: first_s.clone(),
+                expect: None,
+            },
+        ) {
+            Response::SwapReport(report) => assert!(report.report.ok, "{report:?}"),
+            other => panic!("expected a swap report, got {other:?}"),
+        }
+        let opened = snapshot(&t);
+        assert_eq!(opened.source.as_deref(), Some(first_s.as_str()));
+        assert_ne!(opened.content_hash, "");
+        let resolved = channel
+            .set_probes(vec![vec!["/osc".to_string()]])
+            .expect("set_probes");
+        assert_eq!(resolved, vec![vec!["/osc".to_string()]]);
+        let deadline = std::time::Instant::now() + REPLY;
+        while channel.get_meters().expect("meters").probes[0].ports[0]
+            .level
+            .peak_dbfs
+            <= METER_FLOOR_DBFS
+        {
+            std::thread::sleep(Duration::from_millis(5));
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the opened instrument never sounded"
+            );
+        }
+        drop(channel);
+        timed_teardown(engine, false);
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_refused_open_with_nothing_open_says_nothing_is_open() {
+    let dir = scratch("server_calls_nothing_open_refused");
+    let library = dir.join("lib");
+    std::fs::create_dir_all(&library).expect("dir");
+    let outside = dir.join("outside.json");
+    write(&outside, DOC);
+    let outside_s = outside.display().to_string();
+    let config = EngineConfig {
+        osc_in: None,
+        structure: Some("127.0.0.1:0".to_string()),
+        instrument_root: Some(library.clone()),
+        ..EngineConfig::new(Instrument::Silent)
+    };
+    within(HANG_SECS, move || {
+        let engine = start_headless(config).expect("the engine starts");
+        let addr = engine.structure_addr().expect("a structure socket");
+        let t = TcpTransport::new(addr.to_string(), DEFAULT_CONNECT_TIMEOUT);
+        match ask(
+            &t,
+            &Request::Open {
+                name: outside_s,
+                expect: None,
+            },
+        ) {
+            Response::SwapReport(report) => {
+                assert!(!report.report.ok, "{report:?}");
+                assert_eq!(report.content_hash, "");
+                let warnings: Vec<&str> = report
+                    .report
+                    .warnings
+                    .iter()
+                    .map(|w| w.message.as_str())
+                    .collect();
+                assert_eq!(
+                    warnings,
+                    ["nothing was opened; nothing is open, so nothing plays"]
+                );
+            }
+            other => panic!("expected a swap report, got {other:?}"),
+        }
+        assert_eq!(snapshot(&t).source, None);
+        timed_teardown(engine, false);
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// What a relative name, `..` and all, is published as: the one absolute, normalized spelling, so
+/// a client in another directory names the same file.
+#[test]
+fn an_open_or_swap_by_a_relative_name_is_published_absolute() {
+    // Relative to the test's working directory, the crate's own.
+    let relative = |name: &str| format!("../../crates/../instruments/{name}");
+    let absolute = |name: &str| {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let repo = manifest.parent().unwrap().parent().unwrap();
+        repo.join("instruments").join(name).display().to_string()
+    };
+    let config = EngineConfig {
+        osc_in: Some("127.0.0.1:0".to_string()),
+        structure: Some("127.0.0.1:0".to_string()),
+        instrument_root: Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instruments")),
+        ..EngineConfig::new(Instrument::Silent)
+    };
+    within(HANG_SECS, move || {
+        let engine = start_headless(config).expect("the engine starts");
+        let addr = engine.structure_addr().expect("a structure socket");
+        let t = TcpTransport::new(addr.to_string(), DEFAULT_CONNECT_TIMEOUT);
+        let events = follow(&t);
+        let opened = |events: &Receiver<Event>| loop {
+            match events.recv_timeout(REPLY).expect("an opened event") {
+                Event::Opened { name, .. } => break name,
+                _ => continue,
+            }
+        };
+
+        let report = ask(
+            &t,
+            &Request::Open {
+                name: relative("default.json"),
+                expect: None,
+            },
+        );
+        assert!(matches!(report, Response::SwapReport(_)), "{report:?}");
+        assert_eq!(opened(&events), absolute("default.json"));
+        assert_eq!(
+            snapshot(&t).source.as_deref(),
+            Some(absolute("default.json").as_str())
+        );
+
+        let report = ask(
+            &t,
+            &Request::Swap {
+                source: reuben_api::engine::DocSource::Path(relative("groovebox.json")),
+                expect: None,
+            },
+        );
+        assert!(matches!(report, Response::SwapReport(_)), "{report:?}");
+        assert_eq!(opened(&events), absolute("groovebox.json"));
+        assert_eq!(
+            snapshot(&t).source.as_deref(),
+            Some(absolute("groovebox.json").as_str())
+        );
+
+        timed_teardown(engine, false);
+    });
 }
