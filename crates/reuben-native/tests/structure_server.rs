@@ -69,8 +69,8 @@ const MIC_PASSTHRU: &str = r#"{ "format_version": 3, "instrument": "mic-passthru
 /// headless render config's input-stream geometry (`0` = output-only, so an input-binding swap
 /// dark-degrades).
 ///
-/// The control sink is wired exactly as `play` wires it — one [`ControlBatch`] channel with the
-/// structure server on the producing end and the callback draining it. The harness is the crate's
+/// The control sink is wired exactly as `play` wires it — the structure server on the producing end
+/// of a control ring pair and the callback draining it. The harness is the crate's
 /// [`FakeCallback`], shared with the unit tests, so one mirror of the real callback serves both.
 fn wired(doc: &str, opened_input_channels: usize) -> (StructureState, FakeCallback, String) {
     wired_watching(doc, opened_input_channels, Diagnostics::new())

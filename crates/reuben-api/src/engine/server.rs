@@ -137,6 +137,8 @@ pub trait EngineHost: Send + Sync {
 
     /// Hand a control batch to the engine's ingress **as one unit**, so a gesture cannot straddle
     /// a rendered block. `Err` means the ingress is gone (audio torn down) and nothing was queued.
+    /// `Ok` means the host took the batch, not that it will be applied: a host with a bounded
+    /// ingress may drop it and count the drop instead.
     fn deliver_control(&self, messages: Vec<ControlMessage>) -> Result<(), IngressClosed>;
 
     /// The running counters, as an owned copy taken off the audio thread.

@@ -131,10 +131,13 @@ impl ControlRing {
             };
             apply(&batch);
             let returned = self.back.push(batch);
-            debug_assert!(
-                returned.is_ok(),
-                "the return ring overflowed: a producer exceeded CONTROL_RING_BATCHES outstanding"
-            );
+            // Fatal in a debug build and in this crate's unit tests at any opt level; release binaries skip it.
+            if cfg!(any(test, debug_assertions)) {
+                assert!(
+                    returned.is_ok(),
+                    "the return ring overflowed: a producer exceeded CONTROL_RING_BATCHES outstanding"
+                );
+            }
         }
     }
 }

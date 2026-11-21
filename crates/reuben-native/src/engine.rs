@@ -327,11 +327,13 @@ impl RunningEngine {
         // The last StructureState this handle holds; dropping it drops the Coordinator (and any
         // retired Engine it still holds) here, off the audio thread, unless a caller kept a channel.
         self.state = None;
-        self.osc_in = None;
         if let Some(Output::Device(streams)) = &self.output {
             streams.pause();
         }
         self.output = None;
+        // After the render side, so the UDP thread's producer is the last owner of its control
+        // rings and frees them, with any batches still in them, on its own thread.
+        self.osc_in = None;
         // Stopped by its own flag rather than by its sender dropping with the render callback,
         // which the pause above does not guarantee either.
         self.osc_out = None;

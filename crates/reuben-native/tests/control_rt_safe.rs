@@ -45,6 +45,8 @@ fn gesture(mut batch: ControlBatch, i: usize) -> ControlBatch {
     batch
 }
 
+/// Three-message batches, inside the Engine's preallocated control queue: this covers the drain and
+/// its return path, not the Engine's queue growing past its first capacity.
 #[test]
 fn draining_control_neither_allocates_nor_frees_on_the_render_thread() {
     let cfg = AudioConfig::new(48_000.0, 64);
