@@ -33,7 +33,8 @@ struct Inner {
 
 #[derive(Default)]
 struct State {
-    /// The open top-level file, canonical. `None` while nothing is open, when nothing is held.
+    /// The open top-level file, [canonical](canonical). `None` while nothing is open, when nothing
+    /// is held.
     open: Option<PathBuf>,
     /// A later held Swap replaces it.
     pending: Option<Asked>,
@@ -139,13 +140,11 @@ impl HeldSwaps {
     }
 }
 
-/// `path` with links and `..` resolved, so two spellings of one file compare equal. A path that
-/// does not resolve is compared made absolute against the working directory, which is where the
-/// engine reads a Swap's path from.
+/// `path` as the server names it: absolute, with `.` and `..` folded by text, so two spellings of
+/// one name compare equal without asking the filesystem, which for an attached editor is not the
+/// server's.
 pub fn canonical(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path)
-        .or_else(|_| std::path::absolute(path))
-        .unwrap_or_else(|_| path.to_path_buf())
+    crate::names::lexical(path)
 }
 
 /// Draw the prompt while a Swap is held, floating over the bottom-right corner of `within` so
@@ -308,6 +307,16 @@ mod tests {
         fn spelled(&self, relative: &str) -> String {
             self.lib.join(relative).display().to_string()
         }
+    }
+
+    /// Compared by text alone, as the server names files: `..` folded, no file looked at, so a
+    /// remote server's names compare the same as the editor's own.
+    #[test]
+    fn two_spellings_compare_by_text_alone() {
+        let held = HeldSwaps::new(|| {});
+        held.opened(Path::new("/no/such/dir/../pad.json"));
+        assert!(!held.hold(Path::new("/no/such/./pad.json")));
+        assert!(held.hold(Path::new("/no/such/dir/pad.json")));
     }
 
     #[test]

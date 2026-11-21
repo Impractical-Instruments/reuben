@@ -6,6 +6,7 @@ mod recent;
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 use reuben_api::authoring::NewInstrument;
@@ -24,6 +25,11 @@ use crate::session::{Session, Status};
 
 /// What the start screen says while there is no server to list the library.
 pub const NO_ENGINE: &str = "No engine is running, so there is no library to list.";
+
+/// How long a fetch that failed stands before an engine that answers is asked again: an attached
+/// editor started before its engine, or one whose engine restarted, recovers without being asked
+/// every frame.
+const REFETCH_AFTER: Duration = Duration::from_secs(1);
 
 /// What the undo history says after a restart dropped it.
 pub const RESTARTED: &str = "Undo history cleared: the engine restarted.";
@@ -85,12 +91,10 @@ pub fn offer_file(path: &Path, engine: &mut Engine) -> String {
 }
 
 /// The name the server gives the instrument at `path` once it plays it: the path made absolute
-/// against the working directory, which is how an open by that spelling records it.
+/// against the working directory with `.` and `..` folded by text, which is how the server lists
+/// it and how an open by that spelling records it.
 pub fn name_of(path: &Path) -> String {
-    std::path::absolute(path)
-        .unwrap_or_else(|_| path.to_path_buf())
-        .display()
-        .to_string()
+    crate::names::lexical(path).display().to_string()
 }
 
 /// Bring `engine` up to what it has installed: its report names the instrument, and, once the
@@ -103,7 +107,7 @@ pub fn follow(
     session: &mut Session,
     engine: &mut Engine,
     reloaded: bool,
-    start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
+    start: impl FnMut(EngineConfig) -> Result<RunningEngine, StartError>,
 ) {
     engine.follow_installed();
     if reloaded {
@@ -186,6 +190,8 @@ pub struct Start {
     shown: bool,
     /// Whether an engine answered when the screen was last drawn: with none, nothing is fetched.
     engine: bool,
+    /// When the last fetch that failed answered; see [`REFETCH_AFTER`].
+    failed_at: Option<Instant>,
     /// The new instrument's name as typed, and which of the library's dirs it goes in.
     new_name: String,
     new_dir: usize,
@@ -202,6 +208,7 @@ impl Start {
             error: None,
             shown: false,
             engine: false,
+            failed_at: None,
             new_name: String::new(),
             new_dir: 0,
         }
@@ -231,6 +238,7 @@ impl Start {
         self.fetching = None;
         self.offered = None;
         self.listing = None;
+        self.failed_at = None;
     }
 
     /// Take in what the server answered, and ask it whatever is not known yet.
@@ -238,11 +246,31 @@ impl Start {
         self.engine = channel().is_some();
         if let Some(answer) = self.fetching.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.fetching = None;
+            if answer.is_err() {
+                self.failed_at = Some(Instant::now());
+            }
             self.library = Some(answer);
         }
         if let Some(answer) = self.listing.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.listing = None;
+            if answer.is_err() {
+                self.failed_at = Some(Instant::now());
+            }
             self.offered = Some(answer);
+        }
+        if let (Some(at), true) = (self.failed_at, self.engine) {
+            let wait = REFETCH_AFTER.saturating_sub(at.elapsed());
+            if wait.is_zero() {
+                self.failed_at = None;
+                if matches!(self.library, Some(Err(_))) {
+                    self.library = None;
+                }
+                if matches!(self.offered, Some(Err(_))) {
+                    self.offered = None;
+                }
+            } else {
+                ctx.request_repaint_after(wait);
+            }
         }
         let wake = || {
             let ctx = ctx.clone();
@@ -295,7 +323,7 @@ impl Start {
                 ui.add_space(8.0);
                 ui.columns(2, |columns| {
                     self.library_ui(&mut columns[0], &mut chosen);
-                    self.recent_ui(&mut columns[1], &mut chosen);
+                    self.recent_ui(&mut columns[1], embedded, &mut chosen);
                 });
             });
         chosen
@@ -386,7 +414,7 @@ impl Start {
         }
     }
 
-    fn recent_ui(&mut self, ui: &mut egui::Ui, chosen: &mut Option<Choice>) {
+    fn recent_ui(&mut self, ui: &mut egui::Ui, embedded: bool, chosen: &mut Option<Choice>) {
         crate::theme::section(ui, "Recent");
         if let Some(warning) = &self.recent.warning {
             ui.colored_label(ui.visuals().warn_fg_color, warning);
@@ -398,13 +426,13 @@ impl Start {
             Some(Ok(offered)) => Some(offered.as_slice()),
             _ => None,
         };
-        for (name, opens) in self.recent.rows(offered) {
+        for (name, choice) in self.recent.rows(offered, embedded) {
             ui.add_space(4.0);
-            let button = crate::theme::choice(ui, opens, &library::stem(name))
+            let button = crate::theme::choice(ui, choice.is_some(), &library::stem(name))
                 .on_hover_text(name)
                 .on_disabled_hover_text(format!("the engine does not offer {name}"));
             if button.clicked() {
-                *chosen = Some(Choice::Open(name.to_string()));
+                *chosen = choice;
             }
         }
     }
@@ -1059,6 +1087,66 @@ mod tests {
             assert_eq!(session.status(), &Status::Current);
             assert_eq!(plays(&engine), Some(offered));
             assert!(library_of(&engine).dirs.contains(&name(&elsewhere)));
+            engine.shutdown();
+        });
+    }
+
+    #[test]
+    fn a_dot_dot_path_is_named_as_the_library_and_the_server_name_it() {
+        within(HANG_SECS, || {
+            let scratch = Scratch::new("start_dot_dot");
+            let lib = scratch.library();
+            let mut engine = launched(&lib);
+            let path = lib.join("voices").join("..").join("groovebox.json");
+            let offered = offer_file(&path, &mut engine);
+            let listed = (library_of(&engine).instruments.into_iter())
+                .map(|entry| entry.name)
+                .find(|listed| listed.ends_with("groovebox.json"))
+                .expect("the library lists groovebox");
+            assert_eq!(offered, listed);
+            let session = open(&offered, &engine, || {}).expect("opened");
+            assert_eq!(session.top(), listed);
+            assert_eq!(plays(&engine), Some(listed));
+            engine.shutdown();
+        });
+    }
+
+    /// An attached editor started before the engine: the first fetch fails, and the screen asks
+    /// again once an engine answers, though not more than once per [`REFETCH_AFTER`].
+    #[test]
+    fn a_failed_fetch_is_asked_again_once_an_engine_answers() {
+        within(HANG_SECS, || {
+            let temp = TempConfig::new();
+            let scratch = Scratch::new("start_refetch");
+            let lib = scratch.library();
+            let ctx = egui::Context::default();
+            let mut start = Start::new(temp.dir());
+            let gone = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = gone.local_addr().unwrap().to_string();
+            drop(gone);
+            let dead = move || {
+                Some(Channel::new(reuben_api::engine::TcpTransport::new(
+                    addr.clone(),
+                    Duration::from_millis(200),
+                )))
+            };
+            let deadline = Instant::now() + Duration::from_secs(HANG_SECS);
+            while !matches!(start.library, Some(Err(_))) || !matches!(start.offered, Some(Err(_))) {
+                assert!(Instant::now() < deadline, "the fetch never failed");
+                start.fetch(&dead, &ctx);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+
+            let mut engine = launched(&lib);
+            let live = || engine.channel();
+            start.fetch(&live, &ctx);
+            assert!(matches!(start.library, Some(Err(_))), "asked again at once");
+            start.failed_at = start.failed_at.map(|at| at - REFETCH_AFTER);
+            while !matches!(start.library, Some(Ok(_))) || !matches!(start.offered, Some(Ok(_))) {
+                assert!(Instant::now() < deadline, "never fetched again");
+                start.fetch(&live, &ctx);
+                std::thread::sleep(Duration::from_millis(5));
+            }
             engine.shutdown();
         });
     }

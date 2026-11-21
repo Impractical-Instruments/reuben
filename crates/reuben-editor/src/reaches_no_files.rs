@@ -4,39 +4,48 @@
 use std::path::{Path, PathBuf};
 
 /// Files whose subject is a file the editor itself owns, not an instrument.
-const OWNERS: [&str; 4] = [
+const OWNERS: [&str; 3] = [
     // The editor's own config directory.
     "config.rs",
     // The `--io-map` file handed to the embedded engine.
     "audio.rs",
     // The standalone "Open file…" dialog.
     "pick.rs",
-    // The hold callback, which runs inside the embedded server.
-    "held_swap.rs",
 ];
 
 /// Modules compiled only for tests.
 const TEST_ONLY: [&str; 2] = ["ui_tests.rs", "reaches_no_files.rs"];
 
-const TOKENS: [&str; 9] = [
+const TOKENS: [&str; 14] = [
     "FsResolver",
     "DocumentHistory",
     "notify::",
     "canonicalize(",
     "read_dir(",
     "read_to_string(",
+    "std::fs::",
+    "File::open",
+    "fs::metadata",
+    "symlink_metadata",
     "std::fs::write",
     ".exists()",
     ".is_file()",
+    ".is_dir()",
 ];
 
 /// The lines of `text` that are compiled outside tests, numbered from 1.
 ///
 /// Each `#[cfg(test)]` drops the item it gates: one line when that line ends in `;`, `,` or `}`,
-/// else everything through the `}` at the attribute's own indentation, which rustfmt puts on the
-/// closing line of every block. Attributes and comments between the gate and its item go with it.
-/// Counting braces instead would be thrown by the unbalanced JSON the tests hold in string
-/// literals.
+/// everything through the `}` at the attribute's own indentation when it ends in `{`, which
+/// rustfmt puts on the closing line of every block. Attributes and comments between the gate and
+/// its item go with it. Counting braces instead would be thrown by the unbalanced JSON the tests
+/// hold in string literals.
+///
+/// # Panics
+///
+/// On a gated item whose first line ends in anything else, such as a signature broken over
+/// several lines: where it ends cannot be told from that line, and guessing could drop code that
+/// is compiled.
 fn compiled(text: &str) -> Vec<(usize, &str)> {
     let mut kept = Vec::new();
     let mut lines = text.lines().enumerate();
@@ -53,9 +62,17 @@ fn compiled(text: &str) -> Vec<(usize, &str)> {
         }) else {
             break;
         };
-        if !head.trim_end().ends_with([';', ',', '}']) {
+        let head = head.trim_end();
+        if head.ends_with('{') {
             let close = format!("{indent}}}");
             item.find(|line| line.starts_with(&close));
+        } else if !head.ends_with([';', ',', '}']) {
+            panic!(
+                "a #[cfg(test)] item at line {} starts `{}`, which does not end in `{{`, `;`, `,` \
+                 or `}}`: put its head on one line",
+                at + 1,
+                head.trim()
+            );
         }
     }
     kept
@@ -147,4 +164,20 @@ mod tests {
     for name in ["ui_tests", "writes", "gone_a", "gone_b", "gone_c", "gone_d"] {
         assert!(!all.contains(name), "{name} kept:\n{all}");
     }
+
+    let broken = "\
+#[cfg(test)]
+pub(crate) fn gone(
+    a: usize,
+) -> usize {
+    a
+}
+fn kept() {}
+";
+    let unread = std::panic::catch_unwind(|| compiled(broken).len());
+    let said = unread.expect_err("a head that does not end its line is refused");
+    let said = (said.downcast_ref::<String>())
+        .map(String::as_str)
+        .unwrap_or_default();
+    assert!(said.contains("line 1") && said.contains("gone("), "{said}");
 }

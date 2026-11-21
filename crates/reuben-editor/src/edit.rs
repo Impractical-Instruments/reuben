@@ -132,10 +132,14 @@ pub enum Restored {
     /// references having changed since, or the file could not be written. Nothing was written, and
     /// the step stays: it lands again once that is put right.
     Rejected { step: Step, result: EditResult },
-    /// The server refused the restore: the state the step names is no longer held, or the file
-    /// no longer reads as a document. It, and every step behind it in the same direction —
-    /// `dropped` in all — are gone.
-    Forgotten { step: Step, dropped: usize },
+    /// The server refused the restore, saying `why`: the state the step names is no longer held,
+    /// or the file no longer reads as a document. It, and every step behind it in the same
+    /// direction — `dropped` in all — are gone.
+    Forgotten {
+        step: Step,
+        dropped: usize,
+        why: String,
+    },
     /// The restore could not reach the server: no engine is running, or it did not answer. The
     /// step stays, to land once it does.
     Refused { step: Step, why: String },
@@ -155,11 +159,15 @@ impl Restored {
                 file_name(&step.source)
             )),
             Restored::Rejected { step, result } => {
-                let mut note = format!(
-                    "Cannot {verb}: {} would not load in that state:",
-                    file_name(&step.source)
-                );
-                for error in result.report.errors.iter().chain(&result.pre_existing) {
+                let errors: Vec<_> = (result.report.errors.iter())
+                    .chain(&result.pre_existing)
+                    .collect();
+                let file = file_name(&step.source);
+                let mut note = match errors.is_empty() {
+                    true => format!("Cannot {verb}: {file} was not written in that state."),
+                    false => format!("Cannot {verb}: {file} would not load in that state:"),
+                };
+                for error in errors {
                     note.push('\n');
                     for at in [&error.node, &error.port].into_iter().flatten() {
                         note.push_str(at);
@@ -167,11 +175,16 @@ impl Restored {
                     }
                     note.push_str(&error.message);
                 }
+                for said in &result.notes {
+                    note.push('\n');
+                    note.push_str(said);
+                }
                 Some(note)
             }
-            Restored::Forgotten { step, dropped } => Some(format!(
-                "Cannot {verb}: that state of {} is no longer kept. {dropped} step(s) dropped.",
-                file_name(&step.source)
+            Restored::Forgotten { step, dropped, why } => Some(format!(
+                "Cannot {verb} {}: {}. {dropped} step(s) dropped.",
+                file_name(&step.source),
+                why.trim_end_matches('.')
             )),
             Restored::Refused { step, why } => {
                 Some(format!("Cannot {verb} {}: {why}", file_name(&step.source)))
@@ -224,9 +237,9 @@ pub fn restore(
                 },
             }
         }
-        Ok(CallOutcome::Refused(_)) => {
+        Ok(CallOutcome::Refused(why)) => {
             let dropped = session.undo_mut().forget(direction);
-            Restored::Forgotten { step, dropped }
+            Restored::Forgotten { step, dropped, why }
         }
         Err(why) => Restored::Refused { step, why },
     };
@@ -814,10 +827,14 @@ mod tests {
                 assert_eq!(&hash(&rig, &voice), state);
             }
             let refused = undo(&mut rig);
-            assert!(
-                matches!(&refused, Restored::Forgotten { dropped: 1, .. }),
-                "{refused:?}"
-            );
+            let Restored::Forgotten {
+                dropped: 1, why, ..
+            } = &refused
+            else {
+                panic!("{refused:?}");
+            };
+            assert!(!why.is_empty());
+            assert!(rig.session.undo().note().unwrap().contains(why.as_str()));
             assert_eq!(hash(&rig, &voice), states[1], "nothing written");
             assert!(matches!(undo(&mut rig), Restored::Nothing));
             assert!(rig.session.undo().note().is_some());
@@ -855,7 +872,12 @@ mod tests {
             mode(0o755).unwrap();
             assert!(matches!(&refused, Restored::Rejected { .. }), "{refused:?}");
             assert_eq!(hash(&rig, &strip), renamed);
-            assert!(rig.session.undo().note().is_some());
+            let note = rig.session.undo().note().expect("a note");
+            assert!(!note.trim_end().ends_with(':'), "{note:?} {refused:?}");
+            assert!(
+                note.contains("could not be written"),
+                "{note:?} {refused:?}"
+            );
 
             assert!(matches!(undo(&mut rig), Restored::Landed));
             assert_eq!(hash(&rig, &strip), original);
@@ -864,6 +886,68 @@ mod tests {
                 "the step behind it is kept"
             );
         });
+    }
+
+    #[test]
+    fn a_rejected_restore_with_no_errors_still_says_why() {
+        let step = Step {
+            source: "/lib/pad.json".to_string(),
+            before: "a".to_string(),
+            after: "b".to_string(),
+        };
+        let result = EditResult {
+            report: reuben_api::authoring::Report {
+                ok: false,
+                errors: Vec::new(),
+                warnings: Vec::new(),
+            },
+            pre_existing: Vec::new(),
+            written: false,
+            hash: "b".to_string(),
+            notes: vec!["pad.json could not be written; nothing was written".to_string()],
+            zoom: String::new(),
+        };
+        let note = (Restored::Rejected {
+            step: step.clone(),
+            result: result.clone(),
+        })
+        .note(Direction::Undo)
+        .expect("a note");
+        assert_eq!(
+            note,
+            "Cannot undo: pad.json was not written in that state.\n\
+             pad.json could not be written; nothing was written"
+        );
+        let silent = EditResult {
+            notes: Vec::new(),
+            ..result
+        };
+        let note = (Restored::Rejected {
+            step,
+            result: silent,
+        })
+        .note(Direction::Redo)
+        .expect("a note");
+        assert_eq!(note, "Cannot redo: pad.json was not written in that state.");
+    }
+
+    #[test]
+    fn a_forgotten_step_says_what_the_server_said() {
+        let note = (Restored::Forgotten {
+            step: Step {
+                source: "/lib/pad.json".to_string(),
+                before: "a".to_string(),
+                after: "b".to_string(),
+            },
+            dropped: 2,
+            why: "pad.json is not a document".to_string(),
+        })
+        .note(Direction::Undo)
+        .expect("a note");
+        assert_eq!(
+            note,
+            "Cannot undo pad.json: pad.json is not a document. 2 step(s) dropped."
+        );
     }
 
     #[test]
@@ -913,10 +997,15 @@ mod tests {
 
             std::fs::write(&path, "{ not an instrument").unwrap();
             let refused = undo(&mut rig);
-            assert!(
-                matches!(&refused, Restored::Forgotten { dropped: 2, .. }),
-                "{refused:?}"
-            );
+            let Restored::Forgotten {
+                dropped: 2, why, ..
+            } = &refused
+            else {
+                panic!("{refused:?}");
+            };
+            let note = rig.session.undo().note().expect("a note");
+            assert!(!why.is_empty() && note.contains(why.as_str()), "{note}");
+            assert!(!note.contains("no longer kept"), "{note}");
             assert_eq!(
                 std::fs::read_to_string(&path).unwrap(),
                 "{ not an instrument",
@@ -1004,12 +1093,15 @@ mod tests {
             let after = hash(&rig, &voice);
 
             let refused = undo(&mut rig);
-            assert!(
-                matches!(&refused, Restored::Forgotten { dropped: 2, .. }),
-                "{refused:?}"
-            );
+            let Restored::Forgotten {
+                dropped: 2, why, ..
+            } = &refused
+            else {
+                panic!("{refused:?}");
+            };
+            assert!(!why.is_empty());
+            assert!(rig.session.undo().note().unwrap().contains(why.as_str()));
             assert_eq!(served(&rig, &voice), after, "nothing written");
-            assert!(rig.session.undo().note().is_some());
             assert!(matches!(undo(&mut rig), Restored::Nothing));
         });
     }

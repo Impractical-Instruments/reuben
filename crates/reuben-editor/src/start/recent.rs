@@ -1,8 +1,11 @@
 //! The instruments the user opened last, most recent first, stored per user in `recent.json` under
 //! the [`ConfigDir`]. Each is the server's name for it; a list stored as paths reads as names.
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
+use super::Choice;
 use crate::config::ConfigDir;
 
 const FILE: &str = "recent.json";
@@ -64,11 +67,24 @@ impl Recent {
             .map(|e| format!("the recent instruments were not saved: {e}"));
     }
 
-    /// Each recent name, and whether it opens: whether `offered`, the server's `list instruments`,
-    /// names it. Every one is greyed while `offered` is not known.
-    pub fn rows<'a>(&'a self, offered: Option<&[String]>) -> Vec<(&'a str, bool)> {
+    /// Each recent name, and what choosing it does: opens it when `offered`, the server's `list
+    /// instruments`, names it; else, when `embedded`, offers its directory to the editor's own
+    /// server first, as "Open file…" does; else nothing, and the row is greyed. Every one is
+    /// greyed while `offered` is not known.
+    pub fn rows<'a>(
+        &'a self,
+        offered: Option<&[String]>,
+        embedded: bool,
+    ) -> Vec<(&'a str, Option<Choice>)> {
         (self.names.iter())
-            .map(|name| (name.as_str(), offered.is_some_and(|o| o.contains(name))))
+            .map(|name| {
+                let choice = match offered {
+                    Some(offered) if offered.contains(name) => Some(Choice::Open(name.clone())),
+                    Some(_) if embedded => Some(Choice::OpenFile(PathBuf::from(name))),
+                    _ => None,
+                };
+                (name.as_str(), choice)
+            })
             .collect()
     }
 }
@@ -145,7 +161,7 @@ mod tests {
     }
 
     #[test]
-    fn a_recent_name_the_server_no_longer_offers_is_greyed() {
+    fn a_recent_name_the_server_no_longer_offers_is_greyed_unless_the_server_is_the_editors() {
         use reuben_native::test_support::within;
 
         use crate::engine::test_support::{silent, HANG_SECS};
@@ -157,13 +173,20 @@ mod tests {
             let scratch = Scratch::new("recent_greyed");
             let lib = scratch.library();
             let offered_name = lib.join("default.json").display().to_string();
-            let elsewhere = scratch.path("elsewhere/gone.json").display().to_string();
+            // Opened through "Open file…" in an earlier run: its directory is offered no longer.
+            let elsewhere = scratch.path("elsewhere/mine.json");
+            std::fs::create_dir_all(elsewhere.parent().unwrap()).unwrap();
+            std::fs::copy(lib.join("default.json"), &elsewhere).unwrap();
+            let elsewhere_name = elsewhere.display().to_string();
             let mut recent = Recent::load(temp.dir());
-            recent.opened(&elsewhere);
+            recent.opened(&elsewhere_name);
             recent.opened(&offered_name);
             assert_eq!(
-                recent.rows(None),
-                [(offered_name.as_str(), false), (elsewhere.as_str(), false)],
+                recent.rows(None, true),
+                [
+                    (offered_name.as_str(), None),
+                    (elsewhere_name.as_str(), None)
+                ],
                 "nothing opens before the server says what it offers"
             );
 
@@ -173,10 +196,26 @@ mod tests {
                 .recv_timeout(std::time::Duration::from_secs(HANG_SECS))
                 .expect("the worker answers")
                 .expect("the server lists");
+            let opens = Some(Choice::Open(offered_name.clone()));
             assert_eq!(
-                recent.rows(Some(&offered)),
-                [(offered_name.as_str(), true), (elsewhere.as_str(), false)]
+                recent.rows(Some(&offered), false),
+                [
+                    (offered_name.as_str(), opens.clone()),
+                    (elsewhere_name.as_str(), None)
+                ],
+                "an attached editor cannot offer a directory"
             );
+            let rows = recent.rows(Some(&offered), true);
+            assert_eq!(rows[0], (offered_name.as_str(), opens));
+            let Some(Choice::OpenFile(path)) = rows[1].1.clone() else {
+                panic!("{rows:?}");
+            };
+
+            // What the editor does with an `OpenFile` choice.
+            let name = super::super::offer_file(&path, &mut engine);
+            assert_eq!(name, elsewhere_name);
+            let session = super::super::open(&name, &engine, || {}).expect("it opens");
+            assert_eq!(session.top(), elsewhere_name);
             engine.shutdown();
         });
     }

@@ -11,6 +11,7 @@ mod undo;
 mod users;
 mod view;
 
+use std::collections::BTreeSet;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -96,6 +97,11 @@ pub struct Session {
     relist: bool,
     /// Where a listing under way will arrive. Replaced, and so let go, by the next listing.
     listing: Option<Receiver<Result<Vec<String>, String>>>,
+    /// The viewed document and the tree's documents the last listing was asked for. Who plays the
+    /// viewed document changes only with another instrument's files, which the server sends no
+    /// event for, or with which documents the open tree reads: an edit that leaves both alone asks
+    /// for nothing, since each listing reads the server's whole library.
+    listed_for: Option<(String, BTreeSet<String>)>,
 }
 
 impl Session {
@@ -114,6 +120,7 @@ impl Session {
             users: None,
             relist: false,
             listing: None,
+            listed_for: None,
         };
         if channel().is_none() {
             session.tree = Tree::unread(top, "no engine is running to read it".to_string());
@@ -202,6 +209,10 @@ impl Session {
         }
         if let Some(listed) = self.listing.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.listing = None;
+            if listed.is_err() {
+                // Asked again at the next change, whatever it is.
+                self.listed_for = None;
+            }
             if let Some((_, listing)) = &mut self.users {
                 *listing = Listing::Listed(listed);
             }
@@ -209,18 +220,28 @@ impl Session {
         self.users.as_ref().map(|(_, listing)| listing)
     }
 
-    /// Have who plays the viewed document listed again, on the next [`users`](Self::users).
-    /// Every time the view moves or the tree changes, since another instrument may have taken up
-    /// or let go of the document meanwhile. The last answer for the same document stands until the
-    /// new one arrives.
+    /// Have who plays the viewed document listed again, on the next [`users`](Self::users), when
+    /// the view moved to another document or the tree reads other documents than at the last
+    /// listing (see [`listed_for`](Self::listed_for)). The last answer for the same document stands
+    /// until the new one arrives.
     fn list_users(&mut self) {
-        self.listing = None;
         if self.trail.is_empty() {
+            self.listing = None;
             self.users = None;
             self.relist = false;
+            self.listed_for = None;
             return;
         }
         let source = self.viewed().source.clone();
+        let documents = (self.tree.documents().iter())
+            .map(|document| document.source.clone())
+            .collect();
+        let asked = (source.clone(), documents);
+        if self.listed_for.as_ref() == Some(&asked) {
+            return;
+        }
+        self.listed_for = Some(asked);
+        self.listing = None;
         if (self.users.as_ref()).is_none_or(|(listed, _)| *listed != source) {
             self.users = Some((source, Listing::Checking));
         }
@@ -514,7 +535,11 @@ pub(crate) mod test_support {
         }
     }
 
-    /// How many `call`s of each tool have crossed a [`Counting`] transport.
+    /// What [`Rig::calls`] counts `library` requests under.
+    pub const LIBRARY: &str = "<library>";
+
+    /// How many `call`s of each tool, and `library` requests, have crossed a [`Counting`]
+    /// transport.
     type Calls = Arc<Mutex<BTreeMap<String, usize>>>;
 
     /// The engine's own transport, counting the `call`s that cross it by tool name.
@@ -526,8 +551,16 @@ pub(crate) mod test_support {
 
     impl Transport for Counting {
         fn round_trip(&self, line: &str, read_timeout: Duration) -> std::io::Result<String> {
-            if let Ok(Request::Call { tool, .. }) = Request::from_ndjson(line) {
-                *self.calls.lock().unwrap().entry(tool).or_default() += 1;
+            match Request::from_ndjson(line) {
+                Ok(Request::Call { tool, .. }) => {
+                    *self.calls.lock().unwrap().entry(tool).or_default() += 1;
+                }
+                Ok(Request::Library) => {
+                    *(self.calls.lock().unwrap())
+                        .entry(LIBRARY.to_string())
+                        .or_default() += 1;
+                }
+                _ => {}
             }
             self.inner.round_trip(line, read_timeout)
         }
@@ -923,6 +956,52 @@ mod tests {
                 playing,
                 "the top-level document is the same one; only its voice moved"
             );
+        });
+    }
+
+    /// Listed once, then not again for an edit that leaves the tree reading the same documents:
+    /// who plays the viewed one cannot have changed. Listed again once the tree reads another.
+    #[test]
+    fn who_plays_a_viewed_document_is_listed_again_only_when_the_trees_documents_change() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("users_coalesced", "default.json");
+            let voice = source_of(&rig, VOICE);
+            let channel = rig.channel_source();
+            rig.session.enter("/voicer").expect("a voicer");
+            let deadline = Instant::now() + SEEN;
+            while rig.session.users(&channel) == Some(&Listing::Checking) {
+                assert!(Instant::now() < deadline, "never listed");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert_eq!(rig.calls(test_support::LIBRARY), 1);
+
+            let written = client_sets_cutoff(&rig, &voice, 1200.0);
+            rig.poll_until("the voice read again", |rig| {
+                hash_of(rig, &voice).as_deref() == Some(written.as_str())
+            });
+            rig.session.users(&channel);
+            rig.settle();
+            rig.session.users(&channel);
+            assert_eq!(rig.calls(test_support::LIBRARY), 1, "listed again");
+
+            // From outside, as a text editor writes: one more document in the tree.
+            let mut doc: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&rig.top).unwrap()).unwrap();
+            doc["resources"]["space"] = json!("patches/space.json");
+            (doc["nodes"].as_array_mut().unwrap())
+                .push(json!({"type": "subpatch", "address": "/space", "patch": "space"}));
+            let staged = rig.top.with_extension("json.tmp");
+            std::fs::write(&staged, doc.to_string()).unwrap();
+            std::fs::rename(&staged, &rig.top).unwrap();
+            rig.poll_until("the new resource read", |rig| {
+                rig.session.tree().documents().len() > 2
+            });
+            rig.session.users(&channel);
+            let deadline = Instant::now() + SEEN;
+            while rig.calls(test_support::LIBRARY) < 2 {
+                assert!(Instant::now() < deadline, "not listed again");
+                std::thread::sleep(Duration::from_millis(5));
+            }
         });
     }
 

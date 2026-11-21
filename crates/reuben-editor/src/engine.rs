@@ -210,27 +210,44 @@ impl Engine {
     }
 
     /// Start the engine on the audio device `config.profile` selects, or, when that device does
-    /// not open, with no device at all: the server still lists, opens and edits, and the report
-    /// says why nothing is heard.
+    /// not open, with no device at all; and when the OSC-in port is taken, with no OSC-in. Either
+    /// way the server still lists, opens and edits, and the report says what is missing and why.
+    /// A structure socket that does not bind is already left out by the start itself.
     pub fn start(config: EngineConfig) -> Self {
         Self::start_or_headless(config, engine::start, engine::start_headless)
     }
 
     /// [`start`](Self::start) through `start`, falling back to `headless` on an audio device
-    /// error: the seams a test puts its stand-ins in.
+    /// error and to no OSC-in on an OSC-in error: the seams a test puts its stand-ins in. The kept
+    /// config still names the OSC-in address, so a restart asks for it again.
     pub(crate) fn start_or_headless(
         config: EngineConfig,
-        start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
+        mut start: impl FnMut(EngineConfig) -> Result<RunningEngine, StartError>,
         headless: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
     ) -> Self {
+        let mut osc_in = None;
         let mut device = None;
-        let mut engine = Self::start_with(config, |config| match start(config.clone()) {
-            Err(StartError::Audio(e)) => {
-                device = Some(e);
-                headless(config)
+        let mut engine = Self::start_with(config, |mut config| {
+            let mut started = start(config.clone());
+            if let Err(e @ StartError::OscIn { .. }) = &started {
+                osc_in = Some(start_error(e));
+                config.osc_in = None;
+                started = start(config.clone());
             }
-            started => started,
+            match started {
+                Err(StartError::Audio(e)) => {
+                    device = Some(e);
+                    headless(config)
+                }
+                started => started,
+            }
         });
+        if let Some(why) = osc_in {
+            engine.push(Line::new(
+                Level::Error,
+                format!("OSC-in is off ({why}); instruments still open and edit"),
+            ));
+        }
         if let Some(e) = device {
             engine.push(Line::new(
                 Level::Error,
@@ -329,7 +346,7 @@ impl Engine {
     pub fn restart_with(
         &mut self,
         profile: DeviceProfile,
-        start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
+        start: impl FnMut(EngineConfig) -> Result<RunningEngine, StartError>,
     ) {
         self.restart(profile, start, "audio output not changed");
     }
@@ -339,7 +356,7 @@ impl Engine {
     fn restart(
         &mut self,
         profile: DeviceProfile,
-        start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
+        start: impl FnMut(EngineConfig) -> Result<RunningEngine, StartError>,
         refused: &str,
     ) -> bool {
         let Some(mut config) = self.config.clone() else {
@@ -562,7 +579,7 @@ impl Engine {
     /// document until [`retry_fit`](Self::retry_fit). Never waits unless it restarts.
     pub fn fit_input(
         &mut self,
-        start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
+        start: impl FnMut(EngineConfig) -> Result<RunningEngine, StartError>,
     ) -> bool {
         let Some(running) = &self.running else {
             return false;
@@ -999,6 +1016,102 @@ mod tests {
                 .find(|l| l.level == Level::Warning && l.text.contains("structure channel"))
                 .expect("the structure port is reported");
             assert!(warning.text.contains(&addr), "{}", warning.text);
+            engine.shutdown();
+        });
+    }
+
+    /// What the standalone editor starts on a machine where `reuben play`, another editor or
+    /// another OSC app already holds the port: a server without that listener, and a line saying so.
+    #[test]
+    fn a_taken_osc_port_still_starts_a_server_and_says_why() {
+        within(HANG_SECS, || {
+            let taken = UdpSocket::bind("127.0.0.1:0").expect("hold a port");
+            let addr = taken.local_addr().expect("bound").to_string();
+            let mut engine = Engine::start_or_headless(
+                EngineConfig {
+                    osc_in: Some(addr.clone()),
+                    ..super::test_support::silent(&library(""))
+                },
+                start_headless,
+                |_| panic!("the headless start is only for a device that does not open"),
+            );
+            let running = engine.running().expect("a server runs");
+            assert_eq!(running.osc_in_addr(), None);
+            let said = errors(&engine);
+            assert_eq!(said.len(), 1, "{said:?}");
+            assert!(
+                said[0].contains("OSC-in") && said[0].contains(&addr),
+                "{}",
+                said[0]
+            );
+            let library = (engine.channel().expect("the server runs"))
+                .library()
+                .expect("the library lists without OSC-in");
+            assert!(!library.instruments.is_empty());
+            assert_eq!(
+                engine.config.as_ref().and_then(|c| c.osc_in.clone()),
+                Some(addr),
+                "a restart asks for the port again"
+            );
+            engine.shutdown();
+            drop(taken);
+        });
+    }
+
+    #[test]
+    fn a_taken_osc_port_and_no_device_still_start_a_server() {
+        within(HANG_SECS, || {
+            let taken = UdpSocket::bind("127.0.0.1:0").expect("hold a port");
+            let addr = taken.local_addr().expect("bound").to_string();
+            let mut engine = Engine::start_or_headless(
+                EngineConfig {
+                    osc_in: Some(addr),
+                    ..super::test_support::silent(&library(""))
+                },
+                |config| match config.osc_in {
+                    Some(addr) => Err(StartError::OscIn {
+                        addr,
+                        error: io::Error::from(io::ErrorKind::AddrInUse),
+                    }),
+                    None => Err(StartError::Audio(
+                        reuben_native::audio::AudioError::NoDevice,
+                    )),
+                },
+                start_headless,
+            );
+            assert!(engine.running().is_some());
+            assert_eq!(errors(&engine).len(), 2, "{:?}", engine.report());
+            engine.shutdown();
+            drop(taken);
+        });
+    }
+
+    #[test]
+    fn a_taken_structure_port_still_starts_a_server_and_says_why() {
+        within(HANG_SECS, || {
+            let taken = TcpListener::bind("127.0.0.1:0").expect("hold a port");
+            let addr = taken.local_addr().expect("bound").to_string();
+            let mut engine = Engine::start_or_headless(
+                EngineConfig {
+                    structure: Some(addr.clone()),
+                    ..super::test_support::silent(&library(""))
+                },
+                start_headless,
+                |_| panic!("the headless start is only for a device that does not open"),
+            );
+            assert!(engine
+                .running()
+                .is_some_and(|r| r.structure_addr().is_none()));
+            assert!(
+                (engine.report().iter())
+                    .any(|l| l.text.contains("structure channel") && l.text.contains(&addr)),
+                "{:?}",
+                engine.report()
+            );
+            let library = (engine.channel().expect("the server runs"))
+                .library()
+                .expect("the in-process channel serves the editor");
+            assert!(!library.instruments.is_empty());
             engine.shutdown();
         });
     }
