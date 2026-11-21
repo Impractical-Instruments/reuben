@@ -773,6 +773,33 @@ fn a_playing_node_shows_its_level_on_the_canvas() {
     });
 }
 
+/// `reuben-editor <relative path>`: the server names the instrument by its absolute path, and the
+/// session opened at launch must name it the same way for its nodes to meter.
+#[test]
+fn an_instrument_named_by_a_relative_path_at_launch_shows_its_level() {
+    let scratch = Scratch::new("ui_node_meters_relative");
+    let config = TempConfig::new();
+    let top = metered(&scratch);
+    let cwd = std::env::current_dir().expect("a working directory");
+    let up: PathBuf = cwd.components().skip(1).map(|_| "..").collect();
+    let relative = up.join(top.strip_prefix("/").expect("an absolute scratch path"));
+    assert!(relative.is_relative() && relative.is_file(), "{relative:?}");
+    reuben_native::test_support::within(crate::engine::test_support::HANG_SECS, move || {
+        let mut editor = editor(&top, &config);
+        editor.engine = Engine::start_with(
+            crate::engine::test_support::config(relative.clone()),
+            reuben_native::test_support::start_headless,
+        );
+        let session = launched(&relative, &editor.engine);
+        editor.canvas = Canvas::open(None, None);
+        view(&mut editor.canvas, &mut editor.inspector, &session);
+        editor.session = Some(session);
+        let mut harness = harness(editor);
+        until_osc_level(&mut harness);
+        harness.state_mut().engine.shutdown();
+    });
+}
+
 #[test]
 fn a_node_of_a_file_the_engine_does_not_play_shows_no_level() {
     let scratch = Scratch::new("ui_node_meters_other");

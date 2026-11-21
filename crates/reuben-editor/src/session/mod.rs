@@ -14,8 +14,10 @@ mod view;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use reuben_api::engine::{Channel, Event};
+use reuben_native::tree_watch::LONGEST_WAIT;
 
 pub use self::tree::{nested, Document, Tree};
 pub use self::undo::{Direction, Step, Undo};
@@ -23,14 +25,22 @@ use self::users::users;
 pub use self::view::{bar, shortcut, trail, TrailAsk};
 use crate::feedback::Feedback;
 
-/// Whether the engine plays the open instrument as the server reads it.
+/// How long after a read that no event set off, and that found the tree held, it is read once
+/// more: past the server's longest debounce of an outside write, plus its reload. A read made
+/// inside that debounce can see a write the server then finds was undone, and publishes nothing
+/// for.
+const RECHECK_AFTER: Duration = Duration::from_millis(LONGEST_WAIT.as_millis() as u64 + 250);
+
+/// What the session last read of the open instrument's tree from the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Status {
+    /// Every document of the tree reads, and none reports an error. Whether the engine has
+    /// installed it yet is not part of this.
     Current,
-    /// No engine is running, so nothing plays.
+    /// No engine is running, so there is no server to read from and nothing plays.
     NoEngine,
-    /// It does not, and why: a document does not read, or its load reports errors, or the server
-    /// could not be asked.
+    /// The tree does not play as it is, and why: a document does not read, or its load reports
+    /// errors, or the server could not be asked.
     Held(Vec<String>),
 }
 
@@ -42,6 +52,8 @@ pub struct Poll {
     pub reloaded: bool,
     /// The name of an instrument the server opened in place of this session's, when one was.
     pub opened: Option<String>,
+    /// Poll again no later than this, for a read that is due then even if no event comes.
+    pub wait: Option<Duration>,
 }
 
 type Wake = Arc<dyn Fn() + Send + Sync>;
@@ -72,6 +84,8 @@ pub struct Session {
     /// The tree changed since [`poll`](Self::poll) last said so.
     changed: bool,
     status: Status,
+    /// When to read the tree once more, a read having found it held. See [`RECHECK_AFTER`].
+    recheck: Option<Instant>,
     wake: Wake,
     undo: Undo,
     /// Why the last edit did not land, until one does: kept here so the canvas and the inspector,
@@ -92,6 +106,7 @@ impl Session {
             trail: Vec::new(),
             changed: false,
             status: Status::NoEngine,
+            recheck: None,
             wake: Arc::new(|| {}),
             undo: Undo::default(),
             feedback: None,
@@ -241,7 +256,8 @@ impl Session {
     }
 
     /// Take in the server's `events` since the last call: any at all, of whatever kind, is one
-    /// read of the tree, since an event does not say which document changed.
+    /// read of the tree, since an event does not say which document changed. With none, a read
+    /// that came due is made.
     pub fn poll(&mut self, events: &[Event], channel: &dyn Fn() -> Option<Channel>) -> Poll {
         let opened = (events.iter().rev())
             .find_map(|event| match event {
@@ -250,20 +266,33 @@ impl Session {
             })
             .filter(|name| !name.is_empty() && **name != self.top)
             .cloned();
+        let now = Instant::now();
         if !events.is_empty() {
             self.refresh(channel);
+        } else if self.recheck.is_some_and(|due| now >= due) {
+            self.recheck = None;
+            self.read(channel);
         }
         Poll {
             reloaded: std::mem::take(&mut self.changed),
             opened,
+            wait: self.recheck.map(|due| due.saturating_duration_since(now)),
         }
     }
 
     /// Read the tree from the server now. Returns whether it differed from the one held.
     ///
     /// With no engine running the tree is kept, and the status says nothing plays. A read the
-    /// server refused, or that did not reach it, keeps the tree too, and holds with why.
+    /// server refused, or that did not reach it, keeps the tree too, and holds with why. A read
+    /// that holds has another come due after [`RECHECK_AFTER`], which [`poll`](Self::poll) makes.
     pub fn refresh(&mut self, channel: &dyn Fn() -> Option<Channel>) -> bool {
+        let changed = self.read(channel);
+        self.recheck =
+            matches!(self.status, Status::Held(_)).then(|| Instant::now() + RECHECK_AFTER);
+        changed
+    }
+
+    fn read(&mut self, channel: &dyn Fn() -> Option<Channel>) -> bool {
         let Some(channel) = channel() else {
             self.status = Status::NoEngine;
             return false;
@@ -640,6 +669,23 @@ pub(crate) mod test_support {
             self.session.poll(&events, &channel).reloaded
         }
 
+        /// Wait until the server has sent `n` events since the last poll, and return them
+        /// without taking them in.
+        pub fn events(&self, n: usize) -> Vec<Event> {
+            let deadline = Instant::now() + SEEN;
+            let mut events = Vec::new();
+            while events.len() < n {
+                assert!(
+                    Instant::now() < deadline,
+                    "{} of {n} events came",
+                    events.len()
+                );
+                events.extend(self.follow.drain());
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            events
+        }
+
         /// Poll until `done`, failing after [`SEEN`].
         pub fn poll_until(&mut self, what: &str, done: impl Fn(&Rig) -> bool) {
             let deadline = Instant::now() + SEEN;
@@ -971,12 +1017,39 @@ mod tests {
                 };
                 last = client_writes(&rig, names::SET_INSTRUMENT_LAYOUT, json!(layout)).hash;
             }
-            // Long enough for the three events to cross the follow's thread.
-            std::thread::sleep(Duration::from_millis(300));
+            let events = rig.events(3);
+            assert_eq!(events.len(), 3, "{events:?}");
             let reads = rig.calls(names::READ_INSTRUMENT_TREE);
-            assert!(rig.poll(), "the tree changed");
+            let channel = rig.channel_source();
+            assert!(
+                rig.session.poll(&events, &channel).reloaded,
+                "the tree changed"
+            );
             assert_eq!(rig.calls(names::READ_INSTRUMENT_TREE), reads + 1);
             assert_eq!(rig.session.tree().top().hash(), Some(last.as_str()));
+        });
+    }
+
+    /// The server debounces a write undone at once into no change, and says nothing. A read made
+    /// between the two writes saw the first, and is read again once the debounce is past.
+    #[test]
+    fn a_held_read_of_a_write_the_server_never_reports_is_read_again() {
+        within(HANG_SECS, || {
+            let mut rig = Rig::open("transient", "default.json");
+            let channel = rig.channel_source();
+            let file = rig.lib.join(VOICE);
+            let was = std::fs::read_to_string(&file).unwrap();
+            std::fs::write(&file, BROKEN).unwrap();
+            rig.session.refresh(&channel);
+            std::fs::write(&file, was).unwrap();
+            assert!(
+                matches!(rig.status(), Status::Held(_)),
+                "{:?}",
+                rig.status()
+            );
+            let poll = rig.session.poll(&[], &channel);
+            assert!(poll.wait.is_some(), "a read is due");
+            rig.poll_until("read again", |rig| rig.status() == &Status::Current);
         });
     }
 

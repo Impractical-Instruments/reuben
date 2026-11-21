@@ -789,6 +789,29 @@ mod tests {
         assert_eq!(s.files.get("fresh.json"), None);
     }
 
+    #[test]
+    fn a_referenced_document_that_is_missing_is_in_the_tree_and_may_be_created() {
+        let s = confined();
+        // `/extra` references a file that is not there: the load warns and plans without it.
+        let referencing = r#"{"format_version":3,"instrument":"top",
+            "resources":{"v":"v.json","g":"gone.json"},
+            "interface":{"outputs":{"out":{"from":"/voice.out"}}},
+            "nodes":[{"type":"subpatch","address":"/voice","patch":"v"},
+                     {"type":"subpatch","address":"/extra","patch":"g"}]}"#;
+        s.files.write_text("top.json", referencing).unwrap();
+        assert!(s.state.reload().is_some(), "the outside write went live");
+        s.render();
+        assert!(s.state.tree().contains("gone.json"), "{:?}", s.state.tree());
+
+        let (output, _) = call(
+            &s,
+            "new_instrument",
+            json!({"source": "gone.json", "name": "gone"}),
+        );
+        assert_eq!(output["written"], true, "{output}");
+        assert!(s.files.get("gone.json").is_some());
+    }
+
     /// Offers only names starting with `k`, besides the open tree.
     fn offering_only_k() -> Served {
         serving_with(Host {

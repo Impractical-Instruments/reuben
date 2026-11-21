@@ -131,7 +131,8 @@ pub trait EngineHost: Send + Sync {
 
     /// Whether a client may name `name`, a source as the store reads it, in `open` or in a `call`
     /// that reads or creates it. `open` is the source of the instrument now playing, when there is
-    /// one. A document in the open instrument's own tree is always nameable; this decides the rest.
+    /// one. A document in the open instrument's own tree is always nameable, one it references and
+    /// could not read included; this decides the rest.
     ///
     /// Defaults to `true`: a store that is not a filesystem has nothing to confine. A host over a
     /// filesystem overrides it to keep a client to what [`offered`](Self::offered) lists.
@@ -209,8 +210,8 @@ pub struct StructureState {
     /// together) and read beside it — no path takes this lock first, so the ordering cannot invert.
     installed_source: Arc<Mutex<Option<String>>>,
     store: Arc<ServerStore>,
-    /// What the last successful install read: the documents an edit may touch. Written only under
-    /// the Coordinator lock, as `installed_source` is.
+    /// What the last successful install read or referenced: the documents an edit may touch.
+    /// Written only under the Coordinator lock, as `installed_source` is.
     tree: Arc<Mutex<Tree>>,
     /// Set by [`close`](StructureState::close) when the host tears the engine down.
     closed: Arc<AtomicBool>,
@@ -419,8 +420,9 @@ impl StructureState {
         self.events.subscribers()
     }
 
-    /// The canonical sources the last successful install read, the top document's included. An
-    /// edit to any other source is refused.
+    /// The canonical sources the last successful install asked its store for, the top document's
+    /// included: those it read, and those it referenced and could not read, so a document that is
+    /// missing stays one of the instrument's. An edit to any other source is refused.
     pub fn tree(&self) -> BTreeSet<String> {
         self.tree
             .lock()
@@ -1067,10 +1069,11 @@ fn handle_surface(state: &StructureState) -> Response {
     }
 }
 
-/// The documents an install read.
+/// The documents an install read, or referenced and could not read.
 #[derive(Default)]
 struct Tree {
-    /// Every canonical source the load read, the top document's included.
+    /// Every canonical source the load asked for, the top document's included, whether or not it
+    /// could be read.
     sources: BTreeSet<String>,
     /// The texts of the documents the top one reaches, without the top one's: the installed
     /// content hash already says whether that one changed, and leaving it out keeps a top document

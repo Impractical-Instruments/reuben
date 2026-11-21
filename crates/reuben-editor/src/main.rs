@@ -132,8 +132,7 @@ fn main() -> eframe::Result {
             };
             let session = path.as_deref().map(|path| {
                 let ctx = cc.egui_ctx.clone();
-                Session::open(&path.display().to_string(), &|| engine.channel())
-                    .with_wake(move || ctx.request_repaint())
+                launched(path, &engine).with_wake(move || ctx.request_repaint())
             });
             let mut canvas = Canvas::open(None, None);
             let mut inspector = Inspector::default();
@@ -184,6 +183,12 @@ fn start(
         }),
         Err(e) => Engine::not_started(e),
     }
+}
+
+/// The session on the instrument at `path` that `engine` was started on, named as the server
+/// names it rather than as the command line spelled it.
+fn launched(path: &std::path::Path, engine: &Engine) -> Session {
+    Session::open(&start::name_of(path), &|| engine.channel())
 }
 
 /// Draw the document `session` views. A canvas drawing another document, and the inspector with
@@ -342,6 +347,9 @@ impl Editor {
         if self.engine.busy() {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(50));
+        }
+        if let Some(wait) = poll.wait {
+            ui.ctx().request_repaint_after(wait);
         }
         if poll.reloaded {
             view(&mut self.canvas, &mut self.inspector, session);

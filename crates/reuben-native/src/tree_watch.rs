@@ -19,7 +19,7 @@ const QUIET: Duration = Duration::from_millis(50);
 
 /// The longest a touch waits to be read while later touches keep arriving, so files written
 /// without a pause — a script sweeping a value — are still followed.
-const LONGEST_WAIT: Duration = Duration::from_millis(500);
+pub const LONGEST_WAIT: Duration = Duration::from_millis(500);
 
 /// How often an idle watcher wakes to see whether what is open changed, which moves the files to
 /// watch. Shutdown does not wait on it: a drop wakes the thread at once.

@@ -47,7 +47,7 @@ pub fn open(
     wake: impl Fn() + Send + Sync + 'static,
     start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
 ) -> Session {
-    let name = path.display().to_string();
+    let name = name_of(path);
     // An attached engine that is not answering is waited for, never replaced by one started here.
     if engine.channel().is_some() || engine.link().is_some() {
         if let Some(channel) = engine.channel() {
@@ -75,6 +75,15 @@ pub fn open(
         Err(e) => Engine::not_started(e),
     };
     Session::open(&name, &|| engine.channel()).with_wake(wake)
+}
+
+/// The name the server gives the instrument at `path` once it plays it: the path made absolute
+/// against the working directory, which is how a start and a by-path Swap record it.
+pub fn name_of(path: &Path) -> String {
+    std::path::absolute(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .display()
+        .to_string()
 }
 
 /// Bring `engine` up to what it has installed: its report names the instrument, and, once the
