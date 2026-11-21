@@ -18,6 +18,7 @@ mod held_swap;
 mod inspector;
 mod link;
 mod meter_strip;
+mod names;
 mod pick;
 mod sends;
 mod session;

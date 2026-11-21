@@ -24,6 +24,7 @@ use super::view::Ask;
 use super::{Edit, Inspector};
 use crate::chooser;
 use crate::edit::Verb;
+use crate::names::lexical;
 
 /// One change to the resources table, or to what a node reads from it.
 #[derive(Debug, Clone, PartialEq)]
@@ -88,7 +89,7 @@ impl ResourceEdit {
 }
 
 /// What a picked file is named as: a sample is a WAV, anything else here an instrument document.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash)]
 enum Kind {
     Sample,
     Document,
@@ -240,22 +241,6 @@ pub fn relative_source(dir: &Path, picked: &Path) -> Result<String, String> {
     Ok(parts.ok_or_else(unnamed)?.join("/"))
 }
 
-/// `path` made absolute, with each `.` dropped and each `..` folded into the component before it.
-fn lexical(path: &Path) -> PathBuf {
-    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-    let mut folded = PathBuf::new();
-    for component in absolute.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                folded.pop();
-            }
-            other => folded.push(other),
-        }
-    }
-    folded
-}
-
 /// The file's name without its extension, as an id `top` does not have: `testvox`, else
 /// `testvox_2`, `testvox_3`, ….
 fn free_id(top: &InstrumentStructure, picked: &Path) -> String {
@@ -288,7 +273,7 @@ fn readers<'a>(top: &'a InstrumentStructure, id: &str) -> Vec<&'a str> {
 }
 
 /// What a button in the table asked to pick a file for.
-#[derive(Debug)]
+#[derive(Debug, Hash)]
 enum Want {
     Add(Kind),
     Repoint(String, Kind),
@@ -390,7 +375,8 @@ pub fn list(
             None
         }
         Offered::Listed(Ok(names)) => {
-            let id = ui.id().with("resource chooser");
+            // Per ask, so what was typed to filter one chooser is not the next one's filter.
+            let id = ui.id().with(("resource chooser", &choosing.want));
             chooser::show(ui, id, names, &dir.display().to_string())
         }
     };
@@ -671,6 +657,23 @@ mod tests {
                 source: "patches/room.json".into()
             })
         );
+    }
+
+    #[test]
+    fn each_ask_keeps_a_filter_of_its_own() {
+        let id = |want: &Want| egui::Id::new(("resource chooser", want));
+        let asks = [
+            Want::Add(Kind::Sample),
+            Want::Add(Kind::Document),
+            Want::Repoint("a".into(), Kind::Sample),
+            Want::Repoint("b".into(), Kind::Sample),
+        ];
+        for (i, one) in asks.iter().enumerate() {
+            for other in &asks[i + 1..] {
+                assert_ne!(id(one), id(other), "{one:?} {other:?}");
+            }
+        }
+        assert_eq!(id(&Want::Add(Kind::Sample)), id(&asks[0]));
     }
 
     #[test]

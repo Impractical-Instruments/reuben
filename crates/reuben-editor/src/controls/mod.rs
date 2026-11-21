@@ -68,6 +68,12 @@ fn load(channel: &Channel, top: &str) -> Result<Loaded, String> {
             from_surface: false,
         }),
         Ok(Some(text)) => match surface::SurfaceDoc::parse(&text) {
+            // The server answers for the instrument it has open, which an attached engine can
+            // change between the two reads.
+            Ok(doc) if doc.instrument != boundary.instrument => unusable(format!(
+                "is for instrument `{}`, not `{}`",
+                doc.instrument, boundary.instrument
+            )),
             Ok(doc) => Ok(Loaded {
                 panel: Panel::from_surface(&doc, &boundary),
                 from_surface: true,
@@ -563,6 +569,35 @@ mod tests {
                 assert!(warning.contains("probe.json"), "{warning}");
                 assert!(warning.contains("generated panel"), "{warning}");
             }
+            engine.shutdown();
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The server's surface doc is the open instrument's: read for another instrument, it is not
+    /// that one's panel.
+    #[test]
+    fn a_surface_doc_for_another_instrument_is_not_used() {
+        let dir = scratch("other_surface");
+        let instrument = dir.join("instruments/probe.json");
+        std::fs::write(&instrument, PROBE).expect("the probe instrument");
+        std::fs::write(
+            dir.join("surfaces/probe.json"),
+            r#"{"surface_version":1,"instrument":"probe",
+                "controls":[{"bind":"level","label":"Loudness"}]}"#,
+        )
+        .expect("a surface doc");
+        let other = dir.join("instruments/other.json");
+        std::fs::write(&other, PROBE.replace(r#""probe""#, r#""other""#)).expect("another");
+        within(HANG_SECS, move || {
+            let mut engine = headless(&instrument, None);
+            let channel = engine.channel().expect("the engine is running");
+            let loaded = load(&channel, &other.display().to_string()).expect("it loads");
+            assert!(!loaded.from_surface);
+            assert_eq!(loaded.panel.controls.len(), 2, "the generated panel");
+            let warning = &loaded.panel.warnings[0];
+            assert!(warning.contains("`probe`, not `other`"), "{warning}");
+            assert!(warning.contains("generated panel"), "{warning}");
             engine.shutdown();
         });
         let _ = std::fs::remove_dir_all(&dir);
