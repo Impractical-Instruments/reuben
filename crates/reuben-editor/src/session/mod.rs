@@ -390,7 +390,6 @@ fn followed(tree: &Tree, trail: Vec<Crumb>) -> Vec<Crumb> {
 pub(crate) mod test_support {
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
-    use std::sync::mpsc;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
