@@ -47,8 +47,7 @@ pub use reuben_core::operator::{InPort, OutPort};
 /// The operator set: constructors and port-index consts, for a host with no document to name a
 /// type by string.
 pub use reuben_core::operators;
-/// Why [`install_graph`] refused a graph, and where it named an undeclared port. Not the whole
-/// failure surface — see [`install_graph`].
+/// Why [`install_graph`] refused a graph, and where it named an undeclared port or a missing node.
 pub use reuben_core::plan::{PlanError, PortPosition};
 /// The sample rate and block size a Plan is instantiated against — a host's device geometry,
 /// which is why it is a parameter rather than a policy.
@@ -71,9 +70,9 @@ pub use reuben_core::boundary::osc_out_args;
 ///
 /// A bare `usize` port past what its node declares — in a wire's source or destination, a master
 /// tap, or an `interface` entry — is refused as [`PlanError::PortOutOfRange`]; a typed handle in
-/// the wrong position does not compile. [`PlanError`] is still not the whole failure surface: a
-/// wire, tap or `interface` entry naming a [`NodeKey`] the graph does not hold (removed, or minted
-/// by another `Graph`) panics inside Instantiate.
+/// the wrong position does not compile. A wire, tap or `interface` entry naming a [`NodeKey`] the
+/// graph does not hold (left over from a removed node) is refused as [`PlanError::UnknownNode`]. A
+/// key minted by another `Graph` is refused only if it names no node here; see [`NodeKey`].
 ///
 /// Allocates; the Instantiate phase, not the audio thread.
 pub fn install_graph(graph: Graph, config: AudioConfig) -> Result<RenderSide, PlanError> {

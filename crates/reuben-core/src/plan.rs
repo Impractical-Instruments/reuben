@@ -1390,7 +1390,7 @@ impl Adjacency {
             // an edge either: indexing it would hand the node loop an out-of-range port, and
             // would let a dead wire close a cycle or order its endpoints. A key naming no node is
             // skipped too, so the indexing below never panics on one; Instantiate does not reach
-            // here with one, since `check_wire_forms` indexes it first.
+            // here with one, since `check_endpoints` refuses it first.
             let declared = |key: NodeKey, port: usize, outputs: bool| {
                 graph.nodes.get(key).is_some_and(|n| {
                     let ports = if outputs {

@@ -10,7 +10,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use slotmap::{new_key_type, SecondaryMap, SlotMap};
+use slotmap::{new_key_type, Key, SecondaryMap, SlotMap};
 
 use crate::descriptor::Descriptor;
 use crate::message::Arg;
@@ -20,9 +20,11 @@ new_key_type! {
     /// Stable identity of a node within a Graph.
     ///
     /// A key carries no record of which `Graph` minted it. One that names no node here is refused
-    /// at Instantiate as [`PlanError::UnknownNode`](crate::plan::PlanError::UnknownNode), but a key
-    /// from another `Graph` whose index and version happen to match a live node here names *that*
-    /// node, and nothing can tell. Use a key only with the `Graph` that returned it.
+    /// at Instantiate as [`PlanError::UnknownNode`](crate::plan::PlanError::UnknownNode). A key
+    /// from another `Graph` usually does name a node here: keys are handed out in insertion order,
+    /// so two graphs built the same way hold the same keys, and a key from one names whatever the
+    /// other added at that position. Nothing can tell. Use a key only with the `Graph` that
+    /// returned it.
     pub struct NodeKey;
 }
 
@@ -307,7 +309,8 @@ impl Graph {
     /// Keys are the copy's own. A [`NodeKey`] taken from the original is not merely stale here, it
     /// is *wrong-and-live*: SlotMap keys are per-map, so an original's key resolves against
     /// whatever the copy happens to hold in that slot. Every stored key is therefore remapped
-    /// through the insertion rather than carried.
+    /// through the insertion rather than carried. A wire, tap or `interface` entry naming a node
+    /// this graph does not hold names no node in the copy either.
     pub fn spawn_copy(&self) -> Graph {
         let mut nodes = SlotMap::with_capacity_and_key(self.nodes.len());
         let mut remap: SecondaryMap<NodeKey, NodeKey> =
@@ -324,7 +327,10 @@ impl Graph {
             });
             remap.insert(key, fresh);
         }
-        let at = |k: NodeKey| remap[k];
+        // A key this graph doesn't hold has no counterpart in the copy. The null key, which no
+        // SlotMap ever holds, keeps it missing there, so Instantiate refuses the copy the way it
+        // would the original, rather than the entry vanishing or resolving to a live node.
+        let at = |k: NodeKey| remap.get(k).copied().unwrap_or_else(NodeKey::null);
         Graph {
             nodes,
             connections: self
@@ -560,5 +566,24 @@ mod tests {
         assert_eq!(g.nodes.len(), 1);
         assert!(g.nodes[kept].value_overrides.is_empty());
         assert!(g.nodes[kept].constant_overrides.is_empty());
+    }
+
+    #[test]
+    fn spawn_copy_carries_a_missing_node_as_a_key_the_copy_does_not_hold() {
+        use crate::operators::{oscillator, output, Oscillator, Output};
+        let mut g = Graph::new();
+        let out = g.add("/out", Output::new());
+        let gone = g.add("/gone", Oscillator::new());
+        g.nodes.remove(gone);
+        g.connect(gone, oscillator::OUT_AUDIO, out, output::IN_AUDIO);
+        g.tap_output(gone, oscillator::OUT_AUDIO);
+        g.interface.outputs.insert("audio".into(), (gone, 0));
+
+        let copy = g.spawn_copy();
+
+        assert!(!copy.nodes.contains_key(copy.connections[0].src));
+        assert!(copy.nodes.contains_key(copy.connections[0].dst));
+        assert!(!copy.nodes.contains_key(copy.outputs[0].0));
+        assert!(!copy.nodes.contains_key(copy.interface.outputs["audio"].0));
     }
 }
