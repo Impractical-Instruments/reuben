@@ -763,6 +763,20 @@ fn faulted(
                 vec![fault],
             )
         }
+        // Unreachable from a document: the loader hands Instantiate only keys it minted. A backstop
+        // like the arms above, never attributed. No `node`: a missing node has no address.
+        Err(PlanError::UnknownNode { position }) => (
+            Report {
+                ok: false,
+                errors: vec![Diag {
+                    message: format!("{} names a node the graph does not hold", role(&position)),
+                    node: None,
+                    port: None,
+                }],
+                warnings,
+            },
+            vec![None],
+        ),
         // Unreachable from a document: the loader resolves port *names*, so every index it hands
         // Instantiate is a declared one. Kept as a backstop like the arm above. `port` stays
         // `None` because the refusal carries an index the descriptor has no name for.
@@ -772,17 +786,13 @@ fn faulted(
             port,
             declared,
         }) => {
-            let (role, side) = match &position {
-                PortPosition::Source => ("wire source".to_string(), "outputs"),
-                PortPosition::Destination => ("wire destination".to_string(), "inputs"),
-                PortPosition::Tap => ("master tap".to_string(), "outputs"),
-                PortPosition::InterfaceInput(name) => {
-                    (format!("interface input {name:?}"), "inputs")
-                }
-                PortPosition::InterfaceOutput(name) => {
-                    (format!("interface output {name:?}"), "outputs")
+            let side = match &position {
+                PortPosition::Destination | PortPosition::InterfaceInput(_) => "inputs",
+                PortPosition::Source | PortPosition::Tap | PortPosition::InterfaceOutput(_) => {
+                    "outputs"
                 }
             };
+            let role = role(&position);
             // A backstop no document reaches, so it is never attributed.
             (
                 Report {
@@ -799,6 +809,17 @@ fn faulted(
                 vec![None],
             )
         }
+    }
+}
+
+/// How a refusal names the graph entry at `position`.
+fn role(position: &PortPosition) -> String {
+    match position {
+        PortPosition::Source => "wire source".to_string(),
+        PortPosition::Destination => "wire destination".to_string(),
+        PortPosition::Tap => "master tap".to_string(),
+        PortPosition::InterfaceInput(name) => format!("interface input {name:?}"),
+        PortPosition::InterfaceOutput(name) => format!("interface output {name:?}"),
     }
 }
 

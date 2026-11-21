@@ -10,7 +10,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use slotmap::{new_key_type, SecondaryMap, SlotMap};
+use slotmap::{new_key_type, Key, SecondaryMap, SlotMap};
 
 use crate::descriptor::Descriptor;
 use crate::message::Arg;
@@ -18,6 +18,13 @@ use crate::operator::{InPort, Operator, OutPort};
 
 new_key_type! {
     /// Stable identity of a node within a Graph.
+    ///
+    /// A key carries no record of which `Graph` minted it. One that names no node here is refused
+    /// at Instantiate as [`PlanError::UnknownNode`](crate::plan::PlanError::UnknownNode). A key
+    /// from another `Graph` usually does name a node here: keys are handed out in insertion order,
+    /// so two graphs built the same way hold the same keys, and a key from one names whatever the
+    /// other added at that position. Nothing can tell. Use a key only with the `Graph` that
+    /// returned it.
     pub struct NodeKey;
 }
 
@@ -169,10 +176,13 @@ impl Graph {
     /// constant's stored [`Arg`] (an `i32` count clamps to its range). Upserts the `(slot, Arg)`
     /// override the patch's `config` block sets and `from_graph` saves back.
     ///
-    /// **Silent no-op** if `name` is not a constant or `raw` does not resolve — see
+    /// **Silent no-op** if `node` is not in this graph, `name` is not a constant, or `raw` does not
+    /// resolve — see
     /// [`set_value`](Self::set_value) for what that obliges a caller to do.
     pub fn set_constant(&mut self, node: NodeKey, name: &str, raw: &Arg) {
-        let n = &mut self.nodes[node];
+        let Some(n) = self.nodes.get_mut(node) else {
+            return;
+        };
         let Some((slot, arg)) = n.descriptor.coerce_constant(name, raw) else {
             return;
         };
@@ -187,12 +197,15 @@ impl Graph {
     /// symbol / index / concrete variant. Upserts the `(port, Arg)` override consumed by
     /// [`Plan::instantiate`](crate::plan::Plan::instantiate).
     ///
-    /// **Silent no-op** if `name` is not a settable input or `raw` does not resolve. That silence
+    /// **Silent no-op** if `node` is not in this graph, `name` is not a settable input, or `raw`
+    /// does not resolve. That silence
     /// is why a caller must hand over the value its own validation produced, not the one the author
     /// wrote: validating one form and passing another leaves the document saying one thing and the
     /// graph playing another, with nothing raised anywhere.
     pub fn set_value(&mut self, node: NodeKey, name: &str, raw: &Arg) {
-        let n = &mut self.nodes[node];
+        let Some(n) = self.nodes.get_mut(node) else {
+            return;
+        };
         let Some((port, arg)) = n.descriptor.coerce_input(name, raw) else {
             return;
         };
@@ -296,7 +309,8 @@ impl Graph {
     /// Keys are the copy's own. A [`NodeKey`] taken from the original is not merely stale here, it
     /// is *wrong-and-live*: SlotMap keys are per-map, so an original's key resolves against
     /// whatever the copy happens to hold in that slot. Every stored key is therefore remapped
-    /// through the insertion rather than carried.
+    /// through the insertion rather than carried. A wire, tap or `interface` entry naming a node
+    /// this graph does not hold names no node in the copy either.
     pub fn spawn_copy(&self) -> Graph {
         let mut nodes = SlotMap::with_capacity_and_key(self.nodes.len());
         let mut remap: SecondaryMap<NodeKey, NodeKey> =
@@ -313,7 +327,10 @@ impl Graph {
             });
             remap.insert(key, fresh);
         }
-        let at = |k: NodeKey| remap[k];
+        // A key this graph doesn't hold has no counterpart in the copy. The null key, which no
+        // SlotMap ever holds, keeps it missing there, so Instantiate refuses the copy the way it
+        // would the original, rather than the entry vanishing or resolving to a live node.
+        let at = |k: NodeKey| remap.get(k).copied().unwrap_or_else(NodeKey::null);
         Graph {
             nodes,
             connections: self
@@ -533,5 +550,40 @@ mod tests {
             copy.nodes.len(),
             "one spawn per node, and no other route"
         );
+    }
+
+    #[test]
+    fn setting_a_value_or_constant_on_a_missing_node_is_a_silent_no_op() {
+        use crate::operators::Oscillator;
+        let mut g = Graph::new();
+        let kept = g.add("/osc", Oscillator::new());
+        let gone = g.add("/gone", Oscillator::new());
+        g.nodes.remove(gone);
+
+        g.set_value(gone, "freq", &Arg::F32(220.0));
+        g.set_constant(gone, "freq", &Arg::F32(220.0));
+
+        assert_eq!(g.nodes.len(), 1);
+        assert!(g.nodes[kept].value_overrides.is_empty());
+        assert!(g.nodes[kept].constant_overrides.is_empty());
+    }
+
+    #[test]
+    fn spawn_copy_carries_a_missing_node_as_a_key_the_copy_does_not_hold() {
+        use crate::operators::{oscillator, output, Oscillator, Output};
+        let mut g = Graph::new();
+        let out = g.add("/out", Output::new());
+        let gone = g.add("/gone", Oscillator::new());
+        g.nodes.remove(gone);
+        g.connect(gone, oscillator::OUT_AUDIO, out, output::IN_AUDIO);
+        g.tap_output(gone, oscillator::OUT_AUDIO);
+        g.interface.outputs.insert("audio".into(), (gone, 0));
+
+        let copy = g.spawn_copy();
+
+        assert!(!copy.nodes.contains_key(copy.connections[0].src));
+        assert!(copy.nodes.contains_key(copy.connections[0].dst));
+        assert!(!copy.nodes.contains_key(copy.outputs[0].0));
+        assert!(!copy.nodes.contains_key(copy.interface.outputs["audio"].0));
     }
 }

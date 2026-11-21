@@ -47,8 +47,7 @@ pub use reuben_core::operator::{InPort, OutPort};
 /// The operator set: constructors and port-index consts, for a host with no document to name a
 /// type by string.
 pub use reuben_core::operators;
-/// Why [`install_graph`] refused a graph, and where it named an undeclared port. Not the whole
-/// failure surface — see [`install_graph`].
+/// Why [`install_graph`] refused a graph, and where it named an undeclared port or a missing node.
 pub use reuben_core::plan::{PlanError, PortPosition};
 /// The sample rate and block size a Plan is instantiated against — a host's device geometry,
 /// which is why it is a parameter rather than a policy.
@@ -71,9 +70,9 @@ pub use reuben_core::boundary::osc_out_args;
 ///
 /// A bare `usize` port past what its node declares — in a wire's source or destination, a master
 /// tap, or an `interface` entry — is refused as [`PlanError::PortOutOfRange`]; a typed handle in
-/// the wrong position does not compile. [`PlanError`] is still not the whole failure surface: a
-/// wire, tap or `interface` entry naming a [`NodeKey`] the graph does not hold (removed, or minted
-/// by another `Graph`) panics inside Instantiate.
+/// the wrong position does not compile. A wire, tap or `interface` entry naming a [`NodeKey`] the
+/// graph does not hold (left over from a removed node) is refused as [`PlanError::UnknownNode`]. A
+/// key minted by another `Graph` is refused only if it names no node here; see [`NodeKey`].
 ///
 /// Allocates; the Instantiate phase, not the audio thread.
 pub fn install_graph(graph: Graph, config: AudioConfig) -> Result<RenderSide, PlanError> {
@@ -248,5 +247,70 @@ mod tests {
             ),
             Ok(_) => panic!("an out-of-range interface output port instantiated"),
         }
+    }
+
+    /// Adds a node, then removes it, leaving `wire` a key the graph no longer holds.
+    fn with_stale_key(
+        wire: impl FnOnce(&mut Graph, NodeKey, NodeKey, NodeKey),
+    ) -> Result<RenderSide, PlanError> {
+        patched(|g, osc, out| {
+            let gone = g.add("/gone", Oscillator::new());
+            g.nodes.remove(gone);
+            wire(g, osc, out, gone);
+        })
+    }
+
+    fn assert_unknown_node(refusal: Result<RenderSide, PlanError>, expected: PortPosition) {
+        match refusal {
+            Err(e) => assert_eq!(e, PlanError::UnknownNode { position: expected }),
+            Ok(_) => panic!("a graph naming a missing node instantiated"),
+        }
+    }
+
+    #[test]
+    fn a_wire_from_a_missing_node_is_refused_as_a_plan_error() {
+        let refusal = with_stale_key(|g, _, out, gone| {
+            g.connect(gone, oscillator::OUT_AUDIO, out, output::IN_AUDIO);
+            g.tap_output(out, output::OUT_AUDIO);
+        });
+        assert_unknown_node(refusal, PortPosition::Source);
+    }
+
+    #[test]
+    fn a_wire_into_a_missing_node_is_refused_as_a_plan_error() {
+        let refusal = with_stale_key(|g, osc, out, gone| {
+            g.connect(osc, oscillator::OUT_AUDIO, gone, output::IN_AUDIO);
+            g.tap_output(out, output::OUT_AUDIO);
+        });
+        assert_unknown_node(refusal, PortPosition::Destination);
+    }
+
+    #[test]
+    fn a_tap_on_a_missing_node_is_refused_as_a_plan_error() {
+        let refusal = with_stale_key(|g, osc, out, gone| {
+            g.connect(osc, oscillator::OUT_AUDIO, out, output::IN_AUDIO);
+            g.tap_output(gone, output::OUT_AUDIO);
+        });
+        assert_unknown_node(refusal, PortPosition::Tap);
+    }
+
+    #[test]
+    fn an_interface_input_on_a_missing_node_is_refused_as_a_plan_error() {
+        let refusal = with_stale_key(|g, osc, out, gone| {
+            g.connect(osc, oscillator::OUT_AUDIO, out, output::IN_AUDIO);
+            g.tap_output(out, output::OUT_AUDIO);
+            g.interface.inputs.insert("freq".into(), (gone, 0));
+        });
+        assert_unknown_node(refusal, PortPosition::InterfaceInput("freq".into()));
+    }
+
+    #[test]
+    fn an_interface_output_on_a_missing_node_is_refused_as_a_plan_error() {
+        let refusal = with_stale_key(|g, osc, out, gone| {
+            g.connect(osc, oscillator::OUT_AUDIO, out, output::IN_AUDIO);
+            g.tap_output(out, output::OUT_AUDIO);
+            g.interface.outputs.insert("audio".into(), (gone, 0));
+        });
+        assert_unknown_node(refusal, PortPosition::InterfaceOutput("audio".into()));
     }
 }
