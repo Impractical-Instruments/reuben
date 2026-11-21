@@ -1,9 +1,11 @@
-//! The structure channel's **host side**: a loopback-TCP / NDJSON server, and the native seams the
+//! The structure channel's **host side**: a TCP / NDJSON server, and the native seams the
 //! window's verbs are served over.
 //!
-//! **TCP on `127.0.0.1`** (loopback-only — structure edits are more powerful than control, unlike
-//! OSC's `0.0.0.0:9000`), carrying **newline-delimited JSON**, one response per request in order.
-//! A thread in `reuben play` owns it.
+//! **TCP on `127.0.0.1`** by default, carrying **newline-delimited JSON**, one response per request
+//! in order. A thread in `reuben play` owns it. It listens beyond loopback only when bound there
+//! with a token, and then serves a peer on another machine only after that peer's first line
+//! carries the token (see [`admit`]): structure edits are more powerful than control, unlike OSC's
+//! open `0.0.0.0:9000`.
 //!
 //! What each verb *means* is not here: the envelope, the dispatch, the `expect` guard and the
 //! retain-prior report are the window's, so this door and the sidecar cannot disagree about them.
@@ -25,8 +27,8 @@
 //! reuben-native stays **tokio-free** (the async runtime is fenced to reuben-mcp): the server is a
 //! dedicated std thread doing blocking line I/O, never an async runtime.
 
-use std::io::{BufReader, Write};
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::io::{BufReader, Read, Write};
+use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{RecvTimeoutError, Sender};
@@ -36,8 +38,9 @@ use std::time::{Duration, Instant};
 
 use reuben_api::authoring::Diag;
 use reuben_api::engine::{
-    dispatch, dispatch_request, read_ndjson_line, ControlMessage, DiagnosticsReport, EngineHost,
-    IngressClosed, ListWhat, MetersReport, Request, Response, StructureState, Subscription,
+    admit, dispatch, dispatch_request, read_ndjson_line, Admit, ControlMessage, DiagnosticsReport,
+    EngineHost, IngressClosed, ListWhat, MetersReport, Request, Response, StructureState,
+    Subscription, Token, TOKEN_REQUIRED,
 };
 use reuben_api::probe::ProbeSlots;
 
@@ -663,7 +666,7 @@ pub fn diagnostics_report(snapshot: &Snapshot) -> DiagnosticsReport {
     }
 }
 
-/// A running loopback structure server: a std thread accepting connections, one handler thread
+/// A running structure server: a std thread accepting connections, one handler thread
 /// per connection, all joined on [`shutdown`](Self::shutdown) (or `Drop`). Holds no audio state
 /// — it only reads the shared [`StructureState`] — so it starts and stops independently of the
 /// audio device, which is what lets it be exercised end-to-end in tests.
@@ -676,10 +679,29 @@ pub struct StructureServer {
 impl StructureServer {
     /// Bind a loopback TCP listener and start serving. Pass `127.0.0.1:0` to let the OS assign
     /// an ephemeral port (read it back with [`local_addr`](Self::local_addr)); this is how tests
-    /// avoid port collisions. Binding a non-loopback address is the caller's mistake — the
-    /// structure channel must not be network-exposed — but not enforced here.
+    /// avoid port collisions. A non-loopback address is refused: that takes
+    /// [`bind_with_token`](Self::bind_with_token).
     pub fn bind<A: ToSocketAddrs>(addr: A, state: StructureState) -> std::io::Result<Self> {
+        Self::bind_with_token(addr, state, None)
+    }
+
+    /// [`bind`](Self::bind), serving peers on other machines when they open with `token`'s
+    /// credential line. Loopback peers need none. A non-loopback address with no token is refused
+    /// with [`InvalidInput`](std::io::ErrorKind::InvalidInput), judged by the address actually
+    /// bound, so a name that resolves beyond loopback is caught too.
+    pub fn bind_with_token<A: ToSocketAddrs>(
+        addr: A,
+        state: StructureState,
+        token: Option<Token>,
+    ) -> std::io::Result<Self> {
         let listener = TcpListener::bind(addr)?;
+        if token.is_none() && !listener.local_addr()?.ip().to_canonical().is_loopback() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "serving the structure channel beyond loopback takes a token",
+            ));
+        }
+        let token = token.map(Arc::new);
         // Non-blocking so the accept loop can poll its shutdown flag with no client connected.
         listener.set_nonblocking(true)?;
         let local_addr = listener.local_addr()?;
@@ -688,7 +710,7 @@ impl StructureServer {
             let shutdown = Arc::clone(&shutdown);
             std::thread::Builder::new()
                 .name("structure-accept".to_string())
-                .spawn(move || accept_loop(listener, state, shutdown))
+                .spawn(move || accept_loop(listener, state, token, shutdown))
                 .expect("spawn structure-accept thread")
         };
         Ok(Self {
@@ -739,12 +761,17 @@ fn wake_and_join(handle: JoinHandle<()>, wake: Option<TcpStream>) {
 /// blocking handler per connection. On shutdown, wake each live handler (a socket `shutdown`
 /// unblocks its `read_line`) and join it, so no idle client keeps the process alive — the exact
 /// hang `play`'s old `loop { thread::park() }` had, removed.
-fn accept_loop(listener: TcpListener, state: StructureState, shutdown: Arc<AtomicBool>) {
+fn accept_loop(
+    listener: TcpListener,
+    state: StructureState,
+    token: Option<Arc<Token>>,
+    shutdown: Arc<AtomicBool>,
+) {
     // (join handle, a clone of the socket used only to wake the handler at shutdown).
     let mut handlers: Vec<(JoinHandle<()>, Option<TcpStream>)> = Vec::new();
     while !shutdown.load(Ordering::SeqCst) {
         match listener.accept() {
-            Ok((stream, _peer)) => {
+            Ok((stream, peer)) => {
                 // The accepted socket inherits the listener's non-blocking mode on some
                 // platforms; the handler wants blocking reads (clean NDJSON framing — a
                 // partial-line timeout would corrupt the next request), so force it.
@@ -753,11 +780,16 @@ fn accept_loop(listener: TcpListener, state: StructureState, shutdown: Arc<Atomi
                 let wake = stream.try_clone().ok();
                 let handler_state = state.clone();
                 let handler_shutdown = Arc::clone(&shutdown);
-                let handle = std::thread::Builder::new()
+                let admission = Admission::new(peer.ip(), token.clone());
+                let spawned = std::thread::Builder::new()
                     .name("structure-conn".to_string())
-                    .spawn(move || handle_connection(stream, handler_state, handler_shutdown))
-                    .expect("spawn structure-conn thread");
-                handlers.push((handle, wake));
+                    .spawn(move || {
+                        handle_connection(stream, handler_state, admission, handler_shutdown)
+                    });
+                // Out of threads: this connection is dropped, and the channel keeps serving.
+                if let Ok(handle) = spawned {
+                    handlers.push((handle, wake));
+                }
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(ACCEPT_POLL);
@@ -787,8 +819,15 @@ fn accept_loop(listener: TcpListener, state: StructureState, shutdown: Arc<Atomi
 /// order, until the client closes or shutdown wakes the blocked read. Blocking
 /// reads keep the framing exact; a blank line is framing noise, not a request, so it draws no
 /// response. A [`Request::Subscribe`] turns the connection into an event stream for the rest of
-/// its life.
-fn handle_connection(stream: TcpStream, state: StructureState, shutdown: Arc<AtomicBool>) {
+/// its life. The first line is [`admit`]ted first: a credential is read and dropped, and a refusal
+/// is answered and closes the connection.
+fn handle_connection(
+    stream: TcpStream,
+    state: StructureState,
+    admission: Admission,
+    shutdown: Arc<AtomicBool>,
+) {
+    let mut admitted = false;
     // Time-bound each read so the handler wakes to observe `shutdown` itself, rather than
     // depending on the accept thread's `shutdown(Shutdown::Both)` to unblock it — a wake that
     // does not reach a blocked recv on Windows (see [`READ_POLL`]). A request that spans reads
@@ -805,6 +844,13 @@ fn handle_connection(stream: TcpStream, state: StructureState, shutdown: Arc<Ato
         if shutdown.load(Ordering::SeqCst) {
             break;
         }
+        if !admitted && admission.deadline.is_some_and(|by| Instant::now() >= by) {
+            let refused = Response::Error {
+                message: TOKEN_REQUIRED.to_string(),
+            };
+            refuse(&mut writer, &mut reader, &refused);
+            break;
+        }
         match read_ndjson_line(&mut reader, &mut line) {
             // EOF: client closed, or a shutdown `Shutdown::Both` woke us.
             Ok(0) => break,
@@ -812,6 +858,20 @@ fn handle_connection(stream: TcpStream, state: StructureState, shutdown: Arc<Ato
             Ok(_) => {
                 if shutdown.load(Ordering::SeqCst) {
                     break;
+                }
+                if !line.trim().is_empty() && !admitted {
+                    admitted = true;
+                    match admit(admission.token.as_deref(), admission.peer, &line) {
+                        Admit::Credential => {
+                            line.clear();
+                            continue;
+                        }
+                        Admit::Refused(response) => {
+                            refuse(&mut writer, &mut reader, &response);
+                            break;
+                        }
+                        Admit::Request => {}
+                    }
                 }
                 if !line.trim().is_empty() {
                     let response = match Request::from_ndjson(&line) {
@@ -862,6 +922,57 @@ fn handle_connection(stream: TcpStream, state: StructureState, shutdown: Arc<Ato
         }
     }
 }
+
+/// Who is on the other end of a connection, and what the server asks of a peer elsewhere.
+struct Admission {
+    peer: IpAddr,
+    token: Option<Arc<Token>>,
+    /// When a peer that must present the token is closed for not having sent a first line, so an
+    /// idle stranger cannot hold a handler thread.
+    deadline: Option<Instant>,
+}
+
+impl Admission {
+    fn new(peer: IpAddr, token: Option<Arc<Token>>) -> Self {
+        let must_present = token.is_some() && !peer.to_canonical().is_loopback();
+        Self {
+            peer,
+            token,
+            deadline: must_present.then(|| Instant::now() + ADMIT_WITHIN),
+        }
+    }
+}
+
+/// Answer a connection being refused, then close it so the answer arrives. A client writes its
+/// credential and its request together, so the request is usually still unread here; closing over
+/// unread bytes resets the connection, and on Windows the reset discards the answer before the
+/// client reads it. So the write half is shut first and what the peer sent is read off until it
+/// closes, for at most [`REFUSAL_LINGER`].
+fn refuse(writer: &mut TcpStream, reader: &mut BufReader<TcpStream>, response: &Response) {
+    if !write_line(writer, &response.to_ndjson()) || writer.shutdown(Shutdown::Write).is_err() {
+        return;
+    }
+    let until = Instant::now() + REFUSAL_LINGER;
+    let mut sink = [0u8; 1024];
+    while Instant::now() < until {
+        match reader.get_mut().read(&mut sink) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(_) => break,
+        }
+    }
+}
+
+/// How long a refused connection is read off before it is closed regardless. A client closes as
+/// soon as it has read its answer, so this only bounds a peer that keeps the connection open.
+const REFUSAL_LINGER: Duration = Duration::from_secs(1);
+
+/// How long a peer on another machine has to send its first line. A client sends its credential
+/// in the same write as its first request, so any real one is far inside this.
+const ADMIT_WITHIN: Duration = Duration::from_secs(5);
 
 /// Write and flush one line; `false` when the connection is gone.
 fn write_line(writer: &mut TcpStream, line: &str) -> bool {

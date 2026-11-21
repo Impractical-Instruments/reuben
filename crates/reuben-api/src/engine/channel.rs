@@ -7,7 +7,7 @@
 //! start-the-engine guidance, unless the request reached the engine and only its answer is
 //! missing ([`NoAnswer`](ChannelError::NoAnswer)) — so this module never hangs and never panics.
 //!
-//! What is *not* here is the socket. A door supplies the [`Transport`]: loopback TCP for a process
+//! What is *not* here is the socket. A door supplies the [`Transport`]: TCP for a process
 //! dialing `reuben play` (the `tcp` feature's), whatever an in-process host has instead. The
 //! framing, the timeout policy and the response classification are the window's, so two doors
 //! cannot disagree about what a reply means.
@@ -153,7 +153,7 @@ pub fn unanswered(cause: io::Error) -> io::Error {
 ///
 /// **The injectable seam**, and deliberately the lowest one: everything above it — framing,
 /// parsing, the unreachable/protocol split — is exercised rather than replaced by a test double.
-/// Below it live the socket mechanics, which are the door's — the loopback TCP one is behind the
+/// Below it live the socket mechanics, which are the door's — the TCP one is behind the
 /// `tcp` feature, and `reuben-mcp`'s tests drive it over a real socket.
 pub trait Transport: Send + Sync + fmt::Debug {
     /// One request line out, one response line back. `read_timeout` is per-call because `ping`
@@ -248,6 +248,7 @@ impl Channel {
             })?;
         match answer {
             Response::Pong => Ok(()),
+            Response::Error { message } => Err(ChannelError::Channel(message)),
             other => Err(unexpected("ping", "pong", &other)),
         }
     }
@@ -452,6 +453,17 @@ mod tests {
             asked: asked.clone(),
         };
         (Channel::new(fake), asked)
+    }
+
+    #[test]
+    fn a_ping_the_server_refuses_carries_its_message() {
+        let (channel, _) =
+            answering(r#"{"reply":"error","message":"the engine refused this token"}"#);
+        let refused = channel.ping().expect_err("refused");
+        assert!(
+            matches!(&refused, ChannelError::Channel(m) if m == "the engine refused this token"),
+            "{refused:?}"
+        );
     }
 
     #[test]

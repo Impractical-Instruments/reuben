@@ -1431,7 +1431,7 @@ mod tests {
             .expect("the engine starts");
             let addr = played.structure_addr().expect("bound").to_string();
 
-            let mut engine = crate::engine::Engine::attach(addr, || {});
+            let mut engine = crate::engine::Engine::attach(addr, None, || {});
             let channel = || engine.channel();
             let listed = channel().expect("attached").library().expect("the library");
             let top = (listed.instruments.iter())

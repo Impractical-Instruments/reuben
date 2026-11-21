@@ -76,7 +76,7 @@ fn a_taken_osc_port_is_fatal() {
 }
 
 #[test]
-fn a_non_loopback_structure_address_is_refused_before_anything_binds() {
+fn a_non_loopback_structure_address_without_a_token_is_refused_before_anything_binds() {
     let path = seed("non_loopback", OSC_DOC);
     let cfg = EngineConfig {
         structure: Some("0.0.0.0:0".to_string()),
@@ -84,8 +84,23 @@ fn a_non_loopback_structure_address_is_refused_before_anything_binds() {
     };
     assert!(matches!(
         start_headless(cfg),
-        Err(StartError::StructureNotLoopback(_))
+        Err(StartError::StructureNeedsToken(_))
     ));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn a_non_loopback_structure_address_with_a_token_serves() {
+    let path = seed("non_loopback_token", OSC_DOC);
+    let cfg = EngineConfig {
+        structure: Some("0.0.0.0:0".to_string()),
+        token: Some(reuben_api::engine::Token::new("t").expect("a token")),
+        ..config(Instrument::Path(path.clone()))
+    };
+    let engine = start_headless(cfg).expect("starts with a token");
+    let bound = engine.structure_addr().expect("bound");
+    assert!(bound.ip().is_unspecified(), "{bound}");
+    drop(engine);
     let _ = std::fs::remove_file(&path);
 }
 

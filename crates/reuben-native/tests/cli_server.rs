@@ -4,7 +4,7 @@ mod common;
 
 use std::process::Output;
 
-use common::{reuben, spawn_play, TempDir};
+use common::{reuben, spawn_play, spawn_play_on, TempDir};
 use reuben_api::engine::{Channel, TcpTransport, DEFAULT_CONNECT_TIMEOUT};
 
 fn stdout(out: &Output) -> String {
@@ -307,5 +307,82 @@ fn describe_does_not_decode_samples() {
         stderr(&validate).contains("warning"),
         "{}",
         stderr(&validate)
+    );
+}
+
+#[test]
+fn describe_reaches_a_token_server_through_loopback_without_a_token() {
+    let a = TempDir::new("cli_token_loopback");
+    let doc = a.seed("doc.json", "tokened");
+    let play = spawn_play_on(
+        &a.0,
+        "0.0.0.0",
+        &["--token", "t", &doc.display().to_string()],
+    );
+    let port = play.addr.rsplit(':').next().expect("a port");
+    let loopback = format!("127.0.0.1:{port}");
+    let out = reuben(
+        &a.0,
+        &["describe", "doc.json", "--structure-addr", &loopback],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("tokened"), "{}", stdout(&out));
+}
+
+#[test]
+fn play_refuses_a_non_loopback_addr_without_a_token() {
+    let a = TempDir::new("cli_token_required");
+    let out = reuben(
+        &a.0,
+        &["play", "--headless", "--structure-addr", "0.0.0.0:0"],
+    );
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains(
+            "--structure-addr 0.0.0.0:0 is not loopback, so the structure channel needs a token"
+        ),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn a_token_server_refuses_a_wrong_token_by_name() {
+    let a = TempDir::new("cli_token_wrong");
+    let doc = a.seed("doc.json", "tokened");
+    let play = spawn_play_on(
+        &a.0,
+        "0.0.0.0",
+        &["--token", "t", &doc.display().to_string()],
+    );
+    let port = play.addr.rsplit(':').next().expect("a port");
+    let loopback = format!("127.0.0.1:{port}");
+    let out = reuben(
+        &a.0,
+        &[
+            "describe",
+            "doc.json",
+            "--structure-addr",
+            &loopback,
+            "--token",
+            "wrong",
+        ],
+    );
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("the engine refused this token"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!stderr(&out).contains("wrong"), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains(&format!("the reuben server at {loopback} refused")),
+        "the server answered, so the CLI says so: {}",
+        stderr(&out)
+    );
+    assert!(
+        !stderr(&out).contains("--temporary-server"),
+        "{}",
+        stderr(&out)
     );
 }

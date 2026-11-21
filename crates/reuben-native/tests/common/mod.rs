@@ -14,7 +14,7 @@ use std::process::{Child, Command, Output, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use reuben_api::engine::STRUCTURE_ADDR_ENV;
+use reuben_api::engine::{STRUCTURE_ADDR_ENV, STRUCTURE_TOKEN_ENV};
 use reuben_native::cli::INSTRUMENT_ROOT_ENV;
 
 /// How long the binary may take to bind and announce its structure channel.
@@ -69,14 +69,15 @@ pub fn free_udp_port() -> u16 {
 }
 
 /// Collect `child`'s stdout lines on a thread and wait for its structure channel's announcement.
+///
+/// The thread drains stdout for the child's whole life: a pipe closed under it would fail its next
+/// `println!`, and `reuben play` would die mid-test.
 pub fn announced_structure(child: &mut Child) -> String {
     let stdout = child.stdout.take().expect("piped stdout");
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if tx.send(line).is_err() {
-                break;
-            }
+            let _ = tx.send(line);
         }
     });
     loop {
@@ -104,14 +105,21 @@ impl Drop for Play {
 
 /// `reuben play --headless` in `cwd` with `args` after it, on free loopback ports.
 pub fn spawn_play(cwd: &Path, args: &[&str]) -> Play {
-    let structure = format!("127.0.0.1:{}", free_tcp_port());
-    let osc_in = format!("127.0.0.1:{}", free_udp_port());
+    spawn_play_on(cwd, "127.0.0.1", args)
+}
+
+/// [`spawn_play`] with the structure channel on a port of `ip` the OS picks. The port is read back
+/// from the announcement, so no other test can take it between choosing and binding.
+pub fn spawn_play_on(cwd: &Path, ip: &str, args: &[&str]) -> Play {
+    let structure = format!("{ip}:0");
+    let osc_in = "127.0.0.1:0".to_string();
     let mut child = Command::new(env!("CARGO_BIN_EXE_reuben"))
         .args(["play", "--headless", "--structure-addr", &structure])
         .args(["--osc-in", &osc_in])
         .args(args)
         .env_remove(INSTRUMENT_ROOT_ENV)
         .env_remove(STRUCTURE_ADDR_ENV)
+        .env_remove(STRUCTURE_TOKEN_ENV)
         .current_dir(cwd)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -127,6 +135,7 @@ pub fn reuben(cwd: &Path, args: &[&str]) -> Output {
         .args(args)
         .env_remove(INSTRUMENT_ROOT_ENV)
         .env_remove(STRUCTURE_ADDR_ENV)
+        .env_remove(STRUCTURE_TOKEN_ENV)
         .current_dir(cwd)
         .output()
         .expect("the reuben binary runs")

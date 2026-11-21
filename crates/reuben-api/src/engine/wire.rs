@@ -817,14 +817,15 @@ mod tests {
 
     #[test]
     fn default_structure_addr_is_loopback_9124() {
-        // The shared bind/dial address: loopback-only and the fixed M1 port. This
-        // one const is the single source both the reuben-native server and the reuben-mcp client
-        // reference, so they can never drift; the literal is pinned here so an accidental edit is
-        // a red test, not a silent server/client mismatch.
+        // The shared bind/dial address: loopback and the fixed M1 port. This one const is the
+        // single source both the reuben-native server and the reuben-mcp client reference, so they
+        // can never drift; the literal is pinned here so an accidental edit is a red test, not a
+        // silent server/client mismatch. Listening beyond loopback takes an explicit address and a
+        // token, never the default.
         assert_eq!(DEFAULT_STRUCTURE_ADDR, "127.0.0.1:9124");
         assert!(
             DEFAULT_STRUCTURE_ADDR.starts_with("127.0.0.1:"),
-            "the structure channel must stay loopback-only: {DEFAULT_STRUCTURE_ADDR}"
+            "the structure channel's default must stay loopback: {DEFAULT_STRUCTURE_ADDR}"
         );
     }
 

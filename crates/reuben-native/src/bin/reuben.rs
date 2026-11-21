@@ -275,7 +275,7 @@ fn cmd_new_instrument(
         Ok(reached) => reached,
         Err(code) => return code,
     };
-    let mut spelled = Names::default();
+    let mut spelled = Names::for_target(reached.remote());
     let result: authoring::EditResult = match ask(
         &reached,
         names::NEW_INSTRUMENT,
@@ -516,7 +516,7 @@ fn print_diag(level: &str, d: &Diag, names: &Names) {
 /// control-surface tooling consumes. Same question, two consumers — a program here, a model there —
 /// and one window verb behind both, so they cannot describe different pipes.
 fn cmd_describe_boundary(reached: &Reached, source: &str, json: bool) -> ExitCode {
-    let mut spelled = Names::default();
+    let mut spelled = Names::for_target(reached.remote());
     let boundary: authoring::Boundary = match ask(
         reached,
         names::DESCRIBE_BOUNDARY,
@@ -574,7 +574,7 @@ fn cmd_project(
     // `clap`'s `conflicts_with` refuses select-and-type-at-once first with a nicer message; the
     // window refuses it too, and that is the one that decides the grammar. Neither door reads the
     // terms for itself.
-    let mut spelled = Names::default();
+    let mut spelled = Names::for_target(reached.remote());
     let projected: authoring::DocumentView = match ask(
         reached,
         names::DESCRIBE_INSTRUMENT,
@@ -607,7 +607,7 @@ fn cmd_validate(path: &Path, json: bool, server: &ServerFlags, root: Option<Path
         Ok(reached) => reached,
         Err(code) => return code,
     };
-    let mut spelled = Names::default();
+    let mut spelled = Names::for_target(reached.remote());
     let report: authoring::Report = match ask(
         &reached,
         names::VALIDATE_INSTRUMENT,
@@ -717,7 +717,15 @@ fn play(path: Option<PathBuf>, flags: EngineFlags, root: Option<PathBuf>) -> Exi
         eprintln!("warning: {w}");
     }
     match (running.structure_addr(), running.structure_error()) {
-        (Some(addr), _) => println!("structure channel on {addr}"),
+        (Some(addr), _) => {
+            println!("structure channel on {addr}");
+            if !addr.ip().to_canonical().is_loopback() {
+                println!(
+                    "  open to other machines that send its token; the token travels in clear, \
+                     so use a network that encrypts (Tailscale) or one you trust"
+                );
+            }
+        }
         (None, Some(e)) => eprintln!(
             "warning: structure channel unavailable on {structure_addr} ({e}); no client \
              (reuben-mcp, the editor, the CLI) can call, open, list or subscribe this run"

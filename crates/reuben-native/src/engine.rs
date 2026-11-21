@@ -2,7 +2,7 @@
 //!
 //! [`start`] loads the instrument, opens the audio device (and the input device when the
 //! instrument binds input channels) per the [`DeviceProfile`], binds the OSC-in UDP listener and
-//! the optional OSC-out sender, serves the loopback structure channel the MCP sidecar dials, and
+//! the optional OSC-out sender, serves the structure channel every client dials, and
 //! (unless [`EngineConfig::follow_files`] is off) follows outside edits to the instrument's files.
 //! The [`RunningEngine`] it returns is the whole session: it reaches the engine in-process through
 //! the window's own [`Channel`], and dropping it stops every thread and frees every port.
@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use reuben_api::authoring::{DocumentHistory, Resources};
 use reuben_api::engine::{
-    Channel, FromDocumentError, InProcess, Installed, LoadWarning, StructureState,
+    Channel, FromDocumentError, InProcess, Installed, LoadWarning, StructureState, Token,
     DEFAULT_STRUCTURE_ADDR, SILENCE,
 };
 use reuben_api::render::{self, AudioConfig, Message, RenderSide, RenderSlot};
@@ -96,10 +96,11 @@ pub struct EngineConfig {
     pub osc_in: Option<String>,
     /// The `host:port` an `osc_out` node's Messages are sent to; `None` drops them.
     pub osc_out: Option<String>,
-    /// Where the loopback structure server binds; `None` serves no socket, leaving only
-    /// [`RunningEngine::channel`]. Must be a loopback address: structure edits are more powerful
-    /// than control and the channel must never be network-exposed.
+    /// Where the structure server binds; `None` serves no socket, leaving only
+    /// [`RunningEngine::channel`]. A non-loopback address takes a [`token`](Self::token).
     pub structure: Option<String>,
+    /// What a peer on another machine must open its connection with. Loopback peers need none.
+    pub token: Option<Token>,
     /// Log every OSC message received and sent to stdout. Off by default: the stdout lock on the
     /// I/O paths adds jitter.
     pub log_osc: bool,
@@ -124,6 +125,7 @@ impl EngineConfig {
             osc_in: Some(format!("0.0.0.0:{DEFAULT_OSC_PORT}")),
             osc_out: None,
             structure: Some(DEFAULT_STRUCTURE_ADDR.to_string()),
+            token: None,
             log_osc: false,
             swap_hold: None,
             follow_files: true,
@@ -145,9 +147,9 @@ pub enum StartError {
     OscOut { target: String, error: io::Error },
     /// The audio device (or the input device the instrument asked for) would not open.
     Audio(AudioError),
-    /// The structure address names a non-loopback interface. Structure edits are more powerful
-    /// than control, so the channel is never network-exposed.
-    StructureNotLoopback(String),
+    /// The structure address names a non-loopback interface and the config has no token. The
+    /// channel edits and opens instruments, so it never serves another machine without one.
+    StructureNeedsToken(String),
     /// The headless render thread would not start.
     RenderThread(io::Error),
 }
@@ -162,9 +164,10 @@ impl fmt::Display for StartError {
             StartError::OscIn { addr, error } => write!(f, "bind OSC-in {addr}: {error}"),
             StartError::OscOut { target, error } => write!(f, "OSC-out {target}: {error}"),
             StartError::Audio(e) => write!(f, "start audio: {e}"),
-            StartError::StructureNotLoopback(addr) => {
-                write!(f, "structure channel {addr} is not a loopback address")
-            }
+            StartError::StructureNeedsToken(addr) => write!(
+                f,
+                "structure channel {addr} is not a loopback address, so it needs a token"
+            ),
             StartError::RenderThread(e) => write!(f, "start the headless render thread: {e}"),
         }
     }
@@ -179,7 +182,7 @@ impl std::error::Error for StartError {
             | StartError::RenderThread(error) => Some(error),
             StartError::Instrument(e) => Some(e),
             StartError::Audio(e) => Some(e),
-            StartError::StructureNotLoopback(_) => None,
+            StartError::StructureNeedsToken(_) => None,
         }
     }
 }
@@ -507,13 +510,14 @@ pub(crate) fn start_with(
         osc_in,
         osc_out,
         structure,
+        token,
         log_osc,
         swap_hold,
         follow_files,
     } = config;
 
     let structure = match structure {
-        Some(addr) => Some(resolve_structure(&addr)?),
+        Some(addr) => Some(resolve_structure(&addr, token.is_some())?),
         None => None,
     };
     let library_root = instrument_root.clone();
@@ -625,7 +629,8 @@ pub(crate) fn start_with(
         state
     };
     let (structure, structure_error) = match structure {
-        Some(Ok(addrs)) => match StructureServer::bind(&addrs[..], state.clone()) {
+        Some(Ok(addrs)) => match StructureServer::bind_with_token(&addrs[..], state.clone(), token)
+        {
             Ok(server) => (Some(server), None),
             Err(e) => (None, Some(e)),
         },
@@ -652,18 +657,23 @@ pub(crate) fn start_with(
     })
 }
 
-/// Resolve the structure address once, refusing one that resolves to anything but loopback. The
-/// inner error is a resolution failure, which is non-fatal like a failed bind.
-fn resolve_structure(addr: &str) -> Result<io::Result<Vec<SocketAddr>>, StartError> {
+/// Resolve the structure address once, refusing one that resolves to anything but loopback unless
+/// the engine has a token. The inner error is a resolution failure, which is non-fatal like a
+/// failed bind.
+fn resolve_structure(
+    addr: &str,
+    has_token: bool,
+) -> Result<io::Result<Vec<SocketAddr>>, StartError> {
     let resolved = match addr.to_socket_addrs() {
         Ok(resolved) => resolved.collect::<Vec<_>>(),
         Err(e) => return Ok(Err(e)),
     };
-    if resolved
-        .iter()
-        .any(|candidate| !candidate.ip().is_loopback())
+    if !has_token
+        && resolved
+            .iter()
+            .any(|candidate| !candidate.ip().to_canonical().is_loopback())
     {
-        return Err(StartError::StructureNotLoopback(addr.to_string()));
+        return Err(StartError::StructureNeedsToken(addr.to_string()));
     }
     Ok(Ok(resolved))
 }
