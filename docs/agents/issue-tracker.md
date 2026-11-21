@@ -25,10 +25,10 @@ The meanings here are what a label *is*; a label's description field in GitHub i
 
 The state axis answers **who acts next**. When an instruction names a role ("apply the AFK-ready triage label"), use the matching label.
 
-- **`ready-for-agent`** — fully specified and safe to run unattended; the dispatcher claims these.
+- **`ready-for-agent`** — fully specified and safe for an agent to take unattended.
 - **`ready-for-human`** — needs a human in the loop, including work an agent could mostly do.
 
-`ready-for-agent` is read by the dispatcher, so applying it starts unattended work. Carrying neither role is a query rather than a third label:
+Carrying neither role is a query rather than a third label:
 
 ```
 is:issue state:open (-label:ready-for-agent AND -label:ready-for-human)
