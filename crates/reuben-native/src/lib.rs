@@ -2,7 +2,8 @@
 //!
 //! Wraps the window's render surface ([`reuben_api::render`]: the Coordinator + RenderSlot pair,
 //! `queue_osc`, `fill`/`fill_duplex`, `drain_outbound`) with OS-specific I/O: [`osc`] decodes
-//! external OSC/UDP into flat control args, [`audio`] drives a cpal output stream, [`input`] is the
+//! external OSC/UDP into flat control args, [`control`] carries them to the render callback on
+//! bounded ring pairs, [`audio`] drives a cpal output stream, [`input`] is the
 //! cpal input ring feeding it, [`devices`] lists the output devices a profile can name,
 //! [`diagnostics`] is the shared xrun/ring counter surface, [`meters`] the levels at the device,
 //! [`structure`] is the loopback structure channel the MCP sidecar talks to, [`rigs`] holds the
@@ -19,6 +20,7 @@
 pub mod audio;
 pub mod cli;
 pub mod client;
+pub mod control;
 pub mod devices;
 pub mod diagnostics;
 pub mod engine;

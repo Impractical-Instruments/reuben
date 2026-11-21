@@ -49,6 +49,11 @@ pub struct Diagnostics {
     /// from [`Self::input_ring_overruns`], whose fix is rate/servo-side. Kept as a separate
     /// counter precisely so the two opposite diagnoses stay distinguishable.
     pub input_ring_producer_drops: AtomicU64,
+    /// Control batches a producer dropped, counted in **batches**: its ring pair into the render
+    /// callback already held [`CONTROL_RING_BATCHES`](crate::control::CONTROL_RING_BATCHES) it had
+    /// not had back. One batch is one UDP datagram or one structure-channel `send`, lost whole.
+    /// Diagnosis: control is arriving faster than the callback runs, or the callback has stopped.
+    pub control_batches_dropped_full: AtomicU64,
 }
 
 impl Diagnostics {
@@ -85,6 +90,12 @@ impl Diagnostics {
             .fetch_add(frames, Ordering::Relaxed);
     }
 
+    /// Count one control batch a producer dropped against a full ring pair. A single atomic add.
+    pub fn record_control_batch_dropped_full(&self) {
+        self.control_batches_dropped_full
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     /// A point-in-time copy of every counter, cheap enough to take on every logging tick.
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
@@ -92,6 +103,7 @@ impl Diagnostics {
             input_ring_underruns: self.input_ring_underruns.load(Ordering::Relaxed),
             input_ring_overruns: self.input_ring_overruns.load(Ordering::Relaxed),
             input_ring_producer_drops: self.input_ring_producer_drops.load(Ordering::Relaxed),
+            control_batches_dropped_full: self.control_batches_dropped_full.load(Ordering::Relaxed),
         }
     }
 }
@@ -104,6 +116,7 @@ pub struct Snapshot {
     pub input_ring_underruns: u64,
     pub input_ring_overruns: u64,
     pub input_ring_producer_drops: u64,
+    pub control_batches_dropped_full: u64,
 }
 
 impl Snapshot {
@@ -119,8 +132,12 @@ impl Snapshot {
 pub fn log_snapshot(s: &Snapshot) {
     eprintln!(
         "diagnostics: output_xruns={} input_ring_underruns={} input_ring_overruns={} \
-         input_ring_producer_drops={}",
-        s.output_xruns, s.input_ring_underruns, s.input_ring_overruns, s.input_ring_producer_drops
+         input_ring_producer_drops={} control_batches_dropped_full={}",
+        s.output_xruns,
+        s.input_ring_underruns,
+        s.input_ring_overruns,
+        s.input_ring_producer_drops,
+        s.control_batches_dropped_full
     );
 }
 
@@ -227,9 +244,14 @@ mod tests {
             input_ring_producer_drops: 1,
             ..Snapshot::default()
         };
+        let f = Snapshot {
+            control_batches_dropped_full: 1,
+            ..Snapshot::default()
+        };
         assert!(c.changed_since(&a));
         assert!(d.changed_since(&a));
         assert!(e.changed_since(&a));
+        assert!(f.changed_since(&a));
     }
 
     #[test]

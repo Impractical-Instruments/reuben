@@ -32,9 +32,11 @@ pub const DEFAULT_OSC_PORT: u16 = 9000;
 /// **Two producers feed this, not one.** [`decode`] mints them from external UDP datagrams (the
 /// foreign edge), and the structure channel's `send` verb mints them from its own NDJSON framing
 /// (`crate::structure`) — every door ships `{address, [Arg]}` in its own framing and converges
-/// here, on one `mpsc` into the render callback's `queue_osc`. So this type is the flat carrier,
-/// not an OSC-specific one; it lives in this module because decoding is where most of them are
-/// born. They travel in [`ControlBatch`]es, never singly.
+/// here, at the render callback's `queue_osc`. So this type is the flat carrier, not an
+/// OSC-specific one; it lives in this module because decoding is where most of them are born.
+/// They travel in [`ControlBatch`]es, never singly, and are dropped on the thread that made them:
+/// the callback hands every batch back (see [`crate::control`]), because dropping one frees its
+/// `address`, its `args` and any `Arg::Str` the port lookup did not keep.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OscIn {
     /// OSC address path, e.g. `/voicer/notes`.
@@ -55,6 +57,12 @@ pub struct OscIn {
 /// unbounded one would blow a render deadline; `send` is capped at
 /// [`MAX_SEND_BATCH`](reuben_api::engine::MAX_SEND_BATCH) and a UDP datagram is capped by the
 /// receive buffer it arrived in.
+///
+/// Each producer thread pushes batches onto a bounded ring pair of its own
+/// ([`crate::control`]), and the callback returns each spent batch on that pair's return ring, so
+/// the producer frees or reuses it. A producer whose pair already holds
+/// [`CONTROL_RING_BATCHES`](crate::control::CONTROL_RING_BATCHES) it has not had back drops the
+/// batch whole and counts it.
 pub type ControlBatch = Vec<OscIn>;
 
 /// Decode a single UDP datagram of OSC into one [`ControlBatch`] — zero or more flat [`OscIn`]s.
@@ -63,10 +71,17 @@ pub type ControlBatch = Vec<OscIn>;
 /// the callback applies a bundle's messages to the same block. Unsupported argument types
 /// (blob, nil, time, color, midi, …) are dropped from the arg list.
 pub fn decode(bytes: &[u8]) -> Result<ControlBatch, rosc::OscError> {
-    let (_, packet) = rosc::decoder::decode_udp(bytes)?;
     let mut out = Vec::new();
-    flatten(packet, &mut out);
+    decode_into(bytes, &mut out)?;
     Ok(out)
+}
+
+/// [`decode`], appending to `out` so a producer can decode into a batch the callback returned.
+/// `out` is untouched on error.
+pub fn decode_into(bytes: &[u8], out: &mut ControlBatch) -> Result<(), rosc::OscError> {
+    let (_, packet) = rosc::decoder::decode_udp(bytes)?;
+    flatten(packet, out);
+    Ok(())
 }
 
 fn flatten(packet: OscPacket, out: &mut Vec<OscIn>) {

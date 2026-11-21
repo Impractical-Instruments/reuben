@@ -5,7 +5,7 @@
 //! cpal render callback is the headless engine's own driver, so tests and `reuben play --headless`
 //! drain control and render through one implementation.
 
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -15,6 +15,7 @@ use reuben_api::render::{Message, RenderSide};
 use reuben_api::resources::{ResolveError, Resources, SampleBuffer};
 use reuben_api::staged::Staged;
 
+use crate::control::{ControlDrain, ControlRing};
 use crate::engine::{
     headless_config, start_with, EngineConfig, HeadlessDriver, Pace, Render, RunningEngine,
     StartError,
@@ -67,18 +68,28 @@ pub struct FakeCallback {
 }
 
 impl FakeCallback {
-    /// Start driving `side`, draining `control_rx` into the slot's `queue_osc`.
-    pub fn spawn(side: RenderSide, control_rx: Receiver<ControlBatch>) -> Self {
+    /// Start driving `side`, draining `control` into the slot's `queue_osc`. The log keeps a copy
+    /// of each batch; the batch itself goes back to its producer as on the real callback.
+    pub fn spawn(side: RenderSide, control: ControlRing) -> Self {
         let queued = Arc::new(Mutex::new(Vec::new()));
         let batches = Arc::new(Mutex::new(Vec::new()));
         let (queued_log, batch_log) = (Arc::clone(&queued), Arc::clone(&batches));
-        let record = move |batch: ControlBatch| {
+        let record = move |batch: &ControlBatch| {
             batch_log.lock().expect("batch log").push(batch.len());
-            queued_log.lock().expect("queued log").extend(batch);
+            queued_log
+                .lock()
+                .expect("queued log")
+                .extend(batch.iter().cloned());
         };
-        let driver =
-            HeadlessDriver::spawn(side, headless_config(), FAKE_PACE, control_rx, None, record)
-                .expect("spawn the fake render callback");
+        let driver = HeadlessDriver::spawn(
+            side,
+            headless_config(),
+            FAKE_PACE,
+            ControlDrain::new(vec![control]),
+            None,
+            record,
+        )
+        .expect("spawn the fake render callback");
         Self {
             _driver: driver,
             queued,

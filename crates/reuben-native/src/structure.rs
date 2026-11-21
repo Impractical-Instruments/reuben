@@ -12,9 +12,10 @@
 //! What is here is what only a native host can supply — the listener and its threads, the device
 //! output map, the render callback's liveness, the counters, and the control ingress:
 //!
-//! - the control ingress is a producer on the same [`ControlBatch`] channel the UDP decode thread
-//!   feeds, so a `send` and an external datagram are indistinguishable downstream and
-//!   OSC-the-binary-protocol stays at `play`'s foreign edge;
+//! - the control ingress is a [`ControlProducer`] the connection threads share behind a lock only
+//!   they take, beside the UDP decode thread's own, so a `send` and an external datagram are
+//!   indistinguishable at the render callback and OSC-the-binary-protocol stays at `play`'s
+//!   foreign edge;
 //! - [`NativeHost::publish_render_config`] rebuilds the device output map off-thread against the
 //!   *retained* device channel count (streams are fixed at `play` start) and ships it across the
 //!   render mailbox, so the callback installs Engine + map together. A swapped-in engine binding
@@ -31,7 +32,7 @@ use std::io::{BufReader, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{RecvTimeoutError, Sender};
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -44,9 +45,10 @@ use reuben_api::engine::{
 };
 use reuben_api::probe::ProbeSlots;
 
+use crate::control::ControlProducer;
 use crate::diagnostics::{Diagnostics, Snapshot};
 use crate::meters::Meters;
-use crate::osc::{ControlBatch, OscIn};
+use crate::osc::OscIn;
 use crate::probes::{spawn_lease_thread, Probes, LEASE, LEASE_CHECK};
 
 /// How long the accept loop sleeps between polls of its shutdown flag while idle. The listener
@@ -275,14 +277,14 @@ pub(crate) fn dark_degrade_warning(
 /// The native seams the window's engine verbs are served over: the control ingress, the counters,
 /// the device map and the deferred free.
 ///
-/// Cheap to hold behind an `Arc` and shared by every connection handler — the `Sender` is the
-/// multi-producer half of the same channel `play`'s UDP decode thread holds, so a `send` converges
-/// with external OSC at the callback's `queue_osc`.
+/// Cheap to hold behind an `Arc` and shared by every connection handler. The connection threads
+/// share one control ring pair into the render callback, behind a lock only they take; `play`'s
+/// UDP decode thread has a pair of its own, and both converge at the callback's `queue_osc`.
 pub struct NativeHost {
     diagnostics: Arc<Diagnostics>,
     meters: Meters,
     probes: Arc<Mutex<Probes>>,
-    control: Sender<ControlBatch>,
+    control: Mutex<ControlProducer>,
     render_config: Arc<dyn RenderConfigPublisher>,
     hold: Option<SwapHold>,
     library_root: Option<PathBuf>,
@@ -321,7 +323,7 @@ impl NativeHost {
     /// dark-degrades) — production wires the real native map publisher with
     /// [`with_render_config`](Self::with_render_config). That one *is* a builder step because it
     /// has a working default; the control ingress has none, so it is a parameter.
-    pub fn new(diagnostics: Arc<Diagnostics>, control: Sender<ControlBatch>) -> Self {
+    pub fn new(diagnostics: Arc<Diagnostics>, control: ControlProducer) -> Self {
         Self::with_probe_lease(diagnostics, control, LEASE, LEASE_CHECK)
     }
 
@@ -329,7 +331,7 @@ impl NativeHost {
     /// test need not wait the production 5 s and 1 s.
     pub(crate) fn with_probe_lease(
         diagnostics: Arc<Diagnostics>,
-        control: Sender<ControlBatch>,
+        control: ControlProducer,
         lease: Duration,
         check: Duration,
     ) -> Self {
@@ -339,7 +341,7 @@ impl NativeHost {
             diagnostics,
             meters: Meters::none(),
             probes,
-            control,
+            control: Mutex::new(control),
             render_config: Arc::new(HeadlessRenderConfig {
                 opened_input_channels: 0,
             }),
@@ -582,19 +584,24 @@ impl EngineHost for NativeHost {
             .map_err(|e| format!("read {}: {e}", path.display()))
     }
 
-    /// **One `send` on the channel, not one per message.** That single push is what makes the
+    /// **One push onto the ring, not one per message.** That single push is what makes the
     /// documented atomicity true rather than aspirational: concurrent handler threads cannot
     /// interleave message-by-message into each other's gestures, and the callback cannot apply half
     /// a gesture to one block and half to the next.
+    ///
+    /// A batch the full ring refuses is dropped and counted, and the `send` still answers `Ok`.
     fn deliver_control(&self, messages: Vec<ControlMessage>) -> Result<(), IngressClosed> {
-        let batch: ControlBatch = messages
-            .into_iter()
-            .map(|message| OscIn {
-                address: message.address,
-                args: message.args.into_iter().map(Into::into).collect(),
-            })
-            .collect();
-        self.control.send(batch).map_err(|_| IngressClosed)
+        let mut control = self.control.lock().unwrap_or_else(|e| e.into_inner());
+        if control.is_closed() {
+            return Err(IngressClosed);
+        }
+        let mut batch = control.batch();
+        batch.extend(messages.into_iter().map(|message| OscIn {
+            address: message.address,
+            args: message.args.into_iter().map(Into::into).collect(),
+        }));
+        let _ = control.push(batch);
+        Ok(())
     }
 
     /// **RT-safety:** [`Diagnostics::snapshot`] is `Relaxed` atomic loads into an owned copy, so
@@ -657,12 +664,14 @@ pub fn diagnostics_report(snapshot: &Snapshot) -> DiagnosticsReport {
         input_ring_underruns,
         input_ring_overruns,
         input_ring_producer_drops,
+        control_batches_dropped_full,
     } = *snapshot;
     DiagnosticsReport {
         output_xruns,
         input_ring_underruns,
         input_ring_overruns,
         input_ring_producer_drops,
+        control_batches_dropped_full,
     }
 }
 
@@ -1036,6 +1045,7 @@ fn stream_events(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::control::{ring_pair, ControlRing};
     use crate::test_support::{no_store, served, FakeCallback};
     use reuben_api::engine::{ControlArg, Request, Response, MAX_SEND_BATCH};
     use reuben_api::render::{Arg, AudioConfig};
@@ -1090,7 +1100,7 @@ mod tests {
             reuben_api::engine::install_initial(base, staged.clone(), cfg())
                 .expect("initial install");
         let base_hash = coordinator.installed_hash();
-        let (control_tx, control_rx) = std::sync::mpsc::channel::<ControlBatch>();
+        let (control_tx, control_rx) = ring_pair(Diagnostics::new());
         let host = NativeHost::new(Diagnostics::new(), control_tx).with_render_config(Arc::new(
             HeadlessRenderConfig {
                 opened_input_channels,
@@ -1140,7 +1150,7 @@ mod tests {
     ) -> (
         StructureState,
         reuben_api::render::RenderSide,
-        std::sync::mpsc::Receiver<ControlBatch>,
+        ControlRing,
         String,
         Library,
     ) {
@@ -1160,7 +1170,7 @@ mod tests {
             reuben_api::engine::install_initial(base, staged.clone(), cfg())
                 .expect("initial install");
         let base_hash = coordinator.installed_hash();
-        let (control_tx, control_rx) = std::sync::mpsc::channel::<ControlBatch>();
+        let (control_tx, control_rx) = ring_pair(Diagnostics::new());
         let host = NativeHost::new(Diagnostics::new(), control_tx)
             .with_library_root(Some(library.0.clone()))
             .with_render_config(Arc::new(HeadlessRenderConfig {
@@ -1182,11 +1192,15 @@ mod tests {
         d.record_input_ring_underrun_frames(11);
         d.record_input_ring_overrun_frames(22);
         d.record_input_ring_producer_drop_frames(33);
+        for _ in 0..4 {
+            d.record_control_batch_dropped_full();
+        }
         let report = diagnostics_report(&d.snapshot());
         assert_eq!(report.output_xruns, 3);
         assert_eq!(report.input_ring_underruns, 11);
         assert_eq!(report.input_ring_overruns, 22);
         assert_eq!(report.input_ring_producer_drops, 33);
+        assert_eq!(report.control_batches_dropped_full, 4);
     }
 
     #[test]
@@ -1206,7 +1220,7 @@ mod tests {
         ] {
             std::fs::write(base.join(file), "").unwrap();
         }
-        let (tx, _rx) = std::sync::mpsc::channel();
+        let (tx, _rx) = ring_pair(Diagnostics::new());
         let host =
             NativeHost::new(Diagnostics::new(), tx).with_library_root(Some(base.join("lib")));
         let abs = |relative: &str| {
@@ -1240,7 +1254,7 @@ mod tests {
     #[test]
     fn within_is_the_library_root_and_the_open_dir_by_normalized_path() {
         let base = std::env::temp_dir().join("reuben-within-test");
-        let (tx, _rx) = std::sync::mpsc::channel();
+        let (tx, _rx) = ring_pair(Diagnostics::new());
         let host =
             NativeHost::new(Diagnostics::new(), tx).with_library_root(Some(base.join("lib")));
         let abs = |relative: &str| {
@@ -1297,7 +1311,7 @@ mod tests {
         ] {
             std::fs::write(abs(file), "").unwrap();
         }
-        let (tx, _rx) = std::sync::mpsc::channel();
+        let (tx, _rx) = ring_pair(Diagnostics::new());
         let host =
             NativeHost::new(Diagnostics::new(), tx).with_library_root(Some(base.join("lib")));
         host.offer_dir(&base.join("offered"));
@@ -1328,7 +1342,7 @@ mod tests {
         std::fs::create_dir_all(base.join("elsewhere")).unwrap();
         std::fs::write(abs("elsewhere/real.json"), "").unwrap();
         std::os::unix::fs::symlink(abs("elsewhere/real.json"), abs("lib/linked.json")).unwrap();
-        let (tx, _rx) = std::sync::mpsc::channel();
+        let (tx, _rx) = ring_pair(Diagnostics::new());
         let host =
             NativeHost::new(Diagnostics::new(), tx).with_library_root(Some(base.join("lib")));
         assert_eq!(host.library(None), [abs("lib/linked.json")]);
@@ -1341,7 +1355,7 @@ mod tests {
         std::fs::create_dir_all(base.join("offered/nested")).unwrap();
         std::fs::write(abs("offered/o.json"), "").unwrap();
         std::fs::write(abs("offered/nested/n.json"), "").unwrap();
-        let (tx, _rx) = std::sync::mpsc::channel();
+        let (tx, _rx) = ring_pair(Diagnostics::new());
         let host = NativeHost::new(Diagnostics::new(), tx);
         assert!(!host.within(&abs("offered/new.json"), None));
         assert!(host.offered(ListWhat::Instruments, None).is_empty());
@@ -1381,7 +1395,7 @@ mod tests {
         ] {
             std::fs::write(abs(file), "").unwrap();
         }
-        let (tx, _rx) = std::sync::mpsc::channel();
+        let (tx, _rx) = ring_pair(Diagnostics::new());
         let host = NativeHost::new(Diagnostics::new(), tx);
         host.offer_dir(&base.join("mine"));
         let open = abs("mine/top.json");
@@ -1408,7 +1422,7 @@ mod tests {
         std::fs::create_dir_all(base.join("a/b/c/d")).unwrap();
         std::fs::create_dir_all(base.join("a/surfaces")).unwrap();
         std::fs::write(abs("a/surfaces/pad.json"), "the pad surface").unwrap();
-        let (tx, _rx) = std::sync::mpsc::channel();
+        let (tx, _rx) = ring_pair(Diagnostics::new());
         let host = NativeHost::new(Diagnostics::new(), tx);
 
         // The instrument's own directory is the first of the three searched.
@@ -1432,7 +1446,7 @@ mod tests {
     #[test]
     fn a_bare_relative_open_source_still_offers_its_directory() {
         let dir = std::env::current_dir().unwrap();
-        let (tx, _rx) = std::sync::mpsc::channel();
+        let (tx, _rx) = ring_pair(Diagnostics::new());
         let host = NativeHost::new(Diagnostics::new(), tx);
         assert!(host.within(
             &dir.join("sibling.json").display().to_string(),
@@ -1469,7 +1483,7 @@ mod tests {
         let (coordinator, side, _warnings) =
             reuben_api::engine::install_initial(BASE_DOC, staged.clone(), cfg())
                 .expect("initial install");
-        let (control_tx, control_rx) = std::sync::mpsc::channel::<ControlBatch>();
+        let (control_tx, control_rx) = ring_pair(Diagnostics::new());
         let host = NativeHost::new(Diagnostics::new(), control_tx).with_render_config(Arc::new(
             HeadlessRenderConfig {
                 opened_input_channels: 0,
@@ -1678,7 +1692,7 @@ mod tests {
         let (coordinator, side, _w) =
             reuben_api::engine::install_initial(BASE_DOC, staged.clone(), cfg()).expect("install");
         let slots = coordinator.installed_probes();
-        let (control_tx, control_rx) = std::sync::mpsc::channel::<ControlBatch>();
+        let (control_tx, control_rx) = ring_pair(Diagnostics::new());
         let host = Arc::new(NativeHost::with_probe_lease(
             Diagnostics::new(),
             control_tx,
@@ -1708,7 +1722,7 @@ mod tests {
         let diagnostics = Diagnostics::new();
         // This verb never touches control, but the ingress is a constructor parameter now — there
         // is no such thing as a host that cannot serve `send`.
-        let (control_tx, control_rx) = std::sync::mpsc::channel::<ControlBatch>();
+        let (control_tx, control_rx) = ring_pair(Diagnostics::new());
         let state = StructureState::new(
             coordinator,
             Arc::new(NativeHost::new(Arc::clone(&diagnostics), control_tx)),
@@ -1868,6 +1882,36 @@ mod tests {
             other => panic!("expected SwapReport, got {other:?}"),
         }
         cb.stop();
+    }
+
+    fn one_send() -> Vec<ControlMessage> {
+        vec![ControlMessage {
+            address: "/osc/freq".to_string(),
+            args: vec![ControlArg::F32(440.0)],
+        }]
+    }
+
+    /// A `send` the full ring refuses is dropped and counted on the host's diagnostics, and the
+    /// verb still answers: nothing waits on the render callback.
+    #[test]
+    fn a_send_against_a_full_ring_is_dropped_and_counted() {
+        let diagnostics = Diagnostics::new();
+        let (control, _ring) = ring_pair(Arc::clone(&diagnostics));
+        let host = NativeHost::new(Arc::clone(&diagnostics), control);
+        for _ in 0..crate::control::CONTROL_RING_BATCHES + 2 {
+            assert_eq!(host.deliver_control(one_send()), Ok(()));
+        }
+        let report = host.diagnostics();
+        assert_eq!(report.control_batches_dropped_full, 2);
+        assert_eq!(report.output_xruns, 0);
+    }
+
+    #[test]
+    fn a_send_after_the_render_side_is_gone_finds_the_ingress_closed() {
+        let (control, ring) = ring_pair(Diagnostics::new());
+        let host = NativeHost::new(Diagnostics::new(), control);
+        drop(ring);
+        assert_eq!(host.deliver_control(one_send()), Err(IngressClosed));
     }
 
     #[test]

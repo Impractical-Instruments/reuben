@@ -3,10 +3,11 @@
 //! Opens an output device (the host default, or the one a [`DeviceProfile`]'s `output.device`
 //! names), builds a [`Coordinator`] + its RT-side [`RenderSlot`] matched to the device sample
 //! rate, and renders inside the audio callback by driving the [`RenderSlot`] rather than an
-//! `Engine` directly. Incoming control ([`ControlBatch`]) is pulled from an
-//! [`std::sync::mpsc::Receiver`] (fed by the OSC/UDP thread and by the structure channel's `send`)
-//! at the top of each callback and typed to a Message against the Plan; each item is a whole
-//! batch, applied without splitting.
+//! `Engine` directly. Incoming control ([`ControlBatch`](crate::osc::ControlBatch)) is drained at
+//! the top of each callback from a [`ControlDrain`]: one bounded ring pair per producer thread (the
+//! OSC/UDP decode thread, and the structure channel's `send` connections sharing one), each batch
+//! applied whole and pushed back to its producer, so no batch is ever freed on the audio thread. A
+//! producer facing a full pair drops the batch and counts it (see [`crate::control`]).
 //!
 //! **Streams are fixed at `play` start**: a swap never reopens a device. The device
 //! output map is rebuilt off-thread for the new engine's logical width (against the *retained*
@@ -37,7 +38,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -50,9 +51,9 @@ use reuben_api::render::{
     SwapInFlight,
 };
 
+use crate::control::ControlDrain;
 use crate::diagnostics::Diagnostics;
 use crate::meters::{Bank, Meters};
-use crate::osc::ControlBatch;
 use crate::profile::DeviceProfile;
 use crate::structure::{
     dark_degrade_warning, input_stream_fits, RenderConfigPublisher, RenderLiveness, SwapPollGate,
@@ -306,9 +307,12 @@ pub struct LiveAudio {
 /// [`DeviceProfile::default`] for today's behavior (default devices, identity maps). The device
 /// output map is returned as [`LiveAudio::render_config`] ([`NativeRenderConfig`]). When the built
 /// engine binds input channels, the input side opens on the profile's `input.device` (default
-/// input device otherwise) through [`crate::input::InputStage`].
+/// input device otherwise) through [`crate::input::InputStage`]. `control` is every producer's
+/// ring into the callback; `diagnostics` is the counter surface both callbacks feed, returned as
+/// [`LiveAudio::diagnostics`].
 pub fn start<F>(
-    osc_rx: Receiver<ControlBatch>,
+    mut control: ControlDrain,
+    diagnostics: Arc<Diagnostics>,
     block_size: usize,
     osc_out: Option<Sender<Message>>,
     profile: &DeviceProfile,
@@ -363,7 +367,6 @@ where
     // Warn at most once if a rig sends OSC out with no target configured.
     let mut warned_no_target = false;
 
-    let diagnostics = Diagnostics::new();
     let diag_for_callback = Arc::clone(&diagnostics);
 
     // Render-callback liveness heartbeat: the callback ticks it every block so a
@@ -407,14 +410,9 @@ where
                 // messages (an OSC bundle can carry several) or one structure-channel `send`. Taking
                 // the batch as a unit is what lets a multi-control gesture land in one block, so a
                 // paired `(freq, gate)` can never straddle two. Batches are bounded at their
-                // producers, which is what keeps this drain's cost bounded per callback.
-                while let Ok(batch) = osc_rx.try_recv() {
-                    for m in &batch {
-                        // Resolve the address and type the flat args at the slot's Engine, where
-                        // the Plan (and so each dest port's Arg type) is known.
-                        slot.queue_osc(&m.address, &m.args);
-                    }
-                }
+                // producers, and each ring is drained only as far as it was full on entry, which is
+                // what keeps this drain's cost bounded per callback.
+                drain_control(&mut control, &mut slot);
 
                 // The current engine's logical output width (a swap may have just changed it), read
                 // once so buffer sizing and the output map agree. `sync` installs the pending map
@@ -523,6 +521,17 @@ where
         warnings,
         opened_input_channels,
     })
+}
+
+/// Queue every control batch waiting on `control` at the slot's Engine, each batch whole, and hand
+/// each back to its producer. The render callback's control step, so RT-safe: see
+/// [`ControlDrain::drain`].
+pub fn drain_control(control: &mut ControlDrain, slot: &mut RenderSlot) {
+    control.drain(|batch| {
+        for m in batch {
+            slot.queue_osc(&m.address, &m.args);
+        }
+    });
 }
 
 /// What crosses the parallel render mailbox: the freshly-validated device output map

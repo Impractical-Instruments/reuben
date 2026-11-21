@@ -390,7 +390,6 @@ fn followed(tree: &Tree, trail: Vec<Crumb>) -> Vec<Crumb> {
 pub(crate) mod test_support {
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
-    use std::sync::mpsc;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
@@ -401,8 +400,8 @@ pub(crate) mod test_support {
     use reuben_api::render::AudioConfig;
     use reuben_api::staged::Staged;
     use reuben_api::FsResolver;
+    use reuben_native::control::ring_pair;
     use reuben_native::diagnostics::Diagnostics;
-    use reuben_native::osc::ControlBatch;
     use reuben_native::structure::NativeHost;
     use reuben_native::test_support::FakeCallback;
     use reuben_native::tree_watch::{self, TreeWatch};
@@ -655,7 +654,7 @@ pub(crate) mod test_support {
             let (coordinator, side, _warnings) =
                 install_initial(&text, staged.clone(), AudioConfig::new(48_000.0, 128))
                     .expect("install the fixture");
-            let (control, control_rx) = mpsc::channel::<ControlBatch>();
+            let (control, control_rx) = ring_pair(Diagnostics::new());
             let host = NativeHost::new(Diagnostics::new(), control);
             let state = StructureState::new(
                 coordinator,

@@ -257,11 +257,12 @@ pub fn get_engine_diagnostics(channel: &Channel) -> Result<Answer<DiagnosticsRep
         .map_err(|why| refuse("could not read the engine diagnostics", why))?;
     let summary = format!(
         "output_xruns={} input_ring_underruns={} input_ring_overruns={} \
-         input_ring_producer_drops={}",
+         input_ring_producer_drops={} control_batches_dropped_full={}",
         report.output_xruns,
         report.input_ring_underruns,
         report.input_ring_overruns,
-        report.input_ring_producer_drops
+        report.input_ring_producer_drops,
+        report.control_batches_dropped_full
     );
     Ok(Answer {
         output: report,

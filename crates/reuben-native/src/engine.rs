@@ -20,7 +20,7 @@ use std::io;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -35,6 +35,7 @@ use reuben_api::staged::Staged;
 use reuben_api::FsResolver;
 
 use crate::audio::{self, AudioError};
+use crate::control::{self, ControlDrain, ControlProducer};
 use crate::diagnostics::{self, Diagnostics, PeriodicLogger, Snapshot};
 use crate::meters::Meters;
 use crate::osc::{self, ControlBatch, DEFAULT_OSC_PORT};
@@ -326,11 +327,13 @@ impl RunningEngine {
         // The last StructureState this handle holds; dropping it drops the Coordinator (and any
         // retired Engine it still holds) here, off the audio thread, unless a caller kept a channel.
         self.state = None;
-        self.osc_in = None;
         if let Some(Output::Device(streams)) = &self.output {
             streams.pause();
         }
         self.output = None;
+        // After the render side, so the UDP thread's producer is the last owner of its control
+        // rings and frees them, with any batches still in them, on its own thread.
+        self.osc_in = None;
         // Stopped by its own flag rather than by its sender dropping with the render callback,
         // which the pause above does not guarantee either.
         self.osc_out = None;
@@ -388,8 +391,9 @@ pub(crate) enum Pace {
 /// are posted back for the Coordinator's off-thread `reclaim`. It renders the *logical* master; the
 /// device output map needs a device.
 ///
-/// It drains the control ingress as `audio.rs` does, batch by batch and each batch whole, and
-/// forwards outbound Messages to the OSC-out sender. Dropping it stops and joins the thread.
+/// It drains the control rings as `audio.rs` does, batch by batch, each batch whole and handed back
+/// to its producer, and forwards outbound Messages to the OSC-out sender. Dropping it stops and
+/// joins the thread.
 pub(crate) struct HeadlessDriver {
     stop: Arc<AtomicBool>,
     #[cfg_attr(not(test), allow(dead_code))]
@@ -399,15 +403,15 @@ pub(crate) struct HeadlessDriver {
 
 impl HeadlessDriver {
     /// Start driving `side` in blocks of `config.block_size`, paced by `pace`. Each control batch is
-    /// handed to `drained` once it has been queued, on the render thread; the engine's own driver
-    /// passes one that drops it.
+    /// shown to `drained` once it has been queued, on the render thread, before it goes back to its
+    /// producer; the engine's own driver passes one that does nothing.
     pub(crate) fn spawn(
         side: RenderSide,
         config: AudioConfig,
         pace: Pace,
-        control_rx: Receiver<ControlBatch>,
+        mut control: ControlDrain,
         outbound: Option<Sender<Message>>,
-        mut drained: impl FnMut(ControlBatch) + Send + 'static,
+        mut drained: impl FnMut(&ControlBatch) + Send + 'static,
     ) -> io::Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = Arc::clone(&stop);
@@ -426,12 +430,12 @@ impl HeadlessDriver {
                     // Each item is a whole batch, applied without splitting, so a gesture reaches
                     // one block. Flat args in, typed at the slot's Engine where the destination
                     // port's type is known.
-                    while let Ok(batch) = control_rx.try_recv() {
-                        for m in &batch {
+                    control.drain(|batch| {
+                        for m in batch {
                             slot.queue_osc(&m.address, &m.args);
                         }
                         drained(batch);
-                    }
+                    });
                     let ch = slot.channels().max(1);
                     // A swap can change the channel count; the device callback is handed a buffer
                     // of the right size instead.
@@ -524,10 +528,16 @@ pub(crate) fn start_with(
     let nothing_open = instrument == Instrument::Silent;
     let (instrument_json, resolver, initial_source) = read_instrument(instrument, instrument_root)?;
 
-    // The one control ingress into the render callback. Two producers — the UDP listener (the
-    // foreign edge) and the structure channel's `send` — each hold a clone, so a `send` and an
-    // external datagram are indistinguishable downstream.
-    let (osc_tx, osc_rx) = mpsc::channel::<ControlBatch>();
+    // The counters every producer and the render side feed, made first because the control
+    // producers count their drops into it.
+    let diagnostics = Diagnostics::new();
+
+    // The control ingress into the render callback: a ring pair for the UDP listener (the foreign
+    // edge) and one the structure channel's `send` connections share. A `send` and an external
+    // datagram are indistinguishable downstream.
+    let (udp_control, udp_ring) = control::ring_pair(Arc::clone(&diagnostics));
+    let (send_control, send_ring) = control::ring_pair(Arc::clone(&diagnostics));
+    let control = ControlDrain::new(vec![udp_ring, send_ring]);
 
     let (osc_out_tx, osc_out) = match osc_out {
         Some(target) => {
@@ -538,7 +548,7 @@ pub(crate) fn start_with(
     };
 
     let osc_in = match osc_in {
-        Some(addr) => Some(OscListener::bind(addr, osc_tx.clone(), log_osc)?),
+        Some(addr) => Some(OscListener::bind(addr, udp_control, log_osc)?),
         None => None,
     };
 
@@ -561,10 +571,17 @@ pub(crate) fn start_with(
     ): (_, _, _, _, Arc<dyn RenderConfigPublisher>, _, _, _) = match render {
         Render::Device => {
             let mut negotiated = None;
-            let live = audio::start(osc_rx, block_size, osc_out_tx, &profile, |cfg| {
-                negotiated = Some(cfg);
-                build(cfg)
-            })
+            let live = audio::start(
+                control,
+                Arc::clone(&diagnostics),
+                block_size,
+                osc_out_tx,
+                &profile,
+                |cfg| {
+                    negotiated = Some(cfg);
+                    build(cfg)
+                },
+            )
             .map_err(|e| match e {
                 AudioError::Instrument(e) => StartError::Instrument(e),
                 e => StartError::Audio(e),
@@ -593,11 +610,11 @@ pub(crate) fn start_with(
             // Sized as a device start sizes its input stream, so a swap is judged against the
             // same geometry. No input is fed: the bound pipes read silence.
             let opened_input = coordinator.installed_input_channels();
-            let driver = HeadlessDriver::spawn(side, cfg, pace, osc_rx, osc_out_tx, drop)
+            let driver = HeadlessDriver::spawn(side, cfg, pace, control, osc_out_tx, |_| {})
                 .map_err(StartError::RenderThread)?;
             (
                 Output::Headless(driver),
-                Diagnostics::new(),
+                Arc::clone(&diagnostics),
                 Meters::none(),
                 coordinator,
                 Arc::new(HeadlessRenderConfig {
@@ -615,7 +632,7 @@ pub(crate) fn start_with(
     // The structure channel owns the Coordinator — the single writer of graph structure — and
     // publishes each swap's device output map through `render_config`.
     let host = Arc::new(
-        NativeHost::new(Arc::clone(&diagnostics), osc_tx)
+        NativeHost::new(Arc::clone(&diagnostics), send_control)
             .with_meters(meters)
             .with_render_config(render_config)
             .with_swap_hold(swap_hold)
@@ -783,8 +800,9 @@ impl Drop for OscSender {
     }
 }
 
-/// The OSC-in UDP listener: decodes each datagram into one [`ControlBatch`] and forwards it to the
-/// render callback. Dropping it stops and joins the thread, which closes the socket.
+/// The OSC-in UDP listener: decodes each datagram into one [`ControlBatch`] and pushes it onto its
+/// own ring pair into the render callback, decoding into a batch the callback returned when there is
+/// one. Dropping it stops and joins the thread, which closes the socket.
 struct OscListener {
     addr: SocketAddr,
     stop: Arc<AtomicBool>,
@@ -792,7 +810,7 @@ struct OscListener {
 }
 
 impl OscListener {
-    fn bind(addr: String, tx: Sender<ControlBatch>, log_osc: bool) -> Result<Self, StartError> {
+    fn bind(addr: String, mut control: ControlProducer, log_osc: bool) -> Result<Self, StartError> {
         let fail = |error| StartError::OscIn {
             addr: addr.clone(),
             error,
@@ -809,17 +827,21 @@ impl OscListener {
                 let mut buf = [0u8; 1024];
                 while !thread_stop.load(Ordering::SeqCst) {
                     match socket.recv_from(&mut buf) {
-                        Ok((n, _)) => match osc::decode(&buf[..n]) {
-                            Ok(batch) => {
-                                if log_osc {
-                                    for m in &batch {
-                                        println!("recv {} {:?}", m.address, m.args.as_slice());
+                        Ok((n, _)) => {
+                            let mut batch = control.batch();
+                            match osc::decode_into(&buf[..n], &mut batch) {
+                                Ok(()) => {
+                                    if log_osc {
+                                        for m in &batch {
+                                            println!("recv {} {:?}", m.address, m.args.as_slice());
+                                        }
                                     }
+                                    // A full pair drops and counts the datagram's batch.
+                                    let _ = control.push(batch);
                                 }
-                                let _ = tx.send(batch);
+                                Err(e) => eprintln!("OSC decode error: {e}"),
                             }
-                            Err(e) => eprintln!("OSC decode error: {e}"),
-                        },
+                        }
                         // The poll timeout, or a signal landing on this thread: a read timeout
                         // makes Linux return EINTR even under SA_RESTART.
                         Err(ref e)
