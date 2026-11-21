@@ -243,6 +243,15 @@ impl Session {
         &self.undo
     }
 
+    /// Drop the undo and redo stacks, the note saying `why` when there was a step to drop.
+    pub fn forget_undo(&mut self, why: &str) {
+        if self.undo.next(Direction::Undo).is_none() && self.undo.next(Direction::Redo).is_none() {
+            return;
+        }
+        self.undo = Undo::default();
+        self.undo.set_note(Some(why.to_string()));
+    }
+
     pub fn undo_mut(&mut self) -> &mut Undo {
         &mut self.undo
     }

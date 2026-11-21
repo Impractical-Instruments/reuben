@@ -3,7 +3,6 @@
 
 use std::path::{Path, PathBuf};
 
-use clap::Parser;
 use eframe::egui;
 use egui_kittest::kittest::Queryable;
 use egui_kittest::Harness;
@@ -56,7 +55,6 @@ fn instrument(scratch: &Scratch) -> PathBuf {
 /// The editor open on `top`, with an embedded headless engine playing it that binds no port:
 /// `main`'s construction, repeated with test stand-ins.
 fn editor(top: &Path, config: &TempConfig) -> Editor {
-    let args = Args::parse_from(["reuben-editor"]);
     let engine = Engine::start_with(
         EngineConfig {
             structure: None,
@@ -69,8 +67,8 @@ fn editor(top: &Path, config: &TempConfig) -> Editor {
     let mut canvas = Canvas::open(None, None);
     let mut inspector = Inspector::default();
     view(&mut canvas, &mut inspector, &session);
-    let mut start = Start::new(config.dir(), None);
-    start.opened(top);
+    let mut start = Start::new(config.dir());
+    start.opened(&top.display().to_string());
     let (follow, latest) = follower(engine.channel(), || {});
     Editor {
         engine,
@@ -80,11 +78,7 @@ fn editor(top: &Path, config: &TempConfig) -> Editor {
         inspector,
         session: Some(session),
         start,
-        launch: Launch {
-            root: None,
-            flags: args.engine,
-            swap_hold: None,
-        },
+        launch: Launch { root: None },
         held: HeldSwaps::new(|| {}),
         meters: MeterStrip::new(|| {}),
         follow,
@@ -283,7 +277,6 @@ fn echoing(scratch: &Scratch, level: f64) -> PathBuf {
 
 /// The editor as `main` builds it for `--attach addr`, showing `session` if it is given one.
 fn attached(addr: String, config: &TempConfig, session: Option<Session>) -> Editor {
-    let args = Args::parse_from(["reuben-editor", "--attach", &addr]);
     let engine = Engine::attach(addr, || {});
     let (follow, latest) = follower(engine.channel(), || {});
     Editor {
@@ -293,12 +286,8 @@ fn attached(addr: String, config: &TempConfig, session: Option<Session>) -> Edit
         canvas: Canvas::open(None, None),
         inspector: Inspector::default(),
         session,
-        start: Start::new(config.dir(), None),
-        launch: Launch {
-            root: None,
-            flags: args.engine,
-            swap_hold: None,
-        },
+        start: Start::new(config.dir()),
+        launch: Launch { root: None },
         held: HeldSwaps::new(|| {}),
         meters: MeterStrip::new(|| {}),
         follow,
@@ -786,11 +775,13 @@ fn an_instrument_named_by_a_relative_path_at_launch_shows_its_level() {
     assert!(relative.is_relative() && relative.is_file(), "{relative:?}");
     reuben_native::test_support::within(crate::engine::test_support::HANG_SECS, move || {
         let mut editor = editor(&top, &config);
+        let lib = top.parent().expect("in a directory").to_path_buf();
         editor.engine = Engine::start_with(
-            crate::engine::test_support::config(relative.clone()),
+            crate::engine::test_support::silent(&lib),
             reuben_native::test_support::start_headless,
         );
-        let session = launched(&relative, &editor.engine);
+        let session = launched(&relative, &mut editor.engine, &editor.held, || {})
+            .expect("the server opens it");
         editor.canvas = Canvas::open(None, None);
         view(&mut editor.canvas, &mut editor.inspector, &session);
         editor.session = Some(session);
@@ -848,7 +839,7 @@ fn an_attached_edit_keeps_its_level_once_its_swap_lands() {
         let session = Session::open(&top.display().to_string(), &|| editor.engine.channel());
         view(&mut editor.canvas, &mut editor.inspector, &session);
         editor.session = Some(session);
-        editor.start.opened(&top);
+        editor.start.opened(&top.display().to_string());
         let mut harness = harness(editor);
         until_osc_level(&mut harness);
 
@@ -929,7 +920,7 @@ fn a_swap_back_to_what_the_link_last_reported_is_still_followed() {
 
         // The user opens another file; its Swap lands.
         let ctx = harness.ctx.clone();
-        harness.state_mut().open(&shown, &ctx);
+        harness.state_mut().open(&shown.display().to_string(), &ctx);
         let shown_source = shown.display().to_string();
         step_until(&mut harness, "noted the Swap it made", |editor| {
             let session = editor.session.as_ref().expect("a session");
@@ -977,5 +968,35 @@ fn a_swap_back_to_what_the_link_last_reported_is_still_followed() {
         }
         harness.state_mut().engine.shutdown();
         reuben_native::diagnostics::log_snapshot(&played.shutdown());
+    });
+}
+
+/// An open of another instrument the embedded engine let through — another client's, or a held
+/// one the user accepted — is followed, so the canvas never draws one instrument while another
+/// plays.
+#[test]
+fn an_open_by_another_client_reopens_the_embedded_session_on_it() {
+    use reuben_native::test_support::within;
+
+    let scratch = Scratch::new("ui_embedded_follows_open");
+    let config = TempConfig::new();
+    let top = instrument(&scratch);
+    let other = top.with_file_name("other.json");
+    std::fs::copy(&top, &other).expect("copy the instrument");
+    within(crate::engine::test_support::HANG_SECS, move || {
+        let mut harness = harness(editor(&top, &config));
+        let name = other.display().to_string();
+        let channel = harness.state().engine.channel().expect("the engine runs");
+        let opened = channel.open(name.clone(), None).expect("the open ran");
+        assert!(
+            matches!(opened, reuben_api::engine::SwapOutcome::Installed(ref r) if r.report.ok),
+            "{opened:?}"
+        );
+        step_until(&mut harness, "followed the open", |editor| {
+            editor.session.as_ref().is_some_and(|s| s.top() == name)
+        });
+        let editor = harness.state();
+        assert_eq!(editor.canvas.instrument(), Some(name.as_str()));
+        harness.state_mut().engine.shutdown();
     });
 }

@@ -82,14 +82,17 @@ impl HeldSwaps {
         self.state().pending.clone()
     }
 
-    /// The user chose to open `shown`. Returns the path to open, unless another held Swap has
-    /// replaced the one they were shown.
-    pub fn accept(&self, shown: &Asked) -> Option<PathBuf> {
+    /// The user chose to open `shown`. Returns the name to open it by, as the client asked for
+    /// it, unless another held Swap has replaced the one they were shown.
+    pub fn accept(&self, shown: &Asked) -> Option<String> {
         let mut state = self.state();
         if state.pending.as_ref() != Some(shown) {
             return None;
         }
-        state.pending.take().map(|asked| asked.path)
+        state
+            .pending
+            .take()
+            .map(|asked| asked.path.display().to_string())
     }
 
     /// The user kept what is open rather than `shown`: nothing changes. A Swap held since they
@@ -142,8 +145,8 @@ pub fn canonical(path: &Path) -> PathBuf {
 /// Draw the prompt while a Swap is held, floating over the bottom-right corner of `within` so
 /// nothing under it moves when it appears. It takes no focus, and its buttons ignore clicks for [`ARMING`]
 /// after what it asks about changes, so a gesture under way carries on until the user turns to
-/// it. Returns the source the user chose to open.
-pub fn show(ctx: &egui::Context, held: &HeldSwaps, within: egui::Rect) -> Option<PathBuf> {
+/// it. Returns the name the user chose to open.
+pub fn show(ctx: &egui::Context, held: &HeldSwaps, within: egui::Rect) -> Option<String> {
     let asked = held.pending()?;
     let armed = asked.at.elapsed() >= ARMING;
     if !armed {
@@ -197,14 +200,11 @@ mod tests {
     use reuben_native::test_support::{start_headless, within};
 
     use super::*;
-    use crate::audio::tests::two_devices;
-    use crate::audio::AudioSettings;
-    use crate::config::test_support::TempConfig;
-    use crate::engine::test_support::HANG_SECS;
+    use crate::engine::test_support::{silent, HANG_SECS};
     use crate::engine::Engine;
     use crate::session::test_support::Scratch;
     use crate::session::{Session, Status};
-    use crate::start::{self, Launch};
+    use crate::start;
 
     fn headless(mut config: EngineConfig) -> Result<RunningEngine, StartError> {
         config.osc_in = Some("127.0.0.1:0".to_string());
@@ -218,19 +218,14 @@ mod tests {
         lib: PathBuf,
         held: HeldSwaps,
         wakes: Arc<AtomicUsize>,
-        launch: Launch,
-        audio: AudioSettings,
         engine: Engine,
         session: Session,
         link: EngineLink,
-        _temp: TempConfig,
         _scratch: Scratch,
     }
 
     impl Editor {
         fn open(test: &str, instrument: &str) -> Self {
-            let temp = TempConfig::new();
-            let audio = AudioSettings::load_with(temp.dir(), two_devices);
             let scratch = Scratch::new(test);
             let lib = scratch.library();
             let wakes = Arc::new(AtomicUsize::new(0));
@@ -240,25 +235,24 @@ mod tests {
                     wakes.fetch_add(1, Ordering::SeqCst);
                 }
             });
-            let launch = Launch {
-                root: None,
-                flags: Default::default(),
-                swap_hold: Some(held.swap_hold()),
-            };
-            let top = lib.join(instrument);
+            let engine = Engine::start_with(
+                EngineConfig {
+                    swap_hold: Some(held.swap_hold()),
+                    ..silent(&lib)
+                },
+                headless,
+            );
+            let top = lib.join(instrument).display().to_string();
             let mut editor = Self {
                 lib,
                 held,
                 wakes,
-                launch,
-                audio,
-                engine: Engine::idle(),
-                session: Session::open(&top.display().to_string(), &|| None),
+                engine,
+                session: Session::open(&top, &|| None),
                 link: EngineLink::default(),
-                _temp: temp,
                 _scratch: scratch,
             };
-            editor.open_file(&top, headless);
+            editor.open_file(&top);
             let structure = editor
                 .engine
                 .running()
@@ -268,28 +262,17 @@ mod tests {
             editor
         }
 
-        /// What the editor does to open a file, from the start screen or from the prompt, in the
-        /// order it does it, then waits for the Swap to land.
-        fn open_file(
-            &mut self,
-            path: &Path,
-            start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
-        ) {
-            self.held.opened(path);
-            self.session = start::open(
-                path,
-                &self.launch,
-                &mut self.audio,
-                &mut self.engine,
-                || {},
-                start,
-            );
+        /// What the editor does to open an instrument by name, from the start screen or from the
+        /// prompt, in the order it does it.
+        fn open_file(&mut self, name: &str) {
+            self.held.opened(Path::new(name));
+            self.session = start::open(name, &self.engine, || {}).expect("the server opens it");
             assert_eq!(self.session.status(), &Status::Current);
         }
 
         fn accept(&mut self, shown: &Asked) {
-            let path = self.held.accept(shown).expect("the prompt still asks this");
-            self.open_file(&path, |_| panic!("a running engine is not started again"));
+            let name = self.held.accept(shown).expect("the prompt still asks this");
+            self.open_file(&name);
         }
 
         /// `reuben-mcp`'s `swap_instrument` of `path`.
@@ -512,9 +495,7 @@ mod tests {
             let mut editor = Editor::open("held_opened", "acid-techno.json");
             let groovebox = editor.spelled("groovebox.json");
             assert!(editor.mcp_swaps(&groovebox).held.is_some());
-            editor.open_file(Path::new(&groovebox), |_| {
-                panic!("a running engine is not started again")
-            });
+            editor.open_file(&groovebox);
             assert_eq!(editor.held.pending(), None);
             assert_eq!(editor.playing(), groovebox);
             editor.engine.shutdown();

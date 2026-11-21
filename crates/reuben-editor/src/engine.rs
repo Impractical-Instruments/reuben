@@ -12,7 +12,7 @@
 
 use std::fmt;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use reuben_api::authoring::{validate_instrument, ValidateInstrument};
 use reuben_api::engine::{Channel, Installed};
@@ -89,11 +89,18 @@ pub struct Engine {
     /// it: kept through a Swap that holds it, and `None` while that is not known or the document
     /// has no file.
     plays: Option<Playing>,
+    /// The directories offered to the server beyond its own, offered again to the server a
+    /// restart starts.
+    offered: Vec<PathBuf>,
+    /// The engine was stopped and started again since [`take_restarted`](Self::take_restarted):
+    /// the new server's history holds none of the old one's states.
+    restarted: bool,
 }
 
 impl Engine {
-    /// No instrument was named: nothing runs and no port is bound.
-    pub fn idle() -> Self {
+    /// No engine: nothing runs and no port is bound.
+    #[cfg(test)]
+    pub(crate) fn idle() -> Self {
         Self {
             running: None,
             attached: None,
@@ -102,6 +109,8 @@ impl Engine {
             report: Vec::new(),
             refit_tried: None,
             plays: None,
+            offered: Vec::new(),
+            restarted: false,
         }
     }
 
@@ -200,9 +209,38 @@ impl Engine {
         Self::reported(None, None, vec![Line::new(Level::Error, error.to_string())])
     }
 
-    /// Start the engine on the audio device `config.profile` selects.
+    /// Start the engine on the audio device `config.profile` selects, or, when that device does
+    /// not open, with no device at all: the server still lists, opens and edits, and the report
+    /// says why nothing is heard.
     pub fn start(config: EngineConfig) -> Self {
-        Self::start_with(config, engine::start)
+        Self::start_or_headless(config, engine::start, engine::start_headless)
+    }
+
+    /// [`start`](Self::start) through `start`, falling back to `headless` on an audio device
+    /// error: the seams a test puts its stand-ins in.
+    pub(crate) fn start_or_headless(
+        config: EngineConfig,
+        start: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
+        headless: impl FnOnce(EngineConfig) -> Result<RunningEngine, StartError>,
+    ) -> Self {
+        let mut device = None;
+        let mut engine = Self::start_with(config, |config| match start(config.clone()) {
+            Err(StartError::Audio(e)) => {
+                device = Some(e);
+                headless(config)
+            }
+            started => started,
+        });
+        if let Some(e) = device {
+            engine.push(Line::new(
+                Level::Error,
+                format!(
+                    "the audio device did not open ({e}); nothing is heard, but instruments \
+                     still open and edit"
+                ),
+            ));
+        }
+        engine
     }
 
     /// [`start`](Self::start) through `start`, the seam a test puts the headless engine in.
@@ -312,6 +350,9 @@ impl Engine {
             match running.channel().get_document() {
                 Ok(document) => match document.source {
                     Some(source) => config.instrument = Instrument::Path(source.into()),
+                    None if document.content_hash.is_empty() => {
+                        config.instrument = Instrument::Silent;
+                    }
                     None => unsourced = Some("it was installed without a file".to_string()),
                 },
                 Err(e) => unsourced = Some(format!("the engine did not say what it is: {e}")),
@@ -330,8 +371,15 @@ impl Engine {
             }
         }
         config.profile = profile;
+        let offered = std::mem::take(&mut self.offered);
         self.shutdown();
+        // Started on the open instrument rather than on nothing and then opened: the input stream's
+        // width is fixed by what the engine starts on.
         *self = Self::start_with(config, start);
+        for dir in &offered {
+            self.offer_dir(dir);
+        }
+        self.restarted = true;
         if let Some(why) = unsourced {
             self.push(Line::new(
                 Level::Warning,
@@ -342,6 +390,26 @@ impl Engine {
             ));
         }
         true
+    }
+
+    /// Offer `dir` to the server from now on, and to the server of every restart: what it holds
+    /// lists, opens and edits as the library does. Does nothing for an attached engine, whose
+    /// offers are its own.
+    pub fn offer_dir(&mut self, dir: &Path) {
+        if self.attached.is_some() {
+            return;
+        }
+        if !self.offered.iter().any(|offered| offered == dir) {
+            self.offered.push(dir.to_path_buf());
+        }
+        if let Some(running) = &self.running {
+            running.offer_dir(dir);
+        }
+    }
+
+    /// Whether the engine restarted since the last call.
+    pub fn take_restarted(&mut self) -> bool {
+        std::mem::take(&mut self.restarted)
     }
 
     fn push(&mut self, line: Line) {
@@ -540,6 +608,8 @@ impl Engine {
             report,
             refit_tried: None,
             plays: None,
+            offered: Vec::new(),
+            restarted: false,
         }
     }
 
@@ -648,6 +718,17 @@ pub(crate) mod test_support {
             ..EngineConfig::new(Instrument::Path(instrument))
         }
     }
+
+    /// [`config`] starting on nothing, the library rooted at `root`: what the standalone editor
+    /// starts at launch.
+    pub fn silent(root: &std::path::Path) -> EngineConfig {
+        EngineConfig {
+            osc_in: Some("127.0.0.1:0".to_string()),
+            structure: Some("127.0.0.1:0".to_string()),
+            instrument_root: Some(root.to_path_buf()),
+            ..EngineConfig::new(Instrument::Silent)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -695,6 +776,33 @@ mod tests {
             Err(StartError::StructureNotLoopback(String::new()))
         });
         assert_eq!(asked, Some(true));
+    }
+
+    #[test]
+    fn a_device_that_does_not_open_starts_headless_and_says_why() {
+        within(HANG_SECS, || {
+            let mut engine = Engine::start_or_headless(
+                super::test_support::silent(&library("")),
+                |_| {
+                    Err(StartError::Audio(
+                        reuben_native::audio::AudioError::NoDevice,
+                    ))
+                },
+                start_headless,
+            );
+            let said = errors(&engine);
+            assert_eq!(said.len(), 1, "{said:?}");
+            assert!(
+                said[0].starts_with("the audio device did not open"),
+                "{}",
+                said[0]
+            );
+            let library = (engine.channel().expect("the server runs"))
+                .library()
+                .expect("the library lists without a device");
+            assert!(!library.instruments.is_empty());
+            engine.shutdown();
+        });
     }
 
     #[test]

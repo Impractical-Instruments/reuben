@@ -1,168 +1,151 @@
-//! The instruments the start screen offers to play: the documents directly in the library
-//! directory. The voices and patches the library keeps in its subdirectories are parts of those
-//! instruments, not instruments to play on their own, so they are not listed.
+//! The instruments the start screen offers to play: what the server's `library` answers, fetched
+//! off the UI thread.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::sync::mpsc::{self, Receiver};
 
-use reuben_api::authoring::{read_instrument, ReadInstrument};
-use reuben_api::FsResolver;
+use reuben_api::engine::wire::{Library, LibraryEntry, ListWhat};
+use reuben_api::engine::Channel;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
-    pub path: PathBuf,
-    /// The document's `instrument` name, or its file name when it does not read.
+    /// The server's name for it, which opens it.
     pub name: String,
+    /// The document's `instrument` name, or its file stem when it does not read.
+    pub title: String,
     pub description: Option<String>,
     /// Why the document does not read; it is listed, and cannot be opened from the list.
     pub error: Option<String>,
 }
 
-/// The library directory: `root` when one is given, else the first of the library candidates
-/// `reuben play` also looks in. Absolute, so what is opened from it is named the same from
-/// anywhere. `Err` says, for the start screen, why there is none.
-pub fn locate(root: Option<&Path>) -> Result<PathBuf, String> {
-    locate_among(root, &reuben_native::cli::library_candidates())
-}
-
-fn locate_among(root: Option<&Path>, fallbacks: &[PathBuf]) -> Result<PathBuf, String> {
-    match root {
-        Some(root) if root.is_dir() => Ok(super::recent::absolute(root)),
-        Some(root) => Err(format!(
-            "No library: the instrument root {} is not a directory.",
-            root.display()
-        )),
-        None => match fallbacks.iter().find(|dir| dir.is_dir()) {
-            Some(dir) => Ok(super::recent::absolute(dir)),
-            None => Err(
-                "No library: there is no instruments/ here or beside reuben-editor. \
-                 Name one with --instrument-root or REUBEN_INSTRUMENT_ROOT."
-                    .to_string(),
-            ),
-        },
-    }
-}
-
-/// Every `*.json` document directly in `dir`, by name. `root` is the library root references fall
-/// back to, as for the engine.
-pub fn scan(dir: &Path, root: Option<&Path>) -> Result<Vec<Entry>, String> {
-    let listing = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let mut entries = Vec::new();
-    // An entry the directory cannot report names no file to list, and costs only that entry.
-    for item in listing.flatten() {
-        let path = item.path();
-        if path.is_file() && path.extension().is_some_and(|ext| ext == "json") {
-            entries.push(entry(path, root));
+impl From<&LibraryEntry> for Entry {
+    fn from(entry: &LibraryEntry) -> Self {
+        Self {
+            name: entry.name.clone(),
+            title: (entry.title.clone()).unwrap_or_else(|| stem(&entry.name)),
+            description: entry.description.clone(),
+            error: entry.error.clone(),
         }
     }
-    entries.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.path.cmp(&b.path)));
-    Ok(entries)
 }
 
-fn entry(path: PathBuf, root: Option<&Path>) -> Entry {
-    let source = path.display().to_string();
-    let mut store = FsResolver::for_document(&source).stat_only();
-    if let Some(root) = root {
-        store = store.with_root(root);
-    }
-    match read_instrument(&ReadInstrument { source }, &store) {
-        Ok(answer) => Entry {
-            name: answer.output.instrument,
-            description: answer.output.description,
-            error: None,
-            path,
-        },
-        Err(refusal) => Entry {
-            name: path
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-            description: None,
-            error: Some(refusal.message),
-            path,
-        },
-    }
+/// The file stem of the server name `name`, for display.
+pub fn stem(name: &str) -> String {
+    Path::new(name)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| name.to_string())
+}
+
+/// Ask `channel`'s server for its library on a worker thread. `wake` is called from it once the
+/// answer is in the receiver.
+pub fn fetch(
+    channel: Channel,
+    wake: impl Fn() + Send + 'static,
+) -> Receiver<Result<Library, String>> {
+    on_worker(move || channel.library().map_err(|e| e.to_string()), wake)
+}
+
+/// Ask `channel`'s server for the instrument names it offers on a worker thread, as [`fetch`].
+pub fn offered(
+    channel: Channel,
+    wake: impl Fn() + Send + 'static,
+) -> Receiver<Result<Vec<String>, String>> {
+    on_worker(
+        move || (channel.list(ListWhat::Instruments)).map_err(|e| e.to_string()),
+        wake,
+    )
+}
+
+fn on_worker<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+    wake: impl Fn() + Send + 'static,
+) -> Receiver<T> {
+    let (done, answer) = mpsc::channel();
+    std::thread::spawn(move || {
+        if done.send(work()).is_ok() {
+            wake();
+        }
+    });
+    answer
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use reuben_native::test_support::within;
+
     use super::*;
+    use crate::engine::test_support::{silent, HANG_SECS};
+    use crate::engine::Engine;
     use crate::session::test_support::Scratch;
 
+    fn answer<T>(rx: Receiver<T>) -> T {
+        rx.recv_timeout(Duration::from_secs(HANG_SECS))
+            .expect("the worker answers")
+    }
+
     #[test]
-    fn the_repo_library_lists_its_top_level_instruments_by_name() {
-        let lib = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instruments");
-        let entries = scan(&lib, None).expect("scan the library");
-        let names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
-        assert!(names.contains(&"default"), "{names:?}");
-        assert!(names.contains(&"groovebox"), "{names:?}");
-        assert!(
-            !names.contains(&"default-voice"),
-            "a voice is part of an instrument: {names:?}"
-        );
-        let mut sorted = names.clone();
-        sorted.sort();
-        assert_eq!(names, sorted);
-        for entry in &entries {
-            assert_eq!(entry.error, None, "{}", entry.path.display());
-        }
+    fn the_start_screen_lists_the_servers_library() {
+        within(HANG_SECS, || {
+            let scratch = Scratch::new("library_server");
+            let lib = scratch.library();
+            let mut engine =
+                Engine::start_with(silent(&lib), reuben_native::engine::start_headless);
+            let channel = engine.channel().expect("the server runs");
+            let library = answer(fetch(channel, || {})).expect("the library");
+
+            let mut listed: Vec<String> =
+                library.instruments.iter().map(|e| e.name.clone()).collect();
+            listed.sort();
+            let mut files: Vec<String> = std::fs::read_dir(&lib)
+                .expect("read the library")
+                .flatten()
+                .map(|item| item.path())
+                .filter(|path| path.is_file() && path.extension().is_some_and(|e| e == "json"))
+                .map(|path| std::path::absolute(path).unwrap().display().to_string())
+                .collect();
+            files.sort();
+            assert_eq!(listed, files);
+            let entries: Vec<Entry> = library.instruments.iter().map(Entry::from).collect();
+            let titles: Vec<&str> = entries.iter().map(|e| e.title.as_str()).collect();
+            assert!(titles.contains(&"groovebox"), "{titles:?}");
+            assert!(entries.iter().all(|e| e.error.is_none()), "{entries:?}");
+            assert!(
+                library.dirs.contains(&lib.display().to_string()),
+                "{:?}",
+                library.dirs
+            );
+            engine.shutdown();
+        });
     }
 
     #[test]
     fn a_document_that_does_not_read_is_listed_with_why() {
-        let scratch = Scratch::new("library_unreadable");
-        let dir = scratch.path("");
-        std::fs::write(dir.join("broken.json"), "{ not json").expect("seed");
-        std::fs::write(dir.join("notes.txt"), "not an instrument").expect("seed");
-        std::fs::copy(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instruments/patches/space.json"),
-            dir.join("fx.json"),
-        )
-        .expect("seed");
+        within(HANG_SECS, || {
+            let scratch = Scratch::new("library_unreadable");
+            let dir = scratch.path("lib");
+            std::fs::create_dir_all(&dir).expect("mkdir");
+            std::fs::write(dir.join("broken.json"), "{ not json").expect("seed");
+            std::fs::write(dir.join("notes.txt"), "not an instrument").expect("seed");
+            std::fs::copy(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instruments/patches/space.json"),
+                dir.join("fx.json"),
+            )
+            .expect("seed");
+            let mut engine =
+                Engine::start_with(silent(&dir), reuben_native::engine::start_headless);
+            let channel = engine.channel().expect("the server runs");
+            let library = answer(fetch(channel, || {})).expect("the library");
 
-        let entries = scan(&dir, None).expect("scan");
-        let names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, ["broken", "space"]);
-        assert!(entries[0].error.is_some());
-        assert_eq!(entries[1].error, None);
-        assert!(entries[1].description.is_some());
-    }
-
-    #[test]
-    fn the_library_is_the_root_when_one_is_given() {
-        let scratch = Scratch::new("library_locate");
-        let dir = scratch.path("lib");
-        let missing = locate(Some(&dir)).expect_err("a root that is not a directory");
-        assert!(missing.contains(&dir.display().to_string()), "{missing}");
-        std::fs::create_dir_all(&dir).expect("mkdir");
-        let located = locate(Some(&dir)).expect("a directory");
-        assert!(located.is_absolute());
-        assert_eq!(
-            std::fs::canonicalize(located).ok(),
-            std::fs::canonicalize(&dir).ok()
-        );
-    }
-
-    #[test]
-    fn without_a_root_the_first_instruments_directory_that_exists_is_the_library() {
-        let scratch = Scratch::new("library_fallbacks");
-        let missing = scratch.path("cwd/instruments");
-        let beside = scratch.path("bin/instruments");
-        let fallbacks = [missing.clone(), beside.clone()];
-        let none = locate_among(None, &fallbacks).expect_err("neither exists");
-        assert!(none.contains("--instrument-root"), "{none}");
-
-        std::fs::create_dir_all(&beside).expect("mkdir");
-        let located = locate_among(None, &fallbacks).expect("the one beside the binary");
-        assert_eq!(
-            std::fs::canonicalize(located).ok(),
-            std::fs::canonicalize(&beside).ok()
-        );
-
-        std::fs::create_dir_all(&missing).expect("mkdir");
-        let located = locate_among(None, &fallbacks).expect("the working directory's first");
-        assert_eq!(
-            std::fs::canonicalize(located).ok(),
-            std::fs::canonicalize(&missing).ok()
-        );
+            let entries: Vec<Entry> = library.instruments.iter().map(Entry::from).collect();
+            let titles: Vec<&str> = entries.iter().map(|e| e.title.as_str()).collect();
+            assert_eq!(titles, ["broken", "space"]);
+            assert!(entries[0].error.is_some());
+            assert_eq!(entries[1].error, None);
+            assert!(entries[1].description.is_some());
+            engine.shutdown();
+        });
     }
 }
