@@ -537,7 +537,7 @@ mod tests {
 
     #[test]
     fn a_launch_open_the_server_refuses_holds_nothing() {
-        use reuben_api::engine::{swap_instrument, SwapInstrument};
+        use reuben_api::engine::{open_instrument, OpenInstrument};
         use reuben_mcp::EngineLink;
         use reuben_native::engine::RunningEngine;
         use reuben_native::test_support::{start_headless, within};
@@ -563,16 +563,16 @@ mod tests {
                 .and_then(RunningEngine::structure_addr)
                 .expect("the structure server bound");
             let link = EngineLink::new(addr.to_string()).expect("a loopback address");
-            let swapped = swap_instrument(
-                &SwapInstrument {
-                    path: lib.join("groovebox.json").display().to_string(),
+            let opened = open_instrument(
+                &OpenInstrument {
+                    name: lib.join("groovebox.json").display().to_string(),
                     expect: None,
                 },
                 link.structure(),
             )
-            .expect("the swap reached the engine")
+            .expect("the open reached the engine")
             .output;
-            assert_eq!(swapped.held, None, "nothing is open to hold it for");
+            assert_eq!(opened.held, None, "nothing is open to hold it for");
             assert_eq!(held.pending(), None);
             engine.shutdown();
         });

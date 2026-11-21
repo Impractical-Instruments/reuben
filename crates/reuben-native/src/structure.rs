@@ -935,7 +935,7 @@ fn stream_events(
 mod tests {
     use super::*;
     use crate::test_support::{no_store, served, FakeCallback};
-    use reuben_api::engine::{ControlArg, DocSource, Request, Response, MAX_SEND_BATCH};
+    use reuben_api::engine::{ControlArg, Request, Response, MAX_SEND_BATCH};
     use reuben_api::render::{Arg, AudioConfig};
 
     fn cfg() -> AudioConfig {
@@ -972,9 +972,6 @@ mod tests {
         "nodes": [] }"#;
 
     /// A document that fails to load — an unknown operator type — so validation rejects it.
-    const BAD_DOC: &str = r#"{"format_version":3,"instrument":"bad",
-        "nodes":[{"type":"no_such_operator","address":"/x"}]}"#;
-
     /// A Coordinator-backed [`StructureState`] with a live [`FakeCallback`] draining its mailbox
     /// and its control ingress, plus the base document's content hash. `opened_input_channels` sets
     /// the headless render config's input-stream geometry (`0` = output-only, so an input-binding
@@ -1001,11 +998,75 @@ mod tests {
         (state, FakeCallback::spawn(side, control_rx), base_hash)
     }
 
-    fn swap_by_value(target: &str, expect: Option<String>) -> Request {
-        Request::Swap {
-            source: DocSource::Document(serde_json::from_str(target).expect("target parses")),
-            expect,
+    /// A directory the host offers, holding the documents an open names. Removed on drop.
+    struct Library(PathBuf);
+
+    impl Drop for Library {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    impl Library {
+        /// `text` written here as `file`, and the open that names it.
+        fn open(&self, file: &str, text: &str, expect: Option<String>) -> Request {
+            let path = self.0.join(file);
+            std::fs::write(&path, text).expect("seed the document");
+            Request::Open {
+                name: path.display().to_string(),
+                expect,
+            }
+        }
+    }
+
+    /// [`swap_fixture`] with `base` playing from a [`Library`] the host offers and the server's
+    /// store reads. `case` keeps concurrent tests out of each other's directory.
+    fn open_fixture(base: &str, case: &str) -> (StructureState, FakeCallback, String, Library) {
+        let (state, side, control_rx, base_hash, library) = open_parts(base, case);
+        (
+            state,
+            FakeCallback::spawn(side, control_rx),
+            base_hash,
+            library,
+        )
+    }
+
+    /// [`open_fixture`] with no render side running yet.
+    fn open_parts(
+        base: &str,
+        case: &str,
+    ) -> (
+        StructureState,
+        reuben_api::render::RenderSide,
+        std::sync::mpsc::Receiver<ControlBatch>,
+        String,
+        Library,
+    ) {
+        use reuben_api::resources::Resources;
+        use reuben_api::staged::Staged;
+        use reuben_api::FsResolver;
+
+        let dir = std::env::temp_dir().join(format!("reuben_open_{case}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("case dir");
+        let library = Library(dir);
+        let top = library.0.join("base.json");
+        std::fs::write(&top, base).expect("seed what plays");
+        let staged: Staged<Box<dyn Resources + Send + Sync>> =
+            Staged::new(Box::new(FsResolver::for_instrument(&top)));
+        let (coordinator, side, _warnings) =
+            reuben_api::engine::install_initial(base, staged.clone(), cfg())
+                .expect("initial install");
+        let base_hash = coordinator.installed_hash();
+        let (control_tx, control_rx) = std::sync::mpsc::channel::<ControlBatch>();
+        let host = NativeHost::new(Diagnostics::new(), control_tx)
+            .with_library_root(Some(library.0.clone()))
+            .with_render_config(Arc::new(HeadlessRenderConfig {
+                opened_input_channels: 0,
+            }));
+        let state = StructureState::new(coordinator, Arc::new(host), served(staged))
+            .with_installed_source(Some(top.display().to_string()));
+        (state, side, control_rx, base_hash, library)
     }
 
     #[test]
@@ -1441,11 +1502,11 @@ mod tests {
         cb.stop();
     }
 
-    /// The `source` half of the snapshot: seeded by `play`'s path, re-pointed by a
-    /// successful by-path swap, and — the part worth a test — **left alone by a rejected one**, so
-    /// `get_document` never names a document that is not playing.
+    /// The `source` half of the snapshot: seeded by `play`'s path, re-pointed by an open that
+    /// installs, and — the part worth a test — **left alone by one that reads nothing**, so
+    /// `get_document` never names a document that was not opened.
     #[test]
-    fn installed_source_follows_the_install_and_a_rejected_swap_leaves_it_alone() {
+    fn installed_source_follows_the_open_and_an_unreadable_one_leaves_it_alone() {
         fn source_of(state: &StructureState) -> Option<String> {
             match dispatch(state, &Request::GetDocument.to_ndjson()) {
                 Response::Document(snapshot) => snapshot.source,
@@ -1453,50 +1514,24 @@ mod tests {
             }
         }
 
-        // Process-unique: a fixed name collides between concurrent checkouts, and this test
-        // deletes the directory it is about to use.
-        let dir = std::env::temp_dir().join(format!(
-            "reuben_installed_source_test_{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("case dir");
-        let good = dir.join("next.json");
-        std::fs::write(&good, envelope_doc("/eg")).expect("seed the swap target");
+        let (state, cb, _, library) = open_fixture(BASE_DOC, "installed_source");
+        let base = library.0.join("base.json").display().to_string();
+        assert_eq!(source_of(&state), Some(base));
 
-        let staged = no_store();
-
-        let (coordinator, side, _warnings) =
-            reuben_api::engine::install_initial(BASE_DOC, staged.clone(), cfg())
-                .expect("initial install");
-        let (control_tx, control_rx) = std::sync::mpsc::channel::<ControlBatch>();
-        let host = NativeHost::new(Diagnostics::new(), control_tx).with_render_config(Arc::new(
-            HeadlessRenderConfig {
-                opened_input_channels: 0,
-            },
-        ));
-        let state = StructureState::new(coordinator, Arc::new(host), served(staged))
-            .with_installed_source(Some("initial.json".to_string()));
-        let cb = FakeCallback::spawn(side, control_rx);
-
-        // `play`'s path answers for the run's first document.
-        assert_eq!(source_of(&state), Some("initial.json".to_string()));
-
-        // A swap that installs re-points it.
-        let by_path = Request::Swap {
-            source: DocSource::Path(good.to_string_lossy().into_owned()),
-            expect: None,
-        };
-        match dispatch(&state, &by_path.to_ndjson()) {
+        let good = library.0.join("next.json").display().to_string();
+        match dispatch(
+            &state,
+            &library
+                .open("next.json", &envelope_doc("/eg"), None)
+                .to_ndjson(),
+        ) {
             Response::SwapReport(report) => assert!(report.report.ok, "{report:?}"),
             other => panic!("expected SwapReport, got {other:?}"),
         }
-        assert_eq!(source_of(&state), Some(good.to_string_lossy().into_owned()));
+        assert_eq!(source_of(&state), Some(good.clone()));
 
-        // A swap that does NOT install must not re-point it — the whole point of recording the
-        // source only inside the `ok` branch. An unreadable path never reaches the Coordinator.
-        let missing = Request::Swap {
-            source: DocSource::Path(dir.join("nope.json").to_string_lossy().into_owned()),
+        let missing = Request::Open {
+            name: library.0.join("nope.json").display().to_string(),
             expect: None,
         };
         match dispatch(&state, &missing.to_ndjson()) {
@@ -1505,33 +1540,10 @@ mod tests {
         }
         assert_eq!(
             source_of(&state),
-            Some(good.to_string_lossy().into_owned()),
-            "a rejected swap must leave `source` naming what is actually playing"
+            Some(good),
+            "an unreadable open must leave `source` naming what is open"
         );
-
-        // ...and neither does one the loader rejects, which *does* reach the Coordinator.
-        let broken = dir.join("broken.json");
-        std::fs::write(
-            &broken,
-            r#"{"format_version":3,"instrument":"b","nodes":[{"type":"nope","address":"/x"}]}"#,
-        )
-        .expect("seed the broken target");
-        let bad_doc = Request::Swap {
-            source: DocSource::Path(broken.to_string_lossy().into_owned()),
-            expect: None,
-        };
-        match dispatch(&state, &bad_doc.to_ndjson()) {
-            Response::SwapReport(report) => assert!(!report.report.ok, "{report:?}"),
-            other => panic!("expected SwapReport, got {other:?}"),
-        }
-        assert_eq!(
-            source_of(&state),
-            Some(good.to_string_lossy().into_owned()),
-            "an ok:false load must leave `source` on the retained document"
-        );
-
         cb.stop();
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1620,15 +1632,15 @@ mod tests {
     }
 
     #[test]
-    fn swap_installs_via_the_mailbox_with_real_survivor_stats() {
-        // A swap to the identical envelope document keeps both nodes survivors, so the real
+    fn open_installs_via_the_mailbox_with_real_survivor_stats() {
+        // An open of an identical envelope document keeps both nodes survivors, so the real
         // migration diff carries `survived: 2` — impossible under an all-cold restart (which would
-        // hard-code `survived: 0`). The swap installed via the mailbox (the FakeCallback drained
+        // hard-code `survived: 0`). The open installed via the mailbox (the FakeCallback drained
         // it; `reclaim` completing is the proof), no stream teardown involved.
         let base = envelope_doc("/env");
-        let (state, cb, base_hash) = swap_fixture(&base, 0);
+        let (state, cb, base_hash, library) = open_fixture(&base, "survivors");
 
-        match dispatch(&state, &swap_by_value(&base, None).to_ndjson()) {
+        match dispatch(&state, &library.open("same.json", &base, None).to_ndjson()) {
             Response::SwapReport(report) => {
                 assert!(report.report.ok, "a valid document installs: {report:?}");
                 let diff = report.diff.expect("a successful swap carries a diff");
@@ -1645,14 +1657,16 @@ mod tests {
     }
 
     #[test]
-    fn swap_to_a_renamed_node_resets_it_and_reports_a_smaller_survivor_count() {
+    fn open_of_a_renamed_node_resets_it_and_reports_a_smaller_survivor_count() {
         // The reset half: renaming the envelope makes it a remove+add, so only `/out` survives —
         // `survived: 1`, with `/env` removed and `/eg` added. Real survivor semantics from the
         // manifest diff, not a blanket zero.
-        let (state, cb, _base_hash) = swap_fixture(&envelope_doc("/env"), 0);
+        let (state, cb, _base_hash, library) = open_fixture(&envelope_doc("/env"), "renamed");
         match dispatch(
             &state,
-            &swap_by_value(&envelope_doc("/eg"), None).to_ndjson(),
+            &library
+                .open("eg.json", &envelope_doc("/eg"), None)
+                .to_ndjson(),
         ) {
             Response::SwapReport(report) => {
                 assert!(report.report.ok, "{report:?}");
@@ -1667,17 +1681,17 @@ mod tests {
     }
 
     #[test]
-    fn back_to_back_swaps_both_install_proving_off_thread_reclaim() {
-        // One swap in flight: a second swap can only install once the first's retiree
-        // has come home and been reclaimed. Both succeeding is the behavioral proof the mailbox +
+    fn back_to_back_opens_all_install_proving_off_thread_reclaim() {
+        // One swap in flight: a second open can only install once the first's retiree
+        // has come home and been reclaimed. All succeeding is the behavioral proof the mailbox +
         // off-thread reclaim cycle actually turned over, not a restart.
-        let (state, cb, _) = swap_fixture(&envelope_doc("/env"), 0);
-        for target in [
-            envelope_doc("/env"),
-            envelope_doc("/eg"),
-            envelope_doc("/env"),
+        let (state, cb, _, library) = open_fixture(&envelope_doc("/env"), "back_to_back");
+        for (file, target) in [
+            ("a.json", envelope_doc("/env")),
+            ("b.json", envelope_doc("/eg")),
+            ("c.json", envelope_doc("/env")),
         ] {
-            match dispatch(&state, &swap_by_value(&target, None).to_ndjson()) {
+            match dispatch(&state, &library.open(file, &target, None).to_ndjson()) {
                 Response::SwapReport(report) => assert!(report.report.ok, "{report:?}"),
                 other => panic!("expected SwapReport, got {other:?}"),
             }
@@ -1686,12 +1700,15 @@ mod tests {
     }
 
     #[test]
-    fn input_binding_swap_onto_output_only_stream_dark_degrades_with_a_warning() {
-        // The initial rig is output-only (`opened_input_channels: 0`). A swap to an
+    fn input_binding_open_onto_output_only_stream_dark_degrades_with_a_warning() {
+        // The initial rig is output-only (`opened_input_channels: 0`). An open of an
         // instrument that binds an input channel installs and stays silent-but-alive — a loud
         // swap-report WARNING, never an error or a crash.
-        let (state, cb, _) = swap_fixture(BASE_DOC, 0);
-        match dispatch(&state, &swap_by_value(MIC_PASSTHRU, None).to_ndjson()) {
+        let (state, cb, _, library) = open_fixture(BASE_DOC, "dark_degrade");
+        match dispatch(
+            &state,
+            &library.open("mic.json", MIC_PASSTHRU, None).to_ndjson(),
+        ) {
             Response::SwapReport(report) => {
                 assert!(
                     report.report.ok,
@@ -1712,35 +1729,13 @@ mod tests {
     }
 
     #[test]
-    fn swap_of_a_bad_document_reports_errors_and_retains_prior() {
-        let (state, cb, base_hash) = swap_fixture(BASE_DOC, 0);
-        match dispatch(&state, &swap_by_value(BAD_DOC, None).to_ndjson()) {
-            Response::SwapReport(report) => {
-                assert!(!report.report.ok, "a bad document does not install");
-                assert!(
-                    !report.report.errors.is_empty(),
-                    "the failure names its cause"
-                );
-                assert_eq!(
-                    report.content_hash, base_hash,
-                    "the retained hash still names what keeps playing"
-                );
-                assert!(report.diff.is_none(), "a rejected swap has no diff");
-            }
-            other => panic!("expected SwapReport, got {other:?}"),
-        }
-        // get_document is unchanged.
-        match dispatch(&state, &Request::GetDocument.to_ndjson()) {
-            Response::Document(snapshot) => assert_eq!(snapshot.content_hash, base_hash),
-            other => panic!("expected Document, got {other:?}"),
-        }
-        cb.stop();
-    }
-
-    #[test]
-    fn swap_with_a_stale_expect_conflicts_and_does_not_install() {
-        let (state, cb, base_hash) = swap_fixture(BASE_DOC, 0);
-        let req = swap_by_value(&envelope_doc("/env"), Some("0badc0de0badc0de".to_string()));
+    fn open_with_a_stale_expect_conflicts_and_does_not_install() {
+        let (state, cb, base_hash, library) = open_fixture(BASE_DOC, "stale_expect");
+        let req = library.open(
+            "env.json",
+            &envelope_doc("/env"),
+            Some("0badc0de0badc0de".to_string()),
+        );
         match dispatch(&state, &req.to_ndjson()) {
             Response::Conflict(conflict) => {
                 assert_eq!(conflict.expected, "0badc0de0badc0de");
@@ -1760,11 +1755,13 @@ mod tests {
     }
 
     #[test]
-    fn swap_with_a_matching_expect_succeeds() {
-        let (state, cb, base_hash) = swap_fixture(BASE_DOC, 0);
+    fn open_with_a_matching_expect_succeeds() {
+        let (state, cb, base_hash, library) = open_fixture(BASE_DOC, "matching_expect");
         match dispatch(
             &state,
-            &swap_by_value(&envelope_doc("/env"), Some(base_hash)).to_ndjson(),
+            &library
+                .open("env.json", &envelope_doc("/env"), Some(base_hash))
+                .to_ndjson(),
         ) {
             Response::SwapReport(report) => assert!(report.report.ok, "{report:?}"),
             other => panic!("expected SwapReport, got {other:?}"),
@@ -2061,28 +2058,16 @@ mod tests {
         // spin the full SWAP_RECLAIM_TIMEOUT under the Coordinator lock, stalling get_document and
         // the next swap. No FakeCallback here — the render side is dropped, so
         // the retiree never comes home — so the liveness gate must bail at the grace instead.
-        let staged = no_store();
-        let (coordinator, _side, _w) =
-            reuben_api::engine::install_initial(BASE_DOC, staged.clone(), cfg())
-                .expect("initial install");
-        let (control_tx, _control_rx) = std::sync::mpsc::channel::<ControlBatch>();
-        let host = NativeHost::new(Diagnostics::new(), control_tx).with_render_config(Arc::new(
-            HeadlessRenderConfig {
-                opened_input_channels: 0,
-            },
-        ));
-        let state = StructureState::new(coordinator, Arc::new(host), served(staged));
+        let (state, _side, _control_rx, _, library) = open_parts(BASE_DOC, "reclaim_bails");
+        let open = library.open("env.json", &envelope_doc("/env"), None);
 
         let start = Instant::now();
-        let resp = dispatch(
-            &state,
-            &swap_by_value(&envelope_doc("/env"), None).to_ndjson(),
-        );
+        let resp = dispatch(&state, &open.to_ndjson());
         let elapsed = start.elapsed();
 
         assert!(
             matches!(resp, Response::SwapReport(ref r) if r.report.ok),
-            "the swap still commits and returns its report: {resp:?}"
+            "the open still commits and returns its report: {resp:?}"
         );
         assert!(
             elapsed < SWAP_RECLAIM_TIMEOUT,

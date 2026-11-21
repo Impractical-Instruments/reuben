@@ -793,11 +793,8 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
 
-    use reuben_api::engine::{
-        get_current_instrument, get_engine_status, swap_instrument, SwapInstrument,
-    };
+    use reuben_api::engine::{get_engine_status, open_instrument, OpenInstrument};
     use reuben_api::render::Arg;
-    use reuben_api::FsResolver;
     use reuben_mcp::EngineLink;
     use reuben_native::engine::EngineConfig;
     use reuben_native::osc;
@@ -862,7 +859,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sidecar_reaches_and_swaps_the_embedded_engine() {
+    fn the_sidecar_reaches_and_opens_on_the_embedded_engine() {
         within(HANG_SECS, || {
             let mut engine =
                 Engine::start_with(config(library("acid-techno.json")), start_headless);
@@ -878,19 +875,18 @@ mod tests {
             assert!(status.output.reachable, "{}", status.summary);
 
             let target = library("groovebox.json").display().to_string();
-            let swapped = swap_instrument(
-                &SwapInstrument {
-                    path: target.clone(),
+            let opened = open_instrument(
+                &OpenInstrument {
+                    name: target.clone(),
                     expect: None,
                 },
                 link.structure(),
             )
-            .expect("the swap reached the engine");
-            assert!(swapped.output.report.report.ok, "{}", swapped.summary);
+            .expect("the open reached the engine");
+            assert!(opened.output.report.report.ok, "{}", opened.summary);
 
-            let store = |_: Option<&str>| FsResolver::new(library(""));
-            let now = get_current_instrument(link.structure(), store).expect("read over TCP");
-            assert_eq!(now.output.source.as_deref(), Some(target.as_str()));
+            let now = link.structure().get_document().expect("read over TCP");
+            assert_eq!(now.source.as_deref(), Some(target.as_str()));
 
             engine.shutdown();
         });
@@ -1135,7 +1131,7 @@ mod tests {
     }
 
     #[test]
-    fn a_restart_plays_what_was_last_swapped_in_with_the_new_profile() {
+    fn a_restart_plays_what_was_last_opened_with_the_new_profile() {
         within(HANG_SECS, || {
             let mut engine =
                 Engine::start_with(config(library("acid-techno.json")), start_headless);
@@ -1146,21 +1142,21 @@ mod tests {
                     .expect("the structure server bound");
                 EngineLink::new(addr.to_string()).expect("a loopback address")
             };
-            let store = |_: Option<&str>| FsResolver::new(library(""));
 
             let target = library("groovebox.json").display().to_string();
-            let swapped = swap_instrument(
-                &SwapInstrument {
-                    path: target.clone(),
+            let opened = open_instrument(
+                &OpenInstrument {
+                    name: target.clone(),
                     expect: None,
                 },
                 link(&engine).structure(),
             )
-            .expect("the swap reached the engine");
-            assert!(swapped.output.report.report.ok, "{}", swapped.summary);
-            let before = get_current_instrument(link(&engine).structure(), store)
-                .expect("read over TCP")
-                .output;
+            .expect("the open reached the engine");
+            assert!(opened.output.report.report.ok, "{}", opened.summary);
+            let before = link(&engine)
+                .structure()
+                .get_document()
+                .expect("read over TCP");
 
             let mut profile = DeviceProfile::default();
             profile.output.device = Some("Scarlett".to_string());
@@ -1174,9 +1170,10 @@ mod tests {
             assert_eq!(started_with, Some(profile.clone()));
             assert_eq!(engine.profile(), Some(&profile));
             // The sidecar reaches the restarted engine on the port it bound again.
-            let after = get_current_instrument(link(&engine).structure(), store)
-                .expect("read over TCP")
-                .output;
+            let after = link(&engine)
+                .structure()
+                .get_document()
+                .expect("read over TCP");
             assert_eq!(after.source.as_deref(), Some(target.as_str()));
             assert_eq!(after.content_hash, before.content_hash);
             engine.shutdown();
@@ -1328,19 +1325,14 @@ mod tests {
             assert!(source.is_absolute(), "{}", source.display());
             assert!(source.is_file(), "{}", source.display());
 
-            // A by-path Swap spelled relative to the engine is published by the server's own
-            // absolute name, so the editor can follow it.
-            let swapped = played
+            // An open spelled relative to the engine is published by the server's own absolute
+            // name, so the editor can follow it.
+            let opened = played
                 .channel()
-                .swap(
-                    reuben_api::engine::DocSource::Path(
-                        "../../instruments/groovebox.json".to_string(),
-                    ),
-                    None,
-                )
-                .expect("the swap reached the engine");
+                .open("../../instruments/groovebox.json".to_string(), None)
+                .expect("the open reached the engine");
             assert!(matches!(
-                swapped,
+                opened,
                 reuben_api::engine::SwapOutcome::Installed(_)
             ));
             let followed = await_playing(&mut engine);

@@ -1,10 +1,9 @@
-//! Integration: where a by-path Swap resolves the swapped document's relative resources.
+//! Integration: where an open resolves the opened document's relative resources.
 //!
-//! The swapped document is its own anchor — sibling-first from its directory, then the library
-//! root, exactly as a fresh start on that path — while a by-value Swap, which has no source, keeps
-//! the session's. Read two ways: the reports, through the real entry point with no device
-//! ([`start_headless`]); and the sound, through a render slot this file drives itself, because a
-//! report can only say a voice resolved, not *which* file it was built from.
+//! The opened document is its own anchor — sibling-first from its directory, then the library
+//! root, exactly as a fresh start on that path. Read two ways: the reports, through the real entry
+//! point with no device ([`start_headless`]); and the sound, through a render slot this file drives
+//! itself, because a report can only say a voice resolved, not *which* file it was built from.
 //!
 //! Every fixture is a scratch copy of the library: nothing here writes under `instruments/`.
 
@@ -14,7 +13,7 @@ use std::sync::Arc;
 
 use reuben_api::authoring::{validate_instrument, Report, Resources, ValidateInstrument};
 use reuben_api::engine::{
-    install_initial, Channel, DocSource, InProcess, StructureState, SwapOutcome, SwapReport,
+    install_initial, Channel, InProcess, StructureState, SwapOutcome, SwapReport,
 };
 use reuben_api::render::{AudioConfig, RenderSlot};
 use reuben_api::staged::Staged;
@@ -51,7 +50,7 @@ struct Scratch(PathBuf);
 impl Scratch {
     fn new(test: &str) -> Self {
         let dir =
-            std::env::temp_dir().join(format!("reuben_swap_anchor_{test}_{}", std::process::id()));
+            std::env::temp_dir().join(format!("reuben_open_anchor_{test}_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create the scratch directory");
         Scratch(dir)
@@ -117,27 +116,17 @@ fn spelled(path: &Path) -> String {
 fn installed(outcome: SwapOutcome) -> SwapReport {
     match outcome {
         SwapOutcome::Installed(report) => report,
-        SwapOutcome::Conflict(conflict) => panic!("an unguarded swap conflicted: {conflict:?}"),
-        SwapOutcome::Held(held) => panic!("reuben play held a swap: {held:?}"),
-        SwapOutcome::Refused(message) => panic!("reuben play refused a swap: {message}"),
+        SwapOutcome::Conflict(conflict) => panic!("an unguarded open conflicted: {conflict:?}"),
+        SwapOutcome::Held(held) => panic!("reuben play held an open: {held:?}"),
+        SwapOutcome::Refused(message) => panic!("reuben play refused an open: {message}"),
     }
 }
 
-fn swap_path(channel: &Channel, path: &Path) -> SwapReport {
+fn open_path(channel: &Channel, path: &Path) -> SwapReport {
     installed(
         channel
-            .swap(DocSource::Path(spelled(path)), None)
-            .expect("the swap reaches the engine"),
-    )
-}
-
-fn swap_value(channel: &Channel, path: &Path) -> SwapReport {
-    let text = std::fs::read_to_string(path).expect("read the document to send by value");
-    let value = serde_json::from_str(&text).expect("the document is JSON");
-    installed(
-        channel
-            .swap(DocSource::Document(value), None)
-            .expect("the swap reaches the engine"),
+            .open(spelled(path), None)
+            .expect("the open reaches the engine"),
     )
 }
 
@@ -159,8 +148,8 @@ fn headless(launch: &Path, root: Option<&Path>) -> EngineConfig {
         instrument_root: root.map(Path::to_path_buf),
         osc_in: None,
         structure: None,
-        // A followed write would install before the swap these tests make, leaving it nothing
-        // to install and no diff to read.
+        // A followed write would install before the open these tests make, so its diff would
+        // read against the edit rather than what played.
         follow_files: false,
         ..EngineConfig::new(Instrument::Path(launch.to_path_buf()))
     }
@@ -176,7 +165,7 @@ fn assert_clean(report: &SwapReport, what: &str) {
 }
 
 #[test]
-fn a_swapped_documents_voice_is_fingerprinted_from_its_own_directory() {
+fn an_opened_documents_voice_is_fingerprinted_from_its_own_directory() {
     within(HANG_SECS, || {
         let scratch = Scratch::new("fingerprint");
         let lib = scratch.library();
@@ -184,15 +173,16 @@ fn a_swapped_documents_voice_is_fingerprinted_from_its_own_directory() {
 
         let engine = start_headless(headless(&lib.join("euclidean-drums.json"), None))
             .expect("start on a library instrument");
+        engine.offer_dir(&scratch.0);
         let channel = engine.channel();
 
-        assert_clean(&swap_path(&channel, &song), "the copy");
+        assert_clean(&open_path(&channel, &song), "the copy");
 
         // The library's `default.json` is the same document as the copy, byte for byte: the only
         // thing that can tell their voicers apart is which `voices/default-voice.json` each read.
-        let back = swap_path(&channel, &lib.join("default.json"));
+        let back = open_path(&channel, &lib.join("default.json"));
         assert_clean(&back, "the library's own");
-        let diff = back.diff.expect("an installed swap carries a diff");
+        let diff = back.diff.expect("an installed open carries a diff");
         assert_eq!(
             diff.state_reset,
             ["/voicer"],
@@ -203,7 +193,7 @@ fn a_swapped_documents_voice_is_fingerprinted_from_its_own_directory() {
 }
 
 #[test]
-fn a_voice_only_the_swapped_documents_directory_holds_is_found() {
+fn a_voice_only_the_opened_documents_directory_holds_is_found() {
     within(HANG_SECS, || {
         let scratch = Scratch::new("only_here");
         let lib = scratch.library();
@@ -211,22 +201,24 @@ fn a_voice_only_the_swapped_documents_directory_holds_is_found() {
 
         let engine = start_headless(headless(&lib.join("euclidean-drums.json"), None))
             .expect("start on a library instrument");
-        assert_clean(&swap_path(&engine.channel(), &song), "the copy");
+        engine.offer_dir(&scratch.0);
+        assert_clean(&open_path(&engine.channel(), &song), "the copy");
         engine.shutdown();
     });
 }
 
-/// A relative swap path is read against the working directory, so its resources resolve from
-/// there too and not from the launch instrument's directory. Cargo runs this binary in the crate's
-/// own directory, which is what makes the spelling below name the library.
+/// A relative name is read against the working directory, so its resources resolve from there too
+/// and not from the launch instrument's directory. Cargo runs this binary in the crate's own
+/// directory, which is what makes the spelling below name the library.
 #[test]
-fn a_relative_swap_path_is_anchored_at_the_working_directory() {
+fn a_relative_name_is_anchored_at_the_working_directory() {
     within(HANG_SECS, || {
         let scratch = Scratch::new("relative");
         let song = scratch.drone_song("song", "default-voice.json");
 
         let engine = start_headless(headless(&song, None)).expect("start on the scratch song");
-        let report = swap_path(
+        engine.offer_dir(&library_dir());
+        let report = open_path(
             &engine.channel(),
             Path::new("../../instruments/default.json"),
         );
@@ -236,7 +228,7 @@ fn a_relative_swap_path_is_anchored_at_the_working_directory() {
 }
 
 #[test]
-fn a_swap_report_agrees_with_validate_instrument() {
+fn an_open_report_agrees_with_validate_instrument() {
     within(HANG_SECS, || {
         let scratch = Scratch::new("agrees");
         let lib = scratch.library();
@@ -248,11 +240,12 @@ fn a_swap_report_agrees_with_validate_instrument() {
 
         let engine = start_headless(headless(&lib.join("euclidean-drums.json"), None))
             .expect("start on a library instrument");
+        engine.offer_dir(&scratch.0);
         let channel = engine.channel();
 
         for path in [&found, &missing] {
-            let swapped = swap_path(&channel, path).report;
-            assert_eq!(swapped, validate(path, None), "{}", path.display());
+            let opened = open_path(&channel, path).report;
+            assert_eq!(opened, validate(path, None), "{}", path.display());
         }
         assert!(
             !validate(&missing, None).warnings.is_empty(),
@@ -263,7 +256,7 @@ fn a_swap_report_agrees_with_validate_instrument() {
 }
 
 #[test]
-fn swapping_the_launch_file_keeps_every_survivor() {
+fn opening_the_launch_file_keeps_every_survivor() {
     within(HANG_SECS, || {
         let scratch = Scratch::new("launch_file");
         let lib = scratch.library();
@@ -273,27 +266,32 @@ fn swapping_the_launch_file_keeps_every_survivor() {
         let channel = engine.channel();
 
         // Three spellings of the launch file. Each reads as exactly what plays, the documents it
-        // reaches included, so none installs anything: a spelling that resolved a voice from
-        // elsewhere would install, and carry a diff.
+        // reaches included, so every node survives with its state: a spelling that resolved a
+        // voice from elsewhere would reset the node hosting it.
         let spellings = [
             launch.clone(),
             lib.join(".").join("euclidean-drums.json"),
             lib.join("voices").join("..").join("euclidean-drums.json"),
         ];
         for path in &spellings {
-            let report = swap_path(&channel, path);
+            let report = open_path(&channel, path);
             assert_clean(&report, "the launch file");
-            assert_eq!(report.diff, None, "{}", path.display());
+            let diff = report.diff.expect("an installed open carries a diff");
+            assert!(
+                diff.state_reset.is_empty() && diff.added.is_empty() && diff.removed.is_empty(),
+                "{}: {diff:?}",
+                path.display()
+            );
         }
 
-        // An edit to a runtime input, then the Swap an author makes after it.
+        // An edit to a runtime input, then the open an author makes after it.
         let text = std::fs::read_to_string(&launch).unwrap();
         let mut doc: serde_json::Value = serde_json::from_str(&text).unwrap();
         doc["interface"]["inputs"]["tempo"]["default"] = serde_json::json!(97.0);
         std::fs::write(&launch, serde_json::to_string_pretty(&doc).unwrap()).unwrap();
-        let report = swap_path(&channel, &launch);
+        let report = open_path(&channel, &launch);
         assert_clean(&report, "the edited launch file");
-        let diff = report.diff.expect("an installed swap carries a diff");
+        let diff = report.diff.expect("an installed open carries a diff");
         assert!(
             diff.added.is_empty() && diff.removed.is_empty(),
             "an edit to a pipe default moves no node: {diff:?}"
@@ -315,13 +313,13 @@ fn a_sibling_of_the_launch_file_resolves_as_the_launch_file_does() {
         let engine = start_headless(headless(&lib.join("default.json"), None)).expect("start");
         let channel = engine.channel();
         let sibling = lib.join("euclidean-drums.json");
-        assert_clean(&swap_path(&channel, &sibling), "a sibling by path");
+        assert_clean(&open_path(&channel, &sibling), "a sibling");
 
-        // By value the same document resolves from the session's anchor, which is the directory
-        // the sibling is in: one identity per resource either way, so every node survives.
-        let report = swap_value(&channel, &sibling);
-        assert_clean(&report, "the sibling by value");
-        let diff = report.diff.expect("an installed swap carries a diff");
+        // Opened again, the sibling resolves its resources as it did the first time: one identity
+        // per resource, so every node survives.
+        let report = open_path(&channel, &sibling);
+        assert_clean(&report, "the sibling again");
+        let diff = report.diff.expect("an installed open carries a diff");
         assert!(
             diff.state_reset.is_empty() && diff.added.is_empty() && diff.removed.is_empty(),
             "{diff:?}"
@@ -331,45 +329,7 @@ fn a_sibling_of_the_launch_file_resolves_as_the_launch_file_does() {
 }
 
 #[test]
-fn a_swap_by_value_keeps_the_sessions_anchor() {
-    within(HANG_SECS, || {
-        let scratch = Scratch::new("by_value");
-        let lib = scratch.library();
-        let song = scratch.drone_song("song", "song-only-voice.json");
-
-        let engine = start_headless(headless(&lib.join("euclidean-drums.json"), None))
-            .expect("start on a library instrument");
-        let channel = engine.channel();
-
-        let from_session = swap_value(&channel, &lib.join("default.json"));
-        assert_clean(
-            &from_session,
-            "a document whose voice is beside the launch file",
-        );
-
-        // A by-path Swap in between must not leave its anchor behind for the next by-value one.
-        assert_clean(&swap_path(&channel, &song), "the copy by path");
-        let report = swap_value(&channel, &song);
-        assert!(report.report.ok, "{:?}", report.report.errors);
-        assert!(
-            report
-                .report
-                .warnings
-                .iter()
-                .any(|w| w.message.contains("song-only-voice.json")),
-            "by value there is no directory to find the copy's voice in: {:?}",
-            report.report.warnings
-        );
-        assert_clean(
-            &swap_value(&channel, &lib.join("default.json")),
-            "the session's anchor again",
-        );
-        engine.shutdown();
-    });
-}
-
-#[test]
-fn the_library_root_is_the_fallback_after_the_swapped_documents_directory() {
+fn the_library_root_is_the_fallback_after_the_opened_documents_directory() {
     within(HANG_SECS, || {
         let scratch = Scratch::new("root");
         let lib = scratch.library();
@@ -381,10 +341,11 @@ fn the_library_root_is_the_fallback_after_the_swapped_documents_directory() {
         std::fs::copy(lib.join("default.json"), &bare).unwrap();
 
         let engine = start_headless(headless(&launch, Some(&lib))).expect("start");
-        let report = swap_path(&engine.channel(), &bare);
+        engine.offer_dir(&scratch.0);
+        let report = open_path(&engine.channel(), &bare);
         assert_clean(&report, "a document with nothing beside it");
         assert_eq!(report.report, validate(&bare, Some(&lib)));
-        let diff = report.diff.expect("an installed swap carries a diff");
+        let diff = report.diff.expect("an installed open carries a diff");
         assert_eq!(
             diff.state_reset,
             ["/voicer"],
@@ -398,7 +359,7 @@ fn the_library_root_is_the_fallback_after_the_swapped_documents_directory() {
 const BLOCK: usize = 128;
 
 /// An engine whose render slot the test drives, served by the same host and window `reuben play`
-/// wires up, so what a Swap installed can be listened to.
+/// wires up, so what an open installed can be listened to.
 struct Played {
     channel: Channel,
     slot: RenderSlot,
@@ -407,8 +368,9 @@ struct Played {
 }
 
 impl Played {
-    /// The anchor is the one `reuben play <launch> [--instrument-root <root>]` builds.
-    fn start(launch: &Path, root: Option<&Path>) -> Self {
+    /// The anchor is the one `reuben play <launch> [--instrument-root <root>]` builds. Everything
+    /// under `offered` may be opened.
+    fn start(launch: &Path, root: Option<&Path>, offered: &Path) -> Self {
         let text = std::fs::read_to_string(launch).expect("read the launch instrument");
         let store = FsResolver::for_instrument(launch);
         let store = match root {
@@ -422,7 +384,9 @@ impl Played {
         assert!(warnings.is_empty(), "{warnings:?}");
         let (control, control_rx) = mpsc::channel::<ControlBatch>();
         let host = NativeHost::new(Diagnostics::new(), control);
-        let state = StructureState::new(coordinator, Arc::new(host), served(staged));
+        host.offer_dir(offered);
+        let state = StructureState::new(coordinator, Arc::new(host), served(staged))
+            .with_installed_source(Some(spelled(launch)));
         Played {
             channel: Channel::new(InProcess::new(state)),
             slot: RenderSlot::new(side),
@@ -441,7 +405,7 @@ impl Played {
         peak
     }
 
-    /// The peak of what is installed, once a Swap's crossfade has run out.
+    /// The peak of what is installed, once a swap's crossfade has run out.
     fn settled_peak(&mut self) -> f32 {
         // One second: far past any declick ramp, so what follows is the new Engine alone.
         self.render(48_000 / BLOCK);
@@ -450,21 +414,21 @@ impl Played {
 }
 
 #[test]
-fn what_a_swap_installs_sounds_like_the_voice_beside_the_swapped_document() {
+fn what_an_open_installs_sounds_like_the_voice_beside_the_opened_document() {
     let scratch = Scratch::new("sounds");
     let lib = scratch.library();
     let song = scratch.drone_song("song", "default-voice.json");
 
-    // With the root set too: the swapped document's own directory still comes first.
+    // With the root set too: the opened document's own directory still comes first.
     for root in [None, Some(lib.as_path())] {
-        let mut played = Played::start(&lib.join("default.json"), root);
+        let mut played = Played::start(&lib.join("default.json"), root, &scratch.0);
         assert_eq!(
             played.settled_peak(),
             0.0,
             "the library's voice is silent until a note gates it"
         );
 
-        assert_clean(&swap_path(&played.channel, &song), "the copy");
+        assert_clean(&open_path(&played.channel, &song), "the copy");
         assert!(
             played.settled_peak() > 0.01,
             "the copy's voice drones; silence here is the library's voice of the same name"
@@ -473,17 +437,17 @@ fn what_a_swap_installs_sounds_like_the_voice_beside_the_swapped_document() {
 }
 
 #[test]
-fn swapping_back_resolves_from_the_first_documents_directory_again() {
+fn opening_back_resolves_from_the_first_documents_directory_again() {
     let scratch = Scratch::new("back");
     let lib = scratch.library();
     let song = scratch.drone_song("song", "default-voice.json");
     let launch = lib.join("default.json");
 
-    let mut played = Played::start(&launch, None);
-    assert_clean(&swap_path(&played.channel, &song), "the copy");
+    let mut played = Played::start(&launch, None, &scratch.0);
+    assert_clean(&open_path(&played.channel, &song), "the copy");
     assert!(played.settled_peak() > 0.01, "the copy's drone");
 
-    assert_clean(&swap_path(&played.channel, &launch), "the launch file");
+    assert_clean(&open_path(&played.channel, &launch), "the launch file");
     assert_eq!(
         played.settled_peak(),
         0.0,
@@ -491,7 +455,7 @@ fn swapping_back_resolves_from_the_first_documents_directory_again() {
     );
 
     // And a document whose voices only the first directory holds still finds them there.
-    let drums = swap_path(&played.channel, &lib.join("euclidean-drums.json"));
+    let drums = open_path(&played.channel, &lib.join("euclidean-drums.json"));
     assert_clean(&drums, "a sibling of the launch file");
     assert!(played.settled_peak() > 0.0, "the drum machine plays itself");
 }

@@ -396,8 +396,7 @@ pub(crate) mod test_support {
 
     use reuben_api::authoring::{new_instrument, DocumentHistory, NewInstrument, Resources};
     use reuben_api::engine::{
-        get_current_instrument, install_initial, Channel, Event, InProcess, Request,
-        StructureState, Transport,
+        install_initial, Channel, Event, InProcess, Request, StructureState, Transport,
     };
     use reuben_api::render::AudioConfig;
     use reuben_api::staged::Staged;
@@ -704,12 +703,10 @@ pub(crate) mod test_support {
 
         /// The content hash of what the engine is playing; empty while nothing does.
         pub fn playing(&self) -> String {
-            get_current_instrument(&self.channel(), |source: Option<&str>| {
-                FsResolver::for_document(source.expect("installed from a file")).stat_only()
-            })
-            .expect("the engine answers")
-            .output
-            .content_hash
+            self.channel()
+                .get_document()
+                .expect("the engine answers")
+                .content_hash
         }
 
         /// What the session asks for the engine's channel.

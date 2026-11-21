@@ -515,14 +515,12 @@ mod tests {
     use crate::engine::server::{
         dispatch, EngineHost, InProcess, IngressClosed, Installed, SwapInFlight,
     };
-    use crate::engine::wire::{
-        ChangedBy, ControlMessage, DiagnosticsReport, DocSource, Event, Request,
-    };
+    use crate::engine::wire::{ChangedBy, ControlMessage, DiagnosticsReport, Event, Request};
     use crate::render::RenderSlot;
     use crate::staged::Staged;
 
     /// Gives up reclaiming at once, so a swap whose retiree the test has not rendered home stays
-    /// in flight until a later reclaim finds it. Holds every client swap when `hold` is set.
+    /// in flight until a later reclaim finds it. Holds every client open when `hold` is set.
     struct Host {
         hold: bool,
         /// When set, only names starting with it are within what the host offers.
@@ -1657,27 +1655,6 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_swap_while_nothing_plays_says_nothing_was_swapped_in() {
-        let s = serving();
-        open_report(&s, "bt.json", None);
-        let line = Request::Swap {
-            source: DocSource::Path("missing.json".to_string()),
-            expect: None,
-        }
-        .to_ndjson();
-        let report = match dispatch(&s.state, &line) {
-            Response::SwapReport(report) => report,
-            other => panic!("expected a swap report, got {other:?}"),
-        };
-        assert!(!report.report.ok);
-        assert_eq!(report.content_hash, "");
-        assert_eq!(
-            report.report.warnings[0].message,
-            "nothing was swapped in; bt.json is still open but does not load, so nothing plays"
-        );
-    }
-
-    #[test]
     fn an_edit_while_the_silence_swap_is_in_flight_says_nothing_plays() {
         let s = serving();
         // Nothing is rendered after the open, so its swap to silence stays in flight.
@@ -1812,41 +1789,7 @@ mod tests {
     }
 
     #[test]
-    fn a_swap_publishes_opened_for_a_new_source_and_changed_for_the_same_one() {
-        let s = serving();
-        let events = s.state.subscribe();
-        let by_value = Request::Swap {
-            source: crate::engine::DocSource::Document(serde_json::from_str(OTHER).unwrap()),
-            expect: None,
-        }
-        .to_ndjson();
-        for _ in 0..2 {
-            match dispatch(&s.state, &by_value) {
-                Response::SwapReport(report) => assert!(report.report.ok, "{report:?}"),
-                other => panic!("expected a swap report, got {other:?}"),
-            }
-            s.render();
-        }
-        let hash = installed_hash(&s.state);
-        // From `top.json` to by value is a new source; by value again is the same one.
-        assert_eq!(
-            events.try_recv().expect("first"),
-            Event::Opened {
-                name: String::new(),
-                hash: hash.clone(),
-            }
-        );
-        assert_eq!(
-            events.try_recv().expect("second"),
-            Event::Changed {
-                hash,
-                by: ChangedBy::Client,
-            }
-        );
-    }
-
-    #[test]
-    fn a_held_or_rejected_swap_publishes_nothing() {
+    fn a_held_or_rejected_open_publishes_nothing() {
         let s = serving_with(Host {
             hold: true,
             only: None,

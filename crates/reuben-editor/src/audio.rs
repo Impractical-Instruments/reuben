@@ -361,8 +361,6 @@ fn preference_menu(
 pub(crate) mod tests {
     use std::net::UdpSocket;
 
-    use reuben_api::engine::{get_current_instrument, DocSource};
-    use reuben_api::FsResolver;
     use reuben_native::test_support::{start_headless, within};
 
     use super::*;
@@ -418,10 +416,13 @@ pub(crate) mod tests {
 
     /// The content hash and source of what `engine` is playing.
     fn playing(engine: &Engine) -> (String, Option<String>) {
-        let channel = engine.running().expect("running").channel();
-        let store = |_: Option<&str>| FsResolver::new(library(""));
-        let now = get_current_instrument(&channel, store).expect("the engine answers");
-        (now.output.content_hash, now.output.source)
+        let now = engine
+            .running()
+            .expect("running")
+            .channel()
+            .get_document()
+            .expect("the engine answers");
+        (now.content_hash, now.source)
     }
 
     #[test]
@@ -737,24 +738,16 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_switch_while_playing_a_document_with_no_file_says_what_it_went_back_to() {
+    fn a_switch_while_playing_the_built_in_rig_says_what_it_went_back_to() {
         within(HANG_SECS, || {
             let temp = TempConfig::new();
             let mut settings = AudioSettings::load_with(temp.dir(), two_devices);
-            let mut engine =
-                Engine::start_with(config(library("acid-techno.json")), start_headless);
+            let built_in = EngineConfig {
+                instrument: Instrument::Default,
+                ..config(library("acid-techno.json"))
+            };
+            let mut engine = Engine::start_with(built_in, start_headless);
             let launched = playing(&engine);
-            let by_value = serde_json::from_str(
-                &std::fs::read_to_string(library("breath-harp.json")).expect("read"),
-            )
-            .expect("a document");
-            engine
-                .running()
-                .expect("running")
-                .channel()
-                .swap(DocSource::Document(by_value), None)
-                .expect("the engine answers");
-            assert_ne!(playing(&engine), launched);
 
             settings.select_with(usb_audio(), &mut engine, start_headless);
 

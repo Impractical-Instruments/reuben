@@ -1,8 +1,8 @@
 //! Integration test for this door's structure-channel transport: stand up a minimal loopback NDJSON
 //! stub speaking the window's wire envelope, and drive the channel's four verbs over the real TCP
 //! boundary — the same socket a live `reuben play`
-//! server presents. `ping` returns Pong; `swap` (by value AND by path) and `get_document`
-//! round-trip a document; a connect against a dead port fails fast with the "start `reuben play`"
+//! server presents. `ping` returns Pong; `open` round-trips its report and `get_document` what
+//! plays; a connect against a dead port fails fast with the "start `reuben play`"
 //! guidance, not a hang or panic. Every case is bounded by a watchdog so a wedged
 //! client fails loudly instead of hanging CI.
 
@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 
 use reuben_api::authoring::{Diag, Report};
 use reuben_api::engine::{
-    ChannelLevel, Conflict, DiagnosticsReport, DiffSummary, DocSource, DocumentSnapshot,
-    MetersReport, Request, Response, SwapReport, MAX_LINE_BYTES,
+    ChannelLevel, Conflict, DiagnosticsReport, DiffSummary, DocumentSnapshot, MetersReport,
+    Request, Response, SwapReport, MAX_LINE_BYTES,
 };
 
 use reuben_mcp::{Channel, EngineLink, SwapOutcome, TcpTransport, DEFAULT_CONNECT_TIMEOUT};
@@ -38,7 +38,7 @@ fn channel_with_timeouts(
 
 /// A running loopback NDJSON stub: the address the client dials, plus a receiver of every request
 /// the stub parsed off the wire (so a test can assert the client sent the *right* envelope — e.g.
-/// a by-path vs by-value swap). Mirrors the real server's framing: one `Response` per `Request`
+/// the name an open carried). Mirrors the real server's framing: one `Response` per `Request`
 /// line, in order, connection kept open until the client closes it.
 struct Stub {
     addr: SocketAddr,
@@ -145,64 +145,34 @@ fn ping_returns_pong() {
 }
 
 #[test]
-fn swap_by_value_round_trips_a_document() {
+fn open_round_trips_with_expect_guard() {
     let report = sample_swap_report();
     let expected = report.clone();
     let stub = spawn_stub(move |_req| Response::SwapReport(report.clone()));
     let client = channel(stub.addr.to_string());
 
-    let doc = serde_json::json!({ "format_version": 3, "instrument": "t", "nodes": [] });
-    let outcome = within(Duration::from_secs(5), "swap by value", {
-        let doc = doc.clone();
-        move || {
-            client
-                .swap(DocSource::Document(doc), None)
-                .expect("swap resolves to a report")
-        }
-    });
-    assert_eq!(outcome, SwapOutcome::Installed(expected));
-
-    // The client sent the inline-document branch, expect omitted.
-    let sent = stub.requests.recv_timeout(Duration::from_secs(1)).unwrap();
-    assert_eq!(
-        sent,
-        Request::Swap {
-            source: DocSource::Document(doc),
-            expect: None,
-        }
-    );
-}
-
-#[test]
-fn swap_by_path_round_trips_with_expect_guard() {
-    let report = sample_swap_report();
-    let expected = report.clone();
-    let stub = spawn_stub(move |_req| Response::SwapReport(report.clone()));
-    let client = channel(stub.addr.to_string());
-
-    let outcome = within(Duration::from_secs(5), "swap by path", move || {
+    let outcome = within(Duration::from_secs(5), "open", move || {
         client
-            .swap(
-                DocSource::Path("instruments/warm-pad.json".to_string()),
+            .open(
+                "instruments/warm-pad.json".to_string(),
                 Some("00c0ffee00c0ffee".to_string()),
             )
-            .expect("swap resolves to a report")
+            .expect("open resolves to a report")
     });
     assert_eq!(outcome, SwapOutcome::Installed(expected));
 
-    // Both branches of DocSource are accepted; the client sent the by-path form with the guard.
     let sent = stub.requests.recv_timeout(Duration::from_secs(1)).unwrap();
     assert_eq!(
         sent,
-        Request::Swap {
-            source: DocSource::Path("instruments/warm-pad.json".to_string()),
+        Request::Open {
+            name: "instruments/warm-pad.json".to_string(),
             expect: Some("00c0ffee00c0ffee".to_string()),
         }
     );
 }
 
 #[test]
-fn swap_conflict_is_a_reconcilable_outcome_not_an_error() {
+fn open_conflict_is_a_reconcilable_outcome_not_an_error() {
     let stub = spawn_stub(|_req| {
         Response::Conflict(Conflict {
             expected: "0badc0de0badc0de".to_string(),
@@ -210,13 +180,10 @@ fn swap_conflict_is_a_reconcilable_outcome_not_an_error() {
         })
     });
     let client = channel(stub.addr.to_string());
-    let outcome = within(Duration::from_secs(5), "swap conflict", move || {
+    let outcome = within(Duration::from_secs(5), "open conflict", move || {
         client
-            .swap(
-                DocSource::Path("p.json".to_string()),
-                Some("0badc0de0badc0de".to_string()),
-            )
-            .expect("a conflict is a normal swap outcome, not a transport error")
+            .open("p.json".to_string(), Some("0badc0de0badc0de".to_string()))
+            .expect("a conflict is a normal open outcome, not a transport error")
     });
     assert_eq!(
         outcome,

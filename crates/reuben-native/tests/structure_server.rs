@@ -7,8 +7,8 @@
 //! diverge); the audible half — what a swap sounds like on a real device — is not covered here.
 //!
 //! Exercises: the verbs that read (ping, get_document, get_diagnostics, get_meters) over the wire
-//! in order; `get_meters` reading the levels a callback metered; `swap` installing via the
-//! mailbox with real survivor stats and `expect` arbitration; an input-binding swap onto an
+//! in order; `get_meters` reading the levels a callback metered; `open` installing via the
+//! mailbox with real survivor stats and `expect` arbitration; an input-binding open onto an
 //! output-only stream dark-degrading to silence with a warning; `send` converging at the engine's
 //! `queue_osc`; and a clean shutdown with an idle client connected.
 
@@ -19,8 +19,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use reuben_api::engine::{
-    Conflict, ControlArg, ControlMessage, DiagnosticsReport, DocSource, DocumentSnapshot,
-    MetersReport, Request, Response, StructureState, MAX_LINE_BYTES, METER_FLOOR_DBFS,
+    Conflict, ControlArg, ControlMessage, DiagnosticsReport, DocumentSnapshot, MetersReport,
+    Request, Response, StructureState, MAX_LINE_BYTES, METER_FLOOR_DBFS,
 };
 use reuben_api::render::{Arg, AudioConfig};
 use reuben_native::diagnostics::Diagnostics;
@@ -93,6 +93,65 @@ fn wired_watching(
     ));
     let state = StructureState::new(coordinator, Arc::new(host), served(staged));
     (state, FakeCallback::spawn(side, control_rx), base_hash)
+}
+
+/// A directory the host offers, holding the documents an open names. Removed on drop.
+struct Library(std::path::PathBuf);
+
+impl Drop for Library {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+impl Library {
+    /// `text` written here as `file`, and the open that names it.
+    fn open(&self, file: &str, text: &str, expect: Option<String>) -> Request {
+        let path = self.0.join(file);
+        std::fs::write(&path, text).expect("seed the document");
+        Request::Open {
+            name: self.name(file),
+            expect,
+        }
+    }
+
+    fn name(&self, file: &str) -> String {
+        self.0.join(file).display().to_string()
+    }
+}
+
+/// [`wired`] with `doc` playing from a [`Library`] the host offers and the server's store reads,
+/// so a client can open what it writes there. `case` keeps concurrent tests apart.
+fn wired_library(doc: &str, case: &str) -> (StructureState, FakeCallback, String, Library) {
+    use reuben_api::resources::Resources;
+    use reuben_api::staged::Staged;
+    use reuben_api::FsResolver;
+
+    let dir = std::env::temp_dir().join(format!("reuben_wire_{case}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("case dir");
+    let library = Library(dir);
+    let top = library.0.join("base.json");
+    std::fs::write(&top, doc).expect("seed what plays");
+    let staged: Staged<Box<dyn Resources + Send + Sync>> =
+        Staged::new(Box::new(FsResolver::for_instrument(&top)));
+    let (coordinator, side, _warnings) =
+        reuben_api::engine::install_initial(doc, staged.clone(), cfg()).expect("initial install");
+    let base_hash = coordinator.installed_hash();
+    let (control_tx, control_rx) = mpsc::channel::<ControlBatch>();
+    let host = NativeHost::new(Diagnostics::new(), control_tx)
+        .with_library_root(Some(library.0.clone()))
+        .with_render_config(Arc::new(HeadlessRenderConfig {
+            opened_input_channels: 0,
+        }));
+    let state = StructureState::new(coordinator, Arc::new(host), served(staged))
+        .with_installed_source(Some(top.display().to_string()));
+    (
+        state,
+        FakeCallback::spawn(side, control_rx),
+        base_hash,
+        library,
+    )
 }
 
 /// Read one newline-framed [`Response`] off the wire, asserting the framing.
@@ -303,30 +362,23 @@ fn get_diagnostics_reflects_live_counter_bumps() {
 }
 
 #[test]
-fn swap_over_the_wire_installs_via_the_mailbox_with_real_survivor_stats() {
-    // A swap to the identical envelope document installs over the wire through the
+fn open_over_the_wire_installs_via_the_mailbox_with_real_survivor_stats() {
+    // An open of an identical envelope document installs over the wire through the
     // mailbox — the FakeCallback drains it (its `reclaim` completing is the proof, and no
     // stream restart is invoked) — and the real diff carries `survived: 2`
-    // (both nodes), impossible under an all-cold restart. `get_document` then reports the new doc.
+    // (both nodes), impossible under an all-cold restart. `get_document` then names the new one.
     let base = envelope_doc("/env");
-    let (state, cb, base_hash) = wired(&base, 0);
+    let (state, cb, base_hash, library) = wired_library(&base, "survivors");
     let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
     let client = TcpStream::connect(server.local_addr()).expect("connect");
     let mut writer = client.try_clone().unwrap();
     let mut reader = BufReader::new(client);
 
-    let target: serde_json::Value = serde_json::from_str(&base).unwrap();
-    send(
-        &mut writer,
-        &Request::Swap {
-            source: DocSource::Document(target),
-            expect: None,
-        },
-    );
+    send(&mut writer, &library.open("same.json", &base, None));
     match read_response(&mut reader) {
         Response::SwapReport(report) => {
             assert!(report.report.ok, "a valid document installs: {report:?}");
-            let diff = report.diff.expect("a successful swap carries a diff");
+            let diff = report.diff.expect("a successful open carries a diff");
             assert_eq!(
                 diff.survived, 2,
                 "both nodes survive an identical-document swap (real migration): {diff:?}"
@@ -336,14 +388,11 @@ fn swap_over_the_wire_installs_via_the_mailbox_with_real_survivor_stats() {
         other => panic!("expected SwapReport, got {other:?}"),
     }
 
-    // A second, renamed swap: only `/out` survives — proves back-to-back swaps turn over through
+    // A second, renamed open: only `/out` survives — proves back-to-back opens turn over through
     // the mailbox (the first's retiree was reclaimed) with real, changing survivor stats.
     send(
         &mut writer,
-        &Request::Swap {
-            source: DocSource::Document(serde_json::from_str(&envelope_doc("/eg")).unwrap()),
-            expect: None,
-        },
+        &library.open("eg.json", &envelope_doc("/eg"), None),
     );
     let renamed_hash = match read_response(&mut reader) {
         Response::SwapReport(report) => {
@@ -355,24 +404,20 @@ fn swap_over_the_wire_installs_via_the_mailbox_with_real_survivor_stats() {
         other => panic!("expected SwapReport, got {other:?}"),
     };
 
-    // get_document reflects the last installed document.
+    // get_document names the last opened document.
     send(&mut writer, &Request::GetDocument);
     match read_response(&mut reader) {
         Response::Document(DocumentSnapshot {
-            document,
             content_hash: hash,
             source,
+            ..
         }) => {
-            assert_eq!(
-                source, None,
-                "a by-value swap leaves no source behind either"
-            );
-            assert_eq!(document["instrument"], serde_json::json!("eg"));
+            assert_eq!(source, Some(library.name("eg.json")));
             assert_eq!(hash, expected_hash(&envelope_doc("/eg")));
-            // …and the swap that installed it reported that same hash, so the two responses agree
+            // …and the open that installed it reported that same hash, so the two responses agree
             // with each other *and* with what the document actually hashes to.
             assert_eq!(hash, renamed_hash);
-            assert_ne!(hash, base_hash, "the swap changed the installed document");
+            assert_ne!(hash, base_hash, "the open changed the installed document");
         }
         other => panic!("expected Document, got {other:?}"),
     }
@@ -382,60 +427,17 @@ fn swap_over_the_wire_installs_via_the_mailbox_with_real_survivor_stats() {
 }
 
 #[test]
-fn swap_by_path_over_the_wire_installs() {
-    let base = envelope_doc("/env");
-    let (state, cb, _) = wired(&base, 0);
-    let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
-    let client = TcpStream::connect(server.local_addr()).expect("connect");
-    let mut writer = client.try_clone().unwrap();
-    let mut reader = BufReader::new(client);
-
-    let path = std::env::temp_dir().join(format!("reuben_swap_wire_{}.json", std::process::id()));
-    std::fs::write(&path, envelope_doc("/eg")).expect("write swap target");
-    send(
-        &mut writer,
-        &Request::Swap {
-            source: DocSource::Path(path.display().to_string()),
-            expect: None,
-        },
-    );
-    match read_response(&mut reader) {
-        Response::SwapReport(report) => {
-            assert!(report.report.ok, "a valid file installs: {report:?}")
-        }
-        other => panic!("expected SwapReport, got {other:?}"),
-    }
-    send(&mut writer, &Request::GetDocument);
-    match read_response(&mut reader) {
-        Response::Document(DocumentSnapshot { document, .. }) => {
-            assert_eq!(document["instrument"], serde_json::json!("eg"))
-        }
-        other => panic!("expected Document, got {other:?}"),
-    }
-    let _ = std::fs::remove_file(&path);
-
-    server.shutdown();
-    cb.stop();
-}
-
-#[test]
-fn input_binding_swap_over_the_wire_dark_degrades_and_stays_alive() {
-    // The initial rig is output-only (no input stream). A swap to an instrument
+fn input_binding_open_over_the_wire_dark_degrades_and_stays_alive() {
+    // The initial rig is output-only (no input stream). An open of an instrument
     // that binds an input channel installs and stays silent-but-alive — a loud swap-report WARNING,
     // never an error or a crash. The FakeCallback keeps rendering (the process stays alive).
-    let (state, cb, _) = wired(BASE_DOC, 0);
+    let (state, cb, _, library) = wired_library(BASE_DOC, "dark_degrade");
     let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
     let client = TcpStream::connect(server.local_addr()).expect("connect");
     let mut writer = client.try_clone().unwrap();
     let mut reader = BufReader::new(client);
 
-    send(
-        &mut writer,
-        &Request::Swap {
-            source: DocSource::Document(serde_json::from_str(MIC_PASSTHRU).unwrap()),
-            expect: None,
-        },
-    );
+    send(&mut writer, &library.open("mic.json", MIC_PASSTHRU, None));
     match read_response(&mut reader) {
         Response::SwapReport(report) => {
             assert!(
@@ -454,11 +456,11 @@ fn input_binding_swap_over_the_wire_dark_degrades_and_stays_alive() {
         other => panic!("expected SwapReport, got {other:?}"),
     }
 
-    // Still alive afterward: the channel answers, and the mic doc is what's installed.
+    // Still alive afterward: the channel answers, and the mic doc is what's open.
     send(&mut writer, &Request::GetDocument);
     match read_response(&mut reader) {
-        Response::Document(DocumentSnapshot { document, .. }) => {
-            assert_eq!(document["instrument"], serde_json::json!("mic-passthru"))
+        Response::Document(DocumentSnapshot { source, .. }) => {
+            assert_eq!(source, Some(library.name("mic.json")))
         }
         other => panic!("expected Document, got {other:?}"),
     }
@@ -468,70 +470,22 @@ fn input_binding_swap_over_the_wire_dark_degrades_and_stays_alive() {
 }
 
 #[test]
-fn swap_of_a_bad_document_over_the_wire_reports_errors_without_installing() {
-    let (state, cb, base_hash) = wired(BASE_DOC, 0);
-    let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
-    let client = TcpStream::connect(server.local_addr()).expect("connect");
-    let mut writer = client.try_clone().unwrap();
-    let mut reader = BufReader::new(client);
-
-    let bad: serde_json::Value = serde_json::json!({
-        "format_version": 3,
-        "instrument": "bad",
-        "nodes": [ { "type": "no_such_operator", "address": "/x" } ]
-    });
-    send(
-        &mut writer,
-        &Request::Swap {
-            source: DocSource::Document(bad),
-            expect: None,
-        },
-    );
-    match read_response(&mut reader) {
-        Response::SwapReport(report) => {
-            assert!(!report.report.ok, "a bad document must not install");
-            assert!(
-                !report.report.errors.is_empty(),
-                "the failure names its cause"
-            );
-            assert_eq!(
-                report.content_hash, base_hash,
-                "the prior hash still names what plays"
-            );
-            assert!(report.diff.is_none(), "a rejected swap has no diff");
-        }
-        other => panic!("expected SwapReport, got {other:?}"),
-    }
-    // Retain-prior: get_document still returns the original rig.
-    send(&mut writer, &Request::GetDocument);
-    match read_response(&mut reader) {
-        Response::Document(DocumentSnapshot {
-            content_hash: hash, ..
-        }) => assert_eq!(hash, base_hash),
-        other => panic!("expected Document, got {other:?}"),
-    }
-
-    server.shutdown();
-    cb.stop();
-}
-
-#[test]
-fn swap_expect_arbitration_conflicts_then_proceeds_over_the_wire() {
+fn open_expect_arbitration_conflicts_then_proceeds_over_the_wire() {
     let base = envelope_doc("/env");
-    let (state, cb, base_hash) = wired(&base, 0);
+    let (state, cb, base_hash, library) = wired_library(&base, "expect");
     let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
     let client = TcpStream::connect(server.local_addr()).expect("connect");
     let mut writer = client.try_clone().unwrap();
     let mut reader = BufReader::new(client);
 
     // A stale expect rejects with the real installed hash — nothing installs.
-    let target: serde_json::Value = serde_json::from_str(&envelope_doc("/eg")).unwrap();
     send(
         &mut writer,
-        &Request::Swap {
-            source: DocSource::Document(target.clone()),
-            expect: Some("0badc0de0badc0de".to_string()),
-        },
+        &library.open(
+            "eg.json",
+            &envelope_doc("/eg"),
+            Some("0badc0de0badc0de".to_string()),
+        ),
     );
     match read_response(&mut reader) {
         Response::Conflict(Conflict { expected, actual }) => {
@@ -544,10 +498,7 @@ fn swap_expect_arbitration_conflicts_then_proceeds_over_the_wire() {
     // The matching expect (the real installed hash) proceeds.
     send(
         &mut writer,
-        &Request::Swap {
-            source: DocSource::Document(target),
-            expect: Some(base_hash),
-        },
+        &library.open("eg.json", &envelope_doc("/eg"), Some(base_hash)),
     );
     match read_response(&mut reader) {
         Response::SwapReport(report) => {

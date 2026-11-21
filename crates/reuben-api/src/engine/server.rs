@@ -1294,13 +1294,19 @@ mod tests {
         fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
             Err(ResolveError::NotFound(source.to_string()))
         }
+        fn read_text(&self, source: &str) -> Result<String, ResolveError> {
+            if source == PATH {
+                return Ok(DOC.to_string());
+            }
+            Err(ResolveError::NotFound(source.to_string()))
+        }
     }
 
     /// A host that panics under the Coordinator lock — `publish_render_config` runs inside a swap's
     /// critical section — when `panic_on_publish` is set.
     struct Host {
         panic_on_publish: bool,
-        /// Holds every client swap it is offered, and counts the offers.
+        /// Holds every client open it is offered, and counts the offers.
         hold: bool,
         offered: std::sync::atomic::AtomicUsize,
         /// Counts `set_probes` calls.
@@ -1313,7 +1319,7 @@ mod tests {
         meters_nodes: bool,
     }
 
-    /// The one path [`Host`] reads [`DOC`] from.
+    /// The one name [`NoStore`] reads [`DOC`] at.
     const PATH: &str = "t.json";
 
     impl EngineHost for Host {
@@ -1438,26 +1444,26 @@ mod tests {
         let (state, host) = holding();
         assert_eq!(host.installed.load(Ordering::SeqCst), 1);
         let channel = Channel::new(InProcess::new(state.clone()));
-        swap_by_value(&channel).expect("swap");
+        open_doc(&channel).expect("open");
         assert_eq!(host.installed.load(Ordering::SeqCst), 2);
         let given = host.last_installed.lock().unwrap().clone().expect("given");
         let coordinator = state.coordinator.lock().unwrap();
         assert!(Arc::ptr_eq(&given, &coordinator.installed_probes()));
     }
 
-    fn swap_by_path(expect: Option<String>) -> String {
-        Request::Swap {
-            source: DocSource::Path(PATH.to_string()),
+    fn open_line(expect: Option<String>) -> String {
+        Request::Open {
+            name: PATH.to_string(),
             expect,
         }
         .to_ndjson()
     }
 
     #[test]
-    fn a_client_swap_the_host_holds_installs_nothing_and_names_what_plays() {
+    fn a_client_open_the_host_holds_installs_nothing_and_names_what_plays() {
         let (state, _host) = holding();
         let before = state.try_installed();
-        match dispatch(&state, &swap_by_path(None)) {
+        match dispatch(&state, &open_line(None)) {
             Response::Held(held) => {
                 assert_eq!(held.requested, PATH);
                 assert_eq!(held.playing.as_deref(), Some("playing.json"));
@@ -1466,16 +1472,16 @@ mod tests {
                 };
                 assert_eq!(&held.content_hash, content_hash);
             }
-            other => panic!("expected a held swap, got {other:?}"),
+            other => panic!("expected a held open, got {other:?}"),
         }
         assert_eq!(state.try_installed(), before);
     }
 
     #[test]
-    fn the_hosts_own_swap_is_never_offered_for_holding() {
+    fn the_hosts_own_open_is_never_offered_for_holding() {
         let (state, host) = holding();
         let channel = Channel::new(InProcess::new(state.clone()));
-        match channel.swap(DocSource::Path(PATH.to_string()), None) {
+        match open_doc(&channel) {
             Ok(super::super::SwapOutcome::Installed(report)) => {
                 assert!(report.report.ok, "{:?}", report.report.errors)
             }
@@ -1487,7 +1493,7 @@ mod tests {
     #[test]
     fn a_stale_expect_conflicts_before_the_host_is_asked_to_hold() {
         let (state, host) = holding();
-        match dispatch(&state, &swap_by_path(Some("0badc0de".to_string()))) {
+        match dispatch(&state, &open_line(Some("0badc0de".to_string()))) {
             Response::Conflict(conflict) => assert_eq!(conflict.expected, "0badc0de"),
             other => panic!("expected a conflict, got {other:?}"),
         }
@@ -1497,8 +1503,8 @@ mod tests {
     #[test]
     fn an_unreadable_source_is_rejected_before_the_host_is_asked_to_hold() {
         let (state, host) = holding();
-        let line = Request::Swap {
-            source: DocSource::Path("missing.json".to_string()),
+        let line = Request::Open {
+            name: "missing.json".to_string(),
             expect: None,
         }
         .to_ndjson();
@@ -1509,26 +1515,8 @@ mod tests {
         assert_eq!(host.offered.load(Ordering::SeqCst), 0);
     }
 
-    #[test]
-    fn a_swap_by_value_names_no_source_to_hold() {
-        let (state, host) = holding();
-        let line = Request::Swap {
-            source: DocSource::Document(serde_json::from_str(DOC).expect("doc json")),
-            expect: None,
-        }
-        .to_ndjson();
-        match dispatch(&state, &line) {
-            Response::SwapReport(report) => assert!(report.report.ok),
-            other => panic!("expected an install, got {other:?}"),
-        }
-        assert_eq!(host.offered.load(Ordering::SeqCst), 0);
-    }
-
-    fn swap_by_value(channel: &Channel) -> Result<super::super::SwapOutcome, ChannelError> {
-        channel.swap(
-            DocSource::Document(serde_json::from_str(DOC).expect("doc json")),
-            None,
-        )
+    fn open_doc(channel: &Channel) -> Result<super::super::SwapOutcome, ChannelError> {
+        channel.open(PATH.to_string(), None)
     }
 
     #[test]
@@ -1536,12 +1524,12 @@ mod tests {
         let state = state(true);
         let channel = Channel::new(InProcess::new(state.clone()));
 
-        let first = swap_by_value(&channel).expect_err("the panicking swap has no answer");
+        let first = open_doc(&channel).expect_err("the panicking open has no answer");
         assert!(first.is_unreachable(), "{first}");
 
         // Poisoned now: in-process and over any other door, an error rather than a panic.
         for err in [
-            swap_by_value(&channel).expect_err("poisoned"),
+            open_doc(&channel).expect_err("poisoned"),
             channel.get_document().expect_err("poisoned"),
         ] {
             match err {
@@ -1583,8 +1571,6 @@ mod tests {
         assert!(get_engine_status(&channel, "test").output.reachable);
         state.close();
         assert!(!get_engine_status(&channel, "test").output.reachable);
-        assert!(swap_by_value(&channel)
-            .expect_err("closed")
-            .is_unreachable());
+        assert!(open_doc(&channel).expect_err("closed").is_unreachable());
     }
 }
