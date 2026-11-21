@@ -18,6 +18,7 @@ fn describe(view: &str, terms: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_reuben"))
         .args(["describe", &instrument(), "--view", view])
         .args(terms)
+        .arg("--temporary-server")
         .output()
         .expect("the reuben binary runs")
 }
@@ -73,6 +74,7 @@ fn every_view_answers_without_terms() {
 fn reuben(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_reuben"))
         .args(args)
+        .arg("--temporary-server")
         .output()
         .expect("the reuben binary runs")
 }
