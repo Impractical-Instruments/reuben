@@ -8,7 +8,6 @@
 //! Every fixture is a scratch copy of the library: nothing here writes under `instruments/`.
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 
 use reuben_api::authoring::{validate_instrument, Report, Resources, ValidateInstrument};
@@ -18,9 +17,9 @@ use reuben_api::engine::{
 use reuben_api::render::{AudioConfig, RenderSlot};
 use reuben_api::staged::Staged;
 use reuben_api::FsResolver;
+use reuben_native::control::{ring_pair, ControlRing};
 use reuben_native::diagnostics::Diagnostics;
 use reuben_native::engine::{EngineConfig, Instrument};
-use reuben_native::osc::ControlBatch;
 use reuben_native::structure::NativeHost;
 use reuben_native::test_support::{served, start_headless, within};
 
@@ -364,7 +363,7 @@ struct Played {
     channel: Channel,
     slot: RenderSlot,
     /// The control ingress the host sends into; held so a `send` would not find it closed.
-    _control: Receiver<ControlBatch>,
+    _control: ControlRing,
 }
 
 impl Played {
@@ -382,7 +381,7 @@ impl Played {
             install_initial(&text, staged.clone(), AudioConfig::new(48_000.0, BLOCK))
                 .expect("install");
         assert!(warnings.is_empty(), "{warnings:?}");
-        let (control, control_rx) = mpsc::channel::<ControlBatch>();
+        let (control, control_rx) = ring_pair(Diagnostics::new());
         let host = NativeHost::new(Diagnostics::new(), control);
         host.offer_dir(offered);
         let state = StructureState::new(coordinator, Arc::new(host), served(staged))

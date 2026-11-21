@@ -553,6 +553,11 @@ pub struct DiagnosticsReport {
     /// stalled-consumer backstop, kept separate from overruns because the two diagnoses
     /// have opposite fixes (frames).
     pub input_ring_producer_drops: u64,
+    /// Control batches a producer dropped because its ring into the render callback was full: one
+    /// UDP datagram or one `send`, lost whole (batches). Absent from a report by an engine that
+    /// predates it, and then zero.
+    #[serde(default)]
+    pub control_batches_dropped_full: u64,
 }
 
 /// The engine's levels at the device: what it sends out, after the output map, and what the input
@@ -723,6 +728,7 @@ mod tests {
             input_ring_underruns: 480,
             input_ring_overruns: 0,
             input_ring_producer_drops: 96,
+            control_batches_dropped_full: 7,
         }
     }
 
@@ -1153,10 +1159,10 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_response_carries_the_four_adr_0038_counters() {
-        // The diagnostics endpoint is this channel verb, and
-        // its payload is the four running totals (xruns count events, ring counters count
-        // frames), flat next to the tag so new counters land as new fields.
+    fn diagnostics_response_carries_every_counter_flat_beside_the_tag() {
+        // The diagnostics endpoint is this channel verb, and its payload is the running totals
+        // (xruns count events, input ring counters count frames, control drops count batches),
+        // flat next to the tag so new counters land as new fields.
         let v: serde_json::Value =
             serde_json::from_str(&Response::Diagnostics(diagnostics_report()).to_ndjson())
                 .expect("as value");
@@ -1167,9 +1173,22 @@ mod tests {
                 "output_xruns": 2,
                 "input_ring_underruns": 480,
                 "input_ring_overruns": 0,
-                "input_ring_producer_drops": 96
+                "input_ring_producer_drops": 96,
+                "control_batches_dropped_full": 7
             })
         );
+    }
+
+    #[test]
+    fn a_diagnostics_report_without_the_control_drop_count_reads_it_as_zero() {
+        let report: DiagnosticsReport = serde_json::from_value(serde_json::json!({
+            "output_xruns": 2,
+            "input_ring_underruns": 480,
+            "input_ring_overruns": 0,
+            "input_ring_producer_drops": 96
+        }))
+        .expect("an older engine's report still reads");
+        assert_eq!(report.control_batches_dropped_full, 0);
     }
 
     #[test]

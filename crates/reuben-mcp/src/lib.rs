@@ -1971,12 +1971,13 @@ mod tests {
     }
 
     #[test]
-    fn get_engine_diagnostics_returns_the_four_counters() {
+    fn get_engine_diagnostics_returns_every_counter() {
         let report = DiagnosticsReport {
             output_xruns: 2,
             input_ring_underruns: 480,
             input_ring_overruns: 0,
             input_ring_producer_drops: 96,
+            control_batches_dropped_full: 5,
         };
         let result = block_on(
             server_with(FakeTransport::reachable().with_diagnostics(report))
@@ -1991,6 +1992,7 @@ mod tests {
         assert_eq!(s["output_xruns"], serde_json::json!(2));
         assert_eq!(s["input_ring_underruns"], serde_json::json!(480));
         assert_eq!(s["input_ring_producer_drops"], serde_json::json!(96));
+        assert_eq!(s["control_batches_dropped_full"], serde_json::json!(5));
     }
 
     #[test]

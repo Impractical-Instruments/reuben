@@ -24,9 +24,10 @@ use reuben_api::engine::{
     DEFAULT_CONNECT_TIMEOUT, MAX_LINE_BYTES, METER_FLOOR_DBFS, REFUSED_TOKEN,
 };
 use reuben_api::render::{Arg, AudioConfig};
+use reuben_native::control::ring_pair;
 use reuben_native::diagnostics::Diagnostics;
 use reuben_native::meters::{Bank, Meters};
-use reuben_native::osc::{ControlBatch, OscIn};
+use reuben_native::osc::OscIn;
 use reuben_native::structure::{HeadlessRenderConfig, NativeHost, StructureServer};
 use reuben_native::test_support::{no_store, served, FakeCallback};
 
@@ -86,7 +87,7 @@ fn wired_watching(
     let (coordinator, side, _warnings) =
         reuben_api::engine::install_initial(doc, staged.clone(), cfg()).expect("initial install");
     let base_hash = coordinator.installed_hash();
-    let (control_tx, control_rx) = mpsc::channel::<ControlBatch>();
+    let (control_tx, control_rx) = ring_pair(Diagnostics::new());
     let host = NativeHost::new(diagnostics, control_tx).with_render_config(Arc::new(
         HeadlessRenderConfig {
             opened_input_channels,
@@ -139,7 +140,7 @@ fn wired_library(doc: &str, case: &str) -> (StructureState, FakeCallback, String
     let (coordinator, side, _warnings) =
         reuben_api::engine::install_initial(doc, staged.clone(), cfg()).expect("initial install");
     let base_hash = coordinator.installed_hash();
-    let (control_tx, control_rx) = mpsc::channel::<ControlBatch>();
+    let (control_tx, control_rx) = ring_pair(Diagnostics::new());
     let host = NativeHost::new(Diagnostics::new(), control_tx)
         .with_library_root(Some(library.0.clone()))
         .with_render_config(Arc::new(HeadlessRenderConfig {
@@ -262,7 +263,7 @@ fn get_meters_reads_the_levels_the_callbacks_metered() {
         outputs: Bank::new(2, 48_000.0),
         inputs: Bank::new(1, 48_000.0),
     };
-    let (control_tx, control_rx) = mpsc::channel::<ControlBatch>();
+    let (control_tx, control_rx) = ring_pair(Diagnostics::new());
     let state = StructureState::new(
         coordinator,
         Arc::new(NativeHost::new(Diagnostics::new(), control_tx).with_meters(meters.clone())),
@@ -327,7 +328,7 @@ fn get_diagnostics_reflects_live_counter_bumps() {
         reuben_api::engine::install_initial(BASE_DOC, staged.clone(), cfg()).expect("install");
     let diagnostics = Diagnostics::new();
     // This verb never touches control, but the ingress is a constructor parameter now.
-    let (control_tx, control_rx) = mpsc::channel::<ControlBatch>();
+    let (control_tx, control_rx) = ring_pair(Diagnostics::new());
     let state = StructureState::new(
         coordinator,
         Arc::new(NativeHost::new(Arc::clone(&diagnostics), control_tx)),

@@ -230,8 +230,8 @@ mod tests {
     use reuben_api::FsResolver;
 
     use super::*;
+    use crate::control::ring_pair;
     use crate::diagnostics::Diagnostics;
-    use crate::osc::ControlBatch;
     use crate::structure::{HeadlessRenderConfig, NativeHost};
     use crate::test_support::FakeCallback;
 
@@ -299,7 +299,7 @@ mod tests {
             AudioConfig::new(48_000.0, 128),
         )
         .expect("initial install");
-        let (control_tx, control_rx) = mpsc::channel::<ControlBatch>();
+        let (control_tx, control_rx) = ring_pair(Diagnostics::new());
         let host = NativeHost::new(Diagnostics::new(), control_tx).with_render_config(Arc::new(
             HeadlessRenderConfig {
                 opened_input_channels: 0,
@@ -353,7 +353,7 @@ mod tests {
             AudioConfig::new(48_000.0, 128),
         )
         .expect("initial install");
-        let (control_tx, control_rx) = mpsc::channel::<ControlBatch>();
+        let (control_tx, control_rx) = ring_pair(Diagnostics::new());
         let host = NativeHost::new(Diagnostics::new(), control_tx).with_render_config(Arc::new(
             HeadlessRenderConfig {
                 opened_input_channels: 0,
@@ -428,7 +428,7 @@ mod tests {
             AudioConfig::new(48_000.0, 128),
         )
         .expect("initial install");
-        let (control_tx, control_rx) = mpsc::channel::<ControlBatch>();
+        let (control_tx, control_rx) = ring_pair(Diagnostics::new());
         let host = NativeHost::new(Diagnostics::new(), control_tx).with_render_config(Arc::new(
             HeadlessRenderConfig {
                 opened_input_channels: 0,

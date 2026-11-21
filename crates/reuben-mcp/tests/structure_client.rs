@@ -216,12 +216,13 @@ fn get_document_round_trips_the_source_and_hash() {
 }
 
 #[test]
-fn get_diagnostics_round_trips_the_four_counters() {
+fn get_diagnostics_round_trips_every_counter() {
     let report = DiagnosticsReport {
         output_xruns: 2,
         input_ring_underruns: 480,
         input_ring_overruns: 0,
         input_ring_producer_drops: 96,
+        control_batches_dropped_full: 5,
     };
     let stub = spawn_stub(move |_req| Response::Diagnostics(report));
     let client = channel(stub.addr.to_string());
