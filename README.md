@@ -2,7 +2,7 @@
 
 Deterministic CI performance trend: callgrind **instruction counts (Ir)** for rendering **1 s of audio** (375 × 128-frame blocks @ 48 kHz), recorded on every direct push to `dev`. Instruction counts don't jitter — every visible move is a real code change (or a toolchain bump).
 
-**208 commits** · 2026-07-12 → 2026-11-21 · 17221 data points · last: `e01869d` (2026-11-21T09:44:12-05:00)
+**209 commits** · 2026-07-12 → 2026-11-21 · 17318 data points · last: `ab0894e` (2026-11-21T12:29:24-05:00)
 
 *Companion trend: the **main** series lives on the [`bench-history`](https://github.com/Impractical-Instruments/reuben/tree/bench-history) branch.*
 
@@ -21,7 +21,7 @@ Deterministic CI performance trend: callgrind **instruction counts (Ir)** for re
 | `autotune` | 33.8M | ±0.0% | **-17.3%** | 2026-07-12 |
 | `echo` | 36.3M | ±0.0% | **-16.1%** | 2026-07-12 |
 | `reverb` | 43.6M | ±0.0% | **-13.8%** | 2026-07-12 |
-| `sampler-arp` | 14.4M | ±0.0% | **-9.0%** | 2026-07-12 |
+| `sampler-arp` | 14.4M | -0.2% | **-9.2%** | 2026-07-12 |
 
 ## Per-node engine overhead
 
@@ -43,22 +43,22 @@ Cost paid **once per Swap**, on the caller's thread — which in the browser is 
 
 | Case | Latest Ir | vs prev | vs first | since |
 |---|---:|---:|---:|---|
-| `deep_n2048` | 63.0M | ±0.0% | **-4.4%** | 2026-07-30 |
-| `deep_n4096` | 127.9M | ±0.0% | **-3.7%** | 2026-07-30 |
-| `deep_n8192` | 256.8M | ±0.0% | **-7.0%** | 2026-07-30 |
-| `nest_n2048` | 45.6M | ±0.0% | **-19.2%** | 2026-07-30 |
-| `nest_n4096` | 92.3M | ±0.0% | **-19.7%** | 2026-07-30 |
-| `nest_n8192` | 187.1M | ±0.0% | **-18.8%** | 2026-07-30 |
-| `wide_n2048` | 53.4M | ±0.0% | -2.9% | 2026-07-30 |
-| `wide_n4096` | 108.6M | ±0.0% | **-6.5%** | 2026-07-30 |
-| `wide_n8192` | 218.4M | ±0.0% | **-6.8%** | 2026-07-30 |
+| `deep_n2048` | 63.7M | +1.0% | **-3.4%** | 2026-07-30 |
+| `deep_n4096` | 128.7M | +0.6% | **-3.1%** | 2026-07-30 |
+| `deep_n8192` | 258.4M | +0.6% | **-6.4%** | 2026-07-30 |
+| `nest_n2048` | 45.6M | +0.1% | **-19.2%** | 2026-07-30 |
+| `nest_n4096` | 93.4M | +1.2% | **-18.7%** | 2026-07-30 |
+| `nest_n8192` | 188.6M | +0.8% | **-18.1%** | 2026-07-30 |
+| `wide_n2048` | 53.9M | +0.8% | -2.1% | 2026-07-30 |
+| `wide_n4096` | 109.4M | +0.7% | **-5.9%** | 2026-07-30 |
+| `wide_n8192` | 220.0M | +0.8% | **-6.1%** | 2026-07-30 |
 
 | Shape | Nodes | Latest growth |
 |---|---:|---:|
-| deep | 2,048 → 4,096 | 2.03x |
+| deep | 2,048 → 4,096 | 2.02x |
 | deep | 4,096 → 8,192 | 2.01x |
-| nest | 2,048 → 4,096 | 2.02x |
-| nest | 4,096 → 8,192 | 2.03x |
+| nest | 2,048 → 4,096 | 2.05x |
+| nest | 4,096 → 8,192 | 2.02x |
 | wide | 2,048 → 4,096 | 2.03x |
 | wide | 4,096 → 8,192 | 2.01x |
 
@@ -79,16 +79,16 @@ Cost paid **once per Swap**, on the caller's thread — which in the browser is 
 | `macro/autotune` | 33.8M | ±0.0% | **-17.3%** | 2026-07-12 |
 | `macro/echo` | 36.3M | ±0.0% | **-16.1%** | 2026-07-12 |
 | `macro/reverb` | 43.6M | ±0.0% | **-13.8%** | 2026-07-12 |
-| `macro/sampler-arp` | 14.4M | ±0.0% | **-9.0%** | 2026-07-12 |
-| `construct/deep_n2048` | 63.0M | ±0.0% | **-4.4%** | 2026-07-30 |
-| `construct/deep_n4096` | 127.9M | ±0.0% | **-3.7%** | 2026-07-30 |
-| `construct/deep_n8192` | 256.8M | ±0.0% | **-7.0%** | 2026-07-30 |
-| `construct/nest_n2048` | 45.6M | ±0.0% | **-19.2%** | 2026-07-30 |
-| `construct/nest_n4096` | 92.3M | ±0.0% | **-19.7%** | 2026-07-30 |
-| `construct/nest_n8192` | 187.1M | ±0.0% | **-18.8%** | 2026-07-30 |
-| `construct/wide_n2048` | 53.4M | ±0.0% | -2.9% | 2026-07-30 |
-| `construct/wide_n4096` | 108.6M | ±0.0% | **-6.5%** | 2026-07-30 |
-| `construct/wide_n8192` | 218.4M | ±0.0% | **-6.8%** | 2026-07-30 |
+| `macro/sampler-arp` | 14.4M | -0.2% | **-9.2%** | 2026-07-12 |
+| `construct/deep_n2048` | 63.7M | +1.0% | **-3.4%** | 2026-07-30 |
+| `construct/deep_n4096` | 128.7M | +0.6% | **-3.1%** | 2026-07-30 |
+| `construct/deep_n8192` | 258.4M | +0.6% | **-6.4%** | 2026-07-30 |
+| `construct/nest_n2048` | 45.6M | +0.1% | **-19.2%** | 2026-07-30 |
+| `construct/nest_n4096` | 93.4M | +1.2% | **-18.7%** | 2026-07-30 |
+| `construct/nest_n8192` | 188.6M | +0.8% | **-18.1%** | 2026-07-30 |
+| `construct/wide_n2048` | 53.9M | +0.8% | -2.1% | 2026-07-30 |
+| `construct/wide_n4096` | 109.4M | +0.7% | **-5.9%** | 2026-07-30 |
+| `construct/wide_n8192` | 220.0M | +0.8% | **-6.1%** | 2026-07-30 |
 | `granulator` | 27.6M | ±0.0% | +0.3% | 2026-07-12 |
 | `resonator` | 15.2M | ±0.0% | **-18.0%** | 2026-07-12 |
 | `reverb` | 10.9M | ±0.0% | -1.1% | 2026-07-12 |
@@ -196,26 +196,26 @@ The deterministic tier of the eval harness: each task's **reference solution** (
 
 | Task | Metric | Latest | vs prev | vs first | since |
 |---|---|---:|---:|---:|---|
-| `from_scratch` | grounding tokens | 22,725 | ±0.0% | **+371.7%** | 2026-07-22 |
-| `from_scratch` | fixed grounding | 22,352 | ±0.0% | **+368.9%** | 2026-07-22 |
+| `from_scratch` | grounding tokens | 22,853 | +0.6% | **+374.3%** | 2026-07-22 |
+| `from_scratch` | fixed grounding | 22,480 | +0.6% | **+371.6%** | 2026-07-22 |
 | `from_scratch` | document chars | 0 | — | **-100.0%** | 2026-07-22 |
-| `intent_fan_out` | grounding tokens | 22,943 | ±0.0% | **+20.6%** | 2026-07-28 |
-| `intent_fan_out` | fixed grounding | 22,352 | ±0.0% | **+19.0%** | 2026-07-28 |
+| `intent_fan_out` | grounding tokens | 23,071 | +0.6% | **+21.2%** | 2026-07-28 |
+| `intent_fan_out` | fixed grounding | 22,480 | +0.6% | **+19.7%** | 2026-07-28 |
 | `intent_fan_out` | document chars | 0 | — | — | 2026-07-28 |
-| `intent_word` | grounding tokens | 22,560 | ±0.0% | **+19.4%** | 2026-07-28 |
-| `intent_word` | fixed grounding | 22,352 | ±0.0% | **+19.0%** | 2026-07-28 |
+| `intent_word` | grounding tokens | 22,688 | +0.6% | **+20.1%** | 2026-07-28 |
+| `intent_word` | fixed grounding | 22,480 | +0.6% | **+19.7%** | 2026-07-28 |
 | `intent_word` | document chars | 0 | — | — | 2026-07-28 |
 | `nudge` | grounding tokens | 19,324 | ±0.0% | **+207.6%** | 2026-07-22 |
 | `nudge` | fixed grounding | 17,808 | ±0.0% | **+273.6%** | 2026-07-22 |
 | `nudge` | document chars | 2,098 | ±0.0% | ±0.0% | 2026-07-22 |
-| `repair` | grounding tokens | 22,705 | ±0.0% | **+370.9%** | 2026-07-22 |
-| `repair` | fixed grounding | 22,352 | ±0.0% | **+368.9%** | 2026-07-22 |
+| `repair` | grounding tokens | 22,835 | +0.6% | **+373.6%** | 2026-07-22 |
+| `repair` | fixed grounding | 22,480 | +0.6% | **+371.6%** | 2026-07-22 |
 | `repair` | document chars | 0 | — | **-100.0%** | 2026-07-22 |
-| `repair_and_note` | grounding tokens | 22,776 | ±0.0% | **+6.3%** | 2026-11-19 |
-| `repair_and_note` | fixed grounding | 22,352 | ±0.0% | **+5.7%** | 2026-11-19 |
+| `repair_and_note` | grounding tokens | 22,906 | +0.6% | **+6.9%** | 2026-11-19 |
+| `repair_and_note` | fixed grounding | 22,480 | +0.6% | **+6.3%** | 2026-11-19 |
 | `repair_and_note` | document chars | 0 | — | — | 2026-11-19 |
-| `tweak` | grounding tokens | 22,509 | ±0.0% | **+370.9%** | 2026-07-22 |
-| `tweak` | fixed grounding | 22,352 | ±0.0% | **+368.9%** | 2026-07-22 |
+| `tweak` | grounding tokens | 22,637 | +0.6% | **+373.6%** | 2026-07-22 |
+| `tweak` | fixed grounding | 22,480 | +0.6% | **+371.6%** | 2026-07-22 |
 | `tweak` | document chars | 0 | — | **-100.0%** | 2026-07-22 |
 
 - **Fixed grounding** is what every turn of every task pays before the model does anything: the server `instructions` plus every tool schema. It creeps when a tool description or the authoring guide grows, and nothing else watches it.
