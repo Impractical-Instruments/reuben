@@ -747,7 +747,8 @@ class LiveEngineBoundaryTest(unittest.TestCase):
         # on reuben-core — only reuben-api does. Workspace-wide, the member's feature still names.
         cmd = ["cargo", "run", "-q", "--bin", "reuben",
                "--features", "reuben-core/bench", "--",
-               "describe", str(self.SPACE), "--view", "boundary", "--json"]
+               "describe", str(self.SPACE), "--view", "boundary", "--json",
+               "--temporary-server"]
         try:
             proc = subprocess.run(cmd, cwd=self.REPO_ROOT, capture_output=True, text=True,
                                   timeout=self.CARGO_TIMEOUT)

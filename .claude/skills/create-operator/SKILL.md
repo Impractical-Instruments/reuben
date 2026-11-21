@@ -90,8 +90,11 @@ Run all `reuben`/`cargo` commands from the repo root.
       `every_workload_renders` must pass).
    3. `cargo clippy -p reuben-core --all-targets` — clean.
    4. `cargo fmt` — the CI `fmt` gate fails on any unformatted line; run it before you commit.
-   5. `reuben describe <op> --json` — confirm the registered contract matches the freeze.
-   6. `reuben validate <throwaway instrument using it>` — prove it wires in a real graph.
+   5. `reuben describe <op> --json --temporary-server` — confirm the registered contract matches
+      the freeze. `--temporary-server` matters: without it a running `reuben play` answers, and
+      one built before this operator does not know it. Restart `reuben play` to hear it live.
+   6. `reuben validate <throwaway instrument using it> --temporary-server` — prove it wires in a
+      real graph.
    7. **Honest audible caveat.** The above prove it compiles, registers, wires, and meets its
       written oracle — **not that it sounds right.** When behavior is subjective, recommend an
       ear-check: `patcher` a tiny instrument around it, then `reuben play`.

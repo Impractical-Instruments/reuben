@@ -8,11 +8,11 @@ repository.workspace = true
 description = "Removable native layer for reuben: live audio (cpal) + OSC-in (UDP)."
 
 [dependencies]
-# The window, and the only way this crate reaches the engine: the authoring verbs the
-# `describe`/`validate`/`new-instrument` subcommands are, the engine verbs the structure channel
-# serves, the render pair `play` drives per block, and the reference filesystem resolver
-# (`FsResolver`, which brings `hound` with it) filling their resource seam. Both halves, so the
-# default feature set plus the resolver.
+# The window, and the only way this crate reaches the engine: the engine verbs the structure channel
+# serves, the client half of that channel the `describe`/`validate`/`new-instrument` subcommands
+# dial (`tcp`), the render pair `play` drives per block, and the reference filesystem resolver
+# (`FsResolver`, which brings `hound` with it) filling the server's resource seam. Both halves, so
+# the default feature set plus the resolver and the client transport.
 reuben-api = { path = "../reuben-api", features = ["fs-resolver", "tcp"] }
 # Shared operator-contract spec types + validation, single-sourced with the macro.
 reuben-contract = { path = "../reuben-contract" }

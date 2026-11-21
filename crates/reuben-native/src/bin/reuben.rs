@@ -1,7 +1,10 @@
 //! `reuben` — the command-line entry point.
 //!
 //! Five subcommands — `play`, `describe`, `validate`, `scaffold-operator`, `new-instrument` —
-//! each documented on its own `--help`. Send notes to a playing instrument with:
+//! each documented on its own `--help`. `play` is the server. `describe`, `validate` and
+//! `new-instrument` are its clients: they ask the running `reuben play` when one answers, and
+//! otherwise a temporary headless server they start in this process. Send notes to a playing
+//! instrument with:
 //!
 //! ```text
 //! /voicer/notes  [69.0, 1.0]   # note-on  (MIDI 69 = A4, gate 1)
@@ -45,7 +48,8 @@ enum Command {
         engine: EngineFlags,
     },
     /// Print the operator set, one operator's ports/params/resources, or — given an instrument
-    /// JSON path — a structural view of that instrument.
+    /// JSON path — a structural view of that instrument. Asks the running `reuben play`, or a
+    /// temporary server when none runs.
     Describe {
         /// Operator type to describe, or an instrument JSON path (its structural views). A path
         /// is recognized by shape — ends in `.json` or contains a separator; a bare name is
@@ -76,7 +80,8 @@ enum Command {
         #[command(flatten)]
         server: ServerFlags,
     },
-    /// Load + plan an instrument (no audio) and report errors/warnings.
+    /// Load + plan an instrument (no audio) and report errors/warnings. Asks the running
+    /// `reuben play`, or a temporary server when none runs; never changes what plays.
     Validate {
         /// Instrument JSON to validate.
         path: PathBuf,
@@ -99,7 +104,9 @@ enum Command {
         json: bool,
     },
     /// Create a guaranteed-valid minimal instrument document at a path — the start move for
-    /// creating an instrument from scratch (#146). Refuses to overwrite an existing document.
+    /// creating an instrument from scratch. Refuses to overwrite an existing document. The
+    /// running `reuben play` writes it (it must be a place that server offers) and does not open
+    /// it; with none running, a temporary server writes it.
     NewInstrument {
         /// Where to create the document.
         path: PathBuf,
