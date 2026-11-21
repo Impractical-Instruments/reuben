@@ -129,6 +129,9 @@ Without a path it opens on a start screen: play an instrument from the library (
 `--instrument-root` you name, else `instruments/` in the working directory or beside the
 `reuben-editor` binary), create a new one, or reopen a recent file.
 
+If UDP port 9000 is already taken, by `reuben play` or another editor, the editor starts without
+OSC-in and says so; instruments still open, play and edit.
+
 The engine follows the files: a change to the instrument, or to any voice or subpatch file it
 references — from `reuben-mcp`, a text editor, anything — is swapped in as it is saved, and the
 editor shows it. A change that does not load is shown, and the last instrument that loaded keeps
@@ -150,10 +153,10 @@ edit is swapped in as usual. The audio device and the engine flags (`--io-map`, 
 the ones `reuben play` was started with.
 
 The editor checks the engine once a second. If another client has it play a different file, or it
-is restarted on one, the editor opens that file rather than swapping its own over it. A file
-swapped in by a relative path is not opened, since there is no knowing which file it is from the
-editor's directory. If the engine stops answering, the editor says so in its top bar and keeps
-trying. Closing the editor, or losing the link, never stops the engine.
+is restarted on one, the editor opens that file rather than swapping its own over it. The engine
+names every file it opens by one absolute path, however the client that asked spelled it, so a
+file swapped in by a relative path opens too. If the engine stops answering, the editor says so in
+its top bar and keeps trying. Closing the editor, or losing the link, never stops the engine.
 
 Control values from the editor and from any other OSC sender reach the same inputs, and the
 last one written wins. The editor does not hold a swap from another client to ask first, as it

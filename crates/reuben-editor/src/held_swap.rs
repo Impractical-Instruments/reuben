@@ -33,7 +33,7 @@ struct Inner {
 
 #[derive(Default)]
 struct State {
-    /// The open top-level file, [canonical](canonical). `None` while nothing is open, when nothing
+    /// The open top-level file, [`canonical`]. `None` while nothing is open, when nothing
     /// is held.
     open: Option<PathBuf>,
     /// A later held Swap replaces it.
@@ -43,8 +43,8 @@ struct State {
 /// A held Swap the user is being asked about.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Asked {
-    /// As the client spelled it, which is how the engine names it once it is opened, so the
-    /// agent sees the source it asked for.
+    /// The engine's name for it, which it plays under once opened, so the agent sees the source
+    /// it asked for.
     pub path: PathBuf,
     canonical: PathBuf,
     at: Instant,

@@ -536,8 +536,9 @@ pub enum Event {
     /// document it is not the hash that edit's own result carries. An empty `hash` is a write
     /// while nothing plays: the file changed and no Plan was installed.
     Changed { hash: String, by: ChangedBy },
-    /// Another instrument was opened and is playing. `name` is the name it was opened by; empty
-    /// for one installed by value.
+    /// Another instrument was opened and is playing. `name` is the host's
+    /// [origin](crate::engine::EngineHost::document_origin) of the name it was opened by, the one
+    /// spelling every client hears; empty for one installed by value.
     Opened { name: String, hash: String },
     /// The open instrument's documents no longer load; what played before keeps playing.
     Invalid { errors: Vec<Diag> },
