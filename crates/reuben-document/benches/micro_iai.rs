@@ -17,7 +17,7 @@
 //! the same reason the skip list does (see [`setup`]): the perf gate swaps `reuben-core/src` to the
 //! baseline ref, so a census in `bench_support` would be swapped out from under the run.
 
-use iai_callgrind::{library_benchmark, library_benchmark_group, main, LibraryBenchmarkConfig};
+use gungraun::{library_benchmark, library_benchmark_group, main, LibraryBenchmarkConfig};
 use reuben_core::bench_support::OpHarness;
 use std::hint::black_box;
 

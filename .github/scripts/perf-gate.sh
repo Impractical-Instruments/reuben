@@ -215,8 +215,8 @@ missing_at() {
 declare -a SUM_ROWS=()
 
 # Harvest HEAD's absolute Ir per case from a captured compare-run log into $RECORD (one JSON object
-# per case). Parses the human-readable iai output, not --save-summary JSON: the text format is
-# stable across the 0.16.x line and, unlike the summary, carries a value for cases that breached the
+# per case). Parses the human-readable gungraun output, not --save-summary JSON: the text format is
+# stable within a gungraun minor line and, unlike the summary, carries a value for cases that breached the
 # gate (printed as "Performance has regressed: Instructions (base -> head)" with no normal line).
 # A case header ends in `("<workload>")`; the workload id is the clean case name (e.g. add_f32_signal
 # vs add_f32_value). Summary-section headers end in `:` and are ignored, so each case records once.
@@ -476,7 +476,7 @@ gate_one() {
     # Accumulate for the single consolidated table emitted after all layers run, rather than printing
     # a separate per-layer table here.
     SUM_ROWS+=("| ${layer} | ${id} | ${pct} | ${icon} |")
-  done < <(find target/iai -path "*${bench}*" -name summary.json 2>/dev/null)
+  done < <(find target/gungraun -path "*${bench}*" -name summary.json 2>/dev/null)
 
   if [ "$parsed" -eq 0 ]; then
     SUM_ROWS+=("| ${layer} | _(parse unavailable — verdict from callgrind exit code)_ |  |  |")

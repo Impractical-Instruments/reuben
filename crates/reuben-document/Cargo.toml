@@ -32,11 +32,11 @@ schemars = { workspace = true, optional = true }
 [dev-dependencies]
 approx.workspace = true
 hound.workspace = true
-# Perf infra. criterion: local wall-clock. iai-callgrind: CI regression gate. The benches live here
+# Perf infra. criterion: local wall-clock. gungraun: CI regression gate. The benches live here
 # rather than beside the render code because every realistic workload is an instrument *document*,
 # and the loader that turns one into a Plan is this crate's.
 criterion = "0.8"
-iai-callgrind = "0.16"
+gungraun = "0.19.4"
 
 # The OpDriver fidelity pin reaches `reuben_core::op_driver`, which is gated behind the bridge
 # feature. `required-features` so a bare `cargo test` skips it (no error) rather than failing to

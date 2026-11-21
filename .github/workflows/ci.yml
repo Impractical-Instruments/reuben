@@ -578,7 +578,7 @@ jobs:
         run: sudo apt-get update
 
       # Cache the valgrind .deb so the download is skipped on a hit, mirroring the
-      # iai-callgrind-runner cache below.
+      # gungraun-runner cache below.
       - name: Cache valgrind .deb
         id: vg-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -591,7 +591,7 @@ jobs:
         run: |
           mkdir -p ~/valgrind-debs
           cd ~/valgrind-debs && apt-get download valgrind
-      - name: Install valgrind (callgrind backend for iai-callgrind)
+      - name: Install valgrind (callgrind backend for gungraun)
         run: sudo apt-get install -y --no-install-recommends ~/valgrind-debs/*.deb
 
       # Same pinned toolchain as `check`, via the shared composite.
@@ -601,16 +601,24 @@ jobs:
       - name: Cache cargo registry + build
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
-      # The runner binary must match the iai-callgrind dev-dependency (0.16.x).
-      - name: Cache iai-callgrind-runner
-        id: iai-cache
+      # The runner binary must be the exact version of the locked gungraun library: the bench binary
+      # refuses to run under any other. Read from Cargo.lock so a dependency bump cannot leave the
+      # runner behind.
+      - name: Resolve gungraun-runner version
+        id: gungraun
+        run: |
+          ver="$(awk '$0 == "name = \"gungraun\"" { getline; gsub(/"/, "", $3); print $3 }' Cargo.lock)"
+          [ -n "$ver" ] || { echo '::error::no gungraun package in Cargo.lock'; exit 1; }
+          echo "version=$ver" >>"$GITHUB_OUTPUT"
+      - name: Cache gungraun-runner
+        id: gungraun-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.cargo/bin/iai-callgrind-runner
-          key: iai-callgrind-runner-0.16.1-${{ runner.os }}
-      - name: Install iai-callgrind-runner
-        if: steps.iai-cache.outputs.cache-hit != 'true'
-        run: cargo install iai-callgrind-runner --version 0.16.1
+          path: ~/.cargo/bin/gungraun-runner
+          key: gungraun-runner-${{ steps.gungraun.outputs.version }}-${{ runner.os }}
+      - name: Install gungraun-runner
+        if: steps.gungraun-cache.outputs.cache-hit != 'true'
+        run: cargo install gungraun-runner --version "${{ steps.gungraun.outputs.version }}"
 
       - name: Resolve baseline ref
         id: base
