@@ -13,7 +13,7 @@ use reuben_document::format::load_instrument;
 use serde_json::Value;
 
 use crate::authoring::{
-    self, edit_summary, hash_instrument, CallKind, Called, Diag, EditResult, Named, Report,
+    self, edit_summary, hash_instrument, CallKind, Called, Diag, EditResult, Named, Report, Scope,
 };
 use crate::resources::{Adapter, Anchored, ResolveError, Resources, SampleBuffer};
 
@@ -144,11 +144,15 @@ pub(super) fn handle_call(state: &StructureState, tool: &str, args: Value) -> Re
         Err(poisoned) => return poisoned.into(),
     }
     let staged = state.store.inner();
+    // The first name a verb takes is the document it acts on.
+    let scope = named
+        .first()
+        .map(|(document, origin)| Scope { document, origin });
     let Called {
         output,
         summary,
         kind,
-    } = match authoring::call(tool, args, &*state.store) {
+    } = match authoring::call_scoped(tool, args, &*state.store, scope) {
         Ok(called) => called,
         Err(refusal) => {
             staged.discard();
@@ -578,6 +582,14 @@ mod tests {
                 .unwrap()
                 .insert(source.to_string(), text.to_string());
             Ok(())
+        }
+
+        /// Path-shaped, as a filesystem store is: a reference resolves beside its referrer.
+        fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
+            match referrer.and_then(|r| r.rsplit_once('/')) {
+                Some((dir, _)) => format!("{dir}/{source}"),
+                None => source.to_string(),
+            }
         }
     }
 
@@ -1059,6 +1071,29 @@ mod tests {
         let (output, _) = call(&s, "describe_instrument", json!({"source": "top.json"}));
         assert!(!output.is_null());
         assert_eq!(installed_hash(state), before);
+    }
+
+    /// A document outside the open instrument's directory, read through the server's one store,
+    /// resolves its own references beside itself, as it would when opened.
+    #[test]
+    fn a_read_of_another_document_resolves_its_references_beside_it() {
+        let s = serving();
+        s.files
+            .write_text(
+                "sub/w.json",
+                r#"{"format_version":3,"instrument":"w",
+                    "resources":{"v":"x.json"},
+                    "interface":{"outputs":{"out":{"from":"/voice.out"}}},
+                    "nodes":[{"type":"subpatch","address":"/voice","patch":"v"}]}"#,
+            )
+            .unwrap();
+        s.files.write_text("sub/x.json", V).unwrap();
+
+        let (report, _) = call(&s, "validate_instrument", json!({"source": "sub/w.json"}));
+        assert_eq!(report["ok"], true, "{report}");
+        assert_eq!(report["warnings"], json!([]), "{report}");
+        let (boundary, _) = call(&s, "describe_boundary", json!({"source": "sub/w.json"}));
+        assert_eq!(boundary["outputs"][0]["name"], "out", "{boundary}");
     }
 
     #[test]

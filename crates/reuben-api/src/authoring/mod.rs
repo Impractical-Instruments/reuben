@@ -21,7 +21,7 @@ mod verbs;
 /// here. [`crate::resources`] holds it, because the render half calls the same trait.
 pub use crate::resources::{Created, ResolveError, Resources, SampleBuffer};
 pub use args::*;
-pub use call::{call, named_sources, CallKind, Called, Named};
+pub use call::{call, call_scoped, named_sources, CallKind, Called, Named, Scope};
 pub use history::{restore_instrument, DocumentHistory};
 pub use result::{
     Boundary, DeclaredMeta, Diag, DocumentView, EditResult, InputValue, InstrumentStructure,

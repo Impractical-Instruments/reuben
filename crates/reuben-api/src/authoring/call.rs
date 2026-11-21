@@ -11,6 +11,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::*;
+use crate::resources::ScopedTo;
 use crate::tools::names;
 
 /// What the caller must do with a verb's result beyond relaying it.
@@ -136,7 +137,34 @@ pub fn call<R: Resources>(
     args: Value,
     store: &DocumentHistory<R>,
 ) -> Result<Called, Refusal> {
-    let res: &dyn Resources = store;
+    call_scoped(tool, args, store, None)
+}
+
+/// The document a call acts on: as the caller spelled it, and as the store resolves it.
+#[derive(Debug, Clone, Copy)]
+pub struct Scope<'a> {
+    pub document: &'a str,
+    pub origin: &'a str,
+}
+
+/// [`call`] over a store shared by many documents, scoped to the one `scope` names, so that
+/// document's own references resolve beside it rather than from wherever the store's base is.
+pub fn call_scoped<R: Resources>(
+    tool: &str,
+    args: Value,
+    store: &DocumentHistory<R>,
+    scope: Option<Scope<'_>>,
+) -> Result<Called, Refusal> {
+    let history: &dyn Resources = store;
+    let scoped = scope.map(|scope| ScopedTo {
+        store: history,
+        document: scope.document,
+        origin: scope.origin,
+    });
+    let res: &dyn Resources = match &scoped {
+        Some(scoped) => scoped,
+        None => history,
+    };
     macro_rules! edit {
         ($args:ident, $ty:ty, $verb:ident) => {
             run::<$ty, _>(

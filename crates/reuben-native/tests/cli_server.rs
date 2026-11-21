@@ -162,3 +162,108 @@ fn operator_listing_comes_from_the_server() {
         .collect();
     assert!(names.contains(&"oscillator"), "{names:?}");
 }
+
+/// The exit code and every stderr line but the server note.
+fn verdict(out: &Output) -> (Option<i32>, Vec<String>) {
+    let lines = stderr(out)
+        .lines()
+        .filter(|line| !line.starts_with("note: answered by"))
+        .map(str::to_string)
+        .collect();
+    (out.status.code(), lines)
+}
+
+#[test]
+fn validate_on_the_running_server_reports_like_the_temporary_one() {
+    let a = TempDir::new("cli_validate_a");
+    let good = a.seed("good.json", "good");
+    let broken = a.0.join("broken.json");
+    std::fs::write(
+        &broken,
+        r#"{"format_version":3,"instrument":"broken","nodes":[{"type":"no_such_op","address":"/x"}]}"#,
+    )
+    .expect("seed the broken doc");
+    let root = a.0.display().to_string();
+    let play = spawn_play(&a.0, &["--instrument-root", &root]);
+
+    for doc in [&good, &broken] {
+        let source = doc.display().to_string();
+        let running = reuben(&a.0, &["validate", &source, "--structure-addr", &play.addr]);
+        let temporary = reuben(&a.0, &["validate", &source, "--temporary-server"]);
+        assert_eq!(verdict(&running), verdict(&temporary), "{source}");
+        assert_eq!(stdout(&running), stdout(&temporary), "{source}");
+    }
+    let broken = reuben(&a.0, &["validate", "broken.json", "--temporary-server"]);
+    assert!(!broken.status.success());
+    assert!(stderr(&broken).contains("error"), "{}", stderr(&broken));
+}
+
+#[test]
+fn new_instrument_on_the_running_server_writes_and_does_not_open() {
+    let a = TempDir::new("cli_new_running");
+    let doc = a.seed("doc.json", "playing");
+    let play = spawn_play(&a.0, &[&doc.display().to_string()]);
+    let before = channel(&play.addr).get_document().expect("a snapshot");
+
+    let created = a.0.join("n.json");
+    let out = reuben(
+        &a.0,
+        &[
+            "new-instrument",
+            &created.display().to_string(),
+            "--structure-addr",
+            &play.addr,
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(created.is_file());
+    let after = channel(&play.addr).get_document().expect("a snapshot");
+    assert_eq!(after.source, before.source);
+    assert_eq!(after.content_hash, before.content_hash);
+}
+
+#[test]
+fn new_instrument_refuses_to_overwrite() {
+    let a = TempDir::new("cli_new_overwrite");
+    let first = reuben(&a.0, &["new-instrument", "n.json", "--temporary-server"]);
+    assert!(first.status.success(), "{}", stderr(&first));
+    let bytes = std::fs::read(a.0.join("n.json")).expect("created");
+    let second = reuben(&a.0, &["new-instrument", "n.json", "--temporary-server"]);
+    assert!(!second.status.success());
+    assert_eq!(
+        std::fs::read(a.0.join("n.json")).expect("still there"),
+        bytes
+    );
+}
+
+#[test]
+fn new_instrument_outside_what_the_server_offers_writes_nothing() {
+    let a = TempDir::new("cli_new_unoffered_a");
+    let c = TempDir::new("cli_new_unoffered_c");
+    let root = a.0.display().to_string();
+    let play = spawn_play(&a.0, &["--instrument-root", &root]);
+    let out = reuben(
+        &c.0,
+        &["new-instrument", "n.json", "--structure-addr", &play.addr],
+    );
+    assert!(!out.status.success());
+    assert!(!c.0.join("n.json").exists());
+    assert!(
+        stderr(&out).contains("`n.json` is not offered by this server"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn new_instrument_with_no_server_writes_in_cwd() {
+    let a = TempDir::new("cli_new_cwd");
+    let out = reuben(&a.0, &["new-instrument", "n.json", "--temporary-server"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(a.0.join("n.json").is_file());
+    assert!(
+        stdout(&out).starts_with("created n.json (content_hash "),
+        "{}",
+        stdout(&out)
+    );
+}

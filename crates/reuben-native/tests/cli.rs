@@ -1,11 +1,13 @@
-//! Integration: the shipped stereo examples and their device profile, driven through the very
-//! window verb the `reuben validate` subcommand is, over the real filesystem resolver — so what
-//! passes here is what the binary reports, not a parallel path that happens to agree.
+//! Integration: the shipped stereo examples and their device profile, validated on a temporary
+//! server through the very window verb the `reuben validate` subcommand calls — the path the binary
+//! takes when no `reuben play` runs, so what passes here is what the binary reports.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use reuben_api::authoring::{self, ValidateInstrument};
-use reuben_api::FsResolver;
+use reuben_api::engine::call_tool;
+use reuben_api::tools::names;
+use reuben_native::client::{reach, Target, Temporary};
 
 /// Absolute path to this crate's frozen test fixtures (docs that are test coverage,
 /// not library instruments).
@@ -13,22 +15,34 @@ fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
 
-/// Validate a document at `source` exactly as the `validate` subcommand does: a document-scoped
-/// resolver that **decodes** samples, and the window's verb.
+/// Validate a document at `source` as the `validate` subcommand does with no server running: a
+/// temporary server offered the document's directory, and the window's verb.
 ///
-/// Decoding is the part worth being careful about. Stat-ing instead would still pass every
-/// assertion below — the fixtures reference no unreadable audio — while quietly testing a
-/// resolver the binary does not use. `an_undecodable_sample_is_a_warning` is what makes the
-/// setting load-bearing here.
+/// The server's store decodes samples. Stat-ing instead would still pass every assertion below —
+/// the fixtures reference no unreadable audio — so `an_undecodable_sample_is_a_warning` is what
+/// makes the setting load-bearing here.
 fn validate_source(source: &str) -> authoring::Report {
-    authoring::validate_instrument(
+    let reached = reach(
+        Target::Temporary,
+        Temporary {
+            instrument_root: None,
+            offer: Path::new(source)
+                .parent()
+                .map(Path::to_path_buf)
+                .into_iter()
+                .collect(),
+        },
+    )
+    .expect("a temporary server");
+    let answer = call_tool(
+        names::VALIDATE_INSTRUMENT,
         &ValidateInstrument {
             source: source.to_string(),
         },
-        &FsResolver::for_document(source),
+        reached.channel(),
     )
-    .unwrap_or_else(|refusal| panic!("{source} should be readable: {refusal}"))
-    .output
+    .unwrap_or_else(|refusal| panic!("{source} should be readable: {refusal}"));
+    serde_json::from_value(answer.output).expect("a validation report")
 }
 
 /// Validate one frozen fixture by name.

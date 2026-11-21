@@ -115,6 +115,44 @@ impl Resources for Anchored<'_> {
     }
 }
 
+/// `store` scoped to one document, as a filesystem door scopes a store with
+/// `FsResolver::for_document`: a reference with no referrer, which is how a load resolves the top
+/// document's own references, resolves beside `origin`, while the document itself still answers to
+/// `document`, the name the caller spelled. Writes pass through.
+#[cfg(any(feature = "authoring", test))]
+pub(crate) struct ScopedTo<'a> {
+    pub store: &'a dyn Resources,
+    pub document: &'a str,
+    pub origin: &'a str,
+}
+
+#[cfg(any(feature = "authoring", test))]
+impl Resources for ScopedTo<'_> {
+    fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+        self.store.read_samples(source)
+    }
+
+    fn read_text(&self, source: &str) -> Result<String, ResolveError> {
+        self.store.read_text(source)
+    }
+
+    fn write_text(&self, source: &str, text: &str) -> Result<(), ResolveError> {
+        self.store.write_text(source, text)
+    }
+
+    fn create_text(&self, source: &str, text: &str) -> Result<Created, ResolveError> {
+        self.store.create_text(source, text)
+    }
+
+    fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
+        match referrer {
+            Some(referrer) => self.store.canonical(source, Some(referrer)),
+            None if source == self.document => self.store.canonical(source, None),
+            None => self.store.canonical(source, Some(self.origin)),
+        }
+    }
+}
+
 /// [`Adapter`] for a store the engine must **own** rather than borrow: the Coordinator holds its
 /// resolver for the session (a by-path swap resolves through it), so the borrowed form cannot
 /// serve it.

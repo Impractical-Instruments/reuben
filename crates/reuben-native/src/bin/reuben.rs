@@ -14,12 +14,9 @@ use std::sync::mpsc;
 
 use clap::{Parser, Subcommand};
 
-use reuben_api::authoring::{
-    self, Diag, PortInfo, Refusal, COMPACT_DESCRIBE_LEGEND, SCAFFOLD_DEFAULT_NAME,
-};
+use reuben_api::authoring::{self, Diag, PortInfo, COMPACT_DESCRIBE_LEGEND, SCAFFOLD_DEFAULT_NAME};
 use reuben_api::engine::call_tool;
 use reuben_api::tools::names;
-use reuben_api::FsResolver;
 use reuben_native::cli::{
     EngineFlags, InstrumentRoot, ServerFlags, INSTRUMENT_ROOT_ENV, LOG_OSC_ENV,
 };
@@ -86,6 +83,8 @@ enum Command {
         /// Emit machine-readable JSON instead of a human summary.
         #[arg(long)]
         json: bool,
+        #[command(flatten)]
+        server: ServerFlags,
     },
     /// Generate a new Operator's Rust skeleton from a contract spec and wire its registration.
     ScaffoldOperator {
@@ -110,6 +109,8 @@ enum Command {
         /// Emit machine-readable JSON instead of a human summary.
         #[arg(long)]
         json: bool,
+        #[command(flatten)]
+        server: ServerFlags,
     },
 }
 
@@ -169,52 +170,21 @@ fn main() -> ExitCode {
             select_type,
             &|paths: &[&str]| connect(&server, root.clone().resolve(), paths),
         ),
-        Command::Validate { path, json } => cmd_validate(&path, json, root.resolve()),
+        Command::Validate { path, json, server } => {
+            cmd_validate(&path, json, &server, root.resolve())
+        }
         Command::ScaffoldOperator {
             spec,
             core_root,
             json,
         } => cmd_scaffold(&spec, &core_root, json),
-        Command::NewInstrument { path, name, json } => {
-            cmd_new_instrument(&path, name.as_deref(), json)
-        }
+        Command::NewInstrument {
+            path,
+            name,
+            json,
+            server,
+        } => cmd_new_instrument(&path, name.as_deref(), json, &server, root.resolve()),
     }
-}
-
-/// What a command needs of a referenced sample — the one axis on which two commands want different
-/// resolvers behind the same source.
-#[derive(Copy, Clone, PartialEq, Eq)]
-enum Samples {
-    /// Decode them. `validate` is the dry run of the load `play` will do for real, so a sample that
-    /// is present but undecodable has to surface here as the warning `play` would hit; stat-ing it
-    /// would report a document legal that cannot be heard.
-    Decode,
-    /// Check availability without decoding. The introspection reads report port metadata and never
-    /// touch audio, so decoding every referenced WAV to describe a boundary is pure waste.
-    Availability,
-}
-
-/// The CLI door's reading of an opaque document `source`: a filesystem path, with the library root
-/// as the fallback for anything it references.
-fn store(source: &str, root: Option<PathBuf>, samples: Samples) -> FsResolver {
-    let store = FsResolver::for_document(source);
-    let store = match root {
-        Some(root) => store.with_root(root),
-        None => store,
-    };
-    match samples {
-        Samples::Decode => store,
-        Samples::Availability => store.stat_only(),
-    }
-}
-
-/// A [`Refusal`] is the CLI's can't-do-the-job signal: the window's message on stderr and a
-/// non-zero exit — the same split the sidecar renders as `isError`. What is *not* here: a rejected
-/// edit and a failing validation come back as ordinary answers, and each command decides its own
-/// exit code from the report it was handed.
-fn refused(refusal: &Refusal) -> ExitCode {
-    eprintln!("error: {refusal}");
-    ExitCode::FAILURE
 }
 
 /// One `--json` payload on stdout. The shape is whatever the window answered with; the framing —
@@ -286,25 +256,37 @@ fn ask<T: DeserializeOwned>(
 ///
 /// The window's `new_instrument`, the very verb the sidecar calls, so both doors create a document
 /// by exactly one procedure and the result is validated and written by the same code.
-fn cmd_new_instrument(path: &Path, name: Option<&str>, json: bool) -> ExitCode {
+fn cmd_new_instrument(
+    path: &Path,
+    name: Option<&str>,
+    json: bool,
+    server: &ServerFlags,
+    root: Option<PathBuf>,
+) -> ExitCode {
     let source = path.display().to_string();
-    let answer = match authoring::new_instrument(
+    let reached = match connect(server, root, &[&source]) {
+        Ok(reached) => reached,
+        Err(code) => return code,
+    };
+    let mut spelled = Names::default();
+    let result: authoring::EditResult = match ask(
+        &reached,
+        names::NEW_INSTRUMENT,
         &authoring::NewInstrument {
-            source: source.clone(),
+            source: spelled.sent(&source),
             name: name.unwrap_or(SCAFFOLD_DEFAULT_NAME).to_string(),
         },
-        &store(&source, None, Samples::Availability),
+        &spelled,
     ) {
-        Ok(answer) => answer,
-        Err(refusal) => return refused(&refusal),
+        Ok(result) => result,
+        Err(code) => return code,
     };
-    let result = answer.output;
 
     if json {
         print_json(&result);
     } else {
         for e in &result.report.errors {
-            print_diag("error", e, &Names::default());
+            print_diag("error", e, &spelled);
         }
         if result.written {
             println!("created {source} (content_hash {})", result.hash);
@@ -612,27 +594,33 @@ fn cmd_project(
 /// `validate`: report whether an instrument loads + plans cleanly, through the window's
 /// `validate_instrument` — the single authority every document verb re-validates through. Exit 1
 /// only on hard errors; warnings (e.g. an unresolved sample) are advisory and keep exit 0.
-fn cmd_validate(path: &Path, json: bool, root: Option<PathBuf>) -> ExitCode {
+fn cmd_validate(path: &Path, json: bool, server: &ServerFlags, root: Option<PathBuf>) -> ExitCode {
     let source = path.display().to_string();
-    let answer = match authoring::validate_instrument(
-        &authoring::ValidateInstrument {
-            source: source.clone(),
-        },
-        &store(&source, root, Samples::Decode),
-    ) {
-        Ok(answer) => answer,
-        Err(refusal) => return refused(&refusal),
+    let reached = match connect(server, root, &[&source]) {
+        Ok(reached) => reached,
+        Err(code) => return code,
     };
-    let report = answer.output;
+    let mut spelled = Names::default();
+    let report: authoring::Report = match ask(
+        &reached,
+        names::VALIDATE_INSTRUMENT,
+        &authoring::ValidateInstrument {
+            source: spelled.sent(&source),
+        },
+        &spelled,
+    ) {
+        Ok(report) => report,
+        Err(code) => return code,
+    };
 
     if json {
         print_json(&report);
     } else {
         for e in &report.errors {
-            print_diag("error", e, &Names::default());
+            print_diag("error", e, &spelled);
         }
         for w in &report.warnings {
-            print_diag("warning", w, &Names::default());
+            print_diag("warning", w, &spelled);
         }
         if report.ok {
             println!("ok ({} warning(s))", report.warnings.len());
