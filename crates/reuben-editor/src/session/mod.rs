@@ -12,16 +12,14 @@ mod users;
 mod view;
 mod watch;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use reuben_api::authoring::DocumentHistory;
 use reuben_api::engine::{swap_instrument, Channel, SwapInstrument, SwapResult};
-use reuben_api::FsResolver;
 
 pub use self::tree::{nested, Document, Tree};
 pub use self::undo::{Direction, Step, Undo};
@@ -111,11 +109,6 @@ pub struct Session {
     /// Why the last edit did not land, until one does: kept here so the canvas and the inspector,
     /// which both write, show the same one.
     feedback: Option<Feedback>,
-    /// The store each document is written through, kept for the session's life so the states a
-    /// step names stay held for a restore.
-    histories: BTreeMap<String, DocumentHistory<FsResolver>>,
-    /// How many states each of `histories` keeps.
-    states: usize,
     /// The file `users` is about, and the instruments that play it, as last listed.
     users: Option<(PathBuf, Listing)>,
     /// Where a listing under way will arrive. Replaced, and so let go, by the next listing.
@@ -169,8 +162,6 @@ impl Session {
             wake,
             undo: Undo::default(),
             feedback: None,
-            histories: BTreeMap::new(),
-            states: DocumentHistory::<FsResolver>::DEFAULT_CAPACITY,
             users: None,
             listing: None,
             installed: None,
@@ -310,25 +301,6 @@ impl Session {
             Ok(watch) if watch.unwatched().is_empty() => None,
             Ok(watch) => Some(watch.unwatched().join("; ")),
         }
-    }
-
-    /// The store to hand a `reuben-api` verb for the document `source`: the one the tree reads it
-    /// through, wrapped in the history a restore returns it to an earlier state from. The same one
-    /// for every call on `source`, for as long as the session is open, so the states its writes
-    /// left stay held.
-    pub fn history(&mut self, source: &str) -> &DocumentHistory<FsResolver> {
-        let root = self.root.as_deref();
-        let states = self.states;
-        self.histories
-            .entry(source.to_string())
-            .or_insert_with(|| DocumentHistory::with_capacity(tree::store(source, root), states))
-    }
-
-    /// Keep `states` states per document from here on, so a test can push one out of the store.
-    #[cfg(test)]
-    pub fn keep_states(&mut self, states: usize) {
-        self.states = states;
-        self.histories.clear();
     }
 
     pub fn undo(&self) -> &Undo {
@@ -562,6 +534,8 @@ pub(crate) mod test_support {
 
     use super::{Session, Status};
 
+    type Store = Staged<Box<dyn Resources + Send + Sync>>;
+
     /// A scratch directory removed on drop, so a failed assertion leaves nothing behind.
     pub struct Scratch(PathBuf);
 
@@ -715,7 +689,9 @@ pub(crate) mod test_support {
 
     /// A session on a scratch copy of a library instrument, and an engine playing that copy with
     /// no audio device: the Coordinator, host and window are the ones `reuben play` wires up, and a
-    /// [`FakeCallback`] renders in place of the device.
+    /// [`FakeCallback`] renders in place of the device. Built from parts rather than started, so
+    /// the transport the session reaches it through can count and delay Swaps. Every edit the
+    /// session makes is a `call` to this server, written through its store.
     pub struct Rig {
         pub lib: PathBuf,
         pub top: PathBuf,
@@ -735,10 +711,16 @@ pub(crate) mod test_support {
 
     impl Rig {
         pub fn open(test: &str, instrument: &str) -> Self {
+            Self::keeping(test, instrument, DocumentHistory::<Store>::DEFAULT_CAPACITY)
+        }
+
+        /// [`open`](Self::open), on a server whose history holds `states` documents, so a test
+        /// can push a state out of it.
+        pub fn keeping(test: &str, instrument: &str, states: usize) -> Self {
             let scratch = Scratch::new(test);
             let lib = scratch.library();
             let top = lib.join(instrument);
-            Self::started(scratch, lib, top)
+            Self::started(scratch, lib, top, states)
         }
 
         /// A rig on a new instrument, as `new_instrument` seeds it, at `lib/<name>.json`.
@@ -758,13 +740,17 @@ pub(crate) mod test_support {
             .expect("the seed is written")
             .output;
             assert!(seeded.written, "{:?}", seeded.report);
-            Self::started(scratch, lib, top)
+            Self::started(
+                scratch,
+                lib,
+                top,
+                DocumentHistory::<Store>::DEFAULT_CAPACITY,
+            )
         }
 
-        fn started(scratch: Scratch, lib: PathBuf, top: PathBuf) -> Self {
+        fn started(scratch: Scratch, lib: PathBuf, top: PathBuf, states: usize) -> Self {
             let text = std::fs::read_to_string(&top).expect("read the fixture");
-            let staged: Staged<Box<dyn Resources + Send + Sync>> =
-                Staged::new(Box::new(FsResolver::for_instrument(&top)));
+            let staged: Store = Staged::new(Box::new(FsResolver::for_instrument(&top)));
             let (coordinator, side, _warnings) =
                 install_initial(&text, staged.clone(), AudioConfig::new(48_000.0, 128))
                     .expect("install the fixture");
@@ -773,7 +759,7 @@ pub(crate) mod test_support {
             let state = StructureState::new(
                 coordinator,
                 Arc::new(host),
-                Arc::new(DocumentHistory::new(staged)),
+                Arc::new(DocumentHistory::with_capacity(staged, states)),
             )
             .with_installed_source(Some(top.display().to_string()));
             Rig {

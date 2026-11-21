@@ -11,14 +11,15 @@ use std::sync::OnceLock;
 
 use eframe::egui;
 use reuben_api::authoring::{
-    add_instrument_resource, describe_operators, remove_instrument_resource,
-    set_instrument_node_resource, set_instrument_resource, AddInstrumentResource, Answer,
-    DescribeOperators, EditResult, InstrumentStructure, Refusal, RemoveInstrumentResource,
-    ResourceEntry, Resources, SetInstrumentNodeResource, SetInstrumentResource, StructureNode,
+    describe_operators, AddInstrumentResource, DescribeOperators, InstrumentStructure,
+    RemoveInstrumentResource, ResourceEntry, SetInstrumentNodeResource, SetInstrumentResource,
+    StructureNode,
 };
+use reuben_api::tools::names;
 
 use super::view::Ask;
 use super::{Edit, Inspector};
+use crate::edit::Verb;
 use crate::pick;
 
 /// One change to the resources table, or to what a node reads from it.
@@ -45,35 +46,32 @@ pub enum ResourceEdit {
 }
 
 impl ResourceEdit {
-    pub fn run(
-        self,
-        source: String,
-        store: &dyn Resources,
-        expect: Option<String>,
-    ) -> Result<Answer<EditResult>, Refusal> {
+    pub fn verb(self, source: String, expect: Option<String>) -> Verb {
         match self {
-            ResourceEdit::Add { id, source: named } => add_instrument_resource(
+            ResourceEdit::Add { id, source: named } => Verb::of(
+                names::ADD_INSTRUMENT_RESOURCE,
                 &AddInstrumentResource {
                     source,
                     id,
                     resource_source: named,
                     expect,
                 },
-                store,
             ),
-            ResourceEdit::Remove(id) => {
-                remove_instrument_resource(&RemoveInstrumentResource { source, id, expect }, store)
-            }
-            ResourceEdit::Repoint { id, source: named } => set_instrument_resource(
+            ResourceEdit::Remove(id) => Verb::of(
+                names::REMOVE_INSTRUMENT_RESOURCE,
+                &RemoveInstrumentResource { source, id, expect },
+            ),
+            ResourceEdit::Repoint { id, source: named } => Verb::of(
+                names::SET_INSTRUMENT_RESOURCE,
                 &SetInstrumentResource {
                     source,
                     id,
                     resource_source: named,
                     expect,
                 },
-                store,
             ),
-            ResourceEdit::Slot { address, slot, id } => set_instrument_node_resource(
+            ResourceEdit::Slot { address, slot, id } => Verb::of(
+                names::SET_INSTRUMENT_NODE_RESOURCE,
                 &SetInstrumentNodeResource {
                     source,
                     address,
@@ -81,7 +79,6 @@ impl ResourceEdit {
                     id,
                     expect,
                 },
-                store,
             ),
         }
     }
@@ -412,6 +409,7 @@ pub fn slots(
 
 #[cfg(test)]
 mod tests {
+    use reuben_api::authoring::Resources;
     use reuben_api::FsResolver;
     use reuben_native::test_support::within;
     use serde_json::json;

@@ -8,13 +8,11 @@
 
 use std::path::{Path, PathBuf};
 
-use reuben_api::authoring::{
-    copy_instrument, set_instrument_resource, CopyInstrument, EditResult, Refusal,
-    SetInstrumentResource,
-};
+use reuben_api::authoring::{CopyInstrument, EditResult, Refusal, SetInstrumentResource};
 use reuben_api::engine::Channel;
+use reuben_api::tools::names;
 
-use super::write;
+use super::{call, write, Verb};
 use crate::feedback::Feedback;
 use crate::session::Session;
 
@@ -63,28 +61,30 @@ pub fn make(session: &mut Session, channel: &dyn Fn() -> Option<Channel>) -> Opt
     };
 
     let to = to.display().to_string();
-    let copied = copy_instrument(
-        &CopyInstrument {
-            from: crumb.source.clone(),
-            to: to.clone(),
-        },
-        session.history(&to),
-    )
-    .map(|answer| answer.output);
+    let copied = call(
+        channel,
+        Verb::of(
+            names::COPY_INSTRUMENT,
+            &CopyInstrument {
+                from: crumb.source.clone(),
+                to: to.clone(),
+            },
+        ),
+    );
     if let Some(feedback) = Feedback::of(&to, None, &copied) {
         *session.feedback_mut() = Some(feedback);
         return None;
     }
 
-    let landed = write(session, channel, &parent_source, |store, expect| {
-        set_instrument_resource(
+    let landed = write(session, channel, &parent_source, |expect| {
+        Verb::of(
+            names::SET_INSTRUMENT_RESOURCE,
             &SetInstrumentResource {
                 source: parent_source.clone(),
                 id: entry.id,
                 resource_source: repointed,
                 expect,
             },
-            store,
         )
     })
     .is_ok_and(|result| result.written);
@@ -235,14 +235,14 @@ mod tests {
             assert_eq!(hash_on_disk(&copy_path), original_hash);
 
             let source = rig.session.viewed().source.clone();
-            let edited = write(&mut rig.session, &channel, &source, |store, expect| {
-                set_instrument_description(
+            let edited = write(&mut rig.session, &channel, &source, |expect| {
+                Verb::of(
+                    names::SET_INSTRUMENT_DESCRIPTION,
                     &SetInstrumentDescription {
                         source: source.clone(),
                         description: Some("acid-techno's own kick".to_string()),
                         expect,
                     },
-                    store,
                 )
             })
             .expect("the verb ran");

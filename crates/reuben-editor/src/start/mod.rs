@@ -8,8 +8,9 @@ mod recent;
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
-use reuben_api::authoring::{new_instrument, NewInstrument};
-use reuben_api::FsResolver;
+use reuben_api::authoring::NewInstrument;
+use reuben_api::engine::Channel;
+use reuben_api::tools::names;
 use reuben_native::cli::EngineFlags;
 use reuben_native::engine::{EngineConfig, Instrument, RunningEngine, StartError};
 use reuben_native::structure::SwapHold;
@@ -18,6 +19,7 @@ use self::library::Entry;
 use self::recent::Recent;
 use crate::audio::AudioSettings;
 use crate::config::ConfigDir;
+use crate::edit::{self, Verb};
 use crate::engine::Engine;
 use crate::pick;
 use crate::session::{Session, Status};
@@ -101,23 +103,20 @@ pub fn panel_follows(session: &Session, engine: &Engine) -> bool {
     !matches!(session.status(), Status::Held(_)) || engine.channel().is_none()
 }
 
-/// Write a new, valid instrument document at `path`, named for its file. Refused when a document
-/// is already there.
-pub fn create(path: &Path) -> Result<(), String> {
+/// Have the running engine's server write a new, valid instrument document at `path`, named for its
+/// file. Refused when a document is already there, when the server does not offer `path`, and
+/// while no engine is running.
+pub fn create(path: &Path, channel: &dyn Fn() -> Option<Channel>) -> Result<(), String> {
     let source = path.display().to_string();
     let name = path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "untitled".to_string());
-    let made = new_instrument(
-        &NewInstrument {
-            source: source.clone(),
-            name,
-        },
-        &FsResolver::for_document(&source).stat_only(),
+    let made = edit::call(
+        channel,
+        Verb::of(names::NEW_INSTRUMENT, &NewInstrument { source, name }),
     )
-    .map_err(|refusal| refusal.message)?
-    .output;
+    .map_err(|refusal| refusal.message)?;
     if made.written {
         return Ok(());
     }
@@ -173,7 +172,13 @@ impl Start {
 
     /// Draw the start screen into `ui`. Returns the instrument the user chose to open. `open` is
     /// whether an instrument is open already, which the screen then offers to go back to.
-    pub fn show(&mut self, ui: &mut egui::Ui, open: bool) -> Option<PathBuf> {
+    /// `channel` reaches the server a new instrument is created through.
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        open: bool,
+        channel: &dyn Fn() -> Option<Channel>,
+    ) -> Option<PathBuf> {
         let mut chosen = None;
         egui::ScrollArea::vertical()
             .auto_shrink(false)
@@ -192,7 +197,7 @@ impl Start {
                         if let Some(path) =
                             pick::instrument_to_create(self.library_dir.as_deref().ok())
                         {
-                            match create(&path) {
+                            match create(&path, channel) {
                                 Ok(()) => chosen = Some(path),
                                 Err(e) => {
                                     self.error = Some(format!("{}: {e}", path.display()));
@@ -284,6 +289,7 @@ mod tests {
 
     use reuben_api::authoring::{set_instrument_name, SetInstrumentName};
     use reuben_api::engine::{get_current_instrument, swap_instrument, SwapInstrument};
+    use reuben_api::FsResolver;
     use reuben_native::test_support::{start_headless, within};
 
     use super::*;
@@ -725,14 +731,14 @@ mod tests {
             let mut session = open(&first, &launch(), &mut audio, &mut engine, || {}, headless);
             let source = first.display().to_string();
             let channel = || engine.channel();
-            let edit = crate::edit::write(&mut session, &channel, &source, |store, expect| {
-                set_instrument_name(
+            let edit = crate::edit::write(&mut session, &channel, &source, |expect| {
+                Verb::of(
+                    names::SET_INSTRUMENT_NAME,
                     &SetInstrumentName {
                         source: source.clone(),
                         name: "renamed".to_string(),
                         expect,
                     },
-                    store,
                 )
             })
             .expect("the verb ran");
@@ -771,12 +777,23 @@ mod tests {
             let temp = TempConfig::new();
             let mut audio = AudioSettings::load_with(temp.dir(), two_devices);
             let scratch = Scratch::new("start_new");
-            let path = scratch.path("my-synth.json");
-
-            create(&path).expect("created");
+            let lib = scratch.library();
             let mut engine = Engine::idle();
-            let session = open(&path, &launch(), &mut audio, &mut engine, || {}, headless);
-            assert_eq!(session.status(), &Status::Current);
+            let first = lib.join("default.json");
+            open(&first, &launch(), &mut audio, &mut engine, || {}, headless);
+            // Beside the open instrument, so the server offers the name.
+            let path = lib.join("my-synth.json");
+
+            create(&path, &|| engine.channel()).expect("created");
+            let mut session = open(
+                &path,
+                &launch(),
+                &mut audio,
+                &mut engine,
+                || {},
+                |_| panic!("a running engine is Swapped to"),
+            );
+            swapped_in(&mut session, &engine);
             let top = session.tree().top().read.as_ref().expect("it reads");
             assert_eq!(top.instrument, "my-synth");
             assert!(top.report.ok, "{:?}", top.report.errors);
@@ -790,12 +807,28 @@ mod tests {
 
     #[test]
     fn creating_over_an_existing_document_is_refused_and_leaves_it() {
-        let scratch = Scratch::new("start_new_exists");
-        let lib = scratch.library();
-        let path = lib.join("default.json");
-        let before = std::fs::read(&path).expect("read");
-        assert!(create(&path).is_err());
-        assert_eq!(std::fs::read(&path).expect("read"), before);
+        within(HANG_SECS, || {
+            let temp = TempConfig::new();
+            let mut audio = AudioSettings::load_with(temp.dir(), two_devices);
+            let scratch = Scratch::new("start_new_exists");
+            let lib = scratch.library();
+            let mut engine = Engine::idle();
+            let first = lib.join("groovebox.json");
+            open(&first, &launch(), &mut audio, &mut engine, || {}, headless);
+            let path = lib.join("default.json");
+            let before = std::fs::read(&path).expect("read");
+            assert!(create(&path, &|| engine.channel()).is_err());
+            assert_eq!(std::fs::read(&path).expect("read"), before);
+            engine.shutdown();
+        });
+    }
+
+    #[test]
+    fn creating_with_no_engine_running_is_refused_and_writes_nothing() {
+        let scratch = Scratch::new("start_new_no_engine");
+        let path = scratch.path("my-synth.json");
+        assert!(create(&path, &|| None).is_err());
+        assert!(!path.exists());
     }
 
     #[test]

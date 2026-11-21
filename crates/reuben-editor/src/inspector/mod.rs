@@ -14,18 +14,17 @@ mod resources;
 mod view;
 
 use reuben_api::authoring::{
-    remove_instrument_constant, set_instrument_constant, set_instrument_description,
-    set_instrument_input, set_instrument_name, set_instrument_node_description, Answer, EditResult,
-    Refusal, RemoveInstrumentConstant, Resources, SetInstrumentConstant, SetInstrumentDescription,
-    SetInstrumentInput, SetInstrumentName, SetInstrumentNodeDescription,
+    RemoveInstrumentConstant, SetInstrumentConstant, SetInstrumentDescription, SetInstrumentInput,
+    SetInstrumentName, SetInstrumentNodeDescription,
 };
 use reuben_api::engine::{Channel, ControlSendMessage};
+use reuben_api::tools::names;
 use serde_json::Value;
 
 use self::interface::{Adding, PipeEdit};
 use self::model::{fields, pipe_field, Control, Drafts, Holds, Step, Target};
 use self::resources::ResourceEdit;
-use crate::edit;
+use crate::edit::{self, Verb};
 use crate::sends::{Live, Replies};
 use crate::session::Session;
 
@@ -54,17 +53,13 @@ enum Edit {
 }
 
 impl Edit {
-    /// Run this edit's verb on the document `source`. Empty text clears a description.
-    fn run(
-        self,
-        source: &str,
-        store: &dyn Resources,
-        expect: Option<String>,
-    ) -> Result<Answer<EditResult>, Refusal> {
+    /// This edit's verb on the document `source`. Empty text clears a description.
+    fn verb(self, source: &str, expect: Option<String>) -> Verb {
         let source = source.to_string();
         let cleared = |text: String| (!text.trim().is_empty()).then_some(text);
         match self {
-            Edit::Value { target, value } if target.constant => set_instrument_constant(
+            Edit::Value { target, value } if target.constant => Verb::of(
+                names::SET_INSTRUMENT_CONSTANT,
                 &SetInstrumentConstant {
                     source,
                     address: target.address,
@@ -72,9 +67,9 @@ impl Edit {
                     value,
                     expect,
                 },
-                store,
             ),
-            Edit::Value { target, value } => set_instrument_input(
+            Edit::Value { target, value } => Verb::of(
+                names::SET_INSTRUMENT_INPUT,
                 &SetInstrumentInput {
                     source,
                     address: target.address,
@@ -82,44 +77,43 @@ impl Edit {
                     value,
                     expect,
                 },
-                store,
             ),
-            Edit::RemoveConstant { address, name } => remove_instrument_constant(
+            Edit::RemoveConstant { address, name } => Verb::of(
+                names::REMOVE_INSTRUMENT_CONSTANT,
                 &RemoveInstrumentConstant {
                     source,
                     address,
                     name,
                     expect,
                 },
-                store,
             ),
-            Edit::NodeDescription { address, text } => set_instrument_node_description(
+            Edit::NodeDescription { address, text } => Verb::of(
+                names::SET_INSTRUMENT_NODE_DESCRIPTION,
                 &SetInstrumentNodeDescription {
                     source,
                     address,
                     description: cleared(text),
                     expect,
                 },
-                store,
             ),
-            Edit::Name(name) => set_instrument_name(
+            Edit::Name(name) => Verb::of(
+                names::SET_INSTRUMENT_NAME,
                 &SetInstrumentName {
                     source,
                     name,
                     expect,
                 },
-                store,
             ),
-            Edit::Description(text) => set_instrument_description(
+            Edit::Description(text) => Verb::of(
+                names::SET_INSTRUMENT_DESCRIPTION,
                 &SetInstrumentDescription {
                     source,
                     description: cleared(text),
                     expect,
                 },
-                store,
             ),
-            Edit::Pipe(edit) => edit.run(source, store, expect),
-            Edit::Resource(edit) => edit.run(source, store, expect),
+            Edit::Pipe(edit) => edit.verb(source, expect),
+            Edit::Resource(edit) => edit.verb(source, expect),
         }
     }
 }
@@ -244,7 +238,7 @@ impl Inspector {
         }
         let source = session.viewed().source.clone();
         let added = edit.clone();
-        let verb = |store: &dyn Resources, expect| edit.run(&source, store, expect);
+        let verb = |expect| edit.verb(&source, expect);
         let result = match expect {
             Some(expect) => edit::write_against(session, channel, &source, expect, verb),
             None => edit::write(session, channel, &source, verb),
@@ -267,8 +261,8 @@ mod tests {
     use std::time::Duration;
 
     use reuben_api::authoring::{
-        read_instrument, rename_instrument_node, InputValue, PortInfo, ReadInstrument,
-        RenameInstrumentNode, StructureNode, WireSource,
+        read_instrument, rename_instrument_node, set_instrument_input, InputValue, PortInfo,
+        ReadInstrument, RenameInstrumentNode, StructureNode, WireSource,
     };
     use reuben_api::render::Arg;
     use reuben_api::FsResolver;

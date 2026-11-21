@@ -401,7 +401,10 @@ impl eframe::App for Editor {
         // frame paints the theme's fill instead.
         let gestures = egui::Frame::central_panel(ui.style()).show(ui, |ui| {
             if self.session.is_none() || self.start.shown() {
-                let chosen = self.start.show(ui, self.session.is_some());
+                let engine = &self.engine;
+                let chosen = self
+                    .start
+                    .show(ui, self.session.is_some(), &|| engine.channel());
                 if let Some(path) = chosen {
                     self.open(&path, ui.ctx());
                 }

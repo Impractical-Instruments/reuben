@@ -53,7 +53,8 @@ fn instrument(scratch: &Scratch) -> PathBuf {
     top
 }
 
-/// The editor open on `top` with no engine: `main`'s construction, repeated with test stand-ins.
+/// The editor open on `top`, with an embedded headless engine playing it that binds no port:
+/// `main`'s construction, repeated with test stand-ins.
 fn editor(top: &Path, config: &TempConfig) -> Editor {
     let args = Args::parse_from(["reuben-editor"]);
     let session = Session::open(top, None, || {});
@@ -63,7 +64,14 @@ fn editor(top: &Path, config: &TempConfig) -> Editor {
     let mut start = Start::new(config.dir(), None);
     start.opened(top);
     Editor {
-        engine: Engine::idle(),
+        engine: Engine::start_with(
+            EngineConfig {
+                structure: None,
+                osc_in: None,
+                ..EngineConfig::new(Instrument::Path(top.to_path_buf()))
+            },
+            reuben_native::engine::start_headless,
+        ),
         audio: AudioSettings::load_with(config.dir(), two_devices),
         controls: Controls::open(Some(top), None),
         canvas,
@@ -672,7 +680,9 @@ fn with_no_engine_the_meter_strip_says_so() {
     let scratch = Scratch::new("ui_meters_idle");
     let config = TempConfig::new();
     let top = instrument(&scratch);
-    let harness = harness(editor(&top, &config));
+    let mut editor = editor(&top, &config);
+    editor.engine = Engine::idle();
+    let harness = harness(editor);
     harness.get_by_label("Meters: no engine to read");
 }
 
@@ -681,7 +691,9 @@ fn the_meters_ride_the_right_edge_of_the_controls_panel() {
     let scratch = Scratch::new("ui_meters_beside_controls");
     let config = TempConfig::new();
     let top = instrument(&scratch);
-    let harness = harness(editor(&top, &config));
+    let mut editor = editor(&top, &config);
+    editor.engine = Engine::idle();
+    let harness = harness(editor);
     let controls = harness.get_by_label("CONTROLS").rect();
     let meters = harness.get_by_label("Meters: no engine to read").rect();
     assert!(meters.left() > controls.right(), "{meters:?} {controls:?}");
