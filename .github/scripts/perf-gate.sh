@@ -216,12 +216,13 @@ declare -a SUM_ROWS=()
 
 # Harvest HEAD's absolute Ir per case from a captured compare-run log into $RECORD (one JSON object
 # per case). Parses the human-readable gungraun output, not --save-summary JSON: the text format is
-# stable within a gungraun minor line and, unlike the summary, carries a value for cases that breached the
-# gate (printed as "Performance has regressed: Instructions (base -> head)" with no normal line).
-# A case header ends in `("<workload>")`; the workload id is the clean case name (e.g. add_f32_signal
-# vs add_f32_value). Summary-section headers end in `:` and are ignored, so each case records once.
+# stable within a gungraun minor line and, unlike the summary, carries a value for cases that breached
+# the gate (printed as "Performance has regressed: Instructions (base -> head)" with no normal line).
+# A case header ends in `<setup>("<workload>"))` — gungraun wraps the whole description in one more
+# pair of parentheses — and the workload id is the clean case name (e.g. add_f32_signal vs
+# add_f32_value). Summary-section headers end in `:` and are ignored, so each case records once.
 #
-# A layer whose bench args are NOT string literals renders `<bench id>:<setup>(<args>)` with nothing
+# A layer whose bench args are NOT string literals renders `<bench id>:(<setup>(<args>))` with nothing
 # quoted, and the workload rule above skips it silently — which is how the construct layer's first
 # run harvested nothing at all while every other part of the gate reported green. The second header
 # rule takes the **bench id** for those. The two rules are kept separate rather than unified so the
@@ -230,9 +231,9 @@ declare -a SUM_ROWS=()
 # their bench ids would orphan every point already recorded.
 #
 # That rule strips the leading `a::b::c ` path to reach the id, anchored at the START of the line —
-# NOT back from the last space. iai renders the args with `TokenStream::to_string`, which puts a
-# space after each comma, so a bench taking two args renders `id:setup(1024, 2)` and a
-# strip-to-last-space yields the case name `2)`. That name is silently dropped by the scaling gate
+# NOT back from the last space. gungraun renders the args with `TokenStream::to_string`, which puts a
+# space after each comma, so a bench taking two args renders `id:(setup(1024, 2))` and a
+# strip-to-last-space yields the case name `2))`. That name is silently dropped by the scaling gate
 # and is exactly the malformed record the dashboard has to survive.
 #
 # The compare run is captured with CARGO_TERM_COLOR=always (the job log is colored for humans), so the
@@ -246,7 +247,7 @@ harvest_history() {
   awk -v layer="$layer" -v sha="$H_SHA" -v full="$H_FULL" -v date="$H_DATE" -v run="${GITHUB_RUN_ID:-}" '
     function emit(ir){ printf "{\"sha\":\"%s\",\"commit_sha\":\"%s\",\"date\":\"%s\",\"run_id\":\"%s\",\"layer\":\"%s\",\"case\":\"%s\",\"ir\":%s}\n", sha, full, date, run, layer, cur, ir }
     { gsub(/[[:cntrl:]]\[[0-9;]*m/, "") }
-    /\("[^"]+"\)[[:space:]]*$/ { h=$0; sub(/.*\("/,"",h); sub(/"\)[[:space:]]*$/,"",h); cur=h; have=0; next }
+    /\("[^"]+"\)+[[:space:]]*$/ { h=$0; sub(/.*\("/,"",h); sub(/"\)+[[:space:]]*$/,"",h); cur=h; have=0; next }
     /::[^[:space:]]*[[:space:]][^[:space:]]+:[^[:space:]]*\([^"]*\)[[:space:]]*$/ { h=$0; sub(/^[^[:space:]]*[[:space:]]+/,"",h); sub(/:.*/,"",h); cur=h; have=0; next }
     (cur!="" && !have && /Instructions:[[:space:]]*[0-9]+\|/) { v=$0; sub(/.*Instructions:[[:space:]]*/,"",v); sub(/\|.*/,"",v); emit(v); have=1; next }
     (cur!="" && !have && /Performance has regressed: Instructions \([0-9]+ -> [0-9]+\)/) { v=$0; sub(/.*-> /,"",v); sub(/\).*/,"",v); emit(v); have=1; next }
