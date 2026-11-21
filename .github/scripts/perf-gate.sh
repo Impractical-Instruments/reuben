@@ -216,8 +216,9 @@ declare -a SUM_ROWS=()
 
 # Harvest HEAD's absolute Ir per case from a captured compare-run log into $RECORD (one JSON object
 # per case). Parses the human-readable gungraun output, not --save-summary JSON: the text format is
-# stable within a gungraun minor line and, unlike the summary, carries a value for cases that breached
-# the gate (printed as "Performance has regressed: Instructions (base -> head)" with no normal line).
+# stable within a gungraun minor line. A breached case still prints its normal `Instructions:` line,
+# which is what records it; the "Performance has regressed: Instructions (base -> head)" line after it
+# is a fallback for a case whose normal line is missing.
 # A case header ends in `<setup>("<workload>"))` — gungraun wraps the whole description in one more
 # pair of parentheses — and the workload id is the clean case name (e.g. add_f32_signal vs
 # add_f32_value). Summary-section headers end in `:` and are ignored, so each case records once.
@@ -462,7 +463,7 @@ gate_one() {
     pct=$(jq -r 'first(.. | objects | select(has("Ir")) | .Ir | objects | select(has("diffs")) | .diffs | objects | .diff_pct) // empty' "$f" 2>/dev/null)
     [ -z "$pct" ] && continue
     parsed=1
-    # Classify only finite numbers. A skipped new operator renders an 11-instruction no-op, and iai
+    # Classify only finite numbers. A skipped new operator renders an 11-instruction no-op, and gungraun
     # can serialize its diff vs a degenerate 0 baseline as "inf"/"nan" in a secondary context — the
     # authoritative callgrind compare reports it as "No change", so never let such a value drive
     # `table_fail` (which feeds the gate verdict). Non-numeric ⇒ ok.

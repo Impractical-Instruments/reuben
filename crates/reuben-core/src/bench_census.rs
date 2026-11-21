@@ -6,7 +6,7 @@
 //!   head and at the baseline commit, without building either side — which is why the operator set
 //!   has to exist as text at all: an `m::*` census entry generates kinds (`add_f32_value`, …) that
 //!   appear nowhere in the source as literals.
-//! - The `micro_bench_ops!` block in [`IAI_BENCH`]. iai's `#[bench::<id>]` attributes are
+//! - The `micro_bench_ops!` block in [`IAI_BENCH`]. gungraun's `#[bench::<id>]` attributes are
 //!   compile-time, so the bench cannot walk the registry.
 //!
 //! Compiled into every host build, unlike `bench_support`, so the staleness tests in
@@ -105,7 +105,7 @@ pub fn kinds(registry: &Registry) -> Vec<&'static str> {
 }
 
 /// Rust keywords in any edition, strict and reserved. A bench id is an identifier in
-/// `#[bench::<id>]`; `r#<kw>` compiles there, but iai then names the callgrind case `r#<kw>`.
+/// `#[bench::<id>]`; `r#<kw>` compiles there, but gungraun then names the callgrind case `r#<kw>`.
 const KEYWORDS: &[&str] = &[
     "abstract", "as", "async", "await", "become", "box", "break", "const", "continue", "crate",
     "do", "dyn", "else", "enum", "extern", "false", "final", "fn", "for", "gen", "if", "impl",

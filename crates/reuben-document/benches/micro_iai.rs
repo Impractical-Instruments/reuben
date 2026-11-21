@@ -7,7 +7,7 @@
 //! asked to skip (a PR-new operator with no baseline — see [`setup`]), so that operator is dropped
 //! from the comparison instead of crashing the baseline run.
 //!
-//! iai's `#[bench::…]` list is compile-time, so it can't iterate the registry (whose entries are
+//! gungraun's `#[bench::…]` list is compile-time, so it can't iterate the registry (whose entries are
 //! `fn` pointers, readable only at runtime). The `micro_bench_ops!` block below is therefore
 //! generated from the registry by `cargo run -p reuben-core --example gen_bench_census`, alongside
 //! the `micro_kinds.txt` the perf gate reads; `tests/bench_census.rs` reds a plain `cargo test`
@@ -43,7 +43,7 @@ fn setup(kind: &str) -> Option<OpHarness> {
 
 /// Expand the operator census into the `#[library_benchmark]` fn and its `#[bench::<id>]` cases.
 ///
-/// One line per benched kind, `<bench id> => "<kind>"`. The **id is not always the kind**: iai
+/// One line per benched kind, `<bench id> => "<kind>"`. The **id is not always the kind**: gungraun
 /// names each callgrind case by its id, and the CI perf gate matches HEAD against the baseline by
 /// that name — so renaming an id unmatches that operator's history and silently drops it from the
 /// gate. Ids that predate the generator are carried verbatim by `bench_census`; every newer kind is
@@ -146,7 +146,7 @@ micro_bench_ops! {
 }
 
 library_benchmark_group!(name = micro; benchmarks = process);
-// iai clears the environment before each bench for determinism, which would strip the gate's skip
+// gungraun clears the environment before each bench for determinism, which would strip the gate's skip
 // list. Pass exactly that one var through so [`setup`] can see it (see [`setup`] for why we skip).
 main!(
     config = LibraryBenchmarkConfig::default().pass_through_env("REUBEN_MICRO_BENCH_SKIP");

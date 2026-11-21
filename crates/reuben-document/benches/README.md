@@ -34,7 +34,7 @@ Deterministic; this is what gates PRs. Requires `valgrind` and the matching runn
 
 ```sh
 sudo apt-get install valgrind
-cargo install gungraun-runner --version 0.19.4   # must match the gungraun version in Cargo.lock
+cargo install gungraun-runner --version "$(awk '$0 == "name = \"gungraun\"" { getline; gsub(/"/, "", $3); print $3 }' Cargo.lock)"  # must match the locked gungraun
 cargo bench -p reuben-document --bench macro_iai
 ```
 

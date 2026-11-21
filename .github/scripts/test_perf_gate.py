@@ -13,6 +13,7 @@ Run from this directory, the way `scripts/`'s guard suites are:
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import signal
@@ -433,6 +434,54 @@ class PerfGateNewOperatorSkip(unittest.TestCase):
 
     def test_head_kinds_file_with_no_kinds_fails_before_any_bench(self) -> None:
         self._assert_census_refused({_KINDS_FILE: "# comments only\n"})
+
+# Captured gungraun 0.19 compare-run output, ANSI escapes and all, the way CI's colored log holds it.
+_E = "\x1b"
+_HARVEST_LOG = "\n".join(
+    [
+        # A workload case: string-literal args, description wrapped in one extra pair of parens.
+        f"{_E}[32mmacro_iai::macro_render::render{_E}[0m {_E}[36mauto_filter{_E}[0m:{_E}[1;34m(build_state(\"auto-filter\")){_E}[0m",
+        f"{_E}[90m  {_E}[0mBaselines:                               |base",
+        f"{_E}[90m  {_E}[0mInstructions:                    {_E}[1m43605487{_E}[0m|43605487             (No change)",
+        f"{_E}[90m  {_E}[0mL1 Hits:                         58748398|58748398             (No change)",
+        # A breached case whose normal line is absent: only the regression line carries its Ir.
+        f"{_E}[32mmicro_iai::micro::process{_E}[0m {_E}[36mreverb{_E}[0m:{_E}[1;34m(setup(\"reverb\")){_E}[0m",
+        f"{_E}[90m  {_E}[0mBaselines:                               |base",
+        f"Performance has {_E}[1;91mregressed{_E}[0m: Instructions (11 -> {_E}[1m10891636{_E}[0m) regressed by {_E}[1;91m+99014773%{_E}[0m (>{_E}[90m+10.0000%{_E}[0m)",
+        # A bench-id case: non-literal args, two of them, so the args hold a space.
+        f"{_E}[32mconstruct_iai::construct_group::build{_E}[0m {_E}[36mwide_n2048{_E}[0m:{_E}[1;34m(wide(1024, 2)){_E}[0m",
+        f"{_E}[90m  {_E}[0mInstructions:                    {_E}[1m53847764{_E}[0m|53844271             (+0.00649%)",
+        # The end-of-run block names cases again; it must not record a second time.
+        "Regressions:",
+        "",
+        "  micro_iai::micro::process reverb:",
+        "    Callgrind: Instructions (11 -> 10891636): +99014773% exceeds limit of +10.0000%",
+        "",
+    ]
+)
+
+
+class PerfGateHarvest(unittest.TestCase):
+    """`harvest_history` reads case names and Ir from the compare log's text. A header rule that stops
+    matching drops cases from the history record while the gate stays green, so pin it to real output."""
+
+    def test_every_case_records_once_under_its_id(self) -> None:
+        src = SCRIPT.read_text()
+        start = src.index("harvest_history() {")
+        body = src[start : src.index("\n}\n", start) + 3]
+        with tempfile.TemporaryDirectory() as tmp:
+            log = pathlib.Path(tmp) / "compare.log"
+            log.write_text(_HARVEST_LOG)
+            record = pathlib.Path(tmp) / "record.jsonl"
+            record.write_text("")
+            prog = f'{body}\nRECORD="$1"; H_SHA=s; H_FULL=f; H_DATE=d; harvest_history "$2" "$3"\n'
+            subprocess.run(["bash", "-c", prog, "harvest", str(record), "macro_iai", str(log)], check=True)
+            rows = [json.loads(line) for line in record.read_text().splitlines()]
+        self.assertEqual(
+            [(r["case"], r["ir"]) for r in rows],
+            [("auto-filter", 43605487), ("reverb", 10891636), ("wide_n2048", 53847764)],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
