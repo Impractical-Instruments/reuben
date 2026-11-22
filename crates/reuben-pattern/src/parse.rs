@@ -24,8 +24,18 @@ const MAX_DECIMALS: u32 = 9;
 /// Octave of a note name written without one: `c` is `c4`, MIDI 60.
 pub const DEFAULT_OCTAVE: i64 = 4;
 
+/// Longest pattern text [`parse`] accepts, in bytes. Parse memory grows with the text, so this
+/// bounds it; 64 KiB is far beyond any pattern a person writes.
+pub const MAX_INPUT: usize = 64 * 1024;
+
 /// Parse a mini-notation string.
 pub fn parse(src: &str) -> Result<Ast, Error> {
+    if src.len() > MAX_INPUT {
+        return Err(Error::new(
+            MAX_INPUT..src.len(),
+            "pattern text longer than 64 KiB",
+        ));
+    }
     let mut p = Parser {
         src: src.as_bytes(),
         text: src,
@@ -893,6 +903,14 @@ mod tests {
         assert_eq!(err("a b]").span, 3..4);
         assert!(err("[a b>").message.contains("expected ']'"));
         assert!(err("[]").message.contains("empty"));
+    }
+
+    #[test]
+    fn input_length_is_bounded() {
+        let long = "0 ".repeat(MAX_INPUT / 2 + 1);
+        let e = err(&long);
+        assert_eq!(e.span, MAX_INPUT..long.len());
+        assert!(parse(&"0 ".repeat(MAX_INPUT / 2)).is_ok());
     }
 
     #[test]

@@ -80,7 +80,7 @@ pub fn generated(src: &str) -> Option<Pattern> {
     match Pattern::new(src) {
         Ok(p) => Some(p),
         Err(e)
-            if ["too far", "too deeply", "events per cycle", "too large"]
+            if ["too far", "too deeply", "too dense", "too large"]
                 .iter()
                 .any(|m| e.message.contains(m)) =>
         {
@@ -110,7 +110,13 @@ pub fn pattern_src() -> impl Strategy<Value = String> {
         Just("0 .. 3".to_string()),
     ];
     leaf.prop_recursive(4, 48, 5, |inner| {
+        // Mostly unmodified, as written patterns are: stacked speed-ups compound into patterns too
+        // dense to query in real time, which compile refuses and the properties then skip.
         let modifier = prop_oneof![
+            Just(""),
+            Just(""),
+            Just(""),
+            Just(""),
             Just(""),
             Just(""),
             Just("*2"),
@@ -148,7 +154,7 @@ pub fn pattern_src() -> impl Strategy<Value = String> {
             .prop_map(|(t, m1, m2, el)| format!("{t}{m1}{m2}{el}"));
         // A bare sub-sequence takes no modifiers: they would bind to its last step only.
         let term = prop_oneof![inner, modified.clone(), modified];
-        prop::collection::vec(term, 1..5).prop_map(|v| v.join(" "))
+        prop::collection::vec(term, 1..4).prop_map(|v| v.join(" "))
     })
 }
 

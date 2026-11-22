@@ -29,9 +29,11 @@
 //! wraps and nothing panics.
 //!
 //! Compilation bounds what the query can reach. [`MAX_SCALE`] bounds each node's speed relative
-//! to the root. [`MAX_GROWTH`] bounds how much a node can multiply the span's denominator, so a span
-//! whose denominator is at most `2^43` never overflows, at any cycle. [`MAX_GRID`] bounds the
-//! denominators of event times, so they stay representable for `2^33` cycles. A clock position
+//! to the root. [`MAX_GROWTH`] bounds how much a node can multiply the span's denominator.
+//! [`MAX_GRID`] bounds the denominators of event times, so they stay representable within `2^33`
+//! cycles of zero. Together: a span whose denominator is below `2^43` and whose endpoints lie
+//! within `2^33` cycles of zero never overflows. Further out, an event time can fail to fit: the
+//! integer span `[2^50, 2^50 + 1)` through `0*1048573%1048571` reports `overflowed: 1`. A clock position
 //! of the form `(beat + phase) / beats_per_cycle`, with an exact `f32` phase, has a denominator of
 //! about `2^40` just after a beat. A property test runs such spans at 999 BPM for more than 72 hours
 //! of cycles through generated patterns and finds no overflow. The ceiling at that resolution is the
@@ -51,8 +53,10 @@
 //!
 //! # Playing events
 //!
-//! Trigger on [`Event::has_onset`] only, and release at that fragment's `whole.end`. See [`Event`]
-//! for why other fragments can be ignored.
+//! Trigger on [`Event::has_onset`] only, and release at that fragment's [`Event::release`]: its
+//! `whole.end` cut to the end of its enclosing sequence step, so a step never sounds into the next
+//! one (unlike the Tidal reference, where an event holds for its whole `whole`). See [`Event`]
+//! for the details and why other fragments can be ignored.
 //!
 //! # Syntax (v1)
 //!
@@ -87,7 +91,9 @@
 //! - `!`, `..` and euclid expansions beyond [`MAX_EXPANSION`] steps;
 //! - compiled depth beyond [`MAX_DEPTH`];
 //! - time bounds beyond [`MAX_SCALE`], [`MAX_GROWTH`] or [`MAX_GRID`];
-//! - more than [`MAX_DENSITY`] onsets per cycle;
+//! - a worst-case query cost beyond [`MAX_WORK`] over [`MAX_QUERY_SPAN`], or beyond
+//!   [`MAX_SHORT_WORK`] over [`SHORT_QUERY_SPAN`];
+//! - text longer than [`MAX_INPUT`];
 //! - a compiled size beyond [`MAX_SIZE`].
 //!
 //! # Where the references disagree, and what this crate does
@@ -140,9 +146,18 @@
 //! # Cost
 //!
 //! The query is a tree walk over a flat node arena: no string hashing, no trait objects, no
-//! per-event allocation. Its cost is bounded twice: at compile time by [`MAX_DENSITY`], and per
-//! query by [`QUERY_BUDGET`] units of work, after which it stops and sets
-//! [`QueryResult::exhausted`]. Query block-sized spans; a span of many cycles runs into the budget.
+//! per-event allocation. Compilation bounds its work: [`Pattern::work_bound`] gives the most units
+//! any query of a given length can spend, wherever the span lies, counting every node visit
+//! (rests, empty sequences, wrappers) and not just onsets. A pattern whose bound exceeds
+//! [`MAX_WORK`] over [`MAX_QUERY_SPAN`] (a 4096-frame block at 22.05 kHz, 999 BPM, one beat per
+//! cycle) or [`MAX_SHORT_WORK`] over [`SHORT_QUERY_SPAN`] (a 64-frame block at 48 kHz) does not
+//! compile. So a consumer that keeps each query within [`MAX_QUERY_SPAN`] never sees
+//! [`QueryResult::exhausted`]; [`QUERY_BUDGET`] is a backstop for longer spans.
+//!
+//! In time, `examples/query_cost.rs` measured the worst unit at about 170 ns (i7-13620H, release,
+//! fractional speeds and denominators near `2^43`, which push reduction into 128-bit division):
+//! about 0.7 ms for a [`MAX_QUERY_SPAN`] query, about 87 us (6.5% of a 64-frame block at 48 kHz)
+//! for a [`SHORT_QUERY_SPAN`] one. 128-bit division on a Cortex-M is not measured.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -150,6 +165,7 @@ extern crate alloc;
 
 mod ast;
 mod compile;
+mod cost;
 mod error;
 mod parse;
 mod query;
@@ -158,9 +174,12 @@ mod time;
 use alloc::vec::Vec;
 
 pub use ast::{Ast, Expr, ExprKind, Step};
-pub use compile::{compile, MAX_DENSITY, MAX_DEPTH, MAX_GRID, MAX_GROWTH, MAX_SCALE, MAX_SIZE};
+pub use compile::{
+    compile, MAX_DEPTH, MAX_GRID, MAX_GROWTH, MAX_QUERY_SPAN, MAX_SCALE, MAX_SHORT_WORK, MAX_SIZE,
+    MAX_WORK, SHORT_QUERY_SPAN,
+};
 pub use error::Error;
-pub use parse::{parse, DEFAULT_OCTAVE, MAX_EXPANSION, MAX_MODIFIERS, MAX_NESTING};
+pub use parse::{parse, DEFAULT_OCTAVE, MAX_EXPANSION, MAX_INPUT, MAX_MODIFIERS, MAX_NESTING};
 pub use query::{Event, QueryResult, QUERY_BUDGET};
 pub use time::{Rational, Span};
 
@@ -200,5 +219,17 @@ impl Pattern {
             children: Vec::new(),
             root: 0,
         }
+    }
+
+    /// An upper bound on the units of work [`Pattern::query`] spends on any span `len` cycles
+    /// long, wherever it lies; `None` if it overflows. For `len <=` [`MAX_QUERY_SPAN`] it is at
+    /// most [`MAX_WORK`], below [`QUERY_BUDGET`], so such a query never sets
+    /// [`QueryResult::exhausted`]. Compilation checks exactly this. Allocates a memo table; call
+    /// it off the Render thread.
+    pub fn work_bound(&self, len: Rational) -> Option<u64> {
+        let w = cost::work(self, len)?;
+        let ceil =
+            (i128::from(w.numer()) + i128::from(w.denom()) - 1).div_euclid(i128::from(w.denom()));
+        u64::try_from(ceil).ok()
     }
 }

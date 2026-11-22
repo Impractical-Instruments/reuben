@@ -1,50 +1,61 @@
 //! The Render-side query: a recursive walk of the compiled tree into a caller's buffer.
 //!
-//! Each node is visited with three things: the queried span in its own time, an affine map from
-//! its own time to the root's (`root = a * t + b`), and a clip window in root time (the query span
-//! cut by every enclosing slot). A leaf maps its whole event up through the map and takes the part
+//! Each node is visited with the queried span in its own time, an affine map from its own time to
+//! the root's (`root = a * t + b`), a clip window in root time (the query span cut by every
+//! enclosing slot), and the end of the innermost enclosing slot (where a note must release). A leaf maps its whole event up through the map and takes the part
 //! as the whole cut by the clip window, so nothing is transformed on the way back up and no
 //! intermediate event list exists.
 //!
 //! Times are [`Pos`] (integer cycle plus fraction), so a fraction's terms stay bounded by the span's
 //! denominator and the compile-time limits however many cycles have elapsed. The walk allocates
 //! nothing: its state is the recursion (bounded by [`MAX_DEPTH`](crate::MAX_DEPTH)) and a
-//! stack-linked chain of active `?` filters. Its work is bounded by [`QUERY_BUDGET`].
+//! stack-linked chain of active `?` filters. Its work is bounded at compile time (see
+//! [`Pattern::work_bound`]), and by [`QUERY_BUDGET`] as a backstop.
 
 use crate::compile::{Node, SeqStep};
 use crate::time::{Pos, Rational, Span};
 use crate::{Pattern, Value};
 
 /// Most units of work one query may do before it stops and sets [`QueryResult::exhausted`]. A unit
-/// is one node visit, one cycle a node iterates, or one sequence step it examines. This is the
-/// backstop behind [`MAX_DENSITY`](crate::MAX_DENSITY): it bounds every query, whatever the pattern
-/// or span. `examples/query_cost.rs` measures a query that spends the whole budget at 0.23-0.53 ms
-/// (i7-13620H, release), about 5% of a 512-frame block at 48 kHz. A block of up to 4096 frames at
-/// 999 BPM against a pattern at the density cap stays within it.
-pub const QUERY_BUDGET: u32 = 1 << 12;
+/// is one node visit, one cycle a node iterates, or one sequence step it examines.
+///
+/// A backstop, unreachable in contract: compilation proves every pattern's query over at most
+/// [`MAX_QUERY_SPAN`](crate::MAX_QUERY_SPAN) cycles needs at most [`MAX_WORK`](crate::MAX_WORK)
+/// units, and this leaves a quarter more for headroom. Only a longer span can reach it.
+/// `examples/query_cost.rs` measures the worst cost per unit.
+pub const QUERY_BUDGET: u32 = crate::MAX_WORK + crate::MAX_WORK / 4;
 
-/// One event fragment: a value, the full extent of its event, and the part of it inside the query.
+/// One event fragment: a value, the full extent of its event, the part of it inside the query, and
+/// when the note it starts must release.
 ///
 /// # How a consumer plays events
 ///
-/// Trigger on [`has_onset`](Event::has_onset) and nothing else: that fragment starts the event, and
-/// its `whole.end` is when the event releases (legato). Everything a note needs is in the onset
-/// fragment, so the release never depends on a later query.
+/// Trigger on [`has_onset`](Event::has_onset) and nothing else: that fragment starts a note, and
+/// the note releases at its [`release`](Event::release). Everything a note needs is in the onset
+/// fragment, so the release never depends on a later query, and it is the same whichever query the
+/// onset lands in.
 ///
-/// A fragment without an onset is a continuation, and a consumer may ignore it. Some continuations
-/// belong to no onset any query reports: a slowed pattern inside a sequence slot (`[0 1]/1.5 2`)
-/// is cut to its slot each cycle, so in a later cycle its fragment can carry a `whole` that starts
-/// before the slot. That matches the Tidal reference's meaning of whole and part (a fragment's
-/// `whole` is the event it was cut from), and it is why a fragment's `part.end == whole.end` is
-/// not a note-off signal.
+/// `release` is `whole.end` cut to the end of the sequence step the event plays in (and of every
+/// step enclosing that one), so a step's sound never bleeds into the next step. In `[0 1]/1.5 2`,
+/// the `1` whose whole is `3/8..3/4` releases at `1/2`, where `2` starts. This diverges from the
+/// Tidal reference's model, in which an event holds for its whole `whole`.
+///
+/// A fragment without an onset is a continuation, and a consumer ignores it. Some continuations
+/// belong to no onset any query reports: a slowed pattern inside a sequence slot is cut to its slot
+/// each cycle, so in a later cycle its fragment can carry a `whole` that starts before the slot.
+/// That matches the Tidal reference's meaning of whole and part (a fragment's `whole` is the event
+/// it was cut from).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Event {
-    /// The event this fragment was cut from, onset to release. May extend past the query span.
+    /// The event this fragment was cut from. May extend past the query span, and past its step.
     pub whole: Span,
-    /// The part of `whole` that lies inside the queried span; never empty.
+    /// The part of `whole` that lies inside the queried span and its enclosing steps; never empty.
     pub part: Span,
     /// The event's value.
     pub value: Value,
+    /// When a note started by this fragment releases: `min(whole.end, end of its enclosing
+    /// steps)`. Always after `whole.begin`. Meaningful on onset fragments.
+    pub release: Rational,
 }
 
 impl Event {
@@ -53,11 +64,12 @@ impl Event {
         whole: Span::new(Rational::ZERO, Rational::ZERO),
         part: Span::new(Rational::ZERO, Rational::ZERO),
         value: Value::Number(Rational::ZERO),
+        release: Rational::ZERO,
     };
 
     /// `true` if this fragment holds the event's onset: the note-on belongs in this query, and the
-    /// release is at `whole.end`. Across any partition of time into adjacent queries, each onset is
-    /// in exactly one, with the same `whole`.
+    /// note-off at [`release`](Event::release). Across any partition of time into adjacent
+    /// queries, each onset is in exactly one, with the same `whole` and `release`.
     pub fn has_onset(&self) -> bool {
         self.part.begin == self.whole.begin
     }
@@ -72,12 +84,19 @@ pub struct QueryResult {
     /// events are a prefix of the full answer in walk order.
     pub dropped: usize,
     /// Sub-queries abandoned because a time computation overflowed `i64` (see [`Rational`]). Each
-    /// hides an unknown number of events. Cannot happen for a span whose denominator is at most
-    /// `2^43` (see [`MAX_GROWTH`](crate::MAX_GROWTH)).
+    /// hides an unknown number of events. Cannot happen for a span whose endpoints lie within
+    /// `2^33` cycles of zero (where event times stay representable, see
+    /// [`MAX_GRID`](crate::MAX_GRID)) and whose denominator is below `2^43` (see
+    /// [`MAX_GROWTH`](crate::MAX_GROWTH)).
     pub overflowed: usize,
-    /// `true` if the walk stopped after [`QUERY_BUDGET`] units of work. The events written are
-    /// still correct, but later ones in walk order are missing and not counted in `dropped`.
+    /// `true` if the walk stopped after [`QUERY_BUDGET`] units of work. Unreachable for a span of
+    /// at most [`MAX_QUERY_SPAN`](crate::MAX_QUERY_SPAN) cycles. If it fires, the written events
+    /// are still correct and are a prefix of the full answer in walk order (not time order); the
+    /// rest are missing and not counted in `dropped`. A consumer should play what it got and split
+    /// its next query into shorter spans.
     pub exhausted: bool,
+    /// Units of work the query spent; at most [`Pattern::work_bound`] of the span's length.
+    pub work: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -180,6 +199,9 @@ struct Visit<'f> {
     span: PSpan,
     map: Map,
     clip: PSpan,
+    /// The earliest end, in root time, of the sequence slots enclosing this node; `None` above the
+    /// first one.
+    slot_end: Option<Pos>,
     filter: Option<&'f Filter<'f>>,
     path: u64,
 }
@@ -245,10 +267,12 @@ impl Walk<'_, '_> {
                     if part.is_empty() || self.removed(whole.begin, v.path, v.filter) {
                         continue;
                     }
+                    let release = v.slot_end.map_or(whole.end, |e| e.min(whole.end));
                     self.emit(Event {
                         whole: whole.to_span()?,
                         part: part.to_span()?,
                         value: *value,
+                        release: release.to_rational()?,
                     });
                 }
             }
@@ -282,8 +306,12 @@ impl Walk<'_, '_> {
                 }
             }
             Node::Stack { children } => {
-                for &child in &pat.children[children.0 as usize..children.1 as usize] {
-                    self.node(child, v);
+                let (lo, hi) = (children.0 as usize, children.1 as usize);
+                for (i, &child) in pat.children[lo..hi].iter().enumerate() {
+                    // Layers draw independently too. The top bit keeps these paths apart from
+                    // sequence-step ones, which index a different arena.
+                    let path = mix(v.path ^ (1 << 63 | (lo + i) as u64));
+                    self.node(child, Visit { path, ..v });
                 }
             }
             Node::Choice { children, id } => {
@@ -372,6 +400,10 @@ impl Walk<'_, '_> {
                 b: at_slot.sub(cycle.mul(a)?)?,
             },
             clip: v.clip.intersect(&v.map.span(slot)?),
+            slot_end: {
+                let end = v.map.apply(slot.end)?;
+                Some(v.slot_end.map_or(end, |e| e.min(end)))
+            },
             filter: v.filter,
             // Copies and pulses share one child; the path tells their random draws apart.
             path: mix(v.path ^ index),
@@ -387,7 +419,8 @@ impl Pattern {
     ///
     /// Never allocates, locks, or panics; safe on the Render thread. `seed` selects the random
     /// outcome of every `?` and `|`: the same pattern, span and seed always give the same events.
-    /// Work is capped at [`QUERY_BUDGET`] units, so the worst case is bounded whatever the pattern.
+    /// Work is at most [`Pattern::work_bound`] of the span's length, and never more than
+    /// [`QUERY_BUDGET`] units.
     ///
     /// Events come in walk order, not time order; sort the written prefix if order matters. An
     /// event that crosses an edge of `span` is returned as the fragment inside it (see [`Event`]),
@@ -396,9 +429,9 @@ impl Pattern {
     /// # Stack
     ///
     /// The walk recurses once per tree level, at most [`MAX_DEPTH`](crate::MAX_DEPTH) deep. Measured
-    /// on x86_64 for a pattern at that depth, a query needs up to 28 KiB of stack in a release
-    /// build and up to 112 KiB unoptimised; give the calling thread at least 32 KiB (release) or
-    /// 128 KiB (debug) to spare.
+    /// on x86_64 for patterns at that depth, a query needs up to 40 KiB of stack in a release build
+    /// and up to 160 KiB unoptimised; give the calling thread at least 48 KiB (release) or
+    /// 192 KiB (debug).
     pub fn query(&self, span: Span, seed: u64, out: &mut [Event]) -> QueryResult {
         let mut walk = Walk {
             pat: self,
@@ -418,10 +451,12 @@ impl Pattern {
                 b: Pos::int(0),
             },
             clip: root,
+            slot_end: None,
             filter: None,
             path: 0,
         };
         walk.node(self.root, visit);
+        walk.res.work = walk.work;
         walk.res
     }
 }

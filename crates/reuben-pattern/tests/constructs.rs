@@ -2,7 +2,7 @@
 
 mod common;
 use common::*;
-use reuben_pattern::{Event, Pattern, Rational, Span, Value};
+use reuben_pattern::{Event, Pattern, Rational, Span, Value, MAX_QUERY_SPAN, MAX_WORK};
 
 fn sorted(mut xs: Vec<String>) -> Vec<String> {
     xs.sort();
@@ -200,6 +200,29 @@ fn copies_and_pulses_draw_independently() {
             "{src}: same value in {same} of 1000 cycles"
         );
     }
+    // Stack layers under one `?`: each layer is its own draw, as polymeter layers already were.
+    for src in ["[0, 1]?", "[0(3,8), 1(3,8)]?"] {
+        let p = Pattern::new(src).unwrap();
+        let mut kept = [0usize; 3];
+        for c in 0..2000 {
+            let evs: Vec<Event> = query(&p, cycles(c, c + 1), 7)
+                .into_iter()
+                .filter(Event::has_onset)
+                .collect();
+            let mut onsets: Vec<Rational> = evs.iter().map(|e| e.whole.begin).collect();
+            onsets.sort();
+            onsets.dedup();
+            for t in onsets {
+                kept[evs.iter().filter(|e| e.whole.begin == t).count()] += 1;
+            }
+        }
+        // Of times with any onset kept, about a third keep both layers and two thirds one.
+        let any = kept[1] + kept[2];
+        assert!(
+            kept[2] * 4 < any * 2 && kept[2] * 4 > any,
+            "{src}: {kept:?}"
+        );
+    }
     // `?` inside copies: both kept about a quarter of the time.
     let both = (0..1000)
         .filter(|c| values_per_cycle("[0?]!2", *c, 5).len() == 2)
@@ -221,20 +244,40 @@ fn seed_high_bits_matter() {
     assert_ne!(draws(9), draws(9 ^ (1 << 63)));
 }
 
+/// The reviewer's patterns: each hid more work per cycle than an average-density cap could see.
+const OVER_BUDGET: &[&str] = &[
+    "[0 0]!512",
+    "<0*1048576 ~!1023>",
+    "[0*1048576 ~!1023]/1024",
+    "{0*4096 ~ ~ ~}%1",
+    "[~ ~]*262144 0",
+    "[[~ ~]*524288, 0]",
+    "[0*1*1*1*1*1*1*1*1]!1024",
+    "[[[0*1*1*1*1*1*1*1*1]*1*1*1*1*1*1*1*1]*1*1*1*1*1*1*1*1]!1024",
+    "[[0 0]!2]!256",
+    "0*1300",
+    "[0 1 2 3]*128",
+];
+
 #[test]
-fn density_cap() {
-    assert!(Pattern::new("0*1024").is_ok());
-    assert!(Pattern::new("[0*512, 1*512]").is_ok());
-    // Slowing pays back density: 2048 events stretched over two cycles.
-    assert!(Pattern::new("[0*2048]/2").is_ok());
-    for src in [
-        "0*1025",
-        "[0*512, 1*513]",
-        "[0 1 2 3]*257",
-        "{0 1 2, 3 4}%1025",
-    ] {
+fn work_cap_refuses_dense_patterns() {
+    for src in OVER_BUDGET {
         let e = Pattern::new(src).unwrap_err();
-        assert!(e.message.contains("events per cycle"), "{src}: {e}");
+        assert!(
+            e.message.contains("too dense") || e.message.contains("too far"),
+            "{src}: {e}"
+        );
+    }
+    for src in [
+        "0*1024",
+        "[0 1 2 3 4 5 6 7]*16",
+        "<0 .. 1023>",
+        "{0 1 2, 3 4}%64",
+        "[0|1|2]*128",
+    ] {
+        let p = Pattern::new(src).unwrap_or_else(|e| panic!("{src}: {e}"));
+        let bound = p.work_bound(MAX_QUERY_SPAN).unwrap();
+        assert!(bound <= u64::from(MAX_WORK), "{src}: {bound}");
     }
 }
 
@@ -257,28 +300,77 @@ fn compiled_size_cap() {
 }
 
 #[test]
-fn work_budget_stops_long_queries() {
+fn budget_is_a_backstop_for_long_spans_only() {
     let p = Pattern::new("[0*256, 1*256, 2*256, 3*256]").unwrap();
     let mut buf = [Event::EMPTY; 16];
     let res = p.query(cycles(0, 1000), 0, &mut buf);
     assert!(res.exhausted, "{res:?}");
     assert!(res.written <= 16);
-    // A 4096-frame block at 999 BPM, 4 beats per cycle, at the density cap does not exhaust.
+    // The guaranteed block: 4096 frames at 22.05 kHz, 999 BPM, one beat per cycle.
+    let block = r(999 * 4096, 60 * 22_050);
+    assert!(block <= MAX_QUERY_SPAN);
     for src in [
         "0*1024",
-        "[0 [1 [2 [3 [4 [5 6]]]]]]*146",
-        "{0 1 2, 3 4 5 6 7}%512",
+        "[0 1 2 3 4 5 6 7]*16",
+        "[0|1|2]*128",
+        "{0 1 2, 3 4}%64",
     ] {
         let p = Pattern::new(src).unwrap();
-        let start = r(15_000 * 3 + 1, 3);
-        let s = Span::new(
-            start,
-            start.checked_add(r(999 * 4096, 60 * 4 * 48_000)).unwrap(),
-        );
-        let mut buf = vec![Event::EMPTY; 1024];
+        let start = r(15_000 * 7 + 3, 7);
+        let s = Span::new(start, start.checked_add(block).unwrap());
+        let mut buf = vec![Event::EMPTY; 4096];
         let res = p.query(s, 0, &mut buf);
         assert!(!res.exhausted, "{src}: {res:?}");
+        assert!(
+            u64::from(res.work) <= p.work_bound(block).unwrap(),
+            "{src}: {res:?}"
+        );
     }
+}
+
+#[test]
+fn release_is_cut_to_the_enclosing_step() {
+    // `[0 1]/1.5 2`: the slowed `1` has whole 3/8..3/4, but its step ends at 1/2 where `2` starts.
+    let p = Pattern::new("[0 1]/1.5 2").unwrap();
+    let evs = query(&p, cycles(0, 1), 0);
+    let one = evs
+        .iter()
+        .find(|e| e.has_onset() && e.value == Value::Number(r(1, 1)))
+        .unwrap();
+    assert_eq!(one.whole, Span::new(r(3, 8), r(3, 4)));
+    assert_eq!(one.release, r(1, 2));
+    // An event inside its step keeps its whole end.
+    let two = evs
+        .iter()
+        .find(|e| e.value == Value::Number(r(2, 1)))
+        .unwrap();
+    assert_eq!(two.release, Rational::ONE);
+    // `<0 1>/1.5 9`: each slowed alternation event is cut where `9` starts.
+    let p = Pattern::new("<0 1>/1.5 9").unwrap();
+    for c in 0..6 {
+        for e in query(&p, cycles(c, c + 1), 0)
+            .into_iter()
+            .filter(Event::has_onset)
+        {
+            let step_end = if e.value == Value::Number(r(9, 1)) {
+                Rational::int(c + 1)
+            } else {
+                r(2 * c + 1, 2)
+            };
+            assert!(
+                e.release <= step_end && e.release <= e.whole.end,
+                "cycle {c}: {e:?}"
+            );
+            assert!(e.release > e.whole.begin, "cycle {c}: {e:?}");
+        }
+    }
+    let first = query(&p, cycles(0, 1), 0);
+    let zero = first
+        .iter()
+        .find(|e| e.has_onset() && e.value == Value::Number(Rational::ZERO))
+        .unwrap();
+    assert_eq!(zero.whole, Span::new(Rational::ZERO, r(3, 4)));
+    assert_eq!(zero.release, r(1, 2));
 }
 
 #[test]
@@ -302,7 +394,7 @@ fn release_is_known_at_onset() {
             let mut n: Vec<_> = evs
                 .into_iter()
                 .filter(Event::has_onset)
-                .map(|e| (e.whole.begin, e.whole.end, e.value))
+                .map(|e| (e.whole.begin, e.release, e.value))
                 .collect();
             n.sort_by_key(|(b, e, _)| (*b, *e));
             n

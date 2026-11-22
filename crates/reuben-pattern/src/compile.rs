@@ -27,21 +27,34 @@ pub const MAX_SCALE: i64 = 1 << 20;
 
 /// Largest factor by which a node may multiply the denominator of the query span on the way down
 /// to its leaves: the product, along a path, of each step's start-offset denominator and length
-/// numerator, and of each speed factor's denominator. A query span with denominator `d` reaches no
-/// time with a denominator above `d * MAX_GROWTH`, so spans with `d <= 2^43` never overflow.
+/// numerator, and of each speed factor's denominator, tracked by divisibility. A query span with
+/// denominator `d` reaches no time with a denominator above `d * MAX_GROWTH`, so a span with
+/// `d < 2^43` whose endpoints lie within `2^33` cycles of zero (see [`MAX_GRID`]) never overflows.
 pub const MAX_GROWTH: i64 = 1 << 20;
 
 /// Largest denominator of any event's `whole`, relative to its cycle. Bounds the lcm of every
-/// scale and slot offset denominator along a path, so whole times stay representable for
-/// `2^33` cycles.
+/// scale and slot offset denominator along a path, so whole times stay representable within
+/// `2^33` cycles of zero. Beyond that an event time may not fit an `i64`, and the query counts it
+/// in [`QueryResult::overflowed`](crate::QueryResult::overflowed).
 pub const MAX_GRID: i64 = 1 << 30;
 
-/// Most onsets a pattern may produce per cycle, summed over every stack layer: the compile-time
-/// half of the query's cost bound (the other half is [`QUERY_BUDGET`](crate::QUERY_BUDGET)). A
-/// 4096-frame block at 48 kHz and 999 BPM with 4 beats per cycle spans 0.355 cycles, so it holds at
-/// most about 365 onsets. `examples/query_cost.rs` measures such a block at 37-261 us across
-/// patterns at this cap (i7-13620H, release), with none reaching the work budget.
-pub const MAX_DENSITY: i64 = 1024;
+/// The longest query span, in cycles, the crate guarantees never exhausts the work budget: a
+/// 4096-frame block at 22.05 kHz and 999 BPM with one beat per cycle is 3.09 cycles, and this
+/// leaves 5% over it. A consumer that keeps each query within this span gets every event.
+pub const MAX_QUERY_SPAN: Rational = Rational::new_const(13, 4);
+
+/// Most units of work (see [`QUERY_BUDGET`](crate::QUERY_BUDGET)) a query over [`MAX_QUERY_SPAN`]
+/// may need. Compilation computes a worst-case bound `fixed + rate * span` for every pattern (see
+/// [`Pattern::work_bound`]) and refuses one whose bound at `MAX_QUERY_SPAN` exceeds this.
+pub const MAX_WORK: u32 = 4096;
+
+/// A short query span, in cycles: a 64-frame block at 48 kHz and 999 BPM with one beat per cycle is
+/// 0.022 cycles, and this is a little over it.
+pub const SHORT_QUERY_SPAN: Rational = Rational::new_const(1, 32);
+
+/// Most units of work a query over [`SHORT_QUERY_SPAN`] may need, so a small block stays cheap and
+/// not just an average one.
+pub const MAX_SHORT_WORK: u32 = 512;
 
 /// Most entries (nodes, sequence steps, and stack children) a compiled pattern may hold: about
 /// 2.5 MB at most.
@@ -101,20 +114,26 @@ pub fn compile(ast: &Ast) -> Result<Pattern, Error> {
         growth: 1,
         grid: 1,
     };
-    let (root, density) = c.expr(&ast.root, root_ctx, 1)?;
-    if density > Rational::int(MAX_DENSITY) {
-        return Err(too_dense(&ast.root.span));
-    }
-    Ok(Pattern {
+    let root = c.expr(&ast.root, root_ctx, 1)?;
+    let pattern = Pattern {
         nodes: c.nodes,
         steps: c.steps,
         children: c.children,
         root,
-    })
+    };
+    for (len, max) in [
+        (MAX_QUERY_SPAN, MAX_WORK),
+        (SHORT_QUERY_SPAN, MAX_SHORT_WORK),
+    ] {
+        let need = crate::cost::work(&pattern, len);
+        if need.is_none_or(|w| w > Rational::int(i64::from(max))) {
+            return Err(too_costly(&ast.root.span));
+        }
+    }
+    Ok(pattern)
 }
-
-fn too_dense(span: &Range<usize>) -> Error {
-    Error::new(span.clone(), "more than 1024 events per cycle")
+fn too_costly(span: &Range<usize>) -> Error {
+    Error::new(span.clone(), "pattern too dense to query in real time")
 }
 
 fn too_fine(span: &Range<usize>) -> Error {
@@ -225,17 +244,6 @@ struct Compiler {
     next_id: u32,
 }
 
-/// A compiled node and its onset density: an upper bound on onsets per cycle of its own time.
-type Compiled = (u32, Rational);
-
-fn density_mul(d: Rational, by: Rational, span: &Range<usize>) -> Result<Rational, Error> {
-    d.checked_mul(by).ok_or_else(|| too_dense(span))
-}
-
-fn density_add(a: Rational, b: Rational, span: &Range<usize>) -> Result<Rational, Error> {
-    a.checked_add(b).ok_or_else(|| too_dense(span))
-}
-
 impl Compiler {
     fn size(&self) -> usize {
         self.nodes.len() + self.steps.len() + self.children.len()
@@ -266,17 +274,18 @@ impl Compiler {
         Ok((start, self.children.len() as u32))
     }
 
-    fn expr(&mut self, e: &Expr, ctx: Ctx, depth: u32) -> Result<Compiled, Error> {
+    fn expr(&mut self, e: &Expr, ctx: Ctx, depth: u32) -> Result<u32, Error> {
         let span = &e.span;
         if depth > MAX_DEPTH {
             return Err(Error::new(span.clone(), "pattern nested too deeply"));
         }
-        let d = depth + 1;
+        self.expr_inner(e, ctx, depth + 1)
+    }
+
+    fn expr_inner(&mut self, e: &Expr, ctx: Ctx, d: u32) -> Result<u32, Error> {
+        let span = &e.span;
         match &e.kind {
-            ExprKind::Number(n) => Ok((
-                self.push(Node::Atom(Value::Number(*n)), span)?,
-                Rational::ONE,
-            )),
+            ExprKind::Number(n) => self.push(Node::Atom(Value::Number(*n)), span),
             ExprKind::Note(m) => {
                 if *m > 127 {
                     return Err(Error::new(
@@ -284,36 +293,29 @@ impl Compiler {
                         "note outside the MIDI range 0-127",
                     ));
                 }
-                Ok((self.push(Node::Atom(Value::Note(*m)), span)?, Rational::ONE))
+                self.push(Node::Atom(Value::Note(*m)), span)
             }
-            ExprKind::Rest => Ok((self.push(Node::Silence, span)?, Rational::ZERO)),
+            ExprKind::Rest => self.push(Node::Silence, span),
             ExprKind::Seq(steps) => self.seq(steps, ctx, d, span),
             ExprKind::Stack(layers) | ExprKind::Choice(layers) => {
                 if layers.is_empty() {
                     return Err(Error::new(span.clone(), "empty stack or choice"));
                 }
-                let stack = matches!(e.kind, ExprKind::Stack(_));
                 let mut ids = Vec::with_capacity(layers.len());
-                let mut density = Rational::ZERO;
                 for layer in layers {
-                    let (id, ld) = self.expr(layer, ctx, d)?;
+                    let id = self.expr(layer, ctx, d)?;
                     ids.push(id);
-                    density = if stack {
-                        density_add(density, ld, span)?
-                    } else {
-                        density.max(ld)
-                    };
                 }
                 let children = self.list(ids, span)?;
-                let node = if stack {
-                    Node::Stack { children }
+                if matches!(e.kind, ExprKind::Stack(_)) {
+                    self.push(Node::Stack { children }, span)
                 } else {
-                    Node::Choice {
+                    let node = Node::Choice {
                         children,
                         id: self.id(),
-                    }
-                };
-                Ok((self.push(node, span)?, density))
+                    };
+                    self.push(node, span)
+                }
             }
             ExprKind::Alt(steps) => {
                 let total = total_weight(steps, span)?;
@@ -337,19 +339,17 @@ impl Compiler {
                     None => total_weight(first, span)?,
                 };
                 let mut ids = Vec::with_capacity(layers.len());
-                let mut density = Rational::ZERO;
                 for layer in layers {
                     let total = total_weight(layer, span)?;
                     let factor = base.checked_div(total).ok_or_else(|| too_fine(span))?;
-                    let (id, ld) = self.fast_seq(layer, factor, ctx, d, span)?;
+                    let id = self.fast_seq(layer, factor, ctx, d, span)?;
                     ids.push(id);
-                    density = density_add(density, ld, span)?;
                 }
                 if ids.len() == 1 {
-                    return Ok((ids[0], density));
+                    return Ok(ids[0]);
                 }
                 let children = self.list(ids, span)?;
-                Ok((self.push(Node::Stack { children }, span)?, density))
+                self.push(Node::Stack { children }, span)
             }
             ExprKind::Fast(inner, f) | ExprKind::Slow(inner, f) => {
                 if !f.is_positive() {
@@ -362,9 +362,8 @@ impl Compiler {
                         .checked_div(*f)
                         .ok_or_else(|| too_fine(span))?
                 };
-                let (child, cd) = self.expr(inner, ctx.fast(factor, span)?, d)?;
-                let density = density_mul(cd, factor, span)?;
-                Ok((self.push(Node::Fast { child, factor }, span)?, density))
+                let child = self.expr(inner, ctx.fast(factor, span)?, d)?;
+                self.push(Node::Fast { child, factor }, span)
             }
             ExprKind::Degrade(inner, p) => {
                 if *p < Rational::ZERO || *p > Rational::ONE {
@@ -373,7 +372,7 @@ impl Compiler {
                         "probability must be between 0 and 1",
                     ));
                 }
-                let (child, cd) = self.expr(inner, ctx, d)?;
+                let child = self.expr(inner, ctx, d)?;
                 let threshold = ((p.numer() as u128) << 64) / p.denom() as u128;
                 let id = self.id();
                 let node = Node::Degrade {
@@ -381,7 +380,7 @@ impl Compiler {
                     threshold,
                     id,
                 };
-                Ok((self.push(node, span)?, cd))
+                self.push(node, span)
             }
             ExprKind::Euclid {
                 expr,
@@ -411,8 +410,7 @@ impl Compiler {
                     .iter()
                     .map(|i| Rational::new(*i, n64).ok_or_else(|| too_fine(span)))
                     .collect::<Result<Vec<_>, _>>()?;
-                let (child, cd) = self.expr(expr, ctx.slot(&begins, len, span)?, d + 1)?;
-                let density = density_mul(cd, Rational::int(i64::from(*pulses)), span)?;
+                let child = self.expr(expr, ctx.slot(&begins, len, span)?, d + 1)?;
                 self.reserve(begins.len() + 1, span)?;
                 let start = self.steps.len() as u32;
                 for begin in begins {
@@ -425,15 +423,12 @@ impl Compiler {
                     });
                 }
                 let end = self.steps.len() as u32;
-                Ok((
-                    self.push(
-                        Node::Seq {
-                            steps: (start, end),
-                        },
-                        span,
-                    )?,
-                    density,
-                ))
+                self.push(
+                    Node::Seq {
+                        steps: (start, end),
+                    },
+                    span,
+                )
             }
         }
     }
@@ -446,10 +441,9 @@ impl Compiler {
         ctx: Ctx,
         depth: u32,
         span: &Range<usize>,
-    ) -> Result<Compiled, Error> {
-        let (child, cd) = self.seq(steps, ctx.fast(factor, span)?, depth + 1, span)?;
-        let density = density_mul(cd, factor, span)?;
-        Ok((self.push(Node::Fast { child, factor }, span)?, density))
+    ) -> Result<u32, Error> {
+        let child = self.seq(steps, ctx.fast(factor, span)?, depth + 1, span)?;
+        self.push(Node::Fast { child, factor }, span)
     }
 
     fn seq(
@@ -458,7 +452,7 @@ impl Compiler {
         ctx: Ctx,
         depth: u32,
         span: &Range<usize>,
-    ) -> Result<Compiled, Error> {
+    ) -> Result<u32, Error> {
         if depth > MAX_DEPTH {
             return Err(Error::new(span.clone(), "pattern nested too deeply"));
         }
@@ -470,7 +464,6 @@ impl Compiler {
         }
         let mut slots = Vec::new();
         let mut offset = Rational::ZERO;
-        let mut density = Rational::ZERO;
         for step in steps {
             let sspan = &step.expr.span;
             let len = step
@@ -484,9 +477,7 @@ impl Compiler {
                     .checked_add(step.weight)
                     .ok_or_else(|| too_fine(sspan))?;
             }
-            let (child, cd) = self.expr(&step.expr, ctx.slot(&begins, len, sspan)?, depth + 1)?;
-            let copies = Rational::int(i64::from(step.copies));
-            density = density_add(density, density_mul(cd, copies, span)?, span)?;
+            let child = self.expr(&step.expr, ctx.slot(&begins, len, sspan)?, depth + 1)?;
             if matches!(self.nodes[child as usize], Node::Silence) {
                 continue;
             }
@@ -505,15 +496,12 @@ impl Compiler {
         let start = self.steps.len() as u32;
         self.steps.extend(slots);
         let end = self.steps.len() as u32;
-        Ok((
-            self.push(
-                Node::Seq {
-                    steps: (start, end),
-                },
-                span,
-            )?,
-            density,
-        ))
+        self.push(
+            Node::Seq {
+                steps: (start, end),
+            },
+            span,
+        )
     }
 }
 

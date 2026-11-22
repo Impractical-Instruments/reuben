@@ -324,7 +324,7 @@ fn generator_mostly_compiles_and_fits_the_budget() {
         }
     }
     assert!(
-        compiled * 10 >= total * 9,
+        compiled * 20 >= total * 17,
         "only {compiled} of {total} generated patterns compiled"
     );
     assert!(
@@ -540,6 +540,87 @@ fn extreme_spans_never_panic() {
             let mut buf = [Event::EMPTY; 16];
             let res = p.query(s, 0, &mut buf);
             assert!(res.written <= 16);
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 512, ..ProptestConfig::default() })]
+
+    /// The cost contract: work never exceeds the compile-time bound for the span's length, and a
+    /// span within `MAX_QUERY_SPAN` never exhausts the budget.
+    #[test]
+    fn work_stays_within_its_bound(
+        src in pattern_src(),
+        start in -8i64..4000,
+        offset in 0i64..48_000,
+        len in 1i64..(48_000 * 4),
+        seed in any::<u64>(),
+    ) {
+        let Some(p) = generated(&src) else { return Ok(()) };
+        let b = Rational::int(start).checked_add(r(offset, 48_000)).unwrap();
+        let len = r(len, 48_000);
+        let s = Span::new(b, b.checked_add(len).unwrap());
+        let mut buf = vec![Event::EMPTY; 64];
+        let res = p.query(s, seed, &mut buf);
+        let bound = p.work_bound(len).unwrap();
+        prop_assert!(res.exhausted || u64::from(res.work) <= bound, "{res:?} > {bound}");
+        if len <= reuben_pattern::MAX_QUERY_SPAN {
+            prop_assert!(!res.exhausted, "in-contract span exhausted: {res:?}");
+            prop_assert!(bound <= u64::from(reuben_pattern::MAX_WORK));
+        }
+    }
+
+    /// A note never sounds past its step: in `[A] [B]`, an onset in the first half releases by the
+    /// half cycle. And the release is the same however time is split (`check_split` compares it).
+    #[test]
+    fn release_is_cut_to_its_step_and_split_invariant(
+        a in pattern_src(),
+        b in pattern_src(),
+        c in 0i64..1000,
+        cuts in prop::collection::vec(any::<u32>(), 0..8),
+    ) {
+        let src = format!("[{a}] [{b}]");
+        let Some(p) = generated(&src) else { return Ok(()) };
+        let s = cycles(c, c + 1);
+        prop_assume!(fits_budget(&p, s));
+        let half = r(2 * c + 1, 2);
+        for e in query(&p, s, 0).into_iter().filter(Event::has_onset) {
+            prop_assert!(e.whole.begin < e.release && e.release <= e.whole.end, "{e:?}");
+            let step_end = if e.whole.begin < half { half } else { Rational::int(c + 1) };
+            prop_assert!(e.release <= step_end, "{src}: {e:?}");
+        }
+        check_split(&p, s, &pieces(s, &cuts, 4099), 0);
+    }
+}
+
+#[test]
+fn reviewer_patterns_never_exhaust_in_contract() {
+    // Every pattern that compiles, on the guaranteed block (4096 frames, 22.05 kHz, 999 BPM, one
+    // beat per cycle) at several offsets.
+    let block = r(999 * 4096, 60 * 22_050);
+    for src in [
+        "0*1024",
+        "[0 1 2 3 4 5 6 7]*16",
+        "[0 [1 [2 [3 [4 [5 6]]]]]]*16",
+        "[0 [1 [2 [3 [4 [5 [6 [7 [8 [9 [10 [11 [12 13]]]]]]]]]]]]]",
+        "<0*512 ~!3>",
+        "{0*256 ~ ~ ~}%1",
+        "[0*1*1*1*1*1*1*1*1]!64",
+        "[[0 0]!2]!32",
+        "[[0 1 2]*1.001 [3 4 5 6 7]/1.003]*7",
+    ] {
+        let p = Pattern::new(src).unwrap_or_else(|e| panic!("{src}: {e}"));
+        for k in 0..64 {
+            let start = Rational::int(1_000 + k * 7).checked_add(r(k, 64)).unwrap();
+            let s = Span::new(start, start.checked_add(block).unwrap());
+            let mut buf = vec![Event::EMPTY; 8192];
+            let res = p.query(s, 0, &mut buf);
+            assert!(!res.exhausted, "{src}: {res:?}");
+            assert!(
+                u64::from(res.work) <= p.work_bound(block).unwrap(),
+                "{src}: {res:?}"
+            );
         }
     }
 }

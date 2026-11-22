@@ -69,6 +69,18 @@ impl Rational {
         Self::from_i128(num as i128, den as i128)
     }
 
+    /// `num / den` for constants: `den > 0` and the fraction already in lowest terms, or the
+    /// constant fails to compile.
+    pub const fn new_const(num: i64, den: i64) -> Rational {
+        assert!(den > 0, "denominator must be positive");
+        let (mut a, mut b) = (num.unsigned_abs(), den as u64);
+        while b != 0 {
+            (a, b) = (b, a % b);
+        }
+        assert!(a == 1, "fraction must be in lowest terms");
+        Rational { num, den }
+    }
+
     /// The integer `n`.
     pub const fn int(n: i64) -> Rational {
         Rational { num: n, den: 1 }
