@@ -703,6 +703,18 @@ impl StructureServer {
         state: StructureState,
         token: Option<Token>,
     ) -> std::io::Result<Self> {
+        Self::bind_admitting(addr, state, token, ADMIT_WITHIN)
+    }
+
+    /// [`bind_with_token`](Self::bind_with_token), giving a peer elsewhere `admit_within` to send
+    /// its first line instead of [`ADMIT_WITHIN`]: the seam that lets a test watch the deadline
+    /// close a connection without waiting out the real one.
+    pub(crate) fn bind_admitting<A: ToSocketAddrs>(
+        addr: A,
+        state: StructureState,
+        token: Option<Token>,
+        admit_within: Duration,
+    ) -> std::io::Result<Self> {
         let listener = TcpListener::bind(addr)?;
         if token.is_none() && !listener.local_addr()?.ip().to_canonical().is_loopback() {
             return Err(std::io::Error::new(
@@ -719,7 +731,7 @@ impl StructureServer {
             let shutdown = Arc::clone(&shutdown);
             std::thread::Builder::new()
                 .name("structure-accept".to_string())
-                .spawn(move || accept_loop(listener, state, token, shutdown))
+                .spawn(move || accept_loop(listener, state, token, admit_within, shutdown))
                 .expect("spawn structure-accept thread")
         };
         Ok(Self {
@@ -774,6 +786,7 @@ fn accept_loop(
     listener: TcpListener,
     state: StructureState,
     token: Option<Arc<Token>>,
+    admit_within: Duration,
     shutdown: Arc<AtomicBool>,
 ) {
     // (join handle, a clone of the socket used only to wake the handler at shutdown).
@@ -789,7 +802,7 @@ fn accept_loop(
                 let wake = stream.try_clone().ok();
                 let handler_state = state.clone();
                 let handler_shutdown = Arc::clone(&shutdown);
-                let admission = Admission::new(peer.ip(), token.clone());
+                let admission = Admission::new(peer.ip(), token.clone(), admit_within);
                 let spawned = std::thread::Builder::new()
                     .name("structure-conn".to_string())
                     .spawn(move || {
@@ -942,12 +955,12 @@ struct Admission {
 }
 
 impl Admission {
-    fn new(peer: IpAddr, token: Option<Arc<Token>>) -> Self {
+    fn new(peer: IpAddr, token: Option<Arc<Token>>, admit_within: Duration) -> Self {
         let must_present = token.is_some() && !peer.to_canonical().is_loopback();
         Self {
             peer,
             token,
-            deadline: must_present.then(|| Instant::now() + ADMIT_WITHIN),
+            deadline: must_present.then(|| Instant::now() + admit_within),
         }
     }
 }
@@ -1593,6 +1606,62 @@ mod tests {
             Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::ConnectionReset, "{e}"),
         }
         within_deadline("the subscription is dropped", || state.subscribers() == 0);
+
+        server.shutdown();
+        cb.stop();
+    }
+
+    /// A peer elsewhere that sends no first line, or only blank ones, is answered and closed once
+    /// its admission deadline passes. Skipped, saying so, on a machine with no route off loopback.
+    #[test]
+    fn a_peer_elsewhere_that_never_presents_the_token_is_closed() {
+        use std::io::BufRead;
+        use std::net::{SocketAddr, UdpSocket};
+
+        // This machine's address on the interface its default route leaves by. Connecting a UDP
+        // socket sends nothing; it only picks the route.
+        let ip = UdpSocket::bind("0.0.0.0:0")
+            .and_then(|s| s.connect("192.0.2.1:9").and_then(|()| s.local_addr()))
+            .map(|a| a.ip())
+            .ok()
+            .filter(|ip| !ip.is_loopback() && !ip.is_unspecified());
+        let Some(ip) = ip else {
+            eprintln!("skipped: no non-loopback interface");
+            return;
+        };
+
+        let (state, cb, _) = swap_fixture(BASE_DOC, 0);
+        let token = Token::new("s3cret").expect("a token");
+        let server = StructureServer::bind_admitting(
+            "0.0.0.0:0",
+            state,
+            Some(token),
+            Duration::from_millis(50),
+        )
+        .expect("bind");
+        let addr = SocketAddr::new(ip, server.local_addr().port());
+
+        // Silent, and blank lines: neither is a first line, so neither may hold the connection.
+        for blank in ["", "\n\n  \n"] {
+            let stream = TcpStream::connect(addr).expect("connect");
+            (&stream).write_all(blank.as_bytes()).expect("write");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("a read timeout");
+            let mut reply = String::new();
+            BufReader::new(&stream)
+                .read_line(&mut reply)
+                .expect("the engine answers before closing");
+            assert!(reply.contains(TOKEN_REQUIRED), "{blank:?}: {reply:?}");
+            let mut rest = String::new();
+            assert_eq!(
+                BufReader::new(&stream)
+                    .read_line(&mut rest)
+                    .expect("closed"),
+                0,
+                "{blank:?}: the connection is closed"
+            );
+        }
 
         server.shutdown();
         cb.stop();
