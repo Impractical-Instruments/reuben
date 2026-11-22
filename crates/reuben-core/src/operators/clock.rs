@@ -26,9 +26,8 @@
 //!   the next rising edge, and a surviving one sees a falling edge at the Swap. For example,
 //!   `envelope` releases early, a looping `sample` starts its release early, `euclid` sends its
 //!   gate-off early if the current step is a pulse, and `sequencer` sends the held step's note-off
-//!   early. A plain Value
-//!   consumer whose default is nonzero (say a `gain` of 1.0) latches that default after a Swap even
-//!   while `gate` is low, until the next edge.
+//!   early. A plain Value consumer whose default is nonzero (say a `gain` of 1.0) latches that
+//!   default after a Swap even while `gate` is low, until the next edge.
 //! - input 1: `tempo` (BPM).
 //! - input 2: `division` (`i32`) — gate subdivisions per beat (1 = once per beat, default; 4 =
 //!   16ths). Its `1` floor lives in the port contract (`I32Meta` min), so the gate can never
@@ -50,10 +49,12 @@
 //! its consumers, so each reads the right beat in its first block after the Swap, and nothing
 //! repeats in steady state. A beat count is a position, not a trigger, so announcing it is safe
 //! where announcing `gate` is not. Every internal consumer receives the announcement. An external
-//! listener on an `osc_out` can miss it, and any other outbound emitted around a Swap (a `beat`
-//! step or a `gate` edge): the retiring Engine's outbound is discarded at install, and
-//! `RenderSlot` drops an up-ramp segment's outbound when the same callback continues into the
-//! steady segment. The KNOWN LIMITATION in `coordinator/slot.rs` gives the exact conditions.
+//! listener on an `osc_out` can miss it: the new Engine emits it in an up-ramp segment, and
+//! `RenderSlot` drops that segment's outbound when the same callback continues into the steady
+//! segment, which loses any `beat` step or `gate` edge emitted there too. Separately, the install
+//! discards the retiring Engine's outbound, which loses a `beat` step or `gate` edge it emitted
+//! in the installing callback's down segment. The KNOWN LIMITATION in `coordinator/slot.rs` gives
+//! the exact conditions.
 //!
 //! `tempo`/`division` are Value inputs: read held, so a change block-slices and takes effect at the
 //! exact sample of the change — and each can be *wired* and modulated (`division` by an `i32`
