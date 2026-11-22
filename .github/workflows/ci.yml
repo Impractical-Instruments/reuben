@@ -164,11 +164,17 @@ jobs:
               - '.github/scripts/bench-dashboard.py'
               - '.github/scripts/test_bench_dashboard.py'
               - '.github/workflows/ci.yml'
-            # The perf gate's own script suite, apart from `bench`: it needs bash and git, not a
-            # toolchain or valgrind, so an edit to the script is checked in seconds.
+            # The perf and eval gates' own script suites, apart from `bench` and `eval`: they need
+            # bash and git, not a toolchain or valgrind, so an edit to a script is checked in seconds.
+            # The manifests are here because the suite also holds the `bench` filter above and the
+            # perf gate's swap set to the benched build closure, which they declare.
             perf_gate_script:
               - '.github/scripts/perf-gate.sh'
               - '.github/scripts/test_perf_gate.py'
+              - '.github/scripts/eval-gate.sh'
+              - '.github/scripts/test_eval_gate.py'
+              - 'Cargo.toml'
+              - 'crates/*/Cargo.toml'
               - '.github/workflows/ci.yml'
 
   lockstep:
@@ -750,10 +756,12 @@ jobs:
 
   # perf-gate.sh rewrites its swap set from git, which overwrites anything there that is not at HEAD.
   # This suite runs the real script in throwaway repos (a `cargo` stub, nothing built) and holds it
-  # to two things: it refuses while the swap set holds work it would overwrite, and it leaves exactly
-  # HEAD's files behind — after a normal exit and after an interrupt alike.
+  # to its tree handling (refuse work it would overwrite, leave exactly HEAD behind, interrupt or
+  # not), its verdicts for each way a baseline run can fail, and the identical-engine path. It also
+  # holds the `bench` filter and the swap set to the closure the manifests declare. eval-gate.sh's
+  # suite rides along: same shape, same seconds.
   perf-gate-script:
-    name: perf gate script tests
+    name: perf + eval gate script tests
     runs-on: ubuntu-latest
     needs: changes
     if: >-
@@ -761,8 +769,10 @@ jobs:
       && (github.event_name == 'push' || github.event.pull_request.draft == false)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: perf-gate.sh dirty-tree tests
+      - name: perf-gate.sh tests
         run: cd .github/scripts && python3 -m unittest test_perf_gate -v
+      - name: eval-gate.sh tests
+        run: cd .github/scripts && python3 -m unittest test_eval_gate -v
 
   # The hook set's chainer (test_hook_dispatch.py), which is what makes every pre-commit and
   # pre-push check run locally at all. It builds throwaway git repos with synthetic registries, so

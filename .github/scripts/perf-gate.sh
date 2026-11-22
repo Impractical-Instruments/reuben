@@ -367,6 +367,9 @@ overall_fail=0
 skipped=0
 scaling_inert=0
 hard_broken=0
+# Identical-engine mode only: a layer whose HEAD run failed. Nothing was compared, so it gets its own
+# result line rather than the regression one.
+head_unrun=0
 
 # Per-layer outcome of the baseline pass, read by the compare pass: `ok` (a saved `base` to compare
 # against), `skip` (no comparable baseline — non-blocking), or `broken` (fails the gate). The note
@@ -472,7 +475,7 @@ compare_one() {
       printf '::error title=Perf bench failed::%s did not run at HEAD\n' "$bench"
       note "_\`$bench\`: ❌ the bench did not run at HEAD._"
       note ""
-      overall_fail=1
+      head_unrun=1
     fi
     return 0
   fi
@@ -481,7 +484,6 @@ compare_one() {
   # diff_pct is serialized as a string (callgrind event "Ir" = instructions). The jq walk is
   # position-independent so it survives schema nesting changes; if it finds nothing the callgrind
   # exit code still rules.
-  local layer="${bench%_iai}"
   local table_fail=0 parsed=0
   while IFS= read -r f; do
     id=$(jq -r '.id // .function_name // "?"' "$f" 2>/dev/null)
@@ -636,6 +638,11 @@ scaling_gate
 # masking bug we are closing.
 if [ "$hard_broken" -ne 0 ]; then
   both "**Result: baseline bench failed to run — perf gate could not run a comparison. Not a pass.**"
+  exit 1
+fi
+
+if [ "$head_unrun" -ne 0 ]; then
+  both "**Result: ❌ a bench did not run at HEAD — nothing was compared. Not a pass.**"
   exit 1
 fi
 

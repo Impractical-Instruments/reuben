@@ -4,9 +4,12 @@ No inference, no network, no model — so it runs in CI on every PR in seconds a
 byte-reproducible. What it measures is what the *surface* costs a perfect caller: grounding tokens
 handed back by the sidecar and failed-validate rounds.
 
-Document characters (metric (c)) are not reported here. A reference solution calls only roster
-verbs, no roster verb takes a document argument, and an off-roster call already fails the run as
-`file-access` — so on this tier the number is zero by construction. It is a live-tier metric.
+Document characters (metric (c)) are not on the trend here. A reference solution's arguments are
+written in `tasks.py`, and which roster arguments count as a document is `DOCUMENT_ARGUMENTS` in
+`workspace.py` — both harness, which this gate never swaps — so the number cannot differ between the
+two sides of a comparison and measures nothing about the surface. Today it is zero on every task. It
+is a live-tier metric; here it survives only as a warning if a reference ever starts emitting a
+document, since a reference is meant to model a conforming client.
 
 That floor is exactly what a new verb moves, which is why this tier gates and the live tier does
 not.
@@ -212,6 +215,23 @@ def render(report: dict[str, Any], baseline: dict[str, Any] | None) -> tuple[str
                 )
             shown = "—" if delta is None else f"{delta:+.1f}"
             lines.append(f"| `{key}` | {label} | {value} | {base_value} | {shown} | {icon} |")
+
+    emitters = {
+        key: result.get("payload_characters", 0)
+        for key, result in report["tasks"].items()
+        if result.get("payload_characters", 0) > 0
+    }
+    for key, chars in emitters.items():
+        print(
+            f"::warning title=Reference emits a document::{key} emits {chars} document characters — "
+            "a reference solution should edit through the verbs"
+        )
+    if emitters:
+        lines += [
+            "",
+            "⚠️ Reference solutions emitting document characters: "
+            + ", ".join(f"`{key}` ({chars:,})" for key, chars in emitters.items()),
+        ]
 
     lines += _density_lines(report, baseline)
 
