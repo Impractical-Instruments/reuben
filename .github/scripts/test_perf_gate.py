@@ -640,9 +640,10 @@ class BenchClosureIsCovered(unittest.TestCase):
     filter skips a PR that touches only that crate, and an unswapped crate is HEAD's on both sides."""
 
     def test_the_closure_reaches_the_engine(self) -> None:
-        self.assertTrue(
+        self.assertLessEqual(
             {"crates/reuben-document", "crates/reuben-core", "crates/reuben-macros",
-             "crates/reuben-contract"} <= _bench_closure()
+             "crates/reuben-contract"},
+            _bench_closure(),
         )
 
     def test_every_closure_crate_is_in_the_bench_path_filter(self) -> None:
