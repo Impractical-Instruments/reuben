@@ -924,6 +924,73 @@ impl Plan {
             self.nodes[new_index].op.on_transplant();
         }
     }
+
+    /// Carry live input values from a `from` Plan into this (freshly built) one: each
+    /// `(old_index, new_index, port)` triple swaps `from.nodes[old_index].latch[port]` with
+    /// `self.nodes[new_index].latch[port]`, so the value last sent to that input keeps playing and
+    /// this Plan's seed lands in `from` to free off-thread with it. Which ports carry is the
+    /// caller's rule; a triple out of range is skipped.
+    ///
+    /// Caller contract: this Plan has not rendered. A materialized port's scratch is then still
+    /// marked dirty, so the first block fills it from the carried value.
+    ///
+    /// **RT-safe:** a bounded loop of [`core::mem::swap`] over [`Arg`]s — no allocation, and no
+    /// drop on this side. Runs at the render-callback top, beside the transplant.
+    pub(crate) fn carry_latches(&mut self, from: &mut Plan, carries: &[(usize, usize, usize)]) {
+        for &(old_index, new_index, port) in carries {
+            let old = from
+                .nodes
+                .get_mut(old_index)
+                .and_then(|n| n.latch.get_mut(port));
+            let new = self
+                .nodes
+                .get_mut(new_index)
+                .and_then(|n| n.latch.get_mut(port));
+            if let (Some(old), Some(new)) = (old, new) {
+                core::mem::swap(old, new);
+            }
+        }
+    }
+
+    /// Per node (Plan order), per input port: the value Instantiate seeded the port's latch with,
+    /// or `None` where a wire feeds the port or it holds no value (an Event input). Only
+    /// meaningful before the first block renders: rendering overwrites a latch with whatever is
+    /// sent to it.
+    pub fn seeded_inputs(&self) -> Vec<Vec<Option<Arg>>> {
+        let mut wired: Vec<Vec<bool>> = self
+            .nodes
+            .iter()
+            .map(|n| {
+                (0..n.latch.len())
+                    .map(|p| {
+                        n.inputs.get(p).is_some_and(Option::is_some)
+                            && !n.materialize.iter().any(|&(mp, _)| mp == p)
+                    })
+                    .collect()
+            })
+            .collect();
+        for n in &self.nodes {
+            for &(dst, port) in n.out_targets.iter().flatten() {
+                if let Some(w) = wired.get_mut(dst).and_then(|w| w.get_mut(port)) {
+                    *w = true;
+                }
+            }
+        }
+        self.nodes
+            .iter()
+            .zip(wired)
+            .map(|(n, wired)| {
+                n.latch
+                    .iter()
+                    .zip(wired)
+                    .zip(&n.input_kinds)
+                    .map(|((seed, wired), kind)| {
+                        (!wired && *kind != PortKind::Event).then(|| seed.clone())
+                    })
+                    .collect()
+            })
+            .collect()
+    }
 }
 
 /// Collapse pass-through **interface pipes** out of the execution schedule, so the rendered
@@ -1901,6 +1968,7 @@ mod transplant_tests {
     use crate::config::AudioConfig;
     use crate::descriptor::Descriptor;
     use crate::graph::Graph;
+    use crate::message::Arg;
     use crate::operator::{Io, Operator};
 
     // Carries a byte of state so it is **not** a ZST: a `Box<ZST>` is a shared dangling pointer,
@@ -1993,6 +2061,45 @@ mod transplant_tests {
         let mut fresh = one_node_plan();
         let mut retiring = one_node_plan();
         fresh.transplant_survivors(&mut retiring, &[(0, 5)]);
+    }
+
+    /// A one-node plan whose node has one unwired held input, seeded `0.25`.
+    fn one_input_plan() -> Plan {
+        let mut desc = Probe::descriptor();
+        let meta = crate::descriptor::F32Meta {
+            min: 0.0,
+            max: 1.0,
+            default: 0.25,
+            unit: String::new(),
+            curve: crate::descriptor::Curve::default(),
+        };
+        desc.inputs = vec![crate::descriptor::Port::f32("x", meta)];
+        let mut g = Graph::new();
+        g.add_boxed("/n", Box::new(Probe { _state: 0 }), Arc::new(desc));
+        Plan::instantiate(g, AudioConfig::new(48_000.0, 128)).expect("one-node plan instantiates")
+    }
+
+    #[test]
+    fn carrying_a_latch_swaps_it_and_skips_a_triple_out_of_range() {
+        let mut fresh = one_input_plan();
+        let mut retiring = one_input_plan();
+        assert_eq!(
+            fresh.seeded_inputs(),
+            vec![vec![Some(Arg::F32(0.25))]],
+            "an unwired held input reports its seed"
+        );
+        retiring.nodes[0].latch[0] = Arg::F32(0.75);
+        fresh.carry_latches(&mut retiring, &[(0, 0, 0), (0, 0, 1), (3, 0, 0)]);
+        assert_eq!(
+            fresh.nodes[0].latch[0],
+            Arg::F32(0.75),
+            "the live value crosses"
+        );
+        assert_eq!(
+            retiring.nodes[0].latch[0],
+            Arg::F32(0.25),
+            "the seed lands in `from`, to free off-thread with the retiree"
+        );
     }
 }
 

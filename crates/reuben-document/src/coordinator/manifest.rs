@@ -1,7 +1,8 @@
 //! The installed-Plan **manifest** and the swap **survivor key** — per node, its fully-qualified
 //! address, operator type, and instantiate-time identity fingerprint (a content hash over its
-//! normalized `config` plus everything it resolved at Instantiate). [`Manifest::diff`] turns two
-//! manifests into the migration table the render side transplants by box swap.
+//! normalized `config` plus everything it resolved at Instantiate) — and the value each of its
+//! inputs is seeded with. [`Manifest::diff`] turns two manifests into the migration table the
+//! render side transplants by box swap.
 //!
 //! This is off-thread load-time work (no RT constraint) and, like the rest of core, OS-free.
 
@@ -12,6 +13,7 @@ use crate::resources::ResourceResolver;
 use crate::DiffSummary;
 use reuben_core::coordinator::MigrationTable;
 use reuben_core::descriptor::Descriptor;
+use reuben_core::message::Arg;
 use reuben_core::plan::Plan;
 use reuben_core::registry::Registry;
 use reuben_core::resources::SampleBuffer;
@@ -19,7 +21,7 @@ use reuben_core::resources::SampleBuffer;
 /// One installed node's survivor identity: its fully-qualified address, operator
 /// type, and instantiate-time fingerprint. Position in [`Manifest::nodes`] is the node's Plan
 /// index, which the migration table pairs old↔new.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NodeIdentity {
     /// Fully-qualified address (a spliced subpatch child carries its prefix), the
     /// same address the Plan node holds.
@@ -30,12 +32,16 @@ pub struct NodeIdentity {
     /// `None` is the conservative fallback (a node whose fingerprint could not be computed **never
     /// survives**, so an unmodelled shape resets rather than silently transplanting).
     pub fingerprint: Option<u64>,
+    /// Per input port, the value the document seeds it with — a constant, an interface pipe's
+    /// default, or the declared default — or `None` where a wire feeds it or it holds no value.
+    /// Read from the Plan before it renders ([`Plan::seeded_inputs`]).
+    pub inputs: Vec<Option<Arg>>,
 }
 
 /// The installed Plan's per-node survivor identities, in Plan execution order (index = Plan node
 /// index). Built by [`build_manifest`]; diffed against a new Plan's manifest by [`Manifest::diff`]
 /// to precompute the migration table.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Manifest {
     pub nodes: Vec<NodeIdentity>,
 }
@@ -47,6 +53,11 @@ impl Manifest {
     /// operator type** and the **same instantiate-time fingerprint** (both present). Everything
     /// else at a shared address is a `state_reset` (a type change or a fingerprint change — the
     /// edit always wins); addresses only in `new` are `added`, only in `old` are `removed`.
+    ///
+    /// A survivor also keeps the live value of each input whose document value the edit left
+    /// alone: an input unwired on both sides, seeded with an equal value on both sides, carries
+    /// its latch across. An input whose seed changed, or that gained or lost a wire, takes the new
+    /// document's value. A value that compares unequal to itself (a NaN seed) never carries.
     pub fn diff(&self, new: &Manifest) -> (MigrationTable, DiffSummary) {
         // Addresses are unique within a Plan (the loader rejects duplicates), so an address keys a
         // node unambiguously. Old side maps address -> (plan index, identity).
@@ -60,6 +71,7 @@ impl Manifest {
             new.nodes.iter().map(|n| (n.address.as_str(), ())).collect();
 
         let mut survivors = Vec::new();
+        let mut latches = Vec::new();
         let mut state_reset = Vec::new();
         let mut added = Vec::new();
         for (new_idx, nn) in new.nodes.iter().enumerate() {
@@ -70,6 +82,13 @@ impl Manifest {
                         && on.fingerprint == nn.fingerprint;
                     if survives {
                         survivors.push((old_idx, new_idx));
+                        for (port, (old_seed, new_seed)) in
+                            on.inputs.iter().zip(&nn.inputs).enumerate()
+                        {
+                            if old_seed.is_some() && old_seed == new_seed {
+                                latches.push((old_idx, new_idx, port));
+                            }
+                        }
                     } else {
                         state_reset.push(nn.address.clone());
                     }
@@ -95,7 +114,7 @@ impl Manifest {
             added,
             removed,
         };
-        (MigrationTable::new(survivors), diff)
+        (MigrationTable::new(survivors, latches), diff)
     }
 }
 
@@ -120,10 +139,12 @@ pub fn build_manifest(
     let nodes = plan
         .nodes()
         .iter()
-        .map(|node| NodeIdentity {
+        .zip(plan.seeded_inputs())
+        .map(|(node, inputs)| NodeIdentity {
             address: node.address.to_string(),
             type_name: node.descriptor.type_name.to_string(),
             fingerprint: fingerprints.get(&*node.address).copied(),
+            inputs,
         })
         .collect();
     Manifest { nodes }
@@ -190,8 +211,8 @@ fn walk_document(
 
 /// One node's instantiate-time fingerprint: its normalized `config` block, plus the
 /// content identity of what it resolved at Instantiate — a `sample`'s decoded bytes, a `voice`'s
-/// hosted document (recursively). Runtime `inputs` are deliberately excluded: the new
-/// Plan's latches win, so a param edit survives.
+/// hosted document (recursively). Runtime `inputs` are deliberately excluded: they are diffed
+/// per port in [`Manifest::diff`], so a param edit leaves the node a survivor.
 fn node_fingerprint(
     doc: &NormalizedDoc,
     node: &NodeDoc,
@@ -754,5 +775,54 @@ mod tests {
         let out_old = old.nodes.iter().position(|n| n.address == "/out").unwrap();
         let out_new = new.nodes.iter().position(|n| n.address == "/out").unwrap();
         assert_eq!(table.survivors(), &[(out_old, out_new)]);
+    }
+
+    /// `/m.a` is fed `a`, `/m.b` is wired from `/k` when `b_wired`, else the constant `1.0`.
+    fn product_doc(a: f32, b_wired: bool) -> String {
+        let b = if b_wired {
+            r#"{ "from": "/k.out" }"#.to_string()
+        } else {
+            "1.0".to_string()
+        };
+        format!(
+            r#"{{ "format_version": 3, "instrument": "p",
+                 "interface": {{ "outputs": {{ "out": {{ "from": "/out.audio" }} }} }},
+                 "nodes": [
+                   {{ "type": "mul_f32_signal", "address": "/k", "inputs": {{ "a": 1.0 }} }},
+                   {{ "type": "mul_f32_signal", "address": "/m", "inputs": {{ "a": {a}, "b": {b} }} }},
+                   {{ "type": "output", "address": "/out",
+                      "inputs": {{ "audio": {{ "from": "/m.out" }} }} }} ] }}"#
+        )
+    }
+
+    /// The `(port)`s of `address` whose latch the table carries.
+    fn carried(old: &Manifest, new: &Manifest, address: &str) -> Vec<usize> {
+        let (table, _) = old.diff(new);
+        let old_idx = old.nodes.iter().position(|n| n.address == address).unwrap();
+        let new_idx = new.nodes.iter().position(|n| n.address == address).unwrap();
+        table
+            .latches()
+            .iter()
+            .filter(|&&(o, n, _)| (o, n) == (old_idx, new_idx))
+            .map(|&(_, _, port)| port)
+            .collect()
+    }
+
+    #[test]
+    fn a_survivor_carries_exactly_the_inputs_whose_document_value_held() {
+        let resolver = MemoryResolver::new();
+        let base = manifest_for(&product_doc(0.3, false), &resolver);
+        // `mul_f32_signal` declares `a` (port 0) then `b` (port 1).
+        assert_eq!(carried(&base, &base, "/m"), vec![0, 1], "nothing edited");
+        let a_edited = manifest_for(&product_doc(0.5, false), &resolver);
+        assert_eq!(carried(&base, &a_edited, "/m"), vec![1], "a edited");
+        let b_wired = manifest_for(&product_doc(0.3, true), &resolver);
+        assert_eq!(carried(&base, &b_wired, "/m"), vec![0], "b gained a wire");
+        assert_eq!(carried(&b_wired, &base, "/m"), vec![0], "b lost its wire");
+        assert_eq!(
+            carried(&b_wired, &b_wired, "/m"),
+            vec![0],
+            "a wired input carries nothing"
+        );
     }
 }

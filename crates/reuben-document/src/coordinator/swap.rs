@@ -545,6 +545,9 @@ mod tests {
                 bundle
                     .engine
                     .transplant_survivors(&mut self.engine, bundle.migration.survivors());
+                bundle
+                    .engine
+                    .carry_latches(&mut self.engine, bundle.migration.latches());
                 let retiring = std::mem::replace(&mut self.engine, bundle.engine);
                 let _ = self.mailbox.post_retiree(Box::new(InstallBundle {
                     engine: retiring,
@@ -685,6 +688,200 @@ mod tests {
         assert!(
             ringing > 0.6,
             "a survivor keeps ringing at sustain across a runtime param edit: peak {ringing}"
+        );
+    }
+
+    /// `/m` multiplies its two constant-fed signal inputs into the output, so the rendered peak
+    /// is `a · b`. `a` is the input a test sends a live value to; `extra` splices further nodes.
+    fn product_doc(address: &str, a: &str, b: f32, extra: &str) -> String {
+        format!(
+            r#"{{ "format_version": 3, "instrument": "p",
+                 "interface": {{ "outputs": {{ "out": {{ "from": "/out.audio" }} }} }},
+                 "nodes": [
+                   {{ "type": "mul_f32_signal", "address": "{address}",
+                      "inputs": {{ "a": {a}, "b": {b} }} }},
+                   {{ "type": "output", "address": "/out",
+                      "inputs": {{ "audio": {{ "from": "{address}.out" }} }} }} {extra} ] }}"#
+        )
+    }
+
+    /// Install `initial`, send `live` (an address and a value), render it in, swap to `edited`, and return the
+    /// steady peak after the install.
+    fn peak_after_live_send_then_swap(initial: &str, live: (&str, f32), edited: &str) -> f32 {
+        let (mut coord, side, _w) = Coordinator::install_initial(
+            initial,
+            Registry::builtin(),
+            Box::new(MemoryResolver::new()),
+            cfg(),
+        )
+        .expect("initial install");
+        let mut rig = RenderRig::new(side);
+        rig.queue_osc(live.0, &[Arg::F32(live.1)]);
+        rig.render_peak(256);
+        let report = coord.swap_document(edited);
+        assert!(report.report.ok, "swap should succeed: {:?}", report.report);
+        rig.poll_install();
+        coord.try_reclaim();
+        rig.render_peak(256)
+    }
+
+    fn close(actual: f32, expected: f32) -> bool {
+        (actual - expected).abs() < 1e-4
+    }
+
+    #[test]
+    fn a_live_value_survives_an_edit_to_another_input() {
+        let peak = peak_after_live_send_then_swap(
+            &product_doc("/m", "0.3", 1.0, ""),
+            ("/m/a", 0.7),
+            &product_doc("/m", "0.3", 2.0, ""),
+        );
+        assert!(
+            close(peak, 1.4),
+            "live a=0.7 kept, edited b=2 heard: peak {peak}"
+        );
+    }
+
+    #[test]
+    fn editing_the_same_input_lets_the_document_win() {
+        let peak = peak_after_live_send_then_swap(
+            &product_doc("/m", "0.3", 1.0, ""),
+            ("/m/a", 0.7),
+            &product_doc("/m", "0.5", 1.0, ""),
+        );
+        assert!(close(peak, 0.5), "the edited a=0.5 wins: peak {peak}");
+    }
+
+    #[test]
+    fn a_constant_edited_back_to_its_value_keeps_the_live_value() {
+        // The document's value for `a` is 0.3 on both sides of the Swap, so it did not change.
+        let doc = product_doc("/m", "0.3", 1.0, "");
+        let peak = peak_after_live_send_then_swap(&doc, ("/m/a", 0.7), &doc);
+        assert!(close(peak, 0.7), "live a=0.7 kept: peak {peak}");
+    }
+
+    #[test]
+    fn a_renamed_node_starts_from_the_document() {
+        let peak = peak_after_live_send_then_swap(
+            &product_doc("/m", "0.3", 1.0, ""),
+            ("/m/a", 0.7),
+            &product_doc("/m2", "0.3", 1.0, ""),
+        );
+        assert!(close(peak, 0.3), "a rename is a new node: peak {peak}");
+    }
+
+    #[test]
+    fn a_node_removed_and_readded_starts_from_the_document() {
+        let doc = product_doc("/m", "0.3", 1.0, "");
+        let without = r#"{ "format_version": 3, "instrument": "p",
+             "interface": { "outputs": { "out": { "from": "/out.audio" } } },
+             "nodes": [
+               { "type": "mul_f32_signal", "address": "/z", "inputs": { "a": 0.0, "b": 0.0 } },
+               { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/z.out" } } } ] }"#;
+        let (mut coord, side, _w) = Coordinator::install_initial(
+            &doc,
+            Registry::builtin(),
+            Box::new(MemoryResolver::new()),
+            cfg(),
+        )
+        .expect("initial install");
+        let mut rig = RenderRig::new(side);
+        rig.queue_osc("/m/a", &[Arg::F32(0.7)]);
+        rig.render_peak(256);
+        for next in [without, doc.as_str()] {
+            let report = coord.swap_document(next);
+            assert!(report.report.ok, "swap should succeed: {:?}", report.report);
+            rig.poll_install();
+            coord.try_reclaim();
+            rig.render_peak(256);
+        }
+        let peak = rig.render_peak(256);
+        assert!(close(peak, 0.3), "the re-added node is new: peak {peak}");
+    }
+
+    #[test]
+    fn wiring_the_input_lets_the_wire_win() {
+        let src = r#", { "type": "mul_f32_signal", "address": "/k",
+                         "inputs": { "a": 0.2, "b": 1.0 } }"#;
+        let peak = peak_after_live_send_then_swap(
+            &product_doc("/m", "0.3", 1.0, src),
+            ("/m/a", 0.7),
+            &product_doc("/m", r#"{ "from": "/k.out" }"#, 1.0, src),
+        );
+        assert!(close(peak, 0.2), "the new wire feeds a: peak {peak}");
+    }
+
+    #[test]
+    fn unwiring_the_input_lets_the_document_win() {
+        // A value sent to a wired signal input is not what plays, so nothing live carries out.
+        let src = r#", { "type": "mul_f32_signal", "address": "/k",
+                         "inputs": { "a": 0.2, "b": 1.0 } }"#;
+        let peak = peak_after_live_send_then_swap(
+            &product_doc("/m", r#"{ "from": "/k.out" }"#, 1.0, src),
+            ("/m/a", 0.7),
+            &product_doc("/m", "0.3", 1.0, src),
+        );
+        assert!(
+            close(peak, 0.3),
+            "the constant replaces the wire: peak {peak}"
+        );
+    }
+
+    /// `/m.a` fed by an interface input pipe `level` with default `level_default`.
+    fn piped_doc(level_default: f32, b: f32) -> String {
+        format!(
+            r#"{{ "format_version": 3, "instrument": "p",
+                 "interface": {{
+                   "inputs": {{ "level": {{ "type": "f32_buffer", "default": {level_default} }} }},
+                   "outputs": {{ "out": {{ "from": "/out.audio" }} }} }},
+                 "nodes": [
+                   {{ "type": "mul_f32_signal", "address": "/m",
+                      "inputs": {{ "a": {{ "from": "/level" }}, "b": {b} }} }},
+                   {{ "type": "output", "address": "/out",
+                      "inputs": {{ "audio": {{ "from": "/m.out" }} }} }} ] }}"#
+        )
+    }
+
+    #[test]
+    fn a_live_value_on_a_pipe_survives_an_unrelated_edit() {
+        let peak = peak_after_live_send_then_swap(
+            &piped_doc(0.3, 1.0),
+            ("/level/in", 0.7),
+            &piped_doc(0.3, 2.0),
+        );
+        assert!(close(peak, 1.4), "live level=0.7 kept: peak {peak}");
+    }
+
+    #[test]
+    fn editing_a_pipe_default_lets_the_document_win() {
+        let peak = peak_after_live_send_then_swap(
+            &piped_doc(0.3, 1.0),
+            ("/level/in", 0.7),
+            &piped_doc(0.5, 1.0),
+        );
+        assert!(close(peak, 0.5), "the edited default wins: peak {peak}");
+    }
+
+    #[test]
+    fn a_live_value_on_a_held_value_input_survives_an_unrelated_edit() {
+        // `/v` computes a held value from two Value inputs and feeds it to `/m.b`.
+        let doc = |vb: f32| {
+            product_doc(
+                "/m",
+                "1.0",
+                0.0,
+                &format!(
+                    r#", {{ "type": "mul_f32_value", "address": "/v",
+                           "inputs": {{ "a": 0.5, "b": {vb} }} }}"#
+                ),
+            )
+            .replace(r#""b": 0 }"#, r#""b": { "from": "/v.out" } }"#)
+        };
+        assert!(doc(1.0).contains(r#"{ "from": "/v.out" }"#));
+        let peak = peak_after_live_send_then_swap(&doc(1.0), ("/v/a", 0.9), &doc(2.0));
+        assert!(
+            close(peak, 1.8),
+            "live v.a=0.9 kept, edited v.b=2: peak {peak}"
         );
     }
 

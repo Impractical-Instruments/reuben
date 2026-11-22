@@ -83,9 +83,15 @@ Why the steps are what they are:
   an edit changes: the edit is refused if that document keeps its own errors. Any other edit is
   written even though the whole instrument does not plan yet, and nothing plays until the edit
   that makes it load and plan — that edit starts it playing.
-- **Sending is ephemeral audition.** A live control message (`/filt/cutoff 1500`) changes
-  render state only — sweep a cutoff, try a tempo. The next edit re-reads inputs from the
-  document, so an un-folded tweak is **reset by design**. (The MCP tool is
+- **Sending is audition, not authoring.** A live control message (`/filt/cutoff 1500`) changes
+  render state only — sweep a cutoff, try a tempo; the document never sees it. At each swap a
+  surviving node keeps each live value **unless the edit changed that input's document value**
+  — its constant, the default of the interface pipe feeding it, or its wiring (a wire added or
+  removed) — and then the document wins. So a sent `cutoff` outlives an edit to `resonance`, an
+  edit to `cutoff` replaces it, and an edit that leaves `cutoff` at the value it already had
+  keeps it. A renamed or removed node starts over from the document, as does a node whose state
+  resets (see below). A value sent to a wired input is the wire's to overwrite and never carries.
+  Nothing live is saved: a restarted engine plays the document. (The MCP tool is
   `send_live_controls`; the name says which half of the loop it is on.)
 - **Try, then commit.** Send to explore; when a value is a keeper, fold it into the document with
   `set_instrument_input`. Never let the sound and the document drift apart — the document is the

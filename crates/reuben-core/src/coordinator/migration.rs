@@ -5,17 +5,19 @@
 use alloc::vec::Vec;
 
 /// The precomputed **migration table**: the `(old index, new index)` survivor pairs
-/// the render side transplants by box swap. The survivor semantics — which nodes survive, how
-/// indices map — stay off-thread with the Coordinator that built it.
+/// the render side transplants by box swap, and the `(old index, new index, port)` input latches
+/// it carries across. The survivor semantics — which nodes survive, which live values they keep,
+/// how indices map — stay off-thread with the Coordinator that built it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MigrationTable {
     survivors: Vec<(usize, usize)>,
+    latches: Vec<(usize, usize, usize)>,
 }
 
 impl MigrationTable {
-    /// The pairing rule is the builder's; this side takes the result as given.
-    pub fn new(survivors: Vec<(usize, usize)>) -> Self {
-        Self { survivors }
+    /// The pairing and carry rules are the builder's; this side takes the result as given.
+    pub fn new(survivors: Vec<(usize, usize)>, latches: Vec<(usize, usize, usize)>) -> Self {
+        Self { survivors, latches }
     }
 
     /// The empty table (no survivors) — every node resets. The retiree posted back through the
@@ -27,6 +29,12 @@ impl MigrationTable {
     /// The `(old index, new index)` survivor pairs, for the transplant loop.
     pub fn survivors(&self) -> &[(usize, usize)] {
         &self.survivors
+    }
+
+    /// The `(old index, new index, input port)` latches whose live value carries into the fresh
+    /// Engine instead of its seed.
+    pub fn latches(&self) -> &[(usize, usize, usize)] {
+        &self.latches
     }
 
     /// Number of survivor pairs.

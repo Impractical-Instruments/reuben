@@ -45,8 +45,8 @@ built off the hot path — the Voicer's per-voice sub-`Plan` + arena, the Delay'
 
 A third default-no-op hook, `on_transplant(&mut self)`, runs on a **survivor** box just after it is
 transplanted across a hot-swap. A Swap
-rebuilds every input latch from the new document, so a downstream consumer's held-input latch resets
-to its default. An operator that publishes a **held output on change** (emit-on-change) against a baseline it keeps in its box would then see
+rebuilds every wired input latch from the new document, so a downstream consumer's held-input latch
+resets to its default. An operator that publishes a **held output on change** (emit-on-change) against a baseline it keeps in its box would then see
 no change and stay silent, stranding that consumer on the default — a Swap would silently retranspose
 a `harmony`-driven voice. Such an operator clears its publish baseline here (`self.last = None`) so the
 first post-swap block re-asserts the current value; `harmony.rs` is the exemplar. RT-safe: it runs in

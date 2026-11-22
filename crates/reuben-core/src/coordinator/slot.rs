@@ -307,6 +307,11 @@ impl RenderSlot {
         bundle
             .engine
             .transplant_survivors(&mut self.engine, bundle.migration.survivors());
+        // Survivors keep the values last sent to their inputs, where the table says so; the fresh
+        // Engine's seeds for those ports land in `bundle.engine` with the cold boxes.
+        bundle
+            .engine
+            .carry_latches(&mut self.engine, bundle.migration.latches());
         // Swap the fresh Engine live; `bundle.engine` now holds the retiring one. Reusing the box's
         // storage (rather than `Box::new`) is what keeps the post allocation-free.
         core::mem::swap(&mut self.engine, &mut bundle.engine);
