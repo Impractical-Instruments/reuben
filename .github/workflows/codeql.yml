@@ -1,0 +1,46 @@
+name: CodeQL
+
+# Replaces GitHub's default CodeQL setup, which must be switched off in the repository's code
+# security settings: while it is on, GitHub rejects this workflow's uploads.
+#
+# Rust is analysed on every push to dev and weekly, never on a pull request: its analysis takes
+# about six minutes, longer than the slowest CI job, and no ruleset waits on it, so on a PR it only
+# kept a check yellow. A Rust finding arrives as an alert after the merge instead. Actions and
+# Python take under a minute each and stay on pull requests.
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev]
+  schedule:
+    - cron: "37 11 * * 1"
+
+# Supersede a PR's earlier run; let every dev push and scheduled run finish.
+concurrency:
+  group: codeql-${{ github.ref }}${{ github.event_name != 'pull_request' && format('-{0}', github.sha) || '' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ${{ fromJSON(github.event_name == 'pull_request' && '["actions","python"]' || '["actions","python","rust"]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: github/codeql-action/init@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+      - uses: github/codeql-action/analyze@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
+        with:
+          category: /language:${{ matrix.language }}
