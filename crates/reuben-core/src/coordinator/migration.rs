@@ -4,19 +4,21 @@
 
 use alloc::vec::Vec;
 
-/// The precomputed **migration table**: the `(old index, new index)` survivor pairs
-/// the render side transplants by box swap, and the `(old index, new index, port)` input latches
-/// it carries across. The survivor semantics — which nodes survive, which live values they keep,
-/// how indices map — stay off-thread with the Coordinator that built it.
+use crate::plan::LatchCarry;
+
+/// The precomputed **migration table**: the `(old index, new index)` survivor pairs the render
+/// side transplants by box swap, and the `((old node, port), (new node, port))` input latches it
+/// carries across. The survivor semantics — which nodes survive, which live values they keep, how
+/// indices map — stay off-thread with the Coordinator that built it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MigrationTable {
     survivors: Vec<(usize, usize)>,
-    latches: Vec<(usize, usize, usize)>,
+    latches: Vec<LatchCarry>,
 }
 
 impl MigrationTable {
     /// The pairing and carry rules are the builder's; this side takes the result as given.
-    pub fn new(survivors: Vec<(usize, usize)>, latches: Vec<(usize, usize, usize)>) -> Self {
+    pub fn new(survivors: Vec<(usize, usize)>, latches: Vec<LatchCarry>) -> Self {
         Self { survivors, latches }
     }
 
@@ -26,14 +28,23 @@ impl MigrationTable {
         Self::default()
     }
 
+    /// This table with its survivor pairs and no latches: every input starts from the new Engine's
+    /// seed.
+    pub fn without_latches(self) -> Self {
+        Self {
+            survivors: self.survivors,
+            latches: Vec::new(),
+        }
+    }
+
     /// The `(old index, new index)` survivor pairs, for the transplant loop.
     pub fn survivors(&self) -> &[(usize, usize)] {
         &self.survivors
     }
 
-    /// The `(old index, new index, input port)` latches whose live value carries into the fresh
-    /// Engine instead of its seed.
-    pub fn latches(&self) -> &[(usize, usize, usize)] {
+    /// The `((old node, port), (new node, port))` latches whose live value carries into the fresh
+    /// Engine instead of its seed. Each latch appears at most once per side.
+    pub fn latches(&self) -> &[LatchCarry] {
         &self.latches
     }
 

@@ -14,8 +14,8 @@ pub const SEND_LIVE_CONTROLS: &str =
     "Send a batch of control messages to audition a change on the running engine. \
      These values live in render state only, never in the instrument document: one survives an \
      edit that leaves its input alone, and is replaced when an edit changes that input's value or \
-     wiring, or renames or removes its node. Fold any you want to keep into the instrument \
-     document with an edit. The ack means the engine received the batch and queued it for the next \
+     wiring, or renames or removes its node. Opening an instrument, even the one playing, \
+     replaces them all. Fold any you want to keep into the instrument document with an edit. The ack means the engine received the batch and queued it for the next \
      rendered block — not that it took effect: an address matching no node/port is \
      dropped silently, exactly as it would be arriving from an external controller. \
      Fails fast if no engine is reachable.";

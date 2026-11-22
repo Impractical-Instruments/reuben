@@ -5,8 +5,10 @@
 //! generated from the interface inputs otherwise. A surface doc that cannot be used falls back to
 //! the generated panel and says why.
 //!
-//! Controls send live values to the running engine. They never write the instrument document, so
-//! what a control is set to lasts until the next Swap.
+//! Controls send live values to the running engine. They never write the instrument document. What
+//! a control is set to follows the engine's rule for a live value: an edit keeps it unless the
+//! edit changed its interface input's default or type, or removed the input; opening the
+//! instrument, again or afresh, starts every control from its default.
 
 mod model;
 mod surface;
@@ -107,6 +109,41 @@ impl Setting {
     }
 }
 
+/// Whether two controls of one interface input see the same document value: an edit that changes
+/// an input's default or type replaces a live value in the engine, so the control starts over too.
+/// A range or presentation change leaves the value alone in both.
+fn same_input(was: &Kind, is: &Kind) -> bool {
+    match (was, is) {
+        (
+            Kind::Value {
+                rest: a,
+                integer: ai,
+                ..
+            },
+            Kind::Value {
+                rest: b,
+                integer: bi,
+                ..
+            },
+        ) => a == b && ai == bi,
+        (Kind::Toggle { rest: a }, Kind::Toggle { rest: b }) => a == b,
+        (
+            Kind::Choice {
+                variants: av,
+                rest: a,
+            },
+            Kind::Choice {
+                variants: bv,
+                rest: b,
+            },
+        ) => av == bv && a == b,
+        (Kind::NoteToggle { .. }, Kind::NoteToggle { .. })
+        | (Kind::ChordButton { .. }, Kind::ChordButton { .. })
+        | (Kind::Keyboard, Kind::Keyboard) => was == is,
+        _ => false,
+    }
+}
+
 /// The controls panel of the open instrument, with what each control is set to.
 pub struct Controls {
     loaded: Option<Result<Loaded, String>>,
@@ -133,6 +170,34 @@ impl Controls {
             send_error: None,
             replies: Replies::default(),
         }
+    }
+
+    /// [`open`](Self::open) again after an edit: each control keeps what it was set to where a
+    /// control of the old panel drove the same interface input with the same default and type.
+    pub fn reload(&mut self, top: Option<&str>, channel: &dyn Fn() -> Option<Channel>) {
+        self.replace_keeping_settings(Self::open(top, channel));
+    }
+
+    /// Become `fresh`, carrying over each setting [`reload`](Self::reload) keeps.
+    fn replace_keeping_settings(&mut self, mut fresh: Self) {
+        if let (Some(Ok(old)), Some(Ok(new))) = (&self.loaded, &fresh.loaded) {
+            let mut taken = vec![false; old.panel.controls.len()];
+            for (at, control) in new.panel.controls.iter().enumerate() {
+                let kept = (old.panel.controls.iter().enumerate()).find(|(was_at, was)| {
+                    !taken[*was_at]
+                        && was.bind == control.bind
+                        && same_input(&was.kind, &control.kind)
+                });
+                if let Some((was_at, _)) = kept {
+                    taken[was_at] = true;
+                    fresh.settings[at] = self.settings[was_at];
+                }
+            }
+        }
+        fresh.low_key = self.low_key;
+        fresh.send_error = self.send_error.take();
+        fresh.replies = std::mem::take(&mut self.replies);
+        *self = fresh;
     }
 
     /// The interface input each control of the panel drives, in the panel's order.
@@ -642,5 +707,92 @@ mod tests {
             engine.shutdown();
         });
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod reload_tests {
+    use super::model::{Control, Kind, Panel, Shape};
+    use super::*;
+
+    fn value(bind: &str, rest: f64, max: f64) -> Control {
+        Control {
+            bind: bind.to_string(),
+            label: bind.to_string(),
+            group: None,
+            kind: Kind::Value {
+                shape: Shape::Fader,
+                min: Some(0.0),
+                max: Some(max),
+                rest,
+                integer: false,
+                exponential: false,
+                unit: String::new(),
+            },
+        }
+    }
+
+    fn panel(controls: Vec<Control>) -> Controls {
+        let settings = controls.iter().map(Setting::at_rest).collect();
+        Controls {
+            loaded: Some(Ok(Loaded {
+                panel: Panel {
+                    controls,
+                    cols: 1,
+                    warnings: Vec::new(),
+                },
+                from_surface: false,
+            })),
+            settings,
+            low_key: DEFAULT_LOW_KEY,
+            send_error: None,
+            replies: Replies::default(),
+        }
+    }
+
+    #[test]
+    fn a_reload_keeps_each_setting_whose_input_kept_its_default_and_type() {
+        let mut controls = panel(vec![
+            value("cutoff", 0.3, 1.0),
+            value("res", 0.1, 1.0),
+            value("gone", 0.5, 1.0),
+            value("drive", 0.2, 1.0),
+        ]);
+        controls.settings = vec![
+            Setting::Value(0.7),
+            Setting::Value(0.8),
+            Setting::Value(0.9),
+            Setting::Value(0.6),
+        ];
+        let mut integer = value("drive", 0.2, 1.0);
+        if let Kind::Value { integer: i, .. } = &mut integer.kind {
+            *i = true;
+        }
+        controls.replace_keeping_settings(panel(vec![
+            value("res", 0.5, 1.0),
+            value("new", 0.4, 1.0),
+            value("cutoff", 0.3, 2.0),
+            integer,
+        ]));
+        assert_eq!(
+            controls.value("cutoff"),
+            Some(0.7),
+            "a range change keeps it"
+        );
+        assert_eq!(
+            controls.value("res"),
+            Some(0.5),
+            "a default change resets it"
+        );
+        assert_eq!(
+            controls.value("new"),
+            Some(0.4),
+            "a new input starts at rest"
+        );
+        assert_eq!(
+            controls.value("drive"),
+            Some(0.2),
+            "a type change resets it"
+        );
     }
 }

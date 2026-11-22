@@ -170,11 +170,9 @@ impl Engine {
         self.plan.transplant_survivors(&mut retiring.plan, pairs);
     }
 
-    /// Carry live input values from a `retiring` Engine into this (freshly built) one, per the
-    /// `(old node, new node, port)` triples a
-    /// [`MigrationTable`](crate::coordinator::MigrationTable) yields via `latches()`. Forwards to
-    /// `Plan::carry_latches`, which documents the RT-safety guarantee.
-    pub fn carry_latches(&mut self, retiring: &mut Engine, carries: &[(usize, usize, usize)]) {
+    /// Carry live input values from a `retiring` Engine into this (freshly built) one. Each latch
+    /// may appear at most once per side; see `Plan::carry_latches`.
+    pub fn carry_latches(&mut self, retiring: &mut Engine, carries: &[crate::plan::LatchCarry]) {
         self.plan.carry_latches(&mut retiring.plan, carries);
     }
 

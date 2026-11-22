@@ -350,7 +350,21 @@ impl Coordinator {
     /// Committing a swap prepared by a *different* Coordinator at the *same* config is sound and
     /// deliberately allowed: the Engine is self-consistent by then, and the migration table is
     /// diffed here against whatever this Coordinator has installed.
+    ///
+    /// This is an edit's commit: a surviving node keeps each live value its input's document value
+    /// did not change. Opening an instrument commits with [`commit_open`](Self::commit_open).
     pub fn commit_swap(&mut self, prepared: PreparedSwap) -> SwapReport {
+        self.commit(prepared, true)
+    }
+
+    /// [`commit_swap`](Self::commit_swap) for opening an instrument — any instrument, the one
+    /// playing included: every input starts from the document, and no live value carries.
+    /// Survivors still keep their operator state.
+    pub fn commit_open(&mut self, prepared: PreparedSwap) -> SwapReport {
+        self.commit(prepared, false)
+    }
+
+    fn commit(&mut self, prepared: PreparedSwap, keep_live_values: bool) -> SwapReport {
         // A PreparedSwap is an Engine already instantiated against ONE AudioConfig, and the config
         // is not recoverable from the document — so committing one into a Coordinator that runs a
         // different rate or block size installs a Plan rendering at the wrong speed (pitch and
@@ -398,7 +412,10 @@ impl Coordinator {
         // Precompute the migration table + diff (the edit always wins). This is the commit's work,
         // not the build's: the table pairs Plan indices against the Engine this swap displaces, so
         // a prepared swap held across another install still transplants against what it retires.
-        let (migration, diff) = self.manifest.diff(&manifest);
+        let (mut migration, diff) = self.manifest.diff(&manifest);
+        if !keep_live_values {
+            migration = migration.without_latches();
+        }
 
         // Fill the install mailbox. One swap in flight: if the render side has not yet drained
         // the previous swap, the retiree is not home, `install` is refused, and nothing changes —
@@ -708,13 +725,18 @@ mod tests {
     /// Install `initial`, send `live` (an address and a value), render it in, swap to `edited`, and return the
     /// steady peak after the install.
     fn peak_after_live_send_then_swap(initial: &str, live: (&str, f32), edited: &str) -> f32 {
-        let (mut coord, side, _w) = Coordinator::install_initial(
-            initial,
-            Registry::builtin(),
-            Box::new(MemoryResolver::new()),
-            cfg(),
-        )
-        .expect("initial install");
+        peak_after_live_send_then_swap_in(MemoryResolver::new(), initial, live, edited)
+    }
+
+    fn peak_after_live_send_then_swap_in(
+        resolver: MemoryResolver,
+        initial: &str,
+        live: (&str, f32),
+        edited: &str,
+    ) -> f32 {
+        let (mut coord, side, _w) =
+            Coordinator::install_initial(initial, Registry::builtin(), Box::new(resolver), cfg())
+                .expect("initial install");
         let mut rig = RenderRig::new(side);
         rig.queue_osc(live.0, &[Arg::F32(live.1)]);
         rig.render_peak(256);
@@ -860,6 +882,147 @@ mod tests {
             &piped_doc(0.5, 1.0),
         );
         assert!(close(peak, 0.5), "the edited default wins: peak {peak}");
+    }
+
+    /// `level` (default `level_default`) feeds `/m.a`, and `/m2.a` too when `fan_out` — two
+    /// consumers keep the pipe a rendered node of its own; one dissolves it into `/m.a`.
+    fn fan_doc(level_default: f32, b: f32, fan_out: bool) -> String {
+        let second = if fan_out {
+            r#", { "type": "mul_f32_signal", "address": "/m2",
+                   "inputs": { "a": { "from": "/level" }, "b": 1.0 } }"#
+        } else {
+            ""
+        };
+        format!(
+            r#"{{ "format_version": 3, "instrument": "p",
+                 "interface": {{
+                   "inputs": {{ "level": {{ "type": "f32_buffer", "default": {level_default} }} }},
+                   "outputs": {{ "out": {{ "from": "/out.audio" }} }} }},
+                 "nodes": [
+                   {{ "type": "mul_f32_signal", "address": "/m",
+                      "inputs": {{ "a": {{ "from": "/level" }}, "b": {b} }} }},
+                   {{ "type": "output", "address": "/out",
+                      "inputs": {{ "audio": {{ "from": "/m.out" }} }} }} {second} ] }}"#
+        )
+    }
+
+    #[test]
+    fn a_live_value_on_a_fanned_out_pipe_survives_an_unrelated_edit() {
+        let peak = peak_after_live_send_then_swap(
+            &fan_doc(0.3, 1.0, true),
+            ("/level/in", 0.7),
+            &fan_doc(0.3, 2.0, true),
+        );
+        assert!(close(peak, 1.4), "live level=0.7 kept: peak {peak}");
+    }
+
+    #[test]
+    fn editing_a_fanned_out_pipe_default_lets_the_document_win() {
+        let peak = peak_after_live_send_then_swap(
+            &fan_doc(0.3, 1.0, true),
+            ("/level/in", 0.7),
+            &fan_doc(0.5, 1.0, true),
+        );
+        assert!(close(peak, 0.5), "the edited default wins: peak {peak}");
+    }
+
+    #[test]
+    fn a_live_value_on_a_pipe_survives_it_gaining_a_consumer() {
+        let peak = peak_after_live_send_then_swap(
+            &fan_doc(0.3, 1.0, false),
+            ("/level/in", 0.7),
+            &fan_doc(0.3, 1.0, true),
+        );
+        assert!(close(peak, 0.7), "live level=0.7 kept: peak {peak}");
+    }
+
+    #[test]
+    fn a_live_value_on_a_pipe_survives_it_losing_a_consumer() {
+        let peak = peak_after_live_send_then_swap(
+            &fan_doc(0.3, 1.0, true),
+            ("/level/in", 0.7),
+            &fan_doc(0.3, 1.0, false),
+        );
+        assert!(close(peak, 0.7), "live level=0.7 kept: peak {peak}");
+    }
+
+    #[test]
+    fn a_live_value_on_a_subpatch_fan_out_boundary_survives_an_unrelated_edit() {
+        let child = fan_doc(0.3, 1.0, true);
+        let host = |gain: f32| {
+            format!(
+                r#"{{ "format_version": 4, "instrument": "host",
+                     "resources": {{ "child": "lib/child" }},
+                     "interface": {{ "outputs": {{ "out": {{ "from": "/g.out" }} }} }},
+                     "nodes": [
+                       {{ "type": "subpatch", "address": "/a", "patch": "child" }},
+                       {{ "type": "mul_f32_signal", "address": "/g",
+                          "inputs": {{ "a": {{ "from": "/a.out" }}, "b": {gain} }} }} ] }}"#
+            )
+        };
+        let lib = || {
+            let mut lib = MemoryResolver::new();
+            lib.insert_text("lib/child", &child);
+            lib
+        };
+        let peak =
+            peak_after_live_send_then_swap_in(lib(), &host(1.0), ("/a/level/in", 0.7), &host(2.0));
+        assert!(close(peak, 1.4), "live level=0.7 kept: peak {peak}");
+    }
+
+    #[test]
+    fn a_value_sent_to_a_wired_input_does_not_carry_onto_its_declared_default() {
+        // `/v.a` is wired from `/w`, then unwired with no constant: its document value becomes the
+        // declared default 1.0, the same value its latch was seeded with while wired. The 0.7
+        // sent while wired must not come back.
+        let doc = |va: &str| {
+            format!(
+                r#"{{ "format_version": 3, "instrument": "p",
+                     "interface": {{ "outputs": {{ "out": {{ "from": "/out.audio" }} }} }},
+                     "nodes": [
+                       {{ "type": "mul_f32_value", "address": "/w",
+                          "inputs": {{ "a": 0.2, "b": 1.0 }} }},
+                       {{ "type": "mul_f32_value", "address": "/v",
+                          "inputs": {{ {va} "b": 1.0 }} }},
+                       {{ "type": "mul_f32_signal", "address": "/m",
+                          "inputs": {{ "a": 1.0, "b": {{ "from": "/v.out" }} }} }},
+                       {{ "type": "output", "address": "/out",
+                          "inputs": {{ "audio": {{ "from": "/m.out" }} }} }} ] }}"#
+            )
+        };
+        let peak = peak_after_live_send_then_swap(
+            &doc(r#""a": { "from": "/w.out" },"#),
+            ("/v/a", 0.7),
+            &doc(""),
+        );
+        assert!(close(peak, 1.0), "the declared default plays: peak {peak}");
+    }
+
+    #[test]
+    fn opening_an_instrument_starts_every_input_from_the_document() {
+        let doc = product_doc("/m", "0.3", 1.0, "");
+        let other = doc.replace(r#""instrument": "p""#, r#""instrument": "other""#);
+        assert_ne!(doc, other);
+        for opened in [&doc, &other] {
+            let (mut coord, side, _w) = Coordinator::install_initial(
+                &doc,
+                Registry::builtin(),
+                Box::new(MemoryResolver::new()),
+                cfg(),
+            )
+            .expect("initial install");
+            let mut rig = RenderRig::new(side);
+            rig.queue_osc("/m/a", &[Arg::F32(0.7)]);
+            assert!(close(rig.render_peak(256), 0.7), "the live value plays");
+            let prepared = coord.prepare_document(opened).expect("builds");
+            let report = coord.commit_open(prepared);
+            assert!(report.report.ok, "open should succeed: {:?}", report.report);
+            assert_eq!(report.diff.as_ref().unwrap().survived, 2, "state survives");
+            rig.poll_install();
+            coord.try_reclaim();
+            let peak = rig.render_peak(256);
+            assert!(close(peak, 0.3), "the document's a=0.3 plays: peak {peak}");
+        }
     }
 
     #[test]

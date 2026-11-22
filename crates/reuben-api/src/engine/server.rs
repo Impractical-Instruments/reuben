@@ -781,7 +781,7 @@ fn install_opened(
 
     // Unguarded by construction: arbitration was settled above.
     let core_report = match prepared {
-        Ok(prepared) => coordinator.commit_swap(prepared),
+        Ok(prepared) => coordinator.commit_open(prepared),
         Err(rejected) => return open_silent(state, coordinator, origin, tree, rejected),
     };
     let mut report = SwapReport::from_core(core_report);
@@ -1137,6 +1137,9 @@ mod tests {
             if source == PATH {
                 return Ok(DOC.to_string());
             }
+            if source == OTHER {
+                return Ok(DOC.replace(r#""instrument":"t""#, r#""instrument":"other""#));
+            }
             Err(ResolveError::NotFound(source.to_string()))
         }
     }
@@ -1160,6 +1163,8 @@ mod tests {
 
     /// The one name [`NoStore`] reads [`DOC`] at.
     const PATH: &str = "t.json";
+    /// Where [`NoStore`] reads another instrument with [`DOC`]'s nodes and values.
+    const OTHER: &str = "other.json";
 
     impl EngineHost for Host {
         fn hold_swap(&self, _path: &str) -> bool {
@@ -1207,7 +1212,12 @@ mod tests {
     }
 
     fn state_with(host: Host) -> (ChannelState, Arc<Host>) {
-        let (coordinator, _side, _) =
+        let (state, host, _side) = state_and_side(host);
+        (state, host)
+    }
+
+    fn state_and_side(host: Host) -> (ChannelState, Arc<Host>, crate::render::RenderSide) {
+        let (coordinator, side, _) =
             crate::engine::install_initial(DOC, NoStore, reuben_core::AudioConfig::new(48e3, 128))
                 .expect("install");
         let host = Arc::new(host);
@@ -1216,7 +1226,7 @@ mod tests {
         )));
         let state = ChannelState::new(coordinator, Arc::clone(&host) as Arc<dyn EngineHost>, store)
             .with_installed_source(Some("playing.json".to_string()));
-        (state, host)
+        (state, host, side)
     }
 
     fn holding() -> (ChannelState, Arc<Host>) {
@@ -1345,6 +1355,45 @@ mod tests {
             other => panic!("expected a rejected report, got {other:?}"),
         }
         assert_eq!(host.offered.load(Ordering::SeqCst), 0);
+    }
+
+    /// Open `name` over a fresh state playing [`DOC`] and return the migration table the open
+    /// handed the render side.
+    fn migration_of_open(name: &str) -> reuben_core::coordinator::MigrationTable {
+        let (state, _host, mut side) = state_and_side(Host {
+            panic_on_publish: false,
+            hold: false,
+            offered: Default::default(),
+            probed: Default::default(),
+            installed: Default::default(),
+            last_installed: Default::default(),
+            meters_nodes: false,
+        });
+        let channel = Channel::new(InProcess::new(state));
+        match channel.open(name.to_string(), None) {
+            Ok(super::super::SwapOutcome::Installed(report)) => {
+                assert!(report.report.ok, "{:?}", report.report.errors)
+            }
+            other => panic!("expected an install, got {other:?}"),
+        }
+        side.mailbox
+            .take_install()
+            .expect("the open filled the install slot")
+            .migration
+    }
+
+    #[test]
+    fn reopening_the_playing_instrument_carries_no_live_value() {
+        let migration = migration_of_open(PATH);
+        assert!(!migration.is_empty(), "the survivor keeps its state");
+        assert!(migration.latches().is_empty(), "{:?}", migration.latches());
+    }
+
+    #[test]
+    fn opening_another_instrument_with_the_same_nodes_carries_no_live_value() {
+        let migration = migration_of_open(OTHER);
+        assert!(!migration.is_empty(), "the survivor keeps its state");
+        assert!(migration.latches().is_empty(), "{:?}", migration.latches());
     }
 
     fn open_doc(channel: &Channel) -> Result<super::super::SwapOutcome, ChannelError> {

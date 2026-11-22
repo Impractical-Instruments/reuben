@@ -242,6 +242,9 @@ pub struct InputAlias {
     pub node: usize,
     /// The consumer's input port index.
     pub dst_port: usize,
+    /// What the pipe held at rest, in the pipe port's own form — not the consumer's, which may
+    /// clamp or resolve it differently.
+    pub seed: Arg,
 }
 
 /// A pipe collapsed by [`dissolve_interface_pipes`], keyed by its (pre-instantiate) consumer.
@@ -251,6 +254,28 @@ struct DissolvedPipe {
     kind: PortKind,
     consumer: NodeKey,
     consumer_port: usize,
+    seed: Arg,
+}
+
+/// One carried live value: `((old node, old port), (new node, new port))`, the latch it leaves
+/// and the latch it lands in, as [`Engine::carry_latches`](crate::engine::Engine::carry_latches)
+/// swaps them.
+pub type LatchCarry = ((usize, usize), (usize, usize));
+
+/// One input latch a live message can set, as [`Plan::live_slots`] reports it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiveSlot {
+    /// The address a live message reaches it by: `<node>/<port>`, or a dissolved interface
+    /// pipe's `<pipe>/<port>`. One latch can have both.
+    pub address: String,
+    /// The node index in execution order.
+    pub node: usize,
+    /// The input port index on that node.
+    pub port: usize,
+    /// What the latch holds at rest. For a dissolved pipe's address, the pipe's own seed.
+    pub seed: Arg,
+    /// `true` when `address` is an interface input pipe's, rendered as a node or dissolved.
+    pub interface: bool,
 }
 
 /// One input-master tap — the dual of [`OutputTap`]: a **top-level** signal
@@ -840,6 +865,7 @@ impl Plan {
                 kind: d.kind,
                 node: index_of[d.consumer],
                 dst_port: d.consumer_port,
+                seed: d.seed,
             })
             .collect();
 
@@ -926,37 +952,37 @@ impl Plan {
     }
 
     /// Carry live input values from a `from` Plan into this (freshly built) one: each
-    /// `(old_index, new_index, port)` triple swaps `from.nodes[old_index].latch[port]` with
-    /// `self.nodes[new_index].latch[port]`, so the value last sent to that input keeps playing and
-    /// this Plan's seed lands in `from` to free off-thread with it. Which ports carry is the
-    /// caller's rule; a triple out of range is skipped.
+    /// `((old node, old port), (new node, new port))` pair swaps those two latches, so the value
+    /// last sent to that input keeps playing and this Plan's seed lands in `from` to free
+    /// off-thread with it. Which latches carry is the caller's rule, and the caller names each
+    /// latch at most once per side — a second swap onto one latch would undo the first. A pair
+    /// out of range is skipped.
     ///
     /// Caller contract: this Plan has not rendered. A materialized port's scratch is then still
     /// marked dirty, so the first block fills it from the carried value.
     ///
     /// **RT-safe:** a bounded loop of [`core::mem::swap`] over [`Arg`]s — no allocation, and no
     /// drop on this side. Runs at the render-callback top, beside the transplant.
-    pub(crate) fn carry_latches(&mut self, from: &mut Plan, carries: &[(usize, usize, usize)]) {
-        for &(old_index, new_index, port) in carries {
+    pub(crate) fn carry_latches(&mut self, from: &mut Plan, carries: &[LatchCarry]) {
+        for &((old_node, old_port), (new_node, new_port)) in carries {
             let old = from
                 .nodes
-                .get_mut(old_index)
-                .and_then(|n| n.latch.get_mut(port));
+                .get_mut(old_node)
+                .and_then(|n| n.latch.get_mut(old_port));
             let new = self
                 .nodes
-                .get_mut(new_index)
-                .and_then(|n| n.latch.get_mut(port));
+                .get_mut(new_node)
+                .and_then(|n| n.latch.get_mut(new_port));
             if let (Some(old), Some(new)) = (old, new) {
                 core::mem::swap(old, new);
             }
         }
     }
 
-    /// Per node (Plan order), per input port: the value Instantiate seeded the port's latch with,
-    /// or `None` where a wire feeds the port or it holds no value (an Event input). Only
-    /// meaningful before the first block renders: rendering overwrites a latch with whatever is
-    /// sent to it.
-    pub fn seeded_inputs(&self) -> Vec<Vec<Option<Arg>>> {
+    /// Every input latch a live message can set and no wire feeds (an Event input holds
+    /// nothing, so it has none), with what it holds at rest. Only meaningful before the first
+    /// block renders: rendering overwrites a latch with whatever is sent to it.
+    pub fn live_slots(&self) -> Vec<LiveSlot> {
         let mut wired: Vec<Vec<bool>> = self
             .nodes
             .iter()
@@ -976,20 +1002,37 @@ impl Plan {
                 }
             }
         }
-        self.nodes
-            .iter()
-            .zip(wired)
-            .map(|(n, wired)| {
-                n.latch
-                    .iter()
-                    .zip(wired)
-                    .zip(&n.input_kinds)
-                    .map(|((seed, wired), kind)| {
-                        (!wired && *kind != PortKind::Event).then(|| seed.clone())
-                    })
-                    .collect()
-            })
-            .collect()
+        let unwired = |node: usize, port: usize| {
+            wired.get(node).and_then(|w| w.get(port)) == Some(&false)
+                && self.nodes[node].input_kinds[port] != PortKind::Event
+        };
+        let mut slots = Vec::new();
+        for (i, n) in self.nodes.iter().enumerate() {
+            let interface = n.descriptor.type_name == "pipe";
+            for (p, (port, seed)) in n.descriptor.inputs.iter().zip(&n.latch).enumerate() {
+                if unwired(i, p) {
+                    slots.push(LiveSlot {
+                        address: alloc::format!("{}/{}", n.address, port.name),
+                        node: i,
+                        port: p,
+                        seed: seed.clone(),
+                        interface,
+                    });
+                }
+            }
+        }
+        for a in &self.input_aliases {
+            if a.kind != PortKind::Event && unwired(a.node, a.dst_port) {
+                slots.push(LiveSlot {
+                    address: alloc::format!("{}/{}", a.address, a.port.name),
+                    node: a.node,
+                    port: a.dst_port,
+                    seed: a.seed.clone(),
+                    interface: true,
+                });
+            }
+        }
+        slots
     }
 }
 
@@ -1184,6 +1227,7 @@ fn dissolve_interface_pipes(graph: &mut Graph) -> Vec<DissolvedPipe> {
             kind,
             consumer: dst,
             consumer_port: dst_port,
+            seed,
         });
         // The moved aliases and this pipe's own now all name `dst`, so a later dissolve of `dst`
         // finds them together under one key.
@@ -2080,16 +2124,23 @@ mod transplant_tests {
     }
 
     #[test]
-    fn carrying_a_latch_swaps_it_and_skips_a_triple_out_of_range() {
+    fn carrying_a_latch_swaps_it_and_skips_a_pair_out_of_range() {
         let mut fresh = one_input_plan();
         let mut retiring = one_input_plan();
+        let slots = fresh.live_slots();
         assert_eq!(
-            fresh.seeded_inputs(),
-            vec![vec![Some(Arg::F32(0.25))]],
+            slots
+                .iter()
+                .map(|s| (s.address.as_str(), s.node, s.port, &s.seed))
+                .collect::<Vec<_>>(),
+            vec![("/n/x", 0, 0, &Arg::F32(0.25))],
             "an unwired held input reports its seed"
         );
         retiring.nodes[0].latch[0] = Arg::F32(0.75);
-        fresh.carry_latches(&mut retiring, &[(0, 0, 0), (0, 0, 1), (3, 0, 0)]);
+        fresh.carry_latches(
+            &mut retiring,
+            &[((0, 0), (0, 0)), ((0, 1), (0, 0)), ((3, 0), (0, 0))],
+        );
         assert_eq!(
             fresh.nodes[0].latch[0],
             Arg::F32(0.75),

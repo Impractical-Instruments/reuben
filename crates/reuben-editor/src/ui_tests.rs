@@ -1094,3 +1094,56 @@ fn with_no_engine_the_start_screen_says_so_rather_than_reading() {
     harness.get_by_label(start::NO_ENGINE);
     assert!(harness.query_by_label("Reading the library…").is_none());
 }
+
+#[test]
+fn a_control_keeps_its_setting_across_an_edit_and_starts_over_when_reopened() {
+    use egui::accesskit::Role;
+    use reuben_api::authoring::SetInstrumentInterfaceInputMeta;
+    use reuben_api::engine::call_tool;
+    use reuben_api::tools::names;
+    use reuben_native::test_support::within;
+
+    let scratch = Scratch::new("ui_controls_follow_the_carry_rule");
+    let config = TempConfig::new();
+    let top = instrument(&scratch);
+    within(crate::engine::test_support::HANG_SECS, move || {
+        let mut harness = harness(editor(&top, &config));
+        let source = top.display().to_string();
+        harness.get_by_role(Role::Slider).focus();
+        harness.run_steps(1);
+        harness.key_press(egui::Key::ArrowRight);
+        harness.run_steps(1);
+        let moved = harness.state().controls.value("gain").expect("a value");
+        assert!(moved > 0.5, "the fader moved, to {moved}");
+
+        // An edit that leaves `gain`'s default alone keeps the setting, as the engine keeps the
+        // live value.
+        let channel = harness.state().engine.channel().expect("the engine runs");
+        let args = SetInstrumentInterfaceInputMeta {
+            source: source.clone(),
+            name: "gain".to_string(),
+            max: Some(2.0),
+            ..Default::default()
+        };
+        call_tool(names::SET_INSTRUMENT_INTERFACE_INPUT_META, &args, &channel)
+            .expect("the edit is accepted");
+        step_until(&mut harness, "reloaded the edit", |editor| {
+            let session = editor.session.as_ref().expect("a session");
+            let read = session.viewed().read.as_ref().expect("the document reads");
+            (read.inputs.iter()).any(|p| p.port.name == "gain" && p.port.max == Some(2.0))
+        });
+        harness.run_steps(2);
+        assert_eq!(harness.state().controls.value("gain"), Some(moved));
+
+        // Opening it again starts every input from the document, and the panel with it.
+        let opened = channel.open(source, None).expect("the open ran");
+        assert!(
+            matches!(opened, reuben_api::engine::SwapOutcome::Installed(ref r) if r.report.ok),
+            "{opened:?}"
+        );
+        step_until(&mut harness, "reset the panel", |editor| {
+            editor.controls.value("gain") == Some(0.5)
+        });
+        harness.state_mut().engine.shutdown();
+    });
+}

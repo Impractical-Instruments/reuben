@@ -1,27 +1,26 @@
 //! The installed-Plan **manifest** and the swap **survivor key** — per node, its fully-qualified
 //! address, operator type, and instantiate-time identity fingerprint (a content hash over its
-//! normalized `config` plus everything it resolved at Instantiate) — and the value each of its
-//! inputs is seeded with. [`Manifest::diff`] turns two manifests into the migration table the
-//! render side transplants by box swap.
+//! normalized `config` plus everything it resolved at Instantiate) — and every input latch a live
+//! message can set, with what it holds at rest. [`Manifest::diff`] turns two manifests into the
+//! migration table the render side transplants by box swap.
 //!
 //! This is off-thread load-time work (no RT constraint) and, like the rest of core, OS-free.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::format::{NodeDoc, NormalizedDoc, ResourceSource};
 use crate::resources::ResourceResolver;
 use crate::DiffSummary;
 use reuben_core::coordinator::MigrationTable;
 use reuben_core::descriptor::Descriptor;
-use reuben_core::message::Arg;
-use reuben_core::plan::Plan;
+use reuben_core::plan::{LatchCarry, LiveSlot, Plan};
 use reuben_core::registry::Registry;
 use reuben_core::resources::SampleBuffer;
 
 /// One installed node's survivor identity: its fully-qualified address, operator
 /// type, and instantiate-time fingerprint. Position in [`Manifest::nodes`] is the node's Plan
 /// index, which the migration table pairs old↔new.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeIdentity {
     /// Fully-qualified address (a spliced subpatch child carries its prefix), the
     /// same address the Plan node holds.
@@ -32,10 +31,6 @@ pub struct NodeIdentity {
     /// `None` is the conservative fallback (a node whose fingerprint could not be computed **never
     /// survives**, so an unmodelled shape resets rather than silently transplanting).
     pub fingerprint: Option<u64>,
-    /// Per input port, the value the document seeds it with — a constant, an interface pipe's
-    /// default, or the declared default — or `None` where a wire feeds it or it holds no value.
-    /// Read from the Plan before it renders ([`Plan::seeded_inputs`]).
-    pub inputs: Vec<Option<Arg>>,
 }
 
 /// The installed Plan's per-node survivor identities, in Plan execution order (index = Plan node
@@ -44,6 +39,9 @@ pub struct NodeIdentity {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Manifest {
     pub nodes: Vec<NodeIdentity>,
+    /// Every unwired input latch, by the address a live message names it with. Read from the Plan
+    /// before it renders ([`Plan::live_slots`]), so each `seed` is the document's value.
+    pub slots: Vec<LiveSlot>,
 }
 
 impl Manifest {
@@ -54,10 +52,16 @@ impl Manifest {
     /// else at a shared address is a `state_reset` (a type change or a fingerprint change — the
     /// edit always wins); addresses only in `new` are `added`, only in `old` are `removed`.
     ///
-    /// A survivor also keeps the live value of each input whose document value the edit left
-    /// alone: an input unwired on both sides, seeded with an equal value on both sides, carries
-    /// its latch across. An input whose seed changed, or that gained or lost a wire, takes the new
-    /// document's value. A value that compares unequal to itself (a NaN seed) never carries.
+    /// Live values carry by address, where the edit left that address's document value alone: an
+    /// address naming an unwired latch on both sides, with an equal seed on both sides, carries
+    /// its latch across. One whose seed changed, or that gained or lost a wire, takes the new
+    /// document's value; so does a value that compares unequal to itself (a NaN seed).
+    ///
+    /// A node's own port address carries only into the same node surviving. An interface input
+    /// pipe's address carries whatever the pipe renders as on each side — a node of its own when
+    /// it fans out or is tapped, or dissolved into its one consumer's latch — and whether or not
+    /// that node or consumer survives: the value is the interface input's, not the node's. Where
+    /// a pipe's address and its consumer's port address name one latch, the pipe's decides.
     pub fn diff(&self, new: &Manifest) -> (MigrationTable, DiffSummary) {
         // Addresses are unique within a Plan (the loader rejects duplicates), so an address keys a
         // node unambiguously. Old side maps address -> (plan index, identity).
@@ -71,7 +75,6 @@ impl Manifest {
             new.nodes.iter().map(|n| (n.address.as_str(), ())).collect();
 
         let mut survivors = Vec::new();
-        let mut latches = Vec::new();
         let mut state_reset = Vec::new();
         let mut added = Vec::new();
         for (new_idx, nn) in new.nodes.iter().enumerate() {
@@ -82,13 +85,6 @@ impl Manifest {
                         && on.fingerprint == nn.fingerprint;
                     if survives {
                         survivors.push((old_idx, new_idx));
-                        for (port, (old_seed, new_seed)) in
-                            on.inputs.iter().zip(&nn.inputs).enumerate()
-                        {
-                            if old_seed.is_some() && old_seed == new_seed {
-                                latches.push((old_idx, new_idx, port));
-                            }
-                        }
                     } else {
                         state_reset.push(nn.address.clone());
                     }
@@ -114,7 +110,41 @@ impl Manifest {
             added,
             removed,
         };
+        let latches = self.carried_latches(new, &survivors);
         (MigrationTable::new(survivors, latches), diff)
+    }
+
+    /// The latch pairs [`Manifest::diff`] carries (see there for the rule), each latch named at
+    /// most once per side.
+    fn carried_latches(&self, new: &Manifest, survivors: &[(usize, usize)]) -> Vec<LatchCarry> {
+        let old_by_addr: BTreeMap<&str, &LiveSlot> =
+            self.slots.iter().map(|s| (s.address.as_str(), s)).collect();
+        let survivors: BTreeSet<(usize, usize)> = survivors.iter().copied().collect();
+        let mut taken_old = BTreeSet::new();
+        let mut taken_new = BTreeSet::new();
+        let mut latches = Vec::new();
+        let interface_first = new
+            .slots
+            .iter()
+            .filter(|s| s.interface)
+            .chain(new.slots.iter().filter(|s| !s.interface));
+        for ns in interface_first {
+            let Some(os) = old_by_addr.get(ns.address.as_str()) else {
+                continue;
+            };
+            let (from, to) = ((os.node, os.port), (ns.node, ns.port));
+            let carries = os.interface == ns.interface
+                && os.seed == ns.seed
+                && (ns.interface || survivors.contains(&(os.node, ns.node)))
+                && !taken_old.contains(&from)
+                && !taken_new.contains(&to);
+            if carries {
+                taken_old.insert(from);
+                taken_new.insert(to);
+                latches.push((from, to));
+            }
+        }
+        latches
     }
 }
 
@@ -139,15 +169,16 @@ pub fn build_manifest(
     let nodes = plan
         .nodes()
         .iter()
-        .zip(plan.seeded_inputs())
-        .map(|(node, inputs)| NodeIdentity {
+        .map(|node| NodeIdentity {
             address: node.address.to_string(),
             type_name: node.descriptor.type_name.to_string(),
             fingerprint: fingerprints.get(&*node.address).copied(),
-            inputs,
         })
         .collect();
-    Manifest { nodes }
+    Manifest {
+        nodes,
+        slots: plan.live_slots(),
+    }
 }
 
 /// Depth cap for the recursive content walk. A document that successfully built has no resource
@@ -212,7 +243,7 @@ fn walk_document(
 /// One node's instantiate-time fingerprint: its normalized `config` block, plus the
 /// content identity of what it resolved at Instantiate — a `sample`'s decoded bytes, a `voice`'s
 /// hosted document (recursively). Runtime `inputs` are deliberately excluded: they are diffed
-/// per port in [`Manifest::diff`], so a param edit leaves the node a survivor.
+/// per latch in [`Manifest::diff`], so a param edit leaves the node a survivor.
 fn node_fingerprint(
     doc: &NormalizedDoc,
     node: &NodeDoc,
@@ -795,7 +826,7 @@ mod tests {
         )
     }
 
-    /// The `(port)`s of `address` whose latch the table carries.
+    /// The ports of `address` whose latch the table carries onto the same port.
     fn carried(old: &Manifest, new: &Manifest, address: &str) -> Vec<usize> {
         let (table, _) = old.diff(new);
         let old_idx = old.nodes.iter().position(|n| n.address == address).unwrap();
@@ -803,8 +834,8 @@ mod tests {
         table
             .latches()
             .iter()
-            .filter(|&&(o, n, _)| (o, n) == (old_idx, new_idx))
-            .map(|&(_, _, port)| port)
+            .filter(|&&((o, op), (n, np))| (o, n) == (old_idx, new_idx) && op == np)
+            .map(|&(_, (_, port))| port)
             .collect()
     }
 
