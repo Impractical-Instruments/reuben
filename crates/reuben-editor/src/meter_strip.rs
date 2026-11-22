@@ -548,6 +548,8 @@ mod tests {
         probed: Arc<Mutex<Vec<Vec<Vec<String>>>>>,
         /// Whether it refuses a `SetProbes`.
         refuses: Arc<AtomicBool>,
+        /// Every answer waits for this, so a test holding it keeps replies back until it lets go.
+        gate: Arc<Mutex<()>>,
     }
 
     impl Canned {
@@ -575,6 +577,7 @@ mod tests {
 
     impl Transport for Canned {
         fn round_trip(&self, line: &str, _read_timeout: Duration) -> std::io::Result<String> {
+            drop(self.gate.lock().expect("unpoisoned"));
             if let Ok(Request::SetProbes { paths }) = Request::from_ndjson(line) {
                 self.probed.lock().expect("unpoisoned").push(paths.clone());
                 if self.refuses.load(Ordering::SeqCst) {
@@ -776,7 +779,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "flaky: the canned engine's reply can land between the two polls, so the strip asks again and paints the new set's level"]
     fn a_reply_for_the_set_before_a_change_paints_no_levels() {
         let engine = Canned::new(vec![level(-6.0, -9.0)], Vec::new());
         let one = vec![vec!["/osc".to_string()]];
@@ -791,10 +793,14 @@ mod tests {
 
         exchange(&mut strip, at(0), &engine, &one);
         assert_eq!(strip.node_levels().len(), 1);
-        // An ask measuring `one` goes out, and the set changes before its reply is taken.
+        // An ask measuring `one` goes out, and the set changes before its reply is taken. Held
+        // back, the reply cannot land between the polls: the second would take it as stale and
+        // ask afresh for `other`, whose reply carries the canned probe and paints it.
+        let held = engine.gate.lock().expect("unpoisoned");
         strip.poll(at(100), Some(engine.channel()), &one);
         strip.poll(at(100), Some(engine.channel()), &other);
         assert!(strip.node_levels().is_empty(), "cleared with the change");
+        drop(held);
         let deadline = Instant::now() + Duration::from_secs(5);
         while strip.in_flight {
             assert!(Instant::now() < deadline, "no reply");
