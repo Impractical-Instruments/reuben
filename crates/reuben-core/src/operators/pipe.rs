@@ -13,10 +13,10 @@
 //! - **Signal** (`f32_buffer`): copy the input buffer to the output buffer. Unwired, the input
 //!   materializes from its latch — the declared default, or **silence** for a bare pipe — so an
 //!   unfed pipe renders exactly that.
-//! - **Value** (`f32`, `i32`, `str`, a vocab enum, `harmony`): forward the held latch as a sparse Value write.
-//!   The dedup baseline is **operator state** (not the per-segment `MsgWriter`), so a pipe emits
-//!   its seed once on the first block and then only on change — downstream latches see the same
-//!   change frames a direct wire would have delivered.
+//! - **Value** (`f32`, `i32`, `str`, a vocab enum, `harmony`): forward the held latch as a sparse
+//!   Value write. The dedup baseline is **operator state** (not the per-segment `MsgWriter`), so a
+//!   pipe emits its seed once on the first block and then only on change — downstream latches see
+//!   the same change frames a direct wire would have delivered.
 //! - **Event** (`note`): re-emit every routed event at its frame, verbatim.
 
 use alloc::boxed::Box;

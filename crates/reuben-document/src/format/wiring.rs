@@ -207,6 +207,7 @@ impl<'d> WirePorts<'d> {
             feed,
             from,
             &r.graph.nodes[key].descriptor.outputs[idx],
+            r.top_level,
         )
     }
 

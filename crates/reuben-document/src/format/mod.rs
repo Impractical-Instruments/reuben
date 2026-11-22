@@ -209,8 +209,8 @@ impl From<CurveDoc> for Curve {
 
 /// One v2 `interface.inputs` entry: a named **input pipe**. There is no inner
 /// port to inherit from — the entry **declares its `Arg` type** (`"f32_buffer"`, `"f32"`,
-/// `"i32"`, `"str"`, `"note"`, `"harmony"`, `"pitch"`, or a vocab enum name like `"FilterMode"`), and the declared type is
-/// enforced against every consumer by the existing pass-2 wire check. A numeric pipe may carry
+/// `"i32"`, `"str"`, `"note"`, `"harmony"`, `"pitch"`, or a vocab enum name like `"FilterMode"`),
+/// and the declared type is enforced against every consumer by the existing pass-2 wire check. A numeric pipe may carry
 /// its own `default`/`min`/`max`/`curve` — **engine-enforced** on the pipe's port (literals and
 /// external messages clamp to it; an unwired signal pipe materializes `default`, or silence when
 /// bare). A **signal** pipe may bind a logical input `channel`, honored only when
@@ -2059,8 +2059,8 @@ impl InstrumentDoc {
                     Box::new(Pipe::new(kind)),
                     Arc::clone(&descriptor),
                 );
-                // An enum or `str` pipe's declared default seeds the pipe's latch as a value-override;
-                // numeric pipes carry theirs inside the port's own meta. Seeded with what
+                // An enum or `str` pipe's declared default seeds the pipe's latch as a
+                // value-override; numeric pipes carry theirs inside the port's own meta. Seeded with what
                 // `pipe_descriptor` resolved, not with the symbol as written: `set_value` drops a
                 // spelling it cannot coerce in silence, and a numeric-string default ("1") is
                 // exactly such a spelling — validated as an index, then unreadable as a symbol.
@@ -2465,6 +2465,7 @@ impl InstrumentDoc {
             dark,
             unchecked,
             interface,
+            top_level: ctx.loading.is_empty(),
         }
     }
 
@@ -2479,6 +2480,7 @@ impl InstrumentDoc {
             dark,
             unchecked,
             mut interface,
+            top_level,
         } = resolved;
 
         // Pass 2: wire-refs -> edges (Arg-type-checked). A subpatch endpoint resolves through its
@@ -2609,6 +2611,7 @@ impl InstrumentDoc {
                     feed,
                     &feed.from,
                     &graph.nodes[key].descriptor.outputs[idx],
+                    top_level,
                 ) {
                     found.push(site, e);
                     continue;
@@ -2986,6 +2989,9 @@ struct Resolved {
     /// address an earlier entry already holds.
     unchecked: BTreeSet<usize>,
     interface: Interface,
+    /// Whether this is the document being played, not a child spliced into a parent: the cycle
+    /// guard's stack is empty only there. What a host can read off an interface output turns on it.
+    top_level: bool,
 }
 
 /// The synthesized boundary face of a `subpatch` node: one port per `interface`
@@ -3907,15 +3913,29 @@ pub(crate) fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<MintedP
 /// output-pipe half of the wire rule. A pipe declares no type of its own, so there is no type to
 /// match; what it can refuse is its own declaration against the feeding port. The pipe loop and
 /// [`WirePorts`] both ask it. `from` is the wire-ref naming `port`, for the error text.
+/// `top_level` is whether the document is the one being played (see [`Resolved::top_level`]).
 fn check_output_feed(
     name: &str,
     feed: &OutputPipeDoc,
     from: &str,
     port: &Port,
+    top_level: bool,
 ) -> Result<(), LoadError> {
     // Presentational min/max stay a truthful subset of the feeding port's engine-enforced range
     // (the subset law, outputs half).
     check_range_override(name, feed.min, feed.max, port, None)?;
+    // A host reads a played instrument's message-domain output as a captured number, so a string
+    // there would always read 0.0. Nested, the parent wires the output like any port, which works.
+    if top_level && matches!(port.ty, PortType::Str) {
+        return Err(LoadError::InterfacePipe {
+            name: name.to_string(),
+            reason: format!(
+                "{from:?} is a `str` port, and a host reads an instrument's own outputs as \
+                 numbers or audio — feed an `osc_out` from it instead, or expose it from a \
+                 child that a parent wires through a `subpatch` node"
+            ),
+        });
+    }
     let Some(ch) = feed.channel else {
         return Ok(());
     };

@@ -378,9 +378,9 @@ impl Port {
     /// Coerce an author literal [`Arg`](crate::message::Arg) to this port's normalized latch value
     /// — the single type-aware seam every authoring path funnels through. A scalar
     /// [`F32`](PortType::F32) control clamps to its [`F32Meta`] range; a vocab **enum** resolves a
-    /// symbol / index / concrete variant to its `Copy`-normalized `Arg`; a `str` port takes a string
-    /// as-is. `None` when this port takes
-    /// no settable literal (a bare audio buffer, a `Note` stream) or the literal does not resolve.
+    /// symbol / index / concrete variant to its `Copy`-normalized `Arg`; a `str` port takes a
+    /// string as-is. `None` when this port takes no settable literal (a bare audio buffer, a `Note`
+    /// stream) or the literal does not resolve.
     pub fn coerce(&self, raw: &crate::message::Arg) -> Option<crate::message::Arg> {
         use crate::message::Arg;
         match &self.ty {

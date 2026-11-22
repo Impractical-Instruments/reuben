@@ -192,9 +192,9 @@ read's fallback **is** the contract default (no second literal to drift).
 | **`Note`** (vocab struct, an Event, `In<Event<Note>>`) | a pitch/velocity event | read: `EventStream<Note>` of `Stamped<Note>` (`.frame`, `.payload`) · write: `EventWriter` (`.emit(frame, note)`) |
 | **`str`** (a held *Value*, `In<Held<str>>`) | a string — text an operator interprets, set from a document literal or a live send | read: `&str` borrowed from the latch, `""` when unset · **input only**: an operator cannot build a string on the render thread without allocating, so no port outputs one |
 
-A port's **form** is one of three — **Signal** (`f32_buffer`), **Value** (`f32`/enum/`Harmony`/`str`,
-a held latch read once per slice), **Event** (`Note`, a sparse frame-stamped stream) — and follows from
-the declared `Arg` type (`PortKind` in `plan.rs`). Reading older code: **Signal** = `f32_buffer`;
+A port's **form** is one of three — **Signal** (`f32_buffer`), **Value**
+(`f32`/enum/`Harmony`/`str`, a held latch read once per slice), **Event** (`Note`, a sparse
+frame-stamped stream) — and follows from the declared `Arg` type (`PortKind` in `plan.rs`). Reading older code: **Signal** = `f32_buffer`;
 **param** = an `f32` Value or held enum; **Context** = `Harmony`; **Message events** = `Note` (the
 old `shape`/temporality axis is gone). A runtime integer is a rounded `f32` or an enum; `I32` is
 an OSC primitive `Arg`, but no operator declares an `Int` port.
@@ -605,7 +605,8 @@ input takes a scalar (`/filt/cutoff 1500`). An enum input takes a **symbol** —
 (`/filt/mode "Hp"`; the JSON literal `"mode": "Hp"` is the same form) — with an in-range integer
 index accepted as a fallback, quoted (`"1"`) or bare (`1`); an unknown symbol or out-of-range
 index is an **error**, never a silent snap to the default. A `str` input takes one string
-(`/seq/pat "0 3 ~"`); anything else sent to it is dropped. A `Note` input takes its args (`/voicer/notes [69.0, 1.0]`).
+(`/seq/pat "0 3 ~"`); anything else sent to it is dropped. A `Note` input takes its args
+(`/voicer/notes [69.0, 1.0]`).
 Full wildcard dispatch (`/drums/*/decay`) is designed but not built — today a Message targets at
 most one node.
 

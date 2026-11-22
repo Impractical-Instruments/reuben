@@ -178,6 +178,27 @@ fn the_wire_check_refuses_str_into_a_number_and_a_number_into_str() {
         "{errs:?}"
     );
 
+    // Across a subpatch boundary too: the face carries the child pipe's `str` type.
+    const CHILD: &str = r#"{ "format_version": 3, "instrument": "c",
+      "interface": { "inputs": { "pat": { "type": "str" } } },
+      "nodes": [ { "type": "str_len", "address": "/n", "inputs": { "text": { "from": "/pat" } } } ] }"#;
+    let mut r = MemoryResolver::new();
+    r.insert_text("c.json", CHILD);
+    let f32_into_child = r#"{ "format_version": 3, "instrument": "p", "resources": { "c": "c.json" },
+      "interface": { "inputs": { "x": { "type": "f32" } } },
+      "nodes": [ { "type": "subpatch", "address": "/sub", "patch": "c",
+                   "inputs": { "pat": { "from": "/x" } } } ] }"#;
+    let errs: Vec<LoadError> = match load_instrument(f32_into_child, &registry(), &r) {
+        Ok(_) => panic!("f32 into a child's str boundary should be refused"),
+        Err(errs) => errs.into_iter().collect(),
+    };
+    assert!(
+        errs.iter().any(|e| e.to_string().contains("Str")),
+        "{errs:?}"
+    );
+    let str_into_child = f32_into_child.replace(r#""type": "f32""#, r#""type": "str""#);
+    load_instrument(&str_into_child, &registry(), &r).expect("str into a child's str boundary");
+
     // `osc_out`'s pass-through takes any type with an OSC form, a string included.
     let str_into_arg = r#"{ "format_version": 3, "instrument": "t",
       "interface": { "inputs": { "pat": { "type": "str" } } },
@@ -303,11 +324,12 @@ fn the_authoring_verbs_write_and_refuse_str_values() {
     assert_eq!(readback(&r), v);
 }
 
-/// The render thread never allocates a string. It may free one: when a live value overwrites a
-/// `str` latch and nothing else still holds the replaced string, the render thread drops the last
-/// reference. That is the class `Arg::Str` documents — at most one free per overwrite. A latch's
-/// seed and an authored value count: in a freshly built Plan (every Swap builds one) each is held
-/// by its latch alone, so the first send to each input frees it, whatever the sender keeps.
+/// The render thread never allocates a string. It may free one: when a value overwrites a `str`
+/// latch and nothing else still holds the replaced string, the render thread drops the last
+/// reference. That is the class `Arg::Str` documents — at most one free per overwrite, fewer where
+/// something else also holds the replaced value. A latch's seed and an authored value count: in a
+/// freshly built Plan (every Swap builds one) the first send to an input can free what it held,
+/// whatever the sender keeps.
 #[test]
 fn changing_strings_allocate_nothing_and_free_only_the_replaced_ones() {
     // No `osc_out` sinks: each outbound send builds a Message on the render thread, which is that
@@ -334,25 +356,34 @@ fn changing_strings_allocate_nothing_and_free_only_the_replaced_ones() {
     });
     assert_eq!((idle.allocs, idle.frees), (0, 0), "idle blocks");
 
-    // The first send to each input, with the sender keeping every string it sends. The pipe's
-    // declared default, the node literal and the unset seed `""` are each held by one latch only,
-    // so each is freed here: three frees for three overwrites.
+    // The first send to each input, one input per block, with the sender keeping every string it
+    // sends. Each block makes one allocation: a node's routed-held scratch grows on the first
+    // message it is ever routed — once per node per Plan, the same for any held control, and not a
+    // string.
     let warm: Arc<str> = "first send".into();
-    let first = measure(|| {
-        for addr in ["/pat/in", "/direct/text", "/unset/text"] {
+    let mut first_send = |addr: &str| {
+        measure(|| {
             e.queue_osc(addr, &[Arg::Str(warm.clone())]);
-        }
-        e.fill(&mut out);
-    });
+            e.fill(&mut out);
+        })
+    };
+    // An unset input's seed `""` and a node literal are held by nothing but their latch, so the
+    // overwrite frees each.
+    let unset = first_send("/unset/text");
+    assert_eq!((unset.allocs, unset.frees), (1, 1), "unset seed");
+    let literal = first_send("/direct/text");
+    assert_eq!((literal.allocs, literal.frees), (1, 1), "node literal");
+    // A pipe's default handed to the input it dissolved into: whether anything else still holds
+    // it depends on what the Plan keeps for the pipe's address, so only the bound is pinned.
+    let piped = first_send("/pat/in");
     assert_eq!(
-        first.frees, 3,
-        "the first send frees each input's seed or authored value"
+        piped.allocs, 1,
+        "pipe default: first-message scratch growth"
     );
-    // Each node's routed-held scratch grows on the first message it is ever routed: once per
-    // node per Plan, the same for any held control, and not a string.
-    assert_eq!(
-        first.allocs, 3,
-        "first-message scratch growth, one per node"
+    assert!(
+        piped.frees <= 1,
+        "pipe default: at most one free, got {}",
+        piped.frees
     );
 
     // Past the first send, a sender that keeps its own reference to every string it sends leaves
@@ -410,4 +441,101 @@ fn changing_strings_allocate_nothing_and_free_only_the_replaced_ones() {
         [1, 1, 0],
         "an overwrite within a block frees one block late"
     );
+}
+
+/// A `str` pipe with two consumers is rendered, not dissolved. Its first block forwards its
+/// default onto each consumer's latch, which holds that consumer's own `""` seed: with no send at
+/// all, the render thread frees up to one string per consumer. That happens in the first block of
+/// every freshly built Plan, so in every Swap's install window too.
+#[test]
+fn a_rendered_str_pipe_frees_each_consumer_seed_in_its_first_block() {
+    use reuben_core::coordinator::RenderSlot;
+    use reuben_document::coordinator::Coordinator;
+
+    const FAN_OUT: &str = r#"{
+      "format_version": 3, "instrument": "fan_out",
+      "interface": { "inputs": { "pat": { "type": "str", "default": "seed" } } },
+      "nodes": [
+        { "type": "str_len", "address": "/a", "inputs": { "text": { "from": "/pat" } } },
+        { "type": "str_len", "address": "/b", "inputs": { "text": { "from": "/pat" } } } ] }"#;
+    const CONSUMERS: usize = 2;
+
+    // A fresh Plan, measured from its very first block: no warm-up, no send.
+    let mut e = engine(FAN_OUT);
+    let mut out = vec![0.0f32; e.block_size() * e.channels()];
+    assert_counter_is_live();
+    let first = measure(|| e.fill(&mut out));
+    assert_eq!(
+        first.frees, CONSUMERS,
+        "each consumer's own seed, freed once"
+    );
+    let next = measure(|| e.fill(&mut out));
+    assert_eq!((next.allocs, next.frees), (0, 0), "then nothing");
+
+    // Each Swap builds a fresh Plan, so its install window repeats it: at most one free per
+    // consumer, with nothing sent.
+    const BLOCK: usize = 128;
+    let (mut coord, side, _) = Coordinator::install_initial(
+        FAN_OUT,
+        registry(),
+        Box::new(MemoryResolver::new()),
+        AudioConfig::new(48_000.0, BLOCK),
+    )
+    .expect("initial install");
+    let mut slot = RenderSlot::new(side);
+    let mut out = vec![0.0f32; BLOCK * slot.channels()];
+    for _ in 0..8 {
+        slot.fill(&mut out);
+    }
+    for edit in 0..3 {
+        let report = coord.swap_document(FAN_OUT);
+        assert!(report.report.ok, "{:?}", report.report);
+        let mut saw_ramp = false;
+        let mut frees = 0;
+        for _ in 0..16 {
+            frees += measure(|| slot.fill(&mut out)).frees;
+            saw_ramp |= slot.is_ramping();
+        }
+        assert!(
+            saw_ramp && !slot.is_ramping(),
+            "the swap installed inside the window"
+        );
+        assert!(
+            (1..=CONSUMERS).contains(&frees),
+            "edit {edit}: at most one free per consumer, and the case is real; got {frees}"
+        );
+        assert!(coord.try_reclaim().is_some(), "a retiree came home");
+    }
+}
+
+/// A host reads a played instrument's message-domain outputs as captured numbers, so a top-level
+/// `str` output is refused at load. The same document nested is fine: the parent wires the output
+/// like any other port.
+#[test]
+fn a_str_interface_output_is_refused_at_top_level_and_wires_when_nested() {
+    const CHILD: &str = r#"{ "format_version": 3, "instrument": "child",
+      "interface": { "inputs": { "pat": { "type": "str", "default": "inner" } },
+                     "outputs": { "o": { "from": "/pat.out" } } },
+      "nodes": [] }"#;
+    let errs = load_err(CHILD);
+    assert!(
+        matches!(errs.as_slice(), [LoadError::InterfacePipe { name, .. }] if name == "o"),
+        "{errs:?}"
+    );
+
+    let mut r = MemoryResolver::new();
+    r.insert_text("child.json", CHILD);
+    const PARENT: &str = r#"{ "format_version": 3, "instrument": "parent",
+      "resources": { "child": "child.json" },
+      "nodes": [
+        { "type": "subpatch", "address": "/sub", "patch": "child" },
+        { "type": "str_len", "address": "/n", "inputs": { "text": { "from": "/sub.o" } } },
+        { "type": "osc_out", "address": "/len", "inputs": { "in": { "from": "/n.len" } } } ] }"#;
+    let graph = load_instrument(PARENT, &registry(), &r)
+        .expect("a nested str output wires")
+        .graph;
+    let mut e = Engine::new(Plan::instantiate(graph, AudioConfig::new(48_000.0, 64)).unwrap());
+    assert_eq!(sent(&block(&mut e), "/len"), [5.0], "\"inner\"");
+    e.queue_osc("/sub/pat/in", &[Arg::Str("xy".into())]);
+    assert_eq!(sent(&block(&mut e), "/len"), [2.0]);
 }
