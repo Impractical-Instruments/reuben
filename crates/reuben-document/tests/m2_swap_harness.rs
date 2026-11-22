@@ -520,6 +520,82 @@ fn a_layout_only_edit_in_a_subpatch_inside_a_voice_keeps_the_voicer() {
     );
 }
 
+/// A running `/clk` with an audio path for the master tap. With `consumer`, it adds a held `i32`
+/// consumer of `/clk.beat` (`/plus`, `beat + 0`) and an `osc_out` sink `/fb` that reports what
+/// `/plus` read.
+fn clock_doc(consumer: bool) -> String {
+    let extra = if consumer {
+        r#",
+           { "type": "add_i32_value", "address": "/plus",
+             "inputs": { "a": { "from": "/clk.beat" } } },
+           { "type": "osc_out", "address": "/fb",
+             "inputs": { "in": { "from": "/plus.out" } } }"#
+    } else {
+        ""
+    };
+    format!(
+        r#"{{ "format_version": 3, "instrument": "clk",
+             "interface": {{ "outputs": {{ "out": {{ "from": "/out.audio" }} }} }},
+             "nodes": [
+               {{ "type": "clock", "address": "/clk", "inputs": {{ "tempo": 120.0 }} }},
+               {{ "type": "oscillator", "address": "/osc" }},
+               {{ "type": "output", "address": "/out",
+                  "inputs": {{ "audio": {{ "from": "/osc.audio" }} }} }}{extra} ] }}"#
+    )
+}
+
+#[test]
+fn a_beat_consumer_added_mid_set_reads_the_running_beat_in_its_first_block() {
+    // A Swap seeds a new node's held latch from its own default, not from upstream's last output.
+    // The Clock re-emits `beat` at frame 0 of every block, so the consumer still reads the running
+    // beat from its first block rather than its default 0.
+    let (mut coord, mut slot) = setup(&clock_doc(false));
+
+    // 120 BPM at 48 kHz: 24000 frames a beat. Warm 984 blocks (125952 frames, ~5.25 beats) so the
+    // install, a ramp's worth of blocks later, lands mid-beat 5.
+    let warm_blocks = 984;
+    for _ in 0..warm_blocks {
+        render(&mut slot, BLOCK);
+    }
+    assert_eq!(slot.drain_outbound().count(), 0, "no sink before the swap");
+
+    let report = coord.swap_document(&clock_doc(true));
+    assert!(report.report.ok, "swap should install: {:?}", report.report);
+    let diff = report.diff.as_ref().unwrap();
+    assert!(
+        diff.state_reset.is_empty(),
+        "/clk survives with its running beat: {:?}",
+        diff.state_reset
+    );
+
+    // The first block that reports anything is the consumer's first block: before the install
+    // there is no `/fb`; after it, `/plus` emits on its first block (a fresh dedup baseline).
+    let mut first = None;
+    for block in 0..32 {
+        render(&mut slot, BLOCK);
+        let fb: Vec<_> = slot
+            .drain_outbound()
+            .filter(|m| m.address == "/fb")
+            .collect();
+        if let Some(m) = fb.first() {
+            first = Some((block, m.frame, m.arg.clone()));
+            break;
+        }
+    }
+    let (block, frame, arg) = first.expect("the consumer reported within 32 blocks");
+    let elapsed = (warm_blocks + block) * BLOCK;
+    assert!(
+        (5 * 24_000..6 * 24_000).contains(&elapsed),
+        "the install landed mid-beat 5 (frame {elapsed})"
+    );
+    assert_eq!(frame, 0, "read at the consumer's first frame");
+    assert_eq!(
+        arg,
+        Arg::I32(5),
+        "the new consumer reads the running beat, not its default"
+    );
+}
+
 // ---------------------------------------------------------------------------------------------
 // (b) The callback-side install step allocates and frees nothing (RT-safety).
 // ---------------------------------------------------------------------------------------------
