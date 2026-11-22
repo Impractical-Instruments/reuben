@@ -71,6 +71,7 @@ jobs:
               - 'crates/reuben-native/**'
               - 'crates/reuben-mcp/**'
               - 'crates/reuben-guide/**'
+              - 'crates/reuben-pattern/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
@@ -107,6 +108,7 @@ jobs:
               - 'crates/reuben-api/**'
               - 'crates/reuben-macros/**'
               - 'crates/reuben-contract/**'
+              - 'crates/reuben-pattern/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
@@ -436,7 +438,7 @@ jobs:
           {
             echo "### bare-metal build (thumbv7em-none-eabihf)"
             echo
-            echo "Proves \`reuben-core\` and \`reuben-api\`'s render half **compile** with no \`std\` available."
+            echo "Proves \`reuben-core\`, \`reuben-api\`'s render half and \`reuben-pattern\` **compile** with no \`std\` available."
             echo
             echo "- It cannot run tests: there is no host on the target."
             echo "- It cannot prove correctness there: Cortex-M7 is a different float environment."
@@ -452,6 +454,11 @@ jobs:
       # `authoring`, and `reuben-document` with it, which no `*-none-*` triple can build.
       - name: Cross-build reuben-api (render half)
         run: cargo build -p reuben-api --no-default-features --features render --target thumbv7em-none-eabihf --release
+
+      # The mini-notation crate: the `pattern` Operator's Render side walks its compiled tree, so it
+      # has to build wherever `reuben-core` does.
+      - name: Cross-build reuben-pattern
+        run: cargo build -p reuben-pattern --target thumbv7em-none-eabihf --release
 
       # A REPORTED NUMBER, NEVER A THRESHOLD — nothing here fails on size. The embedder's 128 KB of
       # internal flash is a constraint the image is expected to exceed and to live in external QSPI
@@ -519,6 +526,9 @@ jobs:
       - name: Clippy reuben-api render half (cross target)
         run: cargo clippy -p reuben-api --no-default-features --features render --target thumbv7em-none-eabihf --release -- -D warnings
 
+      - name: Clippy reuben-pattern (cross target)
+        run: cargo clippy -p reuben-pattern --target thumbv7em-none-eabihf --release -- -D warnings
+
       # Three readings, because they need different responses and only a reader can tell them apart.
       # Every command this job runs appears in the reproduce block, or a reader reproduces half.
       - name: How to read a red run
@@ -544,6 +554,8 @@ jobs:
             echo "    cargo clippy -p reuben-core --target thumbv7em-none-eabihf --release -- -D warnings"
             echo "    cargo build  -p reuben-api --no-default-features --features render --target thumbv7em-none-eabihf --release"
             echo "    cargo clippy -p reuben-api --no-default-features --features render --target thumbv7em-none-eabihf --release -- -D warnings"
+            echo "    cargo build  -p reuben-pattern --target thumbv7em-none-eabihf --release"
+            echo "    cargo clippy -p reuben-pattern --target thumbv7em-none-eabihf --release -- -D warnings"
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
   bench:
