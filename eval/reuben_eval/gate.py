@@ -6,10 +6,12 @@ handed back by the sidecar and failed-validate rounds.
 
 Document characters (metric (c)) are not on the trend here. A reference solution's arguments are
 written in `tasks.py`, and which roster arguments count as a document is `DOCUMENT_ARGUMENTS` in
-`workspace.py` — both harness, which this gate never swaps — so the number cannot differ between the
-two sides of a comparison and measures nothing about the surface. Today it is zero on every task. It
-is a live-tier metric; here it survives only as a warning if a reference ever starts emitting a
-document, since a reference is meant to model a conforming client.
+`workspace.py` — both harness, which this gate never swaps. The surface enters in one way only:
+whether each verb a reference calls is on the roster, since an off-roster call is charged by value.
+So the number moves with the surface only when a reference calls a verb one side lacks — and then it
+is the reference, not the surface, that needs fixing. Today it is zero on every task. It is a
+live-tier metric; here it survives as a warning whenever a reference emits a document, since a
+reference is meant to model a conforming client.
 
 That floor is exactly what a new verb moves, which is why this tier gates and the live tier does
 not.
@@ -227,6 +229,7 @@ def render(report: dict[str, Any], baseline: dict[str, Any] | None) -> tuple[str
             "a reference solution should edit through the verbs"
         )
     if emitters:
+        warned = True
         lines += [
             "",
             "⚠️ Reference solutions emitting document characters: "

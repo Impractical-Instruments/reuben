@@ -7,8 +7,8 @@
 # guide makes every turn of every task more expensive, and no existing check sees it.
 #
 # What it measures: (a) grounding tokens the sidecar hands back and (b) failed `validate` rounds.
-# (c), freehand-JSON characters, depends only on the harness on this tier, so it is a warning here
-# and a metric on the live tier (see eval/reuben_eval/gate.py). Each task carries a
+# (c), freehand-JSON characters, is set by the harness on this tier (see eval/reuben_eval/gate.py), so
+# it is a warning here and a metric on the live tier. Each task carries a
 # hand-written REFERENCE SOLUTION — the ideal call sequence a perfect model would make — replayed
 # against the real sidecar with NO inference. So this is the surface's COST FLOOR, and a prototype's
 # claim on the wayfinder map is checkable before a single token is bought.

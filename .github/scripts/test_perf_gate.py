@@ -412,6 +412,23 @@ class PerfGateWorkingTree(unittest.TestCase):
                 self.assertNotIn("identical to the baseline", proc.stdout)
                 self.assertIn("--save-baseline=base", self._cargo_calls()[0])
 
+    def test_baseline_without_a_closure_crate_skips_every_layer_without_running(self) -> None:
+        """A PR that adds a crate to the closure has a baseline with no such `src/`: no snapshot can be
+        built, so every layer is a reported, non-blocking skip — never a compare against no `base`."""
+        _git(self.repo, "rm", "-rq", "crates/reuben-contract")
+        _git(self.repo, "commit", "-qm", "drop contract")
+        no_contract = _git(self.repo, "rev-parse", "HEAD").strip()
+        _git(self.repo, "checkout", "-q", "HEAD~1", "--", "crates/reuben-contract")
+        _git(self.repo, "commit", "-qm", "restore contract")
+        self.head_tree = self._tracked_state()
+        self.env["PERF_GATE_TEST_RC"] = "0"
+        proc = self._run_gate(no_contract)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(proc.stdout.count("baseline has no crates/reuben-contract/src"), 3)
+        self.assertIn("3/3 layer(s) skipped", proc.stdout)
+        self.assertEqual(self._cargo_calls(), [])
+        self._assert_exactly_head()
+
     def test_baseline_missing_a_required_path_fails_without_writing(self) -> None:
         _git(self.repo, "rm", "-rq", "instruments")
         _git(self.repo, "commit", "-qm", "drop instruments")
@@ -600,20 +617,22 @@ _REPO = SCRIPT.parents[2]
 
 
 def _bench_closure() -> set[str]:
-    """Every workspace crate dir in the benched build: reuben-document and its path dependencies, of
-    every kind, transitively. Read from the manifests, so a crate that joins the closure joins this."""
+    """Every workspace crate dir in the benched build: reuben-document, its own normal, build and dev
+    path dependencies, and their normal and build ones, transitively — cargo builds dev-dependencies
+    only for the package it benches. Read from the manifests, so a crate that joins the closure joins
+    this."""
     import tomllib
 
     root = tomllib.loads((_REPO / "Cargo.toml").read_text())
     shared = root.get("workspace", {}).get("dependencies", {})
 
-    def path_deps(crate: pathlib.Path, manifest: dict) -> list[pathlib.Path]:
+    def path_deps(crate: pathlib.Path, manifest: dict, kinds: tuple[str, ...]) -> list[pathlib.Path]:
         """Each path dependency's dir. A `workspace = true` entry's path is the root manifest's,
         relative to the root; any other is relative to the crate."""
         tables = [manifest, *manifest.get("target", {}).values()]
         out = []
         for table in tables:
-            for kind in ("dependencies", "dev-dependencies", "build-dependencies"):
+            for kind in kinds:
                 for name, spec in table.get(kind, {}).items():
                     base = crate
                     if isinstance(spec, dict) and spec.get("workspace"):
@@ -623,14 +642,23 @@ def _bench_closure() -> set[str]:
         return out
 
     seen: set[str] = set()
-    todo = [_REPO / "crates/reuben-document"]
+    bench_pkg = _REPO / "crates/reuben-document"
+    todo = path_deps(
+        bench_pkg,
+        tomllib.loads((bench_pkg / "Cargo.toml").read_text()),
+        ("dependencies", "dev-dependencies", "build-dependencies"),
+    ) + [bench_pkg]
     while todo:
         crate = todo.pop().resolve()
         rel = crate.relative_to(_REPO).as_posix()
         if rel in seen:
             continue
         seen.add(rel)
-        todo += path_deps(crate, tomllib.loads((crate / "Cargo.toml").read_text()))
+        todo += path_deps(
+            crate,
+            tomllib.loads((crate / "Cargo.toml").read_text()),
+            ("dependencies", "build-dependencies"),
+        )
     return seen
 
 

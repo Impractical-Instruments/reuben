@@ -97,6 +97,7 @@ class TestDocumentCharactersOnlyWarn(unittest.TestCase):
         summary, failed = gate.render(_report(result), None)
         self.assertFalse(failed)
         self.assertIn("`tweak` (2,097)", summary)
+        self.assertNotIn("the agent surface held", summary)
 
 
 class TestSchemaDensity(unittest.TestCase):

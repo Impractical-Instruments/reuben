@@ -14,10 +14,12 @@ until they exist:
 | **(b)** | **repair rounds** | `validate_instrument` calls that came back `ok: false` |
 | **(c)** | **document characters** | instrument-document payload the model had to emit, **echoes included** |
 
-(c) is trended by the live tier only. On the gate tier it is a function of the harness alone — the
-reference solutions' arguments and `DOCUMENT_ARGUMENTS`, both under `eval/`, which the gate never
-swaps — so both sides of a comparison always read the same number and it measures nothing about the
-surface. It is zero on every task today; the gate only warns if a reference starts emitting a document.
+(c) is trended by the live tier only. On the gate tier it is set by the harness — the reference
+solutions' arguments and `DOCUMENT_ARGUMENTS`, both under `eval/`, which the gate never swaps — plus
+one thing the surface decides: whether each verb a reference calls is on the roster, since an
+off-roster call is charged by value. So it moves only when a reference calls a verb one side lacks,
+which is a reference to fix rather than a surface cost to trend. It is zero on every task today; the
+gate warns when a reference emits a document.
 
 ## Two tiers over one door
 
