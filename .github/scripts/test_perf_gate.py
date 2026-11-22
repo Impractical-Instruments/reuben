@@ -62,7 +62,7 @@ seen=""
 echo "$* |$seen" >>"$PERF_GATE_TEST_LOG"
 [ -n "$PERF_GATE_TEST_SKIP_LOG" ] && echo "${REUBEN_MICRO_BENCH_SKIP-unset}" >>"$PERF_GATE_TEST_SKIP_LOG"
 [ -n "$PERF_GATE_TEST_SLEEP" ] && sleep "$PERF_GATE_TEST_SLEEP"
-exit 1
+exit "${PERF_GATE_TEST_RC:-1}"
 """
 
 
@@ -109,6 +109,7 @@ class PerfGateWorkingTree(unittest.TestCase):
         self.env["PERF_GATE_TEST_LOG"] = str(self.cargo_log)
         self.env.pop("PERF_GATE_TEST_SLEEP", None)
         self.env.pop("PERF_GATE_TEST_SKIP_LOG", None)
+        self.env.pop("PERF_GATE_TEST_RC", None)
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -274,6 +275,64 @@ class PerfGateWorkingTree(unittest.TestCase):
                 self.assertEqual(len(self._cargo_calls()), 1, "the gate ran on past the signal")
                 self._assert_exactly_head()
 
+    def test_baselines_are_all_saved_on_one_swap_then_all_compared_on_one(self) -> None:
+        """Each swap rebuilds the closure, so the gate swaps twice per run, not twice per layer."""
+        self.env["PERF_GATE_TEST_RC"] = "0"
+        proc = self._run_gate()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        calls = self._cargo_calls()
+        self.assertEqual(len(calls), 6, calls)
+        for call in calls[:3]:
+            self.assertIn("--save-baseline=base", call)
+            self.assertTrue(call.endswith("| retired added"), call)
+        for call in calls[3:]:
+            self.assertIn("--baseline=base", call)
+            self.assertTrue(call.endswith("| added"), call)
+        self.assertEqual(
+            [c.split("--bench ")[1].split()[0] for c in calls],
+            ["macro_iai", "micro_iai", "construct_iai"] * 2,
+        )
+        self._assert_exactly_head()
+
+    def _commit_outside_the_swap_set(self) -> str:
+        """Commit a change no swapped path sees; return the commit it sits on."""
+        under = _git(self.repo, "rev-parse", "HEAD").strip()
+        self._write({"README.md": "docs only\n", "crates/reuben-document/benches/micro_iai.rs": "//\n"})
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-qm", "docs")
+        self.head_tree = self._tracked_state()
+        return under
+
+    def test_identical_engine_benches_head_once_and_compares_nothing(self) -> None:
+        self.env["PERF_GATE_TEST_RC"] = "0"
+        proc = self._run_gate(self._commit_outside_the_swap_set())
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        calls = self._cargo_calls()
+        self.assertEqual(len(calls), 3, calls)
+        for call in calls:
+            self.assertNotIn("baseline", call)
+            self.assertTrue(call.endswith("| added"), call)
+        self.assertIn("identical to the baseline", proc.stdout)
+        self._assert_exactly_head()
+
+    def test_identical_engine_still_fails_when_head_does_not_run(self) -> None:
+        proc = self._run_gate(self._commit_outside_the_swap_set())
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("did not run at HEAD", proc.stdout)
+        self._assert_exactly_head()
+
+    def test_a_change_only_to_the_build_config_is_not_identical(self) -> None:
+        under = _git(self.repo, "rev-parse", "HEAD").strip()
+        self._write({".cargo/config.toml": "# head\n"})
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-qm", "config")
+        self.head_tree = self._tracked_state()
+        self.env["PERF_GATE_TEST_RC"] = "0"
+        proc = self._run_gate(under)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertNotIn("identical to the baseline", proc.stdout)
+        self.assertIn("--save-baseline=base", self._cargo_calls()[0])
+
     def test_baseline_missing_a_required_path_fails_without_writing(self) -> None:
         _git(self.repo, "rm", "-rq", "instruments")
         _git(self.repo, "commit", "-qm", "drop instruments")
@@ -343,6 +402,7 @@ class PerfGateNewOperatorSkip(unittest.TestCase):
         self.env["PERF_GATE_TEST_LOG"] = str(root / "cargo.log")
         self.env["PERF_GATE_TEST_SKIP_LOG"] = str(self.skip_log)
         self.env.pop("PERF_GATE_TEST_SLEEP", None)
+        self.env.pop("PERF_GATE_TEST_RC", None)
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -360,7 +420,9 @@ class PerfGateNewOperatorSkip(unittest.TestCase):
         """Commit `base`, then `head` over it, and run the gate from HEAD against `base`."""
         tree = {k: v for k, v in _BASE_TREE.items() if k != _BENCH_SUPPORT}
         base_sha = self._commit({**tree, **base}, "base")
-        self._commit(head, "head")
+        # HEAD always moves the engine: with the swap set identical to the baseline the gate runs no
+        # baseline at all, and these cases are about the skip list that baseline run is handed.
+        self._commit({"crates/reuben-core/src/lib.rs": "// core head\n", **head}, "head")
         return subprocess.run(
             ["bash", str(SCRIPT), base_sha],
             cwd=self.repo,
@@ -419,6 +481,26 @@ class PerfGateNewOperatorSkip(unittest.TestCase):
         )
         self.assertEqual(skip, _legacy_skip(head, base))
         self.assertEqual(skip, "add_f32_value,zigzag")
+
+    def test_identical_engine_benches_every_kind(self) -> None:
+        """No baseline registry runs, so nothing is missing from it — even a kind the baseline's
+        census lacks is benched."""
+        tree = {k: v for k, v in _BASE_TREE.items() if k != _BENCH_SUPPORT}
+        base_sha = self._commit(
+            {**tree, _KINDS_FILE: _kinds_file("gain"), _BENCH_SUPPORT: _workloads("gain")}, "base"
+        )
+        self._commit({_KINDS_FILE: _kinds_file("delay", "gain")}, "head")
+        self.env["PERF_GATE_TEST_RC"] = "0"
+        proc = subprocess.run(
+            ["bash", str(SCRIPT), base_sha],
+            cwd=self.repo,
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(set(self.skip_log.read_text().splitlines()), {""})
 
     # -- the head census guard ----------------------------------------------------------------------
 

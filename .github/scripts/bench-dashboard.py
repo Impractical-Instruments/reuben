@@ -99,7 +99,6 @@ EVAL_FILE = "eval-history.jsonl"
 EVAL_METRICS = [
     ("tokens_total", "grounding tokens", "eval-tokens", "tokens"),
     ("tokens_fixed", "fixed grounding", "eval-fixed", "tokens"),
-    ("payload_characters", "document chars", "eval-payload", "chars"),
 ]
 
 
@@ -407,9 +406,6 @@ def eval_section(outdir, eval_jsonl, label, charts_written):
         "- **Fixed grounding** is what every turn of every task pays before the model does "
         + "anything: the server `instructions` plus every tool schema. It creeps when a tool "
         + "description or the authoring guide grows, and nothing else watches it.",
-        "- **Document chars** is freehand JSON the model had to emit, **echoes included** — a "
-        + "whole-document re-emit for a one-value tweak costs full price here, which is exactly "
-        + "the cost the surface work is chasing.",
     ]
     lines += eval_rewrite_note(order)
     lines += [""]

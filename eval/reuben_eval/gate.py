@@ -2,7 +2,11 @@
 
 No inference, no network, no model — so it runs in CI on every PR in seconds and its numbers are
 byte-reproducible. What it measures is what the *surface* costs a perfect caller: grounding tokens
-handed back by the sidecar, failed-validate rounds, and freehand-JSON characters.
+handed back by the sidecar and failed-validate rounds.
+
+Document characters (metric (c)) are not reported here. A reference solution calls only roster
+verbs, no roster verb takes a document argument, and an off-roster call already fails the run as
+`file-access` — so on this tier the number is zero by construction. It is a live-tier metric.
 
 That floor is exactly what a new verb moves, which is why this tier gates and the live tier does
 not.
@@ -40,7 +44,6 @@ METRICS = (
     ("tokens_total", "grounding tokens", lambda r: r["tokens"]["total"]),
     ("tokens_fixed", "fixed grounding", lambda r: r["tokens"]["fixed"]),
     ("repair_rounds", "repair rounds", lambda r: r["repair_rounds"]),
-    ("payload_characters", "document chars", lambda r: r["payload_characters"]),
 )
 
 
@@ -247,7 +250,6 @@ def history_records(report: dict[str, Any], identity: dict[str, str]) -> list[di
             "schemas_bytes": result["tokens"]["schemas_bytes"],
             "schema_density": result["tokens"]["schema_density"],
             "repair_rounds": result["repair_rounds"],
-            "payload_characters": result["payload_characters"],
         }
         for key, result in report["tasks"].items()
     ]

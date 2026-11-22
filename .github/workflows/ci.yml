@@ -53,15 +53,15 @@ jobs:
         id: filter
         with:
           filters: |
-            # Anchor: any change that can move the Rust workspace build/test/perf outcome. Shared by
-            # the three whole-workspace jobs (check, windows, bench) — every crate transitively depends
+            # Anchor: any change that can move the Rust workspace build/test outcome. Shared by the
+            # whole-workspace jobs (check, windows) and by eval — every crate transitively depends
             # on reuben-contract, so a whole-workspace gate has no sound per-crate split. instruments/ is
             # test + bench DATA (include_str!/include_bytes! + fs-resolved fixtures), so it lives here;
             # .cargo/config.toml sets the build's target-cpu (and perf-gate snapshots it); the workflow
             # + the shared toolchain composite are the infra that runs every job. Every workspace
             # `default-members` entry must appear here: a member missing from the list runs no Rust
             # gate at all while `ci-passed` stays green. `reuben-editor`, the one member outside
-            # `default-members`, is in `editor` below instead — those three jobs never build it.
+            # `default-members`, is in `editor` below instead — those jobs never build it.
             _workspace: &workspace
               - 'crates/reuben-contract/**'
               - 'crates/reuben-macros/**'
@@ -113,10 +113,25 @@ jobs:
               - '.cargo/config.toml'
               - '.github/workflows/ci.yml'
               - '.github/actions/setup-rust/**'
-            # The perf gate benches the same workspace closure; add its own gate script. .cargo/
-            # config.toml is already in the anchor (perf-gate.sh snapshots it into the baseline build).
+            # Deliberately NARROWER than *workspace: the benches build `reuben-document` and its
+            # build closure (reuben-core, reuben-macros, reuben-contract) and nothing above it, so a
+            # change to reuben-api, reuben-native, reuben-mcp or reuben-guide cannot move an Ir count.
+            # A crate joining that closure must join this list (perf-gate.sh's SRC says the same).
+            # The crate dirs are whole, not `src/`: the benches, their fixtures and the manifests that
+            # declare them live there too. instruments/ and .cargo/config.toml are swapped into the
+            # baseline build; the root manifest carries the bench profile.
             bench:
-              - *workspace
+              - 'crates/reuben-contract/**'
+              - 'crates/reuben-macros/**'
+              - 'crates/reuben-core/**'
+              - 'crates/reuben-document/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '.cargo/config.toml'
+              - 'instruments/**'
+              - '.github/workflows/ci.yml'
+              - '.github/actions/setup-rust/**'
               - '.github/scripts/perf-gate.sh'
             # The agent-surface eval gate. Its trigger set is DIFFERENT from *workspace, and
             # deliberately wider in one direction: `docs/agents/**` is served to models as MCP
@@ -651,7 +666,7 @@ jobs:
 
   # Agent-surface eval gate — the deterministic tier of eval/. Sibling of `bench`: that one
   # watches what the engine costs the CPU, this one watches what the authoring surface costs a model
-  # (grounding tokens, repair rounds, freehand-JSON characters). No inference, no network, no model —
+  # (grounding tokens, repair rounds). No inference, no network, no model —
   # it replays hand-written reference solutions against the real sidecar, so it is seconds, not
   # minutes, and byte-reproducible. Runs unconditionally on every main/dev push for the same reason
   # `bench` does: a path-skip would punch a hole in the trend on the history branch.

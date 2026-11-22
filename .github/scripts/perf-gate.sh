@@ -11,7 +11,8 @@
 #   - micro_iai: per-operator `process` (needs the `bench` feature's crate-private bridge).
 #   - construct_iai: parse + build + instantiate, swept across node counts. The other two gate
 #     cost paid per block; this one gates cost paid once per Swap on the caller's thread.
-# Each layer runs its own baseline/compare cycle. If a layer's harness postdates the baseline
+# All layers' baselines are saved on one swap to the baseline ref, then all are compared on one swap
+# back (each swap is a rebuild). If a layer's harness postdates the baseline
 # (e.g. the PR that introduces micro_iai — the baseline `src/` has no `bench_support`), that
 # layer's baseline build fails and it is skipped with a note, while the other still gates.
 #
@@ -94,7 +95,8 @@ FEATURES="bench"
 # reuben-core's render and instantiate paths, so a perf change there must A/B with them.
 # reuben-native and reuben-api are excluded: neither is in `cargo bench -p reuben-document`'s build
 # graph. If a new crate joins the closure and is missed here, the baseline library build fails and
-# the hard-fail guard below trips (rather than masking it as a skip).
+# the hard-fail guard below trips (rather than masking it as a skip). Add it to ci.yml's `bench`
+# path filter too, or a PR that touches only that crate never runs this gate.
 SRC=(
   "crates/${PKG}/src"
   "crates/${ENGINE_PKG}/src"
@@ -131,7 +133,7 @@ WARN_GROWTH=2.2
 # with a single `git show`. Harvesting is best-effort and never affects the gate verdict.
 RECORD="${GITHUB_WORKSPACE:-$PWD}/bench-history-record.jsonl"
 : >"$RECORD"
-# HEAD identity is stable across the src/ swaps gate_one performs (only the worktree moves, never
+# HEAD identity is stable across the src/ swaps this script performs (only the worktree moves, never
 # the commit), so resolve it once. Committer date is deterministic — a sortable trend key.
 H_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 H_FULL="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
@@ -297,6 +299,18 @@ fi
 note "Baseline: \`$(git rev-parse --short "$BASE_SHA")\` · fail > ${FAIL_PCT}% · warn > ${WARN_PCT}%"
 note ""
 
+# The A/B moves only the swap set; the harness, manifests, lockfile and toolchain are HEAD's on both
+# sides. So when the swap set is byte-identical across the two refs, both builds are the same binary
+# and Ir is deterministic: the comparison is 0% by construction. Skip the baseline build and run, and
+# run HEAD once — that still records the history point and feeds the scaling gate, which takes no
+# baseline. `diff-tree` exits 0 only when nothing differs; an error reads as "differs", the safe side.
+IDENTICAL=0
+if git diff-tree --quiet -r "$BASE_SHA" HEAD -- "${SWAP_SET[@]}"; then
+  IDENTICAL=1
+  note "_The engine closure, fixtures and build config are identical to the baseline — HEAD benched once, nothing to compare._"
+  note ""
+fi
+
 # PR-new operators have no baseline counterpart: the baseline commit's swapped-in src/ doesn't
 # register them, so the HEAD micro harness would panic building their driver and abort the WHOLE
 # micro layer — the masking bug where renaming `map` -> `map_f32_signal` (+ adding
@@ -338,6 +352,8 @@ if [ -z "$head_kinds" ]; then
   exit 1
 fi
 REUBEN_MICRO_BENCH_SKIP="$(comm -23 <(printf '%s\n' "$head_kinds") <(printf '%s\n' "$base_kinds") | paste -sd, -)"
+# With no baseline run there is no baseline registry to miss a kind, so bench every one.
+[ "$IDENTICAL" -eq 1 ] && REUBEN_MICRO_BENCH_SKIP=""
 export REUBEN_MICRO_BENCH_SKIP
 if [ -n "$REUBEN_MICRO_BENCH_SKIP" ]; then
   note "_New operators since baseline — benched but not gated (no baseline to compare): \`${REUBEN_MICRO_BENCH_SKIP}\`._"
@@ -352,7 +368,14 @@ skipped=0
 scaling_inert=0
 hard_broken=0
 
-# Gate one bench layer: baseline run (old src + fixtures, PR harness) -> compare PR run -> table.
+# Per-layer outcome of the baseline pass, read by the compare pass: `ok` (a saved `base` to compare
+# against), `skip` (no comparable baseline — non-blocking), or `broken` (fails the gate). The note
+# for a skip or a break is held until the compare pass so it lands under that layer's heading.
+declare -A BASE_STATE=()
+declare -A BASE_NOTE=()
+
+# Baseline run for one layer, over the already-swapped baseline tree: old src + fixtures, PR harness,
+# saved as gungraun baseline "base".
 #
 # A baseline run can fail two very different ways, and conflating them is how a broken gate slips
 # through green (the original masking bug). We split them by whether the bench target COMPILES:
@@ -365,92 +388,94 @@ hard_broken=0
 #     the baseline registry) leaves the library perfectly buildable yet must still fail, not skip.
 #     PR-new operators are removed from this failure mode upstream: REUBEN_MICRO_BENCH_SKIP excludes
 #     them so they never reach the baseline registry lookup.
-gate_one() {
-  local bench="$1"
-  note "### \`$bench\`"
-  note ""
-
-  # 1) Baseline engine + its own fixtures (PR bench harness) -> save as baseline "base".
-  #    Swap src/ and instruments/ together so the baseline reads JSON it can actually load.
-  #    This run compares the baseline against *nothing* (no prior saved baseline exists), so its
-  #    per-case output is noise — we need only its exit code and the saved `base` snapshot for the
-  #    real PR-vs-baseline compare in step 2. Capture it to a log and surface it ONLY on failure,
-  #    where the runner's diagnostics (compile errors feeding the skip probe, or a runtime panic)
-  #    matter. The happy-path job log thus shows just the compare run, not baseline-vs-nothing.
-  local absent
-  absent="$(missing_at "$BASE_SHA")"
-  if [ -n "$absent" ]; then
-    skipped=$((skipped + 1))
-    printf '::warning title=Perf layer skipped::%s baseline has no %s — no comparable snapshot, so this layer is not measured\n' "$bench" "$absent"
-    note "⚠️ \`$bench\`: the baseline ref carries no \`$absent\` (a crate this PR adds), so no baseline snapshot can be built. Layer skipped, non-blocking — **not** compared and reported green."
-    note ""
+#
+# The run compares against nothing, so its per-case output is noise: it is captured and surfaced only
+# on failure, where the compile errors or the panic matter.
+baseline_one() {
+  local bench="$1" baselog probelog
+  baselog="$(mktemp)"
+  if run_bench "$bench" --save-baseline=base >"$baselog" 2>&1; then
+    rm -f "$baselog"
+    BASE_STATE[$bench]=ok
     return 0
   fi
-
-  swap_tree "$BASE_SHA"
-  local baselog
-  baselog="$(mktemp)"
-  if ! run_bench "$bench" --save-baseline=base >"$baselog" 2>&1; then
-    cat "$baselog"
-    rm -f "$baselog"
-    # The baseline bench did not build/run. Classify by COMPILE, not by run. The ONLY legitimate
-    # skip is "HEAD's bench harness postdates the baseline API" — a *compile* incompatibility of the
-    # bench target against the swapped baseline src (e.g. the PR that introduced this layer: baseline
-    # src has no `bench_support`, so HEAD's `use ...::OpHarness` won't compile). Probe exactly that
-    # with `--no-run` against the still-checked-out baseline src; its compile errors are already in
-    # the log above, so the exit code is all we need.
-    local probelog
-    probelog="$(mktemp)"
-    if ! cargo bench -p "$PKG" --features "$FEATURES" --bench "$bench" --no-run >"$probelog" 2>&1; then
-      # An unsatisfied `required-features` is NOT an API gap. It means this layer never built on
-      # EITHER tree, because the invocation does not enable the feature the `[[bench]]` declares —
-      # and cargo signals it with the same non-zero exit as a real compile failure. Classifying it as
-      # a skip is precisely how a layer reports green while never running, which is the masking the
-      # runtime-crash branch below refuses for the same reason.
-      if grep -q "requires the features" "$probelog"; then
-        cat "$probelog"
-        rm -f "$probelog"
-        swap_tree HEAD
-        hard_broken=1
-        overall_fail=1
-        printf '::error title=Perf layer never ran::%s declares required-features that --features %s does not enable — the gate is blind here, not skipping\n' "$bench" "$FEATURES"
-        note "❌ \`$bench\`: the target declares \`required-features\` that \`--features $FEATURES\` does not enable, so it never built on either tree. **Not** a skip — the gate was not measuring this layer at all."
-        note ""
-        return 0
-      fi
+  cat "$baselog"
+  rm -f "$baselog"
+  # Probe exactly the compile with `--no-run` against the still-checked-out baseline src; its compile
+  # errors are already in the log above, so the exit code is all we need.
+  probelog="$(mktemp)"
+  if ! cargo bench -p "$PKG" --features "$FEATURES" --bench "$bench" --no-run >"$probelog" 2>&1; then
+    # An unsatisfied `required-features` is NOT an API gap. It means this layer never built on
+    # EITHER tree, because the invocation does not enable the feature the `[[bench]]` declares —
+    # and cargo signals it with the same non-zero exit as a real compile failure. Classifying it as
+    # a skip is precisely how a layer reports green while never running, which is the masking the
+    # runtime-crash branch below refuses for the same reason.
+    if grep -q "requires the features" "$probelog"; then
+      cat "$probelog"
       rm -f "$probelog"
-      swap_tree HEAD
-      skipped=$((skipped + 1))
-      printf '::warning title=Perf layer skipped::%s HEAD bench harness does not compile against the baseline — no comparison for this layer\n' "$bench"
-      note "⚠️ \`$bench\`: the HEAD bench harness does not compile against the baseline src — its harness postdates the baseline (workload API or bench bridge moved). Layer skipped, non-blocking."
-      note ""
+      hard_broken=1
+      overall_fail=1
+      BASE_STATE[$bench]=broken
+      printf '::error title=Perf layer never ran::%s declares required-features that --features %s does not enable — the gate is blind here, not skipping\n' "$bench" "$FEATURES"
+      BASE_NOTE[$bench]="❌ \`$bench\`: the target declares \`required-features\` that \`--features $FEATURES\` does not enable, so it never built on either tree. **Not** a skip — the gate was not measuring this layer at all."
       return 0
     fi
     rm -f "$probelog"
-    # Compiles but the run failed: a panic/abort at RUNTIME, not an API gap. New operators no longer
-    # crash here (the gate skips them via REUBEN_MICRO_BENCH_SKIP), so a surviving run failure is real
-    # — fail the gate. Treating a runtime crash as a skip is exactly the masking bug we are closing.
-    swap_tree HEAD
-    hard_broken=1
-    overall_fail=1
-    printf '::error title=Baseline bench broken::%s baseline bench compiled but failed at runtime — perf gate cannot certify no regression\n' "$bench"
-    note "❌ \`$bench\`: the bench compiles against the baseline but failed at **runtime** (panic/abort) — not skipping; skipping a runtime failure is how a broken gate slips through green."
-    note ""
+    skipped=$((skipped + 1))
+    BASE_STATE[$bench]=skip
+    printf '::warning title=Perf layer skipped::%s HEAD bench harness does not compile against the baseline — no comparison for this layer\n' "$bench"
+    BASE_NOTE[$bench]="⚠️ \`$bench\`: the HEAD bench harness does not compile against the baseline src — its harness postdates the baseline (workload API or bench bridge moved). Layer skipped, non-blocking."
     return 0
   fi
-  rm -f "$baselog"
+  rm -f "$probelog"
+  # Compiles but the run failed: a panic/abort at RUNTIME, not an API gap. New operators no longer
+  # crash here (the gate skips them via REUBEN_MICRO_BENCH_SKIP), so a surviving run failure is real
+  # — fail the gate. Treating a runtime crash as a skip is exactly the masking bug we are closing.
+  hard_broken=1
+  overall_fail=1
+  BASE_STATE[$bench]=broken
+  printf '::error title=Baseline bench broken::%s baseline bench compiled but failed at runtime — perf gate cannot certify no regression\n' "$bench"
+  BASE_NOTE[$bench]="❌ \`$bench\`: the bench compiles against the baseline but failed at **runtime** (panic/abort) — not skipping; skipping a runtime failure is how a broken gate slips through green."
+}
 
-  # 2) Restore PR engine + fixtures, compare vs "base". callgrind enforces the hard limit and
-  #    exits non-zero if any case breaches it; that exit code is this layer's verdict. We `tee` the
-  #    run so harvest_history can read HEAD's absolute Ir per case; PIPESTATUS[0] keeps the bench's
-  #    own exit code as the verdict (tee always exits 0).
-  swap_tree HEAD
+# PR run for one layer, over HEAD's tree. Against the saved `base` callgrind enforces the hard limit
+# and exits non-zero if any case breaches it; that exit code is this layer's verdict. When the
+# engine is identical to the baseline there is no `base`: the run only records HEAD's Ir (history,
+# scaling gate), and its exit code says whether HEAD's harness ran at all. We `tee` the run so
+# harvest_history can read HEAD's absolute Ir per case; PIPESTATUS[0] keeps the bench's own exit code
+# (tee always exits 0).
+compare_one() {
+  local bench="$1"
+  note "### \`$bench\`"
+  note ""
+  case "${BASE_STATE[$bench]:-}" in
+    skip | broken)
+      note "${BASE_NOTE[$bench]}"
+      note ""
+      return 0
+      ;;
+  esac
+
+  local layer="${bench%_iai}"
+  local args=(--save-summary=json)
+  [ "$IDENTICAL" -eq 0 ] && args+=(--baseline=base --callgrind-limits="ir=${FAIL_PCT}%")
   local complog
   complog="$(mktemp)"
-  run_bench "$bench" --baseline=base --save-summary=json --callgrind-limits="ir=${FAIL_PCT}%" 2>&1 | tee "$complog"
+  run_bench "$bench" "${args[@]}" 2>&1 | tee "$complog"
   local gate_rc=${PIPESTATUS[0]}
   harvest_history "$bench" "$complog"
   rm -f "$complog"
+
+  if [ "$IDENTICAL" -eq 1 ]; then
+    SUM_ROWS+=("| ${layer} | _(engine identical to baseline — recorded, not compared)_ |  |  |")
+    if [ "$gate_rc" -ne 0 ]; then
+      printf '::error title=Perf bench failed::%s did not run at HEAD\n' "$bench"
+      note "_\`$bench\`: ❌ the bench did not run at HEAD._"
+      note ""
+      overall_fail=1
+    fi
+    return 0
+  fi
 
   # Best-effort per-case table from this bench's saved summaries (path-scoped to the bench).
   # diff_pct is serialized as a string (callgrind event "Ir" = instructions). The jq walk is
@@ -497,7 +522,30 @@ gate_one() {
 trap restore_head_on_exit EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-for b in "${BENCHES[@]}"; do gate_one "$b"; done
+
+# Two swaps per run, not two per layer. Every swap rewrites the closure's `src/`, so cargo rebuilds
+# it — and under the bench profile's single codegen unit that rebuild is most of the gate's wall
+# time. So every layer's baseline is saved on one baseline tree, then every layer is compared on one
+# HEAD tree. gungraun keeps each bench's `base` apart, so saving all three first loses nothing.
+if [ "$IDENTICAL" -eq 0 ]; then
+  absent="$(missing_at "$BASE_SHA")"
+  if [ -n "$absent" ]; then
+    # The baseline checkout writes nothing for a path the ref lacks, and swap_tree would stop the
+    # whole gate. A PR that adds a crate to the closure hits that by construction, so every layer
+    # is skipped with a note instead.
+    for b in "${BENCHES[@]}"; do
+      skipped=$((skipped + 1))
+      BASE_STATE[$b]=skip
+      printf '::warning title=Perf layer skipped::%s baseline has no %s — no comparable snapshot, so this layer is not measured\n' "$b" "$absent"
+      BASE_NOTE[$b]="⚠️ \`$b\`: the baseline ref carries no \`$absent\` (a crate this PR adds), so no baseline snapshot can be built. Layer skipped, non-blocking — **not** compared and reported green."
+    done
+  else
+    swap_tree "$BASE_SHA"
+    for b in "${BENCHES[@]}"; do baseline_one "$b"; done
+    swap_tree HEAD
+  fi
+fi
+for b in "${BENCHES[@]}"; do compare_one "$b"; done
 
 # Growth-factor gate for the construct layer — the check the baseline comparison structurally
 # cannot make (see header). Reads the absolute Ir the compare run already harvested into $RECORD,
@@ -603,6 +651,10 @@ if [ "$scaling_inert" -ne 0 ]; then
 fi
 if [ -n "$gaps" ]; then
   both "**Result: ✅ within ${FAIL_PCT}% — but ${gaps} (partial coverage).**"
+  exit 0
+fi
+if [ "$IDENTICAL" -eq 1 ]; then
+  both "**Result: ✅ engine identical to the baseline — no comparison to make.**"
   exit 0
 fi
 both "**Result: ✅ within ${FAIL_PCT}%.**"
