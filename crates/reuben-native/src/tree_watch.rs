@@ -1,5 +1,5 @@
 //! Follows writes from outside the engine — a text editor, a script — to the open instrument's
-//! files, and has the engine [reload](StructureState::reload) them.
+//! files, and has the engine [reload](ChannelState::reload) them.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -9,7 +9,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use reuben_api::engine::{StructureState, Subscription};
+use reuben_api::engine::{ChannelState, Subscription};
 
 /// How long the tree's files must go untouched before they are read again. One write is several
 /// events — a temp file, a rename, sometimes a truncate before the bytes — and a program saving
@@ -47,14 +47,14 @@ impl Drop for TreeWatch {
     }
 }
 
-/// Watch the files of `state`'s open instrument and [reload](StructureState::reload) them a
+/// Watch the files of `state`'s open instrument and [reload](ChannelState::reload) them a
 /// debounced moment after each burst of writes. The files watched follow
-/// [`tree`](StructureState::tree): it is read again after each reload and after each install the
+/// [`tree`](ChannelState::tree): it is read again after each reload and after each install the
 /// state publishes, so a newly referenced file, or a newly opened instrument, is watched.
 ///
 /// A platform that cannot watch files leaves the engine playing and not following; the reason is
 /// printed once.
-pub fn spawn(state: StructureState) -> TreeWatch {
+pub fn spawn(state: ChannelState) -> TreeWatch {
     let (wake, woken) = mpsc::channel();
     let touched = wake.clone();
     let files = Arc::new(Mutex::new(BTreeSet::<PathBuf>::new()));
@@ -109,12 +109,7 @@ pub fn spawn(state: StructureState) -> TreeWatch {
 
 /// The watcher's loop: debounce touches into one reload per burst, and re-aim the watch whenever
 /// what is open may have moved.
-fn follow(
-    state: &StructureState,
-    watch: &mut Watch,
-    woken: &Receiver<Wake>,
-    events: &Subscription,
-) {
+fn follow(state: &ChannelState, watch: &mut Watch, woken: &Receiver<Wake>, events: &Subscription) {
     let mut first: Option<Instant> = None;
     let mut due: Option<Instant> = None;
     loop {
@@ -224,7 +219,7 @@ mod tests {
     use std::sync::mpsc::Receiver;
 
     use reuben_api::authoring::{DocumentHistory, Resources};
-    use reuben_api::engine::{ChangedBy, Event, InProcess, StructureState};
+    use reuben_api::engine::{ChangedBy, ChannelState, Event, InProcess};
     use reuben_api::render::AudioConfig;
     use reuben_api::staged::Staged;
     use reuben_api::FsResolver;
@@ -232,7 +227,7 @@ mod tests {
     use super::*;
     use crate::control::ring_pair;
     use crate::diagnostics::Diagnostics;
-    use crate::structure::{HeadlessRenderConfig, NativeHost};
+    use crate::engine_channel::{HeadlessRenderConfig, NativeHost};
     use crate::test_support::FakeCallback;
 
     const TOP: &str = r#"{"format_version":3,"instrument":"top",
@@ -264,7 +259,7 @@ mod tests {
 
     /// The installed content hash. The event that announced an install is published while the
     /// Coordinator is still held, so this waits for it to be let go.
-    fn installed_hash(state: &StructureState) -> String {
+    fn installed_hash(state: &ChannelState) -> String {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             match state.try_installed() {
@@ -305,7 +300,7 @@ mod tests {
                 opened_input_channels: 0,
             },
         ));
-        let state = StructureState::new(
+        let state = ChannelState::new(
             coordinator,
             Arc::new(host),
             Arc::new(DocumentHistory::new(staged)),
@@ -360,7 +355,7 @@ mod tests {
             },
         ));
         let top_s = top_path.display().to_string();
-        let state = StructureState::new(
+        let state = ChannelState::new(
             coordinator,
             Arc::new(host),
             Arc::new(DocumentHistory::new(staged)),
@@ -434,7 +429,7 @@ mod tests {
                 opened_input_channels: 0,
             },
         ));
-        let state = StructureState::new(
+        let state = ChannelState::new(
             coordinator,
             Arc::new(host),
             Arc::new(DocumentHistory::new(staged)),

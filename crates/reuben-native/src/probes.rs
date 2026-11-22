@@ -6,7 +6,7 @@
 //! ever, so a set that is not renewed within [`LEASE`] is switched off. A thread from
 //! [`spawn_lease_thread`] checks once a second, so this holds when no client is left to poll.
 //!
-//! Only structure-channel threads and the lease thread touch this, behind a `Mutex` in the host.
+//! Only engine-channel threads and the lease thread touch this, behind a `Mutex` in the host.
 //! Render reads the flags through the slots and never takes that lock.
 
 use std::sync::{Arc, Mutex, Weak};
@@ -58,7 +58,7 @@ impl Probes {
 
     /// Replace the set with `paths`, renew the lease, and return the paths that resolved, in
     /// request order. Every node the old set had on that the new one does not is turned off.
-    /// The count is capped at the structure server, before the host is asked.
+    /// The count is capped at the engine-channel server, before the host is asked.
     pub(crate) fn set(&mut self, paths: Vec<Vec<String>>, now: Instant) -> Vec<Vec<String>> {
         let mut unique: Vec<Vec<String>> = Vec::with_capacity(paths.len());
         for path in paths {

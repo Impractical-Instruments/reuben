@@ -1,7 +1,7 @@
 //! Live control values on their way to the engine, without the window waiting for them.
 //!
 //! An embedded engine takes a send without waiting, so it is sent where it is made. To an attached
-//! engine a send is a round trip over its structure channel, which a stopped `reuben play` holds
+//! engine a send is a round trip over its engine channel, which a stopped `reuben play` holds
 //! for the channel's read budget; those are queued for a worker that owns the link's channel, and
 //! the panel that made them hears how they went on a later frame.
 

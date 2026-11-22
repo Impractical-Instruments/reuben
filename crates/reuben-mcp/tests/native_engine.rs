@@ -15,7 +15,7 @@ use reuben_api::engine::{
     IN_PROCESS_ENDPOINT,
 };
 use reuben_api::tools::names;
-use reuben_mcp::{EngineLink, STRUCTURE_ADDR_ENV};
+use reuben_mcp::{EngineLink, ENGINE_ADDR_ENV};
 use reuben_native::engine::{EngineConfig, Instrument};
 use reuben_native::test_support::{start_headless, timed_teardown, within};
 
@@ -49,7 +49,7 @@ fn seed(test: &str, docs: &[(&str, &str)]) -> PathBuf {
 fn config(instrument: PathBuf) -> EngineConfig {
     EngineConfig {
         osc_in: Some("127.0.0.1:0".to_string()),
-        structure: Some("127.0.0.1:0".to_string()),
+        engine_addr: Some("127.0.0.1:0".to_string()),
         ..EngineConfig::new(Instrument::Path(instrument))
     }
 }
@@ -76,25 +76,27 @@ fn the_sidecar_reaches_an_engine_started_through_the_entry_point() {
     let instrument = dir.join("osc.json");
     within(HANG_SECS, move || {
         let engine = start_headless(config(instrument)).expect("the engine starts");
-        let structure = engine.structure_addr().expect("the structure server bound");
+        let engine_addr = engine
+            .engine_addr()
+            .expect("the engine-channel server bound");
 
         // Exactly what the sidecar's `get_engine_status` tool runs, over the link it builds.
-        let link = EngineLink::new(structure.to_string(), None);
-        let status = get_engine_status(link.structure(), env!("CARGO_PKG_VERSION"));
+        let link = EngineLink::new(engine_addr.to_string(), None);
+        let status = get_engine_status(link.channel(), env!("CARGO_PKG_VERSION"));
         assert!(status.output.reachable, "{}", status.summary);
-        assert_eq!(status.output.endpoints.structure, structure.to_string());
+        assert_eq!(status.output.endpoints.engine, engine_addr.to_string());
 
         let in_process = get_engine_status(&engine.channel(), env!("CARGO_PKG_VERSION"));
         assert!(in_process.output.reachable, "{}", in_process.summary);
-        assert_eq!(in_process.output.endpoints.structure, IN_PROCESS_ENDPOINT);
+        assert_eq!(in_process.output.endpoints.engine, IN_PROCESS_ENDPOINT);
 
         timed_teardown(engine, false);
     });
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The sidecar binary as an agent's MCP client runs it, dialing the engine at `structure` through
-/// [`STRUCTURE_ADDR_ENV`], one request at a time.
+/// The sidecar binary as an agent's MCP client runs it, dialing the engine at `engine_addr` through
+/// [`ENGINE_ADDR_ENV`], one request at a time.
 struct Sidecar {
     child: Child,
     stdin: ChildStdin,
@@ -103,9 +105,9 @@ struct Sidecar {
 }
 
 impl Sidecar {
-    fn start(structure: &str) -> Self {
+    fn start(engine_addr: &str) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_reuben-mcp"))
-            .env(STRUCTURE_ADDR_ENV, structure)
+            .env(ENGINE_ADDR_ENV, engine_addr)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -218,7 +220,7 @@ fn an_agent_edit_is_live() {
             ..config(root.join("osc.json"))
         })
         .expect("the engine starts");
-        let mut sidecar = Sidecar::start(&engine.structure_addr().expect("bound").to_string());
+        let mut sidecar = Sidecar::start(&engine.engine_addr().expect("bound").to_string());
 
         let names_offered = listed(&mut sidecar);
         assert_eq!(names_offered.len(), 1, "{names_offered:?}");
@@ -308,14 +310,14 @@ fn shutdown_stops_every_thread_and_frees_every_port() {
     let instrument = dir.join("osc.json");
     // No client connects before the rebind below: an accepted connection the server closed would
     // leave the port in TIME_WAIT, which is not what this test is about.
-    let (structure, osc_in) = within(HANG_SECS, move || {
+    let (engine_addr, osc_in) = within(HANG_SECS, move || {
         let engine = start_headless(config(instrument)).expect("the engine starts");
-        let structure: SocketAddr = engine.structure_addr().expect("bound");
+        let engine_addr: SocketAddr = engine.engine_addr().expect("bound");
         let osc_in: SocketAddr = engine.osc_in_addr().expect("bound");
         timed_teardown(engine, false);
-        (structure, osc_in)
+        (engine_addr, osc_in)
     });
-    TcpListener::bind(structure).expect("the structure port is free again");
+    TcpListener::bind(engine_addr).expect("the engine-channel port is free again");
     UdpSocket::bind(osc_in).expect("the OSC-in port is free again");
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -140,7 +140,7 @@ playing.
 #### Attaching to a running engine
 
 The editor can also play an engine it did not start, such as a `reuben play` started by a
-launcher script for a show. It reaches that engine on its structure channel, which `reuben play`
+launcher script for a show. It reaches that engine on its engine channel, which `reuben play`
 opens on `127.0.0.1:9124`:
 
 ```sh
@@ -162,25 +162,25 @@ Control values from the editor and from any other OSC sender reach the same inpu
 last one written wins. The editor does not hold a swap from another client to ask first, as it
 does for an engine it started: whoever writes last wins.
 
-The structure channel listens on loopback unless told otherwise. To attach from another machine,
+The engine channel listens on loopback unless told otherwise. To attach from another machine,
 start the engine on an address that machine can reach, with a token. The engine refuses to
 listen beyond loopback without one, and serves a client from another machine only when the
 client sends it:
 
 ```sh
 # on the show machine
-export REUBEN_STRUCTURE_TOKEN=$(openssl rand -hex 16)
-cargo reuben-play instruments/groovebox.json --structure-addr 100.64.0.5:9124
+export REUBEN_ENGINE_TOKEN=$(openssl rand -hex 16)
+cargo reuben-play instruments/groovebox.json --engine-addr 100.64.0.5:9124
 
 # on the editing machine, with the same token
-REUBEN_STRUCTURE_TOKEN=… cargo run -p reuben-editor -- --attach show-machine:9124
+REUBEN_ENGINE_TOKEN=… cargo run -p reuben-editor -- --attach show-machine:9124
 ```
 
-`--structure-addr` takes a literal IP: the machine's Tailscale or LAN address, or `0.0.0.0` for
+`--engine-addr` takes a literal IP: the machine's Tailscale or LAN address, or `0.0.0.0` for
 every interface. `--token` works too, but anyone on the machine can read a flag in the process
 list. `reuben-mcp` and the `reuben` CLI's `describe`, `validate` and `new-instrument` take the
-same `REUBEN_STRUCTURE_TOKEN` (the CLI also takes `--token`), and `REUBEN_STRUCTURE_ADDR` or
-`--structure-addr` to name the engine. A client on the engine's own machine needs no token.
+same `REUBEN_ENGINE_TOKEN` (the CLI also takes `--token`), and `REUBEN_ENGINE_ADDR` or
+`--engine-addr` to name the engine. A client on the engine's own machine needs no token.
 
 The token travels in clear: the channel has no TLS. Tailscale encrypts the link. A plain LAN
 does not, so use it only on a network you trust. An SSH tunnel still works too, and needs no

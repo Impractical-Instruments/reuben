@@ -1,5 +1,5 @@
 //! The engine the editor plays through. Either embedded — everything `reuben play` starts, audio
-//! out, OSC-in, the loopback structure channel `reuben-mcp` dials, owned by the editor for as long
+//! out, OSC-in, the loopback engine channel `reuben-mcp` dials, owned by the editor for as long
 //! as its window is open — or [attached](Engine::attach) to a `reuben play` already running, which
 //! the editor reaches over that channel and owns nothing of.
 //!
@@ -18,8 +18,8 @@ use reuben_api::authoring::{Report, ValidateInstrument};
 use reuben_api::engine::{call_tool, Channel, Installed, SwapOutcome, Token};
 use reuben_api::tools::names;
 use reuben_native::engine::{self, EngineConfig, Instrument, RunningEngine, StartError};
+use reuben_native::engine_channel::input_stream_fits;
 use reuben_native::profile::DeviceProfile;
-use reuben_native::structure::input_stream_fits;
 
 use crate::link::{Change, Link};
 use crate::sends::Live;
@@ -114,7 +114,7 @@ impl Engine {
         }
     }
 
-    /// Attach to the `reuben play` whose structure channel is at `addr`, starting nothing, opening
+    /// Attach to the `reuben play` whose engine channel is at `addr`, starting nothing, opening
     /// every connection with `token` when given. `wake` is called from another thread whenever
     /// [`follow_link`](Self::follow_link) has news, and when a live send to it is answered.
     pub fn attach(
@@ -217,7 +217,7 @@ impl Engine {
     /// Start the engine on the audio device `config.profile` selects, or, when that device does
     /// not open, with no device at all; and when the OSC-in port is taken, with no OSC-in. Either
     /// way the server still lists, opens and edits, and the report says what is missing and why.
-    /// A structure socket that does not bind is already left out by the start itself.
+    /// A engine-channel socket that does not bind is already left out by the start itself.
     pub fn start(config: EngineConfig) -> Self {
         Self::start_or_headless(config, engine::start, engine::start_headless)
     }
@@ -277,7 +277,7 @@ impl Engine {
             ..config
         };
         let kept = Some(config.clone());
-        let structure = config.structure.clone();
+        let engine_addr = config.engine_addr.clone();
         let mut report = vec![Line::new(
             Level::Info,
             match &config.instrument {
@@ -317,19 +317,16 @@ impl Engine {
         for w in running.warnings() {
             report.push(Line::new(Level::Warning, w.to_string()));
         }
-        match (running.structure_addr(), running.structure_error()) {
+        match (running.engine_addr(), running.channel_error()) {
             (Some(addr), _) => {
-                report.push(Line::new(
-                    Level::Info,
-                    format!("structure channel on {addr}"),
-                ));
+                report.push(Line::new(Level::Info, format!("engine channel on {addr}")));
             }
             (None, Some(e)) => report.push(Line::new(
                 Level::Warning,
                 format!(
-                    "structure channel unavailable on {} ({e}); reuben-mcp cannot reach this \
+                    "engine channel unavailable on {} ({e}); reuben-mcp cannot reach this \
                      engine{}",
-                    structure.as_deref().unwrap_or_default(),
+                    engine_addr.as_deref().unwrap_or_default(),
                     already_running(e),
                 ),
             )),
@@ -779,7 +776,7 @@ pub(crate) mod test_support {
     pub fn config(instrument: PathBuf) -> EngineConfig {
         EngineConfig {
             osc_in: Some("127.0.0.1:0".to_string()),
-            structure: Some("127.0.0.1:0".to_string()),
+            engine_addr: Some("127.0.0.1:0".to_string()),
             ..EngineConfig::new(Instrument::Path(instrument))
         }
     }
@@ -789,7 +786,7 @@ pub(crate) mod test_support {
     pub fn silent(root: &std::path::Path) -> EngineConfig {
         EngineConfig {
             osc_in: Some("127.0.0.1:0".to_string()),
-            structure: Some("127.0.0.1:0".to_string()),
+            engine_addr: Some("127.0.0.1:0".to_string()),
             instrument_root: Some(root.to_path_buf()),
             ..EngineConfig::new(Instrument::Silent)
         }
@@ -835,7 +832,7 @@ mod tests {
         let mut asked = None;
         let _ = Engine::start_with(config(library("acid-techno.json")), |config| {
             asked = Some(config.follow_files);
-            Err(StartError::StructureNeedsToken(String::new()))
+            Err(StartError::ChannelNeedsToken(String::new()))
         });
         assert_eq!(asked, Some(true));
     }
@@ -873,14 +870,14 @@ mod tests {
             let mut engine =
                 Engine::start_with(config(library("acid-techno.json")), start_headless);
             assert_eq!(errors(&engine), Vec::<&str>::new());
-            let structure = engine
+            let engine_addr = engine
                 .running()
-                .and_then(RunningEngine::structure_addr)
-                .expect("the structure server bound");
+                .and_then(RunningEngine::engine_addr)
+                .expect("the engine-channel server bound");
 
             // The link `reuben-mcp` builds for its engine tools, over the loopback socket.
-            let link = EngineLink::new(structure.to_string(), None);
-            let status = get_engine_status(link.structure(), env!("CARGO_PKG_VERSION"));
+            let link = EngineLink::new(engine_addr.to_string(), None);
+            let status = get_engine_status(link.channel(), env!("CARGO_PKG_VERSION"));
             assert!(status.output.reachable, "{}", status.summary);
 
             let target = library("groovebox.json").display().to_string();
@@ -889,12 +886,12 @@ mod tests {
                     name: target.clone(),
                     expect: None,
                 },
-                link.structure(),
+                link.channel(),
             )
             .expect("the open reached the engine");
             assert!(opened.output.report.report.ok, "{}", opened.summary);
 
-            let now = link.structure().get_document().expect("read over TCP");
+            let now = link.channel().get_document().expect("read over TCP");
             assert_eq!(now.source.as_deref(), Some(target.as_str()));
 
             engine.shutdown();
@@ -1003,13 +1000,13 @@ mod tests {
     }
 
     #[test]
-    fn a_taken_structure_port_is_reported_by_name_and_the_engine_still_plays() {
+    fn a_taken_engine_channel_port_is_reported_by_name_and_the_engine_still_plays() {
         within(HANG_SECS, || {
             let taken = TcpListener::bind("127.0.0.1:0").expect("hold a port");
             let addr = taken.local_addr().expect("bound").to_string();
             let mut engine = Engine::start_with(
                 EngineConfig {
-                    structure: Some(addr.clone()),
+                    engine_addr: Some(addr.clone()),
                     ..config(library("acid-techno.json"))
                 },
                 start_headless,
@@ -1018,8 +1015,8 @@ mod tests {
             let warning = engine
                 .report()
                 .iter()
-                .find(|l| l.level == Level::Warning && l.text.contains("structure channel"))
-                .expect("the structure port is reported");
+                .find(|l| l.level == Level::Warning && l.text.contains("engine channel"))
+                .expect("the engine-channel port is reported");
             assert!(warning.text.contains(&addr), "{}", warning.text);
             engine.shutdown();
         });
@@ -1092,24 +1089,22 @@ mod tests {
     }
 
     #[test]
-    fn a_taken_structure_port_still_starts_a_server_and_says_why() {
+    fn a_taken_engine_channel_port_still_starts_a_server_and_says_why() {
         within(HANG_SECS, || {
             let taken = TcpListener::bind("127.0.0.1:0").expect("hold a port");
             let addr = taken.local_addr().expect("bound").to_string();
             let mut engine = Engine::start_or_headless(
                 EngineConfig {
-                    structure: Some(addr.clone()),
+                    engine_addr: Some(addr.clone()),
                     ..super::test_support::silent(&library(""))
                 },
                 start_headless,
                 |_| panic!("the headless start is only for a device that does not open"),
             );
-            assert!(engine
-                .running()
-                .is_some_and(|r| r.structure_addr().is_none()));
+            assert!(engine.running().is_some_and(|r| r.engine_addr().is_none()));
             assert!(
                 (engine.report().iter())
-                    .any(|l| l.text.contains("structure channel") && l.text.contains(&addr)),
+                    .any(|l| l.text.contains("engine channel") && l.text.contains(&addr)),
                 "{:?}",
                 engine.report()
             );
@@ -1123,20 +1118,20 @@ mod tests {
 
     #[test]
     fn shutdown_frees_every_port() {
-        let (osc_in, structure): (SocketAddr, SocketAddr) = within(HANG_SECS, || {
+        let (osc_in, engine_addr): (SocketAddr, SocketAddr) = within(HANG_SECS, || {
             let mut engine =
                 Engine::start_with(config(library("acid-techno.json")), start_headless);
             let running = engine.running().expect("running");
             let ports = (
                 running.osc_in_addr().expect("OSC-in bound"),
-                running.structure_addr().expect("structure bound"),
+                running.engine_addr().expect("engine channel bound"),
             );
             engine.shutdown();
             assert!(engine.running().is_none());
             ports
         });
         UdpSocket::bind(osc_in).expect("the OSC-in port is free");
-        TcpListener::bind(structure).expect("the structure port is free");
+        TcpListener::bind(engine_addr).expect("the engine-channel port is free");
     }
 
     #[test]
@@ -1147,8 +1142,8 @@ mod tests {
             let link = |engine: &Engine| {
                 let addr = engine
                     .running()
-                    .and_then(RunningEngine::structure_addr)
-                    .expect("the structure server bound");
+                    .and_then(RunningEngine::engine_addr)
+                    .expect("the engine-channel server bound");
                 EngineLink::new(addr.to_string(), None)
             };
 
@@ -1158,12 +1153,12 @@ mod tests {
                     name: target.clone(),
                     expect: None,
                 },
-                link(&engine).structure(),
+                link(&engine).channel(),
             )
             .expect("the open reached the engine");
             assert!(opened.output.report.report.ok, "{}", opened.summary);
             let before = link(&engine)
-                .structure()
+                .channel()
                 .get_document()
                 .expect("read over TCP");
 
@@ -1180,7 +1175,7 @@ mod tests {
             assert_eq!(engine.profile(), Some(&profile));
             // The sidecar reaches the restarted engine on the port it bound again.
             let after = link(&engine)
-                .structure()
+                .channel()
                 .get_document()
                 .expect("read over TCP");
             assert_eq!(after.source.as_deref(), Some(target.as_str()));
@@ -1272,7 +1267,9 @@ mod tests {
                 ..config(instrument.clone())
             })
             .expect("the engine starts");
-            let addr = played.structure_addr().expect("the structure server bound");
+            let addr = played
+                .engine_addr()
+                .expect("the engine-channel server bound");
 
             let mut engine = Engine::attach(addr.to_string(), None, || {});
             let playing = await_playing(&mut engine);
@@ -1328,7 +1325,7 @@ mod tests {
             let relative = "../../instruments/default.json";
             let played =
                 start_headless(config(PathBuf::from(relative))).expect("the engine starts");
-            let addr = played.structure_addr().expect("bound");
+            let addr = played.engine_addr().expect("bound");
             let mut engine = Engine::attach(addr.to_string(), None, || {});
             let source = PathBuf::from(await_playing(&mut engine).source);
             assert!(source.is_absolute(), "{}", source.display());

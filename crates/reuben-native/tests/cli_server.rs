@@ -28,7 +28,7 @@ fn describe_reaches_the_running_server() {
     let play = spawn_play(&a.0, &["--instrument-root", &root]);
     let source = doc.display().to_string();
 
-    let running = reuben(&b.0, &["describe", &source, "--structure-addr", &play.addr]);
+    let running = reuben(&b.0, &["describe", &source, "--engine-addr", &play.addr]);
     assert!(running.status.success(), "{}", stderr(&running));
     let temporary = reuben(&b.0, &["describe", &source, "--temporary-server"]);
     assert!(temporary.status.success(), "{}", stderr(&temporary));
@@ -44,7 +44,7 @@ fn a_running_server_is_named_on_stderr() {
     let play = spawn_play(&a.0, &["--instrument-root", &root]);
     let source = doc.display().to_string();
 
-    let running = reuben(&a.0, &["describe", &source, "--structure-addr", &play.addr]);
+    let running = reuben(&a.0, &["describe", &source, "--engine-addr", &play.addr]);
     assert!(
         stderr(&running).contains(&format!("answered by the reuben server at {}", play.addr)),
         "{}",
@@ -74,7 +74,7 @@ fn a_relative_name_means_the_clis_directory() {
             "doc.json",
             "--view",
             "boundary",
-            "--structure-addr",
+            "--engine-addr",
             &play.addr,
         ],
     );
@@ -91,10 +91,7 @@ fn a_name_the_server_does_not_offer_is_refused_in_the_users_spelling() {
     let root = a.0.display().to_string();
     let play = spawn_play(&a.0, &["--instrument-root", &root]);
 
-    let out = reuben(
-        &c.0,
-        &["describe", "doc.json", "--structure-addr", &play.addr],
-    );
+    let out = reuben(&c.0, &["describe", "doc.json", "--engine-addr", &play.addr]);
     assert!(!out.status.success());
     let err = stderr(&out);
     assert!(
@@ -121,7 +118,7 @@ fn describe_never_changes_what_plays() {
                 &other.display().to_string(),
                 "--view",
                 view,
-                "--structure-addr",
+                "--engine-addr",
                 &play.addr,
             ],
         );
@@ -137,7 +134,7 @@ fn describe_never_changes_what_plays() {
 fn an_explicit_unreachable_address_does_not_fall_back() {
     let a = TempDir::new("cli_dead");
     let dead = format!("127.0.0.1:{}", common::free_tcp_port());
-    let out = reuben(&a.0, &["describe", "--structure-addr", &dead]);
+    let out = reuben(&a.0, &["describe", "--engine-addr", &dead]);
     assert!(!out.status.success());
     assert!(stdout(&out).is_empty(), "{}", stdout(&out));
     assert!(stderr(&out).contains("reuben play"), "{}", stderr(&out));
@@ -147,10 +144,7 @@ fn an_explicit_unreachable_address_does_not_fall_back() {
 fn operator_listing_comes_from_the_server() {
     let a = TempDir::new("cli_operators");
     let play = spawn_play(&a.0, &[]);
-    let out = reuben(
-        &a.0,
-        &["describe", "--json", "--structure-addr", &play.addr],
-    );
+    let out = reuben(&a.0, &["describe", "--json", "--engine-addr", &play.addr]);
     assert!(out.status.success(), "{}", stderr(&out));
     let operators: serde_json::Value =
         serde_json::from_slice(&out.stdout).expect("a JSON operator list");
@@ -188,7 +182,7 @@ fn validate_on_the_running_server_reports_like_the_temporary_one() {
 
     for doc in [&good, &broken] {
         let source = doc.display().to_string();
-        let running = reuben(&a.0, &["validate", &source, "--structure-addr", &play.addr]);
+        let running = reuben(&a.0, &["validate", &source, "--engine-addr", &play.addr]);
         let temporary = reuben(&a.0, &["validate", &source, "--temporary-server"]);
         assert_eq!(verdict(&running), verdict(&temporary), "{source}");
         assert_eq!(stdout(&running), stdout(&temporary), "{source}");
@@ -211,7 +205,7 @@ fn new_instrument_on_the_running_server_writes_and_does_not_open() {
         &[
             "new-instrument",
             &created.display().to_string(),
-            "--structure-addr",
+            "--engine-addr",
             &play.addr,
         ],
     );
@@ -244,7 +238,7 @@ fn new_instrument_outside_what_the_server_offers_writes_nothing() {
     let play = spawn_play(&a.0, &["--instrument-root", &root]);
     let out = reuben(
         &c.0,
-        &["new-instrument", "n.json", "--structure-addr", &play.addr],
+        &["new-instrument", "n.json", "--engine-addr", &play.addr],
     );
     assert!(!out.status.success());
     assert!(!c.0.join("n.json").exists());
@@ -321,10 +315,7 @@ fn describe_reaches_a_token_server_through_loopback_without_a_token() {
     );
     let port = play.addr.rsplit(':').next().expect("a port");
     let loopback = format!("127.0.0.1:{port}");
-    let out = reuben(
-        &a.0,
-        &["describe", "doc.json", "--structure-addr", &loopback],
-    );
+    let out = reuben(&a.0, &["describe", "doc.json", "--engine-addr", &loopback]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(stdout(&out).contains("tokened"), "{}", stdout(&out));
 }
@@ -332,14 +323,11 @@ fn describe_reaches_a_token_server_through_loopback_without_a_token() {
 #[test]
 fn play_refuses_a_non_loopback_addr_without_a_token() {
     let a = TempDir::new("cli_token_required");
-    let out = reuben(
-        &a.0,
-        &["play", "--headless", "--structure-addr", "0.0.0.0:0"],
-    );
+    let out = reuben(&a.0, &["play", "--headless", "--engine-addr", "0.0.0.0:0"]);
     assert!(!out.status.success());
     assert!(
         stderr(&out).contains(
-            "--structure-addr 0.0.0.0:0 is not loopback, so the structure channel needs a token"
+            "--engine-addr 0.0.0.0:0 is not loopback, so the engine channel needs a token"
         ),
         "{}",
         stderr(&out)
@@ -362,7 +350,7 @@ fn a_token_server_refuses_a_wrong_token_by_name() {
         &[
             "describe",
             "doc.json",
-            "--structure-addr",
+            "--engine-addr",
             &loopback,
             "--token",
             "wrong",

@@ -7,7 +7,7 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use reuben_api::engine::{EmptyToken, Token, STRUCTURE_ADDR_ENV, STRUCTURE_TOKEN_ENV};
+use reuben_api::engine::{EmptyToken, Token, ENGINE_ADDR_ENV, ENGINE_TOKEN_ENV};
 
 use crate::client::Target;
 use crate::engine::{EngineConfig, Instrument};
@@ -84,16 +84,16 @@ pub struct EngineFlags {
     #[arg(long, value_name = "FILE")]
     pub io_map: Option<PathBuf>,
     /// Open no audio device: a thread renders blocks at 48 kHz and discards the output, so the
-    /// engine serves its structure channel and OSC on a machine with no sound card.
+    /// engine serves its engine channel and OSC on a machine with no sound card.
     #[arg(long, conflicts_with = "io_map")]
     pub headless: bool,
-    /// Serve the structure channel on this `ip:port` instead of the default `127.0.0.1:9124`. A
+    /// Serve the engine channel on this `ip:port` instead of the default `127.0.0.1:9124`. A
     /// literal IP, not a host name. Anything beyond loopback (`0.0.0.0`, a LAN or Tailscale
     /// address) takes a token, and clients on other machines must send it.
     #[arg(long, value_name = "IP:PORT")]
-    pub structure_addr: Option<String>,
-    /// The structure channel's token, which a client on another machine must send. Else
-    /// `REUBEN_STRUCTURE_TOKEN`, which keeps it out of the process list. It travels in clear:
+    pub engine_addr: Option<String>,
+    /// The engine channel's token, which a client on another machine must send. Else
+    /// `REUBEN_ENGINE_TOKEN`, which keeps it out of the process list. It travels in clear:
     /// use a network that encrypts (Tailscale) or one you trust.
     #[arg(long, value_name = "TOKEN", value_parser = parse_token)]
     pub token: Option<Token>,
@@ -104,9 +104,9 @@ pub struct EngineFlags {
 
 impl EngineFlags {
     /// [`EngineConfig::new`] with these flags, `instrument_root`, [`log_osc`] and the token from
-    /// [`STRUCTURE_TOKEN_ENV`] applied. A malformed profile is an error: a structural problem in a
+    /// [`ENGINE_TOKEN_ENV`] applied. A malformed profile is an error: a structural problem in a
     /// document the user named, never silently replaced by the default devices. So is a
-    /// `--structure-addr` that is not a literal IP, or one beyond loopback with no token.
+    /// `--engine-addr` that is not a literal IP, or one beyond loopback with no token.
     /// `--headless` is not part of the config; the caller picks the entry point.
     pub fn config(
         &self,
@@ -116,14 +116,14 @@ impl EngineFlags {
         self.config_with_env(
             instrument,
             instrument_root,
-            std::env::var(STRUCTURE_TOKEN_ENV).ok(),
+            std::env::var(ENGINE_TOKEN_ENV).ok(),
         )
     }
 
-    /// The structure channel token: `--token`, else [`STRUCTURE_TOKEN_ENV`]. For a binary that
+    /// The engine channel token: `--token`, else [`ENGINE_TOKEN_ENV`]. For a binary that
     /// attaches to a server rather than starting one.
     pub fn token(&self) -> Result<Option<Token>, FlagsError> {
-        token(self.token.clone(), std::env::var(STRUCTURE_TOKEN_ENV).ok())
+        token(self.token.clone(), std::env::var(ENGINE_TOKEN_ENV).ok())
     }
 
     /// [`config`](Self::config) with the token's environment variable passed in.
@@ -134,9 +134,9 @@ impl EngineFlags {
         token_env: Option<String>,
     ) -> Result<EngineConfig, FlagsError> {
         let token = token(self.token.clone(), token_env)?;
-        if let Some(addr) = &self.structure_addr {
+        if let Some(addr) = &self.engine_addr {
             let Ok(parsed) = addr.parse::<SocketAddr>() else {
-                return Err(FlagsError::StructureNotAnIp(addr.clone()));
+                return Err(FlagsError::EngineAddrNotAnIp(addr.clone()));
             };
             if token.is_none() && !parsed.ip().to_canonical().is_loopback() {
                 return Err(FlagsError::TokenRequired(addr.clone()));
@@ -155,10 +155,10 @@ impl EngineFlags {
             profile,
             osc_out: self.osc_out.clone(),
             osc_in: self.osc_in.clone().or_else(|| defaults.osc_in.clone()),
-            structure: self
-                .structure_addr
+            engine_addr: self
+                .engine_addr
                 .clone()
-                .or_else(|| defaults.structure.clone()),
+                .or_else(|| defaults.engine_addr.clone()),
             token,
             log_osc: log_osc(),
             ..defaults
@@ -186,27 +186,27 @@ fn parse_token(token: &str) -> Result<Token, EmptyToken> {
 /// Which server a client subcommand asks.
 #[derive(clap::Args, Debug, Clone, Default)]
 pub struct ServerFlags {
-    /// Ask the server at this `host:port` (else `REUBEN_STRUCTURE_ADDR`, else the running
+    /// Ask the server at this `host:port` (else `REUBEN_ENGINE_ADDR`, else the running
     /// `reuben play` at the default address, or a temporary one when none runs there). A server on
     /// another machine takes a token.
     #[arg(long, value_name = "HOST:PORT")]
-    pub structure_addr: Option<String>,
-    /// The token a server on another machine asks for. Else `REUBEN_STRUCTURE_TOKEN`, which keeps
+    pub engine_addr: Option<String>,
+    /// The token a server on another machine asks for. Else `REUBEN_ENGINE_TOKEN`, which keeps
     /// it out of the process list.
     #[arg(long, value_name = "TOKEN", value_parser = parse_token)]
     pub token: Option<Token>,
     /// Start a temporary server in this process rather than ask a running `reuben play`.
-    #[arg(long, conflicts_with = "structure_addr")]
+    #[arg(long, conflicts_with = "engine_addr")]
     pub temporary_server: bool,
 }
 
 impl ServerFlags {
-    /// The flag, then [`STRUCTURE_ADDR_ENV`], then the default; with the token from `--token`, then
-    /// [`STRUCTURE_TOKEN_ENV`].
+    /// The flag, then [`ENGINE_ADDR_ENV`], then the default; with the token from `--token`, then
+    /// [`ENGINE_TOKEN_ENV`].
     pub fn target(&self) -> Result<Target, FlagsError> {
         self.target_with_env(
-            std::env::var(STRUCTURE_ADDR_ENV).ok(),
-            std::env::var(STRUCTURE_TOKEN_ENV).ok(),
+            std::env::var(ENGINE_ADDR_ENV).ok(),
+            std::env::var(ENGINE_TOKEN_ENV).ok(),
         )
     }
 
@@ -220,7 +220,7 @@ impl ServerFlags {
             return Ok(Target::Temporary);
         }
         let token = token(self.token.clone(), token_env)?;
-        Ok(match self.structure_addr.clone().or(addr_env) {
+        Ok(match self.engine_addr.clone().or(addr_env) {
             None => Target::Default,
             Some(addr) => Target::Named { addr, token },
         })
@@ -232,11 +232,11 @@ impl ServerFlags {
 pub enum FlagsError {
     /// The `--io-map` profile would not load.
     IoMap(IoMapError),
-    /// `--structure-addr` is not a literal IP and port.
-    StructureNotAnIp(String),
-    /// `--structure-addr` is beyond loopback and no token was given.
+    /// `--engine-addr` is not a literal IP and port.
+    EngineAddrNotAnIp(String),
+    /// `--engine-addr` is beyond loopback and no token was given.
     TokenRequired(String),
-    /// `REUBEN_STRUCTURE_TOKEN` is set but empty.
+    /// `REUBEN_ENGINE_TOKEN` is set but empty.
     EmptyToken,
 }
 
@@ -250,15 +250,15 @@ impl fmt::Display for FlagsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             FlagsError::IoMap(e) => write!(f, "{e}"),
-            FlagsError::StructureNotAnIp(addr) => {
-                write!(f, "--structure-addr must be a literal IP and port: {addr}")
+            FlagsError::EngineAddrNotAnIp(addr) => {
+                write!(f, "--engine-addr must be a literal IP and port: {addr}")
             }
             FlagsError::TokenRequired(addr) => write!(
                 f,
-                "--structure-addr {addr} is not loopback, so the structure channel needs a token: \
-                 pass --token or set {STRUCTURE_TOKEN_ENV}"
+                "--engine-addr {addr} is not loopback, so the engine channel needs a token: \
+                 pass --token or set {ENGINE_TOKEN_ENV}"
             ),
-            FlagsError::EmptyToken => write!(f, "{STRUCTURE_TOKEN_ENV}: {EmptyToken}"),
+            FlagsError::EmptyToken => write!(f, "{ENGINE_TOKEN_ENV}: {EmptyToken}"),
         }
     }
 }
@@ -267,7 +267,7 @@ impl std::error::Error for FlagsError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             FlagsError::IoMap(e) => Some(e),
-            FlagsError::StructureNotAnIp(_)
+            FlagsError::EngineAddrNotAnIp(_)
             | FlagsError::TokenRequired(_)
             | FlagsError::EmptyToken => None,
         }
@@ -312,10 +312,10 @@ mod tests {
     }
 
     #[test]
-    fn structure_addr_flag_reaches_the_config() {
-        let flags = parse(&["--structure-addr", "127.0.0.1:9124"]);
+    fn engine_addr_flag_reaches_the_config() {
+        let flags = parse(&["--engine-addr", "127.0.0.1:9124"]);
         let config = flags.config(Instrument::Default, None).expect("a config");
-        assert_eq!(config.structure.as_deref(), Some("127.0.0.1:9124"));
+        assert_eq!(config.engine_addr.as_deref(), Some("127.0.0.1:9124"));
     }
 
     fn token(t: &str) -> Token {
@@ -323,25 +323,25 @@ mod tests {
     }
 
     #[test]
-    fn a_non_loopback_structure_addr_needs_a_token() {
+    fn a_non_loopback_engine_addr_needs_a_token() {
         for addr in ["0.0.0.0:9124", "192.168.1.2:9124", "[::]:9124"] {
-            let flags = parse(&["--structure-addr", addr]);
+            let flags = parse(&["--engine-addr", addr]);
             let error = flags
                 .config_with_env(Instrument::Default, None, None)
-                .expect_err("a non-loopback structure address needs a token");
+                .expect_err("a non-loopback engine address needs a token");
             assert_eq!(
                 error.to_string(),
                 format!(
-                    "--structure-addr {addr} is not loopback, so the structure channel needs a \
-                     token: pass --token or set REUBEN_STRUCTURE_TOKEN"
+                    "--engine-addr {addr} is not loopback, so the engine channel needs a \
+                     token: pass --token or set REUBEN_ENGINE_TOKEN"
                 ),
             );
 
-            let flagged = parse(&["--structure-addr", addr, "--token", "t"]);
+            let flagged = parse(&["--engine-addr", addr, "--token", "t"]);
             let config = flagged
                 .config_with_env(Instrument::Default, None, None)
                 .expect("a token makes it a config");
-            assert_eq!(config.structure.as_deref(), Some(addr));
+            assert_eq!(config.engine_addr.as_deref(), Some(addr));
             assert_eq!(config.token, Some(token("t")));
 
             let from_env = flags
@@ -369,14 +369,14 @@ mod tests {
     }
 
     #[test]
-    fn a_structure_addr_must_be_an_ip() {
-        let flags = parse(&["--structure-addr", "localhost:9124", "--token", "t"]);
+    fn a_engine_addr_must_be_an_ip() {
+        let flags = parse(&["--engine-addr", "localhost:9124", "--token", "t"]);
         let error = flags
             .config_with_env(Instrument::Default, None, None)
             .expect_err("a host name is refused");
         assert_eq!(
             error.to_string(),
-            "--structure-addr must be a literal IP and port: localhost:9124"
+            "--engine-addr must be a literal IP and port: localhost:9124"
         );
     }
 
@@ -391,7 +391,7 @@ mod tests {
             .expect_err("an empty env token is refused");
         assert_eq!(
             from_env.to_string(),
-            "REUBEN_STRUCTURE_TOKEN: a structure channel token must not be empty"
+            "REUBEN_ENGINE_TOKEN: a engine channel token must not be empty"
         );
     }
 
@@ -415,7 +415,7 @@ mod tests {
 
     #[test]
     fn server_flags_pick_the_flag_then_the_env_then_the_default() {
-        let flags = server(&["--structure-addr", "127.0.0.1:7000"]).expect("parse");
+        let flags = server(&["--engine-addr", "127.0.0.1:7000"]).expect("parse");
         assert_eq!(
             flags
                 .target_with_env(Some("127.0.0.1:8000".to_string()), None)
@@ -445,7 +445,7 @@ mod tests {
     #[test]
     fn server_flags_accept_any_address_with_a_token() {
         for addr in ["192.168.1.2:9124", "studio.tail:9124", "localhost:9124"] {
-            let flags = server(&["--structure-addr", addr, "--token", "t"]).expect("parse");
+            let flags = server(&["--engine-addr", addr, "--token", "t"]).expect("parse");
             assert_eq!(
                 flags.target_with_env(None, None).expect("a target"),
                 named(addr, Some(token("t")))
@@ -460,10 +460,10 @@ mod tests {
 
     #[test]
     fn server_flags_refuse_an_empty_token() {
-        let flag = server(&["--structure-addr", "192.168.1.2:9124", "--token", " "])
+        let flag = server(&["--engine-addr", "192.168.1.2:9124", "--token", " "])
             .expect_err("an empty --token is a usage error");
         assert_eq!(flag.kind(), clap::error::ErrorKind::ValueValidation);
-        let flags = server(&["--structure-addr", "192.168.1.2:9124"]).expect("parse");
+        let flags = server(&["--engine-addr", "192.168.1.2:9124"]).expect("parse");
         assert!(matches!(
             flags.target_with_env(None, Some(String::new())),
             Err(FlagsError::EmptyToken)
@@ -471,8 +471,8 @@ mod tests {
     }
 
     #[test]
-    fn temporary_server_conflicts_with_structure_addr() {
-        let conflict = server(&["--temporary-server", "--structure-addr", "127.0.0.1:7000"])
+    fn temporary_server_conflicts_with_engine_addr() {
+        let conflict = server(&["--temporary-server", "--engine-addr", "127.0.0.1:7000"])
             .expect_err("refused");
         assert_eq!(conflict.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
@@ -496,8 +496,8 @@ mod tests {
             .expect("a config");
         assert_eq!(config.osc_in, EngineConfig::new(Instrument::Default).osc_in);
         assert_eq!(
-            config.structure,
-            EngineConfig::new(Instrument::Default).structure
+            config.engine_addr,
+            EngineConfig::new(Instrument::Default).engine_addr
         );
     }
 }

@@ -3,14 +3,14 @@
 
 use std::env::VarError;
 
-use reuben_api::engine::{Token, DEFAULT_STRUCTURE_ADDR};
-use reuben_mcp::{EngineLink, STRUCTURE_ADDR_ENV, STRUCTURE_TOKEN_ENV};
+use reuben_api::engine::{Token, DEFAULT_ENGINE_ADDR};
+use reuben_mcp::{EngineLink, ENGINE_ADDR_ENV, ENGINE_TOKEN_ENV};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = env(STRUCTURE_ADDR_ENV).unwrap_or_else(|| DEFAULT_STRUCTURE_ADDR.to_string());
-    let token = env(STRUCTURE_TOKEN_ENV).map(|token| {
+    let addr = env(ENGINE_ADDR_ENV).unwrap_or_else(|| DEFAULT_ENGINE_ADDR.to_string());
+    let token = env(ENGINE_TOKEN_ENV).map(|token| {
         Token::new(token).unwrap_or_else(|empty| {
-            eprintln!("reuben-mcp: {STRUCTURE_TOKEN_ENV}: {empty}");
+            eprintln!("reuben-mcp: {ENGINE_TOKEN_ENV}: {empty}");
             std::process::exit(2);
         })
     });

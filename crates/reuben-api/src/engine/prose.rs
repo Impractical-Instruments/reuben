@@ -20,7 +20,7 @@ pub const SEND_LIVE_CONTROLS: &str =
      Fails fast if no engine is reachable.";
 
 pub const GET_ENGINE_STATUS: &str =
-    "Report whether the reuben engine is reachable, with the structure endpoint and the \
+    "Report whether the reuben engine is reachable, with the engine endpoint and the \
      sidecar version + supported instrument format_version. Never an error — a dead engine is \
      reported as reachable:false with guidance to start it.";
 

@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use reuben_api::authoring::{validate_instrument, Report, Resources, ValidateInstrument};
 use reuben_api::engine::{
-    install_initial, Channel, InProcess, StructureState, SwapOutcome, SwapReport,
+    install_initial, Channel, ChannelState, InProcess, SwapOutcome, SwapReport,
 };
 use reuben_api::render::{AudioConfig, RenderSlot};
 use reuben_api::staged::Staged;
@@ -20,7 +20,7 @@ use reuben_api::FsResolver;
 use reuben_native::control::{ring_pair, ControlRing};
 use reuben_native::diagnostics::Diagnostics;
 use reuben_native::engine::{EngineConfig, Instrument};
-use reuben_native::structure::NativeHost;
+use reuben_native::engine_channel::NativeHost;
 use reuben_native::test_support::{served, start_headless, within};
 
 /// A voice that sounds with no note held: an oscillator straight to `audio`, and no `active`
@@ -146,7 +146,7 @@ fn headless(launch: &Path, root: Option<&Path>) -> EngineConfig {
     EngineConfig {
         instrument_root: root.map(Path::to_path_buf),
         osc_in: None,
-        structure: None,
+        engine_addr: None,
         // A followed write would install before the open these tests make, so its diff would
         // read against the edit rather than what played.
         follow_files: false,
@@ -384,7 +384,7 @@ impl Played {
         let (control, control_rx) = ring_pair(Diagnostics::new());
         let host = NativeHost::new(Diagnostics::new(), control);
         host.offer_dir(offered);
-        let state = StructureState::new(coordinator, Arc::new(host), served(staged))
+        let state = ChannelState::new(coordinator, Arc::new(host), served(staged))
             .with_installed_source(Some(spelled(launch)));
         Played {
             channel: Channel::new(InProcess::new(state)),

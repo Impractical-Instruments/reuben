@@ -10,7 +10,7 @@
 //! - the **authoring/control** half — called from anywhere, off-thread, where the budget is
 //!   irrelevant and every type is serialized to a consumer. [`authoring`] is document work,
 //!   [`engine`] is reaching a *running* engine (swap, control, status, diagnostics) from either end
-//!   of the structure channel, and [`tools`] is the roster the two are advertised through.
+//!   of the engine channel, and [`tools`] is the roster the two are advertised through.
 //! - [`render`] — called from the audio callback, where a conversion per block *is* the cost.
 //!
 //! A browser worklet or a bare-metal embedder takes `default-features = false,

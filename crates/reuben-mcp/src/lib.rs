@@ -73,7 +73,7 @@ fn served_contracts() -> impl Iterator<Item = &'static reuben_api::tools::Contra
         .filter(|c| c.kind != reuben_api::tools::ContractKind::Host)
 }
 
-pub use reuben_api::engine::{STRUCTURE_ADDR_ENV, STRUCTURE_TOKEN_ENV};
+pub use reuben_api::engine::{ENGINE_ADDR_ENV, ENGINE_TOKEN_ENV};
 
 /// The `reuben://guide/authoring` resource URI: the MCP lane's cut of the authoring guide,
 /// `docs/agents/authoring.md`.
@@ -316,15 +316,15 @@ pub struct ReubenServer {
 #[tool_router]
 impl ReubenServer {
     /// A server backed by an [`EngineLink`] on the shared default endpoint
-    /// (the window's `DEFAULT_STRUCTURE_ADDR`): the engine tools reach a live
-    /// `reuben play` over the real structure channel. The binary's composition root (`main`)
+    /// (the window's `DEFAULT_ENGINE_ADDR`): the engine tools reach a live
+    /// `reuben play` over the real engine channel. The binary's composition root (`main`)
     /// injects the link via [`with_engine`](Self::with_engine); this is the sensible default.
     pub fn new() -> Self {
         Self::with_engine(EngineLink::default())
     }
 
     /// A server with an explicit engine link — the injection point for tests, which pair it with
-    /// a fake structure transport.
+    /// a fake engine-channel transport.
     pub fn with_engine(engine: EngineLink) -> Self {
         let mut tool_router = Self::tool_router();
         stamp_window_prose(&mut tool_router);
@@ -364,7 +364,7 @@ impl ReubenServer {
         answered(engine::call_tool(
             names::DESCRIBE_INSTRUMENT,
             &p,
-            self.engine.structure(),
+            self.engine.channel(),
         ))
     }
 
@@ -381,7 +381,7 @@ impl ReubenServer {
         answered(engine::call_tool(
             names::VALIDATE_INSTRUMENT,
             &p,
-            self.engine.structure(),
+            self.engine.channel(),
         ))
     }
 
@@ -401,7 +401,7 @@ impl ReubenServer {
         &self,
         Parameters(p): Parameters<engine::SendLiveControls>,
     ) -> Result<CallToolResult, McpError> {
-        answered(engine::send_live_controls(&p, self.engine.structure()))
+        answered(engine::send_live_controls(&p, self.engine.channel()))
     }
 
     /// The one engine tool that is **never** `isError` for a dead engine — answering "reachable?"
@@ -413,7 +413,7 @@ impl ReubenServer {
     )]
     async fn get_engine_status(&self) -> Result<CallToolResult, McpError> {
         // The door names itself: its own version is the one identity the window cannot know.
-        let answer = engine::get_engine_status(self.engine.structure(), env!("CARGO_PKG_VERSION"));
+        let answer = engine::get_engine_status(self.engine.channel(), env!("CARGO_PKG_VERSION"));
         structured_ok(&answer.output, answer.summary)
     }
 
@@ -426,7 +426,7 @@ impl ReubenServer {
         &self,
         Parameters(p): Parameters<engine::OpenInstrument>,
     ) -> Result<CallToolResult, McpError> {
-        answered(engine::open_instrument(&p, self.engine.structure()))
+        answered(engine::open_instrument(&p, self.engine.channel()))
     }
 
     #[tool(
@@ -438,7 +438,7 @@ impl ReubenServer {
         &self,
         Parameters(p): Parameters<engine::ListInstruments>,
     ) -> Result<CallToolResult, McpError> {
-        answered(engine::list_instruments(&p, self.engine.structure()))
+        answered(engine::list_instruments(&p, self.engine.channel()))
     }
 
     #[tool(
@@ -448,7 +448,7 @@ impl ReubenServer {
                 .expect("CurrentInstrument is an object schema")
     )]
     async fn get_current_instrument(&self) -> Result<CallToolResult, McpError> {
-        answered(engine::current_instrument(self.engine.structure()))
+        answered(engine::current_instrument(self.engine.channel()))
     }
 
     #[tool(
@@ -458,7 +458,7 @@ impl ReubenServer {
                 .expect("DiagnosticsReport is an object schema")
     )]
     async fn get_engine_diagnostics(&self) -> Result<CallToolResult, McpError> {
-        answered(engine::get_engine_diagnostics(self.engine.structure()))
+        answered(engine::get_engine_diagnostics(self.engine.channel()))
     }
 
     #[tool(
@@ -467,7 +467,7 @@ impl ReubenServer {
             .expect("MetersReport is an object schema")
     )]
     async fn get_engine_meters(&self) -> Result<CallToolResult, McpError> {
-        answered(engine::get_engine_meters(self.engine.structure()))
+        answered(engine::get_engine_meters(self.engine.channel()))
     }
 
     // --- Document edits: a `call` to the engine, which owns the files -----------------------------
@@ -488,7 +488,7 @@ impl ReubenServer {
         answered(engine::call_tool(
             names::NEW_INSTRUMENT,
             &p,
-            self.engine.structure(),
+            self.engine.channel(),
         ))
     }
 
@@ -503,7 +503,7 @@ impl ReubenServer {
         answered(engine::call_tool(
             names::SET_INSTRUMENT_NAME,
             &p,
-            self.engine.structure(),
+            self.engine.channel(),
         ))
     }
 
@@ -518,7 +518,7 @@ impl ReubenServer {
         answered(engine::call_tool(
             names::SET_INSTRUMENT_DESCRIPTION,
             &p,
-            self.engine.structure(),
+            self.engine.channel(),
         ))
     }
 
@@ -533,7 +533,7 @@ impl ReubenServer {
         answered(engine::call_tool(
             names::ADD_INSTRUMENT_NODE,
             &p,
-            self.engine.structure(),
+            self.engine.channel(),
         ))
     }
 
@@ -548,7 +548,7 @@ impl ReubenServer {
         answered(engine::call_tool(
             names::REMOVE_INSTRUMENT_NODE,
             &p,
-            self.engine.structure(),
+            self.engine.channel(),
         ))
     }
 
@@ -563,7 +563,7 @@ impl ReubenServer {
         answered(engine::call_tool(
             names::RENAME_INSTRUMENT_NODE,
             &p,
-            self.engine.structure(),
+            self.engine.channel(),
         ))
     }
 
@@ -578,7 +578,7 @@ impl ReubenServer {
         answered(engine::call_tool(
             names::SET_INSTRUMENT_NODE_DESCRIPTION,
             &p,
-            self.engine.structure(),
+            self.engine.channel(),
         ))
     }
 
@@ -593,7 +593,7 @@ impl ReubenServer {
         answered(engine::call_tool(
             names::SET_INSTRUMENT_INPUT,
             &p,
-            self.engine.structure(),
+            self.engine.channel(),
         ))
     }
 
@@ -608,7 +608,7 @@ impl ReubenServer {
         answered(engine::call_tool(
             names::SET_INSTRUMENT_INPUTS_BY_INTENT,
             &p,
-            self.engine.structure(),
+            self.engine.channel(),
         ))
     }
 
@@ -623,7 +623,7 @@ impl ReubenServer {
         answered(engine::call_tool(
             names::WIRE_INSTRUMENT_INPUT,
             &p,
-            self.engine.structure(),
+            self.engine.channel(),
         ))
     }
 
@@ -638,7 +638,7 @@ impl ReubenServer {
         answered(engine::call_tool(
             names::UNWIRE_INSTRUMENT_INPUT,
             &p,
-            self.engine.structure(),
+            self.engine.channel(),
         ))
     }
 
@@ -653,7 +653,7 @@ impl ReubenServer {
         answered(engine::call_tool(
             names::SET_INSTRUMENT_CONSTANT,
             &p,
-            self.engine.structure(),
+            self.engine.channel(),
         ))
     }
 
@@ -668,7 +668,7 @@ impl ReubenServer {
         answered(engine::call_tool(
             names::REMOVE_INSTRUMENT_CONSTANT,
             &p,
-            self.engine.structure(),
+            self.engine.channel(),
         ))
     }
 
@@ -683,7 +683,7 @@ impl ReubenServer {
         answered(engine::call_tool(
             names::ADD_INSTRUMENT_INTERFACE_INPUT,
             &p,
-            self.engine.structure(),
+            self.engine.channel(),
         ))
     }
 
@@ -698,7 +698,7 @@ impl ReubenServer {
         answered(engine::call_tool(
             names::ADD_INSTRUMENT_INTERFACE_OUTPUT,
             &p,
-            self.engine.structure(),
+            self.engine.channel(),
         ))
     }
 
@@ -713,7 +713,7 @@ impl ReubenServer {
         answered(engine::call_tool(
             names::REMOVE_INSTRUMENT_INTERFACE_INPUT,
             &p,
-            self.engine.structure(),
+            self.engine.channel(),
         ))
     }
 
@@ -728,7 +728,7 @@ impl ReubenServer {
         answered(engine::call_tool(
             names::REMOVE_INSTRUMENT_INTERFACE_OUTPUT,
             &p,
-            self.engine.structure(),
+            self.engine.channel(),
         ))
     }
 
@@ -743,7 +743,7 @@ impl ReubenServer {
         answered(engine::call_tool(
             names::SET_INSTRUMENT_INTERFACE_INPUT_META,
             &p,
-            self.engine.structure(),
+            self.engine.channel(),
         ))
     }
 
@@ -758,7 +758,7 @@ impl ReubenServer {
         answered(engine::call_tool(
             names::SET_INSTRUMENT_INTERFACE_OUTPUT_META,
             &p,
-            self.engine.structure(),
+            self.engine.channel(),
         ))
     }
 
@@ -773,7 +773,7 @@ impl ReubenServer {
         answered(engine::call_tool(
             names::CLEAR_INSTRUMENT_INTERFACE_META,
             &p,
-            self.engine.structure(),
+            self.engine.channel(),
         ))
     }
 
@@ -788,7 +788,7 @@ impl ReubenServer {
         answered(engine::call_tool(
             names::ADD_INSTRUMENT_RESOURCE,
             &p,
-            self.engine.structure(),
+            self.engine.channel(),
         ))
     }
 
@@ -803,7 +803,7 @@ impl ReubenServer {
         answered(engine::call_tool(
             names::REMOVE_INSTRUMENT_RESOURCE,
             &p,
-            self.engine.structure(),
+            self.engine.channel(),
         ))
     }
 }
@@ -969,7 +969,7 @@ mod tests {
     use reuben_api::authoring::{Diag, Report};
     use reuben_api::engine::{
         ChannelLevel, ControlArg, ControlMessage, DiagnosticsReport, DiffSummary, HeldSwap,
-        MetersReport, Request, Response, SwapReport, DEFAULT_STRUCTURE_ADDR,
+        MetersReport, Request, Response, SwapReport, DEFAULT_ENGINE_ADDR,
     };
     use reuben_api::tools::names;
     use std::io;
@@ -1103,7 +1103,7 @@ mod tests {
             match configured {
                 Some(response) => Ok(response.to_ndjson()),
                 // An unconfigured verb models a down engine the way a dead port does: an io::Error
-                // for the client to classify, not a pre-classified StructureError.
+                // for the client to classify, not a pre-classified ChannelError.
                 None => Err(io::Error::new(
                     io::ErrorKind::ConnectionRefused,
                     "connection refused",
@@ -1112,7 +1112,7 @@ mod tests {
         }
 
         fn endpoint(&self) -> &str {
-            DEFAULT_STRUCTURE_ADDR
+            DEFAULT_ENGINE_ADDR
         }
     }
 
@@ -1477,7 +1477,7 @@ mod tests {
                 &engine::EngineStatus {
                     reachable: guidance.is_none(),
                     endpoints: engine::StatusEndpoints {
-                        structure: DEFAULT_STRUCTURE_ADDR.to_string(),
+                        engine: DEFAULT_ENGINE_ADDR.to_string(),
                     },
                     sidecar: engine::SidecarInfo {
                         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -1666,7 +1666,7 @@ mod tests {
             "the down-engine payload carries the `reuben play` guidance: {s}"
         );
         assert!(
-            s["endpoints"]["structure"].is_string(),
+            s["endpoints"]["engine"].is_string(),
             "the endpoint is reported even when down: {s}"
         );
         assert_eq!(
@@ -1740,7 +1740,7 @@ mod tests {
     }
 
     #[test]
-    fn send_live_controls_puts_the_whole_batch_on_the_structure_channel_in_one_exchange() {
+    fn send_live_controls_puts_the_whole_batch_on_the_engine_channel_in_one_exchange() {
         // The batch crosses as ONE `send` request — not one per message — and the assertion is on
         // what the fake parsed back OFF THE WIRE, so a serialization regression is caught rather
         // than a counter being trusted. The JSON args re-type on the way: `1200.0` is a float atom,

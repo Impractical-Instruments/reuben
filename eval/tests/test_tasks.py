@@ -24,7 +24,7 @@ import unittest
 from reuben_eval import tasks
 from reuben_eval.mcp import (
     DEFAULT_OSC_IN_PORT,
-    DEFAULT_STRUCTURE_PORT,
+    DEFAULT_ENGINE_PORT,
     Engine,
     Sidecar,
     SidecarError,
@@ -54,7 +54,7 @@ def binaries_available() -> bool:
 @contextlib.contextmanager
 def _served(root: pathlib.Path):
     """A sidecar and the engine it calls, rooted at `root`, for a test that needs no task."""
-    with Engine(root) as engine, Sidecar(root, engine.structure_addr) as sidecar:
+    with Engine(root) as engine, Sidecar(root, engine.engine_addr) as sidecar:
         yield sidecar
 
 
@@ -89,7 +89,7 @@ class TestSession(unittest.TestCase):
                 self.assertIsNone(engine.process.poll(), "the engine exited during the session")
                 self.assertEqual(engine.argv[0], str(engine_binary()))
                 self.assertEqual(engine.cwd, session.workspace.root)
-                structure = engine.argv[engine.argv.index("--structure-addr") + 1]
+                engine_addr = engine.argv[engine.argv.index("--engine-addr") + 1]
                 osc_in = engine.argv[engine.argv.index("--osc-in") + 1]
                 root_flag = engine.argv.index("--instrument-root")
                 self.assertLess(root_flag, engine.argv.index("play"))
@@ -97,11 +97,11 @@ class TestSession(unittest.TestCase):
                 self.assertIn("--headless", engine.argv)
                 # No instrument argument: the engine plays its built-in default rig.
                 self.assertEqual(engine.argv[-1], osc_in)
-                for address in (structure, osc_in):
+                for address in (engine_addr, osc_in):
                     host, port = address.rsplit(":", 1)
                     self.assertEqual(host, "127.0.0.1")
-                    self.assertNotIn(int(port), (DEFAULT_STRUCTURE_PORT, DEFAULT_OSC_IN_PORT))
-                self.assertEqual(session.sidecar.structure_addr, structure)
+                    self.assertNotIn(int(port), (DEFAULT_ENGINE_PORT, DEFAULT_OSC_IN_PORT))
+                self.assertEqual(session.sidecar.engine_addr, engine_addr)
                 status = session.sidecar.call_tool("get_engine_status", {})
                 self.assertFalse(status.is_error, status.rendered())
             self.assertIsNotNone(engine.process.poll(), "the engine outlived its session")

@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use reuben_api::engine::ENGINE_UNREACHABLE_GUIDANCE;
 use reuben_api::tools::names;
-use reuben_mcp::STRUCTURE_ADDR_ENV;
+use reuben_mcp::ENGINE_ADDR_ENV;
 
 /// A loopback address nothing listens on: bound for a free port, then released.
 fn dead_addr() -> String {
@@ -32,7 +32,7 @@ fn dead_addr() -> String {
 /// a regression fails loudly instead of hanging CI.
 fn drive_tool_call(name: &str, arguments: serde_json::Value) -> String {
     let mut child = Command::new(env!("CARGO_BIN_EXE_reuben-mcp"))
-        .env(STRUCTURE_ADDR_ENV, dead_addr())
+        .env(ENGINE_ADDR_ENV, dead_addr())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -235,7 +235,7 @@ fn there_is_no_inline_document_arm() {
 /// Drive initialize → initialized → tools/list and return the raw stdout, watchdog-bounded.
 fn drive_tools_list() -> String {
     let mut child = Command::new(env!("CARGO_BIN_EXE_reuben-mcp"))
-        .env_remove(STRUCTURE_ADDR_ENV)
+        .env_remove(ENGINE_ADDR_ENV)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

@@ -1,5 +1,5 @@
 //! The link to an engine the editor attached to rather than started: a `reuben play` already
-//! running, reached over its structure channel, on this machine or, with its token, another.
+//! running, reached over its engine channel, on this machine or, with its token, another.
 //!
 //! The editor owns nothing behind the link — no device, no port, no process — so losing it stops
 //! nothing. A thread pings the engine every [`PROBE_EVERY`] and, while it answers, asks what it

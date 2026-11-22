@@ -1,5 +1,5 @@
 //! The master meter strip: a bar per device output channel, and per input channel when the
-//! engine opened an input stream, read from the engine's `GetMeters` over the structure channel —
+//! engine opened an input stream, read from the engine's `GetMeters` over the engine channel —
 //! the same way whether the editor started the engine or attached to one.
 //!
 //! The engine does the ballistics: its peak falls back at a fixed rate and its RMS is averaged, so

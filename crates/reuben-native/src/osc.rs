@@ -16,12 +16,12 @@ use rosc::{OscMessage, OscPacket, OscType};
 
 /// The UDP port `reuben play` binds for OSC-in — the engine's **foreign edge**, where external
 /// controllers (a hardware knob, a TouchOSC surface) reach it. Bound on `0.0.0.0` (all interfaces),
-/// unlike the loopback-only structure channel.
+/// unlike the loopback-only engine channel.
 ///
 /// It lives here, in the OSC codec, because this module *is* that edge and [`crate::engine`] is
-/// its only consumer. It used to live beside `DEFAULT_STRUCTURE_ADDR` in the wire envelope, back
+/// its only consumer. It used to live beside `DEFAULT_ENGINE_ADDR` in the wire envelope, back
 /// when the reuben-mcp sidecar dialed it to deliver `send` — two ends that had to agree on one
-/// literal. The sidecar's control now rides the structure channel, so there is no second end left
+/// literal. The sidecar's control now rides the engine channel, so there is no second end left
 /// to drift from, and core carries no network plumbing.
 pub const DEFAULT_OSC_PORT: u16 = 9000;
 
@@ -30,8 +30,8 @@ pub const DEFAULT_OSC_PORT: u16 = 9000;
 /// `address` to a node/port and converts against that port's type to produce the Message.
 ///
 /// **Two producers feed this, not one.** [`decode`] mints them from external UDP datagrams (the
-/// foreign edge), and the structure channel's `send` verb mints them from its own NDJSON framing
-/// (`crate::structure`) — every door ships `{address, [Arg]}` in its own framing and converges
+/// foreign edge), and the engine channel's `send` verb mints them from its own NDJSON framing
+/// (`crate::engine_channel`) — every door ships `{address, [Arg]}` in its own framing and converges
 /// here, at the render callback's `queue_osc`. So this type is the flat carrier, not an
 /// OSC-specific one; it lives in this module because decoding is where most of them are born.
 /// They travel in [`ControlBatch`]es, never singly, and are dropped on the thread that made them:
@@ -51,7 +51,7 @@ pub struct OscIn {
 /// The callback takes a batch **whole** — it never applies part of one and defers the rest — so a
 /// multi-control gesture reaches one rendered block and a paired `(freq, gate)` cannot straddle two.
 /// That holds for both producers: one UDP datagram (an OSC bundle may carry several messages, and
-/// a bundle means "these are simultaneous") and one structure-channel `send`.
+/// a bundle means "these are simultaneous") and one engine-channel `send`.
 ///
 /// **Producers must bound what they push.** A batch's whole cost lands in one callback, so an
 /// unbounded one would blow a render deadline; `send` is capped at

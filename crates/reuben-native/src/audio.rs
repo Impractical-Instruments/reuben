@@ -5,7 +5,7 @@
 //! rate, and renders inside the audio callback by driving the [`RenderSlot`] rather than an
 //! `Engine` directly. Incoming control ([`ControlBatch`](crate::osc::ControlBatch)) is drained at
 //! the top of each callback from a [`ControlDrain`]: one bounded ring pair per producer thread (the
-//! OSC/UDP decode thread, and the structure channel's `send` connections sharing one), each batch
+//! OSC/UDP decode thread, and the engine channel's `send` connections sharing one), each batch
 //! applied whole and pushed back to its producer, so no batch is ever freed on the audio thread. A
 //! producer facing a full pair drops the batch and counts it (see [`crate::control`]).
 //!
@@ -31,7 +31,7 @@
 //! callback drains — resampled and drift-compensated into the engine rate — into
 //! [`RenderSlot::fill_duplex`]. A swap to an input-binding engine while no input stream is open
 //! **dark-degrades to silence** (the callback feeds `&[]`); the loud warning rode the swap
-//! report, raised on the structure thread at swap time.
+//! report, raised on the engine-channel thread at swap time.
 //!
 //! The returned [`Streams`] must be kept alive for audio to keep playing.
 
@@ -53,11 +53,11 @@ use reuben_api::render::{
 
 use crate::control::ControlDrain;
 use crate::diagnostics::Diagnostics;
-use crate::meters::{Bank, Meters};
-use crate::profile::DeviceProfile;
-use crate::structure::{
+use crate::engine_channel::{
     dark_degrade_warning, input_stream_fits, RenderConfigPublisher, RenderLiveness, SwapPollGate,
 };
+use crate::meters::{Bank, Meters};
+use crate::profile::DeviceProfile;
 
 /// How long [`NativeRenderConfig::publish`] polls to install a swap's output map before giving up.
 /// The map mailbox is one-in-flight: install is refused until the *previous*
@@ -65,7 +65,7 @@ use crate::structure::{
 /// ramp. This bound only bites when audio has genuinely stopped — and even then
 /// [`apply_output_map`]'s total read keeps a stale-width map *panic*-free (it never indexes out of
 /// range), not misroute-free: a callback that recovers after the drop routes at the stale width
-/// until the next swap re-syncs. Generous, matching the structure channel's engine-reclaim bound.
+/// until the next swap re-syncs. Generous, matching the engine channel's engine-reclaim bound.
 const RENDER_CONFIG_INSTALL_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// A render-callback liveness heartbeat. The audio callback [`tick`s](Self::tick)
@@ -269,7 +269,7 @@ impl Streams {
 }
 
 /// The live audio session [`start`] returns. Keep [`streams`](LiveAudio::streams) alive for audio
-/// to keep flowing; hand [`coordinator`](LiveAudio::coordinator) to the structure channel (the
+/// to keep flowing; hand [`coordinator`](LiveAudio::coordinator) to the engine channel (the
 /// single writer of graph structure) and [`render_config`](LiveAudio::render_config) to it
 /// as the device seam a swap publishes its output map through. [`warnings`](LiveAudio::warnings)
 /// are the initial instrument's non-fatal load warnings, for the caller to surface.
@@ -281,9 +281,9 @@ pub struct LiveAudio {
     pub diagnostics: Arc<Diagnostics>,
     /// The levels both callbacks meter at the device.
     pub meters: Meters,
-    /// The passive Coordinator: the structure channel owns it and drives every swap.
+    /// The passive Coordinator: the engine channel owns it and drives every swap.
     pub coordinator: Coordinator,
-    /// The native device seam the structure server publishes each swap's output map + dark-degrade
+    /// The native device seam the engine-channel server publishes each swap's output map + dark-degrade
     /// warning through ([`RenderConfigPublisher`]).
     pub render_config: Arc<dyn RenderConfigPublisher>,
     /// The initial instrument's non-fatal load warnings.
@@ -299,7 +299,7 @@ pub struct LiveAudio {
 /// `block_size` is the core render block size; `build` constructs the [`Coordinator`] + its RT
 /// [`RenderSide`] once the device sample rate is known (so the Plan's tuning matches the hardware)
 /// — typically a call to [`Coordinator::install_initial`]; the Coordinator is returned for the
-/// structure channel, and a build error is [`AudioError::Instrument`]. `osc_out` is the optional
+/// engine channel, and a build error is [`AudioError::Instrument`]. `osc_out` is the optional
 /// OSC-out sink: when `Some`, the callback forwards each outbound Message to it (a sender thread
 /// encodes + UDP-sends, off the audio thread); when `None`, outbound is drained and dropped, with
 /// one warning the first time a rig sends. `profile` selects the devices, negotiates
@@ -338,7 +338,7 @@ where
     let sample_rate = config.sample_rate.0 as f32;
 
     // Build the Coordinator + RT RenderSide at the device rate. The RenderSlot drives the Engine in
-    // the callback; the Coordinator goes to the structure channel.
+    // the callback; the Coordinator goes to the engine channel.
     let (coordinator, render_side, warnings) =
         build(AudioConfig::new(sample_rate, block_size)).map_err(AudioError::Instrument)?;
     let mut slot = RenderSlot::new(render_side);
@@ -346,7 +346,7 @@ where
     let in_channels = slot.input_channels();
 
     // The initial device output map, plus the parallel render mailbox a swap ships the *next* map
-    // across. The callback owns the render end + the active map; the structure server
+    // across. The callback owns the render end + the active map; the engine-channel server
     // owns the coordinator end (through the returned NativeRenderConfig).
     let initial_map = build_output_map(&profile.output.map, logical, channels);
     let (map_coord, map_render) = swap_pair::<RenderConfig>();
@@ -407,7 +407,7 @@ where
                 let callback_start = Instant::now();
 
                 // Each item is a whole control BATCH, applied without splitting: one UDP datagram's
-                // messages (an OSC bundle can carry several) or one structure-channel `send`. Taking
+                // messages (an OSC bundle can carry several) or one engine-channel `send`. Taking
                 // the batch as a unit is what lets a multi-control gesture land in one block, so a
                 // paired `(freq, gate)` can never straddle two. Batches are bounded at their
                 // producers, and each ring is drained only as far as it was full on entry, which is
@@ -625,7 +625,7 @@ impl OutputMapSlot {
 /// rebuilds the device output map off-thread for the new engine's logical width against the
 /// *retained* `device_channels`, ships it across the render mailbox for the callback to install
 /// (synchronized to the engine, `OutputMapSlot`), and returns the input dark-degrade warning.
-/// The structure server calls it under the Coordinator lock, one swap at a time.
+/// The engine-channel server calls it under the Coordinator lock, one swap at a time.
 pub struct NativeRenderConfig {
     /// The coordinator end of the parallel render mailbox; `Mutex` only to take `&mut` for the
     /// (uncontended, one-swap-at-a-time) install/reclaim — never touched by the render thread.
@@ -638,7 +638,7 @@ pub struct NativeRenderConfig {
     /// Logical input channels the (fixed) input stream provides; `0` for an output-only stream.
     opened_input_channels: usize,
     /// The render callback's liveness heartbeat — shared with the callback so `publish`'s bounded
-    /// install poll (and the structure thread's reclaim) can bail early when audio has stopped.
+    /// install poll (and the engine-channel thread's reclaim) can bail early when audio has stopped.
     heartbeat: RenderHeartbeat,
 }
 
@@ -655,7 +655,7 @@ impl RenderConfigPublisher for NativeRenderConfig {
             // one, and `apply_output_map` is then handed a stale-width map. The map mailbox is
             // one-in-flight, so `install` is refused until the *previous* swap's
             // displaced map has come home — which the live render callback posts at that swap's
-            // promote (within ~one ramp). This call runs *before* the structure thread's engine
+            // promote (within ~one ramp). This call runs *before* the engine-channel thread's engine
             // reclaim that proves the callback is consuming, so poll reclaim+install to a bounded
             // deadline rather than dropping: the retiree arrives promptly, and the map is guaranteed
             // installed before the swap returns, so the callback promotes it the moment the engine

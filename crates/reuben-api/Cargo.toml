@@ -10,7 +10,7 @@ description = "The one window between reuben-core and every consumer: the author
 [features]
 default = ["authoring", "render"]
 # The authoring/control half: document verbs, introspection, the engine verbs and both ends of the
-# structure channel, the roster they are advertised through, and the result shapes a door serves.
+# engine channel, the roster they are advertised through, and the result shapes a door serves.
 # Serde-shaped and schema-derived, because everything here is serialized to a consumer; nothing
 # here is on the audio callback's path, so the cost is irrelevant.
 # `reuben-document` is an authoring dependency and only an authoring one: the render half must
@@ -26,7 +26,7 @@ render = []
 # Implies `authoring`: it implements the resolver trait the loader calls, and there is nothing
 # for it to resolve *for* without the loader.
 fs-resolver = ["authoring", "dep:hound"]
-# The loopback TCP transport a client outside the engine dials the structure channel with. Off by
+# The loopback TCP transport a client outside the engine dials the engine channel with. Off by
 # default for the same reason as `fs-resolver`: the transport is the client's to supply, and this is
 # one implementation of it, shared by the processes that dial `reuben play`.
 tcp = ["authoring"]

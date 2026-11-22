@@ -1,5 +1,5 @@
 //! Level meters at the device: each audio callback folds its block into one [`Bank`], and the
-//! structure server reads the banks as a [`MetersReport`].
+//! engine-channel server reads the banks as a [`MetersReport`].
 //!
 //! The fold and ballistics are [`reuben_api::meter`]'s; they run here, on the audio thread, so the
 //! reader sees a held value rather than whatever its own poll rate happens to catch.
@@ -75,7 +75,7 @@ impl Bank {
     }
 }
 
-/// Both directions' banks, as the structure server reads them.
+/// Both directions' banks, as the engine-channel server reads them.
 #[derive(Debug, Clone)]
 pub struct Meters {
     pub outputs: Arc<Bank>,

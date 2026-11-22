@@ -103,7 +103,7 @@ fn a_client_lists_edits_and_opens_over_tcp() {
 
     let config = EngineConfig {
         osc_in: Some("127.0.0.1:0".to_string()),
-        structure: Some("127.0.0.1:0".to_string()),
+        engine_addr: Some("127.0.0.1:0".to_string()),
         instrument_root: Some(library.clone()),
         ..EngineConfig::new(Instrument::Path(first.clone()))
     };
@@ -112,7 +112,7 @@ fn a_client_lists_edits_and_opens_over_tcp() {
 
     within(HANG_SECS, move || {
         let engine = start_headless(config).expect("the engine starts");
-        let addr = engine.structure_addr().expect("a structure socket");
+        let addr = engine.engine_addr().expect("a engine-channel socket");
         let t = TcpTransport::new(addr.to_string(), DEFAULT_CONNECT_TIMEOUT);
 
         match ask(
@@ -248,13 +248,13 @@ fn scratch(case: &str) -> std::path::PathBuf {
 fn serving(open: &Path, library: &Path, f: impl FnOnce(&TcpTransport) + Send + 'static) {
     let config = EngineConfig {
         osc_in: Some("127.0.0.1:0".to_string()),
-        structure: Some("127.0.0.1:0".to_string()),
+        engine_addr: Some("127.0.0.1:0".to_string()),
         instrument_root: Some(library.to_path_buf()),
         ..EngineConfig::new(Instrument::Path(open.to_path_buf()))
     };
     within(HANG_SECS, move || {
         let engine = start_headless(config).expect("the engine starts");
-        let addr = engine.structure_addr().expect("a structure socket");
+        let addr = engine.engine_addr().expect("a engine-channel socket");
         f(&TcpTransport::new(
             addr.to_string(),
             DEFAULT_CONNECT_TIMEOUT,
@@ -348,13 +348,13 @@ fn an_engine_that_does_not_follow_files_publishes_nothing_for_an_outside_write()
     write(&open, DOC);
     let config = EngineConfig {
         osc_in: Some("127.0.0.1:0".to_string()),
-        structure: Some("127.0.0.1:0".to_string()),
+        engine_addr: Some("127.0.0.1:0".to_string()),
         follow_files: false,
         ..EngineConfig::new(Instrument::Path(open.clone()))
     };
     within(HANG_SECS, move || {
         let engine = start_headless(config).expect("the engine starts");
-        let addr = engine.structure_addr().expect("a structure socket");
+        let addr = engine.engine_addr().expect("a engine-channel socket");
         let events = follow(&TcpTransport::new(
             addr.to_string(),
             DEFAULT_CONNECT_TIMEOUT,
@@ -606,13 +606,13 @@ fn a_silent_start_plays_nothing_then_opens_by_name() {
     let first_s = first.display().to_string();
     let config = EngineConfig {
         osc_in: None,
-        structure: Some("127.0.0.1:0".to_string()),
+        engine_addr: Some("127.0.0.1:0".to_string()),
         instrument_root: Some(library.clone()),
         ..EngineConfig::new(Instrument::Silent)
     };
     within(HANG_SECS, move || {
         let engine = start_headless(config).expect("the engine starts");
-        let addr = engine.structure_addr().expect("a structure socket");
+        let addr = engine.engine_addr().expect("a engine-channel socket");
         let t = TcpTransport::new(addr.to_string(), DEFAULT_CONNECT_TIMEOUT);
         let channel = engine.channel();
 
@@ -673,13 +673,13 @@ fn a_refused_open_with_nothing_open_says_nothing_is_open() {
     let outside_s = outside.display().to_string();
     let config = EngineConfig {
         osc_in: None,
-        structure: Some("127.0.0.1:0".to_string()),
+        engine_addr: Some("127.0.0.1:0".to_string()),
         instrument_root: Some(library.clone()),
         ..EngineConfig::new(Instrument::Silent)
     };
     within(HANG_SECS, move || {
         let engine = start_headless(config).expect("the engine starts");
-        let addr = engine.structure_addr().expect("a structure socket");
+        let addr = engine.engine_addr().expect("a engine-channel socket");
         let t = TcpTransport::new(addr.to_string(), DEFAULT_CONNECT_TIMEOUT);
         match ask(
             &t,
@@ -723,13 +723,13 @@ fn an_open_by_a_relative_name_is_published_absolute() {
     };
     let config = EngineConfig {
         osc_in: Some("127.0.0.1:0".to_string()),
-        structure: Some("127.0.0.1:0".to_string()),
+        engine_addr: Some("127.0.0.1:0".to_string()),
         instrument_root: Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instruments")),
         ..EngineConfig::new(Instrument::Silent)
     };
     within(HANG_SECS, move || {
         let engine = start_headless(config).expect("the engine starts");
-        let addr = engine.structure_addr().expect("a structure socket");
+        let addr = engine.engine_addr().expect("a engine-channel socket");
         let t = TcpTransport::new(addr.to_string(), DEFAULT_CONNECT_TIMEOUT);
         let events = follow(&t);
         let opened = |events: &Receiver<Event>| loop {

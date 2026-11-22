@@ -458,7 +458,7 @@ mod tests {
     /// The headless engine on ephemeral loopback ports, so parallel tests never collide.
     fn headless(mut config: EngineConfig) -> Result<RunningEngine, StartError> {
         config.osc_in = Some("127.0.0.1:0".to_string());
-        config.structure = Some("127.0.0.1:0".to_string());
+        config.engine_addr = Some("127.0.0.1:0".to_string());
         start_headless(config)
     }
 
@@ -794,10 +794,10 @@ mod tests {
     fn a_failed_input_restart_leaves_the_session_saying_nothing_plays() {
         within(HANG_SECS, || {
             let (_scratch, _mic, mut session, mut engine) = mic_swapped_in("start_refit_failed");
-            // A structure address off loopback is refused before anything starts.
+            // A engine address off loopback is refused before anything starts.
             follow(&mut session, &mut engine, false, |mut config| {
                 config.osc_in = Some("127.0.0.1:0".to_string());
-                config.structure = Some("192.0.2.1:9".to_string());
+                config.engine_addr = Some("192.0.2.1:9".to_string());
                 start_headless(config)
             });
             assert!(engine.channel().is_none());

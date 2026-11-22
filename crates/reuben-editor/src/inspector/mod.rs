@@ -772,7 +772,7 @@ mod tests {
                 EngineConfig {
                     osc_in: None,
                     osc_out: Some(sink.local_addr().expect("bound").to_string()),
-                    structure: None,
+                    engine_addr: None,
                     ..EngineConfig::new(Instrument::Path(parent))
                 },
                 start_headless,

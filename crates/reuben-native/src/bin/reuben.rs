@@ -25,8 +25,8 @@ use reuben_native::cli::{
 };
 use reuben_native::client::{self, Names, Reached, Temporary};
 use reuben_native::engine::{self, Instrument};
+use reuben_native::engine_channel::lexical_absolute;
 use reuben_native::scaffold;
-use reuben_native::structure::lexical_absolute;
 use serde::de::DeserializeOwned;
 
 #[derive(Parser)]
@@ -679,7 +679,7 @@ fn play(path: Option<PathBuf>, flags: EngineFlags, root: Option<PathBuf>) -> Exi
     }
 
     let log_osc = config.log_osc;
-    let structure_addr = config.structure.clone().unwrap_or_default();
+    let engine_addr = config.engine_addr.clone().unwrap_or_default();
     let start = if flags.headless {
         engine::start_headless
     } else {
@@ -716,9 +716,9 @@ fn play(path: Option<PathBuf>, flags: EngineFlags, root: Option<PathBuf>) -> Exi
     for w in running.warnings() {
         eprintln!("warning: {w}");
     }
-    match (running.structure_addr(), running.structure_error()) {
+    match (running.engine_addr(), running.channel_error()) {
         (Some(addr), _) => {
-            println!("structure channel on {addr}");
+            println!("engine channel on {addr}");
             if !addr.ip().to_canonical().is_loopback() {
                 println!(
                     "  open to other machines that send its token; the token travels in clear, \
@@ -727,7 +727,7 @@ fn play(path: Option<PathBuf>, flags: EngineFlags, root: Option<PathBuf>) -> Exi
             }
         }
         (None, Some(e)) => eprintln!(
-            "warning: structure channel unavailable on {structure_addr} ({e}); no client \
+            "warning: engine channel unavailable on {engine_addr} ({e}); no client \
              (reuben-mcp, the editor, the CLI) can call, open, list or subscribe this run"
         ),
         (None, None) => {}
@@ -751,7 +751,7 @@ fn play(path: Option<PathBuf>, flags: EngineFlags, root: Option<PathBuf>) -> Exi
 /// handler itself only stores into an atomic (all that is async-signal-safe); a small watcher
 /// thread bridges that atomic to a unit message on `tx`, waking `play`'s blocked shutdown receiver
 /// without the handler ever touching a channel or lock. Swaps do not ride this channel — they
-/// install via the mailbox on the structure threads — so it carries only the one shutdown signal.
+/// install via the mailbox on the engine-channel threads — so it carries only the one shutdown signal.
 #[cfg(unix)]
 fn install_shutdown_handler(tx: mpsc::Sender<()>) {
     use std::sync::atomic::{AtomicBool, Ordering};

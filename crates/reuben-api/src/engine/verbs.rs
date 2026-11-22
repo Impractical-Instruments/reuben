@@ -82,7 +82,7 @@ pub fn get_engine_status(channel: &Channel, door_version: &str) -> Answer<Engine
     let output = EngineStatus {
         reachable,
         endpoints: StatusEndpoints {
-            structure: channel.endpoint().to_string(),
+            engine: channel.endpoint().to_string(),
         },
         sidecar: SidecarInfo {
             version: door_version.to_string(),
@@ -95,7 +95,7 @@ pub fn get_engine_status(channel: &Channel, door_version: &str) -> Answer<Engine
         },
     };
     let summary = if reachable {
-        format!("engine reachable on {}", output.endpoints.structure)
+        format!("engine reachable on {}", output.endpoints.engine)
     } else {
         "engine not reachable — start `reuben play`".to_string()
     };
@@ -518,7 +518,7 @@ mod tests {
             answer.output.guidance.as_deref(),
             Some(ENGINE_UNREACHABLE_GUIDANCE)
         );
-        assert_eq!(answer.output.endpoints.structure, "127.0.0.1:9124");
+        assert_eq!(answer.output.endpoints.engine, "127.0.0.1:9124");
         // The door names itself; the window supplies the format it speaks.
         assert_eq!(answer.output.sidecar.version, "9.9.9");
         assert_eq!(

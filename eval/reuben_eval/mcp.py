@@ -33,14 +33,14 @@ REPO = Path(__file__).resolve().parent.parent.parent
 # short enough that a wedged sidecar fails the run instead of the job's 6-hour ceiling.
 TIMEOUT_SECONDS = 120.0
 
-# The ports a developer's own `reuben play` holds by default: the structure channel and OSC-in. A
+# The ports a developer's own `reuben play` holds by default: the engine channel and OSC-in. A
 # session never takes either, so an eval run neither collides with nor talks to that engine.
-DEFAULT_STRUCTURE_PORT = 9124
+DEFAULT_ENGINE_PORT = 9124
 DEFAULT_OSC_IN_PORT = 9000
-# The sidecar's own name for the engine address (`reuben_mcp::STRUCTURE_ADDR_ENV`).
-STRUCTURE_ADDR_ENV = "REUBEN_STRUCTURE_ADDR"
-# The line `reuben play` prints once its structure channel is bound.
-_ENGINE_READY = "structure channel on "
+# The sidecar's own name for the engine address (`reuben_mcp::ENGINE_ADDR_ENV`).
+ENGINE_ADDR_ENV = "REUBEN_ENGINE_ADDR"
+# The line `reuben play` prints once its engine channel is bound.
+_ENGINE_READY = "engine channel on "
 
 
 class SidecarError(RuntimeError):
@@ -170,7 +170,7 @@ def _free_port(kind: int) -> int:
         with socket.socket(socket.AF_INET, kind) as probe:
             probe.bind(("127.0.0.1", 0))
             port = probe.getsockname()[1]
-        if port not in (DEFAULT_STRUCTURE_PORT, DEFAULT_OSC_IN_PORT):
+        if port not in (DEFAULT_ENGINE_PORT, DEFAULT_OSC_IN_PORT):
             return port
 
 
@@ -183,7 +183,7 @@ class Engine:
 
     def __init__(self, cwd: Path) -> None:
         self.cwd = cwd
-        self.structure_addr = f"127.0.0.1:{_free_port(socket.SOCK_STREAM)}"
+        self.engine_addr = f"127.0.0.1:{_free_port(socket.SOCK_STREAM)}"
         self.osc_in = f"127.0.0.1:{_free_port(socket.SOCK_DGRAM)}"
         self.argv = [
             str(engine_binary()),
@@ -191,8 +191,8 @@ class Engine:
             str(cwd),
             "play",
             "--headless",
-            "--structure-addr",
-            self.structure_addr,
+            "--engine-addr",
+            self.engine_addr,
             "--osc-in",
             self.osc_in,
         ]
@@ -242,7 +242,7 @@ class Engine:
                 proc.stdout.close()
 
     def _await_ready(self) -> None:
-        """Block until the structure channel is bound, then keep draining the engine's output.
+        """Block until the engine channel is bound, then keep draining the engine's output.
 
         The output is read on a thread throughout: a pipe left unread fills and blocks the engine.
         """
@@ -255,7 +255,7 @@ class Engine:
                 for line in proc.stdout:  # type: ignore[union-attr]
                     if not ready.is_set():
                         seen.append(line.rstrip())
-                        if line.startswith(_ENGINE_READY + self.structure_addr):
+                        if line.startswith(_ENGINE_READY + self.engine_addr):
                             ready.set()
             except (OSError, ValueError):
                 pass  # `__exit__` closed the pipe under the read.
@@ -266,7 +266,7 @@ class Engine:
             if proc.poll() is not None or time.monotonic() > deadline:
                 said = "\n".join(seen[-10:]) or "(nothing)"
                 raise SidecarError(
-                    f"reuben play did not serve its structure channel on {self.structure_addr}:\n"
+                    f"reuben play did not serve its engine channel on {self.engine_addr}:\n"
                     f"{said}"
                 )
 
@@ -276,12 +276,12 @@ class Sidecar:
 
     Used as a context manager; the process is killed on exit either way. `cwd` roots the sidecar's
     path resolution, so each task gets its own workspace and tasks cannot contaminate each other.
-    `structure_addr` is the engine it calls; `None` leaves it unset, which dials the default.
+    `engine_addr` is the engine it calls; `None` leaves it unset, which dials the default.
     """
 
-    def __init__(self, cwd: Path, structure_addr: str | None = None) -> None:
+    def __init__(self, cwd: Path, engine_addr: str | None = None) -> None:
         self._cwd = cwd
-        self.structure_addr = structure_addr
+        self.engine_addr = engine_addr
         self._proc: subprocess.Popen[str] | None = None
         self._next_id = 0
         self.ledger = Ledger()
@@ -289,9 +289,9 @@ class Sidecar:
         self.instructions = ""
 
     def __enter__(self) -> Sidecar:
-        env = {key: value for key, value in os.environ.items() if key != STRUCTURE_ADDR_ENV}
-        if self.structure_addr is not None:
-            env[STRUCTURE_ADDR_ENV] = self.structure_addr
+        env = {key: value for key, value in os.environ.items() if key != ENGINE_ADDR_ENV}
+        if self.engine_addr is not None:
+            env[ENGINE_ADDR_ENV] = self.engine_addr
         self._proc = subprocess.Popen(
             [str(sidecar_binary())],
             cwd=str(self._cwd),

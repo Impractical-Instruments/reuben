@@ -6,7 +6,7 @@
 //! bounded ring pairs, [`audio`] drives a cpal output stream, [`input`] is the
 //! cpal input ring feeding it, [`devices`] lists the output devices a profile can name,
 //! [`diagnostics`] is the shared xrun/ring counter surface, [`meters`] the levels at the device,
-//! [`structure`] is the loopback structure channel the MCP sidecar talks to, [`rigs`] holds the
+//! [`engine_channel`] is the loopback engine channel the MCP sidecar talks to, [`rigs`] holds the
 //! default playable rig, and [`profile`] is the device profile (`--io-map`). Sample data resolves
 //! through [`reuben_api::FsResolver`].
 //!
@@ -24,6 +24,7 @@ pub mod control;
 pub mod devices;
 pub mod diagnostics;
 pub mod engine;
+pub mod engine_channel;
 pub mod input;
 pub mod library;
 pub mod meters;
@@ -32,7 +33,6 @@ mod probes;
 pub mod profile;
 pub mod rigs;
 pub mod scaffold;
-pub mod structure;
 #[doc(hidden)]
 pub mod test_support;
 pub mod tree_watch;

@@ -34,7 +34,7 @@ fn seed(test: &str, body: &str) -> std::path::PathBuf {
 fn config(instrument: Instrument) -> EngineConfig {
     EngineConfig {
         osc_in: Some("127.0.0.1:0".to_string()),
-        structure: Some("127.0.0.1:0".to_string()),
+        engine_addr: Some("127.0.0.1:0".to_string()),
         ..EngineConfig::new(instrument)
     }
 }
@@ -76,46 +76,46 @@ fn a_taken_osc_port_is_fatal() {
 }
 
 #[test]
-fn a_non_loopback_structure_address_without_a_token_is_refused_before_anything_binds() {
+fn a_non_loopback_engine_address_without_a_token_is_refused_before_anything_binds() {
     let path = seed("non_loopback", OSC_DOC);
     let cfg = EngineConfig {
-        structure: Some("0.0.0.0:0".to_string()),
+        engine_addr: Some("0.0.0.0:0".to_string()),
         ..config(Instrument::Path(path.clone()))
     };
     assert!(matches!(
         start_headless(cfg),
-        Err(StartError::StructureNeedsToken(_))
+        Err(StartError::ChannelNeedsToken(_))
     ));
     let _ = std::fs::remove_file(&path);
 }
 
 #[test]
-fn a_non_loopback_structure_address_with_a_token_serves() {
+fn a_non_loopback_engine_address_with_a_token_serves() {
     let path = seed("non_loopback_token", OSC_DOC);
     let cfg = EngineConfig {
-        structure: Some("0.0.0.0:0".to_string()),
+        engine_addr: Some("0.0.0.0:0".to_string()),
         token: Some(reuben_api::engine::Token::new("t").expect("a token")),
         ..config(Instrument::Path(path.clone()))
     };
     let engine = start_headless(cfg).expect("starts with a token");
-    let bound = engine.structure_addr().expect("bound");
+    let bound = engine.engine_addr().expect("bound");
     assert!(bound.ip().is_unspecified(), "{bound}");
     drop(engine);
     let _ = std::fs::remove_file(&path);
 }
 
 #[test]
-fn a_taken_structure_port_is_survived_and_the_in_process_channel_still_answers() {
-    let path = seed("structure_taken", OSC_DOC);
+fn a_taken_engine_channel_port_is_survived_and_the_in_process_channel_still_answers() {
+    let path = seed("engine_addr_taken", OSC_DOC);
     let taken = TcpListener::bind("127.0.0.1:0").expect("hold a port");
     let cfg = EngineConfig {
-        structure: Some(taken.local_addr().unwrap().to_string()),
+        engine_addr: Some(taken.local_addr().unwrap().to_string()),
         ..config(Instrument::Path(path.clone()))
     };
     within(HANG_SECS, move || {
-        let engine = start_headless(cfg).expect("a taken structure port is not fatal");
-        assert!(engine.structure_addr().is_none());
-        assert!(engine.structure_error().is_some());
+        let engine = start_headless(cfg).expect("a taken engine-channel port is not fatal");
+        assert!(engine.engine_addr().is_none());
+        assert!(engine.channel_error().is_some());
         assert!(
             get_engine_status(&engine.channel(), "test")
                 .output
@@ -132,13 +132,13 @@ fn no_sockets_at_all_is_a_valid_embedding() {
     let path = seed("no_sockets", OSC_DOC);
     let cfg = EngineConfig {
         osc_in: None,
-        structure: None,
+        engine_addr: None,
         ..EngineConfig::new(Instrument::Path(path.clone()))
     };
     within(HANG_SECS, move || {
         let engine = start_headless(cfg).expect("starts with no sockets");
-        assert!(engine.osc_in_addr().is_none() && engine.structure_addr().is_none());
-        assert!(engine.structure_error().is_none());
+        assert!(engine.osc_in_addr().is_none() && engine.engine_addr().is_none());
+        assert!(engine.channel_error().is_none());
         assert!(
             get_engine_status(&engine.channel(), "test")
                 .output

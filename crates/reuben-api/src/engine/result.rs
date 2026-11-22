@@ -31,9 +31,9 @@ pub struct SendOutput {
 /// it).
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct StatusEndpoints {
-    /// The structure channel address — every engine tool speaks it
+    /// The engine channel address — every engine tool speaks it
     /// (`ping`/`send`/`open`/`call`/`get_document`/`get_diagnostics`).
-    pub structure: String,
+    pub engine: String,
 }
 
 /// The sidecar identity `engine_status` reports: its own version and the instrument
@@ -50,7 +50,7 @@ pub struct SidecarInfo {
 /// `guidance` (present only when unreachable) ARE the deliverable.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct EngineStatus {
-    /// Whether a live `reuben play` answered `ping` on the structure channel.
+    /// Whether a live `reuben play` answered `ping` on the engine channel.
     pub reachable: bool,
     /// The endpoint this sidecar talks to.
     pub endpoints: StatusEndpoints,
@@ -66,7 +66,7 @@ pub struct EngineStatus {
 /// asked first, `held`.
 ///
 // One `outputSchema` spans the install, validation-failure, guard-miss and held cases; the
-// flattened `SwapReport`, the `Conflict` and the `HeldSwap` are the same types the structure channel
+// flattened `SwapReport`, the `Conflict` and the `HeldSwap` are the same types the engine channel
 // serializes, so the tool shape and the wire shape cannot drift.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SwapResult {

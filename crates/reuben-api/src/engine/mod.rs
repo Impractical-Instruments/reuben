@@ -3,7 +3,7 @@
 //!
 //! "Engine" here is the running instance a door reaches, not the render Engine a host drives per
 //! block; that one is [`crate::render`]'s. Both ends of the reach are doors — `reuben play` serves
-//! the structure channel, the MCP sidecar dials it — which is why the envelope, the verbs and the
+//! the engine channel, the MCP sidecar dials it — which is why the envelope, the verbs and the
 //! guards are the window's rather than either door's.
 //!
 //! The engine also runs authoring for its clients: a client sends `call` to read or edit the open
@@ -49,9 +49,9 @@ pub mod wire;
 
 pub use args::*;
 
-/// The environment variable a client reads the engine's structure address from when no flag names
-/// one. Unset, it dials [`DEFAULT_STRUCTURE_ADDR`].
-pub const STRUCTURE_ADDR_ENV: &str = "REUBEN_STRUCTURE_ADDR";
+/// The environment variable a client reads the engine's engine address from when no flag names
+/// one. Unset, it dials [`DEFAULT_ENGINE_ADDR`].
+pub const ENGINE_ADDR_ENV: &str = "REUBEN_ENGINE_ADDR";
 pub use channel::{
     unanswered, CallOutcome, Channel, ChannelError, Events, SwapOutcome, Transport, Unanswered,
 };
@@ -62,11 +62,11 @@ pub use result::{
     SwapResult,
 };
 pub use server::{
-    dispatch, dispatch_request, EngineHost, InProcess, IngressClosed, Installed, ServerStore,
-    StructureState, SwapInFlight, COORDINATOR_POISONED, IN_PROCESS_ENDPOINT, SILENCE,
+    dispatch, dispatch_request, ChannelState, EngineHost, InProcess, IngressClosed, Installed,
+    ServerStore, SwapInFlight, COORDINATOR_POISONED, IN_PROCESS_ENDPOINT, SILENCE,
 };
 
-/// The single-writer graph owner an [`StructureState`] serves. The engine's type, re-exported because
+/// The single-writer graph owner an [`ChannelState`] serves. The engine's type, re-exported because
 /// a host has to name it to build one — and reaching past the window for the *one* type its own
 /// constructor demands would make "every consumer goes through the window" false for every host
 /// there will ever be.
@@ -82,7 +82,7 @@ pub use reuben_document::FromDocumentError;
 #[cfg(feature = "tcp")]
 pub use tcp::{TcpTransport, DEFAULT_CONNECT_TIMEOUT};
 pub use token::{
-    admit, credential_line, Admit, EmptyToken, Token, REFUSED_TOKEN, STRUCTURE_TOKEN_ENV,
+    admit, credential_line, Admit, EmptyToken, Token, ENGINE_TOKEN_ENV, REFUSED_TOKEN,
     TOKEN_REQUIRED,
 };
 pub use verbs::*;
@@ -90,7 +90,7 @@ pub use wire::{
     read_ndjson_line, ChangedBy, ChannelLevel, Conflict, ControlArg, ControlMessage,
     DiagnosticsReport, DiffSummary, DocumentSnapshot, Event, HeldSwap, Library, LibraryEntry,
     ListWhat, MetersReport, PortLevel, ProbeLevels, Request, Response, SwapReport,
-    DEFAULT_STRUCTURE_ADDR, MAX_LINE_BYTES, MAX_PROBES, MAX_SEND_BATCH, METER_CEILING_DBFS,
+    DEFAULT_ENGINE_ADDR, MAX_LINE_BYTES, MAX_PROBES, MAX_SEND_BATCH, METER_CEILING_DBFS,
     METER_FLOOR_DBFS, PEAK_FALL_DB_PER_SEC, RMS_WINDOW_SECS,
 };
 

@@ -99,7 +99,7 @@ class Session:
         self.task = task
         self.workspace = Workspace(root, task.seed)
         self.engine = Engine(self.workspace.root)
-        self.sidecar = Sidecar(self.workspace.root, self.engine.structure_addr)
+        self.sidecar = Sidecar(self.workspace.root, self.engine.engine_addr)
         self.trace = Trace()
         self.repair_rounds = 0
         self.rounds = 0

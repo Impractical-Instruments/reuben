@@ -6,7 +6,7 @@
 //! it names no document type: a bundle carries a built [`Engine`](crate::engine::Engine) and a flat
 //! table of survivor index pairs, never the instrument that produced them.
 //!
-//! The structure channel's NDJSON envelope used to live here beside them. It does not: both of its
+//! The engine channel's NDJSON envelope used to live here beside them. It does not: both of its
 //! ends are doors, so it is the window's — nothing in this crate serializes it.
 
 pub mod install;

@@ -38,7 +38,7 @@ use eframe::egui;
 use reuben_api::engine::{Channel, Event};
 use reuben_native::cli::{EngineFlags, InstrumentRoot};
 use reuben_native::engine::{EngineConfig, Instrument};
-use reuben_native::structure::SwapHold;
+use reuben_native::engine_channel::SwapHold;
 
 use crate::audio::AudioSettings;
 use crate::canvas::Canvas;
@@ -57,14 +57,14 @@ use crate::start::{Choice, Start};
 struct Args {
     /// Instrument JSON to open and play; omit to choose one on the start screen.
     path: Option<PathBuf>,
-    /// Attach to a `reuben play` already running instead of starting an engine, at its structure
+    /// Attach to a `reuben play` already running instead of starting an engine, at its engine
     /// channel's address: open the instrument it plays and play it live. The audio device and the
     /// engine flags stay what `reuben play` was started with. An engine on another machine takes
-    /// its token: `--token`, or `REUBEN_STRUCTURE_TOKEN`.
+    /// its token: `--token`, or `REUBEN_ENGINE_TOKEN`.
     #[arg(
         long,
         value_name = "HOST:PORT",
-        conflicts_with_all = ["path", "osc_out", "io_map", "headless", "structure_addr", "osc_in"]
+        conflicts_with_all = ["path", "osc_out", "io_map", "headless", "engine_addr", "osc_in"]
     )]
     attach: Option<String>,
     #[command(flatten)]
@@ -536,7 +536,7 @@ mod tests {
 
     #[test]
     fn the_engine_started_at_launch_holds_what_the_launch_says() {
-        let hold = reuben_native::structure::SwapHold::new(|_| true);
+        let hold = reuben_native::engine_channel::SwapHold::new(|_| true);
         let (config, _) = started(&["reuben-editor", "instrument.json"], Some(hold));
         assert!(config.expect("an engine starts").swap_hold.is_some());
     }
@@ -566,15 +566,15 @@ mod tests {
             assert!(launched(&missing, &mut engine, &held, || {}).is_err());
 
             let addr = (engine.running())
-                .and_then(RunningEngine::structure_addr)
-                .expect("the structure server bound");
+                .and_then(RunningEngine::engine_addr)
+                .expect("the engine-channel server bound");
             let link = EngineLink::new(addr.to_string(), None);
             let opened = open_instrument(
                 &OpenInstrument {
                     name: lib.join("groovebox.json").display().to_string(),
                     expect: None,
                 },
-                link.structure(),
+                link.channel(),
             )
             .expect("the open reached the engine")
             .output;

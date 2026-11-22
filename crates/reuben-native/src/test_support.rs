@@ -41,7 +41,7 @@ pub fn no_store() -> Staged<Box<dyn Resources + Send + Sync>> {
     Staged::new(Box::new(NoResources))
 }
 
-/// The store a `StructureState` serves `call` through, over `staged`.
+/// The store a `ChannelState` serves `call` through, over `staged`.
 pub fn served(staged: Staged<Box<dyn Resources + Send + Sync>>) -> Arc<ServerStore> {
     Arc::new(DocumentHistory::new(staged))
 }
@@ -145,7 +145,7 @@ pub fn start_headless_holding_outbound(
     Ok((engine, held))
 }
 
-/// How long a whole engine teardown may take. Its own polls add up to well under this (the structure
+/// How long a whole engine teardown may take. Its own polls add up to well under this (the engine-channel
 /// read poll is the longest, at 250 ms), so a teardown that nears it is waiting on a thread that
 /// is not being woken.
 pub const SHUTDOWN_BOUND: Duration = Duration::from_secs(1);
