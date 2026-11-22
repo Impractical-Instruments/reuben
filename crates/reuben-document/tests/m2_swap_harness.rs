@@ -736,9 +736,9 @@ fn clock_sinks_send_only_changes_in_steady_state_and_one_beat_announcement_after
 
     // 64 blocks after the Swap request ends over a thousand frames before the next edge. Outbound
     // frames are relative to the emitting Engine's blocks, which a Swap offsets from the fill grid,
-    // so this count is approximate. The surviving Clock announces `beat` once; `gate` has not
-    // changed, so it sends nothing. One-block fills keep the announcement out of the ramp segment
-    // that `RenderSlot` drops when a callback spans the end of the ramp.
+    // so this margin is approximate. The surviving Clock announces `beat` once; `gate` has not
+    // changed, so it sends nothing. A one-block fill never runs the installing callback past the
+    // end of the ramp, where `RenderSlot` would drop the announcement's outbound.
     let mut after = Vec::new();
     let mut ramped = false;
     for b in 0..64 {

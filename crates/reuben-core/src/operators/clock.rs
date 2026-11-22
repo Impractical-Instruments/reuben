@@ -20,11 +20,14 @@
 //!   pulses N times per beat — a 16th-note grid is `division` 4. Emitted only on change (at each
 //!   edge), and never announced: a consumer added in a Swap starts with its edge flag low, so an
 //!   announced high level would be a rising edge at the Swap frame, off the beat grid. Known
-//!   limitation, which matters only when a Swap lands while `gate` is high: the Swap resets every
-//!   consumer's held `gate` input to its default 0.0, which holds until the next edge. A new
-//!   consumer simply waits for the next rising edge. A surviving edge consumer sees a falling edge
-//!   at the Swap: a surviving `envelope` releases early, and a `euclid` or `sequencer` sends its
-//!   gate-off early.
+//!   limitation: a Swap resets each consumer's held `gate` input to that port's own default (0.0
+//!   for `envelope`, `euclid` and `sequencer`), which holds until the next edge. It matters when
+//!   that default differs from the live level. For the edge consumers that means a Swap landing
+//!   while `gate` is high: a new one waits for the next rising edge, and a surviving one sees a
+//!   falling edge at the Swap — `envelope` releases early, `euclid` sends its gate-off early if the
+//!   current step is a pulse, and `sequencer` sends the held step's note-off early. A plain Value
+//!   consumer whose default is nonzero (say a `gain` of 1.0) latches that default after a Swap even
+//!   while `gate` is low, until the next edge.
 //! - input 1: `tempo` (BPM).
 //! - input 2: `division` (`i32`) — gate subdivisions per beat (1 = once per beat, default; 4 =
 //!   16ths). Its `1` floor lives in the port contract (`I32Meta` min), so the gate can never
@@ -46,8 +49,12 @@
 //! its consumers, so each reads the right beat in its first block after the Swap, and nothing
 //! repeats in steady state. A beat count is a position, not a trigger, so announcing it is safe
 //! where announcing `gate` is not. Every internal consumer receives the announcement. An external
-//! OSC listener on an `osc_out` can miss it: when one host callback spans the end of the Swap ramp
-//! and the steady segment after it, `RenderSlot` drops the up-ramp segment's outbound messages.
+//! OSC listener on an `osc_out` can miss it when the host callback that installs the Swap runs past
+//! the end of the ramp (more than two ramp edges, 960 frames at 48 kHz): the new Engine renders
+//! the announcement at the start of that callback's up-ramp segment, and `RenderSlot` drops an
+//! up-ramp segment's outbound when the same callback goes on into the steady segment. That drop is
+//! not specific to the announcement: an ordinary `beat` step or `gate` edge emitted in such an
+//! up-ramp segment is lost to an external listener the same way.
 //!
 //! `tempo`/`division` are Value inputs: read held, so a change block-slices and takes effect at the
 //! exact sample of the change — and each can be *wired* and modulated (`division` by an `i32`
