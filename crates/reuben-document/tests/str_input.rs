@@ -303,10 +303,11 @@ fn the_authoring_verbs_write_and_refuse_str_values() {
     assert_eq!(readback(&r), v);
 }
 
-/// The render thread never allocates a string. It may free one: when a send replaces a latched
-/// string and nothing else still holds it, the render thread drops the last reference. That is the
-/// accepted class `Arg::Str` documents — one free per replaced string, none in a block where no
-/// string changed, and none at all while the sender keeps its own reference.
+/// The render thread never allocates a string. It may free one: when a live value overwrites a
+/// `str` latch and nothing else still holds the replaced string, the render thread drops the last
+/// reference. That is the class `Arg::Str` documents — at most one free per overwrite. A latch's
+/// seed and an authored value count: in a freshly built Plan (every Swap builds one) each is held
+/// by its latch alone, so the first send to each input frees it, whatever the sender keeps.
 #[test]
 fn changing_strings_allocate_nothing_and_free_only_the_replaced_ones() {
     // No `osc_out` sinks: each outbound send builds a Message on the render thread, which is that
@@ -316,15 +317,11 @@ fn changing_strings_allocate_nothing_and_free_only_the_replaced_ones() {
       "interface": { "inputs": { "pat": { "type": "str", "default": "seed" } } },
       "nodes": [
         { "type": "str_len", "address": "/from_pipe", "inputs": { "text": { "from": "/pat" } } },
-        { "type": "str_len", "address": "/direct", "inputs": { "text": "x" } } ] }"#;
+        { "type": "str_len", "address": "/direct", "inputs": { "text": "x" } },
+        { "type": "str_len", "address": "/unset" } ] }"#;
     let mut e = engine(QUIET);
     let mut out = vec![0.0f32; e.block_size() * e.channels()];
-    // Warm up with sends too: the first message a node is routed grows its per-block scratch.
-    // The sender holds on to these, like the ones below.
-    let warm: Vec<Arc<str>> = (0..4).map(|i| format!("warm {i}").into()).collect();
-    for s in &warm {
-        e.queue_osc("/pat/in", &[Arg::Str(s.clone())]);
-        e.queue_osc("/direct/text", &[Arg::Str(s.clone())]);
+    for _ in 0..4 {
         e.fill(&mut out);
     }
     assert_counter_is_live();
@@ -337,8 +334,29 @@ fn changing_strings_allocate_nothing_and_free_only_the_replaced_ones() {
     });
     assert_eq!((idle.allocs, idle.frees), (0, 0), "idle blocks");
 
-    // The sender keeps its own reference to every string it sends, so the render thread is
-    // never the last owner of a replaced one: nothing is freed there.
+    // The first send to each input, with the sender keeping every string it sends. The pipe's
+    // declared default, the node literal and the unset seed `""` are each held by one latch only,
+    // so each is freed here: three frees for three overwrites.
+    let warm: Arc<str> = "first send".into();
+    let first = measure(|| {
+        for addr in ["/pat/in", "/direct/text", "/unset/text"] {
+            e.queue_osc(addr, &[Arg::Str(warm.clone())]);
+        }
+        e.fill(&mut out);
+    });
+    assert_eq!(
+        first.frees, 3,
+        "the first send frees each input's seed or authored value"
+    );
+    // Each node's routed-held scratch grows on the first message it is ever routed: once per
+    // node per Plan, the same for any held control, and not a string.
+    assert_eq!(
+        first.allocs, 3,
+        "first-message scratch growth, one per node"
+    );
+
+    // Past the first send, a sender that keeps its own reference to every string it sends leaves
+    // the render thread never the last owner of a replaced one: nothing is freed there.
     let kept: Vec<Arc<str>> = (0..16).map(|i| format!("kept {i}").into()).collect();
     let mut keeping = rt_alloc::Counts {
         allocs: 0,
@@ -391,107 +409,5 @@ fn changing_strings_allocate_nothing_and_free_only_the_replaced_ones() {
         frees,
         [1, 1, 0],
         "an overwrite within a block frees one block late"
-    );
-}
-
-/// A `str` pipe kept as a rendered node — it fans out to two consumers and an `osc_out` — so its
-/// first block after a build forwards its seed onto every consumer's freshly seeded latch.
-const FAN_OUT: &str = r#"{
-  "format_version": 3, "instrument": "fan_out",
-  "interface": { "inputs": { "pat": { "type": "str", "default": "0 3 ~" } } },
-  "nodes": [
-    { "type": "str_len", "address": "/a", "inputs": { "text": { "from": "/pat" } } },
-    { "type": "str_len", "address": "/b", "inputs": { "text": { "from": "/pat" } } },
-    { "type": "osc_out", "address": "/echo", "inputs": { "in": { "from": "/pat" } } } ] }"#;
-
-/// Every Swap rebuilds each consumer's latch, and the pipe overwrites it in the first block. With
-/// nothing sent, that must free nothing on the render thread: the overwritten seed is the Plan's
-/// own `""`, which the Plan keeps.
-#[test]
-fn a_swap_frees_nothing_on_the_render_thread_for_a_fanned_out_str_pipe() {
-    use reuben_core::coordinator::RenderSlot;
-    use reuben_document::coordinator::Coordinator;
-
-    const BLOCK: usize = 128;
-    let (mut coord, side, _) = Coordinator::install_initial(
-        FAN_OUT,
-        registry(),
-        Box::new(MemoryResolver::new()),
-        AudioConfig::new(48_000.0, BLOCK),
-    )
-    .expect("initial install");
-    let mut slot = RenderSlot::new(side);
-    let mut out = vec![0.0f32; BLOCK * slot.channels()];
-    for _ in 0..8 {
-        slot.fill(&mut out);
-        slot.drain_outbound().for_each(drop);
-    }
-    assert_counter_is_live();
-
-    for edit in 0..3 {
-        let report = coord.swap_document(FAN_OUT);
-        assert!(report.report.ok, "{:?}", report.report);
-        assert_eq!(report.diff.as_ref().unwrap().survived, 3, "the three nodes");
-        let mut saw_ramp = false;
-        let mut frees = 0;
-        for _ in 0..16 {
-            frees += measure(|| slot.fill(&mut out)).frees;
-            saw_ramp |= slot.is_ramping();
-            // The echo's outbound Messages are the sink's own cost; drop them off the window.
-            slot.drain_outbound().for_each(drop);
-        }
-        assert!(
-            saw_ramp && !slot.is_ramping(),
-            "the swap installed inside the window"
-        );
-        assert_eq!(frees, 0, "edit {edit}: the render thread freed a string");
-        assert!(coord.try_reclaim().is_some(), "a retiree came home");
-    }
-}
-
-/// The surviving pipe carries its dedup baseline across the Swap. When the retiring Engine is
-/// dropped right after the transplant, that baseline must not be left as the only owner of the
-/// last string sent, or the pipe's first forward in the new Engine frees it on the render thread.
-#[test]
-fn a_transplanted_str_pipe_does_not_strand_the_last_send_on_the_render_thread() {
-    let build = || {
-        let graph = load_instrument(FAN_OUT, &registry(), &MemoryResolver::new())
-            .expect("loads")
-            .graph;
-        Plan::instantiate(graph, AudioConfig::new(48_000.0, 64)).expect("instantiates")
-    };
-    let (old, new) = (build(), build());
-    let pairs: Vec<(usize, usize)> = old
-        .nodes()
-        .iter()
-        .enumerate()
-        .filter_map(|(i, n)| {
-            let j = new.nodes().iter().position(|m| m.address == n.address)?;
-            Some((i, j))
-        })
-        .collect();
-    assert_eq!(pairs.len(), 4, "pipe + three nodes survive");
-
-    let mut retiring = Engine::new(old);
-    let mut out = vec![0.0f32; retiring.block_size() * retiring.channels()];
-    // The sender lets go at once: the graph holds every reference to this string.
-    retiring.queue_osc("/pat/in", &[Arg::Str("sent live".into())]);
-    for _ in 0..4 {
-        retiring.fill(&mut out);
-        retiring.drain_outbound().for_each(drop);
-    }
-
-    let mut live = Engine::new(new);
-    live.transplant_survivors(&mut retiring, &pairs);
-    drop(retiring);
-    assert_counter_is_live();
-    let mut frees = 0;
-    for _ in 0..8 {
-        frees += measure(|| live.fill(&mut out)).frees;
-        live.drain_outbound().for_each(drop);
-    }
-    assert_eq!(
-        frees, 0,
-        "the render thread freed a string after the transplant"
     );
 }

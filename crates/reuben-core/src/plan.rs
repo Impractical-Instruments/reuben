@@ -78,18 +78,11 @@ pub(crate) fn port_kind(p: &Port) -> PortKind {
 /// The seed [`Arg`] for an input port's latch at Instantiate: an `F32` control's
 /// (override-or-default) value, an enum's (override-or-default) variant, the default `Harmony`,
 /// or a harmless placeholder for ports with no held value (`Note`, `Buffer`).
-///
-/// Every empty string seeds as a clone of `empty`, the one `""` its Plan owns. Replacing a seed on
-/// the render thread then only drops a count, never the allocation: the Plan keeps it until the
-/// Plan itself is dropped, which happens off the render thread.
-fn seed_latch(p: &Port, port: usize, value_overrides: &[(usize, Arg)], empty: &Arc<str>) -> Arg {
+fn seed_latch(p: &Port, port: usize, value_overrides: &[(usize, Arg)]) -> Arg {
     // An author override is already `Port::coerce`-normalized to this port's latch value (an
     // `F32` control's clamped scalar, an enum's concrete variant) — use it verbatim.
     if let Some((_, arg)) = value_overrides.iter().find(|(po, _)| *po == port) {
-        return match arg {
-            Arg::Str(s) if s.is_empty() => Arg::Str(empty.clone()),
-            _ => arg.clone(),
-        };
+        return arg.clone();
     }
     match &p.ty {
         // F32 (Value-bound scalar control) and an F32Buffer *carrying meta*
@@ -110,7 +103,7 @@ fn seed_latch(p: &Port, port: usize, value_overrides: &[(usize, Arg)], empty: &A
         // consumer that inspects it directly (an interface-pipe forward, `resolve`).
         PortType::Vocab { name, .. } if *name == "Pitch" => Arg::Pitch(Pitch::default()),
         PortType::I32 { meta } => Arg::I32(meta.as_ref().map(|m| m.default).unwrap_or(0)),
-        PortType::Str => Arg::Str(empty.clone()),
+        PortType::Str => Arg::Str("".into()),
         // Note (stream) / Buffer (dense): no held value — a placeholder a held-handle read never decodes.
         _ => Arg::F32(0.0),
     }
@@ -339,10 +332,6 @@ pub struct Plan {
     /// whose host commits them once after rendering all of them; `render_plan` then leaves the
     /// commit to it.
     pub(crate) hosted: bool,
-    /// The `""` every unset or empty `str` latch is seeded with — see [`seed_latch`]. Held here
-    /// so a latch overwrite on the render thread is never its last owner. Never read: owning it
-    /// is the whole job.
-    _empty_str: Arc<str>,
 }
 
 /// Why Instantiate failed.
@@ -482,8 +471,7 @@ impl Plan {
         // concept, not a mandatory rendered node) before ordering what actually executes.
         check_endpoints(&graph)?;
         check_wire_forms(&graph)?;
-        let empty_str: Arc<str> = Arc::from("");
-        let dissolved = dissolve_interface_pipes(&mut graph, &empty_str);
+        let dissolved = dissolve_interface_pipes(&mut graph);
         // Index the (now final) wire list once; every per-node wire question below asks it
         // instead of rescanning the flat list.
         let adj = Adjacency::build(&graph);
@@ -600,7 +588,7 @@ impl Plan {
                 .inputs
                 .iter()
                 .enumerate()
-                .map(|(port, p)| seed_latch(p, port, overrides, &empty_str))
+                .map(|(port, p)| seed_latch(p, port, overrides))
                 .collect();
 
             // Input buffer wiring: a Buffer input wired to a Buffer source shares its
@@ -877,7 +865,6 @@ impl Plan {
             input_aliases,
             probes,
             hosted: false,
-            _empty_str: empty_str,
         })
     }
 
@@ -957,7 +944,7 @@ impl Plan {
 /// pipe feeding an Event/`Arg` pass-through input (its frame-0 seed emission is observable
 /// there). Chains (a pipe feeding a pipe, e.g. through a spliced nest) collapse to fixpoint;
 /// an alias whose consumer dissolves is re-pointed to that pipe's own consumer.
-fn dissolve_interface_pipes(graph: &mut Graph, empty_str: &Arc<str>) -> Vec<DissolvedPipe> {
+fn dissolve_interface_pipes(graph: &mut Graph) -> Vec<DissolvedPipe> {
     // The candidates, in graph key order — the order the fixpoint settles them in, and so the
     // order of the aliases it returns. Collected once: dissolution only ever removes pipes, never
     // mints one. A patch with no boundary at all (nothing nested, nothing declared) leaves here
@@ -1062,7 +1049,7 @@ fn dissolve_interface_pipes(graph: &mut Graph, empty_str: &Arc<str>) -> Vec<Diss
         let address = node.address.clone();
         // What the pipe held at rest: its declared default (or an author/boundary override),
         // via the same seeding rule Instantiate applies below.
-        let seed = seed_latch(&pipe_port, 0, &node.value_overrides, empty_str);
+        let seed = seed_latch(&pipe_port, 0, &node.value_overrides);
 
         // Splice the pipe out of the wiring: its feeder (if any) takes over the consumer edge.
         // Legality is transitive — the pipe's `in`/`out` share one declared type, so every

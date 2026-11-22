@@ -153,9 +153,10 @@ impl Operator for Filter {
   reads `""`. **Input-only**: the validator refuses a `str` output, because building a string on
   the render thread allocates, and a `str` constant, because no operator reads a constant's
   value. Read it, don't keep it — a `&str` cannot outlive the `process` call,
-  and copying it into operator state would allocate. Replacing a latched string may free the old
-  one on the render thread (one bounded `free()` per string sent, the class `Arg::Str` in
-  `message.rs` documents).
+  and copying it into operator state would allocate. A live value overwriting the latch may free
+  the replaced string on the render thread — at most one bounded `free()` per overwrite, including
+  the first send after a Swap to an input still holding its seed or authored value (the class
+  `Arg::Str` in `message.rs` documents).
 - **`name: arg`** — a **type-agnostic pass-through** (issue #141): carries *any* `Arg` as a raw
   Event stream (`Port::arg`), read via its `In<Raw>` handle (`io.read(IN)` yields undecoded
   `&Arg` payloads) and re-emitted through the sink's local `Out<Raw>` tap handle

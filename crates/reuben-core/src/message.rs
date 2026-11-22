@@ -68,16 +68,18 @@ pub enum Arg {
     /// A string / symbol atom, backed by `Arc<str>` so cloning on the render thread is a
     /// refcount bump, never a heap allocation. Construction (`Arc::from`) allocates, and happens
     /// only on cold paths: the OSC decode thread, the engine channel, document load. Nothing on the
-    /// render thread builds one — a `str` port is never an Operator output (the contract validator
-    /// refuses it), and the interface pipe forwards the latched `Arc` it was given.
+    /// render thread builds one — a `str` port is input-only (the contract validator refuses an
+    /// output), and the interface pipe forwards the latched `Arc` it was given.
     ///
-    /// **Render-thread frees: an accepted class, not a fenced one.** A clone is RT-safe, but the
-    /// *last* `Arc` drop frees the backing allocation on whichever thread holds it, and once a
-    /// `str` input is latched, the graph is often that holder. Where a last drop can land on the
-    /// render thread:
+    /// **Render-thread frees: an accepted class, not yet fenced.** A clone is RT-safe, but the
+    /// *last* `Arc` drop frees the backing allocation on whichever thread holds it, and a `str`
+    /// latch is often that holder. When a live value overwrites a `str` latch and nothing else
+    /// holds the replaced string, the render thread frees it: at most one free per overwrite. That
+    /// includes the first send to an input after a Swap, which builds every latch afresh — the
+    /// input's seed (`""`, from `plan.rs`) or its authored default or literal is held by that latch
+    /// alone, so the send frees it whatever the sender keeps. The sites:
     ///
-    /// - **A `str` latch overwrite** (`render.rs`, and the interface pipe's own dedup baseline):
-    ///   the replaced string drops there, and by then its sender has usually let go of it.
+    /// - **A `str` latch overwrite** (`render.rs`, and the interface pipe's own dedup baseline).
     /// - **The next block's scratch clears** (`render.rs`): when several strings hit one port in
     ///   a block, the ones overwritten within it are last held by `routes[i].held` (or, for a
     ///   pipe's forward, `scratch.emitted`), cleared at the top of the next block.
@@ -88,28 +90,11 @@ pub enum Arg {
     ///   no `--osc-out` target, native's drain-and-drop frees on the audio thread — a warned
     ///   misconfiguration, and the same path that frees each outbound Message's `address: String`.
     ///
-    /// Each of these is one `free()` of one string that came in from outside the graph: at most one
-    /// per string sent, only in the block a send arrives in or the one after it, never in the
-    /// steady-state signal loop. A sender that keeps its own reference to what it sent keeps every
-    /// free off the render thread. `reuben-document`'s `tests/str_input.rs` pins these under the
-    /// counting allocator.
-    ///
-    /// **What never frees on the render thread: a Swap with nothing sent.** Every install rebuilds
-    /// each latch, and a rendered `str` pipe overwrites its consumers' seeds in its first block.
-    /// Two things keep that free-less:
-    ///
-    /// - every unset or empty `str` latch is seeded with one `""` its Plan owns (`plan.rs`
-    ///   `seed_latch`), so overwriting a seed only drops a count; the Plan frees it when it is
-    ///   dropped, off the render thread;
-    /// - the surviving pipe clears its dedup baseline in `on_transplant`, while the retiring Plan
-    ///   (still borrowed) holds the same `Arc` in its latch — otherwise the baseline could be the
-    ///   last owner of the last string sent once the retiree is dropped, and the pipe's first
-    ///   forward would free it.
-    ///
-    /// Fencing this (a retain/reclaim buffer handed back off-thread) would need a render-to-
-    /// Coordinator return route that exists today only for a retiring Plan at a Swap. Off-thread
-    /// preparation of a `str` input — where the replaced value is also what must be dropped
-    /// off-thread — is the place to build that route once, rather than twice.
+    /// Each is one bounded `free()` on sparse message traffic, in the block a send arrives in or
+    /// the one after it, never in the steady-state signal loop. No built-in Operator declares a
+    /// `str` input yet. `reuben-document`'s `tests/str_input.rs` pins the counts under the counting
+    /// allocator. Moving these frees off the render thread needs a queue that hands replaced owning
+    /// values back to the off-thread side; that is a separate change.
     Str(Arc<str>),
 
     // Shared vocab concrete types — each defined once with `#[derive(ArgValue)]`,
