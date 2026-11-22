@@ -13,10 +13,11 @@
 //! - **Signal** (`f32_buffer`): copy the input buffer to the output buffer. Unwired, the input
 //!   materializes from its latch — the declared default, or **silence** for a bare pipe — so an
 //!   unfed pipe renders exactly that.
-//! - **Value** (`f32`, `i32`, `str`, a vocab enum, `harmony`): forward the held latch as a sparse Value write.
-//!   The dedup baseline is **operator state** (not the per-segment `MsgWriter`), so a pipe emits
-//!   its seed once on the first block and then only on change — downstream latches see the same
-//!   change frames a direct wire would have delivered.
+//! - **Value** (`f32`, `i32`, `str`, a vocab enum, `harmony`): forward the held latch as a sparse
+//!   Value write. The dedup baseline is **operator state** (not the per-segment `MsgWriter`), so a
+//!   pipe emits its seed once on the first block — and again on the first block after a Swap
+//!   transplants it, since its consumers' latches were rebuilt — and then only on change:
+//!   downstream latches see the same change frames a direct wire would have delivered.
 //! - **Event** (`note`): re-emit every routed event at its frame, verbatim.
 
 use alloc::boxed::Box;
@@ -99,6 +100,15 @@ impl Operator for Pipe {
 
     fn spawn(&self) -> Box<dyn Operator> {
         Box::new(Self::new(self.kind))
+    }
+
+    /// The consumers' latches are freshly seeded, so the first block forwards the latch again.
+    /// Clearing here, not at that forward, is what keeps a `str` baseline's drop off the last
+    /// reference: the retiring Plan is still borrowed by the transplant, and its pipe latch holds
+    /// the same `Arc` this baseline does (every block that changes the latch forwards and records
+    /// it). Replaced later, by a forward, it could be the only owner left once the retiree drops.
+    fn on_transplant(&mut self) {
+        self.last = None;
     }
 }
 

@@ -8,8 +8,8 @@
 //! A port carries an **`Arg` type**, named by [`PortSpec::ty`]: `f32_buffer` (a dense per-sample
 //! signal), `f32` (a materialized scalar control with a `{ .. }` meta block), `i32` (a bounded
 //! integer control / constant), `enum` (a held vocab enum, naming its shared `vocab` type), `str`
-//! (a held string), `note`, `harmony`, `pitch`, or `arg` (the type-agnostic pass-through). The retired `Shape`/legacy-`kind`
-//! two-surface world is gone.
+//! (a held string input), `note`, `harmony`, `pitch`, or `arg` (the type-agnostic pass-through).
+//! The retired `Shape`/legacy-`kind` two-surface world is gone.
 //!
 //! reuben-core re-exports this crate's meta types, so it is reached from the bare-metal target the
 //! render half builds for, where no `std` exists to link. It is therefore `no_std` + `alloc`, with
@@ -133,8 +133,8 @@ pub enum PortTy {
     /// `arg` — a type-agnostic pass-through carrying any `Arg`. Input-only
     /// ([`validate`] enforces it — legality needs list context).
     Arg,
-    /// `str` — a held string (`Arg::Str`), read as `&str`; unset, it reads `""`. Never an
-    /// output ([`validate`] enforces it).
+    /// `str` — a held string (`Arg::Str`), read as `&str`; unset, it reads `""`. Input-only
+    /// ([`validate`] enforces it).
     Str,
 }
 
@@ -386,16 +386,18 @@ fn validate_port(at: Locus, label: &str, p: &PortSpec) -> Result<(), ContractErr
         }
         // An output would have the render thread mint the string it emits, and minting one
         // allocates. A string enters only from outside the graph: a document value or a live
-        // control message.
+        // control message. Not a constant either: no Operator reads a constant's value, so a
+        // `str` one would validate, save and do nothing.
         PortTy::Str => {
-            if label == "output" {
+            if label != "input" {
+                let why = if label == "output" {
+                    "an operator cannot build a string on the render thread without allocating"
+                } else {
+                    "no operator reads a constant's value; declare a `str` input"
+                };
                 return Err(ContractError::new(
                     at,
-                    format!(
-                        "output {:?}: `str` is not an output type (an operator cannot build a \
-                         string on the render thread without allocating)",
-                        p.name
-                    ),
+                    format!("{label} {:?}: `str` is an input type only ({why})", p.name),
                 ));
             }
         }
@@ -511,20 +513,16 @@ mod tests {
     }
 
     #[test]
-    fn str_is_an_input_and_constant_type_but_never_an_output() {
-        let ok = spec(
-            r#"{ "type_name": "x", "inputs": [ {"name":"pat","ty":"str"} ],
-                 "constants": [ {"name":"label","ty":"str"} ] }"#,
-        );
+    fn str_is_an_input_type_only() {
+        let ok = spec(r#"{ "type_name": "x", "inputs": [ {"name":"pat","ty":"str"} ] }"#);
         assert!(validate(&ok).is_ok());
         assert_eq!(ok.inputs[0].ty, PortTy::Str);
         let e = err(r#"{ "type_name": "x", "outputs": [ {"name":"pat","ty":"str"} ] }"#);
         assert_eq!(e.locus, Locus::Output(0));
-        assert!(
-            e.message.contains("`str` is not an output type"),
-            "{}",
-            e.message
-        );
+        assert!(e.message.contains("input type only"), "{}", e.message);
+        let e = err(r#"{ "type_name": "x", "constants": [ {"name":"label","ty":"str"} ] }"#);
+        assert_eq!(e.locus, Locus::Constant(0));
+        assert!(e.message.contains("declare a `str` input"), "{}", e.message);
     }
 
     #[test]

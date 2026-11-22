@@ -190,7 +190,7 @@ read's fallback **is** the contract default (no second literal to drift).
 | **enum** (a *vocab* type, a Value, `In<Held<E>>`) | a named discrete choice — `FilterMode`, `Waveform` | read: the real Rust enum (not an index), defaulted to its `#[default]` variant |
 | **`Harmony`** (vocab struct, a Value, `In<Held<Harmony>>`) | the tonal-context struct: `root`/`scale`/`chord` + resolvers `hz()`/`snap()`/`chord_tone()` | read: `Harmony`, defaulted to C-major 12-TET (`Harmony::DEFAULT`) · write: `MsgWriter` (`.set(frame, h)`) |
 | **`Note`** (vocab struct, an Event, `In<Event<Note>>`) | a pitch/velocity event | read: `EventStream<Note>` of `Stamped<Note>` (`.frame`, `.payload`) · write: `EventWriter` (`.emit(frame, note)`) |
-| **`str`** (a held *Value*, `In<Held<str>>`) | a string — text an operator interprets, set from a document literal or a live send | read: `&str` borrowed from the latch, `""` when unset · **input and constant only**: an operator cannot build a string on the render thread without allocating, so no port outputs one |
+| **`str`** (a held *Value*, `In<Held<str>>`) | a string — text an operator interprets, set from a document literal or a live send | read: `&str` borrowed from the latch, `""` when unset · **input only**: an operator cannot build a string on the render thread without allocating, so no port outputs one |
 
 A port's **form** is one of three — **Signal** (`f32_buffer`), **Value** (`f32`/enum/`Harmony`/`str`,
 a held latch read once per slice), **Event** (`Note`, a sparse frame-stamped stream) — and follows from

@@ -551,15 +551,15 @@ pub enum InputValue {
 /// One [`NodeDoc::config`] value: an instantiate-time `Constant`.
 ///
 /// Untagged: a JSON number is a [`Number`](Self::Number) (an `Int` constant such as `voices`); a
-/// JSON string is a [`Symbol`](Self::Symbol) (an `Enum` constant, or a `str` constant's text).
-/// Floats are accepted and rounded so `8` and `8.0` both name 8 voices.
+/// JSON string is a [`Symbol`](Self::Symbol) (an `Enum` constant, none today). Floats are accepted
+/// and rounded so `8` and `8.0` both name 8 voices.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(untagged)]
 pub enum ConfigValue {
     /// An `Int` constant (e.g. `voices`), applied rounded.
     Number(f64),
-    /// An `Enum` constant symbol, or a `str` constant's text.
+    /// An `Enum` constant symbol (none today; forward-compatible).
     Symbol(String),
 }
 
@@ -6840,7 +6840,7 @@ mod tests {
         use super::*;
 
         /// The `str` row's witness. No built-in Operator declares a `str` port, so the table's
-        /// registry carries this one beside the built-ins: one `str` input and one `str` constant.
+        /// registry carries this one beside the built-ins.
         mod str_witness {
             use reuben_core::descriptor::Descriptor;
             use reuben_core::operator::{Io, Operator};
@@ -6850,7 +6850,6 @@ mod tests {
                 type_name: "str_witness",
                 inputs: { text: str },
                 outputs: { },
-                constants: { label: str },
             });
             impl Operator for StrWitness {
                 fn descriptor() -> Descriptor {
@@ -7105,28 +7104,17 @@ mod tests {
             literals: &'static [(&'static str, Owed)],
         }
 
-        const CONSTANTS: &[ConstRow] = &[
-            ConstRow {
-                // The voicer's pool size: an `I32Meta`-bounded 1..=32.
-                kind: LiteralPort::I32Control,
-                witness: ("voicer", "voices"),
-                literals: &[
-                    ("3", Owed::Accepted),
-                    ("100", Owed::Accepted),
-                    ("\"eight\"", Owed::WrongForm),
-                    ("\"3\"", Owed::WrongForm),
-                ],
-            },
-            ConstRow {
-                kind: LiteralPort::Str,
-                witness: ("str_witness", "label"),
-                literals: &[
-                    ("\"eight\"", Owed::Accepted),
-                    ("\"3\"", Owed::Accepted),
-                    ("3", Owed::WrongForm),
-                ],
-            },
-        ];
+        const CONSTANTS: &[ConstRow] = &[ConstRow {
+            // The voicer's pool size: an `I32Meta`-bounded 1..=32.
+            kind: LiteralPort::I32Control,
+            witness: ("voicer", "voices"),
+            literals: &[
+                ("3", Owed::Accepted),
+                ("100", Owed::Accepted),
+                ("\"eight\"", Owed::WrongForm),
+                ("\"3\"", Owed::WrongForm),
+            ],
+        }];
 
         /// A resolver handing back one generated child document — the fixed-`&'static str`
         /// `PatchResolver` cannot carry a per-case child.

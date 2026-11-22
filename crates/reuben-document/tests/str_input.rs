@@ -17,9 +17,7 @@ use reuben_core::message::{Arg, Message};
 use reuben_core::operator::{Io, Operator};
 use reuben_core::plan::Plan;
 use reuben_core::{AudioConfig, Engine, Registry};
-use reuben_document::edit::{
-    add_instrument_interface_input, set_instrument_constant, set_instrument_input,
-};
+use reuben_document::edit::{add_instrument_interface_input, set_instrument_input};
 use reuben_document::{load_instrument, LoadError, MemoryResolver, NormalizedDoc};
 use serde_json::json;
 
@@ -35,7 +33,6 @@ mod str_len {
         type_name: "str_len",
         inputs: { text: str },
         outputs: { len: f32 { 0.0..=1_000_000.0, default 0.0 } },
-        constants: { label: str },
     });
 
     impl Operator for StrLen {
@@ -69,7 +66,6 @@ fn the_contract_declares_str_ports() {
     use reuben_core::descriptor::PortType;
     let d = <str_len::StrLen as Operator>::descriptor();
     assert_eq!(d.inputs[str_len::IN_TEXT.index()].ty, PortType::Str);
-    assert_eq!(d.constants[str_len::C_LABEL].ty, PortType::Str);
 }
 
 /// `/pat` is a `str` pipe declaring a default, feeding `/from_pipe`; `/literal` carries a node
@@ -80,8 +76,7 @@ const DOC: &str = r#"{
   "interface": { "inputs": { "pat": { "type": "str", "default": "0 3 <7 5> ~" } } },
   "nodes": [
     { "type": "str_len", "address": "/from_pipe", "inputs": { "text": { "from": "/pat" } } },
-    { "type": "str_len", "address": "/literal", "inputs": { "text": "hello" },
-      "config": { "label": "lead" } },
+    { "type": "str_len", "address": "/literal", "inputs": { "text": "hello" } },
     { "type": "str_len", "address": "/unset" },
     { "type": "osc_out", "address": "/pipe_len", "inputs": { "in": { "from": "/from_pipe.len" } } },
     { "type": "osc_out", "address": "/literal_len", "inputs": { "in": { "from": "/literal.len" } } },
@@ -234,7 +229,6 @@ fn save_round_trips_every_str_value() {
         .find(|n| n["address"] == "/literal")
         .expect("/literal");
     assert_eq!(literal["inputs"]["text"], json!("hello"));
-    assert_eq!(literal["config"]["label"], json!("lead"));
 
     // And what was saved loads back to the same values.
     let again = serde_json::to_string(&v).unwrap();
@@ -268,9 +262,6 @@ fn the_authoring_verbs_write_and_refuse_str_values() {
     let done =
         set_instrument_input(SRC, "/pat", "in", json!("bd*2 sn"), &registry, &r).expect("runs");
     assert!(done.written, "{:?}", done.report);
-    let done =
-        set_instrument_constant(SRC, "/unset", "label", json!("pad"), &registry, &r).expect("runs");
-    assert!(done.written, "{:?}", done.report);
     let done = add_instrument_interface_input(
         SRC,
         "words",
@@ -295,19 +286,16 @@ fn the_authoring_verbs_write_and_refuse_str_values() {
         .find(|n| n["address"] == "/unset")
         .unwrap();
     assert_eq!(unset["inputs"]["text"], json!("a b c"));
-    assert_eq!(unset["config"]["label"], json!("pad"));
     assert_eq!(v["interface"]["inputs"]["pat"]["default"], json!("bd*2 sn"));
     assert_eq!(
         v["interface"]["inputs"]["words"],
         json!({ "type": "str", "default": "one two" })
     );
 
-    // A number is refused on a `str` input, a `str` constant and a `str` pipe, and nothing is
-    // written.
+    // A number is refused on a `str` input and a `str` pipe, and nothing is written.
     for refused in [
         set_instrument_input(SRC, "/unset", "text", json!(3), &registry, &r),
         set_instrument_input(SRC, "/pat", "in", json!(3), &registry, &r),
-        set_instrument_constant(SRC, "/unset", "label", json!(3), &registry, &r),
     ] {
         let refused = refused.expect("runs");
         assert!(!refused.written, "{:?}", refused.report);
@@ -403,5 +391,107 @@ fn changing_strings_allocate_nothing_and_free_only_the_replaced_ones() {
         frees,
         [1, 1, 0],
         "an overwrite within a block frees one block late"
+    );
+}
+
+/// A `str` pipe kept as a rendered node — it fans out to two consumers and an `osc_out` — so its
+/// first block after a build forwards its seed onto every consumer's freshly seeded latch.
+const FAN_OUT: &str = r#"{
+  "format_version": 3, "instrument": "fan_out",
+  "interface": { "inputs": { "pat": { "type": "str", "default": "0 3 ~" } } },
+  "nodes": [
+    { "type": "str_len", "address": "/a", "inputs": { "text": { "from": "/pat" } } },
+    { "type": "str_len", "address": "/b", "inputs": { "text": { "from": "/pat" } } },
+    { "type": "osc_out", "address": "/echo", "inputs": { "in": { "from": "/pat" } } } ] }"#;
+
+/// Every Swap rebuilds each consumer's latch, and the pipe overwrites it in the first block. With
+/// nothing sent, that must free nothing on the render thread: the overwritten seed is the Plan's
+/// own `""`, which the Plan keeps.
+#[test]
+fn a_swap_frees_nothing_on_the_render_thread_for_a_fanned_out_str_pipe() {
+    use reuben_core::coordinator::RenderSlot;
+    use reuben_document::coordinator::Coordinator;
+
+    const BLOCK: usize = 128;
+    let (mut coord, side, _) = Coordinator::install_initial(
+        FAN_OUT,
+        registry(),
+        Box::new(MemoryResolver::new()),
+        AudioConfig::new(48_000.0, BLOCK),
+    )
+    .expect("initial install");
+    let mut slot = RenderSlot::new(side);
+    let mut out = vec![0.0f32; BLOCK * slot.channels()];
+    for _ in 0..8 {
+        slot.fill(&mut out);
+        slot.drain_outbound().for_each(drop);
+    }
+    assert_counter_is_live();
+
+    for edit in 0..3 {
+        let report = coord.swap_document(FAN_OUT);
+        assert!(report.report.ok, "{:?}", report.report);
+        assert_eq!(report.diff.as_ref().unwrap().survived, 3, "the three nodes");
+        let mut saw_ramp = false;
+        let mut frees = 0;
+        for _ in 0..16 {
+            frees += measure(|| slot.fill(&mut out)).frees;
+            saw_ramp |= slot.is_ramping();
+            // The echo's outbound Messages are the sink's own cost; drop them off the window.
+            slot.drain_outbound().for_each(drop);
+        }
+        assert!(
+            saw_ramp && !slot.is_ramping(),
+            "the swap installed inside the window"
+        );
+        assert_eq!(frees, 0, "edit {edit}: the render thread freed a string");
+        assert!(coord.try_reclaim().is_some(), "a retiree came home");
+    }
+}
+
+/// The surviving pipe carries its dedup baseline across the Swap. When the retiring Engine is
+/// dropped right after the transplant, that baseline must not be left as the only owner of the
+/// last string sent, or the pipe's first forward in the new Engine frees it on the render thread.
+#[test]
+fn a_transplanted_str_pipe_does_not_strand_the_last_send_on_the_render_thread() {
+    let build = || {
+        let graph = load_instrument(FAN_OUT, &registry(), &MemoryResolver::new())
+            .expect("loads")
+            .graph;
+        Plan::instantiate(graph, AudioConfig::new(48_000.0, 64)).expect("instantiates")
+    };
+    let (old, new) = (build(), build());
+    let pairs: Vec<(usize, usize)> = old
+        .nodes()
+        .iter()
+        .enumerate()
+        .filter_map(|(i, n)| {
+            let j = new.nodes().iter().position(|m| m.address == n.address)?;
+            Some((i, j))
+        })
+        .collect();
+    assert_eq!(pairs.len(), 4, "pipe + three nodes survive");
+
+    let mut retiring = Engine::new(old);
+    let mut out = vec![0.0f32; retiring.block_size() * retiring.channels()];
+    // The sender lets go at once: the graph holds every reference to this string.
+    retiring.queue_osc("/pat/in", &[Arg::Str("sent live".into())]);
+    for _ in 0..4 {
+        retiring.fill(&mut out);
+        retiring.drain_outbound().for_each(drop);
+    }
+
+    let mut live = Engine::new(new);
+    live.transplant_survivors(&mut retiring, &pairs);
+    drop(retiring);
+    assert_counter_is_live();
+    let mut frees = 0;
+    for _ in 0..8 {
+        frees += measure(|| live.fill(&mut out)).frees;
+        live.drain_outbound().for_each(drop);
+    }
+    assert_eq!(
+        frees, 0,
+        "the render thread freed a string after the transplant"
     );
 }

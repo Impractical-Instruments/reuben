@@ -77,9 +77,7 @@ pub enum Arg {
     /// render thread:
     ///
     /// - **A `str` latch overwrite** (`render.rs`, and the interface pipe's own dedup baseline):
-    ///   the replaced string drops there, and by then its sender has usually let go of it. The
-    ///   seed counts: an unset `str` latch holds `""` (`plan.rs`), an `ArcInner` allocated at
-    ///   instantiate, so the first overwrite of an unset port frees that.
+    ///   the replaced string drops there, and by then its sender has usually let go of it.
     /// - **The next block's scratch clears** (`render.rs`): when several strings hit one port in
     ///   a block, the ones overwritten within it are last held by `routes[i].held` (or, for a
     ///   pipe's forward, `scratch.emitted`), cleared at the top of the next block.
@@ -95,6 +93,18 @@ pub enum Arg {
     /// steady-state signal loop. A sender that keeps its own reference to what it sent keeps every
     /// free off the render thread. `reuben-document`'s `tests/str_input.rs` pins these under the
     /// counting allocator.
+    ///
+    /// **What never frees on the render thread: a Swap with nothing sent.** Every install rebuilds
+    /// each latch, and a rendered `str` pipe overwrites its consumers' seeds in its first block.
+    /// Two things keep that free-less:
+    ///
+    /// - every unset or empty `str` latch is seeded with one `""` its Plan owns (`plan.rs`
+    ///   `seed_latch`), so overwriting a seed only drops a count; the Plan frees it when it is
+    ///   dropped, off the render thread;
+    /// - the surviving pipe clears its dedup baseline in `on_transplant`, while the retiring Plan
+    ///   (still borrowed) holds the same `Arc` in its latch — otherwise the baseline could be the
+    ///   last owner of the last string sent once the retiree is dropped, and the pipe's first
+    ///   forward would free it.
     ///
     /// Fencing this (a retain/reclaim buffer handed back off-thread) would need a render-to-
     /// Coordinator return route that exists today only for a retiring Plan at a Swap. Off-thread

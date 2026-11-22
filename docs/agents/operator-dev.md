@@ -148,10 +148,11 @@ impl Operator for Filter {
 - **`name: note`** / **`name: harmony`** / **`name: pitch`** — `Note` (Event) / `Harmony` (Value) /
   `Pitch` (Value) ports (`Port::note` / `Port::harmony` / `Port::pitch`). `pitch` is a held `Pitch`
   leaf — the wire-internal output an `unpack_<type>` op emits, consumed by `pitch2freq`.
-- **`name: str`** — a held string (Value) input or constant (`Port::str`), read through its
+- **`name: str`** — a held string (Value) input (`Port::str`), read through its
   `In<Held<str>>` handle as a `&str` borrowed from the latch (no copy, no allocation); unset, it
-  reads `""`. **Never an output**: the validator refuses it, because building a string on the
-  render thread allocates. Read it, don't keep it — a `&str` cannot outlive the `process` call,
+  reads `""`. **Input-only**: the validator refuses a `str` output, because building a string on
+  the render thread allocates, and a `str` constant, because no operator reads a constant's
+  value. Read it, don't keep it — a `&str` cannot outlive the `process` call,
   and copying it into operator state would allocate. Replacing a latched string may free the old
   one on the render thread (one bounded `free()` per string sent, the class `Arg::Str` in
   `message.rs` documents).

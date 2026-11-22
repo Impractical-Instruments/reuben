@@ -506,7 +506,7 @@ fn literal_input(value: Value) -> Result<InputValue, EditError> {
     }
 }
 
-/// Coerce a JSON value into a config constant (a number, or a string: an enum symbol or `str` text).
+/// Coerce a JSON value into a config constant (a number, or a forward-compatible enum symbol).
 fn config_value(value: Value) -> Result<ConfigValue, EditError> {
     match value {
         Value::Number(n) => n
@@ -515,7 +515,7 @@ fn config_value(value: Value) -> Result<ConfigValue, EditError> {
             .ok_or_else(|| EditError::Target("constant value is not a finite number".into())),
         Value::String(s) => Ok(ConfigValue::Symbol(s)),
         _ => Err(EditError::Target(
-            "constant value must be a number or a string".into(),
+            "constant value must be a number or a symbol string".into(),
         )),
     }
 }
