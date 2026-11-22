@@ -18,7 +18,7 @@ until they exist:
 solutions' arguments and `DOCUMENT_ARGUMENTS`, both under `eval/`, which the gate never swaps — plus
 one thing the surface decides: whether each verb a reference calls is on the roster, since an
 off-roster call is charged by value. So it moves only when a reference calls a verb one side lacks,
-which is a reference to fix rather than a surface cost to trend. It is zero on every task today; the
+which says whether a verb exists, not what the surface costs. It is zero on every task today; the
 gate warns when a reference emits a document.
 
 ## Two tiers over one door

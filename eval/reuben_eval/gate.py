@@ -8,8 +8,8 @@ Document characters (metric (c)) are not on the trend here. A reference solution
 written in `tasks.py`, and which roster arguments count as a document is `DOCUMENT_ARGUMENTS` in
 `workspace.py` — both harness, which this gate never swaps. The surface enters in one way only:
 whether each verb a reference calls is on the roster, since an off-roster call is charged by value.
-So the number moves with the surface only when a reference calls a verb one side lacks — and then it
-is the reference, not the surface, that needs fixing. Today it is zero on every task. It is a
+So the number moves with the surface only when a reference calls a verb one side lacks, which says
+whether a verb exists, not what the surface costs. Today it is zero on every task. It is a
 live-tier metric; here it survives as a warning whenever a reference emits a document, since a
 reference is meant to model a conforming client.
 
@@ -229,7 +229,6 @@ def render(report: dict[str, Any], baseline: dict[str, Any] | None) -> tuple[str
             "a reference solution should edit through the verbs"
         )
     if emitters:
-        warned = True
         lines += [
             "",
             "⚠️ Reference solutions emitting document characters: "
@@ -248,6 +247,10 @@ def render(report: dict[str, Any], baseline: dict[str, Any] | None) -> tuple[str
         lines.append(f"**Result: ❌ {verdict}.**")
     elif warned:
         lines.append("**Result: ⚠️ the agent surface grew — recorded on the trend, not blocked. See annotations.**")
+    elif emitters:
+        lines.append(
+            "**Result: ⚠️ a reference solution emits a document — not blocked. See annotations.**"
+        )
     else:
         lines.append("**Result: ✅ the agent surface held.**")
     lines.append("")
