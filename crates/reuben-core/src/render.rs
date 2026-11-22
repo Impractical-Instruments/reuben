@@ -590,10 +590,14 @@ pub(crate) fn held_arg(p: &Port, arg: &Arg) -> Option<Arg> {
         // literal does through [`Port::coerce`] — round to the nearest integer, then clamp to the
         // declared range. So an `i32` pipe driven `/steps/in 12.7` latches `13`, not `12.7`; the
         // "int control" promise holds for live OSC input, not only authored defaults.
-        PortType::I32 { meta } => arg.as_f32().map(|v| {
-            let i = Float::round(v) as i32;
-            Arg::I32(meta.as_ref().map(|m| m.clamp(i)).unwrap_or(i))
-        }),
+        // An `Arg::I32` clamps directly: through f32 it would lose every integer past 2^24.
+        PortType::I32 { meta } => {
+            let i = match arg {
+                Arg::I32(i) => *i,
+                _ => Float::round(arg.as_f32()?) as i32,
+            };
+            Some(Arg::I32(meta.as_ref().map(|m| m.clamp(i)).unwrap_or(i)))
+        }
         PortType::Vocab {
             enum_meta: Some(e), ..
         } => e.resolve_arg(arg),
@@ -1085,6 +1089,37 @@ mod tests {
         assert_eq!(held_arg(&port, &Arg::F32(12.7)), Some(Arg::I32(13)));
         assert_eq!(held_arg(&port, &Arg::F32(99.0)), Some(Arg::I32(16))); // clamps to the ceiling
         assert_eq!(held_arg(&port, &Arg::I32(5)), Some(Arg::I32(5))); // integer passes through
+    }
+
+    /// An integer arriving at an `i32` port latches exactly across the whole `i32` range, with no
+    /// f32 step: 2^24 + 1 is the first integer an f32 cannot hold.
+    #[test]
+    fn held_arg_keeps_an_int_exact_past_f32_precision() {
+        use crate::descriptor::{I32Meta, Port};
+        let port = Port::i32(
+            "beat",
+            I32Meta {
+                min: i32::MIN,
+                max: i32::MAX,
+                default: 0,
+            },
+        );
+        for v in [16_777_217, 16_777_219, i32::MAX - 1, i32::MAX, i32::MIN + 1] {
+            assert_eq!(held_arg(&port, &Arg::I32(v)), Some(Arg::I32(v)), "{v}");
+        }
+        let narrow = Port::i32(
+            "steps",
+            I32Meta {
+                min: 0,
+                max: 16_777_216,
+                default: 0,
+            },
+        );
+        assert_eq!(
+            held_arg(&narrow, &Arg::I32(i32::MAX)),
+            Some(Arg::I32(16_777_216)),
+            "an int past the range still clamps"
+        );
     }
 
     /// Two leaf nodes in an ancestor-prefix relationship — the shape inlining

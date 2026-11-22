@@ -25,12 +25,15 @@
 //! - output 2: `beat` (`i32`, held Value) — whole beats since the last `sync` (or since the Clock
 //!   started). `beat + phase` is the musical position. It is driven by the same accumulator as
 //!   `phase`, so it steps at exactly the frame `phase` wraps, and resets to 0 at a `sync` frame.
-//!   It is also re-emitted at the first frame of every `process` call, even unchanged: a consumer
-//!   added in a Swap seeds its latch from its own default, not from upstream's last output, and the
-//!   Clock renders before its consumers, so that consumer reads the right beat in its first block.
+//!   It is also re-emitted at the first frame of every `process` call, even unchanged: a Swap seeds
+//!   a new consumer's latch from its own default, not from upstream's last output, and resets a
+//!   surviving consumer's held latches to their defaults too. The Clock renders before its
+//!   consumers, so either one reads the right beat in its first block after the Swap.
 //!   After `i32::MAX` it wraps to 0, exactly as a `sync` would (about 34 years at 120 BPM): the
 //!   value stays inside its declared range, and a consumer that already treats a backward jump as a
-//!   locate needs no second case.
+//!   locate needs no second case. A held `i32` input latches it exactly, but clamped to that
+//!   input's declared range: the `*_i32_value` arithmetic operators declare ±1,000,000, so a `beat`
+//!   routed through one pins at 1,000,000 (about 5.8 days at 120 BPM).
 //!
 //! `tempo`/`division` are Value inputs: read held, so a change block-slices and takes effect at the
 //! exact sample of the change — and each can be *wired* and modulated (`division` by an `i32`
@@ -66,7 +69,8 @@ pub struct Clock {
     /// This (sub)block's `sync` frames, cleared per call and kept so a burst's capacity survives
     /// into the next block.
     resets: Vec<usize>,
-    /// Whole beats since the last `sync`, as `beat` last stood at the end of the previous call.
+    /// The `beat` the next call emits at its frame 0: whole beats since the last `sync`, including
+    /// a wrap that fell after the previous call's last frame.
     beat: i32,
 }
 
@@ -121,8 +125,8 @@ impl Operator for Clock {
         }
         resets.sort_unstable();
 
-        // Two passes over the block, one per output port (only one output borrow at a time).
-        // Both replay the identical accumulator from `start` — applying resets — so they
+        // Three passes over the block, one per output port (only one output borrow at a time).
+        // Each replays the identical accumulator from `start` — applying resets — so they
         // stay in lock-step; a reset re-zeroes the phase before that sample is emitted.
         let start = self.phase;
 
@@ -646,6 +650,7 @@ mod tests {
         d.set(IN_TEMPO, 1.0).set(IN_DIVISION, 1.0).render(2);
         let phase = d.output(OUT_PHASE).to_vec();
         assert!(phase[0] < 1.0, "phase {} reached 1.0", phase[0]);
+        assert_eq!(PHASE_CEIL.to_bits(), 1.0f32.to_bits() - 1, "one ulp below 1.0");
         assert_eq!(phase[0], PHASE_CEIL);
         assert!(phase[1] < 0.01, "and wraps on the next frame: {}", phase[1]);
     }
