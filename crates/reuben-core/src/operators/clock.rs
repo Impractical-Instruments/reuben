@@ -17,12 +17,10 @@
 //! - output 1: `gate` (`f32`, held Value) — 1.0 for the first half of each **1/`division` sub-beat**, else
 //!   0.0; its rising edge is a sample-accurate trigger. At the default `division` 1 this is the
 //!   original once-per-beat gate, high for the first half of the beat. At `division` N the gate
-//!   pulses N times per beat — a 16th-note grid is `division` 4. Emitted at each edge, and its
-//!   current level re-emitted at the first frame of every `process` call for the same Swap reason
-//!   as `beat` (output 2). The gate consumers (`envelope`, and `euclid`/`sequencer` through
-//!   `EdgeDetector`) find edges by comparing the held level against their own flag kept across
-//!   slices, so re-emitting an unchanged level adds no trigger. A sink that forwards every message,
-//!   such as `osc_out`, does see one per block.
+//!   pulses N times per beat — a 16th-note grid is `division` 4. Emitted at each edge, and announced
+//!   (see below). The gate consumers (`envelope`, and `euclid`/`sequencer` through `EdgeDetector`)
+//!   find edges by comparing the held level against their own flag kept across slices, so an
+//!   announced level that matches that flag adds no trigger.
 //! - input 1: `tempo` (BPM).
 //! - input 2: `division` (`i32`) — gate subdivisions per beat (1 = once per beat, default; 4 =
 //!   16ths). Its `1` floor lives in the port contract (`I32Meta` min), so the gate can never
@@ -30,15 +28,19 @@
 //! - output 2: `beat` (`i32`, held Value) — whole beats since the last `sync` (or since the Clock
 //!   started). `beat + phase` is the musical position. It is driven by the same accumulator as
 //!   `phase`, so it steps at exactly the frame `phase` wraps, and resets to 0 at a `sync` frame.
-//!   It is also re-emitted at the first frame of every `process` call, even unchanged: a Swap seeds
-//!   a new consumer's latch from its own default, not from upstream's last output, and resets a
-//!   surviving consumer's held latches to their defaults too. The Clock renders before its
-//!   consumers, so either one reads the right beat in its first block after the Swap.
+//!   Emitted at those changes, and announced (see below).
 //!   After `i32::MAX` it wraps to 0, exactly as a `sync` would (about 34 years at 120 BPM): the
 //!   value stays inside its declared range, and a consumer that already treats a backward jump as a
 //!   locate needs no second case. A held `i32` input latches it exactly, but clamped to that
 //!   input's declared range: the `*_i32_value` arithmetic operators declare ±1,000,000, so a `beat`
 //!   routed through one pins at 1,000,000 (about 5.8 days at 120 BPM).
+//!
+//! **Announcing.** `gate` and `beat` are otherwise emitted only when they change, but every Swap
+//! builds a Plan whose held latches start at their defaults: a new consumer's, and a surviving
+//! consumer's too. So the Clock *announces* both current values at frame 0 of its first `process`
+//! call after construction and of its first call after `on_transplant` (a surviving Clock is
+//! transplanted into the new Plan). The Clock renders before its consumers, so each reads the right
+//! values in its first block after the Swap, and nothing repeats in steady state.
 //!
 //! `tempo`/`division` are Value inputs: read held, so a change block-slices and takes effect at the
 //! exact sample of the change — and each can be *wired* and modulated (`division` by an `i32`
@@ -67,15 +69,20 @@ pub struct Clock {
     /// Held in f64 so the beat grid doesn't drift off the sample timeline over a long
     /// session (f32 accumulation slips audibly within seconds).
     phase: f64,
-    /// The `gate` level at the end of the previous call. Edges within a call are found against it;
-    /// frame 0 emits the current level whether or not it changed.
+    /// The `gate` level at the end of the previous call; edges within a call are found against it.
     gate_high: bool,
     /// This (sub)block's `sync` frames, cleared per call and kept so a burst's capacity survives
     /// into the next block.
     resets: Vec<usize>,
-    /// The `beat` the next call emits at its frame 0: whole beats since the last `sync`, including
-    /// a wrap that fell after the previous call's last frame.
+    /// Whole beats since the last `sync`, as of the next call's frame 0 (a wrap after the previous
+    /// call's last frame included).
     beat: i32,
+    /// A wrap after the previous call's last frame changed `beat` with no frame left to emit it on;
+    /// the next call's frame 0 emits it.
+    beat_pending: bool,
+    /// Whether `gate` and `beat` have been announced since construction or the last
+    /// `on_transplant`. False in a fresh Clock, so the first call announces.
+    announced: bool,
 }
 
 /// The largest f32 below `1.0`: the ceiling on the emitted `phase`.
@@ -156,8 +163,8 @@ impl Operator for Clock {
             end = phase;
         }
         {
-            // `gate`: replay the same accumulator, emitting at frame 0 and at each edge. A
-            // downstream Value/materialize bridge ZOH-reconstructs the dense gate.
+            // `gate`: replay the same accumulator, emitting at each edge and, when announcing, at
+            // frame 0. A downstream Value/materialize bridge ZOH-reconstructs the dense gate.
             let mut out = io.write(OUT_GATE);
             let mut phase = start;
             let mut ri = 0;
@@ -171,7 +178,7 @@ impl Operator for Clock {
                 // half. division 1 reduces to `phase < 0.5` exactly (bit-identical default).
                 let sub = Float::fract(phase * division);
                 let now_high = sub < 0.5;
-                if i == 0 || now_high != high {
+                if now_high != high || (i == 0 && !self.announced) {
                     out.set(i, if now_high { 1.0 } else { 0.0 });
                     high = now_high;
                 }
@@ -187,13 +194,13 @@ impl Operator for Clock {
         }
         {
             // `beat`: the same replay once more. A wrap after frame `i` is the beat change at `i + 1`
-            // (the frame whose `phase` is the wrapped value); one after the last frame carries into
-            // `self.beat` and lands at the next call's frame 0, which always emits.
+            // (the frame whose `phase` is the wrapped value); one after the last frame is left
+            // pending for the next call's frame 0.
             let mut out = io.write(OUT_BEAT);
             let mut phase = start;
             let mut ri = 0;
             let mut beat = self.beat;
-            let mut changed = true;
+            let mut changed = self.beat_pending || !self.announced;
             for i in 0..n {
                 while ri < resets.len() && resets[ri] == i {
                     phase = 0.0;
@@ -213,6 +220,11 @@ impl Operator for Clock {
                 }
             }
             self.beat = beat;
+            // With no frames, nothing was emitted: keep what was pending.
+            if n > 0 {
+                self.beat_pending = changed;
+                self.announced = true;
+            }
         }
         self.phase = end;
         self.resets = resets;
@@ -220,6 +232,11 @@ impl Operator for Clock {
 
     fn spawn(&self) -> Box<dyn Operator> {
         Box::new(Self::new())
+    }
+
+    fn on_transplant(&mut self) {
+        // The new Plan's consumers latch their defaults; announce the current values to them.
+        self.announced = false;
     }
 }
 
@@ -509,20 +526,18 @@ mod tests {
 
     /// Drive `op` for `total` frames in `render` calls of `chunk` frames at `tempo`, with optional
     /// `sync` resets at global frames. Returns the dense `phase`, the ZOH-reconstructed `beat` per
-    /// frame, the global frames `beat` was emitted at, and the global frame of every block start
-    /// (each `render` call splits into `BLOCK_SIZE` blocks, each one `process` call).
+    /// frame, and the global frames `beat` was emitted at.
     fn run_beat(
         op: Clock,
         total: usize,
         chunk: usize,
         tempo: f32,
         resets: &[usize],
-    ) -> (Vec<f32>, Vec<i32>, Vec<usize>, Vec<usize>) {
+    ) -> (Vec<f32>, Vec<i32>, Vec<usize>) {
         use crate::message::Arg;
-        use crate::op_driver::BLOCK_SIZE;
         let mut d = OpDriver::for_type(op, SR);
         d.set(IN_TEMPO, tempo).set(IN_DIVISION, 1.0);
-        let (mut phase, mut beat, mut emits, mut starts) = (vec![], vec![], vec![], vec![]);
+        let (mut phase, mut beat, mut emits) = (vec![], vec![], vec![]);
         let mut level = None;
         let mut at = 0;
         // `OpDriver::push` frames are relative to each `render` call and replay on every later
@@ -534,7 +549,6 @@ mod tests {
         while at < total {
             let n = chunk.min(total - at);
             d.render(n);
-            starts.extend((at..at + n).step_by(BLOCK_SIZE));
             phase.extend_from_slice(d.output(OUT_PHASE));
             // Only `beat` emits `I32`; they arrive in frame order among themselves.
             let mut ev = d.emits().iter().filter_map(|e| match e.arg {
@@ -553,7 +567,7 @@ mod tests {
             assert!(next.is_none(), "beat emits are in frame order");
             at += n;
         }
-        (phase, beat, emits, starts)
+        (phase, beat, emits)
     }
 
     /// The reference: replay the f64 accumulator, returning per frame the expected beat and
@@ -584,7 +598,7 @@ mod tests {
         for &tempo in &[60.0, 120.0, 173.3, 999.0] {
             for &chunk in &[1usize, 7, 64, 128, 1000] {
                 let total = 60_000;
-                let (phase, beat, emits, starts) = run_beat(Clock::new(), total, chunk, tempo, &[]);
+                let (phase, beat, emits) = run_beat(Clock::new(), total, chunk, tempo, &[]);
                 let (want, wraps) = reference_beats(total, tempo, &[]);
                 assert_eq!(beat, want, "beat drifted at {tempo} BPM, chunk {chunk}");
                 assert!(*beat.last().unwrap() >= 1, "the run spans a beat");
@@ -600,9 +614,9 @@ mod tests {
                         "beat and phase disagree at {i} ({tempo} BPM, chunk {chunk})"
                     );
                 }
-                // Emitted exactly at every wrap and every block start, and nowhere else.
+                // Announced at frame 0, then emitted exactly at every wrap: no block-start repeats.
                 let want_emits: Vec<usize> = (0..total)
-                    .filter(|&i| wraps[i] || starts.binary_search(&i).is_ok())
+                    .filter(|&i| i == 0 || wraps[i])
                     .collect();
                 assert_eq!(emits, want_emits, "{tempo} BPM, chunk {chunk}");
             }
@@ -615,7 +629,7 @@ mod tests {
         // 44_928 is a block start (351 * 128); 30_000 is mid-block.
         let resets = [30_000, 44_928];
         let total = 60_000;
-        let (phase, beat, emits, _) = run_beat(Clock::new(), total, total, 240.0, &resets);
+        let (phase, beat, emits) = run_beat(Clock::new(), total, total, 240.0, &resets);
         let (want, _) = reference_beats(total, 240.0, &resets);
         assert_eq!(beat, want);
         assert_eq!(beat[29_999], 2, "two beats elapsed before the first sync");
@@ -631,9 +645,9 @@ mod tests {
     #[test]
     fn beat_and_phase_are_chunk_size_independent() {
         let total = 50_000;
-        let (p1, b1, _, _) = run_beat(Clock::new(), total, 1, 173.3, &[]);
+        let (p1, b1, _) = run_beat(Clock::new(), total, 1, 173.3, &[]);
         for &chunk in &[7usize, 64, 128, 333] {
-            let (p, b, _, _) = run_beat(Clock::new(), total, chunk, 173.3, &[]);
+            let (p, b, _) = run_beat(Clock::new(), total, chunk, 173.3, &[]);
             assert!(
                 p.iter().zip(&p1).all(|(a, b)| a.to_bits() == b.to_bits()),
                 "phase, chunk {chunk}"
@@ -676,7 +690,7 @@ mod tests {
         // Start one beat short of `i32::MAX`. At 999 BPM a beat is ~2883 frames, so 7000 frames
         // cross two wraps: MAX-1 -> MAX -> 0, the same locate a `sync` performs.
         let clock = Clock { beat: i32::MAX - 1, ..Clock::new() };
-        let (_, beat, _, _) = run_beat(clock, 7_000, 128, 999.0, &[]);
+        let (_, beat, _) = run_beat(clock, 7_000, 128, 999.0, &[]);
         let mut seen = vec![beat[0]];
         for &b in &beat[1..] {
             if b != *seen.last().unwrap() {
@@ -684,5 +698,33 @@ mod tests {
             }
         }
         assert_eq!(seen, vec![i32::MAX - 1, i32::MAX, 0]);
+    }
+
+    #[test]
+    fn gate_and_beat_are_announced_once_after_construction_and_after_transplant() {
+        use crate::message::Arg;
+        // 240 BPM: a beat every 12000 frames, the gate high for the first 6000. Blocks from 2048 to
+        // 4096 hold no edge and no wrap, so only an announcement emits there.
+        let mut d = OpDriver::for_type(Clock::new(), SR);
+        d.set(IN_TEMPO, 240.0).set(IN_DIVISION, 1.0);
+        let first = d.render(2048).emits().to_vec();
+        let announced = |es: &[crate::message::Emit]| -> Vec<(usize, Arg)> {
+            es.iter().map(|e| (e.frame, e.arg.clone())).collect()
+        };
+        assert_eq!(
+            announced(&first),
+            vec![(0, Arg::F32(1.0)), (0, Arg::I32(0))],
+            "the first call announces gate and beat; later blocks repeat nothing"
+        );
+        assert!(d.render(1024).emits().is_empty(), "steady state emits nothing");
+
+        d.on_transplant();
+        let after = d.render(1024).emits().to_vec();
+        assert_eq!(
+            announced(&after),
+            vec![(0, Arg::F32(1.0)), (0, Arg::I32(0))],
+            "the first call after a transplant announces the current values once"
+        );
+        assert!(d.render(1024).emits().is_empty(), "then nothing repeats");
     }
 }
