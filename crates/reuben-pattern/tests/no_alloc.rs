@@ -3,7 +3,7 @@
 mod common;
 use common::*;
 use proptest::prelude::*;
-use reuben_pattern::{Event, Pattern, Rational, Span};
+use reuben_pattern::{Note, Pattern, MAX_CYCLE};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
@@ -44,9 +44,9 @@ fn allocations(f: impl FnOnce()) -> usize {
     COUNT.with(Cell::get)
 }
 
-fn assert_query_allocates_nothing(p: &Pattern, s: Span, buf: &mut [Event]) {
+fn assert_query_allocates_nothing(p: &Pattern, c: i64, buf: &mut [Note]) {
     let n = allocations(|| {
-        let _ = std::hint::black_box(p.query(s, 11, buf));
+        let _ = std::hint::black_box(p.cycle(c, 11, buf));
     });
     assert_eq!(n, 0, "query allocated {n} times");
 }
@@ -58,37 +58,24 @@ fn counter_sees_allocations() {
 
 #[test]
 fn query_allocates_nothing_including_on_overflow() {
-    let p = Pattern::new("[0 1 2]*7 <3 [4 5]/3> {0 1 2, 3 4}%5? c4(5,13,3) [0|1|2]").unwrap();
-    let mut roomy = [Event::EMPTY; 1024];
-    let mut tight = [Event::EMPTY; 2];
-    let mut none: [Event; 0] = [];
-    for s in [cycles(0, 1), cycles(-3, 5), Span::new(r(1, 3), r(2, 7))] {
-        assert_query_allocates_nothing(&p, s, &mut roomy);
-        assert_query_allocates_nothing(&p, s, &mut tight);
-        assert_query_allocates_nothing(&p, s, &mut none);
+    let p = Pattern::new("[0 1 2]*3 <3 [4 5]/3> {0 1, 3 4}%3? c4(5,13,3) [0|1|2]").unwrap();
+    let mut roomy = [Note::EMPTY; 1024];
+    let mut tight = [Note::EMPTY; 2];
+    let mut none: [Note; 0] = [];
+    for c in [0, -3, 7, MAX_CYCLE, -MAX_CYCLE, i64::MAX, i64::MIN] {
+        assert_query_allocates_nothing(&p, c, &mut roomy);
+        assert_query_allocates_nothing(&p, c, &mut tight);
+        assert_query_allocates_nothing(&p, c, &mut none);
     }
-    let dense = Pattern::new("[0*256, 1*256, 2*256, 3*256]?").unwrap();
-    let mut res = None;
-    assert_eq!(
-        allocations(|| res = Some(dense.query(cycles(0, 1000), 0, &mut roomy))),
-        0
-    );
-    assert!(res.unwrap().exhausted);
-    let near = Rational::int(i64::MAX / 4);
-    assert_query_allocates_nothing(
-        &p,
-        Span::new(near, near.checked_add(r(1, 3)).unwrap()),
-        &mut roomy,
-    );
 }
 
 proptest! {
     #![proptest_config(ProptestConfig { cases: 128, ..ProptestConfig::default() })]
 
     #[test]
-    fn generated_queries_allocate_nothing(src in pattern_src(), s in query_span(), cap in 0usize..64) {
+    fn generated_queries_allocate_nothing(src in pattern_src(), c in any_cycle(), cap in 0usize..64) {
         let Some(p) = generated(&src) else { return Ok(()) };
-        let mut buf = vec![Event::EMPTY; cap];
-        assert_query_allocates_nothing(&p, s, &mut buf);
+        let mut buf = vec![Note::EMPTY; cap];
+        assert_query_allocates_nothing(&p, c, &mut buf);
     }
 }

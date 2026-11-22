@@ -1,8 +1,10 @@
-//! The compile-time bound on a query's work.
+//! The compile-time bound on a cycle query's work.
 //!
-//! [`bound`] returns, for a node and a span length, the most units of work (`spend()` calls in the
-//! walk) a query of that length can cost, wherever the span lies. Each node kind mirrors its walk:
-//! one unit per node visit, per cycle iterated, and per sequence step examined.
+//! [`cycle_work`] is the most units of work (`spend()` calls in the walk) one cycle query can
+//! cost, for any cycle. It recurses through [`bound`]: for a node and a span length, the most work
+//! a visit with that span can cost, wherever the span lies. Each node kind mirrors its walk: one
+//! unit per node visit, per cycle iterated, per sequence step examined, and per `?` filter each
+//! candidate onset is tested against.
 //!
 //! Two facts make the bound tight. A span of length `len` touches at most `ceil(len) + 1` cycles,
 //! or `ceil(len)` when it starts or ends on a cycle boundary ("anchored"). And in a sequence only
@@ -12,9 +14,14 @@
 //! keeps nesting additive: an anchored span has at most one partial slot per level, and an anchored
 //! span of whole cycles (what a whole slot asks of its child) has none.
 //!
-//! The recursion is memoised by `(node, len, anchored)`. A node only ever sees lengths derived
-//! from the root's by the slot ratios on its path, capped at one cycle, so each node is evaluated
-//! at most about twice per level of depth.
+//! A third fact handles `< >`, polymeter and other speed changes: a cycle query's ends are
+//! integers, and a speed factor `p/q` puts them on multiples of `1/q`. A slot that starts on that
+//! grid and is no longer than its spacing can never be partial, so `<a b c>` is charged one whole
+//! step per cycle.
+//!
+//! The recursion is memoised by `(node, len, anchored, grid, filters)`. A node only ever sees
+//! lengths derived from the root's by the ratios on its path, capped at one cycle, so each node is
+//! evaluated a few times per level of depth, not once per path.
 
 use alloc::collections::BTreeMap;
 
@@ -22,22 +29,36 @@ use crate::compile::Node;
 use crate::time::Rational;
 use crate::Pattern;
 
-type Memo = BTreeMap<(u32, Rational, bool), Rational>;
+type Memo = BTreeMap<(u32, Rational, bool, Option<i64>, u32), Rational>;
 
-/// The most units of work a query of `len` cycles can spend on `pat`; `None` on arithmetic
-/// overflow, which callers treat as unbounded.
-pub(crate) fn work(pat: &Pattern, len: Rational) -> Option<Rational> {
-    // Any span lies inside a longer one, and the walk does no less over the longer, so rounding
-    // the length up keeps the bound sound while keeping its arithmetic on a small grid.
-    let grid = 1024;
-    let up = ceil(len.checked_mul(int(grid))?)?;
-    bound(
-        pat,
-        pat.root,
-        Rational::new(up, grid)?,
-        false,
-        &mut Memo::new(),
-    )
+/// The most units of work one cycle query can spend on `pat`; `None` on arithmetic overflow, which
+/// callers treat as unbounded. A cycle is a span of one whole cycle on its boundaries.
+pub(crate) fn cycle_work(pat: &Pattern) -> Option<Rational> {
+    let span = Visit {
+        len: Rational::ONE,
+        anchored: true,
+        grid: Some(1),
+        filters: 0,
+    };
+    bound(pat, pat.root, span, &mut Memo::new())
+}
+
+/// What the bound knows about a span: its length; whether one end lies on a cycle boundary;
+/// `Some(g)` when both ends are known to be multiples of `1/g`; and how many `?` nodes lie above,
+/// each tested once per candidate onset.
+#[derive(Clone, Copy)]
+struct Visit {
+    len: Rational,
+    anchored: bool,
+    grid: Option<i64>,
+    filters: u32,
+}
+
+/// A grid finer than this is treated as unknown; nothing is lost but tightness.
+const MAX_LATTICE: i64 = 1 << 40;
+
+fn finer(g: Option<i64>, by: i64) -> Option<i64> {
+    g?.checked_mul(by).filter(|g| *g <= MAX_LATTICE)
 }
 
 fn ceil(x: Rational) -> Option<i64> {
@@ -53,50 +74,80 @@ fn add(a: Rational, b: Rational) -> Option<Rational> {
     a.checked_add(b)
 }
 
-fn bound(
-    pat: &Pattern,
-    id: u32,
-    len: Rational,
-    anchored: bool,
-    memo: &mut Memo,
-) -> Option<Rational> {
+fn bound(pat: &Pattern, id: u32, v: Visit, memo: &mut Memo) -> Option<Rational> {
+    let Visit {
+        len,
+        anchored,
+        grid,
+        filters,
+    } = v;
     if !len.is_positive() {
         return Some(Rational::ZERO);
     }
-    if let Some(w) = memo.get(&(id, len, anchored)) {
+    let key = (id, len, anchored, grid, filters);
+    if let Some(w) = memo.get(&key) {
         return Some(*w);
     }
-    let touched = int(ceil(len)?.checked_add(i64::from(!anchored))?);
-    // Anchored with a whole number of cycles: both ends lie on cycle boundaries, so nothing is
-    // partial. This is what a whole sequence slot asks of its child.
-    let exact = anchored && len.denom() == 1;
+    // Both ends on cycle boundaries: nothing is partial. This is what a whole sequence slot, or a
+    // whole cycle query, asks of a node.
+    let exact = len.denom() == 1 && (anchored || grid == Some(1));
+    let touched = if exact {
+        len
+    } else {
+        int(ceil(len)?.checked_add(i64::from(!anchored))?)
+    };
+    let whole_cycle = Visit {
+        len: Rational::ONE,
+        anchored: true,
+        grid: Some(1),
+        filters,
+    };
     let w = match &pat.nodes[id as usize] {
         Node::Silence => Rational::ONE,
-        Node::Atom(_) => add(Rational::ONE, touched)?,
+        Node::Atom(_) => {
+            let per_onset = int(i64::from(filters).checked_add(1)?);
+            add(Rational::ONE, touched.checked_mul(per_onset)?)?
+        }
         Node::Fast { child, factor } => {
-            let edge = anchored && factor.denom() == 1;
-            add(
-                Rational::ONE,
-                bound(pat, *child, len.checked_mul(*factor)?, edge, memo)?,
-            )?
+            // Ends on multiples of 1/g land on multiples of p/(q g), so of 1/(q g).
+            let sub = Visit {
+                len: len.checked_mul(*factor)?,
+                anchored: anchored && factor.denom() == 1,
+                grid: finer(grid, factor.denom()),
+                filters,
+            };
+            add(Rational::ONE, bound(pat, *child, sub, memo)?)?
         }
         Node::Degrade { child, .. } => {
-            add(Rational::ONE, bound(pat, *child, len, anchored, memo)?)?
+            let sub = Visit {
+                filters: filters.checked_add(1)?,
+                ..v
+            };
+            add(Rational::ONE, bound(pat, *child, sub, memo)?)?
         }
         Node::Stack { children } => {
             let mut w = Rational::ONE;
             for &c in &pat.children[children.0 as usize..children.1 as usize] {
-                w = add(w, bound(pat, c, len, anchored, memo)?)?;
+                w = add(w, bound(pat, c, v, memo)?)?;
             }
             w
         }
         Node::Choice { children, .. } => {
             let one_piece = len.min(Rational::ONE);
             let (mut whole, mut end, mut single) = (Rational::ZERO, Rational::ZERO, Rational::ZERO);
+            let end_piece = Visit {
+                len: one_piece,
+                anchored: true,
+                ..v
+            };
+            let single_piece = Visit {
+                len: one_piece,
+                ..v
+            };
             for &c in &pat.children[children.0 as usize..children.1 as usize] {
-                whole = whole.max(bound(pat, c, Rational::ONE, true, memo)?);
-                end = end.max(bound(pat, c, one_piece, true, memo)?);
-                single = single.max(bound(pat, c, one_piece, anchored, memo)?);
+                whole = whole.max(bound(pat, c, whole_cycle, memo)?);
+                end = end.max(bound(pat, c, end_piece, memo)?);
+                single = single.max(bound(pat, c, single_piece, memo)?);
             }
             // One unit per touched cycle and one child visit per piece: whole cycles between two
             // end pieces entered at an edge, or a single piece entered anywhere.
@@ -116,18 +167,42 @@ fn bound(
             let (mut rate, mut per_cycle) = (Rational::ZERO, Rational::ZERO);
             let (mut partial, mut single) = (Rational::ZERO, Rational::ZERO);
             for s in slots {
-                let whole = add(
-                    Rational::ONE,
-                    bound(pat, s.node, Rational::ONE, true, memo)?,
-                )?;
+                let whole = add(Rational::ONE, bound(pat, s.node, whole_cycle, memo)?)?;
                 rate = rate.max(whole.checked_div(s.len)?);
                 per_cycle = add(per_cycle, whole)?;
+                // A span whose ends lie on multiples of 1/g cannot end inside a slot that starts
+                // on one and is no longer than 1/g: that slot is only ever whole.
+                let on_grid = grid.and_then(|g| {
+                    let begin = s.begin.checked_mul(int(g))?;
+                    Some((g, begin.denom() == 1))
+                });
+                if let Some((g, true)) = on_grid {
+                    if s.len.checked_mul(int(g))? <= Rational::ONE {
+                        continue;
+                    }
+                }
+                // Inside the slot, ends on multiples of 1/g map to multiples of 1/(g n), with n
+                // the slot length's numerator, when the slot starts on the grid.
+                let sub_grid = match on_grid {
+                    Some((g, true)) => finer(Some(g), s.len.numer()),
+                    _ => None,
+                };
                 let x = len.checked_div(s.len)?;
-                let part = bound(pat, s.node, x.min(Rational::ONE), true, memo)?;
-                partial = partial.max(add(Rational::ONE, part)?);
+                let edge = Visit {
+                    len: x.min(Rational::ONE),
+                    anchored: true,
+                    grid: sub_grid,
+                    filters,
+                };
+                partial = partial.max(add(Rational::ONE, bound(pat, s.node, edge, memo)?)?);
                 if x <= Rational::ONE {
-                    let inside = bound(pat, s.node, x, anchored, memo)?;
-                    single = single.max(add(Rational::ONE, inside)?);
+                    let inside = Visit {
+                        len: x,
+                        anchored,
+                        grid: sub_grid,
+                        filters,
+                    };
+                    single = single.max(add(Rational::ONE, bound(pat, s.node, inside, memo)?)?);
                 }
             }
             // The partial slots: one, entered at its edge, for an anchored span; otherwise one
@@ -148,6 +223,6 @@ fn bound(
             add(add(base, by_length.min(by_cycle))?, partials)?
         }
     };
-    memo.insert((id, len, anchored), w);
+    memo.insert(key, w);
     Some(w)
 }

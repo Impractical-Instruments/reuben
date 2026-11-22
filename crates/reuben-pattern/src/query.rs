@@ -1,101 +1,83 @@
-//! The Render-side query: a recursive walk of the compiled tree into a caller's buffer.
+//! The Render-side query: every note whose onset lies in one cycle, by a recursive walk of the
+//! compiled tree into a caller's buffer.
 //!
-//! Each node is visited with the queried span in its own time, an affine map from its own time to
-//! the root's (`root = a * t + b`), a clip window in root time (the query span cut by every
-//! enclosing slot), and the end of the innermost enclosing slot (where a note must release). A leaf maps its whole event up through the map and takes the part
-//! as the whole cut by the clip window, so nothing is transformed on the way back up and no
-//! intermediate event list exists.
+//! Each node is visited with the part of its own timeline that the queried cycle covers, an affine
+//! map from its own time to the root's (`root = a * t + b`), a clip window in root time (the cycle
+//! cut by every enclosing slot), and the end of the innermost enclosing slot. A leaf maps each
+//! onset in its part up through the map, so nothing is transformed on the way back up and no
+//! intermediate list exists.
 //!
-//! Times are [`Pos`] (integer cycle plus fraction), so a fraction's terms stay bounded by the span's
-//! denominator and the compile-time limits however many cycles have elapsed. The walk allocates
-//! nothing: its state is the recursion (bounded by [`MAX_DEPTH`](crate::MAX_DEPTH)) and a
+//! Times are [`Pos`] (integer cycle plus fraction). The cycle number only ever meets integers and
+//! the pattern's own ratios, so fractions stay over the pattern's denominators (see
+//! [`MAX_GROWTH`](crate::MAX_GROWTH) and [`MAX_GRID`](crate::MAX_GRID)) whatever the cycle. The walk
+//! allocates nothing: its state is the recursion (bounded by [`MAX_DEPTH`](crate::MAX_DEPTH)) and a
 //! stack-linked chain of active `?` filters. Its work is bounded at compile time (see
-//! [`Pattern::work_bound`]), and by [`QUERY_BUDGET`] as a backstop.
+//! [`Pattern::max_cycle_work`]), and by [`QUERY_BUDGET`] as a backstop.
 
 use crate::compile::{Node, SeqStep};
-use crate::time::{Pos, Rational, Span};
+use crate::time::{Pos, Rational};
 use crate::{Pattern, Value};
 
-/// Most units of work one query may do before it stops and sets [`QueryResult::exhausted`]. A unit
-/// is one node visit, one cycle a node iterates, or one sequence step it examines.
+/// Most units of work one [`Pattern::cycle`] query may do before it stops and sets
+/// [`CycleResult::exhausted`]. A unit is one node visit, one cycle a node iterates, one sequence
+/// step it examines, or one `?` filter an onset is tested against.
 ///
-/// A backstop, unreachable in contract: compilation proves every pattern's query over at most
-/// [`MAX_QUERY_SPAN`](crate::MAX_QUERY_SPAN) cycles needs at most [`MAX_WORK`](crate::MAX_WORK)
-/// units, and this leaves a quarter more for headroom. Only a longer span can reach it.
-/// `examples/query_cost.rs` measures the worst cost per unit.
+/// A backstop, unreachable for a compiled pattern: compilation proves every pattern's cycle query
+/// needs at most [`MAX_WORK`](crate::MAX_WORK) units, and this leaves a quarter more for headroom.
 pub const QUERY_BUDGET: u32 = crate::MAX_WORK + crate::MAX_WORK / 4;
 
-/// One event fragment: a value, the full extent of its event, the part of it inside the query, and
-/// when the note it starts must release.
+/// The most cycles from zero that [`Pattern::cycle`] is guaranteed to handle without overflow:
+/// any `cycle` with `|cycle| <= MAX_CYCLE` has every note it should. Beyond it, a time may not fit
+/// and the query counts it in [`CycleResult::overflowed`] instead.
+pub const MAX_CYCLE: i64 = 1 << 31;
+
+/// One note: where in its cycle it starts, when it releases, and its value.
 ///
-/// # How a consumer plays events
+/// # Contract
 ///
-/// Trigger on [`has_onset`](Event::has_onset) and nothing else: that fragment starts a note, and
-/// the note releases at its [`release`](Event::release). Everything a note needs is in the onset
-/// fragment, so the release never depends on a later query, and it is the same whichever query the
-/// onset lands in.
+/// A note belongs to the cycle its onset lies in, and only that cycle reports it. A note from a
+/// slowed pattern that starts in one cycle and sounds into the next is reported once, by the first.
 ///
-/// `release` is `whole.end` cut to the end of the sequence step the event plays in (and of every
-/// step enclosing that one), so a step's sound never bleeds into the next step. In `[0 1]/1.5 2`,
-/// the `1` whose whole is `3/8..3/4` releases at `1/2`, where `2` starts. This diverges from the
-/// Tidal reference's model, in which an event holds for its whole `whole`.
-///
-/// A fragment without an onset is a continuation, and a consumer ignores it. Some continuations
-/// belong to no onset any query reports: a slowed pattern inside a sequence slot is cut to its slot
-/// each cycle, so in a later cycle its fragment can carry a `whole` that starts before the slot.
-/// That matches the Tidal reference's meaning of whole and part (a fragment's `whole` is the event
-/// it was cut from).
+/// `release` is the end of the note's event, cut to the end of the sequence step it plays in (and
+/// of every step enclosing that one), so a step never sounds into the next one. In `[0 1]/1.5 2`,
+/// the `1` starting at 3/8 would hold until 3/4 but releases at 1/2, where `2` starts. This
+/// diverges from the Tidal reference's model, in which an event holds for its whole extent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Event {
-    /// The event this fragment was cut from. May extend past the query span, and past its step.
-    pub whole: Span,
-    /// The part of `whole` that lies inside the queried span and its enclosing steps; never empty.
-    pub part: Span,
-    /// The event's value.
-    pub value: Value,
-    /// When a note started by this fragment releases: `min(whole.end, end of its enclosing
-    /// steps)`. Always after `whole.begin`. Meaningful on onset fragments.
+pub struct Note {
+    /// The onset, as a fraction of the cycle from its start: in `[0, 1)`.
+    pub onset: Rational,
+    /// The release, relative to the same cycle start: greater than `onset`, and above 1 when the
+    /// note sounds into a later cycle.
     pub release: Rational,
+    /// The note's value.
+    pub value: Value,
 }
 
-impl Event {
+impl Note {
     /// A placeholder for initialising a buffer; never returned by a query.
-    pub const EMPTY: Event = Event {
-        whole: Span::new(Rational::ZERO, Rational::ZERO),
-        part: Span::new(Rational::ZERO, Rational::ZERO),
-        value: Value::Number(Rational::ZERO),
+    pub const EMPTY: Note = Note {
+        onset: Rational::ZERO,
         release: Rational::ZERO,
+        value: Value::Number(Rational::ZERO),
     };
-
-    /// `true` if this fragment holds the event's onset: the note-on belongs in this query, and the
-    /// note-off at [`release`](Event::release). Across any partition of time into adjacent
-    /// queries, each onset is in exactly one, with the same `whole` and `release`.
-    pub fn has_onset(&self) -> bool {
-        self.part.begin == self.whole.begin
-    }
 }
 
-/// What a query wrote, and what it could not.
+/// What a cycle query wrote, and what it could not.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct QueryResult {
-    /// Events written to the front of the buffer.
+pub struct CycleResult {
+    /// Notes written to the front of the buffer.
     pub written: usize,
-    /// Events the query produced after the buffer was full. They are lost; the first `written`
-    /// events are a prefix of the full answer in walk order.
+    /// Notes found after the buffer was full. They are lost; the first `written` notes are a
+    /// prefix of the full answer in walk order.
     pub dropped: usize,
-    /// Sub-queries abandoned because a time computation overflowed `i64` (see [`Rational`]). Each
-    /// hides an unknown number of events. Cannot happen for a span whose endpoints lie within
-    /// `2^33` cycles of zero (where event times stay representable, see
-    /// [`MAX_GRID`](crate::MAX_GRID)) and whose denominator is below `2^43` (see
-    /// [`MAX_GROWTH`](crate::MAX_GROWTH)).
+    /// Parts of the walk abandoned because a time did not fit an `i64`. Zero for any
+    /// `|cycle| <=` [`MAX_CYCLE`].
     pub overflowed: usize,
-    /// `true` if the walk stopped after [`QUERY_BUDGET`] units of work. Unreachable for a span of
-    /// at most [`MAX_QUERY_SPAN`](crate::MAX_QUERY_SPAN) cycles. If it fires, the written events
-    /// are still correct and are a prefix of the full answer in walk order (not time order); the
-    /// rest are missing and not counted in `dropped`. A consumer should play what it got and split
-    /// its next query into shorter spans.
+    /// `true` if the walk stopped after [`QUERY_BUDGET`] units of work. Unreachable for a compiled
+    /// pattern. If it fires, the written notes are correct and a prefix of the full answer in walk
+    /// order (not time order), and the rest are missing and not counted in `dropped`.
     pub exhausted: bool,
-    /// Units of work the query spent; at most [`Pattern::work_bound`] of the span's length.
+    /// Units of work the query spent; at most [`Pattern::max_cycle_work`].
     pub work: u32,
 }
 
@@ -120,12 +102,6 @@ impl PSpan {
             begin: Pos::int(c),
             end: Pos::int(c.checked_add(1)?),
         })
-    }
-    fn to_span(self) -> Option<Span> {
-        Some(Span::new(
-            self.begin.to_rational()?,
-            self.end.to_rational()?,
-        ))
     }
 }
 
@@ -176,8 +152,10 @@ fn hash(seed: u64, id: u32, path: u64, a: i64, b: i64, c: i64) -> u64 {
 struct Walk<'p, 'o> {
     pat: &'p Pattern,
     seed: u64,
-    out: &'o mut [Event],
-    res: QueryResult,
+    /// The queried cycle's start in root time; notes are reported relative to it.
+    origin: Pos,
+    out: &'o mut [Note],
+    res: CycleResult,
     work: u32,
 }
 
@@ -192,8 +170,24 @@ fn cycles(span: PSpan) -> core::ops::RangeInclusive<i64> {
     span.begin.cyc..=last
 }
 
+/// The integer times (onsets of an atom's events) in a non-empty span.
+fn onsets(span: PSpan) -> core::ops::Range<i64> {
+    let first = if span.begin.frac == Rational::ZERO {
+        span.begin.cyc
+    } else {
+        span.begin.cyc.saturating_add(1)
+    };
+    let end = if span.end.frac == Rational::ZERO {
+        span.end.cyc
+    } else {
+        span.end.cyc.saturating_add(1)
+    };
+    first..end
+}
+
 /// Everything a node visit needs besides the node: its span, its map to root time, the root-time
-/// window its fragments are cut to, the `?` filters above it, and its structural path.
+/// window its onsets must lie in, the end of its enclosing slots, the `?` filters above it, and its
+/// structural path.
 #[derive(Clone, Copy)]
 struct Visit<'f> {
     span: PSpan,
@@ -217,17 +211,21 @@ impl Walk<'_, '_> {
         true
     }
 
-    fn emit(&mut self, ev: Event) {
+    fn emit(&mut self, note: Note) {
         if let Some(slot) = self.out.get_mut(self.res.written) {
-            *slot = ev;
+            *slot = note;
             self.res.written += 1;
         } else {
             self.res.dropped += 1;
         }
     }
 
-    fn removed(&self, onset: Pos, path: u64, mut filter: Option<&Filter<'_>>) -> bool {
+    /// `Some(true)` if a `?` above removes the note at `onset`; `None` if the budget ran out.
+    fn removed(&mut self, onset: Pos, path: u64, mut filter: Option<&Filter<'_>>) -> Option<bool> {
         while let Some(f) = filter {
+            if !self.spend() {
+                return None;
+            }
             let h = hash(
                 self.seed,
                 f.id,
@@ -237,11 +235,11 @@ impl Walk<'_, '_> {
                 onset.frac.denom(),
             );
             if u128::from(h) < f.threshold {
-                return true;
+                return Some(true);
             }
             filter = f.parent;
         }
-        false
+        Some(false)
     }
 
     fn node(&mut self, id: u32, v: Visit<'_>) {
@@ -258,21 +256,25 @@ impl Walk<'_, '_> {
         match &pat.nodes[id as usize] {
             Node::Silence => {}
             Node::Atom(value) => {
-                for c in cycles(v.span) {
+                for c in onsets(v.span) {
                     if !self.spend() {
                         return Some(());
                     }
-                    let whole = v.map.span(PSpan::cycle(c)?)?;
-                    let part = whole.intersect(&v.clip);
-                    if part.is_empty() || self.removed(whole.begin, v.path, v.filter) {
+                    let onset = v.map.apply(Pos::int(c))?;
+                    if onset < v.clip.begin || onset >= v.clip.end {
                         continue;
                     }
-                    let release = v.slot_end.map_or(whole.end, |e| e.min(whole.end));
-                    self.emit(Event {
-                        whole: whole.to_span()?,
-                        part: part.to_span()?,
+                    match self.removed(onset, v.path, v.filter) {
+                        None => return Some(()),
+                        Some(true) => continue,
+                        Some(false) => {}
+                    }
+                    let end = v.map.apply(Pos::int(c.checked_add(1)?))?;
+                    let release = v.slot_end.map_or(end, |e| e.min(end));
+                    self.emit(Note {
+                        onset: onset.sub(self.origin)?.to_rational()?,
+                        release: release.sub(self.origin)?.to_rational()?,
                         value: *value,
-                        release: release.to_rational()?,
                     });
                 }
             }
@@ -414,17 +416,14 @@ impl Walk<'_, '_> {
 }
 
 impl Pattern {
-    /// Write the events overlapping `span` into `out`, and report how many were written, dropped
-    /// for lack of room, lost to overflow, or cut off by the work budget.
+    /// Write every note whose onset lies in cycle `cycle`, that is in `[cycle, cycle + 1)`, into
+    /// `out`, and report how many were written, dropped for lack of room, or lost.
     ///
     /// Never allocates, locks, or panics; safe on the Render thread. `seed` selects the random
-    /// outcome of every `?` and `|`: the same pattern, span and seed always give the same events.
-    /// Work is at most [`Pattern::work_bound`] of the span's length, and never more than
-    /// [`QUERY_BUDGET`] units.
+    /// outcome of every `?` and `|`: the same pattern, cycle and seed always give the same notes.
+    /// Work is at most [`Pattern::max_cycle_work`] units, so the call never exhausts the budget.
     ///
-    /// Events come in walk order, not time order; sort the written prefix if order matters. An
-    /// event that crosses an edge of `span` is returned as the fragment inside it (see [`Event`]),
-    /// so splitting a span into adjacent queries yields every onset exactly once.
+    /// Notes come in walk order, not time order; sort the written prefix if order matters.
     ///
     /// # Stack
     ///
@@ -432,30 +431,31 @@ impl Pattern {
     /// on x86_64 for patterns at that depth, a query needs up to 40 KiB of stack in a release build
     /// and up to 160 KiB unoptimised; give the calling thread at least 48 KiB (release) or
     /// 192 KiB (debug).
-    pub fn query(&self, span: Span, seed: u64, out: &mut [Event]) -> QueryResult {
+    pub fn cycle(&self, cycle: i64, seed: u64, out: &mut [Note]) -> CycleResult {
         let mut walk = Walk {
             pat: self,
             seed,
+            origin: Pos::int(cycle),
             out,
-            res: QueryResult::default(),
+            res: CycleResult::default(),
             work: 0,
         };
-        let root = PSpan {
-            begin: Pos::from_rational(span.begin),
-            end: Pos::from_rational(span.end),
-        };
-        let visit = Visit {
-            span: root,
-            map: Map {
-                a: Rational::ONE,
-                b: Pos::int(0),
-            },
-            clip: root,
-            slot_end: None,
-            filter: None,
-            path: 0,
-        };
-        walk.node(self.root, visit);
+        if let Some(root) = PSpan::cycle(cycle) {
+            let visit = Visit {
+                span: root,
+                map: Map {
+                    a: Rational::ONE,
+                    b: Pos::int(0),
+                },
+                clip: root,
+                slot_end: None,
+                filter: None,
+                path: 0,
+            };
+            walk.node(self.root, visit);
+        } else {
+            walk.res.overflowed += 1;
+        }
         walk.res.work = walk.work;
         walk.res
     }

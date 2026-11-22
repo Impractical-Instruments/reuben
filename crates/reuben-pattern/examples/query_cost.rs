@@ -1,52 +1,51 @@
-//! Measures the query's cost per unit of work, which turns the compile-time work bound into time.
+//! Measures how long a unit of work takes, which turns the compile-time per-cycle work bound into
+//! time.
 //!
 //! `cargo run --release -p reuben-pattern --example query_cost`, pinned to one core on a shared
 //! machine (`taskset -c 3 target/release/examples/query_cost`): scheduling noise otherwise poses
 //! as a slow unit.
 //!
-//! Every compiled pattern's query over a span of `len` cycles spends at most
-//! `Pattern::work_bound(len)` units, and at most `MAX_WORK` units over `MAX_QUERY_SPAN`. This
-//! measures how long a unit takes in the worst cases found (fractional speeds and denominators
-//! near `2^43`, which push reduction into 128-bit division), and prints the time bounds that
-//! follow. 128-bit division on a Cortex-M is not measured here.
+//! Every compiled pattern's cycle query spends at most `Pattern::max_cycle_work()` units, never more
+//! than `MAX_WORK`. This times the patterns that make units slowest (deep `?` chains, which hash
+//! once per filter, and fractional speeds, whose reduction is the costliest arithmetic) at cycles
+//! across the guaranteed range, and prints the time bounds that follow. 128-bit division on a
+//! Cortex-M is not measured here.
 
-use reuben_pattern::{
-    Event, Pattern, QueryResult, Rational, Span, MAX_QUERY_SPAN, MAX_SHORT_WORK, MAX_WORK,
-    QUERY_BUDGET,
-};
+use reuben_pattern::{CycleResult, Note, Pattern, MAX_CYCLE, MAX_WORK};
 use std::time::Instant;
 
-fn r(n: i64, d: i64) -> Rational {
-    Rational::new(n, d).unwrap()
-}
-
-fn time(p: &Pattern, s: Span, buf: &mut [Event]) -> (f64, QueryResult) {
-    let runs = 100;
-    let mut res = QueryResult::default();
+fn time(p: &Pattern, cycle: i64, buf: &mut [Note]) -> (f64, CycleResult) {
+    let runs = 200;
+    let mut res = CycleResult::default();
     let t = Instant::now();
     for _ in 0..runs {
-        res = std::hint::black_box(p.query(std::hint::black_box(s), 1, buf));
+        res = std::hint::black_box(p.cycle(std::hint::black_box(cycle), 1, buf));
     }
     (t.elapsed().as_secs_f64() * 1e6 / f64::from(runs), res)
 }
 
 fn main() {
+    // Each near the cap (`max_cycle_work` is printed beside it), and each a kind of slow unit.
     let patterns = [
-        "0*1024",
-        "[0 1 2 3]*64",
-        "[0 [1 [2 [3 [4 [5 6]]]]]]*16",
-        "{0 1 2, 3 4 5 6 7}%128",
-        "[[0 1 2]*1.001 [3 4 5 6 7]/1.003]*7",
+        "0*150",
+        "[0 1 2 3]*9",
+        "[0 [1 [2 [3 [4 [5 6]]]]]]",
+        "{0 1 2, 3 4 5 6 7}%16",
+        "[[0 1 2]*1.001 [3 4 5 6 7]/1.003]*2",
         "[0 1 2 3 4 5 6]*1.37 [0 1]*1.013",
-        "<[0 1 2]*1.003 [3 4 5 6 7]/1.009>*13",
-        "[0(5,13,3)*1.007]*9",
+        "<[0 1 2]*1.003 [3 4 5 6 7]/1.009>*3",
+        "[0(5,13,3)*1.007]*2",
         "[0|1|2]*1.01 [3? 4?0.3]*1.03 <5 6 7>*1.07",
-        "[[0 1]*1.00001]!8",
+        "[[0 1]*1.00001]!4",
+        "0*12?0?0?0?0?0?0?0",
+        "[[0*2?0?0?0?0?0?0?0]?0?0?0?0?0?0?0?0]?0?0?0?0?0?0?0?0",
+        "[[[0*1.7?0?0?0?0?0?0?0]?0?0?0?0?0?0?0?0]?0?0?0?0?0?0?0?0]*1.0001",
+        "[[0*2?0?0?0?0?0?0?0]?0?0?0?0?0?0?0?0]*1.0001",
     ];
-    let dens = [(1i64 << 43) - 1, (1i64 << 40) * 7, 48_000 * 7];
-    let mut worst_ns = 0.0f64;
-    let mut buf = vec![Event::EMPTY; 8192];
-    println!("cost per unit over a {MAX_QUERY_SPAN}-cycle span:");
+
+    let cycles = [0i64, 1 << 20, -MAX_CYCLE, MAX_CYCLE];
+    let (mut worst_ns, mut worst_us) = (0.0f64, 0.0f64);
+    let mut buf = vec![Note::EMPTY; 4096];
     for src in patterns {
         let p = match Pattern::new(src) {
             Ok(p) => p,
@@ -55,39 +54,34 @@ fn main() {
                 continue;
             }
         };
-        for den in dens {
-            for c0 in [0i64, 1 << 16] {
-                let start = Rational::int(c0).checked_add(r(den / 3, den)).unwrap();
-                let len = MAX_QUERY_SPAN.checked_mul(r(den - 1, den)).unwrap();
-                let s = Span::new(start, start.checked_add(len).unwrap());
-                // The fastest of five runs: a cold cache or a busy machine does not pose as the
-                // worst case, which is a property of the arithmetic.
-                let (mut us, res) = time(&p, s, &mut buf);
-                for _ in 0..4 {
-                    us = us.min(time(&p, s, &mut buf).0);
-                }
-                assert!(!res.exhausted && u64::from(res.work) <= p.work_bound(len).unwrap());
-                let ns = us * 1000.0 / f64::from(res.work.max(1));
-                worst_ns = worst_ns.max(ns);
-                println!(
-                    "  {ns:6.0} ns/unit {us:8.1} us work={:5} den={den:<14} {src}",
-                    res.work
-                );
+        for c in cycles {
+            // The fastest of five runs: a cold cache or a busy machine does not pose as the worst
+            // case, which is a property of the arithmetic.
+            let (mut us, res) = time(&p, c, &mut buf);
+            for _ in 0..4 {
+                us = us.min(time(&p, c, &mut buf).0);
             }
+            assert!(!res.exhausted && res.overflowed == 0 && res.work <= p.max_cycle_work());
+            let ns = us * 1000.0 / f64::from(res.work.max(1));
+            worst_ns = worst_ns.max(ns);
+            worst_us = worst_us.max(us);
+            println!(
+                "  {ns:5.0} ns/unit {us:7.1} us work={:4} of {:4} cycle={c:<12} {src}",
+                res.work,
+                p.max_cycle_work()
+            );
         }
     }
-    println!("worst cost per unit: {worst_ns:.0} ns");
+    let cap = f64::from(MAX_WORK) * worst_ns / 1000.0;
+    println!("worst cost per unit: {worst_ns:.0} ns; slowest query measured: {worst_us:.0} us");
+    println!("  one cycle query at the cap ({MAX_WORK} units): <= {cap:.0} us");
     println!(
-        "  query over {MAX_QUERY_SPAN} cycles: <= {MAX_WORK} units = {:.0} us",
-        f64::from(MAX_WORK) * worst_ns / 1000.0
+        "  four queries (one 4096-frame block at 22.05 kHz, 999 BPM, 1 beat/cycle): <= {:.0} us",
+        4.0 * cap
     );
     println!(
-        "  query over {} cycles (a 64-frame block at 48 kHz is 0.022): <= {MAX_SHORT_WORK} units = {:.0} us of a 1333 us block",
-        reuben_pattern::SHORT_QUERY_SPAN,
-        f64::from(MAX_SHORT_WORK) * worst_ns / 1000.0
-    );
-    println!(
-        "  whole budget (out-of-contract spans only): {QUERY_BUDGET} units = {:.0} us",
-        f64::from(QUERY_BUDGET) * worst_ns / 1000.0
+        "  as a share of a 64-frame block at 48 kHz (1333 us): one {:.1}%, four {:.1}%",
+        cap / 13.33,
+        4.0 * cap / 13.33
     );
 }

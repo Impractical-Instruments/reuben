@@ -4,7 +4,7 @@
 //! denominator, always in lowest terms. Arithmetic widens to `i128`, reduces, and narrows back.
 //! A result that does not fit in `i64` after reduction is an overflow: the checked operations
 //! return `None`, never wrap, and never panic. The query turns that `None` into a counted, skipped
-//! sub-query (see [`QueryResult::overflowed`](crate::QueryResult::overflowed)).
+//! sub-query (see [`CycleResult::overflowed`](crate::CycleResult::overflowed)).
 //!
 //! Inside the query, time is a [`Pos`]: an integer cycle plus a fraction of a cycle. Scaling a
 //! `Pos` scales the cycle count as an integer and only the fraction as a rational, so the size of a
@@ -67,18 +67,6 @@ impl Rational {
     /// `num / den`, reduced. `None` if `den == 0` or the reduced value does not fit.
     pub fn new(num: i64, den: i64) -> Option<Rational> {
         Self::from_i128(num as i128, den as i128)
-    }
-
-    /// `num / den` for constants: `den > 0` and the fraction already in lowest terms, or the
-    /// constant fails to compile.
-    pub const fn new_const(num: i64, den: i64) -> Rational {
-        assert!(den > 0, "denominator must be positive");
-        let (mut a, mut b) = (num.unsigned_abs(), den as u64);
-        while b != 0 {
-            (a, b) = (b, a % b);
-        }
-        assert!(a == 1, "fraction must be in lowest terms");
-        Rational { num, den }
     }
 
     /// The integer `n`.
@@ -194,35 +182,6 @@ impl fmt::Display for Rational {
     }
 }
 
-/// A half-open time span `[begin, end)` in cycles.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct Span {
-    /// Inclusive start.
-    pub begin: Rational,
-    /// Exclusive end.
-    pub end: Rational,
-}
-
-impl Span {
-    /// `[begin, end)`.
-    pub const fn new(begin: Rational, end: Rational) -> Span {
-        Span { begin, end }
-    }
-
-    /// `true` if the span contains no time.
-    pub fn is_empty(&self) -> bool {
-        self.begin >= self.end
-    }
-
-    /// The overlap of two spans; empty if they do not overlap.
-    pub fn intersect(&self, other: &Span) -> Span {
-        Span {
-            begin: self.begin.max(other.begin),
-            end: self.end.min(other.end),
-        }
-    }
-}
-
 /// A position as an integer cycle plus a fraction in `[0, 1)`. Ordered by `(cyc, frac)`, which
 /// matches numeric order because `frac` is normalised.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -251,6 +210,7 @@ impl Pos {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn from_rational(r: Rational) -> Pos {
         // `num.rem_euclid(den)` is coprime with `den` because `num` is, so the fraction is reduced.
         Pos {

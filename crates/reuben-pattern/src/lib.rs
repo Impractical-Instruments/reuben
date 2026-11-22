@@ -1,62 +1,72 @@
 //! reuben-pattern — the mini-notation pattern language.
 //!
 //! A text pattern such as `"0 [3 5] <7 ~> 2*2"` is [`parse`]d to an [`Ast`], [`compile`]d to a
-//! [`Pattern`], and then [`Pattern::query`]'d for the events in a span of time. Parse and compile
-//! allocate and belong off the Render thread; the query allocates nothing and writes into a buffer
-//! the caller owns.
+//! [`Pattern`], and then asked, one integer cycle at a time, for the notes that start in that cycle
+//! ([`Pattern::cycle`]). Parse and compile allocate and belong off the Render thread; the cycle
+//! query allocates nothing and writes into a buffer the caller owns.
 //!
 //! ```
-//! use reuben_pattern::{Event, Pattern, Rational, Span};
+//! use reuben_pattern::{Note, Pattern, Rational};
 //!
 //! let pat = Pattern::new("0 [3 5]").unwrap();
-//! let mut buf = [Event::EMPTY; 16];
-//! let res = pat.query(Span::new(Rational::ZERO, Rational::ONE), 0, &mut buf);
-//! assert_eq!((res.written, res.dropped), (3, 0));
+//! let mut buf = [Note::EMPTY; 16];
+//! let res = pat.cycle(0, 0, &mut buf);
+//! assert_eq!(res.written, 3);
+//! assert_eq!(buf[1].onset, Rational::new(1, 2).unwrap());
+//! assert_eq!(buf[1].release, Rational::new(3, 4).unwrap());
 //! ```
+//!
+//! The text syntax follows Tidal's and Strudel's mini-notation. The engine underneath does not:
+//! it is shaped around reuben's Clock, and matching their internals is not a goal.
+//!
+//! # Playing a pattern from a clock
+//!
+//! The Clock gives an integer beat and a phase that only rises between syncs. A consumer (the
+//! `pattern` Operator) turns that into a cycle position, `(beat + phase) / beats_per_cycle`, and:
+//!
+//! 1. When the position enters a new cycle `n`, calls [`Pattern::cycle`] for `n` once and caches
+//!    the notes it returns.
+//! 2. Converts each cached note's [`onset`](Note::onset) and [`release`](Note::release) (exact
+//!    fractions of the cycle) to the clock's units once, e.g. to a phase threshold per note.
+//! 3. Fires a note on the first frame whose position is at or past its onset, and releases it
+//!    when the position passes its release. It keeps the previous frame's position across
+//!    blocks, so each note fires exactly once however blocks fall. A backward jump (`sync`) is a
+//!    locate: release held notes and re-arm from the new position.
+//!
+//! A block of 4096 frames at 22.05 kHz, 999 BPM and one beat per cycle spans about 3.1 cycles, so
+//! a consumer may make up to four cycle queries in one block; see Cost.
 //!
 //! # Time
 //!
-//! Time is measured in cycles and is always an exact [`Rational`] (`i64` over `i64`, kept in
-//! lowest terms), never floating point. The query's span is in cycles; the caller converts its
-//! clock (beats, frames) to cycles exactly. Integer cycle numbers are what `< >`, `?` and `|` key
-//! on, so the cycle position is an input to every query, not state the pattern keeps.
+//! Inside a cycle, time is always exact: fractions of the cycle as [`Rational`] (`i64` over `i64`,
+//! in lowest terms), never floating point. Integer cycle numbers are what `< >`, `?` and `|` key
+//! on, so the cycle is an input to every query, not state the pattern keeps.
 //!
-//! Inside the query, time is an integer cycle plus a fraction of a cycle. Speeding up or slowing
-//! down multiplies the cycle count as an integer and only the fraction as a rational, so the size of
-//! every term depends on the span's denominator and the pattern's ratios, never on how long a set
-//! has run. Arithmetic widens to `i128` and fails cleanly when a reduced result does not fit `i64`;
-//! the query then abandons that sub-query and counts it in [`QueryResult::overflowed`]. Nothing
-//! wraps and nothing panics.
-//!
-//! Compilation bounds what the query can reach. [`MAX_SCALE`] bounds each node's speed relative
-//! to the root. [`MAX_GROWTH`] bounds how much a node can multiply the span's denominator.
-//! [`MAX_GRID`] bounds the denominators of event times, so they stay representable within `2^33`
-//! cycles of zero. Together: a span whose denominator is below `2^43` and whose endpoints lie
-//! within `2^33` cycles of zero never overflows. Further out, an event time can fail to fit: the
-//! integer span `[2^50, 2^50 + 1)` through `0*1048573%1048571` reports `overflowed: 1`. A clock position
-//! of the form `(beat + phase) / beats_per_cycle`, with an exact `f32` phase, has a denominator of
-//! about `2^40` just after a beat. A property test runs such spans at 999 BPM for more than 72 hours
-//! of cycles through generated patterns and finds no overflow. The ceiling at that resolution is the
-//! span itself: a [`Rational`] with denominator `2^40` can only express times up to `2^23` cycles.
+//! The query carries time as an integer cycle plus a fraction. The cycle number only meets integers
+//! and the pattern's own ratios, through 128-bit arithmetic; fractions stay over the pattern's
+//! denominators, bounded at compile time by [`MAX_SCALE`], [`MAX_GROWTH`] and [`MAX_GRID`]. So any
+//! cycle within [`MAX_CYCLE`] (2^31) of zero gives exact results; a property test checks cycles
+//! across that range. Further out a time may not fit, and the query counts it in
+//! [`CycleResult::overflowed`] rather than wrapping or panicking.
 //!
 //! # Determinism
 //!
-//! There is no random state. `?` removes an event when a hash of (seed, the `?` node's structural
-//! id, the event's structural path, the event's onset) falls below its probability. `|` picks a
-//! branch by a hash of (seed, the `|` node's structural id, its structural path, the cycle number).
+//! There is no random state. `?` removes a note when a hash of (seed, the `?` node's structural
+//! id, the note's structural path, its onset) falls below its probability. `|` picks a branch by
+//! a hash of (seed, the `|` node's structural id, its structural path, the cycle number).
 //! Structural ids are assigned in source order at compile time. The path names which sequence slot
-//! led to the node, so the copies made by `!` and the pulses of a euclid draw independently even
-//! though they share one compiled child: `[0|1]!2` behaves like `[0|1] [0|1]`. Nothing depends on
-//! how time is split into queries, so the same text, span and seed give the same events on every
-//! run and platform. The *distribution* matches the reference docs (probability `p`, equal-weight
-//! choice), but the particular outcomes differ from Tidal's and Strudel's.
+//! and stack layer led to the node, so the copies made by `!`, the pulses of a euclid and the
+//! layers of a stack draw independently: `[0|1]!2` behaves like `[0|1] [0|1]`. The same text,
+//! cycle and seed give the same notes on every run and platform. The *distribution* matches the
+//! reference docs (probability `p`, equal-weight choice), but the particular outcomes differ from
+//! Tidal's and Strudel's.
 //!
-//! # Playing events
+//! # Notes
 //!
-//! Trigger on [`Event::has_onset`] only, and release at that fragment's [`Event::release`]: its
-//! `whole.end` cut to the end of its enclosing sequence step, so a step never sounds into the next
-//! one (unlike the Tidal reference, where an event holds for its whole `whole`). See [`Event`]
-//! for the details and why other fragments can be ignored.
+//! A note belongs to the cycle its onset lies in, and only that cycle reports it, even when a
+//! slowed pattern makes it sound into the next. Its release is its event's end cut to the end of
+//! its enclosing sequence step, so a step never sounds into the next one (unlike the Tidal
+//! reference, where an event holds for its whole extent). See [`Note`].
 //!
 //! # Syntax (v1)
 //!
@@ -91,8 +101,7 @@
 //! - `!`, `..` and euclid expansions beyond [`MAX_EXPANSION`] steps;
 //! - compiled depth beyond [`MAX_DEPTH`];
 //! - time bounds beyond [`MAX_SCALE`], [`MAX_GROWTH`] or [`MAX_GRID`];
-//! - a worst-case query cost beyond [`MAX_WORK`] over [`MAX_QUERY_SPAN`], or beyond
-//!   [`MAX_SHORT_WORK`] over [`SHORT_QUERY_SPAN`];
+//! - a worst-case cycle query cost beyond [`MAX_WORK`];
 //! - text longer than [`MAX_INPUT`];
 //! - a compiled size beyond [`MAX_SIZE`].
 //!
@@ -141,23 +150,23 @@
 //!   and `cat` the stack and sequence nodes), so the query does not change shape; new functions
 //!   that need new behaviour add node kinds to the same walk.
 //! - **The query is the contract.** A function layer produces a [`Pattern`]; the `pattern`
-//!   Operator only ever calls [`Pattern::query`].
+//!   Operator only ever calls [`Pattern::cycle`].
 //!
 //! # Cost
 //!
 //! The query is a tree walk over a flat node arena: no string hashing, no trait objects, no
-//! per-event allocation. Compilation bounds its work: [`Pattern::work_bound`] gives the most units
-//! any query of a given length can spend, wherever the span lies, counting every node visit
-//! (rests, empty sequences, wrappers) and not just onsets. A pattern whose bound exceeds
-//! [`MAX_WORK`] over [`MAX_QUERY_SPAN`] (a 4096-frame block at 22.05 kHz, 999 BPM, one beat per
-//! cycle) or [`MAX_SHORT_WORK`] over [`SHORT_QUERY_SPAN`] (a 64-frame block at 48 kHz) does not
-//! compile. So a consumer that keeps each query within [`MAX_QUERY_SPAN`] never sees
-//! [`QueryResult::exhausted`]; [`QUERY_BUDGET`] is a backstop for longer spans.
+//! per-note allocation. Compilation bounds the work of one cycle query
+//! ([`Pattern::max_cycle_work`]), counting every node visit (rests, empty sequences, wrappers),
+//! every cycle and step the walk iterates, and every `?` filter each onset is tested against. A
+//! pattern whose bound exceeds [`MAX_WORK`] does not compile, so a compiled pattern's cycle query
+//! never sets [`CycleResult::exhausted`]; [`QUERY_BUDGET`] is only a backstop.
 //!
-//! In time, `examples/query_cost.rs` measured the worst unit at about 170 ns (i7-13620H, release,
-//! fractional speeds and denominators near `2^43`, which push reduction into 128-bit division):
-//! about 0.7 ms for a [`MAX_QUERY_SPAN`] query, about 87 us (6.5% of a 64-frame block at 48 kHz)
-//! for a [`SHORT_QUERY_SPAN`] one. 128-bit division on a Cortex-M is not measured.
+//! In time: `examples/query_cost.rs`, pinned to one core of an i7-13620H in release, measured
+//! the worst unit at about 115 ns (145 ns in the noisiest run), over patterns near the cap that
+//! include deep `?` chains and fractional speeds, at cycles across the guaranteed range. A cycle
+//! query is then at most about 19 us (23 us), and four of them, the most one block can need, about
+//! 74 us (93 us): 5.6% (7%) of a 64-frame block at 48 kHz. A 64-frame block itself spans far less
+//! than a cycle, so it needs at most one. 128-bit division on a Cortex-M is not measured.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -174,16 +183,13 @@ mod time;
 use alloc::vec::Vec;
 
 pub use ast::{Ast, Expr, ExprKind, Step};
-pub use compile::{
-    compile, MAX_DEPTH, MAX_GRID, MAX_GROWTH, MAX_QUERY_SPAN, MAX_SCALE, MAX_SHORT_WORK, MAX_SIZE,
-    MAX_WORK, SHORT_QUERY_SPAN,
-};
+pub use compile::{compile, MAX_DEPTH, MAX_GRID, MAX_GROWTH, MAX_SCALE, MAX_SIZE, MAX_WORK};
 pub use error::Error;
 pub use parse::{parse, DEFAULT_OCTAVE, MAX_EXPANSION, MAX_INPUT, MAX_MODIFIERS, MAX_NESTING};
-pub use query::{Event, QueryResult, QUERY_BUDGET};
-pub use time::{Rational, Span};
+pub use query::{CycleResult, Note, MAX_CYCLE, QUERY_BUDGET};
+pub use time::Rational;
 
-/// The value an event carries.
+/// The value a note carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Value {
     /// A number atom, exact as written.
@@ -193,7 +199,7 @@ pub enum Value {
     Note(u8),
 }
 
-/// A compiled pattern, ready to [`query`](Pattern::query).
+/// A compiled pattern, ready to query one [`cycle`](Pattern::cycle) at a time.
 ///
 /// Immutable after compilation; queries take `&self`, so one pattern can be queried from any
 /// thread. Dropping it frees its arena, so drop it off the Render thread.
@@ -203,6 +209,8 @@ pub struct Pattern {
     steps: Vec<compile::SeqStep>,
     children: Vec<u32>,
     root: u32,
+    /// The compile-time bound on one cycle query's work.
+    max_work: u32,
 }
 
 impl Pattern {
@@ -218,18 +226,13 @@ impl Pattern {
             steps: Vec::new(),
             children: Vec::new(),
             root: 0,
+            max_work: 1,
         }
     }
 
-    /// An upper bound on the units of work [`Pattern::query`] spends on any span `len` cycles
-    /// long, wherever it lies; `None` if it overflows. For `len <=` [`MAX_QUERY_SPAN`] it is at
-    /// most [`MAX_WORK`], below [`QUERY_BUDGET`], so such a query never sets
-    /// [`QueryResult::exhausted`]. Compilation checks exactly this. Allocates a memo table; call
-    /// it off the Render thread.
-    pub fn work_bound(&self, len: Rational) -> Option<u64> {
-        let w = cost::work(self, len)?;
-        let ceil =
-            (i128::from(w.numer()) + i128::from(w.denom()) - 1).div_euclid(i128::from(w.denom()));
-        u64::try_from(ceil).ok()
+    /// The most units of work [`Pattern::cycle`] can spend, for any cycle and seed: a bound
+    /// proved at compile time. At most [`MAX_WORK`], below [`QUERY_BUDGET`].
+    pub fn max_cycle_work(&self) -> u32 {
+        self.max_work
     }
 }

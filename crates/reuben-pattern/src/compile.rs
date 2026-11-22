@@ -18,7 +18,7 @@ use crate::time::Rational;
 use crate::{Pattern, Value};
 
 /// Deepest node nesting a compiled pattern may have; bounds the query's recursion, and with it the
-/// stack a query needs (see [`Pattern::query`]).
+/// stack a query needs (see [`Pattern::cycle`]).
 pub const MAX_DEPTH: u32 = 32;
 
 /// Largest numerator or denominator any node's time scale may reach. A node's scale is how many
@@ -27,34 +27,21 @@ pub const MAX_SCALE: i64 = 1 << 20;
 
 /// Largest factor by which a node may multiply the denominator of the query span on the way down
 /// to its leaves: the product, along a path, of each step's start-offset denominator and length
-/// numerator, and of each speed factor's denominator, tracked by divisibility. A query span with
-/// denominator `d` reaches no time with a denominator above `d * MAX_GROWTH`, so a span with
-/// `d < 2^43` whose endpoints lie within `2^33` cycles of zero (see [`MAX_GRID`]) never overflows.
+/// numerator, and of each speed factor's denominator, tracked by divisibility. A cycle query starts
+/// from whole cycles, so no node's local time has a denominator above this.
 pub const MAX_GROWTH: i64 = 1 << 20;
 
-/// Largest denominator of any event's `whole`, relative to its cycle. Bounds the lcm of every
-/// scale and slot offset denominator along a path, so whole times stay representable within
-/// `2^33` cycles of zero. Beyond that an event time may not fit an `i64`, and the query counts it
-/// in [`QueryResult::overflowed`](crate::QueryResult::overflowed).
+/// Largest denominator of any onset or release, relative to its cycle. Bounds the lcm of every
+/// scale and slot offset denominator along a path. With [`MAX_SCALE`], it keeps every time a cycle
+/// query computes within an `i64` for any cycle up to [`MAX_CYCLE`](crate::MAX_CYCLE) from zero.
 pub const MAX_GRID: i64 = 1 << 30;
 
-/// The longest query span, in cycles, the crate guarantees never exhausts the work budget: a
-/// 4096-frame block at 22.05 kHz and 999 BPM with one beat per cycle is 3.09 cycles, and this
-/// leaves 5% over it. A consumer that keeps each query within this span gets every event.
-pub const MAX_QUERY_SPAN: Rational = Rational::new_const(13, 4);
-
-/// Most units of work (see [`QUERY_BUDGET`](crate::QUERY_BUDGET)) a query over [`MAX_QUERY_SPAN`]
-/// may need. Compilation computes a worst-case bound `fixed + rate * span` for every pattern (see
-/// [`Pattern::work_bound`]) and refuses one whose bound at `MAX_QUERY_SPAN` exceeds this.
-pub const MAX_WORK: u32 = 4096;
-
-/// A short query span, in cycles: a 64-frame block at 48 kHz and 999 BPM with one beat per cycle is
-/// 0.022 cycles, and this is a little over it.
-pub const SHORT_QUERY_SPAN: Rational = Rational::new_const(1, 32);
-
-/// Most units of work a query over [`SHORT_QUERY_SPAN`] may need, so a small block stays cheap and
-/// not just an average one.
-pub const MAX_SHORT_WORK: u32 = 512;
+/// Most units of work (see [`QUERY_BUDGET`](crate::QUERY_BUDGET)) one cycle query may need.
+/// Compilation computes a worst-case bound for every pattern (see [`Pattern::max_cycle_work`]) and
+/// refuses one above this. Set so four cycle queries, the most one block can need, stay well under
+/// 10% of a 64-frame block at 48 kHz (see the crate docs' Cost section). In practice it admits
+/// about 40 sequence notes per cycle, e.g. `0*128` or `[0 1 2 3 4 5 6 7]*4`, or deep nesting.
+pub const MAX_WORK: u32 = 160;
 
 /// Most entries (nodes, sequence steps, and stack children) a compiled pattern may hold: about
 /// 2.5 MB at most.
@@ -115,23 +102,21 @@ pub fn compile(ast: &Ast) -> Result<Pattern, Error> {
         grid: 1,
     };
     let root = c.expr(&ast.root, root_ctx, 1)?;
-    let pattern = Pattern {
+    let mut pattern = Pattern {
         nodes: c.nodes,
         steps: c.steps,
         children: c.children,
         root,
+        max_work: 0,
     };
-    for (len, max) in [
-        (MAX_QUERY_SPAN, MAX_WORK),
-        (SHORT_QUERY_SPAN, MAX_SHORT_WORK),
-    ] {
-        let need = crate::cost::work(&pattern, len);
-        if need.is_none_or(|w| w > Rational::int(i64::from(max))) {
-            return Err(too_costly(&ast.root.span));
-        }
-    }
+    let work = crate::cost::cycle_work(&pattern)
+        .filter(|w| *w <= Rational::int(i64::from(MAX_WORK)))
+        .ok_or_else(|| too_costly(&ast.root.span))?;
+    // At most MAX_WORK, so the rounded-up value fits.
+    pattern.max_work = (work.numer() + work.denom() - 1).div_euclid(work.denom()) as u32;
     Ok(pattern)
 }
+
 fn too_costly(span: &Range<usize>) -> Error {
     Error::new(span.clone(), "pattern too dense to query in real time")
 }

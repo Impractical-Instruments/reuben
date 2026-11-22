@@ -1,157 +1,107 @@
-//! Property tests: span-edge exactness, determinism, buffer truncation, and hostile input.
+//! Property tests: determinism, notes reported exactly once across cycles, the work bound,
+//! overflow freedom across the guaranteed cycle range, releases, and hostile input.
 //!
-//! The hostile-input property doubles as the in-CI fuzz target; `fuzz/` runs the same body under
+//! The hostile-input properties double as the in-CI fuzz target; `fuzz/` runs the same body under
 //! libFuzzer for longer campaigns.
 
 mod common;
 use common::*;
 use proptest::prelude::*;
-use reuben_pattern::{parse, Event, Pattern, Rational, Span};
+use reuben_pattern::{parse, Note, Pattern, Rational, MAX_WORK};
 
-/// Split `s` at `cuts` (fractions of its length, any order) into adjacent spans.
-fn pieces(s: Span, cuts: &[u32], den: i64) -> Vec<Span> {
-    let len = s.end.checked_sub(s.begin).unwrap();
-    let mut points: Vec<Rational> = cuts
-        .iter()
-        .map(|c| {
-            let f = r(i64::from(*c) % (den + 1), den);
-            s.begin.checked_add(len.checked_mul(f).unwrap()).unwrap()
-        })
-        .collect();
-    points.push(s.begin);
-    points.push(s.end);
-    points.sort();
-    points.dedup();
-    points.windows(2).map(|w| Span::new(w[0], w[1])).collect()
-}
-
-/// What the split queries must return: every whole-span fragment cut at the piece edges.
-fn cut(whole: &[Event], parts: &[Span]) -> Vec<Event> {
+/// The notes of `p` over cycles `cs` as `(absolute onset, absolute release, value)`, scaled by `k`.
+fn absolute(
+    p: &Pattern,
+    cs: std::ops::Range<i64>,
+    k: Rational,
+) -> Vec<(Rational, Rational, reuben_pattern::Value)> {
     let mut out = Vec::new();
-    for e in whole {
-        for p in parts {
-            let part = e.part.intersect(p);
-            if !part.is_empty() {
-                out.push(Event { part, ..*e });
-            }
+    for c in cs {
+        for n in query(p, c, 3) {
+            let at = |x: Rational| {
+                Rational::int(c)
+                    .checked_add(x)
+                    .unwrap()
+                    .checked_mul(k)
+                    .unwrap()
+            };
+            out.push((at(n.onset), at(n.release), n.value));
         }
     }
-    sort(&mut out);
+    out.sort_by_key(|(o, r, v)| (*o, *r, format!("{v:?}")));
     out
-}
-
-fn check_split(p: &Pattern, s: Span, parts: &[Span], seed: u64) {
-    let whole = query(p, s, seed);
-    let mut split: Vec<Event> = parts
-        .iter()
-        .flat_map(|piece| query(p, *piece, seed))
-        .collect();
-    sort(&mut split);
-    assert_eq!(split, cut(&whole, parts));
-    // An onset is identified by its whole and value; its part differs once the span is cut.
-    let onsets = |evs: &[Event]| -> Vec<Event> {
-        let mut o: Vec<Event> = evs
-            .iter()
-            .filter(|e| e.has_onset())
-            .map(|e| Event {
-                part: e.whole,
-                ..*e
-            })
-            .collect();
-        sort(&mut o);
-        o
-    };
-    let split_onsets = onsets(&split);
-    assert_eq!(
-        split_onsets,
-        onsets(&whole),
-        "an onset was dropped or doubled at a span edge"
-    );
-}
-
-const BLOCK_PATTERNS: &[&str] = &[
-    "0 [3 5] <7 ~> 2*2",
-    "c4(3,8,2) eb3?0.4 [0|1|2]",
-    "{0 1 2, 3 4}%5 <0 _ 1@2 2!2>",
-    "[0 1]/1.5 2*2.75 . 0 .. 3",
-    "<0 <1 2>>*3 [0, 1 2, 3 4 5]?",
-];
-
-#[test]
-fn audio_blocks_partition_exactly() {
-    // A cycle of 2 s at 48 kHz, cut into the irregular block sizes a host may deliver.
-    let frames_per_cycle = 96_000;
-    let blocks = [64, 128, 480, 512, 37, 1, 1024, 257];
-    for src in BLOCK_PATTERNS {
-        let p = Pattern::new(src).unwrap();
-        let start = 1_000_000 * frames_per_cycle;
-        let total = 4 * frames_per_cycle;
-        let mut edges = vec![start];
-        let mut i = 0;
-        while *edges.last().unwrap() < start + total {
-            let next = (edges.last().unwrap() + blocks[i % blocks.len()]).min(start + total);
-            edges.push(next);
-            i += 1;
-        }
-        let at = |f: i64| r(f, frames_per_cycle);
-        let parts: Vec<Span> = edges
-            .windows(2)
-            .map(|w| Span::new(at(w[0]), at(w[1])))
-            .collect();
-        check_split(&p, Span::new(at(start), at(start + total)), &parts, 7);
-    }
 }
 
 proptest! {
     #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
 
     #[test]
-    fn adjacent_spans_equal_one_span(
-        src in pattern_src(),
-        s in query_span(),
-        cuts in prop::collection::vec(any::<u32>(), 0..12),
-        den in prop_oneof![Just(7i64), Just(64), Just(48_000), Just(1 << 20)],
-        seed in any::<u64>(),
-    ) {
-        let Some(p) = generated(&src) else { return Ok(()) };
-        prop_assume!(fits_budget(&p, s));
-        check_split(&p, s, &pieces(s, &cuts, den), seed);
-    }
-
-    #[test]
-    fn query_is_deterministic(src in pattern_src(), s in query_span(), seed in any::<u64>()) {
+    fn cycle_query_is_deterministic(src in pattern_src(), c in any_cycle(), seed in any::<u64>()) {
         let Some(a) = generated(&src) else { return Ok(()) };
         let b = Pattern::new(&src).unwrap();
-        let mut x = vec![Event::EMPTY; 4096];
-        let mut y = vec![Event::EMPTY; 4096];
-        let rx = a.query(s, seed, &mut x);
-        let ry = b.query(s, seed, &mut y);
+        let mut x = vec![Note::EMPTY; 4096];
+        let mut y = vec![Note::EMPTY; 4096];
+        let rx = a.cycle(c, seed, &mut x);
+        let ry = b.cycle(c, seed, &mut y);
         prop_assert_eq!(rx, ry);
         prop_assert_eq!(&x[..rx.written], &y[..ry.written]);
     }
 
+    /// Every compiled pattern stays within its work bound, never exhausts the budget, and never
+    /// overflows, at any cycle within `MAX_CYCLE`.
     #[test]
-    fn small_buffer_truncates_to_a_prefix(src in pattern_src(), s in query_span(), cap in 0usize..8) {
+    fn work_and_overflow_contract(src in pattern_src(), c in any_cycle(), seed in any::<u64>()) {
         let Some(p) = generated(&src) else { return Ok(()) };
-        let mut big = vec![Event::EMPTY; 1 << 16];
-        let full = p.query(s, 3, &mut big);
-        prop_assert_eq!(full.dropped, 0);
-        let mut small = vec![Event::EMPTY; cap];
-        let res = p.query(s, 3, &mut small);
-        prop_assert_eq!(res.written, full.written.min(cap));
-        prop_assert_eq!(res.written + res.dropped, full.written);
-        prop_assert_eq!(&small[..res.written], &big[..res.written]);
+        prop_assert!(p.max_cycle_work() <= MAX_WORK);
+        let mut buf = vec![Note::EMPTY; 64];
+        let res = p.cycle(c, seed, &mut buf);
+        prop_assert!(!res.exhausted, "{src}: {res:?}");
+        prop_assert_eq!(res.overflowed, 0, "{} at cycle {}", src, c);
+        prop_assert!(res.work <= p.max_cycle_work(), "{src}: {res:?}");
+    }
+
+    /// Notes lie in their cycle, release after they start, and a note never sounds past its step:
+    /// in `[A] [B]`, a note starting in the first half releases by the half cycle.
+    #[test]
+    fn notes_lie_in_their_cycle_and_step(a in pattern_src(), b in pattern_src(), c in any_cycle()) {
+        let src = format!("[{a}] [{b}]");
+        let Some(p) = generated(&src) else { return Ok(()) };
+        let half = r(1, 2);
+        for n in query(&p, c, 0) {
+            prop_assert!(Rational::ZERO <= n.onset && n.onset < Rational::ONE, "{n:?}");
+            prop_assert!(n.onset < n.release, "{n:?}");
+            let step_end = if n.onset < half { half } else { Rational::ONE };
+            prop_assert!(n.release <= step_end, "{src}: {n:?}");
+        }
+    }
+
+    /// Each note is reported exactly once, by the cycle its onset lies in, however it straddles
+    /// cycle boundaries: `[P]/2` over cycles `2m` and `2m + 1` is `P` over cycle `m` stretched,
+    /// and `[P]*2` over cycle `m` is `P` over cycles `2m` and `2m + 1` squeezed. (`?` is stripped:
+    /// it draws on the note's absolute onset, which stretching moves.)
+    #[test]
+    fn notes_are_reported_once_across_cycles(src in pattern_src(), m in -1000i64..1000) {
+        let src = src.replace("?0.3", "").replace('?', "");
+        let Some(p) = generated(&src) else { return Ok(()) };
+        if let Some(slow) = generated(&format!("[{src}]/2")) {
+            prop_assert_eq!(absolute(&slow, 2 * m..2 * m + 2, Rational::ONE), absolute(&p, m..m + 1, Rational::int(2)));
+        }
+        if let Some(fast) = generated(&format!("[{src}]*2")) {
+            prop_assert_eq!(absolute(&fast, m..m + 1, Rational::int(2)), absolute(&p, 2 * m..2 * m + 2, Rational::ONE));
+        }
     }
 
     #[test]
-    fn events_lie_inside_the_query(src in pattern_src(), s in query_span()) {
+    fn small_buffer_truncates_to_a_prefix(src in pattern_src(), c in any_cycle(), cap in 0usize..8) {
         let Some(p) = generated(&src) else { return Ok(()) };
-        prop_assume!(fits_budget(&p, s));
-        for e in query(&p, s, 1) {
-            prop_assert!(!e.part.is_empty());
-            prop_assert!(s.begin <= e.part.begin && e.part.end <= s.end);
-            prop_assert!(e.whole.begin <= e.part.begin && e.part.end <= e.whole.end);
-        }
+        let mut big = vec![Note::EMPTY; 4096];
+        let full = p.cycle(c, 3, &mut big);
+        prop_assert_eq!(full.dropped, 0);
+        let mut small = vec![Note::EMPTY; cap];
+        let res = p.cycle(c, 3, &mut small);
+        prop_assert_eq!(res.written, full.written.min(cap));
+        prop_assert_eq!(res.written + res.dropped, full.written);
+        prop_assert_eq!(&small[..res.written], &big[..res.written]);
     }
 
     /// The in-CI fuzz target: arbitrary text never panics the parser, and whatever compiles
@@ -159,21 +109,21 @@ proptest! {
     #[test]
     fn hostile_input_never_panics(
         src in "[0-9a-g~\\-_.,|!@?*/%:()<>\\[\\]{} #sbx\"é]{0,64}",
-        s in query_span(),
+        c in any::<i64>(),
         cap in 0usize..64,
     ) {
-        fuzz_body(&src, s, cap);
+        fuzz_body(&src, c, cap);
     }
 
     #[test]
-    fn arbitrary_bytes_never_panic(bytes in prop::collection::vec(any::<u8>(), 0..96)) {
+    fn arbitrary_bytes_never_panic(bytes in prop::collection::vec(any::<u8>(), 0..96), c in any::<i64>()) {
         if let Ok(src) = std::str::from_utf8(&bytes) {
-            fuzz_body(src, Span::new(Rational::ZERO, r(7, 3)), 16);
+            fuzz_body(src, c, 16);
         }
     }
 }
 
-fn fuzz_body(src: &str, s: Span, cap: usize) {
+fn fuzz_body(src: &str, c: i64, cap: usize) {
     match parse(src) {
         Err(e) => {
             assert!(
@@ -185,151 +135,50 @@ fn fuzz_body(src: &str, s: Span, cap: usize) {
         }
         Ok(ast) => {
             if let Ok(p) = reuben_pattern::compile(&ast) {
-                let mut buf = vec![Event::EMPTY; cap];
-                let res = p.query(s, 0, &mut buf);
+                let mut buf = vec![Note::EMPTY; cap];
+                let res = p.cycle(c, 0, &mut buf);
                 assert!(res.written <= cap);
+                assert!(!res.exhausted && res.work <= p.max_cycle_work());
             }
         }
     }
 }
 
 #[test]
-fn overflow_is_counted_not_panicked() {
-    let p = Pattern::new("[0 1 2]*7 <3 4>/5").unwrap();
-    let near = Rational::int(i64::MAX / 4);
-    let s = Span::new(near, near.checked_add(r(1, 3)).unwrap());
-    let mut buf = [Event::EMPTY; 32];
-    let res = p.query(s, 0, &mut buf);
-    assert!(res.overflowed > 0, "{res:?}");
-}
-
-/// Patterns the reviewer found overflowing under clock-derived spans before time became
-/// cycle-plus-fraction.
-const CLOCK_PATTERNS: &[&str] = &[
-    "0*1001",
-    "0*7*11*13",
-    "<0 1 2 3 4 5 6>/100*1.001",
-    "0*1023",
-    "0*1048573%1048571",
-    "[0 1 2 3 4 5 6]*1.37",
-    "[[0 1 2]*7 <3 [4 5]/3>]*1.37 {0 1 2, 3 4}%5?0.2 6(5,13,3)",
-    "c4 [e4 g4]/3 <b4 d5>?",
-];
-
-#[test]
-fn clock_positions_never_overflow_over_long_sets() {
-    // Frames just after a beat, where the f32 phase is smallest and its denominator largest.
-    for src in CLOCK_PATTERNS {
-        let p = Pattern::new(src).unwrap();
-        for (bpm, hours) in [(120.0f64, 12.0f64), (999.0, 80.0), (30.0, 80.0)] {
-            let beat = (hours * 60.0 * bpm) as i64;
-            let inc = bpm / 60.0 / 48_000.0;
-            for bpc in [1, 4, 7] {
-                for k in 1..64 {
-                    let a = clock_pos(beat, (k as f64 * inc) as f32, bpc);
-                    let b = clock_pos(beat, ((k + 1) as f64 * inc) as f32, bpc);
-                    let mut buf = [Event::EMPTY; 64];
-                    let res = p.query(Span::new(a, b), 0, &mut buf);
-                    assert_eq!(
-                        res.overflowed, 0,
-                        "{src} at {hours} h, {bpm} BPM, frame {k}"
-                    );
-                }
-            }
-        }
-    }
-}
-
-proptest! {
-    #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
-
-    /// Clock-derived spans: more than 72 h at 999 BPM, any frame, several cycle lengths.
-    #[test]
-    fn clock_spans_never_overflow(
-        src in pattern_src(),
-        bpm in prop_oneof![Just(30.0f64), Just(120.0), Just(999.0)],
-        hours in 0.0f64..80.0,
-        frame in 0u32..96_000,
-        frames in 1u32..512,
-        bpc in prop_oneof![Just(1i64), Just(3), Just(4), Just(7)],
-    ) {
-        let Some(p) = generated(&src) else { return Ok(()) };
-        let inc = bpm / 60.0 / 48_000.0;
-        let beat = (hours * 60.0 * bpm) as i64;
-        let frames_per_beat = (1.0 / inc) as u32;
-        let k = frame % frames_per_beat;
-        let end = (k + frames).min(frames_per_beat - 1);
-        prop_assume!(end > k);
-        let a = clock_pos(beat, (f64::from(k) * inc) as f32, bpc);
-        let b = clock_pos(beat, (f64::from(end) * inc) as f32, bpc);
-        prop_assume!(a < b);
-        let mut buf = vec![Event::EMPTY; 256];
-        prop_assert_eq!(p.query(Span::new(a, b), 0, &mut buf).overflowed, 0);
-    }
-
-    /// Spans on a `2^40` grid, up to `2^22` cycles in (beyond 72 h at 999 BPM, one beat per cycle).
-    #[test]
-    fn two_to_the_forty_denominators_never_overflow(
-        src in pattern_src(),
-        cycle in 0i64..(1 << 22),
-        offset in 0i64..(1 << 40),
-        len in 1i64..(1 << 36),
-        odd in prop_oneof![Just(1i64), Just(3), Just(7)],
-    ) {
-        let Some(p) = generated(&src) else { return Ok(()) };
-        let den = (1i64 << 40) * odd;
-        // A `Rational` endpoint holds `cycle * den` in an i64, which caps the cycle at 2^23 / odd.
-        let cycle = cycle / odd;
-        let b = Rational::int(cycle).checked_add(r(offset, den)).unwrap();
-        let e = b.checked_add(r(len, den)).unwrap();
-        let mut buf = vec![Event::EMPTY; 256];
-        prop_assert_eq!(p.query(Span::new(b, e), 0, &mut buf).overflowed, 0);
-    }
-}
-
-#[test]
-fn negative_cycles_work() {
-    assert_same("<0 1 2>", "<0 1 2>", cycles(-5, 0));
-    assert_eq!(onsets("<0 1 2>", cycles(-1, 0)), vec!["-1-0 2".to_string()]);
-}
-
-#[test]
-fn seed_changes_random_outcomes_only() {
-    let src = "[0*16?, 1*4]";
-    let a = onsets_seeded(src, cycles(0, 4), 1);
-    let b = onsets_seeded(src, cycles(0, 4), 2);
-    assert_ne!(a, b);
-    let ones = |v: &[String]| v.iter().filter(|e| e.ends_with(" 1")).count();
-    assert_eq!(ones(&a), 16);
-    assert_eq!(ones(&b), 16);
-}
-
-#[test]
-fn generator_mostly_compiles_and_fits_the_budget() {
-    // The properties skip generated patterns that trip a limit, and queries that exhaust the work
-    // budget; both must stay the exception or the properties test little.
+fn generator_reaches_deep_nesting_and_mostly_compiles() {
+    // The properties skip generated patterns that trip a limit; that must stay the exception, and
+    // the generator must reach far enough to exercise the depth limits.
     use proptest::strategy::ValueTree;
     use proptest::test_runner::TestRunner;
     let mut runner = TestRunner::deterministic();
-    let (patterns, spans) = (pattern_src(), query_span());
+    let patterns = pattern_src();
     let total = 500;
-    let mut compiled = 0;
-    let mut fit = 0;
+    let (mut compiled, mut deepest) = (0, 0);
     for _ in 0..total {
         let src = patterns.new_tree(&mut runner).unwrap().current();
-        let s = spans.new_tree(&mut runner).unwrap().current();
-        if let Some(p) = generated(&src) {
+        let (mut depth, mut max) = (0i32, 0);
+        for ch in src.chars() {
+            match ch {
+                '[' | '<' | '{' => {
+                    depth += 1;
+                    max = max.max(depth);
+                }
+                ']' | '>' | '}' => depth -= 1,
+                _ => {}
+            }
+        }
+        if generated(&src).is_some() {
             compiled += 1;
-            fit += usize::from(fits_budget(&p, s));
+            deepest = deepest.max(max);
         }
     }
     assert!(
-        compiled * 20 >= total * 17,
+        compiled * 10 >= total * 6,
         "only {compiled} of {total} generated patterns compiled"
     );
     assert!(
-        fit * 10 >= compiled * 9,
-        "only {fit} of {compiled} queries fit the budget"
+        deepest >= 8,
+        "compiled patterns only reached nesting {deepest}"
     );
 }
 
@@ -397,11 +246,12 @@ proptest! {
     /// `compile` takes a public `Ast`, so it must reject anything malformed with an `Error`, and
     /// whatever it accepts must never panic a query.
     #[test]
-    fn hand_built_asts_never_panic(root in arb_expr(), s in query_span(), cap in 0usize..32) {
+    fn hand_built_asts_never_panic(root in arb_expr(), c in any::<i64>(), cap in 0usize..32) {
         if let Ok(p) = reuben_pattern::compile(&reuben_pattern::Ast { root }) {
-            let mut buf = vec![Event::EMPTY; cap];
-            let res = p.query(s, 0, &mut buf);
+            let mut buf = vec![Note::EMPTY; cap];
+            let res = p.cycle(c, 0, &mut buf);
             prop_assert!(res.written <= cap);
+            prop_assert!(!res.exhausted);
         }
     }
 }
@@ -466,161 +316,47 @@ fn malformed_asts_are_errors() {
     }
 }
 
-/// Cut points at every event edge plus an audio-rate grid, across cycle offsets up to 10^12.
 #[test]
-fn adversarial_splits_partition_exactly() {
-    let pats = [
-        "[0 [1 [2 3 4 5 6 7 8]] 9 10 11 12 13 14 15 16 17]",
-        "[0 1 2 3 4 5 6]*1.1 . [1 2 3 4 5 6 7 8 9 10 11]/1.3",
-        "<0 1@3 [2 3]/7 4!2 _>/1.5",
-        "{0 1 2 3 4 5 6, 1 2 3 4 5 6 7 8 9 10, 1 2 3 4 5 6 7 8 9 10 11 12 13}%11",
-        "0(5,13,3)@2.5 1(7,11,-4)/3 2?0.37*13",
-        "<0 <1 2 <3 4 5>>>*7%3 [0|1|2|3]*5?",
-        "[0@1.1 1@2.3 2@0.7]*1.7",
-        "<[0 1]/3 [2 3 4]*7>*11%13",
-        "[0 1]/1.5 2",
-    ];
-    for src in pats {
-        let p = Pattern::new(src).unwrap();
-        for c in [-7i64, 0, 1, 999_999_937, 1_000_000_000_000] {
-            for den in [44_100i64, 48_000, 7 * 11 * 13] {
-                let b = Rational::int(c);
-                let s = Span::new(b, b.checked_add(Rational::int(3)).unwrap());
-                let whole = query(&p, s, 1);
-                let mut pts: Vec<Rational> = whole
-                    .iter()
-                    .flat_map(|e| [e.whole.begin, e.whole.end])
-                    .collect();
-                let mut k = 0;
-                loop {
-                    let x = b.checked_add(r(k * 4099 + 1, den)).unwrap();
-                    if x >= s.end {
-                        break;
-                    }
-                    pts.push(x);
-                    k += 1;
-                }
-                pts.retain(|x| *x > s.begin && *x < s.end);
-                pts.extend([s.begin, s.end]);
-                pts.sort();
-                pts.dedup();
-                let parts: Vec<Span> = pts.windows(2).map(|w| Span::new(w[0], w[1])).collect();
-                check_split(&p, s, &parts, 1);
-            }
-        }
-    }
-}
-
-#[test]
-fn extreme_spans_never_panic() {
-    let (m, n) = (i64::MAX, i64::MIN);
-    let spans = [
-        Span::new(Rational::int(n), Rational::int(n + 1)),
-        Span::new(Rational::int(m - 1), Rational::int(m)),
-        Span::new(r(n + 1, m), r(n + 2, m)),
-        Span::new(r(m - 1, m), Rational::ONE),
-        Span::new(r(-1, m), r(1, m)),
-        Span::new(r(m - 2, 3), r(m, 3)),
-        Span::new(r(n, 7), r(n + 7, 7)),
-    ];
-    for src in [
-        "0",
-        "0 1",
-        "<0 1>",
-        "[0|1]",
-        "0?",
-        "0(3,8,1)",
-        "{0 1 2}%4",
-        "0/3",
-        "0*3",
-        "0@2 1",
+fn doc_strings_parse() {
+    // Every example string on the two reference pages that v1 accepts, sample names as numbers,
+    // including Strudel's Tetris theme.
+    let tetris = "<\n[e5 [b4 c5] d5 [c5 b4]]\n[a4 [a4 c5] e5 [d5 c5]]\n[b4 [~ c5] d5 e5]\n[c5 a4 a4 ~]\n[[~ d5] [~ f5] a5 [g5 f5]]\n[e5 [~ c5] e5 [d5 c5]]\n[b4 [b4 c5] d5 e5]\n[c5 a4 a4 ~]\n,\n[[e2 e3]*4]\n[[a2 a3]*4]\n[[g#2 g#3]*2 [e2 e3]*2]\n[a2 a3 a2 a3 a2 a3 b1 c2]\n[[d2 d3]*4]\n[[c2 c3]*4]\n[[b1 b2]*2 [e2 e3]*2]\n[[a1 a2]*4]\n>";
+    for s in [
+        "[e5 [b4 c5] d5 [c5 b4]]*2",
+        "[e5 b4 d5 c5]/2.75",
+        "[b4 [~ c5] d5 e5]",
+        "g3,b3,e4",
+        "<[g3,b3,e4] [a3,c3,e4] [b3,d3,f#4] [b3,e4,g4]>*2",
+        "<[g3,b3,e4]@2 [a3,c3,e4] [b3,d3,f#4]>*2",
+        "<[g3,b3,e4]!2 [a3,c3,e4] [b3,d3,f#4]>*2",
+        "[g3,b3,e4]*8?",
+        "[g3,b3,e4]*8?0.1",
+        "[g3,b3,e4] | [a3,c3,e4] | [b3,d3,f#4]",
+        "<[g3,b3,e4]/2 [a3,c3,e4] [b3,d3,f#4]>*2",
+        "<[g3,b3,e4] _ [a3,c3,e4] [b3,d3,f#4]>*2",
+        "<[g3,b3,e4]? [a3,c3,e4] [b3,d3,f#4]>*2",
+        "<[g3|b3|e4] [a3,c3,e4] [b3,d3,f#4]>*2",
+        "c(3,8,0)",
+        "e5(2,8) b4(3,8) d5(2,8) c5(3,8)",
+        "c(3,8,5), d e",
+        tetris,
+        "[[1*3],[1 2 3 4*3]]",
+        "[1*2,2*3,[~ 3]*2, 4]",
+        "[1*3 . 2*2] . 2*4 3",
+        "[1 [2 [3 4] 2]] 1 1 1",
+        "[1(5,8), 2(1,8)?, 3(7,8), 4(8,16)]",
+        "{1*2, 2*4, 1 2 3}",
+        "[1*4%2]",
+        "1 2? 1 2?0.8",
+        "[1*4|2*12|3*2]",
+        "[1|2|3]",
+        "{1 1 1 1, 2 2 3}",
+        "1*4%2",
+        "{1 2 3}%8",
     ] {
-        let p = Pattern::new(src).unwrap();
-        for s in spans {
-            let mut buf = [Event::EMPTY; 16];
-            let res = p.query(s, 0, &mut buf);
-            assert!(res.written <= 16);
-        }
-    }
-}
-
-proptest! {
-    #![proptest_config(ProptestConfig { cases: 512, ..ProptestConfig::default() })]
-
-    /// The cost contract: work never exceeds the compile-time bound for the span's length, and a
-    /// span within `MAX_QUERY_SPAN` never exhausts the budget.
-    #[test]
-    fn work_stays_within_its_bound(
-        src in pattern_src(),
-        start in -8i64..4000,
-        offset in 0i64..48_000,
-        len in 1i64..(48_000 * 4),
-        seed in any::<u64>(),
-    ) {
-        let Some(p) = generated(&src) else { return Ok(()) };
-        let b = Rational::int(start).checked_add(r(offset, 48_000)).unwrap();
-        let len = r(len, 48_000);
-        let s = Span::new(b, b.checked_add(len).unwrap());
-        let mut buf = vec![Event::EMPTY; 64];
-        let res = p.query(s, seed, &mut buf);
-        let bound = p.work_bound(len).unwrap();
-        prop_assert!(res.exhausted || u64::from(res.work) <= bound, "{res:?} > {bound}");
-        if len <= reuben_pattern::MAX_QUERY_SPAN {
-            prop_assert!(!res.exhausted, "in-contract span exhausted: {res:?}");
-            prop_assert!(bound <= u64::from(reuben_pattern::MAX_WORK));
-        }
-    }
-
-    /// A note never sounds past its step: in `[A] [B]`, an onset in the first half releases by the
-    /// half cycle. And the release is the same however time is split (`check_split` compares it).
-    #[test]
-    fn release_is_cut_to_its_step_and_split_invariant(
-        a in pattern_src(),
-        b in pattern_src(),
-        c in 0i64..1000,
-        cuts in prop::collection::vec(any::<u32>(), 0..8),
-    ) {
-        let src = format!("[{a}] [{b}]");
-        let Some(p) = generated(&src) else { return Ok(()) };
-        let s = cycles(c, c + 1);
-        prop_assume!(fits_budget(&p, s));
-        let half = r(2 * c + 1, 2);
-        for e in query(&p, s, 0).into_iter().filter(Event::has_onset) {
-            prop_assert!(e.whole.begin < e.release && e.release <= e.whole.end, "{e:?}");
-            let step_end = if e.whole.begin < half { half } else { Rational::int(c + 1) };
-            prop_assert!(e.release <= step_end, "{src}: {e:?}");
-        }
-        check_split(&p, s, &pieces(s, &cuts, 4099), 0);
-    }
-}
-
-#[test]
-fn reviewer_patterns_never_exhaust_in_contract() {
-    // Every pattern that compiles, on the guaranteed block (4096 frames, 22.05 kHz, 999 BPM, one
-    // beat per cycle) at several offsets.
-    let block = r(999 * 4096, 60 * 22_050);
-    for src in [
-        "0*1024",
-        "[0 1 2 3 4 5 6 7]*16",
-        "[0 [1 [2 [3 [4 [5 6]]]]]]*16",
-        "[0 [1 [2 [3 [4 [5 [6 [7 [8 [9 [10 [11 [12 13]]]]]]]]]]]]]",
-        "<0*512 ~!3>",
-        "{0*256 ~ ~ ~}%1",
-        "[0*1*1*1*1*1*1*1*1]!64",
-        "[[0 0]!2]!32",
-        "[[0 1 2]*1.001 [3 4 5 6 7]/1.003]*7",
-    ] {
-        let p = Pattern::new(src).unwrap_or_else(|e| panic!("{src}: {e}"));
-        for k in 0..64 {
-            let start = Rational::int(1_000 + k * 7).checked_add(r(k, 64)).unwrap();
-            let s = Span::new(start, start.checked_add(block).unwrap());
-            let mut buf = vec![Event::EMPTY; 8192];
-            let res = p.query(s, 0, &mut buf);
-            assert!(!res.exhausted, "{src}: {res:?}");
-            assert!(
-                u64::from(res.work) <= p.work_bound(block).unwrap(),
-                "{src}: {res:?}"
-            );
+        let p = Pattern::new(s).unwrap_or_else(|e| panic!("{s:?}: {e}"));
+        for c in -2..20 {
+            query(&p, c, 0);
         }
     }
 }

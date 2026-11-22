@@ -7,7 +7,7 @@
 //!
 //! v1 atoms are numbers and note names, so the docs' sample names are renamed to numbers:
 //! bd=0 sd=1 hh=2 cp=3 stab=4 arpy=5 cr=6 superpiano=7 sn=8. Notes are MIDI numbers (`n60` = c4).
-//! Events are written `"begin-end value"` for each onset, sorted.
+//! Notes are written `"onset-release value"` in absolute cycles, sorted.
 
 mod common;
 use common::*;
@@ -74,10 +74,11 @@ fn t_slow() {
     assert_eq!(onsets("0/2", cycles(0, 1)), v(&["0-2 0"]));
     assert_eq!(onsets("0/2", cycles(1, 2)), v(&[]));
     assert_eq!(onsets("0/2", cycles(2, 3)), v(&["2-4 0"]));
-    // T, "/": `"bd cp/2"`, the clap "will only be heard every other cycle".
-    assert_eq!(onsets("0 3/2", cycles(0, 1)), v(&["0-1/2 0", "1/2-3/2 3"]));
+    // T, "/": `"bd cp/2"`, the clap "will only be heard every other cycle". Its event would hold
+    // a whole cycle, but a note is cut at the end of its step (see `Note`).
+    assert_eq!(onsets("0 3/2", cycles(0, 1)), v(&["0-1/2 0", "1/2-1 3"]));
     assert_eq!(onsets("0 3/2", cycles(1, 2)), v(&["1-3/2 0"]));
-    assert_eq!(onsets("0 3/2", cycles(2, 3)), v(&["2-5/2 0", "5/2-7/2 3"]));
+    assert_eq!(onsets("0 3/2", cycles(2, 3)), v(&["2-5/2 0", "5/2-3 3"]));
 }
 
 #[test]
@@ -406,13 +407,14 @@ fn s_euclid() {
 #[test]
 fn s_review_slow_in_alternation() {
     // S, "Mini-notation review": `<[g3,b3,e4]/2 [a3,c3,e4] [b3,d3,f#4]>*2`. The first chord is
-    // slowed inside its half-cycle slot, so it sounds on every other turn and holds a full cycle.
+    // slowed inside its half-cycle slot, so it sounds on every other turn; its event would hold a
+    // full cycle, but the note is cut at the end of its half-cycle step.
     let got = onsets("<g3/2 a3 b3>*2", cycles(0, 6));
     assert_eq!(
         sorted(got),
         v(&[
-            "0-1 n55",
-            "3-4 n55",
+            "0-1/2 n55",
+            "3-7/2 n55",
             "1/2-1 n57",
             "2-5/2 n57",
             "7/2-4 n57",

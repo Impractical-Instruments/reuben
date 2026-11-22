@@ -2,7 +2,7 @@
 
 mod common;
 use common::*;
-use reuben_pattern::{Event, Pattern, Rational, Span, Value, MAX_QUERY_SPAN, MAX_WORK};
+use reuben_pattern::{Note, Pattern, Rational, Value, MAX_CYCLE, MAX_WORK};
 
 fn sorted(mut xs: Vec<String>) -> Vec<String> {
     xs.sort();
@@ -17,9 +17,208 @@ fn v(xs: &[&str]) -> Vec<String> {
 fn empty_and_silence() {
     assert_eq!(onsets("", cycles(0, 4)), v(&[]));
     assert_eq!(onsets("~ - ~", cycles(0, 4)), v(&[]));
-    let mut buf = [Event::EMPTY; 4];
-    let res = Pattern::silence().query(cycles(0, 9), 0, &mut buf);
+    let mut buf = [Note::EMPTY; 4];
+    let res = Pattern::silence().cycle(9, 0, &mut buf);
     assert_eq!(res.written, 0);
+}
+
+#[test]
+fn values_are_exact_numbers_or_notes() {
+    let p = Pattern::new("1.25 eb3").unwrap();
+    let notes = query(&p, 0, 0);
+    assert_eq!(notes[0].value, Value::Number(r(5, 4)));
+    assert_eq!(notes[1].value, Value::Note(51));
+}
+
+#[test]
+fn onsets_are_relative_to_their_cycle() {
+    let p = Pattern::new("0 [1 2]").unwrap();
+    for c in [-5, 0, 7, MAX_CYCLE, -MAX_CYCLE] {
+        let notes = query(&p, c, 0);
+        let got: Vec<(Rational, Rational)> = notes.iter().map(|n| (n.onset, n.release)).collect();
+        assert_eq!(
+            got,
+            vec![
+                (Rational::ZERO, r(1, 2)),
+                (r(1, 2), r(3, 4)),
+                (r(3, 4), Rational::ONE)
+            ],
+            "cycle {c}"
+        );
+    }
+}
+
+#[test]
+fn slowed_notes_belong_to_their_onset_cycle() {
+    // `0/3` is one note three cycles long: cycle 0 reports it, cycles 1 and 2 do not.
+    let p = Pattern::new("0/3").unwrap();
+    assert_eq!(
+        query(&p, 0, 0),
+        vec![Note {
+            onset: Rational::ZERO,
+            release: Rational::int(3),
+            value: Value::Number(Rational::ZERO)
+        }]
+    );
+    assert!(query(&p, 1, 0).is_empty() && query(&p, 2, 0).is_empty());
+    assert_eq!(query(&p, 3, 0).len(), 1);
+    // `[0 1 2]/1.5`: notes of 1/2 cycle starting at 0, 1/2, 1, 3/2, ... each reported once.
+    let p = Pattern::new("[0 1 2]/1.5").unwrap();
+    let starts: Vec<String> = (0..3)
+        .flat_map(|c| {
+            query(&p, c, 0)
+                .into_iter()
+                .map(move |n| format!("{}", Rational::int(c).checked_add(n.onset).unwrap()))
+        })
+        .collect();
+    assert_eq!(starts, ["0", "1/2", "1", "3/2", "2", "5/2"]);
+}
+
+#[test]
+fn release_is_cut_to_the_enclosing_step() {
+    // `[0 1]/1.5 2`: the slowed `1` starts at 3/8 and would hold to 3/4, but its step ends at 1/2,
+    // where `2` starts.
+    let p = Pattern::new("[0 1]/1.5 2").unwrap();
+    let notes = query(&p, 0, 0);
+    let one = notes
+        .iter()
+        .find(|n| n.value == Value::Number(r(1, 1)))
+        .unwrap();
+    assert_eq!((one.onset, one.release), (r(3, 8), r(1, 2)));
+    let two = notes
+        .iter()
+        .find(|n| n.value == Value::Number(r(2, 1)))
+        .unwrap();
+    assert_eq!((two.onset, two.release), (r(1, 2), Rational::ONE));
+    // Cycle 1: the `1` whose event started in cycle 0 is not repeated; `0` starts at 5/4 - 1.
+    let next = query(&p, 1, 0);
+    assert_eq!(
+        next.iter()
+            .filter(|n| n.value == Value::Number(r(1, 1)))
+            .count(),
+        0
+    );
+    // `<0 1>/1.5 9`: every alternation note is cut where `9` starts, half way through its cycle.
+    let p = Pattern::new("<0 1>/1.5 9").unwrap();
+    for c in 0..12 {
+        for n in query(&p, c, 0) {
+            let step_end = if n.value == Value::Number(r(9, 1)) {
+                Rational::ONE
+            } else {
+                r(1, 2)
+            };
+            assert!(
+                n.onset < n.release && n.release <= step_end,
+                "cycle {c}: {n:?}"
+            );
+        }
+    }
+    let zero = query(&p, 0, 0)
+        .into_iter()
+        .find(|n| n.value == Value::Number(Rational::ZERO))
+        .unwrap();
+    assert_eq!((zero.onset, zero.release), (Rational::ZERO, r(1, 2)));
+}
+
+#[test]
+fn alternation_and_choice_are_per_cycle() {
+    assert_eq!(
+        onsets("<0 1 2>", cycles(0, 6)),
+        v(&["0-1 0", "1-2 1", "2-3 2", "3-4 0", "4-5 1", "5-6 2"])
+    );
+    // `|` decides once per cycle: a choice between two sequences never mixes them, and both
+    // branches turn up.
+    let p = Pattern::new("[0 0 0] | [1 1 1]").unwrap();
+    let mut seen = [false; 2];
+    for c in 0..200 {
+        let vals: Vec<Value> = query(&p, c, 4).into_iter().map(|n| n.value).collect();
+        assert_eq!(vals.len(), 3);
+        assert!(vals.iter().all(|x| *x == vals[0]), "cycle {c}: {vals:?}");
+        seen[usize::from(vals[0] == Value::Number(Rational::ONE))] = true;
+    }
+    assert_eq!(seen, [true; 2]);
+}
+
+#[test]
+fn degrade_is_deterministic_per_note() {
+    let src = "[0?]!16";
+    let a = onsets_seeded(src, cycles(0, 1), 5);
+    let b = onsets_seeded(src, cycles(0, 1), 5);
+    assert_eq!(a, b);
+    assert!(!a.is_empty() && a.len() < 16, "{} of 16 kept", a.len());
+}
+
+#[test]
+fn far_cycles_are_exact() {
+    // `<0 1 2>` at cycle n plays n mod 3, for any cycle within the guaranteed range.
+    let p = Pattern::new("<0 1 2> [3 4]*1.5").unwrap();
+    for c in [
+        MAX_CYCLE,
+        MAX_CYCLE - 1,
+        -MAX_CYCLE,
+        1 << 30,
+        -(1 << 30) - 7,
+    ] {
+        let notes = query(&p, c, 0);
+        let alt = notes.iter().find(|n| n.onset == Rational::ZERO).unwrap();
+        assert_eq!(alt.value, Value::Number(Rational::int(c.rem_euclid(3))));
+    }
+    // Even at the extremes of i64 nothing panics; out-of-range parts are counted, not wrapped.
+    let mut buf = [Note::EMPTY; 16];
+    for c in [i64::MIN, i64::MAX, i64::MAX - 1] {
+        let res = p.cycle(c, 0, &mut buf);
+        assert!(res.written <= 16);
+    }
+}
+
+fn values_per_cycle(src: &str, c: i64, seed: u64) -> Vec<Value> {
+    let p = Pattern::new(src).unwrap();
+    query(&p, c, seed).into_iter().map(|n| n.value).collect()
+}
+
+#[test]
+fn copies_and_pulses_draw_independently() {
+    // Replicated, written out, and euclid pulses of one `|`: each step is its own coin flip.
+    for src in ["[0|1]!2", "[0|1] [0|1]", "[0|1](2,2)"] {
+        let same = (0..1000)
+            .filter(|c| {
+                let v = values_per_cycle(src, *c, 5);
+                v[0] == v[1]
+            })
+            .count();
+        assert!(
+            (430..570).contains(&same),
+            "{src}: same value in {same} of 1000 cycles"
+        );
+    }
+    // Stack layers under one `?`: each layer is its own draw, as polymeter layers already were.
+    for src in ["[0, 1]?", "[0(3,8), 1(3,8)]?"] {
+        let p = Pattern::new(src).unwrap();
+        let mut kept = [0usize; 3];
+        for c in 0..2000 {
+            let notes = query(&p, c, 7);
+            let mut onsets: Vec<Rational> = notes.iter().map(|n| n.onset).collect();
+            onsets.sort();
+            onsets.dedup();
+            for t in onsets {
+                kept[notes.iter().filter(|n| n.onset == t).count()] += 1;
+            }
+        }
+        // Of times with any onset kept, about a third keep both layers and two thirds one.
+        let any = kept[1] + kept[2];
+        assert!(
+            kept[2] * 4 < any * 2 && kept[2] * 4 > any,
+            "{src}: {kept:?}"
+        );
+    }
+    // `?` inside copies: both kept about a quarter of the time.
+    let both = (0..1000)
+        .filter(|c| values_per_cycle("[0?]!2", *c, 5).len() == 2)
+        .count();
+    assert!(
+        (190..310).contains(&both),
+        "both copies kept in {both} of 1000 cycles"
+    );
 }
 
 #[test]
@@ -28,14 +227,6 @@ fn atom_spans_each_cycle() {
         sorted(onsets("5", cycles(0, 3))),
         v(&["0-1 5", "1-2 5", "2-3 5"])
     );
-}
-
-#[test]
-fn values_are_exact_numbers_or_notes() {
-    let p = Pattern::new("1.25 eb3").unwrap();
-    let evs = query(&p, cycles(0, 1), 0);
-    assert_eq!(evs[0].value, Value::Number(r(5, 4)));
-    assert_eq!(evs[1].value, Value::Note(51));
 }
 
 #[test]
@@ -105,21 +296,6 @@ fn range_is_inclusive_and_either_direction() {
 }
 
 #[test]
-fn degrade_is_keyed_on_onset_not_query() {
-    // Same seed, same events however the span is cut; replicated copies decide independently.
-    let src = "[0?]!16";
-    let whole = onsets_seeded(src, cycles(0, 1), 5);
-    let mut halves = onsets_seeded(src, Span::new(Rational::ZERO, r(1, 2)), 5);
-    halves.extend(onsets_seeded(src, Span::new(r(1, 2), Rational::ONE), 5));
-    assert_eq!(sorted(whole.clone()), sorted(halves));
-    assert!(
-        !whole.is_empty() && whole.len() < 16,
-        "{} of 16 kept",
-        whole.len()
-    );
-}
-
-#[test]
 fn degrade_extremes() {
     assert_same("0*8?0", "0*8", cycles(0, 4));
     assert_same("0*8?1", "~", cycles(0, 4));
@@ -137,33 +313,6 @@ fn choice_is_per_cycle_and_seeded() {
 }
 
 #[test]
-fn whole_and_part_across_a_query_edge() {
-    let p = Pattern::new("0@3 1").unwrap();
-    let evs = query(&p, Span::new(r(1, 2), Rational::ONE), 0);
-    assert_eq!(evs.len(), 2);
-    assert_eq!(evs[0].whole, Span::new(Rational::ZERO, r(3, 4)));
-    assert_eq!(evs[0].part, Span::new(r(1, 2), r(3, 4)));
-    assert!(!evs[0].has_onset());
-    assert!(evs[1].has_onset());
-}
-
-#[test]
-fn empty_or_reversed_span_yields_nothing() {
-    let p = Pattern::new("0 1 2").unwrap();
-    let mut buf = [Event::EMPTY; 8];
-    assert_eq!(
-        p.query(Span::new(Rational::ONE, Rational::ONE), 0, &mut buf)
-            .written,
-        0
-    );
-    assert_eq!(
-        p.query(Span::new(Rational::ONE, Rational::ZERO), 0, &mut buf)
-            .written,
-        0
-    );
-}
-
-#[test]
 fn compile_limits_are_errors_with_spans() {
     let e = Pattern::new("0 [1*1048576]*2").unwrap_err();
     assert!(e.message.contains("too far"), "{e}");
@@ -175,64 +324,6 @@ fn compile_limits_are_errors_with_spans() {
         .contains("too many modifiers"));
 }
 
-fn values_per_cycle(src: &str, c: i64, seed: u64) -> Vec<Value> {
-    let p = Pattern::new(src).unwrap();
-    let mut evs: Vec<Event> = query(&p, cycles(c, c + 1), seed)
-        .into_iter()
-        .filter(Event::has_onset)
-        .collect();
-    evs.sort_by_key(|e| e.whole.begin);
-    evs.into_iter().map(|e| e.value).collect()
-}
-
-#[test]
-fn copies_and_pulses_draw_independently() {
-    // Replicated, written out, and euclid pulses of one `|`: each step is its own coin flip.
-    for src in ["[0|1]!2", "[0|1] [0|1]", "[0|1](2,2)"] {
-        let same = (0..1000)
-            .filter(|c| {
-                let v = values_per_cycle(src, *c, 5);
-                v[0] == v[1]
-            })
-            .count();
-        assert!(
-            (430..570).contains(&same),
-            "{src}: same value in {same} of 1000 cycles"
-        );
-    }
-    // Stack layers under one `?`: each layer is its own draw, as polymeter layers already were.
-    for src in ["[0, 1]?", "[0(3,8), 1(3,8)]?"] {
-        let p = Pattern::new(src).unwrap();
-        let mut kept = [0usize; 3];
-        for c in 0..2000 {
-            let evs: Vec<Event> = query(&p, cycles(c, c + 1), 7)
-                .into_iter()
-                .filter(Event::has_onset)
-                .collect();
-            let mut onsets: Vec<Rational> = evs.iter().map(|e| e.whole.begin).collect();
-            onsets.sort();
-            onsets.dedup();
-            for t in onsets {
-                kept[evs.iter().filter(|e| e.whole.begin == t).count()] += 1;
-            }
-        }
-        // Of times with any onset kept, about a third keep both layers and two thirds one.
-        let any = kept[1] + kept[2];
-        assert!(
-            kept[2] * 4 < any * 2 && kept[2] * 4 > any,
-            "{src}: {kept:?}"
-        );
-    }
-    // `?` inside copies: both kept about a quarter of the time.
-    let both = (0..1000)
-        .filter(|c| values_per_cycle("[0?]!2", *c, 5).len() == 2)
-        .count();
-    assert!(
-        (190..310).contains(&both),
-        "both copies kept in {both} of 1000 cycles"
-    );
-}
-
 #[test]
 fn seed_high_bits_matter() {
     let draws = |seed: u64| -> Vec<Vec<Value>> {
@@ -242,43 +333,6 @@ fn seed_high_bits_matter() {
     };
     assert_ne!(draws(9), draws(9 ^ (1 << 32)));
     assert_ne!(draws(9), draws(9 ^ (1 << 63)));
-}
-
-/// The reviewer's patterns: each hid more work per cycle than an average-density cap could see.
-const OVER_BUDGET: &[&str] = &[
-    "[0 0]!512",
-    "<0*1048576 ~!1023>",
-    "[0*1048576 ~!1023]/1024",
-    "{0*4096 ~ ~ ~}%1",
-    "[~ ~]*262144 0",
-    "[[~ ~]*524288, 0]",
-    "[0*1*1*1*1*1*1*1*1]!1024",
-    "[[[0*1*1*1*1*1*1*1*1]*1*1*1*1*1*1*1*1]*1*1*1*1*1*1*1*1]!1024",
-    "[[0 0]!2]!256",
-    "0*1300",
-    "[0 1 2 3]*128",
-];
-
-#[test]
-fn work_cap_refuses_dense_patterns() {
-    for src in OVER_BUDGET {
-        let e = Pattern::new(src).unwrap_err();
-        assert!(
-            e.message.contains("too dense") || e.message.contains("too far"),
-            "{src}: {e}"
-        );
-    }
-    for src in [
-        "0*1024",
-        "[0 1 2 3 4 5 6 7]*16",
-        "<0 .. 1023>",
-        "{0 1 2, 3 4}%64",
-        "[0|1|2]*128",
-    ] {
-        let p = Pattern::new(src).unwrap_or_else(|e| panic!("{src}: {e}"));
-        let bound = p.work_bound(MAX_QUERY_SPAN).unwrap();
-        assert!(bound <= u64::from(MAX_WORK), "{src}: {bound}");
-    }
 }
 
 #[test]
@@ -300,112 +354,61 @@ fn compiled_size_cap() {
 }
 
 #[test]
-fn budget_is_a_backstop_for_long_spans_only() {
-    let p = Pattern::new("[0*256, 1*256, 2*256, 3*256]").unwrap();
-    let mut buf = [Event::EMPTY; 16];
-    let res = p.query(cycles(0, 1000), 0, &mut buf);
-    assert!(res.exhausted, "{res:?}");
-    assert!(res.written <= 16);
-    // The guaranteed block: 4096 frames at 22.05 kHz, 999 BPM, one beat per cycle.
-    let block = r(999 * 4096, 60 * 22_050);
-    assert!(block <= MAX_QUERY_SPAN);
-    for src in [
-        "0*1024",
-        "[0 1 2 3 4 5 6 7]*16",
-        "[0|1|2]*128",
-        "{0 1 2, 3 4}%64",
-    ] {
-        let p = Pattern::new(src).unwrap();
-        let start = r(15_000 * 7 + 3, 7);
-        let s = Span::new(start, start.checked_add(block).unwrap());
-        let mut buf = vec![Event::EMPTY; 4096];
-        let res = p.query(s, 0, &mut buf);
-        assert!(!res.exhausted, "{src}: {res:?}");
-        assert!(
-            u64::from(res.work) <= p.work_bound(block).unwrap(),
-            "{src}: {res:?}"
-        );
-    }
-}
-
-#[test]
-fn release_is_cut_to_the_enclosing_step() {
-    // `[0 1]/1.5 2`: the slowed `1` has whole 3/8..3/4, but its step ends at 1/2 where `2` starts.
-    let p = Pattern::new("[0 1]/1.5 2").unwrap();
-    let evs = query(&p, cycles(0, 1), 0);
-    let one = evs
-        .iter()
-        .find(|e| e.has_onset() && e.value == Value::Number(r(1, 1)))
-        .unwrap();
-    assert_eq!(one.whole, Span::new(r(3, 8), r(3, 4)));
-    assert_eq!(one.release, r(1, 2));
-    // An event inside its step keeps its whole end.
-    let two = evs
-        .iter()
-        .find(|e| e.value == Value::Number(r(2, 1)))
-        .unwrap();
-    assert_eq!(two.release, Rational::ONE);
-    // `<0 1>/1.5 9`: each slowed alternation event is cut where `9` starts.
-    let p = Pattern::new("<0 1>/1.5 9").unwrap();
-    for c in 0..6 {
-        for e in query(&p, cycles(c, c + 1), 0)
-            .into_iter()
-            .filter(Event::has_onset)
-        {
-            let step_end = if e.value == Value::Number(r(9, 1)) {
-                Rational::int(c + 1)
-            } else {
-                r(2 * c + 1, 2)
-            };
-            assert!(
-                e.release <= step_end && e.release <= e.whole.end,
-                "cycle {c}: {e:?}"
-            );
-            assert!(e.release > e.whole.begin, "cycle {c}: {e:?}");
-        }
-    }
-    let first = query(&p, cycles(0, 1), 0);
-    let zero = first
-        .iter()
-        .find(|e| e.has_onset() && e.value == Value::Number(Rational::ZERO))
-        .unwrap();
-    assert_eq!(zero.whole, Span::new(Rational::ZERO, r(3, 4)));
-    assert_eq!(zero.release, r(1, 2));
-}
-
-#[test]
 fn offsets_from_fractional_weights_are_bounded_at_compile() {
     let src = "0@1%1048574 1@1%1048538 2@524286%1048574 3@524268%1048538";
     assert!(Pattern::new(src).is_err());
 }
 
+/// Patterns whose cycle query would do more work than a real-time budget allows.
+const OVER_BUDGET: &[&str] = &[
+    "[0 0]!512",
+    "<0*1048576 ~!1023>",
+    "[0*1048576 ~!1023]/1024",
+    "{0*4096 ~ ~ ~}%1",
+    "[~ ~]*262144 0",
+    "[[~ ~]*524288, 0]",
+    "[0*1*1*1*1*1*1*1*1]!1024",
+    "0*200",
+    "[0 1 2 3]*64",
+    "[0*20?0?0?0?0?0?0?0]?0?0?0?0?0?0?0?0",
+];
+
 #[test]
-fn release_is_known_at_onset() {
-    // Play block by block the way the Operator will: note-on at each onset fragment, note-off at
-    // its `whole.end`, ignoring every other fragment. That yields the same notes as one query.
-    for src in [
-        "[0 1]/1.5 2",
-        "0 3/2",
-        "<0 1>/2 2",
-        "<0@3 [1 2]/5>*2 0(3,8)/3",
-    ] {
-        let p = Pattern::new(src).unwrap();
-        let notes = |evs: Vec<Event>| -> Vec<(Rational, Rational, Value)> {
-            let mut n: Vec<_> = evs
-                .into_iter()
-                .filter(Event::has_onset)
-                .map(|e| (e.whole.begin, e.release, e.value))
-                .collect();
-            n.sort_by_key(|(b, e, _)| (*b, *e));
-            n
-        };
-        let whole = notes(query(&p, cycles(0, 6), 0));
-        let mut blocks = Vec::new();
-        for k in 0..6 * 97 {
-            blocks.extend(query(&p, Span::new(r(k, 97), r(k + 1, 97)), 0));
-        }
-        let played = notes(blocks);
-        assert_eq!(played, whole, "{src}");
-        assert!(played.iter().all(|(b, e, _)| b < e));
+fn work_cap_refuses_dense_patterns() {
+    for src in OVER_BUDGET {
+        let e = Pattern::new(src).unwrap_err();
+        assert!(
+            e.message.contains("too dense") || e.message.contains("too far"),
+            "{src}: {e}"
+        );
     }
+    for src in [
+        "0*128",
+        "[0 1 2 3 4 5 6 7]*4",
+        "<0 .. 1023>",
+        "{0 1 2, 3 4 5 6 7}%16",
+        "[0 [1 [2 [3 [4 [5 [6 [7 [8 [9 10]]]]]]]]]]",
+        "<[e5 [b4 c5] d5 [c5 b4]] [a4 [a4 c5] e5 [d5 c5]]>, [[e2 e3]*4]",
+    ] {
+        let p = Pattern::new(src).unwrap_or_else(|e| panic!("{src}: {e}"));
+        assert!(p.max_cycle_work() <= MAX_WORK, "{src}");
+        for c in -3..40 {
+            query(&p, c, 1);
+        }
+    }
+}
+
+#[test]
+fn filter_chains_are_charged() {
+    // Each `?` above an onset costs a unit per candidate, so deep chains count against the cap.
+    let shallow = Pattern::new("0*16?0").unwrap().max_cycle_work();
+    let deep = Pattern::new("0*16?0?0?0?0?0?0?0").unwrap().max_cycle_work();
+    assert!(deep >= shallow + 6 * 16, "{shallow} vs {deep}");
+    let p = Pattern::new("0*16?0?0?0?0?0?0?0").unwrap();
+    let mut buf = [Note::EMPTY; 32];
+    let res = p.cycle(0, 0, &mut buf);
+    assert!(
+        res.work <= p.max_cycle_work() && res.work > 16 * 7,
+        "{res:?}"
+    );
 }
