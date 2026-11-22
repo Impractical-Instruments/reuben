@@ -73,7 +73,7 @@ Ten crates. The engine is two of them — `reuben-core` (render) and `reuben-doc
 | `reuben-contract` | The single source of an Operator's port/constant contract, shared by the macro and scaffold. |
 | `reuben-macros` | `operator_contract!` — emits the index consts *and* the `Descriptor` from one declaration. |
 | `reuben-editor` | The desktop instrument editor (eframe/egui). Outside `default-members`; its own CI job builds and lints it. |
-| `reuben-pattern` | The mini-notation pattern language: parser, compiler, and the allocation-free query over exact rational time that the `pattern` Operator's Render side calls. `no_std` + `alloc`; depends on nothing in the workspace. |
+| `reuben-pattern` | The mini-notation pattern language: parser, compiler, and the allocation-free query over exact rational time that the `pattern` Operator's Render side calls. Builds without the standard library; depends on nothing in the workspace. |
 | `reuben-guide` | Docs tooling, not engine code: slices `docs/agents/authoring.md` into its per-delivery-lane cuts. Depends on nothing in the workspace. |
 
 Inside `reuben-core` (the full version is the `crates/reuben-core/src/lib.rs` doc comment):
