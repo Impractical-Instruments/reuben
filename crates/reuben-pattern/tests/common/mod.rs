@@ -16,12 +16,20 @@ pub fn cycles(a: i64, b: i64) -> Span {
     Span::new(Rational::int(a), Rational::int(b))
 }
 
+/// `true` if one query over `s` completes within the work budget. Generated patterns can be dense
+/// enough to exhaust it over a long span, which is correct behaviour but leaves nothing to compare.
+pub fn fits_budget(p: &Pattern, s: Span) -> bool {
+    let mut buf = vec![Event::EMPTY; 1 << 16];
+    !p.query(s, 0, &mut buf).exhausted
+}
+
 /// Every fragment in `s`, from a buffer large enough that nothing drops.
 pub fn query(p: &Pattern, s: Span, seed: u64) -> Vec<Event> {
     let mut buf = vec![Event::EMPTY; 1 << 16];
     let res = p.query(s, seed, &mut buf);
     assert_eq!(res.dropped, 0, "test buffer too small");
     assert_eq!(res.overflowed, 0, "unexpected overflow");
+    assert!(!res.exhausted, "test query ran out of work budget");
     buf.truncate(res.written);
     sort(&mut buf);
     buf
@@ -71,7 +79,13 @@ pub fn onsets_seeded(src: &str, s: Span, seed: u64) -> Vec<String> {
 pub fn generated(src: &str) -> Option<Pattern> {
     match Pattern::new(src) {
         Ok(p) => Some(p),
-        Err(e) if e.message.contains("too far") || e.message.contains("too deeply") => None,
+        Err(e)
+            if ["too far", "too deeply", "events per cycle", "too large"]
+                .iter()
+                .any(|m| e.message.contains(m)) =>
+        {
+            None
+        }
         Err(e) => panic!("{src:?}: {e}"),
     }
 }
@@ -157,7 +171,33 @@ pub fn query_span() -> impl Strategy<Value = Span> {
             let b = Rational::int(c)
                 .checked_add(r(i64::from(off), den))
                 .unwrap();
-            let e = b.checked_add(r(i64::from(len), 2000)).unwrap();
+            let e = b.checked_add(r(i64::from(len), 4000)).unwrap();
             Span::new(b, e)
         })
+}
+
+/// An `f32` as the exact rational it is.
+pub fn f32_exact(x: f32) -> Rational {
+    assert!(x.is_finite() && x >= 0.0);
+    if x == 0.0 {
+        return Rational::ZERO;
+    }
+    let bits = x.to_bits();
+    let exp = ((bits >> 23) & 0xff) as i32;
+    let mant = i64::from(bits & 0x7f_ffff) | if exp == 0 { 0 } else { 1 << 23 };
+    let shift = 150 - exp.max(1);
+    if shift >= 0 {
+        Rational::new(mant, 1i64 << shift).unwrap()
+    } else {
+        Rational::int(mant << -shift)
+    }
+}
+
+/// The cycle position the `pattern` Operator derives from the Clock: `(beat + phase) / bpc`.
+pub fn clock_pos(beat: i64, phase: f32, bpc: i64) -> Rational {
+    Rational::int(beat)
+        .checked_add(f32_exact(phase))
+        .unwrap()
+        .checked_div(Rational::int(bpc))
+        .unwrap()
 }

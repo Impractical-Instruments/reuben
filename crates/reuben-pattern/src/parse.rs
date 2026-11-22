@@ -14,7 +14,7 @@ use crate::error::Error;
 use crate::time::Rational;
 
 /// Deepest bracket nesting (`[`, `<`, `{`, counted together) the parser accepts.
-pub const MAX_NESTING: u32 = 32;
+pub const MAX_NESTING: u32 = 16;
 /// Most modifiers that wrap one step (`*`, `/`, `?`, `(k,n,r)`, counted together).
 pub const MAX_MODIFIERS: u32 = 8;
 /// Largest count for `!`, a `..` range, or euclid steps: each expands to that many steps.
@@ -31,6 +31,7 @@ pub fn parse(src: &str) -> Result<Ast, Error> {
         text: src,
         pos: 0,
         depth: 0,
+        expanded: 0,
     };
     let layers = p.layers(None, 0)?;
     let root = match combine(layers, 0..src.len(), false) {
@@ -48,6 +49,8 @@ struct Parser<'a> {
     text: &'a str,
     pos: usize,
     depth: u32,
+    /// Steps produced by `..` ranges so far; the one expansion the AST holds in full.
+    expanded: usize,
 }
 
 /// The layers of one body (top level or inside a bracket), and which separator joined them.
@@ -181,6 +184,9 @@ impl<'a> Parser<'a> {
             match self.peek() {
                 None | Some(b',' | b'|' | b']' | b'>' | b'}') => break,
                 Some(b'.') => {
+                    if matches!(self.peek_at(1), Some(b'0'..=b'9')) {
+                        return Err(self.err_here("write a leading zero, as in 0.5"));
+                    }
                     if self.peek_at(1) == Some(b'.') {
                         return Err(Error::new(
                             self.pos..self.pos + 2,
@@ -234,7 +240,19 @@ impl<'a> Parser<'a> {
     }
 
     /// One step (with its modifiers), or a `_` / bare `!` that amends the previous step.
+    /// One step, which must end at whitespace, a separator, or a closing bracket: `1-2`, `0~1`
+    /// and `[a][b]` are errors rather than two steps.
     fn step(&mut self, cur: &mut Vec<Step>) -> Result<(), Error> {
+        self.step_inner(cur)?;
+        match self.peek() {
+            None | Some(b' ' | b'\t' | b'\n' | b'\r' | b',' | b'|' | b'.' | b']' | b'>' | b'}') => {
+                Ok(())
+            }
+            Some(_) => Err(self.err_here("separate steps with whitespace")),
+        }
+    }
+
+    fn step_inner(&mut self, cur: &mut Vec<Step>) -> Result<(), Error> {
         let start = self.pos;
         match self.peek() {
             Some(b'_') => {
@@ -320,6 +338,10 @@ impl<'a> Parser<'a> {
         let len = (i128::from(b) - i128::from(a)).unsigned_abs() + 1;
         if len > MAX_EXPANSION as u128 {
             return Err(Error::new(span, "range too long"));
+        }
+        self.expanded += len as usize;
+        if self.expanded > crate::compile::MAX_SIZE {
+            return Err(Error::new(span, "ranges expand to too many steps"));
         }
         let dir: i64 = if b >= a { 1 } else { -1 };
         let steps = (0..len as i64)
@@ -449,6 +471,9 @@ impl<'a> Parser<'a> {
                 }
                 b'?' => {
                     self.pos += 1;
+                    if self.peek() == Some(b'.') && matches!(self.peek_at(1), Some(b'0'..=b'9')) {
+                        return Err(self.err_here("write a leading zero, as in ?0.5"));
+                    }
                     let p = if matches!(self.peek(), Some(b'0'..=b'9')) {
                         let (p, pspan) = self.number_arg()?;
                         if p < Rational::ZERO || p > Rational::ONE {
@@ -635,7 +660,13 @@ impl<'a> Parser<'a> {
             i += 1;
         }
         let octave = if i == word.len() {
-            DEFAULT_OCTAVE
+            // `-1` directly after the name is the octave below 0, so MIDI 0-11 can be written.
+            if self.peek() == Some(b'-') && self.peek_at(1) == Some(b'1') {
+                self.pos += 2;
+                -1
+            } else {
+                DEFAULT_OCTAVE
+            }
         } else {
             let digits = &word[i..];
             if digits.len() > 2 || !digits.iter().all(u8::is_ascii_digit) {
@@ -647,7 +678,7 @@ impl<'a> Parser<'a> {
         u8::try_from(midi)
             .ok()
             .filter(|m| *m <= 127)
-            .ok_or_else(|| Error::new(span, "note outside the MIDI range 0-127"))
+            .ok_or_else(|| Error::new(start..self.pos, "note outside the MIDI range 0-127"))
     }
 
     fn euclid_args(&mut self) -> Result<(u32, u32, i64), Error> {
@@ -778,6 +809,40 @@ mod tests {
             seq_kinds(kind("bb2 bf2 C4")),
             vec![ExprKind::Note(46), ExprKind::Note(46), ExprKind::Note(60)]
         );
+    }
+
+    #[test]
+    fn octave_minus_one() {
+        assert_eq!(
+            seq_kinds(kind("c-1 b-1 cs-1")),
+            vec![ExprKind::Note(0), ExprKind::Note(11), ExprKind::Note(1)]
+        );
+        assert!(err("cb-1").message.contains("MIDI range"));
+        assert!(err("c-2").message.contains("whitespace"));
+    }
+
+    #[test]
+    fn adjacent_steps_need_whitespace() {
+        for (src, at) in [
+            ("1-2", 1),
+            ("0~1", 1),
+            ("c4-1", 2),
+            ("[0][1]", 3),
+            ("0 1_", 3),
+        ] {
+            let e = err(src);
+            assert!(e.message.contains("whitespace"), "{src}: {e}");
+            assert_eq!(e.span.start, at, "{src}");
+        }
+        assert_eq!(seq_kinds(kind("[0] [1]")).len(), 2);
+        assert!(matches!(kind("0 1, 2"), ExprKind::Stack(_)));
+        assert!(matches!(kind("0 1. 2"), ExprKind::Seq(_)));
+    }
+
+    #[test]
+    fn leading_dot_numbers_are_errors() {
+        assert!(err("a?.5 b").message.contains("?0.5"));
+        assert!(err("a .5").message.contains("0.5"));
     }
 
     #[test]

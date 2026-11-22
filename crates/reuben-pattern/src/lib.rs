@@ -21,21 +21,38 @@
 //! clock (beats, frames) to cycles exactly. Integer cycle numbers are what `< >`, `?` and `|` key
 //! on, so the cycle position is an input to every query, not state the pattern keeps.
 //!
-//! Overflow: arithmetic widens to `i128` and fails cleanly when a reduced result does not fit
-//! `i64`. In the query a failure abandons that sub-query and counts it in
-//! [`QueryResult::overflowed`]; nothing wraps and nothing panics. Compilation keeps every node's
-//! cumulative time scale within [`MAX_SCALE`], which keeps realistic spans far from the limit: a
-//! year of cycles at frame resolution (denominators up to 176 400) through patterns at the scale
-//! cap reports no overflow, and a test holds that.
+//! Inside the query, time is an integer cycle plus a fraction of a cycle. Speeding up or slowing
+//! down multiplies the cycle count as an integer and only the fraction as a rational, so the size of
+//! every term depends on the span's denominator and the pattern's ratios, never on how long a set
+//! has run. Arithmetic widens to `i128` and fails cleanly when a reduced result does not fit `i64`;
+//! the query then abandons that sub-query and counts it in [`QueryResult::overflowed`]. Nothing
+//! wraps and nothing panics.
+//!
+//! Compilation bounds what the query can reach. [`MAX_SCALE`] bounds each node's speed relative
+//! to the root. [`MAX_GROWTH`] bounds how much a node can multiply the span's denominator, so a span
+//! whose denominator is at most `2^43` never overflows, at any cycle. [`MAX_GRID`] bounds the
+//! denominators of event times, so they stay representable for `2^33` cycles. A clock position
+//! of the form `(beat + phase) / beats_per_cycle`, with an exact `f32` phase, has a denominator of
+//! about `2^40` just after a beat. A property test runs such spans at 999 BPM for more than 72 hours
+//! of cycles through generated patterns and finds no overflow. The ceiling at that resolution is the
+//! span itself: a [`Rational`] with denominator `2^40` can only express times up to `2^23` cycles.
 //!
 //! # Determinism
 //!
 //! There is no random state. `?` removes an event when a hash of (seed, the `?` node's structural
-//! id, the event's onset) falls below its probability; `|` picks a branch by a hash of (seed, the
-//! `|` node's structural id, the cycle number). Structural ids are assigned in source order at
-//! compile time, so the same text, span and seed give the same events on every run and platform.
-//! The *distribution* matches the reference docs (probability `p`, equal-weight choice), but the
-//! particular outcomes differ from Tidal's and Strudel's.
+//! id, the event's structural path, the event's onset) falls below its probability. `|` picks a
+//! branch by a hash of (seed, the `|` node's structural id, its structural path, the cycle number).
+//! Structural ids are assigned in source order at compile time. The path names which sequence slot
+//! led to the node, so the copies made by `!` and the pulses of a euclid draw independently even
+//! though they share one compiled child: `[0|1]!2` behaves like `[0|1] [0|1]`. Nothing depends on
+//! how time is split into queries, so the same text, span and seed give the same events on every
+//! run and platform. The *distribution* matches the reference docs (probability `p`, equal-weight
+//! choice), but the particular outcomes differ from Tidal's and Strudel's.
+//!
+//! # Playing events
+//!
+//! Trigger on [`Event::has_onset`] only, and release at that fragment's `whole.end`. See [`Event`]
+//! for why other fragments can be ignored.
 //!
 //! # Syntax (v1)
 //!
@@ -61,10 +78,17 @@
 //! Not in v1, each a clear error rather than silent acceptance: `:` sample index, patterned
 //! modifier arguments (`a*<2 3>`, `a(3,8,<0 2>)`), and any word that is not a note name.
 //!
-//! Limits, each an error with a span: bracket nesting beyond [`MAX_NESTING`], more than
-//! [`MAX_MODIFIERS`] wrapping modifiers on one step, `!`, `..` and euclid expansions beyond
-//! [`MAX_EXPANSION`] steps, compiled depth beyond [`MAX_DEPTH`], and time scale beyond
-//! [`MAX_SCALE`].
+//! Steps are separated by whitespace: `1-2`, `0~1` and `[0][1]` are errors rather than two steps.
+//! A decimal needs its leading zero (`?0.5`, not `?.5`).
+//!
+//! Limits, each an error with a span:
+//! - bracket nesting beyond [`MAX_NESTING`];
+//! - more than [`MAX_MODIFIERS`] wrapping modifiers on one step;
+//! - `!`, `..` and euclid expansions beyond [`MAX_EXPANSION`] steps;
+//! - compiled depth beyond [`MAX_DEPTH`];
+//! - time bounds beyond [`MAX_SCALE`], [`MAX_GROWTH`] or [`MAX_GRID`];
+//! - more than [`MAX_DENSITY`] onsets per cycle;
+//! - a compiled size beyond [`MAX_SIZE`].
 //!
 //! # Where the references disagree, and what this crate does
 //!
@@ -91,10 +115,9 @@
 //!   integer literals that expands into separate steps, ascending or descending.
 //! - **Bare `!`**: neither page documents it. A `!` with no count, attached or standalone, adds one
 //!   more copy of the previous step, so `a!`, `a !` and `a!2` are all `a a`.
-//! - **Note names and octaves**: Tidal numbers octaves so that `c5` is middle C; Strudel uses
-//!   scientific pitch, `c4` is middle C. This crate uses scientific pitch: [`Value::Note`] is the
-//!   MIDI note number, `c4` = 60. A name with no octave takes [`DEFAULT_OCTAVE`] (4), so a bare
-//!   `c` is middle C, which is also where an octave-less note lands in Tidal.
+//! - **Note names and octaves**: neither page fixes an octave numbering. This crate uses scientific
+//!   pitch notation: [`Value::Note`] is the MIDI note number, `c4` = 60, and `c-1` = 0 is the
+//!   lowest. A name with no octave takes [`DEFAULT_OCTAVE`] (4), so a bare `c` is middle C.
 //! - **Modifier order**: neither page says. Speed, `?` and euclid wrap the step in the order
 //!   written (`a*2?` degrades the sped-up step); `@` and `!` are properties of the step and apply
 //!   wherever they appear among its modifiers. A modifier must touch its step: `a *2` is an error.
@@ -117,8 +140,9 @@
 //! # Cost
 //!
 //! The query is a tree walk over a flat node arena: no string hashing, no trait objects, no
-//! per-event allocation. Its cost is linear in the events produced plus the cycles the span
-//! touches at each node, so query block-sized spans, not hours.
+//! per-event allocation. Its cost is bounded twice: at compile time by [`MAX_DENSITY`], and per
+//! query by [`QUERY_BUDGET`] units of work, after which it stops and sets
+//! [`QueryResult::exhausted`]. Query block-sized spans; a span of many cycles runs into the budget.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -134,10 +158,10 @@ mod time;
 use alloc::vec::Vec;
 
 pub use ast::{Ast, Expr, ExprKind, Step};
-pub use compile::{compile, MAX_DEPTH, MAX_SCALE};
+pub use compile::{compile, MAX_DENSITY, MAX_DEPTH, MAX_GRID, MAX_GROWTH, MAX_SCALE, MAX_SIZE};
 pub use error::Error;
 pub use parse::{parse, DEFAULT_OCTAVE, MAX_EXPANSION, MAX_MODIFIERS, MAX_NESTING};
-pub use query::{Event, QueryResult};
+pub use query::{Event, QueryResult, QUERY_BUDGET};
 pub use time::{Rational, Span};
 
 /// The value an event carries.

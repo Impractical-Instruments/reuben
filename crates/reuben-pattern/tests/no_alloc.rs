@@ -67,6 +67,13 @@ fn query_allocates_nothing_including_on_overflow() {
         assert_query_allocates_nothing(&p, s, &mut tight);
         assert_query_allocates_nothing(&p, s, &mut none);
     }
+    let dense = Pattern::new("[0*256, 1*256, 2*256, 3*256]?").unwrap();
+    let mut res = None;
+    assert_eq!(
+        allocations(|| res = Some(dense.query(cycles(0, 1000), 0, &mut roomy))),
+        0
+    );
+    assert!(res.unwrap().exhausted);
     let near = Rational::int(i64::MAX / 4);
     assert_query_allocates_nothing(
         &p,

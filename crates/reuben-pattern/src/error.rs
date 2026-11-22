@@ -5,8 +5,10 @@ use core::ops::Range;
 /// A parse or compile failure: where in the source, and a short human message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {
-    /// Byte range in the source text. Always on `char` boundaries, and non-empty unless the error
-    /// is at the end of the input (`start == end == len`).
+    /// Byte range in the source text. From [`parse`](crate::parse), always on `char` boundaries
+    /// and non-empty unless the error is at the end of the input (`start == end == len`). From
+    /// [`compile`](crate::compile), the span of the offending [`Expr`](crate::Expr), as the
+    /// [`Ast`](crate::Ast) recorded it.
     pub span: Range<usize>,
     /// One line, lowercase, no trailing period; written for a live-coding UI to show beside `span`.
     pub message: String,

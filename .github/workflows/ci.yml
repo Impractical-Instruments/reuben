@@ -96,10 +96,10 @@ jobs:
             windows:
               - *workspace
             # The bare-metal cross build, and deliberately NARROWER than *workspace rather than
-            # riding it. The packages cross-built are reuben-core and reuben-api's render half, so
-            # only those and the crates below them can move this outcome. reuben-document
-            # is not here: it is an optional dependency of `authoring`, which the render-only build
-            # does not enable. reuben-native and reuben-mcp sit above the window and reach the
+            # riding it. The packages cross-built are reuben-core, reuben-api's render half and
+            # reuben-pattern, so only those and the crates below them can move this outcome.
+            # reuben-document is not here: it is an optional dependency of `authoring`, which the
+            # render-only build does not enable. reuben-native and reuben-mcp sit above the window and reach the
             # bare-metal target by no path at all, and instruments/ is test DATA no cross build
             # reads. .cargo/config.toml is here because it sets rustflags (scoped to x86_64 today,
             # which is exactly the kind of scoping a later edit can widen by accident).

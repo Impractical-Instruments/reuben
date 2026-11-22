@@ -143,8 +143,8 @@ fn whole_and_part_across_a_query_edge() {
     assert_eq!(evs.len(), 2);
     assert_eq!(evs[0].whole, Span::new(Rational::ZERO, r(3, 4)));
     assert_eq!(evs[0].part, Span::new(r(1, 2), r(3, 4)));
-    assert!(!evs[0].has_onset() && evs[0].has_offset());
-    assert!(evs[1].has_onset() && evs[1].has_offset());
+    assert!(!evs[0].has_onset());
+    assert!(evs[1].has_onset());
 }
 
 #[test]
@@ -173,4 +173,147 @@ fn compile_limits_are_errors_with_spans() {
         .unwrap_err()
         .message
         .contains("too many modifiers"));
+}
+
+fn values_per_cycle(src: &str, c: i64, seed: u64) -> Vec<Value> {
+    let p = Pattern::new(src).unwrap();
+    let mut evs: Vec<Event> = query(&p, cycles(c, c + 1), seed)
+        .into_iter()
+        .filter(Event::has_onset)
+        .collect();
+    evs.sort_by_key(|e| e.whole.begin);
+    evs.into_iter().map(|e| e.value).collect()
+}
+
+#[test]
+fn copies_and_pulses_draw_independently() {
+    // Replicated, written out, and euclid pulses of one `|`: each step is its own coin flip.
+    for src in ["[0|1]!2", "[0|1] [0|1]", "[0|1](2,2)"] {
+        let same = (0..1000)
+            .filter(|c| {
+                let v = values_per_cycle(src, *c, 5);
+                v[0] == v[1]
+            })
+            .count();
+        assert!(
+            (430..570).contains(&same),
+            "{src}: same value in {same} of 1000 cycles"
+        );
+    }
+    // `?` inside copies: both kept about a quarter of the time.
+    let both = (0..1000)
+        .filter(|c| values_per_cycle("[0?]!2", *c, 5).len() == 2)
+        .count();
+    assert!(
+        (190..310).contains(&both),
+        "both copies kept in {both} of 1000 cycles"
+    );
+}
+
+#[test]
+fn seed_high_bits_matter() {
+    let draws = |seed: u64| -> Vec<Vec<Value>> {
+        (0..64)
+            .map(|c| values_per_cycle("[0|1|2] 3?", c, seed))
+            .collect()
+    };
+    assert_ne!(draws(9), draws(9 ^ (1 << 32)));
+    assert_ne!(draws(9), draws(9 ^ (1 << 63)));
+}
+
+#[test]
+fn density_cap() {
+    assert!(Pattern::new("0*1024").is_ok());
+    assert!(Pattern::new("[0*512, 1*512]").is_ok());
+    // Slowing pays back density: 2048 events stretched over two cycles.
+    assert!(Pattern::new("[0*2048]/2").is_ok());
+    for src in [
+        "0*1025",
+        "[0*512, 1*513]",
+        "[0 1 2 3]*257",
+        "{0 1 2, 3 4}%1025",
+    ] {
+        let e = Pattern::new(src).unwrap_err();
+        assert!(e.message.contains("events per cycle"), "{src}: {e}");
+    }
+}
+
+#[test]
+fn compiled_size_cap() {
+    // 448 bytes of text asking for 65,536 steps, inside every time and density limit.
+    let src = format!("[{}]/64", "0!1024 ".repeat(64));
+    let e = Pattern::new(&src).unwrap_err();
+    assert_eq!(e.message, "pattern too large to compile");
+    assert_eq!(e.span.start, 1);
+    assert!(e.span.end < src.len());
+    // The reviewer's 7 KB, 2^20-step text is refused before it allocates the steps.
+    let layer = format!("[{}]", "0!1024 ".repeat(1024));
+    assert!(Pattern::new(&layer).is_err());
+    let ranges = "[0 .. 1023]/1024 ".repeat(80);
+    assert!(Pattern::new(&ranges)
+        .unwrap_err()
+        .message
+        .contains("too many steps"));
+}
+
+#[test]
+fn work_budget_stops_long_queries() {
+    let p = Pattern::new("[0*256, 1*256, 2*256, 3*256]").unwrap();
+    let mut buf = [Event::EMPTY; 16];
+    let res = p.query(cycles(0, 1000), 0, &mut buf);
+    assert!(res.exhausted, "{res:?}");
+    assert!(res.written <= 16);
+    // A 4096-frame block at 999 BPM, 4 beats per cycle, at the density cap does not exhaust.
+    for src in [
+        "0*1024",
+        "[0 [1 [2 [3 [4 [5 6]]]]]]*146",
+        "{0 1 2, 3 4 5 6 7}%512",
+    ] {
+        let p = Pattern::new(src).unwrap();
+        let start = r(15_000 * 3 + 1, 3);
+        let s = Span::new(
+            start,
+            start.checked_add(r(999 * 4096, 60 * 4 * 48_000)).unwrap(),
+        );
+        let mut buf = vec![Event::EMPTY; 1024];
+        let res = p.query(s, 0, &mut buf);
+        assert!(!res.exhausted, "{src}: {res:?}");
+    }
+}
+
+#[test]
+fn offsets_from_fractional_weights_are_bounded_at_compile() {
+    let src = "0@1%1048574 1@1%1048538 2@524286%1048574 3@524268%1048538";
+    assert!(Pattern::new(src).is_err());
+}
+
+#[test]
+fn release_is_known_at_onset() {
+    // Play block by block the way the Operator will: note-on at each onset fragment, note-off at
+    // its `whole.end`, ignoring every other fragment. That yields the same notes as one query.
+    for src in [
+        "[0 1]/1.5 2",
+        "0 3/2",
+        "<0 1>/2 2",
+        "<0@3 [1 2]/5>*2 0(3,8)/3",
+    ] {
+        let p = Pattern::new(src).unwrap();
+        let notes = |evs: Vec<Event>| -> Vec<(Rational, Rational, Value)> {
+            let mut n: Vec<_> = evs
+                .into_iter()
+                .filter(Event::has_onset)
+                .map(|e| (e.whole.begin, e.whole.end, e.value))
+                .collect();
+            n.sort_by_key(|(b, e, _)| (*b, *e));
+            n
+        };
+        let whole = notes(query(&p, cycles(0, 6), 0));
+        let mut blocks = Vec::new();
+        for k in 0..6 * 97 {
+            blocks.extend(query(&p, Span::new(r(k, 97), r(k + 1, 97)), 0));
+        }
+        let played = notes(blocks);
+        assert_eq!(played, whole, "{src}");
+        assert!(played.iter().all(|(b, e, _)| b < e));
+    }
 }
