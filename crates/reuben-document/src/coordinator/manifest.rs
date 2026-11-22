@@ -12,7 +12,7 @@ use crate::format::{NodeDoc, NormalizedDoc, ResourceSource};
 use crate::resources::ResourceResolver;
 use crate::DiffSummary;
 use reuben_core::coordinator::MigrationTable;
-use reuben_core::descriptor::Descriptor;
+use reuben_core::descriptor::{Descriptor, Port};
 use reuben_core::plan::{LatchCarry, LiveSlot, Plan};
 use reuben_core::registry::Registry;
 use reuben_core::resources::SampleBuffer;
@@ -53,15 +53,18 @@ impl Manifest {
     /// edit always wins); addresses only in `new` are `added`, only in `old` are `removed`.
     ///
     /// Live values carry by address, where the edit left that address's document value alone: an
-    /// address naming an unwired latch on both sides, with an equal seed on both sides, carries
-    /// its latch across. One whose seed changed, or that gained or lost a wire, takes the new
-    /// document's value; so does a value that compares unequal to itself (a NaN seed).
+    /// address naming an unwired latch on both sides, with an equal seed and the same type and
+    /// range on both sides, carries its latch across. One whose seed, type or range changed, or
+    /// that gained or lost a wire, takes the new document's value; so does a value that compares
+    /// unequal to itself (a NaN seed). The type check is what keeps an enum index from carrying
+    /// into another enum, and the range check what keeps a value from carrying past a narrowed
+    /// bound: the live value itself is only known on the render thread, so it cannot be clamped
+    /// here.
     ///
     /// A node's own port address carries only into the same node surviving. An interface input
     /// pipe's address carries whatever the pipe renders as on each side — a node of its own when
     /// it fans out or is tapped, or dissolved into its one consumer's latch — and whether or not
-    /// that node or consumer survives: the value is the interface input's, not the node's. Where
-    /// a pipe's address and its consumer's port address name one latch, the pipe's decides.
+    /// that node or consumer survives: the value is the interface input's, not the node's.
     pub fn diff(&self, new: &Manifest) -> (MigrationTable, DiffSummary) {
         // Addresses are unique within a Plan (the loader rejects duplicates), so an address keys a
         // node unambiguously. Old side maps address -> (plan index, identity).
@@ -123,18 +126,16 @@ impl Manifest {
         let mut taken_old = BTreeSet::new();
         let mut taken_new = BTreeSet::new();
         let mut latches = Vec::new();
-        let interface_first = new
-            .slots
-            .iter()
-            .filter(|s| s.interface)
-            .chain(new.slots.iter().filter(|s| !s.interface));
-        for ns in interface_first {
+        for ns in &new.slots {
             let Some(os) = old_by_addr.get(ns.address.as_str()) else {
                 continue;
             };
             let (from, to) = ((os.node, os.port), (ns.node, ns.port));
+            // A chain of dissolved pipes names one latch by each pipe's address, so the same
+            // latch can come up twice; carrying it twice would swap the value back out.
             let carries = os.interface == ns.interface
                 && os.seed == ns.seed
+                && same_type_and_range(&os.typed_by, &ns.typed_by)
                 && (ns.interface || survivors.contains(&(os.node, ns.node)))
                 && !taken_old.contains(&from)
                 && !taken_new.contains(&to);
@@ -146,6 +147,14 @@ impl Manifest {
         }
         latches
     }
+}
+
+/// Whether a live value typed by `old` still means the same thing typed by `new`: the same type —
+/// for an enum, the same enum and variants — and the same bounds. The unit and sweep curve are
+/// presentation, and the default is compared as the seed.
+fn same_type_and_range(old: &Port, new: &Port) -> bool {
+    let bounds = |p: &Port| p.meta.as_ref().map(|m| (m.min, m.max));
+    old.ty == new.ty && bounds(old) == bounds(new)
 }
 
 /// Build the manifest for a freshly built (`doc`, `plan`) pair. The Plan is the authority for the
@@ -855,5 +864,33 @@ mod tests {
             vec![0],
             "a wired input carries nothing"
         );
+    }
+
+    #[test]
+    fn a_node_port_address_never_carries_into_an_interface_pipe_at_the_same_address() {
+        // A node `/level` replaced by an interface input `level`: one address, unrelated values.
+        let slot = |interface: bool| LiveSlot {
+            address: "/level/in".to_string(),
+            node: 0,
+            port: 0,
+            seed: reuben_core::message::Arg::F32(0.3),
+            typed_by: Port::f32_buffer("in"),
+            interface,
+        };
+        let identity = |type_name: &str| NodeIdentity {
+            address: "/level".to_string(),
+            type_name: type_name.to_string(),
+            fingerprint: Some(1),
+        };
+        let old = Manifest {
+            nodes: vec![identity("m2s")],
+            slots: vec![slot(false)],
+        };
+        let new = Manifest {
+            nodes: vec![identity("pipe")],
+            slots: vec![slot(true)],
+        };
+        assert!(old.diff(&new).0.latches().is_empty());
+        assert!(new.diff(&old).0.latches().is_empty());
     }
 }

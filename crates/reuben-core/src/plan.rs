@@ -243,8 +243,9 @@ pub struct InputAlias {
     /// The consumer's input port index.
     pub dst_port: usize,
     /// What the pipe held at rest, in the pipe port's own form — not the consumer's, which may
-    /// clamp or resolve it differently.
-    pub seed: Arg,
+    /// clamp or resolve it differently. `None` when a wire fed the pipe as it dissolved: its value
+    /// was then the feeder's, even where the feeder (another pipe) dissolved after it.
+    pub seed: Option<Arg>,
 }
 
 /// A pipe collapsed by [`dissolve_interface_pipes`], keyed by its (pre-instantiate) consumer.
@@ -254,7 +255,7 @@ struct DissolvedPipe {
     kind: PortKind,
     consumer: NodeKey,
     consumer_port: usize,
-    seed: Arg,
+    seed: Option<Arg>,
 }
 
 /// One carried live value: `((old node, old port), (new node, new port))`, the latch it leaves
@@ -274,6 +275,8 @@ pub struct LiveSlot {
     pub port: usize,
     /// What the latch holds at rest. For a dissolved pipe's address, the pipe's own seed.
     pub seed: Arg,
+    /// The port the address types its messages by: the node's own, or the dissolved pipe's.
+    pub typed_by: Port,
     /// `true` when `address` is an interface input pipe's, rendered as a node or dissolved.
     pub interface: bool,
 }
@@ -1007,29 +1010,37 @@ impl Plan {
                 && self.nodes[node].input_kinds[port] != PortKind::Event
         };
         let mut slots = Vec::new();
-        for (i, n) in self.nodes.iter().enumerate() {
-            let interface = n.descriptor.type_name == "pipe";
-            for (p, (port, seed)) in n.descriptor.inputs.iter().zip(&n.latch).enumerate() {
-                if unwired(i, p) {
-                    slots.push(LiveSlot {
-                        address: alloc::format!("{}/{}", n.address, port.name),
-                        node: i,
-                        port: p,
-                        seed: seed.clone(),
-                        interface,
-                    });
-                }
-            }
-        }
         for a in &self.input_aliases {
+            let Some(seed) = &a.seed else { continue };
             if a.kind != PortKind::Event && unwired(a.node, a.dst_port) {
                 slots.push(LiveSlot {
                     address: alloc::format!("{}/{}", a.address, a.port.name),
                     node: a.node,
                     port: a.dst_port,
-                    seed: a.seed.clone(),
+                    seed: seed.clone(),
+                    typed_by: a.port.clone(),
                     interface: true,
                 });
+            }
+        }
+        // A dissolved pipe's consumer port is wired from the pipe in the document, so its own
+        // address is no route for a live value: only the pipe's is.
+        let piped = |node: usize, port: usize| {
+            (self.input_aliases.iter()).any(|a| a.node == node && a.dst_port == port)
+        };
+        for (i, n) in self.nodes.iter().enumerate() {
+            let interface = n.descriptor.type_name == "pipe";
+            for (p, (port, seed)) in n.descriptor.inputs.iter().zip(&n.latch).enumerate() {
+                if unwired(i, p) && !piped(i, p) {
+                    slots.push(LiveSlot {
+                        address: alloc::format!("{}/{}", n.address, port.name),
+                        node: i,
+                        port: p,
+                        seed: seed.clone(),
+                        typed_by: port.clone(),
+                        interface,
+                    });
+                }
             }
         }
         slots
@@ -1227,7 +1238,7 @@ fn dissolve_interface_pipes(graph: &mut Graph) -> Vec<DissolvedPipe> {
             kind,
             consumer: dst,
             consumer_port: dst_port,
-            seed,
+            seed: feeder.is_none().then_some(seed),
         });
         // The moved aliases and this pipe's own now all name `dst`, so a later dissolve of `dst`
         // finds them together under one key.
@@ -2531,6 +2542,56 @@ mod hosted_probes {
         assert!(
             hosted.find("/freq").is_none(),
             "a pipe dissolved out of every voice has no slot"
+        );
+    }
+
+    /// A pipe whose `in` port defaults to `default`.
+    fn pipe_with_default(default: f32) -> (Box<Pipe>, Arc<crate::descriptor::Descriptor>) {
+        let mut desc = Pipe::descriptor();
+        desc.inputs = vec![crate::descriptor::Port::f32_buffer_meta(
+            "in",
+            crate::descriptor::F32Meta {
+                min: 0.0,
+                max: 1.0,
+                default,
+                unit: alloc::string::String::new(),
+                curve: crate::descriptor::Curve::default(),
+            },
+        )];
+        (Box::new(Pipe::new(PortKind::Signal)), Arc::new(desc))
+    }
+
+    #[test]
+    fn a_pipe_fed_by_a_pipe_offers_no_live_value_of_its_own() {
+        // The inner pipe comes first in key order, so it dissolves while the outer still feeds
+        // it: both addresses then reach `/osc.freq`, whose document value is the outer default.
+        let mut g = Graph::new();
+        let (inner, inner_desc) = pipe_with_default(0.5);
+        let inner = g.add_boxed("/a/freq", inner, inner_desc);
+        let (outer, outer_desc) = pipe_with_default(0.3);
+        let outer = g.add_boxed("/freq", outer, outer_desc);
+        let osc = g.add("/osc", Oscillator::new());
+        g.connect(outer, 0usize, inner, 0usize);
+        g.connect(inner, 0usize, osc, oscillator::IN_FREQ);
+        g.tap_output(osc, oscillator::OUT_AUDIO);
+        let plan = Plan::instantiate(g, AudioConfig::new(48_000.0, 128)).expect("instantiate");
+        assert_eq!(plan.input_aliases.len(), 2, "both pipes dissolve");
+        let slots = plan.live_slots();
+        let seed_at = |address: &str| {
+            (slots.iter())
+                .find(|s| s.address == address)
+                .map(|s| s.seed.clone())
+        };
+        assert_eq!(seed_at("/freq/in"), Some(crate::message::Arg::F32(0.3)));
+        assert_eq!(
+            seed_at("/a/freq/in"),
+            None,
+            "the inner pipe's value is the outer's"
+        );
+        assert_eq!(
+            seed_at("/osc/freq"),
+            None,
+            "the pipe feeds the consumer's port"
         );
     }
 

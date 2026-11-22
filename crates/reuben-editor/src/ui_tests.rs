@@ -1116,13 +1116,13 @@ fn a_control_keeps_its_setting_across_an_edit_and_starts_over_when_reopened() {
         let moved = harness.state().controls.value("gain").expect("a value");
         assert!(moved > 0.5, "the fader moved, to {moved}");
 
-        // An edit that leaves `gain`'s default alone keeps the setting, as the engine keeps the
-        // live value.
+        // An edit that leaves `gain`'s default, type and range alone keeps the setting, as the
+        // engine keeps the live value.
         let channel = harness.state().engine.channel().expect("the engine runs");
         let args = SetInstrumentInterfaceInputMeta {
             source: source.clone(),
             name: "gain".to_string(),
-            max: Some(2.0),
+            unit: Some("dB".to_string()),
             ..Default::default()
         };
         call_tool(names::SET_INSTRUMENT_INTERFACE_INPUT_META, &args, &channel)
@@ -1130,7 +1130,7 @@ fn a_control_keeps_its_setting_across_an_edit_and_starts_over_when_reopened() {
         step_until(&mut harness, "reloaded the edit", |editor| {
             let session = editor.session.as_ref().expect("a session");
             let read = session.viewed().read.as_ref().expect("the document reads");
-            (read.inputs.iter()).any(|p| p.port.name == "gain" && p.port.max == Some(2.0))
+            (read.inputs.iter()).any(|p| p.port.name == "gain" && p.port.unit == "dB")
         });
         harness.run_steps(2);
         assert_eq!(harness.state().controls.value("gain"), Some(moved));

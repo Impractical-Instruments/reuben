@@ -119,10 +119,11 @@ const INSTRUCTIONS: &str = "reuben authoring sidecar. The instrument document is
      edit it accepts is written, and playing starts once it loads. A rejection lists under \
      `pre_existing` the errors it can show were already there; fix those first. Validation \
      reports every error at once. \
-     `send_live_controls` auditions a value without committing it: it outlives edits to other \
-     inputs, an edit to that input or an `open_instrument` replaces it, and it is never saved, so \
-     fold a keeper into the document with an edit. Read `reuben://guide/authoring` \
-     for the type system, wiring rules, instrument format, and the authoring loop. Read \
+     `send_live_controls` auditions a value without committing it: it outlives an edit unless the \
+     edit changes that input's value, type, range or wiring, `open_instrument` replaces it, and \
+     it is never saved, so fold a keeper into the document with an edit. Read \
+     `reuben://guide/authoring` for the type system, wiring rules, instrument format, and the \
+     authoring loop. Read \
      `reuben://guide/vocabulary` for the word→move table translating intent language (\"warmer\", \
      \"busier\", \"sadder\") into parameter moves. Read `reuben://guide/library-index` for the \
      available instruments to reuse by reference through a `subpatch` node.";

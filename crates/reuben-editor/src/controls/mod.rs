@@ -7,7 +7,7 @@
 //!
 //! Controls send live values to the running engine. They never write the instrument document. What
 //! a control is set to follows the engine's rule for a live value: an edit keeps it unless the
-//! edit changed its interface input's default or type, or removed the input; opening the
+//! edit changed its interface input's default, type or range, or removed the input; opening the
 //! instrument, again or afresh, starts every control from its default.
 
 mod model;
@@ -110,22 +110,26 @@ impl Setting {
 }
 
 /// Whether two controls of one interface input see the same document value: an edit that changes
-/// an input's default or type replaces a live value in the engine, so the control starts over too.
-/// A range or presentation change leaves the value alone in both.
+/// an input's default, type or range replaces a live value in the engine, so the control starts
+/// over too. A presentation change leaves the value alone in both.
 fn same_input(was: &Kind, is: &Kind) -> bool {
     match (was, is) {
         (
             Kind::Value {
                 rest: a,
                 integer: ai,
+                min: amin,
+                max: amax,
                 ..
             },
             Kind::Value {
                 rest: b,
                 integer: bi,
+                min: bmin,
+                max: bmax,
                 ..
             },
-        ) => a == b && ai == bi,
+        ) => a == b && ai == bi && amin == bmin && amax == bmax,
         (Kind::Toggle { rest: a }, Kind::Toggle { rest: b }) => a == b,
         (
             Kind::Choice {
@@ -173,7 +177,8 @@ impl Controls {
     }
 
     /// [`open`](Self::open) again after an edit: each control keeps what it was set to where a
-    /// control of the old panel drove the same interface input with the same default and type.
+    /// control of the old panel drove the same interface input with the same default, type and
+    /// range.
     pub fn reload(&mut self, top: Option<&str>, channel: &dyn Fn() -> Option<Channel>) {
         self.replace_keeping_settings(Self::open(top, channel));
     }
@@ -751,19 +756,23 @@ mod reload_tests {
     }
 
     #[test]
-    fn a_reload_keeps_each_setting_whose_input_kept_its_default_and_type() {
+    fn a_reload_keeps_each_setting_whose_input_kept_its_default_type_and_range() {
         let mut controls = panel(vec![
             value("cutoff", 0.3, 1.0),
             value("res", 0.1, 1.0),
             value("gone", 0.5, 1.0),
             value("drive", 0.2, 1.0),
+            value("width", 0.5, 2.0),
         ]);
         controls.settings = vec![
             Setting::Value(0.7),
             Setting::Value(0.8),
             Setting::Value(0.9),
             Setting::Value(0.6),
+            Setting::Value(1.8),
         ];
+        let mut relabelled = value("cutoff", 0.3, 1.0);
+        relabelled.label = "Cutoff".to_string();
         let mut integer = value("drive", 0.2, 1.0);
         if let Kind::Value { integer: i, .. } = &mut integer.kind {
             *i = true;
@@ -771,13 +780,15 @@ mod reload_tests {
         controls.replace_keeping_settings(panel(vec![
             value("res", 0.5, 1.0),
             value("new", 0.4, 1.0),
-            value("cutoff", 0.3, 2.0),
+            relabelled,
             integer,
+            value("width", 0.5, 1.0),
         ]));
+        assert_eq!(controls.value("cutoff"), Some(0.7), "a relabel keeps it");
         assert_eq!(
-            controls.value("cutoff"),
-            Some(0.7),
-            "a range change keeps it"
+            controls.value("width"),
+            Some(0.5),
+            "a range change resets it"
         );
         assert_eq!(
             controls.value("res"),
