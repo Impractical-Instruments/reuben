@@ -360,9 +360,11 @@ impl ChannelState {
             if reported.take().is_none() {
                 return Ok(None);
             }
+            // Nothing swapped, so every live value is where it was.
             let event = Event::Changed {
                 hash: coordinator.installed_hash(),
                 by: ChangedBy::Outside,
+                reset: Some(Vec::new()),
             };
             self.events.publish(event.clone());
             return Ok(Some(event));
@@ -377,6 +379,7 @@ impl ChannelState {
         Ok(Some(Event::Changed {
             hash: coordinator.installed_hash(),
             by: ChangedBy::Outside,
+            reset: Some(coordinator.live_reset().to_vec()),
         }))
     }
 
@@ -1041,7 +1044,11 @@ fn went_live(
             hash,
         }
     } else {
-        Event::Changed { hash, by }
+        Event::Changed {
+            hash,
+            by,
+            reset: Some(coordinator.live_reset().to_vec()),
+        }
     });
     Ok(warnings)
 }

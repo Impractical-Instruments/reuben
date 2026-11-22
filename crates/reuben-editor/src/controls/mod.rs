@@ -6,19 +6,21 @@
 //! the generated panel and says why.
 //!
 //! Controls send live values to the running engine. They never write the instrument document. What
-//! a control is set to follows the engine's rule for a live value: an edit keeps it unless the
-//! edit changed its interface input's default, type or range, or removed the input; opening the
-//! instrument, again or afresh, starts every control from its default.
+//! a control is set to follows what the engine did with that live value: after an edit, a control
+//! keeps its setting where the engine's event says the value carried, and starts from its default
+//! where the engine replaced it with the document's; opening the instrument, again or afresh,
+//! starts every control from its default.
 
 mod model;
 mod surface;
 mod view;
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use eframe::egui;
 use reuben_api::authoring::{Boundary, DescribeBoundary};
-use reuben_api::engine::{call_tool, Channel};
+use reuben_api::engine::{call_tool, Channel, Event};
 use reuben_api::tools::names;
 
 use self::model::{Control, Kind, Panel};
@@ -109,45 +111,6 @@ impl Setting {
     }
 }
 
-/// Whether two controls of one interface input see the same document value: an edit that changes
-/// an input's default, type or range replaces a live value in the engine, so the control starts
-/// over too. A presentation change leaves the value alone in both.
-fn same_input(was: &Kind, is: &Kind) -> bool {
-    match (was, is) {
-        (
-            Kind::Value {
-                rest: a,
-                integer: ai,
-                min: amin,
-                max: amax,
-                ..
-            },
-            Kind::Value {
-                rest: b,
-                integer: bi,
-                min: bmin,
-                max: bmax,
-                ..
-            },
-        ) => a == b && ai == bi && amin == bmin && amax == bmax,
-        (Kind::Toggle { rest: a }, Kind::Toggle { rest: b }) => a == b,
-        (
-            Kind::Choice {
-                variants: av,
-                rest: a,
-            },
-            Kind::Choice {
-                variants: bv,
-                rest: b,
-            },
-        ) => av == bv && a == b,
-        (Kind::NoteToggle { .. }, Kind::NoteToggle { .. })
-        | (Kind::ChordButton { .. }, Kind::ChordButton { .. })
-        | (Kind::Keyboard, Kind::Keyboard) => was == is,
-        _ => false,
-    }
-}
-
 /// The controls panel of the open instrument, with what each control is set to.
 pub struct Controls {
     loaded: Option<Result<Loaded, String>>,
@@ -156,6 +119,42 @@ pub struct Controls {
     /// Why the last send failed, until one succeeds.
     send_error: Option<String>,
     replies: Replies,
+    /// Which settings the engine has replaced since the panel was built.
+    replaced: Replaced,
+}
+
+/// The live values the engine replaced with the document's since the panel was built, as its
+/// events said, less those a control has sent again since.
+#[derive(Debug, Default)]
+struct Replaced {
+    /// An event replaced every live value, or could not say which it replaced.
+    all: bool,
+    /// Interface input addresses an event replaced.
+    some: BTreeSet<String>,
+    /// Addresses a control sent to after the latest event that replaced them.
+    sent_since: BTreeSet<String>,
+}
+
+impl Replaced {
+    fn every(&mut self) {
+        self.all = true;
+        self.sent_since.clear();
+    }
+
+    fn these(&mut self, addresses: &[String]) {
+        for address in addresses {
+            self.sent_since.remove(address);
+            self.some.insert(address.clone());
+        }
+    }
+
+    fn sent(&mut self, address: &str) {
+        self.sent_since.insert(address.to_string());
+    }
+
+    fn covers(&self, address: &str) -> bool {
+        (self.all || self.some.contains(address)) && !self.sent_since.contains(address)
+    }
 }
 
 impl Controls {
@@ -173,25 +172,46 @@ impl Controls {
             low_key: DEFAULT_LOW_KEY,
             send_error: None,
             replies: Replies::default(),
+            replaced: Replaced::default(),
         }
     }
 
-    /// [`open`](Self::open) again after an edit: each control keeps what it was set to where a
-    /// control of the old panel drove the same interface input with the same default, type and
-    /// range.
+    /// Take in one of the engine's events about `top`, the open instrument: which live values a
+    /// change replaced, or that opening it again replaced them all.
+    pub fn hear(&mut self, event: &Event, top: &str) {
+        match event {
+            Event::Changed {
+                reset: Some(reset), ..
+            } => self.replaced.these(reset),
+            Event::Changed { reset: None, .. } => self.replaced.every(),
+            Event::Opened { name, .. } if name == top => self.replaced.every(),
+            _ => {}
+        }
+    }
+
+    /// [`open`](Self::open) again after the engine swapped: each control keeps what it was set to
+    /// where the engine kept the live value of the interface input it drives, as [`hear`]d, and a
+    /// control of the old panel drove that input with the same kind of widget.
+    ///
+    /// [`hear`]: Self::hear
     pub fn reload(&mut self, top: Option<&str>, channel: &dyn Fn() -> Option<Channel>) {
         self.replace_keeping_settings(Self::open(top, channel));
     }
 
     /// Become `fresh`, carrying over each setting [`reload`](Self::reload) keeps.
     fn replace_keeping_settings(&mut self, mut fresh: Self) {
+        let replaced = std::mem::take(&mut self.replaced);
         if let (Some(Ok(old)), Some(Ok(new))) = (&self.loaded, &fresh.loaded) {
             let mut taken = vec![false; old.panel.controls.len()];
             for (at, control) in new.panel.controls.iter().enumerate() {
+                if replaced.covers(&control.address()) {
+                    continue;
+                }
                 let kept = (old.panel.controls.iter().enumerate()).find(|(was_at, was)| {
                     !taken[*was_at]
                         && was.bind == control.bind
-                        && same_input(&was.kind, &control.kind)
+                        && std::mem::discriminant(&was.kind)
+                            == std::mem::discriminant(&control.kind)
                 });
                 if let Some((was_at, _)) = kept {
                     taken[was_at] = true;
@@ -276,6 +296,9 @@ impl Controls {
                     })
                     .inner;
                 if let Some(live) = &live {
+                    for message in &messages {
+                        self.replaced.sent(&message.address);
+                    }
                     live.send(messages, &self.replies);
                 }
             });
@@ -752,58 +775,86 @@ mod reload_tests {
             low_key: DEFAULT_LOW_KEY,
             send_error: None,
             replies: Replies::default(),
+            replaced: Replaced::default(),
         }
     }
 
-    #[test]
-    fn a_reload_keeps_each_setting_whose_input_kept_its_default_type_and_range() {
-        let mut controls = panel(vec![
-            value("cutoff", 0.3, 1.0),
-            value("res", 0.1, 1.0),
-            value("gone", 0.5, 1.0),
-            value("drive", 0.2, 1.0),
-            value("width", 0.5, 2.0),
-        ]);
-        controls.settings = vec![
-            Setting::Value(0.7),
-            Setting::Value(0.8),
-            Setting::Value(0.9),
-            Setting::Value(0.6),
-            Setting::Value(1.8),
-        ];
-        let mut relabelled = value("cutoff", 0.3, 1.0);
-        relabelled.label = "Cutoff".to_string();
-        let mut integer = value("drive", 0.2, 1.0);
-        if let Kind::Value { integer: i, .. } = &mut integer.kind {
-            *i = true;
+    fn changed(reset: Option<&[&str]>) -> Event {
+        Event::Changed {
+            hash: "h".to_string(),
+            by: reuben_api::engine::ChangedBy::Client,
+            reset: reset.map(|r| r.iter().map(|a| a.to_string()).collect()),
         }
+    }
+
+    fn moved(binds: &[&str]) -> Controls {
+        let mut controls = panel(binds.iter().map(|b| value(b, 0.3, 1.0)).collect());
+        controls.settings = vec![Setting::Value(0.7); binds.len()];
+        controls
+    }
+
+    #[test]
+    fn a_reload_keeps_each_setting_the_engine_kept() {
+        let mut controls = moved(&["cutoff", "res", "gone"]);
+        controls.hear(&changed(Some(&["/res/in"])), "t.json");
+        controls.hear(&changed(Some(&[])), "t.json");
         controls.replace_keeping_settings(panel(vec![
-            value("res", 0.5, 1.0),
+            value("res", 0.3, 1.0),
             value("new", 0.4, 1.0),
-            relabelled,
-            integer,
-            value("width", 0.5, 1.0),
+            value("cutoff", 0.3, 1.0),
         ]));
-        assert_eq!(controls.value("cutoff"), Some(0.7), "a relabel keeps it");
-        assert_eq!(
-            controls.value("width"),
-            Some(0.5),
-            "a range change resets it"
-        );
-        assert_eq!(
-            controls.value("res"),
-            Some(0.5),
-            "a default change resets it"
-        );
+        assert_eq!(controls.value("cutoff"), Some(0.7), "the engine kept it");
+        assert_eq!(controls.value("res"), Some(0.3), "the engine replaced it");
         assert_eq!(
             controls.value("new"),
             Some(0.4),
             "a new input starts at rest"
         );
+
+        // Heard replacements are spent by the reload they applied to.
+        controls.replace_keeping_settings(panel(vec![value("cutoff", 0.3, 1.0)]));
+        assert_eq!(controls.value("cutoff"), Some(0.7));
+    }
+
+    #[test]
+    fn a_control_sent_again_after_its_value_was_replaced_keeps_what_it_sent() {
+        let mut controls = moved(&["cutoff", "res"]);
+        controls.hear(&changed(None), "t.json");
+        controls.replaced.sent("/cutoff/in");
+        controls.replace_keeping_settings(panel(vec![
+            value("cutoff", 0.3, 1.0),
+            value("res", 0.3, 1.0),
+        ]));
+        assert_eq!(controls.value("cutoff"), Some(0.7), "sent after the event");
+        assert_eq!(controls.value("res"), Some(0.3), "replaced by the event");
+    }
+
+    #[test]
+    fn a_reload_starts_over_when_the_engine_could_not_say_or_opened_the_instrument() {
+        for event in [
+            changed(None),
+            Event::Opened {
+                name: "t.json".to_string(),
+                hash: "h".to_string(),
+            },
+        ] {
+            let mut controls = moved(&["cutoff"]);
+            controls.hear(&event, "t.json");
+            controls.hear(&changed(Some(&[])), "t.json");
+            controls.replace_keeping_settings(panel(vec![value("cutoff", 0.3, 1.0)]));
+            assert_eq!(controls.value("cutoff"), Some(0.3), "{event:?}");
+        }
+        let mut controls = moved(&["cutoff"]);
+        let other = Event::Opened {
+            name: "other.json".to_string(),
+            hash: "h".to_string(),
+        };
+        controls.hear(&other, "t.json");
+        controls.replace_keeping_settings(panel(vec![value("cutoff", 0.3, 1.0)]));
         assert_eq!(
-            controls.value("drive"),
-            Some(0.2),
-            "a type change resets it"
+            controls.value("cutoff"),
+            Some(0.7),
+            "another instrument's open"
         );
     }
 }

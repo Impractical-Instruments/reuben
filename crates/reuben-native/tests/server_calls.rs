@@ -152,7 +152,7 @@ fn a_client_lists_edits_and_opens_over_tcp() {
             .unwrap()
             .contains("renamed"));
         match events.recv_timeout(REPLY).expect("a changed event") {
-            Event::Changed { hash, by } => {
+            Event::Changed { hash, by, .. } => {
                 assert_eq!(by, ChangedBy::Client);
                 assert_eq!(serde_json::json!(hash), edit["hash"]);
             }
@@ -517,7 +517,7 @@ fn a_broken_document_opens_silent_and_one_call_repairs_it_into_playing() {
         ));
         assert_eq!(repaired["written"], true, "{repaired}");
         match events.recv_timeout(REPLY).expect("a changed event") {
-            Event::Changed { hash, by } => {
+            Event::Changed { hash, by, .. } => {
                 assert_eq!(by, ChangedBy::Client);
                 assert_eq!(serde_json::json!(hash), repaired["hash"]);
             }
@@ -556,7 +556,7 @@ fn an_outside_repair_of_the_open_broken_document_starts_it_playing() {
             }
         };
         match changed {
-            Event::Changed { hash, by } => {
+            Event::Changed { hash, by, .. } => {
                 assert_eq!(by, ChangedBy::Outside);
                 assert_eq!(snapshot(t).content_hash, hash);
                 assert_ne!(hash, "");

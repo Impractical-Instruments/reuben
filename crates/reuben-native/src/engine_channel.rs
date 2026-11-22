@@ -1533,7 +1533,7 @@ mod tests {
             .recv_timeout(Duration::from_secs(10))
             .expect("an event within the deadline")
         {
-            Some(Ok(Event::Changed { hash, by })) => {
+            Some(Ok(Event::Changed { hash, by, .. })) => {
                 assert_eq!(by, ChangedBy::Client);
                 assert_eq!(serde_json::json!(hash), output["hash"]);
             }

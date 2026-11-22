@@ -13,7 +13,7 @@ use crate::resources::ResourceResolver;
 use crate::DiffSummary;
 use reuben_core::coordinator::MigrationTable;
 use reuben_core::descriptor::{Descriptor, Port};
-use reuben_core::plan::{LatchCarry, LiveSlot, Plan};
+use reuben_core::plan::{LatchCarry, LatchRoute, LiveSlot, Plan};
 use reuben_core::registry::Registry;
 use reuben_core::resources::SampleBuffer;
 
@@ -52,19 +52,19 @@ impl Manifest {
     /// else at a shared address is a `state_reset` (a type change or a fingerprint change — the
     /// edit always wins); addresses only in `new` are `added`, only in `old` are `removed`.
     ///
-    /// Live values carry by address, where the edit left that address's document value alone: an
-    /// address naming an unwired latch on both sides, with an equal seed and the same type and
-    /// range on both sides, carries its latch across. One whose seed, type or range changed, or
-    /// that gained or lost a wire, takes the new document's value; so does a value that compares
-    /// unequal to itself (a NaN seed). The type check is what keeps an enum index from carrying
-    /// into another enum, and the range check what keeps a value from carrying past a narrowed
-    /// bound: the live value itself is only known on the render thread, so it cannot be clamped
-    /// here.
+    /// A live value carries where one address reaches the same kind of latch on both sides, with
+    /// an equal seed and the same type and range: a node's own input of a surviving node, an
+    /// interface pipe's own latch where the pipe renders as a node on both sides, or the same
+    /// consumer input (same node address and port, same type and range) where the pipe dissolves
+    /// on both sides. Everything else takes the new document's value — a changed seed, type or
+    /// range, a wire gained or lost, a pipe that gains or loses a consumer and so changes how it
+    /// renders, and a value that compares unequal to itself (a NaN seed).
     ///
-    /// A node's own port address carries only into the same node surviving. An interface input
-    /// pipe's address carries whatever the pipe renders as on each side — a node of its own when
-    /// it fans out or is tapped, or dissolved into its one consumer's latch — and whether or not
-    /// that node or consumer survives: the value is the interface input's, not the node's.
+    /// The live value is only known on the render thread, so it cannot be clamped or converted
+    /// here: every condition is about the value meaning the same thing in the latch it lands in.
+    /// The type check keeps an enum index out of another enum, the range check keeps a value
+    /// inside a narrowed bound, and the same-kind check keeps a value clamped by one consumer out
+    /// of another.
     pub fn diff(&self, new: &Manifest) -> (MigrationTable, DiffSummary) {
         // Addresses are unique within a Plan (the loader rejects duplicates), so an address keys a
         // node unambiguously. Old side maps address -> (plan index, identity).
@@ -117,32 +117,51 @@ impl Manifest {
         (MigrationTable::new(survivors, latches), diff)
     }
 
+    /// The addresses of this (new) manifest's interface pipe latches that `carried` does not land
+    /// a live value in, sorted.
+    pub fn interface_resets(&self, carried: &[LatchCarry]) -> Vec<String> {
+        let landed: BTreeSet<(usize, usize)> = carried.iter().map(|&(_, to)| to).collect();
+        let mut reset: Vec<String> = (self.slots.iter())
+            .filter(|s| !matches!(s.route, LatchRoute::Node))
+            .filter(|s| !landed.contains(&(s.node, s.port)))
+            .map(|s| s.address.clone())
+            .collect();
+        reset.sort();
+        reset
+    }
+
     /// The latch pairs [`Manifest::diff`] carries (see there for the rule), each latch named at
     /// most once per side.
     fn carried_latches(&self, new: &Manifest, survivors: &[(usize, usize)]) -> Vec<LatchCarry> {
         let old_by_addr: BTreeMap<&str, &LiveSlot> =
             self.slots.iter().map(|s| (s.address.as_str(), s)).collect();
         let survivors: BTreeSet<(usize, usize)> = survivors.iter().copied().collect();
-        let mut taken_old = BTreeSet::new();
-        let mut taken_new = BTreeSet::new();
+        // Each side names a latch by at most one address ([`Plan::live_slots`]), and an address
+        // pairs once, so no latch is swapped twice.
         let mut latches = Vec::new();
         for ns in &new.slots {
             let Some(os) = old_by_addr.get(ns.address.as_str()) else {
                 continue;
             };
-            let (from, to) = ((os.node, os.port), (ns.node, ns.port));
-            // A chain of dissolved pipes names one latch by each pipe's address, so the same
-            // latch can come up twice; carrying it twice would swap the value back out.
-            let carries = os.interface == ns.interface
-                && os.seed == ns.seed
-                && same_type_and_range(&os.typed_by, &ns.typed_by)
-                && (ns.interface || survivors.contains(&(os.node, ns.node)))
-                && !taken_old.contains(&from)
-                && !taken_new.contains(&to);
-            if carries {
-                taken_old.insert(from);
-                taken_new.insert(to);
-                latches.push((from, to));
+            let same_route = match (&os.route, &ns.route) {
+                (LatchRoute::Node, LatchRoute::Node) => survivors.contains(&(os.node, ns.node)),
+                (LatchRoute::Pipe, LatchRoute::Pipe) => true,
+                (
+                    LatchRoute::Dissolved {
+                        consumer: a,
+                        port: ap,
+                        typed_by: at,
+                    },
+                    LatchRoute::Dissolved {
+                        consumer: b,
+                        port: bp,
+                        typed_by: bt,
+                    },
+                ) => a == b && ap == bp && same_type_and_range(at, bt),
+                _ => false,
+            };
+            if same_route && os.seed == ns.seed && same_type_and_range(&os.typed_by, &ns.typed_by) {
+                latches.push(((os.node, os.port), (ns.node, ns.port)));
             }
         }
         latches
@@ -867,30 +886,43 @@ mod tests {
     }
 
     #[test]
-    fn a_node_port_address_never_carries_into_an_interface_pipe_at_the_same_address() {
-        // A node `/level` replaced by an interface input `level`: one address, unrelated values.
-        let slot = |interface: bool| LiveSlot {
+    fn a_latch_carries_only_into_the_same_kind_of_latch() {
+        // One address, one surviving node, equal values: only the route differs.
+        let slot = |route: LatchRoute| LiveSlot {
             address: "/level/in".to_string(),
             node: 0,
             port: 0,
             seed: reuben_core::message::Arg::F32(0.3),
             typed_by: Port::f32_buffer("in"),
-            interface,
+            route,
         };
-        let identity = |type_name: &str| NodeIdentity {
-            address: "/level".to_string(),
-            type_name: type_name.to_string(),
-            fingerprint: Some(1),
+        let manifest = |route: LatchRoute| Manifest {
+            nodes: vec![NodeIdentity {
+                address: "/level".to_string(),
+                type_name: "m2s".to_string(),
+                fingerprint: Some(1),
+            }],
+            slots: vec![slot(route)],
         };
-        let old = Manifest {
-            nodes: vec![identity("m2s")],
-            slots: vec![slot(false)],
+        let dissolved = |consumer: &str, port: usize| LatchRoute::Dissolved {
+            consumer: consumer.into(),
+            port,
+            typed_by: Port::f32_buffer("a"),
         };
-        let new = Manifest {
-            nodes: vec![identity("pipe")],
-            slots: vec![slot(true)],
-        };
-        assert!(old.diff(&new).0.latches().is_empty());
-        assert!(new.diff(&old).0.latches().is_empty());
+        let routes = [
+            LatchRoute::Node,
+            LatchRoute::Pipe,
+            dissolved("/m", 0),
+            dissolved("/m", 1),
+            dissolved("/n", 0),
+        ];
+        for (i, old) in routes.iter().enumerate() {
+            for (j, new) in routes.iter().enumerate() {
+                let carried = !(manifest(old.clone()).diff(&manifest(new.clone())).0)
+                    .latches()
+                    .is_empty();
+                assert_eq!(carried, i == j, "{old:?} -> {new:?}");
+            }
+        }
     }
 }

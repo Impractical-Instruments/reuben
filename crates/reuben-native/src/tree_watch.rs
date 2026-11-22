@@ -250,7 +250,7 @@ mod tests {
         loop {
             let left = deadline.checked_duration_since(Instant::now())?;
             match events.recv_timeout(left) {
-                Ok(Event::Changed { hash, by }) => return Some((hash, by)),
+                Ok(Event::Changed { hash, by, .. }) => return Some((hash, by)),
                 Ok(_) => {}
                 Err(_) => return None,
             }

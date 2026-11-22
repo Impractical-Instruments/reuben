@@ -84,18 +84,17 @@ Why the steps are what they are:
   written even though the whole instrument does not plan yet, and nothing plays until the edit
   that makes it load and plan — that edit starts it playing.
 - **Sending is audition, not authoring.** A live control message (`/filt/cutoff 1500`) changes
-  render state only — sweep a cutoff, try a tempo; the document never sees it. At each edit a
-  live value stays **unless the edit changed that input's value, type or range** — its
-  constant or interface default, its declared type or bounds, or its wiring (a wire added or
-  removed, or a move to another interface input) — and then the document wins. So a sent
-  `cutoff` outlives an edit to `resonance`, an edit to `cutoff` replaces it, and an edit that
-  leaves `cutoff` at the value it already had keeps it. A value sent to an interface input
-  (`/cutoff/in`) stays whatever the edit does to the nodes it feeds, and starts over when that
-  interface input is renamed or removed. One sent to an unpiped node input starts over when the
-  node is renamed, removed, or its state resets (see below). A value sent to a wired input is the
-  wire's to overwrite and never carries. `open_instrument` — of another instrument, or again of
-  the one playing — starts every input from the document. Nothing live is saved. (The MCP tool
-  is `send_live_controls`; the name says which half of the loop it is on.)
+  render state only — sweep a cutoff, try a tempo; the document never sees it. An edit keeps a
+  live value **only where it leaves that input exactly as it was**: the same value, type and
+  range, the same wiring, and for an interface input the same consumers; otherwise the document
+  wins. So a value sent to `/cutoff/in` outlives an edit to `resonance` but starts over when the
+  edit changes `cutoff`'s default, type or range, renames or removes it, or adds or removes a node
+  it feeds; a value sent to a node's own unwired input also starts over when that node is renamed,
+  removed, or its state resets (see below). A value sent to a wired input — including a node
+  input an interface input feeds, such as `/filt/cutoff` under a `cutoff` pipe — is heard but is
+  the wire's, and never carries. `open_instrument`, of another instrument or again of the one
+  playing, starts every input from the document. Nothing live is saved. (The MCP tool is
+  `send_live_controls`; the name says which half of the loop it is on.)
 - **Try, then commit.** Send to explore; when a value is a keeper, fold it into the document with
   `set_instrument_input`. Never let the sound and the document drift apart — the document is the
   save source of truth.

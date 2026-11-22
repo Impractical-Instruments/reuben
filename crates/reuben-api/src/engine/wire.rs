@@ -502,7 +502,16 @@ pub enum Event {
     /// document's content hash, whichever of its files changed: after an edit to a nested
     /// document it is not the hash that edit's own result carries. An empty `hash` is a write
     /// while nothing plays: the file changed and no Plan was installed.
-    Changed { hash: String, by: ChangedBy },
+    ///
+    /// `reset` lists the interface input addresses (`/<name>/in`) whose live value the change
+    /// replaced with the document's, every other live value having carried across. `None` when
+    /// that is not known, which a client reads as every one.
+    Changed {
+        hash: String,
+        by: ChangedBy,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reset: Option<Vec<String>>,
+    },
     /// Another instrument was opened and is playing. `name` is the host's
     /// [origin](crate::engine::EngineHost::document_origin) of the name it was opened by, the one
     /// spelling every client hears.
@@ -1104,13 +1113,24 @@ mod tests {
                 Event::Changed {
                     hash: "00c0ffee00c0ffee".to_string(),
                     by: ChangedBy::Client,
+                    reset: None,
                 },
                 serde_json::json!({"event": "changed", "hash": "00c0ffee00c0ffee", "by": "client"}),
             ),
             (
                 Event::Changed {
                     hash: "00c0ffee00c0ffee".to_string(),
+                    by: ChangedBy::Client,
+                    reset: Some(vec!["/cutoff/in".to_string()]),
+                },
+                serde_json::json!({"event": "changed", "hash": "00c0ffee00c0ffee", "by": "client",
+                                   "reset": ["/cutoff/in"]}),
+            ),
+            (
+                Event::Changed {
+                    hash: "00c0ffee00c0ffee".to_string(),
                     by: ChangedBy::Outside,
+                    reset: None,
                 },
                 serde_json::json!({"event": "changed", "hash": "00c0ffee00c0ffee", "by": "outside"}),
             ),

@@ -185,6 +185,13 @@ pub struct PlanNode {
     pub out_targets: Vec<Vec<(usize, usize)>>,
     /// This node's slot in [`Plan::probes`], or `None` for a node with no Signal output.
     pub probe: Option<usize>,
+    /// Per input port: `true` where a dissolved interface pipe feeds it, so the pipe's address
+    /// is the document's name for its latch.
+    pub piped: Vec<bool>,
+    /// Per input port: `true` while the latest value routed to a piped latch came by the node's
+    /// own address rather than the pipe's. Such a value is the consumer's, as on a wired input,
+    /// so a Swap does not carry it. Written by routing, in message order.
+    pub piped_bypassed: Vec<bool>,
 }
 
 /// One outbound (OSC-out) sink: a node whose emitted Messages leave the
@@ -243,8 +250,8 @@ pub struct InputAlias {
     /// The consumer's input port index.
     pub dst_port: usize,
     /// What the pipe held at rest, in the pipe port's own form — not the consumer's, which may
-    /// clamp or resolve it differently. `None` when a wire fed the pipe as it dissolved: its value
-    /// was then the feeder's, even where the feeder (another pipe) dissolved after it.
+    /// clamp or resolve it differently. `None` when the pipe was fed: by a wire as it dissolved,
+    /// or by another pipe that dissolved into it first. Its value was then the feeder's.
     pub seed: Option<Arg>,
 }
 
@@ -263,11 +270,29 @@ struct DissolvedPipe {
 /// swaps them.
 pub type LatchCarry = ((usize, usize), (usize, usize));
 
+/// How a [`LiveSlot`]'s address reaches its latch.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LatchRoute {
+    /// A node's own input, no wire or pipe feeding it.
+    Node,
+    /// An interface pipe rendered as a node of its own: its `in` latch.
+    Pipe,
+    /// A dissolved interface pipe, into its one consumer's input.
+    Dissolved {
+        /// The consumer node's address.
+        consumer: Arc<str>,
+        /// The consumer's input port index.
+        port: usize,
+        /// The consumer's input port, which types the value as it lands.
+        typed_by: Port,
+    },
+}
+
 /// One input latch a live message can set, as [`Plan::live_slots`] reports it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LiveSlot {
-    /// The address a live message reaches it by: `<node>/<port>`, or a dissolved interface
-    /// pipe's `<pipe>/<port>`. One latch can have both.
+    /// The address a live message reaches it by: `<node>/<port>`, or an interface pipe's
+    /// `<pipe>/<port>`. Each latch has at most one.
     pub address: String,
     /// The node index in execution order.
     pub node: usize,
@@ -275,10 +300,9 @@ pub struct LiveSlot {
     pub port: usize,
     /// What the latch holds at rest. For a dissolved pipe's address, the pipe's own seed.
     pub seed: Arg,
-    /// The port the address types its messages by: the node's own, or the dissolved pipe's.
+    /// The port the address types its messages by: the node's own, or the pipe's.
     pub typed_by: Port,
-    /// `true` when `address` is an interface input pipe's, rendered as a node or dissolved.
-    pub interface: bool,
+    pub route: LatchRoute,
 }
 
 /// One input-master tap — the dual of [`OutputTap`]: a **top-level** signal
@@ -746,6 +770,8 @@ impl Plan {
                 recycled_outputs,
                 out_targets,
                 probe,
+                piped: vec![false; n_inputs],
+                piped_bypassed: vec![false; n_inputs],
             });
 
             // Every buffer whose last reader was this node returns to the free list, for a
@@ -871,6 +897,9 @@ impl Plan {
                 seed: d.seed,
             })
             .collect();
+        for a in &input_aliases {
+            nodes[a.node].piped[a.dst_port] = true;
+        }
 
         // A slot set this Plan built is still unshared here. One passed in by a host is shared
         // with the host's other copies and stays as built: the copy whose Plan built it already
@@ -959,7 +988,8 @@ impl Plan {
     /// last sent to that input keeps playing and this Plan's seed lands in `from` to free
     /// off-thread with it. Which latches carry is the caller's rule, and the caller names each
     /// latch at most once per side — a second swap onto one latch would undo the first. A pair
-    /// out of range is skipped.
+    /// out of range is skipped, and so is a piped latch whose latest value came by the node's own
+    /// address ([`PlanNode::piped_bypassed`]): that value is only known here.
     ///
     /// Caller contract: this Plan has not rendered. A materialized port's scratch is then still
     /// marked dirty, so the first block fills it from the carried value.
@@ -968,6 +998,14 @@ impl Plan {
     /// drop on this side. Runs at the render-callback top, beside the transplant.
     pub(crate) fn carry_latches(&mut self, from: &mut Plan, carries: &[LatchCarry]) {
         for &((old_node, old_port), (new_node, new_port)) in carries {
+            let bypassed = from
+                .nodes
+                .get(old_node)
+                .and_then(|n| n.piped_bypassed.get(old_port))
+                == Some(&true);
+            if bypassed {
+                continue;
+            }
             let old = from
                 .nodes
                 .get_mut(old_node)
@@ -982,9 +1020,11 @@ impl Plan {
         }
     }
 
-    /// Every input latch a live message can set and no wire feeds (an Event input holds
-    /// nothing, so it has none), with what it holds at rest. Only meaningful before the first
-    /// block renders: rendering overwrites a latch with whatever is sent to it.
+    /// Every input latch a live message can set and nothing feeds, each under the one address
+    /// that reaches it, with what it holds at rest. A pipe-fed input — a dissolved pipe's
+    /// consumer, a pipe another pipe fed — counts as fed. An Event input holds nothing, so it has
+    /// none. Only meaningful before the first block renders: rendering overwrites a latch with
+    /// whatever is sent to it.
     pub fn live_slots(&self) -> Vec<LiveSlot> {
         let mut wired: Vec<Vec<bool>> = self
             .nodes
@@ -1012,38 +1052,47 @@ impl Plan {
         let mut slots = Vec::new();
         for a in &self.input_aliases {
             let Some(seed) = &a.seed else { continue };
-            if a.kind != PortKind::Event && unwired(a.node, a.dst_port) {
+            if unwired(a.node, a.dst_port) {
+                let consumer = &self.nodes[a.node];
                 slots.push(LiveSlot {
                     address: alloc::format!("{}/{}", a.address, a.port.name),
                     node: a.node,
                     port: a.dst_port,
                     seed: seed.clone(),
                     typed_by: a.port.clone(),
-                    interface: true,
+                    route: LatchRoute::Dissolved {
+                        consumer: Arc::clone(&consumer.address),
+                        port: a.dst_port,
+                        typed_by: consumer.descriptor.inputs[a.dst_port].clone(),
+                    },
                 });
             }
         }
-        // A dissolved pipe's consumer port is wired from the pipe in the document, so its own
-        // address is no route for a live value: only the pipe's is.
-        let piped = |node: usize, port: usize| {
-            (self.input_aliases.iter()).any(|a| a.node == node && a.dst_port == port)
-        };
         for (i, n) in self.nodes.iter().enumerate() {
-            let interface = n.descriptor.type_name == "pipe";
+            let route = match n.descriptor.type_name == "pipe" {
+                true => LatchRoute::Pipe,
+                false => LatchRoute::Node,
+            };
             for (p, (port, seed)) in n.descriptor.inputs.iter().zip(&n.latch).enumerate() {
-                if unwired(i, p) && !piped(i, p) {
+                if unwired(i, p) && !self.piped(i, p) {
                     slots.push(LiveSlot {
                         address: alloc::format!("{}/{}", n.address, port.name),
                         node: i,
                         port: p,
                         seed: seed.clone(),
                         typed_by: port.clone(),
-                        interface,
+                        route: route.clone(),
                     });
                 }
             }
         }
         slots
+    }
+
+    /// Whether a dissolved pipe feeds input `port` of node `node`: the document wires it from
+    /// the pipe, so the pipe's address, not the node's, is how a message reaches it.
+    fn piped(&self, node: usize, port: usize) -> bool {
+        self.nodes[node].piped.get(port) == Some(&true)
     }
 }
 
@@ -1089,6 +1138,9 @@ fn dissolve_interface_pipes(graph: &mut Graph) -> Vec<DissolvedPipe> {
     // recorded so far at every dissolve is quadratic in the pipe count, and a spliced document's
     // pipe count is its subpatch count times their boundary width — the number that grows.
     let mut aliases_of: SecondaryMap<NodeKey, Vec<usize>> = SecondaryMap::new();
+    // Pipes another pipe dissolved into: the feeder's value now rests in them, so a later dissolve
+    // of one records no value of its own, as it would have had the feeder still been a wire.
+    let mut fed_by_pipe: SecondaryMap<NodeKey, ()> = SecondaryMap::new();
     // The two "kept as a rendered node" reasons that are fixed for the whole fixpoint: nothing
     // dissolution does adds a channel binding or a tap, and a pipe carrying either never
     // dissolves, so both sets are read out of the graph once instead of re-derived per candidate.
@@ -1221,6 +1273,9 @@ fn dissolve_interface_pipes(graph: &mut Graph) -> Vec<DissolvedPipe> {
             }
         }
 
+        if graph.nodes[dst].descriptor.type_name == "pipe" {
+            fed_by_pipe.insert(dst, ());
+        }
         graph.nodes.remove(key);
         graph.interface.inputs.retain(|_, (k, _)| *k != key);
         // A chained alias (this pipe was another dissolved pipe's consumer) follows through to
@@ -1238,7 +1293,7 @@ fn dissolve_interface_pipes(graph: &mut Graph) -> Vec<DissolvedPipe> {
             kind,
             consumer: dst,
             consumer_port: dst_port,
-            seed: feeder.is_none().then_some(seed),
+            seed: (feeder.is_none() && !fed_by_pipe.contains_key(key)).then_some(seed),
         });
         // The moved aliases and this pipe's own now all name `dst`, so a later dissolve of `dst`
         // finds them together under one key.
@@ -2563,36 +2618,53 @@ mod hosted_probes {
 
     #[test]
     fn a_pipe_fed_by_a_pipe_offers_no_live_value_of_its_own() {
-        // The inner pipe comes first in key order, so it dissolves while the outer still feeds
-        // it: both addresses then reach `/osc.freq`, whose document value is the outer default.
+        // Whichever of the two dissolves first, both addresses reach `/osc.freq`, whose document
+        // value is the outer default: only the outer pipe's address is a route for a live value.
+        for inner_first in [true, false] {
+            let mut g = Graph::new();
+            let (inner_op, inner_desc) = pipe_with_default(0.5);
+            let (outer_op, outer_desc) = pipe_with_default(0.3);
+            let (inner, outer) = match inner_first {
+                true => {
+                    let inner = g.add_boxed("/a/freq", inner_op, inner_desc);
+                    (inner, g.add_boxed("/freq", outer_op, outer_desc))
+                }
+                false => {
+                    let outer = g.add_boxed("/freq", outer_op, outer_desc);
+                    (g.add_boxed("/a/freq", inner_op, inner_desc), outer)
+                }
+            };
+            let osc = g.add("/osc", Oscillator::new());
+            g.connect(outer, 0usize, inner, 0usize);
+            g.connect(inner, 0usize, osc, oscillator::IN_FREQ);
+            g.tap_output(osc, oscillator::OUT_AUDIO);
+            let plan = Plan::instantiate(g, AudioConfig::new(48_000.0, 128)).expect("instantiate");
+            assert_eq!(plan.input_aliases.len(), 2, "both pipes dissolve");
+            let slots = plan.live_slots();
+            let addresses: Vec<&str> = slots.iter().map(|s| s.address.as_str()).collect();
+            assert!(
+                !addresses.contains(&"/a/freq/in") && !addresses.contains(&"/osc/freq"),
+                "inner_first={inner_first}: {addresses:?}"
+            );
+            let outer_slot = slots.iter().find(|s| s.address == "/freq/in");
+            assert_eq!(
+                outer_slot.map(|s| &s.seed),
+                Some(&crate::message::Arg::F32(0.3)),
+                "inner_first={inner_first}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_event_input_offers_no_live_value() {
         let mut g = Graph::new();
-        let (inner, inner_desc) = pipe_with_default(0.5);
-        let inner = g.add_boxed("/a/freq", inner, inner_desc);
-        let (outer, outer_desc) = pipe_with_default(0.3);
-        let outer = g.add_boxed("/freq", outer, outer_desc);
+        g.add("/t", crate::operators::Transpose::new());
         let osc = g.add("/osc", Oscillator::new());
-        g.connect(outer, 0usize, inner, 0usize);
-        g.connect(inner, 0usize, osc, oscillator::IN_FREQ);
         g.tap_output(osc, oscillator::OUT_AUDIO);
         let plan = Plan::instantiate(g, AudioConfig::new(48_000.0, 128)).expect("instantiate");
-        assert_eq!(plan.input_aliases.len(), 2, "both pipes dissolve");
-        let slots = plan.live_slots();
-        let seed_at = |address: &str| {
-            (slots.iter())
-                .find(|s| s.address == address)
-                .map(|s| s.seed.clone())
-        };
-        assert_eq!(seed_at("/freq/in"), Some(crate::message::Arg::F32(0.3)));
-        assert_eq!(
-            seed_at("/a/freq/in"),
-            None,
-            "the inner pipe's value is the outer's"
-        );
-        assert_eq!(
-            seed_at("/osc/freq"),
-            None,
-            "the pipe feeds the consumer's port"
-        );
+        let addresses: Vec<String> = plan.live_slots().into_iter().map(|s| s.address).collect();
+        assert!(addresses.contains(&"/t/amount".into()), "{addresses:?}");
+        assert!(!addresses.contains(&"/t/notes".into()), "{addresses:?}");
     }
 
     /// `/v`, a Voicer with two voices, summed to the master; with `extra`, an outer oscillator

@@ -1147,3 +1147,76 @@ fn a_control_keeps_its_setting_across_an_edit_and_starts_over_when_reopened() {
         harness.state_mut().engine.shutdown();
     });
 }
+
+/// Move `gain`'s fader up one step and return where it landed.
+fn nudge_gain(harness: &mut Harness<'_, Editor>) -> f64 {
+    use egui::accesskit::Role;
+    harness.get_by_role(Role::Slider).focus();
+    harness.run_steps(1);
+    harness.key_press(egui::Key::ArrowRight);
+    harness.run_steps(1);
+    let moved = harness.state().controls.value("gain").expect("a value");
+    assert!(moved > 0.5, "the fader moved, to {moved}");
+    moved
+}
+
+#[test]
+fn a_control_starts_over_where_the_engine_replaced_its_value() {
+    use reuben_api::authoring::{RemoveInstrumentNode, SetInstrumentInterfaceInputMeta};
+    use reuben_api::engine::call_tool;
+    use reuben_api::tools::names;
+    use reuben_native::test_support::within;
+
+    let scratch = Scratch::new("ui_controls_follow_the_engine");
+    let config = TempConfig::new();
+    let top = instrument(&scratch);
+    within(crate::engine::test_support::HANG_SECS, move || {
+        let mut harness = harness(editor(&top, &config));
+        let source = top.display().to_string();
+        let channel = harness.state().engine.channel().expect("the engine runs");
+
+        // A range edit replaces the live value in the engine, and the panel follows.
+        nudge_gain(&mut harness);
+        let args = SetInstrumentInterfaceInputMeta {
+            source: source.clone(),
+            name: "gain".to_string(),
+            max: Some(2.0),
+            ..Default::default()
+        };
+        call_tool(names::SET_INSTRUMENT_INTERFACE_INPUT_META, &args, &channel)
+            .expect("the edit is accepted");
+        step_until(&mut harness, "reset gain after the range edit", |editor| {
+            editor.controls.value("gain") == Some(0.5)
+        });
+
+        // Reopened while it does not load, the instrument plays nothing; the edit that makes it
+        // load again starts every input from the document, and the panel with it.
+        let moved = nudge_gain(&mut harness);
+        let mut doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&top).expect("read")).expect("json");
+        doc["nodes"]
+            .as_array_mut()
+            .expect("nodes")
+            .push(json!({"type": "no_such_operator", "address": "/x"}));
+        std::fs::write(&top, doc.to_string()).expect("write the broken instrument");
+        channel.open(source.clone(), None).expect("the open ran");
+        step_until(&mut harness, "held the broken instrument", |editor| {
+            matches!(
+                editor.session.as_ref().map(|s| s.status()),
+                Some(Status::Held(_))
+            )
+        });
+        harness.run_steps(2);
+        assert_eq!(harness.state().controls.value("gain"), Some(moved));
+        let fix = RemoveInstrumentNode {
+            source,
+            address: "/x".to_string(),
+            expect: None,
+        };
+        call_tool(names::REMOVE_INSTRUMENT_NODE, &fix, &channel).expect("the fix is accepted");
+        step_until(&mut harness, "reset gain after the fix", |editor| {
+            editor.controls.value("gain") == Some(0.5)
+        });
+        harness.state_mut().engine.shutdown();
+    });
+}

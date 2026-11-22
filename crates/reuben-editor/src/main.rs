@@ -369,18 +369,19 @@ impl Editor {
         if poll.reloaded {
             view(&mut self.canvas, &mut self.inspector, session);
         }
-        // Opening this instrument again starts every input from the document, so the panel starts
-        // over; an edit keeps each live value its input's default left alone, and so does the panel.
+        // The panel keeps a control's setting only where the engine kept the live value, and it
+        // hears which those were even while it is not rebuilt, so a rebuild after a tree that did
+        // not load still knows what an open in between replaced.
+        for event in &events {
+            self.controls.hear(event, session.top());
+        }
         let reopened = (events.iter()).any(
             |event| matches!(event, Event::Opened { name, .. } if name.as_str() == session.top()),
         );
         // A tree that does not load keeps the panel of the instrument still playing.
         if (poll.reloaded || reopened) && !matches!(session.status(), Status::Held(_)) {
-            let channel = || self.engine.channel();
-            match reopened {
-                true => self.controls = Controls::open(Some(session.top()), &channel),
-                false => self.controls.reload(Some(session.top()), &channel),
-            }
+            self.controls
+                .reload(Some(session.top()), &|| self.engine.channel());
         }
     }
 }

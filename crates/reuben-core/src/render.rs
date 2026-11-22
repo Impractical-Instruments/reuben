@@ -704,7 +704,7 @@ impl<'a> Inbound<'a> {
 
 /// Deliver each message to its [`Target`], classified by the destination port's [`PortKind`].
 /// Reuses `routes` (one entry per node); clears and refills.
-fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: Inbound<'_>) {
+fn route_messages(routes: &mut Vec<NodeRoute>, plan: &mut Plan, messages: Inbound<'_>) {
     // Steady-state no-op: the Renderer presizes `routes` to the node count.
     if routes.len() != plan.nodes.len() {
         routes.resize_with(plan.nodes.len(), NodeRoute::default);
@@ -726,6 +726,7 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: Inbound<'_
             Target::Alias(ai) => {
                 let alias = &plan.input_aliases[ai];
                 let (n, port) = (alias.node, alias.dst_port);
+                plan.nodes[n].piped_bypassed[port] = false;
                 match alias.kind {
                     // A signal pipe's message feed was a raw ZOH materialize write (unclamped).
                     PortKind::Signal => {
@@ -765,25 +766,30 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: Inbound<'_
                 }
             }
             // Routing is by port, not by operator address-filtering.
-            Target::Port { node: i, port } => match plan.nodes[i].input_kinds[port] {
-                PortKind::Signal => {
-                    if let Some(v) = arg.as_f32() {
-                        routes[i].push_materialize(frame, port, v);
+            Target::Port { node: i, port } => {
+                if plan.nodes[i].piped[port] {
+                    plan.nodes[i].piped_bypassed[port] = true;
+                }
+                match plan.nodes[i].input_kinds[port] {
+                    PortKind::Signal => {
+                        if let Some(v) = arg.as_f32() {
+                            routes[i].push_materialize(frame, port, v);
+                        }
+                    }
+                    PortKind::Value => {
+                        let p = &plan.nodes[i].descriptor.inputs[port];
+                        if let Some(a) = held_arg(p, arg) {
+                            routes[i].held.push((frame, port, a));
+                        }
+                    }
+                    PortKind::Event => {
+                        routes[i].events.push(RoutedEvent {
+                            dst_port: port,
+                            src: EventSrc::External { msg: mi },
+                        });
                     }
                 }
-                PortKind::Value => {
-                    let p = &plan.nodes[i].descriptor.inputs[port];
-                    if let Some(a) = held_arg(p, arg) {
-                        routes[i].held.push((frame, port, a));
-                    }
-                }
-                PortKind::Event => {
-                    routes[i].events.push(RoutedEvent {
-                        dst_port: port,
-                        src: EventSrc::External { msg: mi },
-                    });
-                }
-            },
+            }
         }
     }
 }
@@ -1139,7 +1145,7 @@ mod tests {
     /// rule.
     #[test]
     fn osc_in_message_and_route_messages_agree_on_the_destination() {
-        let plan = shadowed_plan();
+        let mut plan = shadowed_plan();
         let cases = [
             // A direct hit on the ancestor (Signal input: oscillator freq is a signal control).
             ("/fx/freq", "/fx"),
@@ -1148,7 +1154,7 @@ mod tests {
             ("/fx/verb/delay/mix", "/fx/verb/delay"),
         ];
         let mut routes = Vec::new();
-        let delivered = |routes: &[NodeRoute]| -> Vec<alloc::string::String> {
+        let delivered = |routes: &[NodeRoute], plan: &Plan| -> Vec<alloc::string::String> {
             routes
                 .iter()
                 .zip(plan.nodes())
@@ -1162,9 +1168,9 @@ mod tests {
             let msg = plan
                 .osc_in_message(addr, &[Arg::F32(0.25)])
                 .unwrap_or_else(|| panic!("{addr}: the boundary dropped the message"));
-            route_messages(&mut routes, &plan, Inbound::Addressed(&[msg]));
+            route_messages(&mut routes, &mut plan, Inbound::Addressed(&[msg]));
             assert_eq!(
-                delivered(&routes),
+                delivered(&routes, &plan),
                 [want],
                 "{addr}: addressed routing disagrees"
             );
@@ -1175,9 +1181,9 @@ mod tests {
                 frame: 0,
                 arg,
             }];
-            route_messages(&mut routes, &plan, Inbound::Resolved(&resolved));
+            route_messages(&mut routes, &mut plan, Inbound::Resolved(&resolved));
             assert_eq!(
-                delivered(&routes),
+                delivered(&routes, &plan),
                 [want],
                 "{addr}: resolved routing disagrees"
             );

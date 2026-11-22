@@ -21,6 +21,7 @@ pub fn resubscribed() -> Event {
     Event::Changed {
         hash: String::new(),
         by: ChangedBy::Outside,
+        reset: None,
     }
 }
 

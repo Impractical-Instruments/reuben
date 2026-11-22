@@ -106,15 +106,9 @@ fn install_slot_callback_never_allocates_or_frees() {
     assert_install_step_heap_neutral(&mut coord, &mut slot, BLOCK);
 }
 
-/// `level` (a Signal pipe) feeds `/m.a`, and `/m2.a` too when `fan_out`, so it renders as a node of
-/// its own or dissolves into `/m.a`; `k` (a held pipe) feeds `/v.a`.
-fn piped_doc(b: f32, fan_out: bool) -> String {
-    let second = if fan_out {
-        r#", { "type": "mul_f32_signal", "address": "/m2",
-               "inputs": { "a": { "from": "/level" }, "b": 1.0 } }"#
-    } else {
-        ""
-    };
+/// `level` (a Signal pipe) feeds `/m.a` and `/m2.a`, so it renders as a node of its own; `k` (a
+/// held pipe) feeds only `/v.a`, so it dissolves into it.
+fn piped_doc(b: f32) -> String {
     format!(
         r#"{{ "format_version": 3, "instrument": "p",
              "interface": {{
@@ -127,15 +121,17 @@ fn piped_doc(b: f32, fan_out: bool) -> String {
                {{ "type": "mul_f32_value", "address": "/v",
                   "inputs": {{ "a": {{ "from": "/k" }}, "b": 1.0 }} }},
                {{ "type": "output", "address": "/out",
-                  "inputs": {{ "audio": {{ "from": "/m.out" }} }} }} {second} ] }}"#
+                  "inputs": {{ "audio": {{ "from": "/m.out" }} }} }},
+               {{ "type": "mul_f32_signal", "address": "/m2",
+                  "inputs": {{ "a": {{ "from": "/level" }}, "b": 1.0 }} }} ] }}"#
     )
 }
 
 #[test]
 fn carrying_live_values_across_a_swap_never_allocates_or_frees() {
-    let (kept, dissolved) = (piped_doc(1.0, true), piped_doc(2.0, false));
+    let (one, two) = (piped_doc(1.0), piped_doc(2.0));
     let (mut coord, side, _w) = Coordinator::install_initial(
-        &kept,
+        &one,
         Registry::builtin(),
         Box::new(MemoryResolver::new()),
         cfg(),
@@ -152,7 +148,7 @@ fn carrying_live_values_across_a_swap_never_allocates_or_frees() {
     assert_counter_is_live();
 
     let mut block = vec![0.0f32; BLOCK * ch];
-    for next in [&dissolved, &kept, &dissolved] {
+    for next in [&two, &one, &two] {
         let report = coord.swap_document(next);
         assert!(report.report.ok, "swap should install: {:?}", report.report);
         assert_install_step_heap_neutral(&mut coord, &mut slot, BLOCK);

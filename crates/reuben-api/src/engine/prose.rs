@@ -12,10 +12,11 @@ pub const ENGINE_UNREACHABLE_GUIDANCE: &str =
 
 pub const SEND_LIVE_CONTROLS: &str =
     "Send a batch of control messages to audition a change on the running engine. \
-     These values live in render state only, never in the instrument document: one survives an \
-     edit unless the edit changes that input's value, type, range or wiring, or renames or \
-     removes it. Opening an instrument, even the one playing, replaces them all. Fold any you \
-     want to keep into the instrument document with an edit. The ack means the engine received \
+     These values live in render state only, never in the instrument document: an edit keeps \
+     one only where it leaves that input exactly as it was (value, type, range, wiring, and an \
+     interface input's consumers) and does not rename, remove or reset the node it reaches. \
+     Opening an instrument, even the one playing, replaces them all. Fold any you want to keep \
+     into the instrument document with an edit. The ack means the engine received \
      the batch and queued it for the next rendered block — not that it took effect: an address \
      matching no node/port is dropped silently, exactly as it would be arriving from an external \
      controller. \
