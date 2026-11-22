@@ -156,9 +156,9 @@ impl Operator for Filter {
   and copying it into operator state would allocate. A value overwriting the latch may free the
   replaced string on the render thread — at most one bounded `free()` per overwrite, fewer where
   something else also holds it. That includes the first send after a Swap to an input still
-  holding its seed or authored value, and a rendered `str` pipe's first block, which overwrites
-  each wired consumer's seed with no send at all (the class `Arg::Str` in `message.rs`
-  documents).
+  holding its seed or authored value, and a rendered `str` pipe's first rendered block (for a
+  Voicer-hosted voice, its first note), which overwrites each wired consumer's seed with no send
+  at all (the class `Arg::Str` in `message.rs` documents).
 - **`name: arg`** — a **type-agnostic pass-through** (issue #141): carries *any* `Arg` as a raw
   Event stream (`Port::arg`), read via its `In<Raw>` handle (`io.read(IN)` yields undecoded
   `&Arg` payloads) and re-emitted through the sink's local `Out<Raw>` tap handle

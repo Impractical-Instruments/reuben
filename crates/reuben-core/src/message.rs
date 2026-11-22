@@ -87,20 +87,24 @@ pub enum Arg {
     /// - **A rendered pipe's first block**, with nothing sent: a `str` pipe kept as a node (two or
     ///   more consumers, an `osc_out` or a tap) starts with no dedup baseline, so it forwards its
     ///   default onto each wired consumer and overwrites that consumer's seed — up to one free per
-    ///   consumer, in the first block of every freshly built Plan.
+    ///   consumer, in a Plan's first rendered block. For a Voicer-hosted voice that is its first
+    ///   note, not the install: an idle voice is not rendered.
     /// - **The next block's scratch clears** (`render.rs`): when several strings hit one port in
     ///   a block, the ones overwritten within it are last held by `routes[i].held` (or, for a
     ///   pipe's forward, `scratch.emitted`), cleared at the top of the next block.
-    /// - **The engine's pending-control hand-off** (`engine.rs`): a queued string its port refused
-    ///   drops when the queue clears after its block.
+    /// - **The engine's pending-control hand-off** (`engine.rs`): a queued string drops when the
+    ///   queue clears after its block. Whether its port latched a clone, converted it (an
+    ///   `Engine::queue` Message carrying a symbol into an enum port) or refused it, the queue's
+    ///   copy can be the last.
     /// - **The echo path** (`str` → `osc_out` → outbound): the sink's emit is *moved* into the
     ///   outbound [`Message`], which native hands to the OSC-out sender thread before dropping.
     ///   With no `--osc-out` target, native's drain-and-drop frees on the audio thread — a warned
     ///   misconfiguration, and the same path that frees each outbound Message's `address: String`.
     ///
-    /// Each is one bounded `free()` on sparse message traffic or a Plan's first block, never in the
-    /// steady-state signal loop. No built-in Operator declares a `str` input yet.
-    /// `reuben-document`'s `tests/str_input.rs` pins the counts under the counting allocator.
+    /// Each is one bounded `free()` on sparse message traffic or a Plan's (or voice's) first
+    /// rendered block, never in the steady-state signal loop. No built-in Operator declares a
+    /// `str` input yet. `reuben-document`'s `tests/str_input.rs` pins the counts under the
+    /// counting allocator.
     /// Moving these frees off the render thread needs a queue that hands replaced owning values
     /// back to the off-thread side; that is a separate change.
     Str(Arc<str>),

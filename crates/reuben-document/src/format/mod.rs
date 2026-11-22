@@ -1126,6 +1126,11 @@ pub enum LoadWarning {
     /// The interface entry carried retired pipe presentation (`label`/`widget`), dropped; `field`
     /// names which. Ignored, never fatal: the pipe keeps its quantity contract.
     DeprecatedPipePresentation { name: String, field: &'static str },
+    /// An `interface.outputs` entry is fed from a `str` port in the document at the root of the
+    /// load. A host reads a played instrument's message-domain outputs as numbers, so the output
+    /// is **inert** there: nothing captures it. It works when a parent wires it through a
+    /// `subpatch` node, so this is a warning, not an error.
+    InertStrOutput { name: String },
     /// A pre-v4 node address broke the node address rule and was renamed at parse, every
     /// reference to it rewritten. Its OSC control address moved with it.
     RenamedAddress { from: String, to: String },
@@ -1184,6 +1189,11 @@ impl fmt::Display for LoadWarning {
                 f,
                 "top-level input pipe {name:?} binds no logical input channel — nothing can \
                  feed it; it renders silence"
+            ),
+            LoadWarning::InertStrOutput { name } => write!(
+                f,
+                "interface output {name:?} carries a `str`, which a host cannot read off a \
+                 played instrument; it only works when a parent wires it through a `subpatch` node"
             ),
             LoadWarning::InertChannelBinding { name } => write!(
                 f,
@@ -1535,6 +1545,32 @@ fn load_doc_guarded(
                             continue 'voicers;
                         }
                     };
+                    // The Voicer reads a voice's held `active` output as a number to know when
+                    // its release tail has finished. Any other held type would read 0 — idle —
+                    // and cut every tail, so it is refused. (A signal `active` has no captured
+                    // slot; liveness then falls back to the gate.)
+                    if i == 0 {
+                        if let Some(&(key, idx)) = loaded.graph.interface.outputs.get("active") {
+                            let ty = &loaded.graph.nodes[key].descriptor.outputs[idx].ty;
+                            let numeric = ty.is_buffer()
+                                || matches!(ty, PortType::F32 | PortType::I32 { .. });
+                            if !numeric {
+                                let reason = format!(
+                                    "a hosted voice's `active` output is read as a number (its \
+                                     release tail is over at 0); this one carries {ty}"
+                                );
+                                found.nested(
+                                    Site::Node(at),
+                                    &n.address,
+                                    [LoadError::InterfacePipe {
+                                        name: "active".to_string(),
+                                        reason,
+                                    }],
+                                );
+                                continue 'voicers;
+                            }
+                        }
+                    }
                     // One copy's warnings suffice — the N builds are identical. Wrapped with the
                     // hosting node so provenance survives the merge (see `LoadWarning::Nested`).
                     if i == 0 {
@@ -2611,10 +2647,16 @@ impl InstrumentDoc {
                     feed,
                     &feed.from,
                     &graph.nodes[key].descriptor.outputs[idx],
-                    top_level,
                 ) {
                     found.push(site, e);
                     continue;
+                }
+                // Inert at the root, like a `channel` binding nested: a host reads a played
+                // instrument's message-domain outputs as numbers, so a `str` one gets no
+                // captured slot (`Plan::instantiate`). It works when a parent wires it through
+                // a `subpatch` node, which is what this document is for.
+                if top_level && matches!(ty, PortType::Str) {
+                    warnings.push(LoadWarning::InertStrOutput { name: name.clone() });
                 }
                 match feed.channel {
                     Some(ch) => {
@@ -2989,8 +3031,9 @@ struct Resolved {
     /// address an earlier entry already holds.
     unchecked: BTreeSet<usize>,
     interface: Interface,
-    /// Whether this is the document being played, not a child spliced into a parent: the cycle
-    /// guard's stack is empty only there. What a host can read off an interface output turns on it.
+    /// Whether this is the root of the load — the document opened, validated or played, not a
+    /// child spliced into a parent: the cycle guard's stack is empty only there. Decides the
+    /// [`LoadWarning::InertStrOutput`] warning.
     top_level: bool,
 }
 
@@ -3913,29 +3956,15 @@ pub(crate) fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<MintedP
 /// output-pipe half of the wire rule. A pipe declares no type of its own, so there is no type to
 /// match; what it can refuse is its own declaration against the feeding port. The pipe loop and
 /// [`WirePorts`] both ask it. `from` is the wire-ref naming `port`, for the error text.
-/// `top_level` is whether the document is the one being played (see [`Resolved::top_level`]).
 fn check_output_feed(
     name: &str,
     feed: &OutputPipeDoc,
     from: &str,
     port: &Port,
-    top_level: bool,
 ) -> Result<(), LoadError> {
     // Presentational min/max stay a truthful subset of the feeding port's engine-enforced range
     // (the subset law, outputs half).
     check_range_override(name, feed.min, feed.max, port, None)?;
-    // A host reads a played instrument's message-domain output as a captured number, so a string
-    // there would always read 0.0. Nested, the parent wires the output like any port, which works.
-    if top_level && matches!(port.ty, PortType::Str) {
-        return Err(LoadError::InterfacePipe {
-            name: name.to_string(),
-            reason: format!(
-                "{from:?} is a `str` port, and a host reads an instrument's own outputs as \
-                 numbers or audio — feed an `osc_out` from it instead, or expose it from a \
-                 child that a parent wires through a `subpatch` node"
-            ),
-        });
-    }
     let Some(ch) = feed.channel else {
         return Ok(());
     };

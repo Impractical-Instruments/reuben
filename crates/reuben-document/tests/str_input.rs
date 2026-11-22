@@ -508,34 +508,164 @@ fn a_rendered_str_pipe_frees_each_consumer_seed_in_its_first_block() {
     }
 }
 
-/// A host reads a played instrument's message-domain outputs as captured numbers, so a top-level
-/// `str` output is refused at load. The same document nested is fine: the parent wires the output
-/// like any other port.
+/// A child that exposes a `str` output is authored, validated and edited on its own — where the
+/// output is inert, with a warning, because a host cannot read a `str` off a played instrument —
+/// and works under a parent that wires it through a `subpatch` node.
 #[test]
-fn a_str_interface_output_is_refused_at_top_level_and_wires_when_nested() {
-    const CHILD: &str = r#"{ "format_version": 3, "instrument": "child",
-      "interface": { "inputs": { "pat": { "type": "str", "default": "inner" } },
-                     "outputs": { "o": { "from": "/pat.out" } } },
+fn a_str_interface_output_is_inert_at_the_root_and_wires_when_nested() {
+    use reuben_document::edit::{add_instrument_interface_output, set_instrument_name};
+    use reuben_document::introspect::validate;
+
+    let registry = registry();
+    const BARE: &str = r#"{ "format_version": 3, "instrument": "child",
+      "interface": { "inputs": { "pat": { "type": "str", "default": "inner" } } },
       "nodes": [] }"#;
-    let errs = load_err(CHILD);
+    let r = resolver_with(BARE);
+    let added = add_instrument_interface_output(
+        SRC, "o", "/pat.out", None, None, None, None, &registry, &r,
+    )
+    .expect("runs");
+    assert!(added.written, "{:?}", added.report);
     assert!(
-        matches!(errs.as_slice(), [LoadError::InterfacePipe { name, .. }] if name == "o"),
-        "{errs:?}"
+        added
+            .report
+            .warnings
+            .iter()
+            .any(|w| w.message.contains("`str`")),
+        "{:?}",
+        added.report
+    );
+    let renamed = set_instrument_name(SRC, "renamed", &registry, &r).expect("runs");
+    assert!(renamed.written, "{:?}", renamed.report);
+
+    let child = {
+        use reuben_document::ResourceResolver;
+        r.resolve_text(SRC).unwrap()
+    };
+    let report = validate(&child, &registry, &MemoryResolver::new());
+    assert!(report.ok, "{report:?}");
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.port.as_deref() == Some("o") && w.message.contains("subpatch")),
+        "{report:?}"
     );
 
+    // At the root, nothing is captured: a host asking for the output gets no slot, not 0.0.
+    let graph = load_instrument(&child, &registry, &MemoryResolver::new())
+        .expect("loads")
+        .graph;
+    let plan = Plan::instantiate(graph, AudioConfig::new(48_000.0, 64)).unwrap();
+    assert_eq!(plan.interface_value_slot("o"), None);
+    assert!(plan.captured.is_empty());
+
+    // Nested, the parent wires it like any port, and no warning reaches the parent.
     let mut r = MemoryResolver::new();
-    r.insert_text("child.json", CHILD);
+    r.insert_text("child.json", &child);
     const PARENT: &str = r#"{ "format_version": 3, "instrument": "parent",
       "resources": { "child": "child.json" },
       "nodes": [
         { "type": "subpatch", "address": "/sub", "patch": "child" },
         { "type": "str_len", "address": "/n", "inputs": { "text": { "from": "/sub.o" } } },
         { "type": "osc_out", "address": "/len", "inputs": { "in": { "from": "/n.len" } } } ] }"#;
-    let graph = load_instrument(PARENT, &registry(), &r)
-        .expect("a nested str output wires")
-        .graph;
-    let mut e = Engine::new(Plan::instantiate(graph, AudioConfig::new(48_000.0, 64)).unwrap());
+    let loaded = load_instrument(PARENT, &registry, &r).expect("a nested str output wires");
+    assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+    let mut e =
+        Engine::new(Plan::instantiate(loaded.graph, AudioConfig::new(48_000.0, 64)).unwrap());
     assert_eq!(sent(&block(&mut e), "/len"), [5.0], "\"inner\"");
     e.queue_osc("/sub/pat/in", &[Arg::Str("xy".into())]);
     assert_eq!(sent(&block(&mut e), "/len"), [2.0]);
+}
+
+/// A `str` pipe feeding `osc_out` is rendered, and forwards only when its latch is replaced: the
+/// seed once, then each send once, and nothing on the blocks between.
+#[test]
+fn a_rendered_str_pipe_forwards_only_a_replaced_string() {
+    const ECHO: &str = r#"{ "format_version": 3, "instrument": "echo",
+      "interface": { "inputs": { "pat": { "type": "str", "default": "seed" } } },
+      "nodes": [ { "type": "osc_out", "address": "/o", "inputs": { "in": { "from": "/pat" } } } ] }"#;
+    let mut e = engine(ECHO);
+    let mut out = vec![0.0f32; e.block_size() * e.channels()];
+    let mut echoed = |e: &mut Engine| -> Vec<Arg> {
+        e.fill(&mut out);
+        e.drain_outbound().map(|m| m.arg).collect()
+    };
+    assert_eq!(echoed(&mut e), [Arg::Str("seed".into())]);
+    for _ in 0..4 {
+        assert!(
+            echoed(&mut e).is_empty(),
+            "an unchanged latch is not re-sent"
+        );
+    }
+    e.queue_osc("/pat/in", &[Arg::Str("next".into())]);
+    assert_eq!(echoed(&mut e), [Arg::Str("next".into())]);
+    assert!(echoed(&mut e).is_empty());
+    // The same text sent again is a new send, and goes out again.
+    e.queue_osc("/pat/in", &[Arg::Str("next".into())]);
+    assert_eq!(echoed(&mut e), [Arg::Str("next".into())]);
+}
+
+/// A voice patch for the Voicer tests: `gate`/`freq` pipes the Voicer drives, an `active` output,
+/// and a `str` pipe fanned out to two consumers, so it is rendered.
+fn voice_patch(active_from: &str) -> String {
+    format!(
+        r#"{{ "format_version": 3, "instrument": "voice",
+      "interface": {{ "inputs": {{
+          "gate": {{ "type": "f32", "default": 0.0, "min": 0.0, "max": 1.0 }},
+          "freq": {{ "type": "f32", "default": 440.0, "min": 20.0, "max": 20000.0 }},
+          "pat": {{ "type": "str", "default": "seed" }} }},
+        "outputs": {{ "active": {{ "from": "{active_from}" }} }} }},
+      "nodes": [
+        {{ "type": "envelope", "address": "/env", "inputs": {{ "gate": {{ "from": "/gate" }} }} }},
+        {{ "type": "str_len", "address": "/a", "inputs": {{ "text": {{ "from": "/pat" }} }} }},
+        {{ "type": "str_len", "address": "/b", "inputs": {{ "text": {{ "from": "/pat" }} }} }} ] }}"#
+    )
+}
+
+const HOST: &str = r#"{ "format_version": 3, "instrument": "host",
+  "resources": { "voice": "voice.json" },
+  "interface": { "inputs": { "notes": { "type": "note" } } },
+  "nodes": [ { "type": "voicer", "address": "/v", "config": { "voices": 4 }, "voice": "voice",
+               "inputs": { "notes": { "from": "/notes" } } } ] }"#;
+
+/// An idle hosted voice is not rendered, so its rendered pipe's first block — and the consumer
+/// seed frees it brings — comes at that voice's first note, not at install.
+#[test]
+fn a_hosted_voice_frees_its_pipe_consumer_seeds_at_its_first_note() {
+    const CONSUMERS: usize = 2;
+    let mut r = MemoryResolver::new();
+    r.insert_text("voice.json", voice_patch("/env.active"));
+    let graph = load_instrument(HOST, &registry(), &r).expect("loads").graph;
+    let mut e = Engine::new(Plan::instantiate(graph, AudioConfig::new(48_000.0, 64)).unwrap());
+    let mut out = vec![0.0f32; e.block_size() * e.channels()];
+    assert_counter_is_live();
+    let idle: usize = (0..8).map(|_| measure(|| e.fill(&mut out)).frees).sum();
+    assert_eq!(idle, 0, "no voice has rendered yet");
+    // Four held notes take four fresh voices; each one's first rendered block frees its two
+    // consumers' seeds.
+    for (i, pitch) in [60.0f32, 62.0, 64.0, 65.0].into_iter().enumerate() {
+        e.queue_osc("/notes/in", &[Arg::F32(pitch), Arg::F32(1.0)]);
+        let frees = measure(|| e.fill(&mut out)).frees;
+        assert_eq!(frees, CONSUMERS, "voice {i}'s first note");
+    }
+}
+
+/// The Voicer reads a voice's `active` output as a number, so a `str` one is refused.
+#[test]
+fn a_hosted_voice_refuses_a_str_active_output() {
+    let mut r = MemoryResolver::new();
+    r.insert_text("voice.json", voice_patch("/pat.out"));
+    let errs: Vec<LoadError> = match load_instrument(HOST, &registry(), &r) {
+        Ok(_) => panic!("a str `active` should be refused"),
+        Err(errs) => errs.into_iter().collect(),
+    };
+    let [LoadError::Nested { node, error }] = errs.as_slice() else {
+        panic!("one nested error: {errs:?}");
+    };
+    assert_eq!(node, "/v");
+    assert!(
+        matches!(&**error, LoadError::InterfacePipe { name, .. } if name == "active"),
+        "{error:?}"
+    );
 }
