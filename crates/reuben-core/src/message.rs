@@ -86,10 +86,10 @@ pub enum Arg {
     ///   baseline).
     /// - **A rendered pipe's first block**, with nothing sent: a `str` pipe kept as a node (two or
     ///   more consumers, an `osc_out`, a tap, or an interface output reading it) starts with no
-    ///   dedup baseline, so it forwards its
-    ///   default onto each wired consumer and overwrites that consumer's seed — up to one free per
-    ///   consumer, in a Plan's first rendered block. For a Voicer-hosted voice that is its first
-    ///   note, not the install: an idle voice is not rendered.
+    ///   dedup baseline, so it forwards its default onto each wired consumer and overwrites that
+    ///   consumer's seed — up to one free per consumer, in a Plan's first rendered block. For a
+    ///   Voicer-hosted voice that is its first note, not the install: an idle voice is not
+    ///   rendered.
     /// - **The next block's scratch clears** (`render.rs`): when several strings hit one port in
     ///   a block, the ones overwritten within it are last held by `routes[i].held` (or, for a
     ///   pipe's forward, `scratch.emitted`), cleared at the top of the next block.
