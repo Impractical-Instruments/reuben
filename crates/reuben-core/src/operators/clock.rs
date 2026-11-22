@@ -17,10 +17,11 @@
 //! - output 1: `gate` (`f32`, held Value) — 1.0 for the first half of each **1/`division` sub-beat**, else
 //!   0.0; its rising edge is a sample-accurate trigger. At the default `division` 1 this is the
 //!   original once-per-beat gate, high for the first half of the beat. At `division` N the gate
-//!   pulses N times per beat — a 16th-note grid is `division` 4. Emitted at each edge, and announced
-//!   (see below). The gate consumers (`envelope`, and `euclid`/`sequencer` through `EdgeDetector`)
-//!   find edges by comparing the held level against their own flag kept across slices, so an
-//!   announced level that matches that flag adds no trigger.
+//!   pulses N times per beat — a 16th-note grid is `division` 4. Emitted only on change (at each
+//!   edge), and never announced: a consumer added in a Swap starts with its edge flag low, so an
+//!   announced high level would be a rising edge at the Swap frame, off the beat grid. Known
+//!   limitation: after a Swap, a consumer's held `gate` input (a new one's, and a surviving one's,
+//!   whose latch the Swap resets) reads its default 0.0 until the next edge.
 //! - input 1: `tempo` (BPM).
 //! - input 2: `division` (`i32`) — gate subdivisions per beat (1 = once per beat, default; 4 =
 //!   16ths). Its `1` floor lives in the port contract (`I32Meta` min), so the gate can never
@@ -35,12 +36,13 @@
 //!   input's declared range: the `*_i32_value` arithmetic operators declare ±1,000,000, so a `beat`
 //!   routed through one pins at 1,000,000 (about 5.8 days at 120 BPM).
 //!
-//! **Announcing.** `gate` and `beat` are otherwise emitted only when they change, but every Swap
-//! builds a Plan whose held latches start at their defaults: a new consumer's, and a surviving
-//! consumer's too. So the Clock *announces* both current values at frame 0 of its first `process`
-//! call after construction and of its first call after `on_transplant` (a surviving Clock is
-//! transplanted into the new Plan). The Clock renders before its consumers, so each reads the right
-//! values in its first block after the Swap, and nothing repeats in steady state.
+//! **Announcing `beat`.** Every Swap builds a Plan whose held latches start at their defaults: a
+//! new consumer's, and a surviving consumer's too. So the Clock *announces* `beat`'s current value
+//! at frame 0 of its first `process` call after construction and of its first call after
+//! `on_transplant` (a surviving Clock is transplanted into the new Plan). The Clock renders before
+//! its consumers, so each reads the right beat in its first block after the Swap, and nothing
+//! repeats in steady state. A beat count is a position, not a trigger, so announcing it is safe
+//! where announcing `gate` is not.
 //!
 //! `tempo`/`division` are Value inputs: read held, so a change block-slices and takes effect at the
 //! exact sample of the change — and each can be *wired* and modulated (`division` by an `i32`
@@ -80,8 +82,8 @@ pub struct Clock {
     /// A wrap after the previous call's last frame changed `beat` with no frame left to emit it on;
     /// the next call's frame 0 emits it.
     beat_pending: bool,
-    /// Whether `gate` and `beat` have been announced since construction or the last
-    /// `on_transplant`. False in a fresh Clock, so the first call announces.
+    /// Whether `beat` has been announced since construction or the last `on_transplant`. False in
+    /// a fresh Clock, so the first call announces.
     announced: bool,
 }
 
@@ -163,8 +165,9 @@ impl Operator for Clock {
             end = phase;
         }
         {
-            // `gate`: replay the same accumulator, emitting at each edge and, when announcing, at
-            // frame 0. A downstream Value/materialize bridge ZOH-reconstructs the dense gate.
+            // `gate`: replay the same accumulator, emitting only at each edge. `self.gate_high`
+            // carries the level across calls, so a block boundary is not an edge. A downstream
+            // Value/materialize bridge ZOH-reconstructs the dense gate.
             let mut out = io.write(OUT_GATE);
             let mut phase = start;
             let mut ri = 0;
@@ -178,7 +181,7 @@ impl Operator for Clock {
                 // half. division 1 reduces to `phase < 0.5` exactly (bit-identical default).
                 let sub = Float::fract(phase * division);
                 let now_high = sub < 0.5;
-                if now_high != high || (i == 0 && !self.announced) {
+                if now_high != high {
                     out.set(i, if now_high { 1.0 } else { 0.0 });
                     high = now_high;
                 }
@@ -220,7 +223,8 @@ impl Operator for Clock {
                 }
             }
             self.beat = beat;
-            // With no frames, nothing was emitted: keep what was pending.
+            // The renderer never calls with zero frames; if one did, nothing was emitted, so the
+            // pending wrap and the announcement must carry to the next call.
             if n > 0 {
                 self.beat_pending = changed;
                 self.announced = true;
@@ -235,7 +239,7 @@ impl Operator for Clock {
     }
 
     fn on_transplant(&mut self) {
-        // The new Plan's consumers latch their defaults; announce the current values to them.
+        // The new Plan's consumers latch their defaults; announce the current beat to them.
         self.announced = false;
     }
 }
@@ -701,10 +705,10 @@ mod tests {
     }
 
     #[test]
-    fn gate_and_beat_are_announced_once_after_construction_and_after_transplant() {
+    fn beat_is_announced_once_after_construction_and_after_transplant() {
         use crate::message::Arg;
-        // 240 BPM: a beat every 12000 frames, the gate high for the first 6000. Blocks from 2048 to
-        // 4096 hold no edge and no wrap, so only an announcement emits there.
+        // 240 BPM: a beat every 12000 frames, the gate high for the first 6000. Frames 0..5120
+        // hold no edge after frame 0 and no wrap, so only an announcement emits after frame 0.
         let mut d = OpDriver::for_type(Clock::new(), SR);
         d.set(IN_TEMPO, 240.0).set(IN_DIVISION, 1.0);
         let first = d.render(2048).emits().to_vec();
@@ -714,7 +718,7 @@ mod tests {
         assert_eq!(
             announced(&first),
             vec![(0, Arg::F32(1.0)), (0, Arg::I32(0))],
-            "the first call announces gate and beat; later blocks repeat nothing"
+            "the gate's first rising edge, and beat's announcement; later blocks repeat nothing"
         );
         assert!(d.render(1024).emits().is_empty(), "steady state emits nothing");
 
@@ -722,8 +726,8 @@ mod tests {
         let after = d.render(1024).emits().to_vec();
         assert_eq!(
             announced(&after),
-            vec![(0, Arg::F32(1.0)), (0, Arg::I32(0))],
-            "the first call after a transplant announces the current values once"
+            vec![(0, Arg::I32(0))],
+            "the first call after a transplant announces beat once, and not the unchanged gate"
         );
         assert!(d.render(1024).emits().is_empty(), "then nothing repeats");
     }
