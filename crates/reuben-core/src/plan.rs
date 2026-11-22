@@ -20,6 +20,7 @@ use alloc::string::ToString;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
+use num_traits::Float;
 
 use slotmap::SecondaryMap;
 
@@ -185,13 +186,9 @@ pub struct PlanNode {
     pub out_targets: Vec<Vec<(usize, usize)>>,
     /// This node's slot in [`Plan::probes`], or `None` for a node with no Signal output.
     pub probe: Option<usize>,
-    /// Per input port: `true` where a dissolved interface pipe feeds it, so the pipe's address
-    /// is the document's name for its latch.
-    pub piped: Vec<bool>,
-    /// Per input port: `true` while the latest value routed to a piped latch came by the node's
-    /// own address rather than the pipe's. Such a value is the consumer's, as on a wired input,
-    /// so a Swap does not carry it. Written by routing, in message order.
-    pub piped_bypassed: Vec<bool>,
+    /// Per input port: `true` where a wire or a dissolved interface pipe feeds it. Its value is
+    /// its feeder's, so routing drops a message addressed to it.
+    pub wired: Vec<bool>,
 }
 
 /// One outbound (OSC-out) sink: a node whose emitted Messages leave the
@@ -251,8 +248,16 @@ pub struct InputAlias {
     pub dst_port: usize,
     /// What the pipe held at rest, in the pipe port's own form — not the consumer's, which may
     /// clamp or resolve it differently. `None` when the pipe was fed: by a wire as it dissolved,
-    /// or by another pipe that dissolved into it first. Its value was then the feeder's.
+    /// or by another pipe that dissolved into it first. Its value was then the feeder's, and
+    /// routing drops a message addressed to it.
     pub seed: Option<Arg>,
+    /// A numeric pipe's latest value, in the pipe port's own form: the consumer's latch holds it
+    /// as the consumer clamped it, which a Swap into another consumer must not inherit. The seed
+    /// until a message arrives. Unused by a non-numeric pipe, whose consumer holds it unchanged.
+    pub last: Arg,
+    /// The frame `last` was written at this block, so the latest frame wins as it does in a
+    /// latch. Cleared by routing at the start of each block that carries messages.
+    pub(crate) last_frame: Option<usize>,
 }
 
 /// A pipe collapsed by [`dissolve_interface_pipes`], keyed by its (pre-instantiate) consumer.
@@ -265,42 +270,48 @@ struct DissolvedPipe {
     seed: Option<Arg>,
 }
 
-/// One carried live value: `((old node, old port), (new node, new port))`, the latch it leaves
-/// and the latch it lands in, as [`Engine::carry_latches`](crate::engine::Engine::carry_latches)
-/// swaps them.
-pub type LatchCarry = ((usize, usize), (usize, usize));
-
-/// How a [`LiveSlot`]'s address reaches its latch.
-#[derive(Debug, Clone, PartialEq)]
-pub enum LatchRoute {
-    /// A node's own input, no wire or pipe feeding it.
-    Node,
-    /// An interface pipe rendered as a node of its own: its `in` latch.
-    Pipe,
-    /// A dissolved interface pipe, into its one consumer's input.
-    Dissolved {
-        /// The consumer node's address.
-        consumer: Arc<str>,
-        /// The consumer's input port index.
-        port: usize,
-        /// The consumer's input port, which types the value as it lands.
-        typed_by: Port,
-    },
+/// Where a Plan keeps an interface input's live value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum InterfaceAt {
+    /// A pipe rendered as a node of its own (this node index): its `in` latch.
+    Pipe(usize),
+    /// A dissolved pipe (this [`InputAlias`] index): its `last` value for a numeric pipe, its
+    /// consumer's latch otherwise.
+    Alias(usize),
 }
 
-/// One input latch a live message can set, as [`Plan::live_slots`] reports it.
+/// One live value a Swap carries from the retiring Plan into the fresh one, as
+/// [`Engine::carry_live_values`](crate::engine::Engine::carry_live_values) applies it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveCarry {
+    /// A node input's latch, `(node, port)` to `(node, port)`, moved as it is.
+    Latch {
+        from: (usize, usize),
+        to: (usize, usize),
+    },
+    /// An interface input's value, from where the retiring Plan keeps it to where the fresh one
+    /// does, clamped to the fresh pipe's range.
+    Interface { from: InterfaceAt, to: InterfaceAt },
+}
+
+/// Where a [`LiveSlot`]'s value lives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LatchRoute {
+    /// A node's own input `(node, port)`, nothing feeding it.
+    Node { node: usize, port: usize },
+    /// An interface input nothing feeds, however it renders.
+    Interface(InterfaceAt),
+}
+
+/// A live value a message can set and nothing feeds, as [`Plan::live_slots`] reports it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LiveSlot {
     /// The address a live message reaches it by: `<node>/<port>`, or an interface pipe's
-    /// `<pipe>/<port>`. Each latch has at most one.
+    /// `<pipe>/in`.
     pub address: String,
-    /// The node index in execution order.
-    pub node: usize,
-    /// The input port index on that node.
-    pub port: usize,
-    /// What the latch holds at rest. For a dissolved pipe's address, the pipe's own seed.
+    /// What it holds at rest. For an interface input, the pipe's own seed.
     pub seed: Arg,
-    /// The port the address types its messages by: the node's own, or the pipe's.
+    /// The port that types its messages: the node's own, or the pipe's.
     pub typed_by: Port,
     pub route: LatchRoute,
 }
@@ -384,6 +395,9 @@ pub struct Plan {
     /// whose host commits them once after rendering all of them; `render_plan` then leaves the
     /// commit to it.
     pub(crate) hosted: bool,
+    /// Messages routing dropped since the host last took the count, for addressing an input a
+    /// wire or a pipe feeds.
+    pub(crate) dropped_wired_writes: u64,
 }
 
 /// Why Instantiate failed.
@@ -770,8 +784,7 @@ impl Plan {
                 recycled_outputs,
                 out_targets,
                 probe,
-                piped: vec![false; n_inputs],
-                piped_bypassed: vec![false; n_inputs],
+                wired: vec![false; n_inputs],
             });
 
             // Every buffer whose last reader was this node returns to the free list, for a
@@ -894,12 +907,12 @@ impl Plan {
                 kind: d.kind,
                 node: index_of[d.consumer],
                 dst_port: d.consumer_port,
+                last: d.seed.clone().unwrap_or(Arg::F32(0.0)),
                 seed: d.seed,
+                last_frame: None,
             })
             .collect();
-        for a in &input_aliases {
-            nodes[a.node].piped[a.dst_port] = true;
-        }
+        mark_wired(&mut nodes, &input_aliases);
 
         // A slot set this Plan built is still unshared here. One passed in by a host is shared
         // with the host's other copies and stays as built: the copy whose Plan built it already
@@ -923,6 +936,7 @@ impl Plan {
             input_aliases,
             probes,
             hosted: false,
+            dropped_wired_writes: 0,
         })
     }
 
@@ -983,116 +997,214 @@ impl Plan {
         }
     }
 
-    /// Carry live input values from a `from` Plan into this (freshly built) one: each
-    /// `((old node, old port), (new node, new port))` pair swaps those two latches, so the value
-    /// last sent to that input keeps playing and this Plan's seed lands in `from` to free
-    /// off-thread with it. Which latches carry is the caller's rule, and the caller names each
-    /// latch at most once per side — a second swap onto one latch would undo the first. A pair
-    /// out of range is skipped, and so is a piped latch whose latest value came by the node's own
-    /// address ([`PlanNode::piped_bypassed`]): that value is only known here.
+    /// Carry live input values from a `from` Plan into this (freshly built) one. A
+    /// [`LiveCarry::Latch`] swaps the two latches; a [`LiveCarry::Interface`] moves the
+    /// interface input's value to where this Plan keeps it, clamping a numeric value to this
+    /// Plan's pipe range and landing it in a dissolved pipe's consumer as routing would. Which
+    /// values carry is the caller's rule, and the caller names each place at most once per side.
+    /// An entry out of range, or whose two places do not hold the same kind of value, is skipped.
     ///
     /// Caller contract: this Plan has not rendered. A materialized port's scratch is then still
     /// marked dirty, so the first block fills it from the carried value.
     ///
-    /// **RT-safe:** a bounded loop of [`core::mem::swap`] over [`Arg`]s — no allocation, and no
-    /// drop on this side. Runs at the render-callback top, beside the transplant.
-    pub(crate) fn carry_latches(&mut self, from: &mut Plan, carries: &[LatchCarry]) {
-        for &((old_node, old_port), (new_node, new_port)) in carries {
-            let bypassed = from
-                .nodes
-                .get(old_node)
-                .and_then(|n| n.piped_bypassed.get(old_port))
-                == Some(&true);
-            if bypassed {
-                continue;
-            }
-            let old = from
-                .nodes
-                .get_mut(old_node)
-                .and_then(|n| n.latch.get_mut(old_port));
-            let new = self
-                .nodes
-                .get_mut(new_node)
-                .and_then(|n| n.latch.get_mut(new_port));
-            if let (Some(old), Some(new)) = (old, new) {
-                core::mem::swap(old, new);
+    /// **RT-safe:** a bounded loop. A non-numeric value is moved by [`core::mem::swap`], its
+    /// displaced seed landing in `from` to free off-thread with it; a numeric one overwrites an
+    /// `F32`/`I32` latch, which owns nothing. No allocation, no drop that frees.
+    pub(crate) fn carry_live_values(&mut self, from: &mut Plan, carries: &[LiveCarry]) {
+        for &carry in carries {
+            match carry {
+                LiveCarry::Latch {
+                    from: (old_node, old_port),
+                    to: (new_node, new_port),
+                } => {
+                    let old = from.latch_mut(old_node, old_port);
+                    let new = self.latch_mut(new_node, new_port);
+                    if let (Some(old), Some(new)) = (old, new) {
+                        core::mem::swap(old, new);
+                    }
+                }
+                LiveCarry::Interface { from: at, to } => self.carry_interface(from, at, to),
             }
         }
     }
 
-    /// Every input latch a live message can set and nothing feeds, each under the one address
-    /// that reaches it, with what it holds at rest. A pipe-fed input — a dissolved pipe's
-    /// consumer, a pipe another pipe fed — counts as fed. An Event input holds nothing, so it has
-    /// none. Only meaningful before the first block renders: rendering overwrites a latch with
-    /// whatever is sent to it.
-    pub fn live_slots(&self) -> Vec<LiveSlot> {
-        let mut wired: Vec<Vec<bool>> = self
-            .nodes
-            .iter()
-            .map(|n| {
-                (0..n.latch.len())
-                    .map(|p| {
-                        n.inputs.get(p).is_some_and(Option::is_some)
-                            && !n.materialize.iter().any(|&(mp, _)| mp == p)
-                    })
-                    .collect()
-            })
-            .collect();
-        for n in &self.nodes {
-            for &(dst, port) in n.out_targets.iter().flatten() {
-                if let Some(w) = wired.get_mut(dst).and_then(|w| w.get_mut(port)) {
-                    *w = true;
+    fn latch_mut(&mut self, node: usize, port: usize) -> Option<&mut Arg> {
+        self.nodes.get_mut(node)?.latch.get_mut(port)
+    }
+
+    /// The pipe port typing interface input `at`.
+    fn interface_port(&self, at: InterfaceAt) -> Option<&Port> {
+        match at {
+            InterfaceAt::Pipe(node) => self.nodes.get(node)?.descriptor.inputs.first(),
+            InterfaceAt::Alias(i) => self.input_aliases.get(i).map(|a| &a.port),
+        }
+    }
+
+    /// The latch holding interface input `at`'s value when it is not numeric: the pipe's own,
+    /// or a dissolved pipe's consumer's, which a non-numeric pipe passes through unchanged.
+    fn interface_latch_mut(&mut self, at: InterfaceAt) -> Option<&mut Arg> {
+        match at {
+            InterfaceAt::Pipe(node) => self.latch_mut(node, 0),
+            InterfaceAt::Alias(i) => {
+                let (node, port) = self.input_aliases.get(i).map(|a| (a.node, a.dst_port))?;
+                self.latch_mut(node, port)
+            }
+        }
+    }
+
+    fn carry_interface(&mut self, from: &mut Plan, at: InterfaceAt, to: InterfaceAt) {
+        let Some(numeric) = from.interface_port(at).map(is_numeric) else {
+            return;
+        };
+        if !numeric {
+            if let (Some(old), Some(new)) =
+                (from.interface_latch_mut(at), self.interface_latch_mut(to))
+            {
+                core::mem::swap(old, new);
+            }
+            return;
+        }
+        let value = match at {
+            InterfaceAt::Pipe(node) => from.nodes.get(node).and_then(|n| n.latch.first()),
+            InterfaceAt::Alias(i) => from.input_aliases.get(i).map(|a| &a.last),
+        };
+        let Some(v) = value.and_then(Arg::as_f32) else {
+            return;
+        };
+        match to {
+            InterfaceAt::Pipe(node) => {
+                let Some(n) = self.nodes.get_mut(node) else {
+                    return;
+                };
+                let Some(port) = n.descriptor.inputs.first() else {
+                    return;
+                };
+                let landed = numeric_arg(port, v);
+                if let Some(latch) = n.latch.first_mut().filter(|l| is_numeric_arg(l)) {
+                    *latch = landed;
+                }
+            }
+            InterfaceAt::Alias(i) => {
+                let Some(a) = self.input_aliases.get_mut(i) else {
+                    return;
+                };
+                let held = numeric_arg(&a.port, v);
+                let (kind, node, port) = (a.kind, a.node, a.dst_port);
+                if is_numeric_arg(&a.last) {
+                    a.last = held.clone();
+                }
+                let Some(consumer) = self.nodes.get_mut(node) else {
+                    return;
+                };
+                // As routing lands a message sent to the pipe: a Signal pipe, or any pipe into a
+                // Signal input, materializes the raw scalar; a Value pipe into a Value input is
+                // held by the consumer's port too.
+                let landed = match (kind, consumer.input_kinds.get(port)) {
+                    (PortKind::Signal, _) | (_, Some(PortKind::Signal)) => {
+                        held.as_f32().map(Arg::F32)
+                    }
+                    (PortKind::Value, Some(PortKind::Value)) => consumer
+                        .descriptor
+                        .inputs
+                        .get(port)
+                        .filter(|p| is_numeric(p))
+                        .and_then(|p| crate::render::held_arg(p, &held)),
+                    _ => None,
+                };
+                if let (Some(landed), Some(latch)) = (
+                    landed,
+                    consumer.latch.get_mut(port).filter(|l| is_numeric_arg(l)),
+                ) {
+                    *latch = landed;
                 }
             }
         }
-        let unwired = |node: usize, port: usize| {
-            wired.get(node).and_then(|w| w.get(port)) == Some(&false)
-                && self.nodes[node].input_kinds[port] != PortKind::Event
-        };
+    }
+
+    /// Every live value a message can set and nothing feeds, each under the one address that
+    /// reaches it, with what it holds at rest: each unwired node input, and each interface input
+    /// nothing feeds, however it renders. A pipe fed by a wire or by another pipe offers none, its
+    /// value being its feeder's; nor does an Event input, which holds nothing. Only meaningful
+    /// before the first block renders: rendering overwrites a value with whatever is sent to it.
+    pub fn live_slots(&self) -> Vec<LiveSlot> {
         let mut slots = Vec::new();
-        for a in &self.input_aliases {
+        for (i, a) in self.input_aliases.iter().enumerate() {
             let Some(seed) = &a.seed else { continue };
-            if unwired(a.node, a.dst_port) {
-                let consumer = &self.nodes[a.node];
+            if a.kind != PortKind::Event {
                 slots.push(LiveSlot {
                     address: alloc::format!("{}/{}", a.address, a.port.name),
-                    node: a.node,
-                    port: a.dst_port,
                     seed: seed.clone(),
                     typed_by: a.port.clone(),
-                    route: LatchRoute::Dissolved {
-                        consumer: Arc::clone(&consumer.address),
-                        port: a.dst_port,
-                        typed_by: consumer.descriptor.inputs[a.dst_port].clone(),
-                    },
+                    route: LatchRoute::Interface(InterfaceAt::Alias(i)),
                 });
             }
         }
         for (i, n) in self.nodes.iter().enumerate() {
-            let route = match n.descriptor.type_name == "pipe" {
-                true => LatchRoute::Pipe,
-                false => LatchRoute::Node,
-            };
+            let pipe = n.descriptor.type_name == "pipe";
             for (p, (port, seed)) in n.descriptor.inputs.iter().zip(&n.latch).enumerate() {
-                if unwired(i, p) && !self.piped(i, p) {
-                    slots.push(LiveSlot {
-                        address: alloc::format!("{}/{}", n.address, port.name),
-                        node: i,
-                        port: p,
-                        seed: seed.clone(),
-                        typed_by: port.clone(),
-                        route: route.clone(),
-                    });
+                if n.wired[p] || n.input_kinds[p] == PortKind::Event {
+                    continue;
                 }
+                slots.push(LiveSlot {
+                    address: alloc::format!("{}/{}", n.address, port.name),
+                    seed: seed.clone(),
+                    typed_by: port.clone(),
+                    route: match pipe {
+                        true => LatchRoute::Interface(InterfaceAt::Pipe(i)),
+                        false => LatchRoute::Node { node: i, port: p },
+                    },
+                });
             }
         }
         slots
     }
 
-    /// Whether a dissolved pipe feeds input `port` of node `node`: the document wires it from
-    /// the pipe, so the pipe's address, not the node's, is how a message reaches it.
-    fn piped(&self, node: usize, port: usize) -> bool {
-        self.nodes[node].piped.get(port) == Some(&true)
+    /// Take the count of messages routing dropped for addressing an input a wire or a pipe
+    /// feeds, leaving zero.
+    pub(crate) fn take_dropped_wired_writes(&mut self) -> u64 {
+        core::mem::take(&mut self.dropped_wired_writes)
+    }
+}
+
+/// Whether a value typed by `p` is a plain number, which a Swap clamps rather than moves.
+fn is_numeric(p: &Port) -> bool {
+    matches!(
+        p.ty,
+        PortType::F32 | PortType::I32 { .. } | PortType::F32Buffer
+    )
+}
+
+fn is_numeric_arg(a: &Arg) -> bool {
+    matches!(a, Arg::F32(_) | Arg::I32(_))
+}
+
+/// `v` as port `p` holds it: rounded for an integer, clamped to the declared range.
+fn numeric_arg(p: &Port, v: f32) -> Arg {
+    match &p.ty {
+        PortType::I32 { meta } => {
+            let i = Float::round(v) as i32;
+            Arg::I32(meta.as_ref().map(|m| m.clamp(i)).unwrap_or(i))
+        }
+        _ => Arg::F32(p.meta.as_ref().map(|m| m.clamp(v)).unwrap_or(v)),
+    }
+}
+
+/// Mark each input a Signal edge, a message edge or a dissolved pipe feeds as wired.
+fn mark_wired(nodes: &mut [PlanNode], aliases: &[InputAlias]) {
+    for n in nodes.iter_mut() {
+        for p in 0..n.wired.len() {
+            n.wired[p] = n.inputs.get(p).is_some_and(Option::is_some)
+                && !n.materialize.iter().any(|&(mp, _)| mp == p);
+        }
+    }
+    let targets: Vec<(usize, usize)> = (nodes.iter())
+        .flat_map(|n| n.out_targets.iter().flatten().copied())
+        .chain(aliases.iter().map(|a| (a.node, a.dst_port)))
+        .collect();
+    for (node, port) in targets {
+        if let Some(w) = nodes.get_mut(node).and_then(|n| n.wired.get_mut(port)) {
+            *w = true;
+        }
     }
 }
 
@@ -2197,15 +2309,24 @@ mod transplant_tests {
         assert_eq!(
             slots
                 .iter()
-                .map(|s| (s.address.as_str(), s.node, s.port, &s.seed))
+                .map(|s| (s.address.as_str(), s.route, &s.seed))
                 .collect::<Vec<_>>(),
-            vec![("/n/x", 0, 0, &Arg::F32(0.25))],
+            vec![(
+                "/n/x",
+                super::LatchRoute::Node { node: 0, port: 0 },
+                &Arg::F32(0.25)
+            )],
             "an unwired held input reports its seed"
         );
         retiring.nodes[0].latch[0] = Arg::F32(0.75);
-        fresh.carry_latches(
+        let latch = |from, to| super::LiveCarry::Latch { from, to };
+        fresh.carry_live_values(
             &mut retiring,
-            &[((0, 0), (0, 0)), ((0, 1), (0, 0)), ((3, 0), (0, 0))],
+            &[
+                latch((0, 0), (0, 0)),
+                latch((0, 1), (0, 0)),
+                latch((3, 0), (0, 0)),
+            ],
         );
         assert_eq!(
             fresh.nodes[0].latch[0],
@@ -2657,14 +2778,27 @@ mod hosted_probes {
 
     #[test]
     fn an_event_input_offers_no_live_value() {
+        // `/t`'s notes come straight in; `/u`'s through a `notes` pipe that dissolves into it.
         let mut g = Graph::new();
         g.add("/t", crate::operators::Transpose::new());
+        let u = g.add("/u", crate::operators::Transpose::new());
+        let mut desc = Pipe::descriptor();
+        desc.inputs = vec![crate::descriptor::Port::note("in")];
+        desc.outputs = vec![crate::descriptor::Port::note("out")];
+        let notes = g.add_boxed(
+            "/notes",
+            Box::new(Pipe::new(PortKind::Event)),
+            Arc::new(desc),
+        );
+        g.connect(notes, 0usize, u, crate::operators::transpose::IN_NOTES);
         let osc = g.add("/osc", Oscillator::new());
         g.tap_output(osc, oscillator::OUT_AUDIO);
         let plan = Plan::instantiate(g, AudioConfig::new(48_000.0, 128)).expect("instantiate");
+        assert_eq!(plan.input_aliases.len(), 1, "the notes pipe dissolves");
         let addresses: Vec<String> = plan.live_slots().into_iter().map(|s| s.address).collect();
         assert!(addresses.contains(&"/t/amount".into()), "{addresses:?}");
         assert!(!addresses.contains(&"/t/notes".into()), "{addresses:?}");
+        assert!(!addresses.contains(&"/notes/in".into()), "{addresses:?}");
     }
 
     /// `/v`, a Voicer with two voices, summed to the master; with `extra`, an outer oscillator

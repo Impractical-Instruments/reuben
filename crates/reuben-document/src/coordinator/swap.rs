@@ -181,9 +181,9 @@ impl Coordinator {
         self.installed_hash.clone()
     }
 
-    /// The interface input addresses (`/<name>/in`) whose live value the last committed swap
-    /// replaced with the document's; every other interface input kept its own. After an open,
-    /// that is every one.
+    /// The addresses (`/<name>/in`, nested boundary inputs included) of the installed Plan's
+    /// unfed interface inputs that did not keep a live value at the last committed swap, sorted;
+    /// every other one kept its own. After an open, that is every one.
     pub fn live_reset(&self) -> &[String] {
         &self.live_reset
     }
@@ -425,9 +425,9 @@ impl Coordinator {
         // a prepared swap held across another install still transplants against what it retires.
         let (mut migration, diff) = self.manifest.diff(&manifest);
         if !keep_live_values {
-            migration = migration.without_latches();
+            migration = migration.without_live_values();
         }
-        let live_reset = manifest.interface_resets(migration.latches());
+        let live_reset = manifest.interface_resets(migration.live_values());
 
         // Fill the install mailbox. One swap in flight: if the render side has not yet drained
         // the previous swap, the retiree is not home, `install` is refused, and nothing changes —
@@ -577,7 +577,7 @@ mod tests {
                     .transplant_survivors(&mut self.engine, bundle.migration.survivors());
                 bundle
                     .engine
-                    .carry_latches(&mut self.engine, bundle.migration.latches());
+                    .carry_live_values(&mut self.engine, bundle.migration.live_values());
                 let retiring = std::mem::replace(&mut self.engine, bundle.engine);
                 let _ = self.mailbox.post_retiree(Box::new(InstallBundle {
                     engine: retiring,
@@ -940,23 +940,16 @@ mod tests {
     }
 
     #[test]
-    fn a_pipe_gaining_a_consumer_lets_the_document_win() {
-        let peak = peak_after_live_send_then_swap(
-            &fan_doc(0.3, 1.0, false),
-            ("/level/in", 0.7),
-            &fan_doc(0.3, 1.0, true),
-        );
-        assert!(close(peak, 0.3), "the default plays: peak {peak}");
-    }
-
-    #[test]
-    fn a_pipe_losing_a_consumer_lets_the_document_win() {
-        let peak = peak_after_live_send_then_swap(
-            &fan_doc(0.3, 1.0, true),
-            ("/level/in", 0.7),
-            &fan_doc(0.3, 1.0, false),
-        );
-        assert!(close(peak, 0.3), "the default plays: peak {peak}");
+    fn a_live_value_on_a_pipe_survives_it_gaining_or_losing_a_consumer() {
+        // One consumer dissolves `level` into `/m.a`; two keep it a node of its own.
+        for (before, after) in [(false, true), (true, false)] {
+            let peak = peak_after_live_send_then_swap(
+                &fan_doc(0.3, 1.0, before),
+                ("/level/in", 0.7),
+                &fan_doc(0.3, 1.0, after),
+            );
+            assert!(close(peak, 0.7), "fan_out {before} -> {after}: peak {peak}");
+        }
     }
 
     #[test]
@@ -1199,13 +1192,24 @@ mod tests {
     }
 
     #[test]
-    fn narrowing_an_inputs_range_lets_the_document_win() {
+    fn narrowing_an_inputs_range_clamps_its_live_value() {
         let peak = peak_after_live_send_then_swap(
             &held_fan_doc(2.0, 1.0),
             ("/k/in", 1.8),
             &held_fan_doc(1.0, 1.0),
         );
-        assert!(close(peak, 0.5), "the default plays, not 1.8: peak {peak}");
+        assert!(close(peak, 1.0), "1.8 clamped to the new max: peak {peak}");
+        // Dissolved too: `/v2` gone, `k` feeds only `/v`.
+        let single = |max: f32| {
+            held_fan_doc(max, 1.0).replace(
+                r#"{ "type": "mul_f32_value", "address": "/v2",
+                      "inputs": { "a": { "from": "/k" }, "b": 1.0 } },"#,
+                "",
+            )
+        };
+        assert_ne!(single(2.0), held_fan_doc(2.0, 1.0));
+        let peak = peak_after_live_send_then_swap(&single(2.0), ("/k/in", 1.8), &single(1.0));
+        assert!(close(peak, 1.0), "dissolved: peak {peak}");
     }
 
     #[test]
@@ -1302,10 +1306,25 @@ mod tests {
         rig.render_peak(256)
     }
 
+    /// The steady peak of `doc` with `live` sent to it fresh: what a value plays as there.
+    fn fresh_peak(doc: &str, live: (&str, f32)) -> f32 {
+        let (_coord, side, _w) = Coordinator::install_initial(
+            doc,
+            Registry::builtin(),
+            Box::new(MemoryResolver::new()),
+            cfg(),
+        )
+        .expect("initial install");
+        let mut rig = RenderRig::new(side);
+        rig.queue_osc(live.0, &[Arg::F32(live.1)]);
+        rig.render_peak(256);
+        rig.render_peak(256)
+    }
+
     #[test]
-    fn a_pipe_changing_how_it_renders_lets_the_document_win() {
-        // `power_f32_value.exponent` clamps to 0..8, so 10 sent to `e` lands as 8 in `/p` but as
-        // 10 in `e`'s own latch or `/q`'s: no carry between those latches keeps its meaning.
+    fn a_live_value_on_a_pipe_plays_as_if_sent_afresh_however_the_pipe_renders() {
+        // `power_f32_value.exponent` clamps to 0..8 and `e` to 0..20, so 10 sent to `e` is held as
+        // 10 by `e` and lands as 8 in `/p`: the carried value must be `e`'s, not `/p`'s clamp.
         let p = ("/p", "power_f32_value", "exponent");
         let p2 = ("/p2", "power_f32_value", "exponent");
         let q = ("/q", "mul_f32_value", "a");
@@ -1322,14 +1341,24 @@ mod tests {
             ),
             (
                 "another consumer",
-                consumers_doc(&[q], "/q"),
                 consumers_doc(&[p], "/p"),
+                consumers_doc(&[q], "/q"),
+            ),
+            (
+                "a third consumer",
+                consumers_doc(&[p, p2], "/p"),
+                consumers_doc(&[p, p2, q], "/q"),
             ),
         ];
         for (what, before, after) in edits {
             let peak = peak_after_live_send_then_swap(&before, ("/e/in", 10.0), &after);
+            let fresh = fresh_peak(&after, ("/e/in", 10.0));
             let document = document_peak(&after);
-            assert!(close(peak, document), "{what}: {peak}, document {document}");
+            assert!(close(peak, fresh), "{what}: {peak}, fresh {fresh}");
+            assert!(
+                !close(peak, document),
+                "{what}: the document's {document} plays"
+            );
         }
     }
 
@@ -1366,11 +1395,10 @@ mod tests {
     }
 
     #[test]
-    fn a_value_sent_to_a_piped_input_by_its_own_address_never_carries() {
-        // `/m.a` is wired from `level` in the document. A value sent to `/m/a` is heard, as one
-        // sent to any input is, but it is the consumer's, not the interface input's, so an edit
-        // drops it; sending to `/level/in` afterwards makes the latch the interface input's again.
-        let (mut coord, side, _w) = Coordinator::install_initial(
+    fn a_value_sent_to_a_fed_input_is_dropped_and_counted() {
+        // `/m.a` is fed by `level`, and the child's boundary `level` by the host's `level`: both
+        // values are their feeders', so a message to either is dropped, and nothing carries.
+        let (_coord, side, _w) = Coordinator::install_initial(
             &piped_doc(0.3, 1.0),
             Registry::builtin(),
             Box::new(MemoryResolver::new()),
@@ -1378,28 +1406,136 @@ mod tests {
         )
         .expect("initial install");
         let mut rig = RenderRig::new(side);
-        let mut swap_to = |rig: &mut RenderRig, b: f32| {
-            let report = coord.swap_document(&piped_doc(0.3, b));
-            assert!(report.report.ok, "swap should succeed: {:?}", report.report);
+        rig.queue_osc("/m/a", &[Arg::F32(0.7)]);
+        rig.render_peak(256);
+        assert!(close(rig.render_peak(256), 0.3), "the send is dropped");
+        assert_eq!(rig.engine.take_dropped_wired_writes(), 1);
+        let peak = peak_after_live_send_then_swap(
+            &piped_doc(0.3, 1.0),
+            ("/m/a", 0.7),
+            &piped_doc(0.3, 2.0),
+        );
+        assert!(close(peak, 0.6), "the document plays: peak {peak}");
+        for fan_out in [false, true] {
+            let (a, lib) = nested_host(0.3, 1.0, fan_out);
+            let (_coord, side, _w) =
+                Coordinator::install_initial(&a, Registry::builtin(), Box::new(lib), cfg())
+                    .expect("initial install");
+            let mut rig = RenderRig::new(side);
+            rig.queue_osc("/a/level/in", &[Arg::F32(0.7)]);
+            rig.render_peak(256);
+            let heard = rig.render_peak(256);
+            assert!(
+                close(heard, 0.3),
+                "fan_out={fan_out}: the send is dropped: {heard}"
+            );
+            assert_eq!(
+                rig.engine.take_dropped_wired_writes(),
+                1,
+                "fan_out={fan_out}"
+            );
+
+            let (a, lib) = nested_host(0.3, 1.0, fan_out);
+            let (b, _) = nested_host(0.3, 2.0, fan_out);
+            let peak = peak_after_live_send_then_swap_in(lib, &a, ("/a/level/in", 0.7), &b);
+            assert!(close(peak, 0.6), "fan_out={fan_out}: peak {peak}");
+        }
+    }
+
+    #[test]
+    fn the_latest_value_sent_to_a_dissolved_pipe_carries_whatever_order_it_arrived_in() {
+        // Messages in one block apply by frame; what the pipe remembers must too.
+        let run = |sends: &[(f32, usize)]| {
+            let (mut coord, side, _w) = Coordinator::install_initial(
+                &piped_doc(0.3, 1.0),
+                Registry::builtin(),
+                Box::new(MemoryResolver::new()),
+                cfg(),
+            )
+            .expect("initial install");
+            let mut rig = RenderRig::new(side);
+            for &(v, frame) in sends {
+                rig.engine.queue(reuben_core::message::Message::new(
+                    "/level/in",
+                    Arg::F32(v),
+                    frame,
+                ));
+            }
+            rig.render_peak(256);
+            let report = coord.swap_document(&piped_doc(0.3, 2.0));
+            assert!(report.report.ok, "{:?}", report.report);
             rig.poll_install();
             coord.try_reclaim();
             rig.render_peak(256);
             rig.render_peak(256)
         };
-        rig.queue_osc("/m/a", &[Arg::F32(0.7)]);
-        rig.render_peak(256);
-        assert!(close(rig.render_peak(256), 0.7), "the send is heard");
-        let dropped = swap_to(&mut rig, 2.0);
-        assert!(close(dropped, 0.6), "the document plays: peak {dropped}");
-
-        rig.queue_osc("/m/a", &[Arg::F32(0.7)]);
-        rig.queue_osc("/level/in", &[Arg::F32(0.4)]);
-        rig.render_peak(256);
-        let carried = swap_to(&mut rig, 1.0);
         assert!(
-            close(carried, 0.4),
-            "the pipe's value carries: peak {carried}"
+            close(run(&[(0.7, 100), (0.2, 10)]), 1.4),
+            "the later frame wins"
         );
+        assert!(
+            close(run(&[(0.2, 0), (0.7, 0)]), 1.4),
+            "on one frame, the later message"
+        );
+    }
+
+    #[test]
+    fn a_live_value_on_a_pipe_survives_its_consumer_changing_type() {
+        let typed = |ty: &str| {
+            format!(
+                r#"{{ "format_version": 3, "instrument": "p",
+                     "interface": {{
+                       "inputs": {{ "level": {{ "type": "f32_buffer", "default": 0.3 }} }},
+                       "outputs": {{ "out": {{ "from": "/out.audio" }} }} }},
+                     "nodes": [
+                       {{ "type": "{ty}", "address": "/m",
+                          "inputs": {{ "a": {{ "from": "/level" }}, "b": 0.0 }} }},
+                       {{ "type": "output", "address": "/out",
+                          "inputs": {{ "audio": {{ "from": "/m.out" }} }} }} ] }}"#
+            )
+        };
+        let peak = peak_after_live_send_then_swap(
+            &typed("add_f32_signal"),
+            ("/level/in", 0.7),
+            &typed("sub_f32_signal"),
+        );
+        assert!(
+            close(peak, 0.7),
+            "the interface input's value plays: peak {peak}"
+        );
+        // A node's own input starts over with the node.
+        let direct = |ty: &str| typed(ty).replace(r#"{ "from": "/level" }"#, "0.3");
+        let peak = peak_after_live_send_then_swap(
+            &direct("add_f32_signal"),
+            ("/m/a", 0.7),
+            &direct("sub_f32_signal"),
+        );
+        assert!(close(peak, 0.3), "a replaced node starts over: peak {peak}");
+    }
+
+    #[test]
+    fn the_coordinator_names_no_reset_when_a_pipe_gains_or_swaps_consumers() {
+        let (mut coord, side, _w) = Coordinator::install_initial(
+            &fan_doc(0.3, 1.0, true),
+            Registry::builtin(),
+            Box::new(MemoryResolver::new()),
+            cfg(),
+        )
+        .expect("initial install");
+        let mut rig = RenderRig::new(side);
+        let third = r#", { "type": "mul_f32_signal", "address": "/m3",
+               "inputs": { "a": { "from": "/level" }, "b": 1.0 } }"#;
+        let three = fan_doc(0.3, 1.0, true).replacen("} ] }", &format!("}} {third} ] }}"), 1);
+        assert_ne!(three, fan_doc(0.3, 1.0, true));
+        let replaced = fan_doc(0.3, 1.0, true).replace(r#""/m2""#, r#""/m3""#);
+        let one = fan_doc(0.3, 1.0, false);
+        for next in [three, replaced, one] {
+            let report = coord.swap_document(&next);
+            assert!(report.report.ok, "{:?}", report.report);
+            assert_eq!(coord.live_reset(), &[] as &[String], "{next}");
+            rig.poll_install();
+            coord.try_reclaim();
+        }
     }
 
     /// [`nested_host`] with no host interface input: the child's boundary `level` is unfed.

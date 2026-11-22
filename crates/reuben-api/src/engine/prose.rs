@@ -12,11 +12,14 @@ pub const ENGINE_UNREACHABLE_GUIDANCE: &str =
 
 pub const SEND_LIVE_CONTROLS: &str =
     "Send a batch of control messages to audition a change on the running engine. \
-     These values live in render state only, never in the instrument document: an edit keeps \
-     one only where it leaves that input exactly as it was (value, type, range, wiring, and an \
-     interface input's consumers) and does not rename, remove or reset the node it reaches. \
-     Opening an instrument, even the one playing, replaces them all. Fold any you want to keep \
-     into the instrument document with an edit. The ack means the engine received \
+     These values live in render state only, never in the instrument document. A value sent to \
+     an interface input (/<name>/in) lasts through edits, clamped into a new range, until an \
+     edit changes its type or default or renames or removes it; one sent to a node input \
+     nothing feeds lasts while the node survives and its document value is unchanged. A message \
+     to an input a wire or an interface input feeds is dropped and counted \
+     (wired_writes_dropped); send to the interface input instead. Opening an instrument, even \
+     the one playing, replaces them all. Fold any you want to keep into the instrument \
+     document with an edit. The ack means the engine received \
      the batch and queued it for the next rendered block — not that it took effect: an address \
      matching no node/port is dropped silently, exactly as it would be arriving from an external \
      controller. \
@@ -34,8 +37,10 @@ pub const GET_CURRENT_INSTRUMENT: &str =
      instrument is open, so open one. Fails fast if no engine is reachable.";
 
 pub const GET_ENGINE_DIAGNOSTICS: &str =
-    "Return the engine's running diagnostics counters since start: output_xruns (events) plus \
-     input_ring underruns/overruns/producer_drops (frames). Fails fast if no engine is reachable.";
+    "Return the engine's running diagnostics counters since start: output_xruns (events), \
+     input_ring underruns/overruns/producer_drops (frames), control_batches_dropped_full \
+     (batches), and wired_writes_dropped (control messages dropped for addressing a node input \
+     a wire or an interface input feeds). Fails fast if no engine is reachable.";
 
 pub const GET_ENGINE_METERS: &str =
     "Return the engine's levels at the audio device, one entry per output and input channel, as \

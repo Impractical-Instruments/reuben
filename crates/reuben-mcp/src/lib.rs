@@ -119,11 +119,12 @@ const INSTRUCTIONS: &str = "reuben authoring sidecar. The instrument document is
      edit it accepts is written, and playing starts once it loads. A rejection lists under \
      `pre_existing` the errors it can show were already there; fix those first. Validation \
      reports every error at once. \
-     `send_live_controls` auditions a value without committing it: an edit keeps it only where \
-     it leaves that input exactly as it was (value, type, range, wiring, and an interface \
-     input's consumers) and does not rename, remove or reset the node it reaches; \
-     `open_instrument` replaces it, and it is never saved, so fold a keeper into the document \
-     with an edit. Read \
+     `send_live_controls` auditions a value without committing it. One sent to an interface \
+     input (`/<name>/in`) lasts through edits, clamped into a new range, until an edit changes \
+     its type or default or renames or removes it; one sent to a node input nothing feeds lasts \
+     while the node survives and its document value is unchanged; a message to an input a wire \
+     or an interface input feeds is dropped. `open_instrument` replaces them all, and nothing \
+     is saved, so fold a keeper into the document with an edit. Read \
      `reuben://guide/authoring` for the type system, wiring rules, instrument format, and the \
      authoring loop. Read \
      `reuben://guide/vocabulary` for the word→move table translating intent language (\"warmer\", \
@@ -1982,6 +1983,7 @@ mod tests {
             input_ring_overruns: 0,
             input_ring_producer_drops: 96,
             control_batches_dropped_full: 5,
+            wired_writes_dropped: 3,
         };
         let result = block_on(
             server_with(FakeTransport::reachable().with_diagnostics(report))
@@ -1997,6 +1999,7 @@ mod tests {
         assert_eq!(s["input_ring_underruns"], serde_json::json!(480));
         assert_eq!(s["input_ring_producer_drops"], serde_json::json!(96));
         assert_eq!(s["control_batches_dropped_full"], serde_json::json!(5));
+        assert_eq!(s["wired_writes_dropped"], serde_json::json!(3));
     }
 
     #[test]

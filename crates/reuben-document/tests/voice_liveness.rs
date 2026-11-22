@@ -70,8 +70,8 @@ fn active_is_captured_high_while_gated_and_returns_to_zero_after_release() {
     assert_eq!(plan.captured[active], 0.0, "idle voice is inactive");
     assert_eq!(peak(&buf), 0.0, "idle voice is silent");
 
-    // Gate on (held Value to /env.gate): active latches high and audio sounds.
-    let gate_on = Message::new("/env/gate", Arg::F32(1.0), 0);
+    // Gate on (held Value to the `gate` interface input): active latches high and audio sounds.
+    let gate_on = Message::new("/gate/in", Arg::F32(1.0), 0);
     r.render_block(&mut plan, &[gate_on], &mut buf);
     assert_eq!(plan.captured[active], 1.0, "active high through the note");
     assert!(peak(&buf) > 0.0, "gated voice sounds");
@@ -83,7 +83,7 @@ fn active_is_captured_high_while_gated_and_returns_to_zero_after_release() {
     assert_eq!(plan.captured[active], 1.0, "held note stays active");
 
     // Gate off: active must remain high through the release tail, then fall to 0 once idle.
-    let gate_off = Message::new("/env/gate", Arg::F32(0.0), 0);
+    let gate_off = Message::new("/gate/in", Arg::F32(0.0), 0);
     r.render_block(&mut plan, &[gate_off], &mut buf);
 
     let mut went_idle = false;

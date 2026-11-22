@@ -1161,7 +1161,7 @@ fn nudge_gain(harness: &mut Harness<'_, Editor>) -> f64 {
 }
 
 #[test]
-fn a_control_starts_over_where_the_engine_replaced_its_value() {
+fn a_control_follows_the_engine_through_a_range_edit_and_a_failed_open() {
     use reuben_api::authoring::{RemoveInstrumentNode, SetInstrumentInterfaceInputMeta};
     use reuben_api::engine::call_tool;
     use reuben_api::tools::names;
@@ -1175,18 +1175,19 @@ fn a_control_starts_over_where_the_engine_replaced_its_value() {
         let source = top.display().to_string();
         let channel = harness.state().engine.channel().expect("the engine runs");
 
-        // A range edit replaces the live value in the engine, and the panel follows.
-        nudge_gain(&mut harness);
+        // A range edit keeps the live value, clamped into the new range, and the panel follows.
+        let moved = nudge_gain(&mut harness);
+        let max = (0.5 + moved) / 2.0;
         let args = SetInstrumentInterfaceInputMeta {
             source: source.clone(),
             name: "gain".to_string(),
-            max: Some(2.0),
+            max: Some(max),
             ..Default::default()
         };
         call_tool(names::SET_INSTRUMENT_INTERFACE_INPUT_META, &args, &channel)
             .expect("the edit is accepted");
-        step_until(&mut harness, "reset gain after the range edit", |editor| {
-            editor.controls.value("gain") == Some(0.5)
+        step_until(&mut harness, "clamp gain after the range edit", |editor| {
+            editor.controls.value("gain") == Some(max)
         });
 
         // Reopened while it does not load, the instrument plays nothing; the edit that makes it

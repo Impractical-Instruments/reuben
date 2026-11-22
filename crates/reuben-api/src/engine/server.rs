@@ -1393,14 +1393,22 @@ mod tests {
     fn reopening_the_playing_instrument_carries_no_live_value() {
         let migration = migration_of_open(PATH);
         assert!(!migration.is_empty(), "the survivor keeps its state");
-        assert!(migration.latches().is_empty(), "{:?}", migration.latches());
+        assert!(
+            migration.live_values().is_empty(),
+            "{:?}",
+            migration.live_values()
+        );
     }
 
     #[test]
     fn opening_another_instrument_with_the_same_nodes_carries_no_live_value() {
         let migration = migration_of_open(OTHER);
         assert!(!migration.is_empty(), "the survivor keeps its state");
-        assert!(migration.latches().is_empty(), "{:?}", migration.latches());
+        assert!(
+            migration.live_values().is_empty(),
+            "{:?}",
+            migration.live_values()
+        );
     }
 
     fn open_doc(channel: &Channel) -> Result<super::super::SwapOutcome, ChannelError> {

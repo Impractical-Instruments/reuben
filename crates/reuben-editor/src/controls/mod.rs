@@ -7,9 +7,21 @@
 //!
 //! Controls send live values to the running engine. They never write the instrument document. What
 //! a control is set to follows what the engine did with that live value: after an edit, a control
-//! keeps its setting where the engine's event says the value carried, and starts from its default
-//! where the engine replaced it with the document's; opening the instrument, again or afresh,
-//! starts every control from its default.
+//! keeps its setting where the engine's event says the value carried, clamped into the control's
+//! range as the engine clamps it, and starts from its default where the engine replaced it with the
+//! document's; opening the instrument, again or afresh, starts every control from its default. A
+//! kept setting the new control cannot show as it is — its widget changed kind, or the value lies
+//! outside the widget's range — is set to what the control can show and sent again, so the engine
+//! plays what the panel shows.
+//!
+//! Two races remain, both bounded by one Swap:
+//!
+//! - A control moved after the engine installs a Swap but before the panel takes in that Swap's
+//!   `Changed` event is reset if the event lists its input: the panel cannot tell a send made after
+//!   the install from one made before it. The engine kept what was sent; the panel shows the
+//!   default until the control is moved again.
+//! - A send queued on the engine just before an install, and not yet rendered when the install
+//!   lands, is dropped with the retiring Engine, while the panel shows what was sent.
 
 mod model;
 mod surface;
@@ -23,7 +35,7 @@ use reuben_api::authoring::{Boundary, DescribeBoundary};
 use reuben_api::engine::{call_tool, Channel, Event};
 use reuben_api::tools::names;
 
-use self::model::{Control, Kind, Panel};
+use self::model::{Control, Gesture, Kind, Panel};
 use crate::engine::Engine;
 use crate::sends::Replies;
 
@@ -111,6 +123,42 @@ impl Setting {
     }
 }
 
+/// `setting` as `control` shows it, and whether that is the setting unchanged; `None` when the
+/// control has no way to show it.
+fn fit(setting: Setting, control: &Control) -> Option<(Setting, bool)> {
+    match (setting, &control.kind) {
+        (
+            Setting::Value(v),
+            Kind::Value {
+                min, max, integer, ..
+            },
+        ) => {
+            let shown = model::clamp(v, *min, *max);
+            let shown = if *integer { shown.round() } else { shown };
+            Some((Setting::Value(shown), shown == v))
+        }
+        (Setting::On(on), Kind::Toggle { .. })
+        | (Setting::On(on), Kind::NoteToggle { .. })
+        | (Setting::On(on), Kind::ChordButton { .. }) => Some((Setting::On(on), true)),
+        (Setting::Choice(i), Kind::Choice { variants, .. }) if i < variants.len() => {
+            Some((Setting::Choice(i), true))
+        }
+        (Setting::Key(key), Kind::Keyboard) => Some((Setting::Key(key), true)),
+        _ => None,
+    }
+}
+
+/// The gesture that sets a control to `setting`, for one a reload sends again; `None` for a
+/// setting no single gesture restores.
+fn gesture(setting: Setting) -> Option<Gesture> {
+    match setting {
+        Setting::Value(v) => Some(Gesture::Set(v)),
+        Setting::On(on) => Some(Gesture::Switch(on)),
+        Setting::Choice(i) => Some(Gesture::Pick(i)),
+        Setting::Key(_) => None,
+    }
+}
+
 /// The controls panel of the open instrument, with what each control is set to.
 pub struct Controls {
     loaded: Option<Result<Loaded, String>>,
@@ -121,6 +169,9 @@ pub struct Controls {
     replies: Replies,
     /// Which settings the engine has replaced since the panel was built.
     replaced: Replaced,
+    /// Controls whose setting a reload changed while the engine kept its own value: sent at the
+    /// next draw with an engine to send to.
+    resend: Vec<usize>,
 }
 
 /// The live values the engine replaced with the document's since the panel was built, as its
@@ -173,6 +224,7 @@ impl Controls {
             send_error: None,
             replies: Replies::default(),
             replaced: Replaced::default(),
+            resend: Vec::new(),
         }
     }
 
@@ -207,15 +259,21 @@ impl Controls {
                 if replaced.covers(&control.address()) {
                     continue;
                 }
-                let kept = (old.panel.controls.iter().enumerate()).find(|(was_at, was)| {
-                    !taken[*was_at]
-                        && was.bind == control.bind
-                        && std::mem::discriminant(&was.kind)
-                            == std::mem::discriminant(&control.kind)
-                });
-                if let Some((was_at, _)) = kept {
-                    taken[was_at] = true;
-                    fresh.settings[at] = self.settings[was_at];
+                let kept = (old.panel.controls.iter().enumerate())
+                    .find(|(was_at, was)| !taken[*was_at] && was.bind == control.bind);
+                let Some((was_at, _)) = kept else {
+                    continue;
+                };
+                taken[was_at] = true;
+                match fit(self.settings[was_at], control) {
+                    Some((setting, true)) => fresh.settings[at] = setting,
+                    Some((setting, false)) => {
+                        fresh.settings[at] = setting;
+                        fresh.resend.push(at);
+                    }
+                    // The engine kept a value the new widget cannot show: send it the default
+                    // the control now shows.
+                    None => fresh.resend.push(at),
                 }
             }
         }
@@ -296,6 +354,13 @@ impl Controls {
                     })
                     .inner;
                 if let Some(live) = &live {
+                    let mut messages = messages;
+                    for at in std::mem::take(&mut self.resend) {
+                        let resent = (loaded.panel.controls.get(at))
+                            .zip(self.settings.get(at))
+                            .and_then(|(control, setting)| control.message(gesture(*setting)?));
+                        messages.extend(resent);
+                    }
                     for message in &messages {
                         self.replaced.sent(&message.address);
                     }
@@ -776,6 +841,7 @@ mod reload_tests {
             send_error: None,
             replies: Replies::default(),
             replaced: Replaced::default(),
+            resend: Vec::new(),
         }
     }
 
@@ -827,6 +893,54 @@ mod reload_tests {
         ]));
         assert_eq!(controls.value("cutoff"), Some(0.7), "sent after the event");
         assert_eq!(controls.value("res"), Some(0.3), "replaced by the event");
+    }
+
+    #[test]
+    fn an_event_replacing_every_value_overrides_a_send_made_before_it() {
+        let mut controls = moved(&["cutoff"]);
+        controls.replaced.sent("/cutoff/in");
+        controls.hear(&changed(None), "t.json");
+        controls.replace_keeping_settings(panel(vec![value("cutoff", 0.3, 1.0)]));
+        assert_eq!(controls.value("cutoff"), Some(0.3), "sent before the event");
+    }
+
+    #[test]
+    fn a_kept_setting_is_clamped_into_the_new_range_and_sent_again_when_that_moved_it() {
+        let mut controls = moved(&["cutoff", "res"]);
+        controls.settings[0] = Setting::Value(1.8);
+        controls.replace_keeping_settings(panel(vec![
+            value("cutoff", 0.3, 1.0),
+            value("res", 0.3, 1.0),
+        ]));
+        assert_eq!(
+            controls.value("cutoff"),
+            Some(1.0),
+            "clamped, as the engine clamps it"
+        );
+        assert_eq!(
+            controls.value("res"),
+            Some(0.7),
+            "inside the range, unchanged"
+        );
+        assert_eq!(
+            controls.resend,
+            vec![0],
+            "only the clamped one is sent again"
+        );
+    }
+
+    #[test]
+    fn a_kept_setting_the_new_widget_cannot_show_is_reset_and_sent_again() {
+        let mut controls = moved(&["mode"]);
+        let toggle = Control {
+            bind: "mode".to_string(),
+            label: "Mode".to_string(),
+            group: None,
+            kind: Kind::Toggle { rest: false },
+        };
+        controls.replace_keeping_settings(panel(vec![toggle]));
+        assert_eq!(controls.settings, vec![Setting::On(false)]);
+        assert_eq!(controls.resend, vec![0]);
     }
 
     #[test]

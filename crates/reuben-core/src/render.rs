@@ -715,6 +715,12 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &mut Plan, messages: Inboun
         r.events.clear();
     }
 
+    if messages.len() > 0 {
+        for a in plan.input_aliases.iter_mut() {
+            a.last_frame = None;
+        }
+    }
+
     for mi in 0..messages.len() {
         let Some((target, arg, frame)) = messages.resolve(plan, mi) else {
             continue;
@@ -726,12 +732,19 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &mut Plan, messages: Inboun
             Target::Alias(ai) => {
                 let alias = &plan.input_aliases[ai];
                 let (n, port) = (alias.node, alias.dst_port);
-                plan.nodes[n].piped_bypassed[port] = false;
+                // A fed pipe's value is its feeder's.
+                if alias.seed.is_none() {
+                    plan.dropped_wired_writes += 1;
+                    continue;
+                }
+                // What the rendered pipe would now hold, for a numeric pipe.
+                let mut held = None;
                 match alias.kind {
                     // A signal pipe's message feed was a raw ZOH materialize write (unclamped).
                     PortKind::Signal => {
                         if let Some(v) = arg.as_f32() {
                             routes[n].push_materialize(frame, port, v);
+                            held = Some(Arg::F32(v));
                         }
                     }
                     // A value pipe latched (pipe-meta clamp), then forwarded; the emission landed
@@ -755,6 +768,9 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &mut Plan, messages: Inboun
                             // Never aliased: dissolve keeps a Value pipe feeding an Event input.
                             PortKind::Event => {}
                         }
+                        if matches!(a, Arg::F32(_) | Arg::I32(_)) {
+                            held = Some(a);
+                        }
                     }
                     // An event pipe re-emitted each routed event verbatim at its frame.
                     PortKind::Event => {
@@ -764,11 +780,20 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &mut Plan, messages: Inboun
                         });
                     }
                 }
+                let alias = &mut plan.input_aliases[ai];
+                if let Some(held) = held {
+                    if alias.last_frame.is_none_or(|f| frame >= f) {
+                        alias.last = held;
+                        alias.last_frame = Some(frame);
+                    }
+                }
             }
             // Routing is by port, not by operator address-filtering.
             Target::Port { node: i, port } => {
-                if plan.nodes[i].piped[port] {
-                    plan.nodes[i].piped_bypassed[port] = true;
+                // Writing a fed input is unsupported: its value is its feeder's.
+                if plan.nodes[i].wired[port] {
+                    plan.dropped_wired_writes += 1;
+                    continue;
                 }
                 match plan.nodes[i].input_kinds[port] {
                     PortKind::Signal => {
@@ -1232,31 +1257,6 @@ mod tests {
                 }
             }
         }
-
-        pub mod hold {
-            use super::*;
-            crate::operator_contract!(NoteToValue {
-                inputs:  { trig: note },
-                outputs: { out: f32 { -1000.0..=1000.0, default 0.0, "", lin } },
-            });
-            /// Sets its Value output to each event's absolute pitch, at the event's frame.
-            pub struct NoteToValue;
-            impl Operator for NoteToValue {
-                fn descriptor() -> Descriptor {
-                    Self::contract()
-                }
-                fn process(&mut self, io: &mut Io) {
-                    for ev in io.read(IN_TRIG) {
-                        if let Pitch::Absolute(p) = ev.payload.pitch {
-                            io.write(OUT_OUT).set(ev.frame, p);
-                        }
-                    }
-                }
-                fn spawn(&self) -> Box<dyn Operator> {
-                    Box::new(NoteToValue)
-                }
-            }
-        }
     }
 
     /// `(frame, pitch)` of each emitted absolute-pitch note.
@@ -1308,11 +1308,10 @@ mod tests {
         );
     }
 
-    /// A port fed both by external Messages and by an upstream node's emissions receives the
-    /// external events first, in Message order, then the emitted ones, in emission order — each
-    /// at its own frame, whatever the frames are.
+    /// A wired port takes only its upstream node's emissions, in emission order: an external
+    /// Message addressed to it is dropped and counted, while one to an unwired port is delivered.
     #[test]
-    fn external_then_emitted_events_share_a_port_in_routing_order() {
+    fn a_wired_port_drops_external_messages_and_counts_them() {
         use crate::graph::Graph;
         use crate::operators::{transpose, OscOut, Transpose};
         use crate::vocab::pitch::{Note, Pitch};
@@ -1341,45 +1340,41 @@ mod tests {
         r.render_block_multi(&mut plan, &messages, &[], &mut master, &mut outbound);
 
         let got = note_frames(outbound.iter().map(|m| (m.frame, &m.arg)));
-        assert_eq!(got, [(5, 1.0), (2, 2.0), (1, 10.0), (0, 11.0), (5, 12.0)]);
+        assert_eq!(got, [(1, 10.0), (0, 11.0), (5, 12.0)]);
+        assert_eq!(plan.take_dropped_wired_writes(), 2);
+        assert_eq!(
+            plan.take_dropped_wired_writes(),
+            0,
+            "taking the count clears it"
+        );
     }
 
-    /// Writes to one Signal input at one frame apply in arrival order, so the last wins — external
-    /// Messages first, then an upstream node's emission. Enough same-frame writes that the frame
-    /// sort is not an insertion sort, so dropping the arrival tie-break would reorder them.
+    /// Writes to one Signal input at one frame apply in arrival order, so the last wins. Enough
+    /// same-frame writes that the frame sort is not an insertion sort, so dropping the arrival
+    /// tie-break would reorder them.
     #[test]
     fn same_frame_materialize_writes_keep_last_write_wins() {
         use crate::graph::Graph;
         use crate::operators::Output;
-        use crate::vocab::pitch::{Note, Pitch};
-        use probe::hold::*;
 
         let mut g = Graph::new();
-        let src = g.add("/src", NoteToValue);
         let out = g.add("/out", Output::new());
-        g.connect(src, OUT_OUT, out, 0);
         g.tap_output(out, 0);
         let cfg = AudioConfig::new(48_000.0, 64);
         let mut plan = Plan::instantiate(g, cfg).expect("instantiate");
         let mut r = Renderer::new(&plan);
 
-        // External writes alternate between frames 10 and 20 with distinct values; the upstream
-        // node then writes 999 at frame 10, arriving after every external write.
-        let mut messages: Vec<Message> = (0..64)
+        // Writes alternate between frames 10 and 20 with distinct values.
+        let messages: Vec<Message> = (0..64)
             .map(|i| Message::float("/out/audio", i as f32, if i % 2 == 0 { 10 } else { 20 }))
             .collect();
-        messages.push(Message::new(
-            "/src/trig",
-            Note::new(Pitch::Absolute(999.0), 1.0),
-            10,
-        ));
         let mut block = vec![0.0; cfg.block_size];
         r.render_block(&mut plan, &messages, &mut block);
 
         assert!(block[..10].iter().all(|&s| s == 0.0), "{:?}", &block[..10]);
         assert!(
-            block[10..20].iter().all(|&s| s == 999.0),
-            "frame 10's last write is the emitted 999: {:?}",
+            block[10..20].iter().all(|&s| s == 62.0),
+            "frame 10's last write is 62: {:?}",
             &block[10..20]
         );
         assert!(

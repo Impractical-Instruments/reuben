@@ -28,8 +28,8 @@ fn default_engine(cfg: AudioConfig) -> Engine {
 fn engine_with_note() -> Engine {
     let mut e = default_engine(AudioConfig::new(48_000.0, 256));
     // Drive a note in through the real inbound boundary: flat OSC args -> typed `Arg::Note`,
-    // driven by the voicer's note port type.
-    e.queue_osc("/voicer/notes", &[Arg::F32(69.0), Arg::F32(1.0)]);
+    // driven by the `notes` interface input's type.
+    e.queue_osc("/notes/in", &[Arg::F32(69.0), Arg::F32(1.0)]);
     e
 }
 
@@ -319,13 +319,13 @@ fn control_that_cannot_land_is_dropped_without_touching_the_render() {
     let mut clean = engine_with_note();
     sent.queue_osc("/nowhere/at/all", &[Arg::F32(1.0)]);
     sent.queue_osc("/voicer", &[Arg::F32(1.0)]);
-    sent.queue_osc("/voicer/notes", &[Arg::Str("loud".into())]);
-    sent.queue_osc("/voicer/notes", &[]);
+    sent.queue_osc("/notes/in", &[Arg::Str("loud".into())]);
+    sent.queue_osc("/notes/in", &[]);
     assert_eq!(sent.pending_len(), clean.pending_len());
 
     // The typed form: an unknown address and a payload the port's kind cannot hold.
     sent.queue(reuben_core::Message::float("/nowhere/at/all", 1.0, 0));
-    sent.queue(reuben_core::Message::float("/voicer/notes", 1.0, 0));
+    sent.queue(reuben_core::Message::float("/notes/in", 1.0, 0));
 
     let mut a = vec![0.0f32; 8 * cfg.block_size * sent.channels()];
     let mut b = a.clone();
