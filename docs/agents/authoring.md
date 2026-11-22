@@ -360,10 +360,13 @@ target-pointing form (no entry points inward anymore):
 - An **output pipe is fed from an internal port**: `"main_l": { "from": "/pan.left" }`.
   Signal output pipes drive the logical master channels.
 - A **`str` output pipe** works only nested: a parent wires `/<sub>.<name>` into a `str` input
-  like any port. In the document played (or validated) on its own it is **inert** — a host reads
-  an instrument's message outputs as numbers, so nothing captures it — and validation warns,
-  without failing. A Voicer-hosted voice's `active` output must be numeric; a `str` one is a load
-  error, since the Voicer reads it as a number to know when a release tail has finished.
+  like any port. In the document played (or validated) on its own it is **inert** — nothing reads
+  a top-level instrument's message outputs; only a parent's `subpatch` node (or a Voicer, for
+  `active`) consumes them — and validation warns, without failing. It also keeps a pipe it reads
+  from rendered as a node. A Voicer-hosted voice's held `active` output must be a number (`f32`
+  or `i32`): a `str`, enum, `note`, `harmony` or `pitch` one is a load error, since the Voicer
+  reads it as a number to know when a release tail has finished. (A signal `active` falls back to
+  the gate.)
 - A **signal** pipe may carry an optional logical **`channel: <int>`** binding — **honored
   only on the graph actually played at top level**: an input pipe with `channel: k` reads
   logical input channel `k` (real device audio via the input stream); an output pipe with

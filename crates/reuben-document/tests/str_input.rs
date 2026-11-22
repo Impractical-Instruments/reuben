@@ -651,21 +651,98 @@ fn a_hosted_voice_frees_its_pipe_consumer_seeds_at_its_first_note() {
     }
 }
 
-/// The Voicer reads a voice's `active` output as a number, so a `str` one is refused.
+/// The Voicer reads a voice's held `active` output as a number, so any other held type is
+/// refused: a `str`, and an enum or a `note` alike. A numeric `i32` loads.
 #[test]
-fn a_hosted_voice_refuses_a_str_active_output() {
+fn a_hosted_voice_refuses_a_non_numeric_active_output() {
+    let voice_with = |extra: &str, from: &str| {
+        format!(
+            r#"{{ "format_version": 3, "instrument": "voice",
+          "interface": {{ "inputs": {{
+              "gate": {{ "type": "f32", "default": 0.0, "min": 0.0, "max": 1.0 }},
+              "freq": {{ "type": "f32", "default": 440.0, "min": 20.0, "max": 20000.0 }},
+              {extra} }},
+            "outputs": {{ "active": {{ "from": "{from}" }} }} }},
+          "nodes": [] }}"#
+        )
+    };
+    let refused = [
+        ("str", voice_patch("/pat.out")),
+        (
+            "enum",
+            voice_with(
+                r#""mode": { "type": "FilterMode", "default": "Hp" }"#,
+                "/mode.out",
+            ),
+        ),
+        ("note", voice_with(r#""nn": { "type": "note" }"#, "/nn.out")),
+    ];
+    for (label, voice) in refused {
+        let mut r = MemoryResolver::new();
+        r.insert_text("voice.json", voice);
+        let errs: Vec<LoadError> = match load_instrument(HOST, &registry(), &r) {
+            Ok(_) => panic!("{label}: a non-numeric `active` should be refused"),
+            Err(errs) => errs.into_iter().collect(),
+        };
+        let [LoadError::Nested { node, error }] = errs.as_slice() else {
+            panic!("{label}: one nested error: {errs:?}");
+        };
+        assert_eq!(node, "/v", "{label}");
+        assert!(
+            matches!(&**error, LoadError::InterfacePipe { name, .. } if name == "active"),
+            "{label}: {error:?}"
+        );
+    }
+
     let mut r = MemoryResolver::new();
-    r.insert_text("voice.json", voice_patch("/pat.out"));
-    let errs: Vec<LoadError> = match load_instrument(HOST, &registry(), &r) {
-        Ok(_) => panic!("a str `active` should be refused"),
-        Err(errs) => errs.into_iter().collect(),
-    };
-    let [LoadError::Nested { node, error }] = errs.as_slice() else {
-        panic!("one nested error: {errs:?}");
-    };
-    assert_eq!(node, "/v");
-    assert!(
-        matches!(&**error, LoadError::InterfacePipe { name, .. } if name == "active"),
-        "{error:?}"
+    r.insert_text(
+        "voice.json",
+        voice_with(
+            r#""cnt": { "type": "i32", "default": 1, "min": 0, "max": 4 }"#,
+            "/cnt.out",
+        ),
     );
+    load_instrument(HOST, &registry(), &r).expect("an i32 `active` loads");
+}
+
+/// Validated on its own, a voice patch's `str` `active` warns that a Voicer refuses it, rather
+/// than offering the `subpatch` route that suits other names.
+#[test]
+fn a_str_active_validated_alone_says_a_voicer_refuses_it() {
+    let report = reuben_document::introspect::validate(
+        &voice_patch("/pat.out"),
+        &registry(),
+        &MemoryResolver::new(),
+    );
+    assert!(report.ok, "{report:?}");
+    let warning = report
+        .warnings
+        .iter()
+        .find(|w| w.port.as_deref() == Some("active"))
+        .unwrap_or_else(|| panic!("{report:?}"));
+    assert!(warning.message.contains("Voicer"), "{}", warning.message);
+}
+
+/// An interface output reading a single-consumer `str` pipe keeps the pipe rendered, so its first
+/// block frees the consumer's seed; without the output the pipe dissolves and nothing is freed.
+#[test]
+fn an_interface_output_keeps_a_str_pipe_rendered() {
+    const WITH: &str = r#"{ "format_version": 3, "instrument": "t",
+      "interface": { "inputs": { "pat": { "type": "str", "default": "seed" } },
+                     "outputs": { "o": { "from": "/pat.out" } } },
+      "nodes": [ { "type": "str_len", "address": "/a", "inputs": { "text": { "from": "/pat" } } } ] }"#;
+    let without = WITH.replace(
+        r#",
+                     "outputs": { "o": { "from": "/pat.out" } }"#,
+        "",
+    );
+    assert_ne!(without, WITH);
+    assert_counter_is_live();
+    let first_block = |doc: &str| {
+        let mut e = engine(doc);
+        let mut out = vec![0.0f32; e.block_size() * e.channels()];
+        measure(|| e.fill(&mut out)).frees
+    };
+    assert_eq!(first_block(WITH), 1, "rendered: the consumer's seed");
+    assert_eq!(first_block(&without), 0, "dissolved: nothing to overwrite");
 }

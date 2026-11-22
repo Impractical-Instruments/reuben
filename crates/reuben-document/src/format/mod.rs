@@ -1127,9 +1127,11 @@ pub enum LoadWarning {
     /// names which. Ignored, never fatal: the pipe keeps its quantity contract.
     DeprecatedPipePresentation { name: String, field: &'static str },
     /// An `interface.outputs` entry is fed from a `str` port in the document at the root of the
-    /// load. A host reads a played instrument's message-domain outputs as numbers, so the output
-    /// is **inert** there: nothing captures it. It works when a parent wires it through a
-    /// `subpatch` node, so this is a warning, not an error.
+    /// load. Nothing reads a root instrument's message-domain outputs — only a parent's `subpatch`
+    /// node consumes them, or a Voicer reading a hosted voice's `active` — so the output is
+    /// **inert** there, and a `str` one has no numeric slot besides. It works when a parent wires
+    /// it through a `subpatch` node, so this is a warning, not an error. Named `active`, it says
+    /// that a Voicer refuses it.
     InertStrOutput { name: String },
     /// A pre-v4 node address broke the node address rule and was renamed at parse, every
     /// reference to it rewritten. Its OSC control address moved with it.
@@ -1190,10 +1192,16 @@ impl fmt::Display for LoadWarning {
                 "top-level input pipe {name:?} binds no logical input channel — nothing can \
                  feed it; it renders silence"
             ),
+            LoadWarning::InertStrOutput { name } if name == "active" => write!(
+                f,
+                "interface output \"active\" carries a `str`: a Voicer hosting this patch as a \
+                 voice refuses it, because it reads `active` as a number; nothing else reads it \
+                 here, and only a parent's `subpatch` node can wire a `str` output"
+            ),
             LoadWarning::InertStrOutput { name } => write!(
                 f,
-                "interface output {name:?} carries a `str`, which a host cannot read off a \
-                 played instrument; it only works when a parent wires it through a `subpatch` node"
+                "interface output {name:?} carries a `str`, which nothing reads at the top level; \
+                 it only works when a parent wires it through a `subpatch` node"
             ),
             LoadWarning::InertChannelBinding { name } => write!(
                 f,
@@ -2651,10 +2659,10 @@ impl InstrumentDoc {
                     found.push(site, e);
                     continue;
                 }
-                // Inert at the root, like a `channel` binding nested: a host reads a played
-                // instrument's message-domain outputs as numbers, so a `str` one gets no
-                // captured slot (`Plan::instantiate`). It works when a parent wires it through
-                // a `subpatch` node, which is what this document is for.
+                // Inert at the root, like a `channel` binding nested: nothing reads a root
+                // instrument's message-domain outputs, and a `str` one gets no captured slot
+                // besides (`Plan::instantiate`). It works when a parent wires it through a
+                // `subpatch` node, which is what this document is for.
                 if top_level && matches!(ty, PortType::Str) {
                     warnings.push(LoadWarning::InertStrOutput { name: name.clone() });
                 }

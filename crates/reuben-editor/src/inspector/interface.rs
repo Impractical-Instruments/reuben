@@ -206,11 +206,14 @@ impl Adding {
             return Err("A new interface input needs a name.".to_string());
         }
         let type_name = self.input_type.trim();
+        // A `str` pipe's value is its text as typed — digits, and leading or trailing spaces in a
+        // pattern, included. Only an empty field means no value.
+        let raw = self.input_value.as_str();
         let value = self.input_value.trim();
         let value = match value.parse::<f64>() {
+            _ if raw.is_empty() => None,
+            _ if type_name == "str" => Some(Value::String(raw.to_string())),
             _ if value.is_empty() => None,
-            // A `str` pipe's value is its text, digits included.
-            _ if type_name == "str" => Some(Value::String(value.to_string())),
             Ok(number) => Some(serde_json::json!(number)),
             // An enum pipe's value is one of its type's symbols.
             Err(_) => Some(Value::String(value.to_string())),
@@ -821,6 +824,12 @@ pub(super) mod tests {
         assert!(matches!(
             adding.input(),
             Ok(PipeEdit::AddInput { value: Some(v), .. }) if v == json!("440")
+        ));
+        // ...and keeps its spaces: they can be part of a pattern.
+        adding.input_value = " 0 3 ~ ".into();
+        assert!(matches!(
+            adding.input(),
+            Ok(PipeEdit::AddInput { value: Some(v), .. }) if v == json!(" 0 3 ~ ")
         ));
     }
 

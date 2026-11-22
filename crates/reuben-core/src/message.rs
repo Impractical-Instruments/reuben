@@ -85,7 +85,8 @@ pub enum Arg {
     /// - **A live send overwriting a `str` latch** (`render.rs`, and the interface pipe's own dedup
     ///   baseline).
     /// - **A rendered pipe's first block**, with nothing sent: a `str` pipe kept as a node (two or
-    ///   more consumers, an `osc_out` or a tap) starts with no dedup baseline, so it forwards its
+    ///   more consumers, an `osc_out`, a tap, or an interface output reading it) starts with no
+    ///   dedup baseline, so it forwards its
     ///   default onto each wired consumer and overwrites that consumer's seed — up to one free per
     ///   consumer, in a Plan's first rendered block. For a Voicer-hosted voice that is its first
     ///   note, not the install: an idle voice is not rendered.
