@@ -13,13 +13,14 @@
 //! - **Signal** (`f32_buffer`): copy the input buffer to the output buffer. Unwired, the input
 //!   materializes from its latch — the declared default, or **silence** for a bare pipe — so an
 //!   unfed pipe renders exactly that.
-//! - **Value** (`f32`, a vocab enum, `harmony`): forward the held latch as a sparse Value write.
+//! - **Value** (`f32`, `i32`, `str`, a vocab enum, `harmony`): forward the held latch as a sparse Value write.
 //!   The dedup baseline is **operator state** (not the per-segment `MsgWriter`), so a pipe emits
 //!   its seed once on the first block and then only on change — downstream latches see the same
 //!   change frames a direct wire would have delivered.
 //! - **Event** (`note`): re-emit every routed event at its frame, verbatim.
 
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -75,10 +76,10 @@ impl Operator for Pipe {
             PortKind::Value => {
                 // Forward the held latch, type-erased: the pipe's declared type already
                 // normalized it (an enum latches its concrete variant), so the raw Arg is
-                // exactly what a downstream latch wants. Cheap clone — Value pipes carry
-                // F32 / Enum / Harmony, none of which heap-allocate.
+                // exactly what a downstream latch wants. Cheap clone — F32 / Enum / Harmony
+                // copy, and a `str` pipe's `Arc<str>` takes a refcount bump.
                 let Some(arg) = io.latch_arg(0) else { return };
-                if self.last.as_ref() != Some(arg) {
+                if !self.last.as_ref().is_some_and(|last| unchanged(last, arg)) {
                     let arg = arg.clone();
                     MsgWriter::on(io, 0).set(0, arg.clone());
                     self.last = Some(arg);
@@ -98,6 +99,16 @@ impl Operator for Pipe {
 
     fn spawn(&self) -> Box<dyn Operator> {
         Box::new(Self::new(self.kind))
+    }
+}
+
+/// The Value pipe's dedup test. A string compares by allocation, not by text: the latch only ever
+/// changes by being replaced, so a different allocation is a new send, and comparing text would
+/// walk the whole string on every block.
+fn unchanged(last: &Arg, latch: &Arg) -> bool {
+    match (last, latch) {
+        (Arg::Str(a), Arg::Str(b)) => Arc::ptr_eq(a, b),
+        _ => last == latch,
     }
 }
 

@@ -176,8 +176,9 @@ pub enum InterfaceEntry {
 /// a pipe through the `/<name>` its entry mints.
 pub const PIPE_INPUT_PORT: &str = "in";
 
-/// A pipe's declared unwired/seed value: a number (`f32` / `f32_buffer` pipes) or a vocab-enum
-/// variant **symbol** (enum pipes) — mirroring [`InputValue`]'s literal forms.
+/// A pipe's declared unwired/seed value: a number (`f32` / `f32_buffer` pipes), a vocab-enum
+/// variant **symbol** (enum pipes), or a string's text (`str` pipes) — mirroring [`InputValue`]'s
+/// literal forms.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(untagged)]
@@ -208,7 +209,7 @@ impl From<CurveDoc> for Curve {
 
 /// One v2 `interface.inputs` entry: a named **input pipe**. There is no inner
 /// port to inherit from — the entry **declares its `Arg` type** (`"f32_buffer"`, `"f32"`,
-/// `"i32"`, `"note"`, `"harmony"`, `"pitch"`, or a vocab enum name like `"FilterMode"`), and the declared type is
+/// `"i32"`, `"str"`, `"note"`, `"harmony"`, `"pitch"`, or a vocab enum name like `"FilterMode"`), and the declared type is
 /// enforced against every consumer by the existing pass-2 wire check. A numeric pipe may carry
 /// its own `default`/`min`/`max`/`curve` — **engine-enforced** on the pipe's port (literals and
 /// external messages clamp to it; an unwired signal pipe materializes `default`, or silence when
@@ -220,14 +221,15 @@ impl From<CurveDoc> for Curve {
 #[serde(deny_unknown_fields)]
 pub struct InputPipeDoc {
     /// The declared `Arg` type: `"f32_buffer"` (Signal), `"f32"` (held Value), `"i32"` (held
-    /// integer Value), `"note"` (Event), `"harmony"` (held Value), `"pitch"` (held Value), or a
-    /// shared vocab enum's type name (`"FilterMode"`).
+    /// integer Value), `"str"` (held string Value), `"note"` (Event), `"harmony"` (held Value),
+    /// `"pitch"` (held Value), or a shared vocab enum's type name (`"FilterMode"`).
     #[serde(rename = "type")]
     pub ty: String,
     /// Logical input channel binding; signal pipes only, top-level-honored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<usize>,
-    /// Unwired/seed value: number for a numeric pipe, variant symbol for an enum pipe.
+    /// Unwired/seed value: number for a numeric pipe, variant symbol for an enum pipe, the text
+    /// itself for a `str` pipe.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<PipeDefault>,
     /// Engine-enforced range floor (numeric pipes; defaults to the type-wide `NUMBER_MIN`).
@@ -527,11 +529,11 @@ impl NodeDoc {
     }
 }
 
-/// One [`NodeDoc::inputs`] value: a wire-ref, an `Enum` symbol, or a numeric literal.
+/// One [`NodeDoc::inputs`] value: a wire-ref, a string literal, or a numeric literal.
 ///
 /// Untagged: a JSON object `{ "from": ... }` is a [`Wire`](Self::Wire); a JSON string is a
-/// [`Symbol`](Self::Symbol) (an `Enum` variant name); a JSON number is a [`Number`](Self::Number)
-/// (a `Float`/param value, or an `Enum` index fallback).
+/// [`Symbol`](Self::Symbol) (an `Enum` variant name, or a `str` port's text); a JSON number is a
+/// [`Number`](Self::Number) (a `Float`/param value, or an `Enum` index fallback).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(untagged)]
@@ -539,7 +541,8 @@ pub enum InputValue {
     /// A wire-ref to a source output: `"/node.port"`, or `"/node"` when the source has exactly
     /// one output (the sole-output sugar).
     Wire { from: String },
-    /// An `Enum` input symbol, e.g. `"Hp"` (enum-over-the-wire, symbol primary).
+    /// A string literal: an `Enum` input symbol, e.g. `"Hp"` (enum-over-the-wire, symbol
+    /// primary), or the text of a `str` input, taken verbatim.
     Symbol(String),
     /// A numeric literal — a `Float` input/param value, or an `Enum` variant index (fallback form).
     Number(f64),
@@ -548,15 +551,15 @@ pub enum InputValue {
 /// One [`NodeDoc::config`] value: an instantiate-time `Constant`.
 ///
 /// Untagged: a JSON number is a [`Number`](Self::Number) (an `Int` constant such as `voices`); a
-/// JSON string is a [`Symbol`](Self::Symbol) (an `Enum` constant, none today). Floats are accepted
-/// and rounded so `8` and `8.0` both name 8 voices.
+/// JSON string is a [`Symbol`](Self::Symbol) (an `Enum` constant, or a `str` constant's text).
+/// Floats are accepted and rounded so `8` and `8.0` both name 8 voices.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(untagged)]
 pub enum ConfigValue {
     /// An `Int` constant (e.g. `voices`), applied rounded.
     Number(f64),
-    /// An `Enum` constant symbol (none today; forward-compatible).
+    /// An `Enum` constant symbol, or a `str` constant's text.
     Symbol(String),
 }
 
@@ -2036,7 +2039,7 @@ impl InstrumentDoc {
                     MintedPipe {
                         descriptor,
                         kind,
-                        enum_default,
+                        seed,
                     },
                 ) = match minted {
                     Ok(minted) => minted,
@@ -2056,12 +2059,12 @@ impl InstrumentDoc {
                     Box::new(Pipe::new(kind)),
                     Arc::clone(&descriptor),
                 );
-                // An enum pipe's declared default seeds the pipe's latch as a value-override;
+                // An enum or `str` pipe's declared default seeds the pipe's latch as a value-override;
                 // numeric pipes carry theirs inside the port's own meta. Seeded with what
                 // `pipe_descriptor` resolved, not with the symbol as written: `set_value` drops a
                 // spelling it cannot coerce in silence, and a numeric-string default ("1") is
                 // exactly such a spelling — validated as an index, then unreadable as a symbol.
-                if let Some(arg) = &enum_default {
+                if let Some(arg) = &seed {
                     graph.set_value(key, PIPE_INPUT_PORT, arg);
                 }
                 by_addr.insert(Arc::clone(&address), (key, descriptor));
@@ -2685,7 +2688,8 @@ impl InstrumentDoc {
                     config.insert(p.name.to_string(), value);
                 }
                 // Settable input overrides round-trip under the input's name: an `F32`
-                // control as a number, an enum as its variant **symbol** (the primary wire form).
+                // control as a number, an enum as its variant **symbol** (the primary wire form),
+                // a `str` as its text.
                 for (port, arg) in &node.value_overrides {
                     let p = &d.inputs[*port];
                     let value = match doc_value(p, arg) {
@@ -2849,6 +2853,12 @@ fn pipe_doc_from_descriptor(
     if pipe.ty == "note" || pipe.ty == "harmony" || pipe.ty == "pitch" {
         return pipe;
     }
+    if let PortType::Str = &p.ty {
+        if let Some((_, Arg::Str(s))) = node.value_overrides.first() {
+            pipe.default = Some(PipeDefault::Symbol(s.to_string()));
+        }
+        return pipe;
+    }
     if let PortType::Vocab {
         enum_meta: Some(e), ..
     } = &p.ty
@@ -2929,6 +2939,7 @@ fn pipe_type_name(ty: &PortType) -> Option<String> {
         PortType::F32Buffer => Some("f32_buffer".to_string()),
         PortType::F32 => Some("f32".to_string()),
         PortType::I32 { .. } => Some("i32".to_string()),
+        PortType::Str => Some("str".to_string()),
         PortType::Vocab {
             name: "Note",
             is_event: true,
@@ -3080,6 +3091,9 @@ fn expected_literal(port: &Port, nothing: &str) -> String {
     if port.accepts_number_literal() {
         return "a number".to_string();
     }
+    if matches!(port.ty, PortType::Str) {
+        return "a string".to_string();
+    }
     nothing.to_string()
 }
 
@@ -3198,6 +3212,11 @@ fn coerce_literal(
             port.coerce(&Arg::F32(*v as f32))
                 .ok_or_else(|| bad_value(got_number(*v)))
         }
+        // Through `coerce` like every other literal, so a `str` port stores exactly the
+        // `Arg::Str` it validated. No length cap: the text is the value.
+        InputValue::Symbol(s) if matches!(port.ty, PortType::Str) => port
+            .coerce(&Arg::Str(s.as_str().into()))
+            .ok_or_else(|| bad_value(got_symbol(s))),
         InputValue::Symbol(s) => {
             let Some(e) = port.enum_meta() else {
                 return Err(wrong_form(got_quoted_symbol(s)));
@@ -3472,7 +3491,7 @@ pub fn widen_f32(v: f32) -> f64 {
 }
 
 /// A single override [`Arg`] in document-facing form: a number for `F32`/`I32`, the
-/// variant **symbol** for an enum choice (the primary wire form).
+/// variant **symbol** for an enum choice (the primary wire form), the text for a `Str`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DocValue {
     Number(f64),
@@ -3487,6 +3506,7 @@ pub fn doc_value(port: &reuben_core::descriptor::Port, arg: &Arg) -> DocValue {
     match arg {
         Arg::F32(v) => DocValue::Number(widen_f32(*v)),
         Arg::I32(v) => DocValue::Number(*v as f64),
+        Arg::Str(s) => DocValue::Symbol(s.to_string()),
         other => DocValue::Symbol(
             port.enum_meta()
                 .and_then(|e| e.symbol_of(other))
@@ -3585,12 +3605,19 @@ fn check_logical_channel(name: &str, ch: usize) -> Result<(), LoadError> {
 /// offers them. Everything else it accepts is a vocab enum name
 /// ([`pipeable_enum_types`](reuben_core::vocab::pipeable_enum_types)), so these two rosters together are
 /// the whole declarable set.
-pub(crate) const PIPE_BASE_TYPES: &[&str] =
-    &["f32_buffer", "f32", "i32", "note", "harmony", "pitch"];
+pub(crate) const PIPE_BASE_TYPES: &[&str] = &[
+    "f32_buffer",
+    "f32",
+    "i32",
+    "str",
+    "note",
+    "harmony",
+    "pitch",
+];
 
 /// What one `interface.inputs` entry mints — [`pipe_descriptor`]'s whole result.
 ///
-/// The resolved `enum_default` rides along rather than being re-derived at the application site,
+/// The resolved `seed` rides along rather than being re-derived at the application site,
 /// because re-deriving is how a validated value and a stored value come apart: `pipe_descriptor`
 /// accepts a bare integer string as an index, and re-spelling that as `Arg::Str` downstream fails
 /// the symbol-only coercion and stores nothing at all.
@@ -3599,9 +3626,9 @@ pub(crate) struct MintedPipe {
     pub descriptor: Descriptor,
     /// The kind the pipe operator runs as, which decides whether it may bind a hardware channel.
     pub kind: PortKind,
-    /// The enum pipe's declared default as its latch [`Arg`]; `None` for a numeric pipe (whose
-    /// default lives in the port's own meta) and for an enum pipe that declares none.
-    pub enum_default: Option<Arg>,
+    /// An enum or `str` pipe's declared default as its latch [`Arg`]; `None` for a numeric pipe
+    /// (whose default lives in the port's own meta) and for a pipe that declares none.
+    pub seed: Option<Arg>,
 }
 
 /// Synthesize an input pipe's per-entry [`Descriptor`] from its declaration: one
@@ -3609,8 +3636,8 @@ pub(crate) struct MintedPipe {
 /// `Arg` type — the existing pass-2 wire check then enforces that type against every consumer,
 /// no new checker. A numeric pipe's declared `default`/`min`/`max`/`curve` become the port's own
 /// engine-enforced [`F32Meta`] (an unwired signal pipe materializes `default`; a **bare** signal
-/// pipe materializes silence); an enum pipe's default is resolved here and handed back in
-/// [`MintedPipe::enum_default`]. Validation is local and pointed: unknown type, numeric metadata
+/// pipe materializes silence); an enum or `str` pipe's default is resolved here and handed back in
+/// [`MintedPipe::seed`]. Validation is local and pointed: unknown type, numeric metadata
 /// on a message pipe, an incoherent range, a default the declared type cannot read, or a `channel`
 /// on anything but a signal pipe (hardware channels carry signals).
 pub(crate) fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<MintedPipe, LoadError> {
@@ -3726,9 +3753,9 @@ pub(crate) fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<MintedP
         Ok(())
     };
 
-    // Set by the enum arm to the default it resolved, so the value that passed validation is the
-    // one the caller seeds the latch with.
-    let mut enum_default = None;
+    // Set by the enum and `str` arms to the default they resolved, so the value that passed
+    // validation is the one the caller seeds the latch with.
+    let mut seed = None;
     let (input, output, kind) = match pipe.ty.as_str() {
         "f32_buffer" => {
             let declared = pipe.default.is_some()
@@ -3791,6 +3818,26 @@ pub(crate) fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<MintedP
                 PortKind::Value,
             )
         }
+        "str" => {
+            if pipe.min.is_some() || pipe.max.is_some() || pipe.curve.is_some() {
+                return Err(err(
+                    "`min`/`max`/`curve` apply to numeric pipes only, not \"str\"".to_string(),
+                ));
+            }
+            let port = Port::str(PIPE_INPUT_PORT);
+            match &pipe.default {
+                Some(PipeDefault::Symbol(s)) => {
+                    seed = port.coerce(&Arg::Str(s.as_str().into()));
+                }
+                Some(PipeDefault::Number(v)) => {
+                    return Err(err(format!(
+                        "default {v} is a number — a str pipe's default is a string"
+                    )));
+                }
+                None => {}
+            }
+            (port, Port::str("out"), PortKind::Value)
+        }
         other => {
             let (Some(im), Some(om)) = (
                 reuben_core::vocab::enum_meta_by_type(other, PIPE_INPUT_PORT),
@@ -3824,7 +3871,7 @@ pub(crate) fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<MintedP
                     else {
                         return Err(err(format!("default {s:?} names no {other} variant")));
                     };
-                    enum_default = Some(arg);
+                    seed = Some(arg);
                 }
                 Some(PipeDefault::Number(_)) => {
                     return Err(err(
@@ -3852,7 +3899,7 @@ pub(crate) fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<MintedP
             resources: Vec::new(),
         },
         kind,
-        enum_default,
+        seed,
     })
 }
 
@@ -6792,6 +6839,40 @@ mod tests {
     mod literal_form {
         use super::*;
 
+        /// The `str` row's witness. No built-in Operator declares a `str` port, so the table's
+        /// registry carries this one beside the built-ins: one `str` input and one `str` constant.
+        mod str_witness {
+            use reuben_core::descriptor::Descriptor;
+            use reuben_core::operator::{Io, Operator};
+
+            pub struct StrWitness;
+            reuben_core::operator_contract!(StrWitness {
+                type_name: "str_witness",
+                inputs: { text: str },
+                outputs: { },
+                constants: { label: str },
+            });
+            impl Operator for StrWitness {
+                fn descriptor() -> Descriptor {
+                    Self::contract()
+                }
+                fn process(&mut self, _io: &mut Io) {}
+                fn spawn(&self) -> Box<dyn Operator> {
+                    Box::new(StrWitness)
+                }
+            }
+        }
+
+        /// The built-ins plus [`str_witness`]; shadows the module-wide `reg` for this table.
+        fn reg() -> Registry {
+            let mut r = Registry::builtin();
+            r.register(
+                || Box::new(str_witness::StrWitness),
+                <str_witness::StrWitness as reuben_core::operator::Operator>::descriptor(),
+            );
+            r
+        }
+
         /// The row key — the kinds of port a literal can land on, one per way [`Port::coerce`]
         /// answers. Classified from a `&Port` **exhaustively over [`PortType`]**, so a new port
         /// type does not compile until someone decides what a literal on it owes an author.
@@ -6811,6 +6892,8 @@ mod tests {
             StructVocab,
             /// The type-agnostic pass-through (`osc_out.in`).
             PassThrough,
+            /// A held string (`str_witness.text`).
+            Str,
         }
 
         /// Classify one port into its row, or name the kind that has none. The `Err` arms are the
@@ -6838,7 +6921,7 @@ mod tests {
                 (PortType::Arg, _) => LiteralPort::PassThrough,
                 (PortType::F32, false) => return Err("an F32 port carrying no F32Meta"),
                 (PortType::I32 { meta: None }, _) => return Err("an I32 port carrying no I32Meta"),
-                (PortType::Str, _) => return Err("a Str port"),
+                (PortType::Str, _) => LiteralPort::Str,
             })
         }
 
@@ -6987,6 +7070,24 @@ mod tests {
                 defaults: &[("1", Owed::PipeRefused), ("\"Hp\"", Owed::PipeRefused)],
             },
             Row {
+                kind: LiteralPort::Str,
+                witness: ("str_witness", "text"),
+                pipes: &[r#"{"type":"str"}"#],
+                literals: &[
+                    ("1", Owed::WrongForm),
+                    ("1000000000", Owed::WrongForm),
+                    ("\"Hp\"", Owed::Accepted),
+                    ("\"nonesuch\"", Owed::Accepted),
+                    // The seed is `""` too, but a written value is still a recorded override.
+                    ("\"\"", Owed::Accepted),
+                    ("{\"from\":\"/nonesuch.out\"}", Owed::Deferred),
+                ],
+                defaults: &[
+                    ("\"0 3 <7 5> ~\"", Owed::Accepted),
+                    ("1", Owed::PipeRefused),
+                ],
+            },
+            Row {
                 kind: LiteralPort::PassThrough,
                 witness: ("osc_out", "in"),
                 // `arg` is not a declarable pipe type — the boundary axis cannot present this kind.
@@ -7004,17 +7105,28 @@ mod tests {
             literals: &'static [(&'static str, Owed)],
         }
 
-        const CONSTANTS: &[ConstRow] = &[ConstRow {
-            // The voicer's pool size: an `I32Meta`-bounded 1..=32.
-            kind: LiteralPort::I32Control,
-            witness: ("voicer", "voices"),
-            literals: &[
-                ("3", Owed::Accepted),
-                ("100", Owed::Accepted),
-                ("\"eight\"", Owed::WrongForm),
-                ("\"3\"", Owed::WrongForm),
-            ],
-        }];
+        const CONSTANTS: &[ConstRow] = &[
+            ConstRow {
+                // The voicer's pool size: an `I32Meta`-bounded 1..=32.
+                kind: LiteralPort::I32Control,
+                witness: ("voicer", "voices"),
+                literals: &[
+                    ("3", Owed::Accepted),
+                    ("100", Owed::Accepted),
+                    ("\"eight\"", Owed::WrongForm),
+                    ("\"3\"", Owed::WrongForm),
+                ],
+            },
+            ConstRow {
+                kind: LiteralPort::Str,
+                witness: ("str_witness", "label"),
+                literals: &[
+                    ("\"eight\"", Owed::Accepted),
+                    ("\"3\"", Owed::Accepted),
+                    ("3", Owed::WrongForm),
+                ],
+            },
+        ];
 
         /// A resolver handing back one generated child document — the fixed-`&'static str`
         /// `PatchResolver` cannot carry a per-case child.
@@ -7506,7 +7618,7 @@ mod tests {
                     r#"{"format_version":2,"instrument":"t",
                         "interface":{"inputs":{"p":{"type":"FilterMod"}}},"nodes":[]}"#,
                     "interface pipe \"p\": unknown pipe type \"FilterMod\" — one of \
-                     \"f32_buffer\", \"f32\", \"i32\", \"note\", \"harmony\", \"pitch\", \
+                     \"f32_buffer\", \"f32\", \"i32\", \"str\", \"note\", \"harmony\", \"pitch\", \
                      \"GateMode\", \"FilterMode\", \"Waveform\", \"GrainWindow\", \"M2sMode\", \
                      \"MapCurve\", \"SnapDir\", \"SnapTarget\"",
                 ),

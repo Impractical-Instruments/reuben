@@ -7,8 +7,8 @@ use std::borrow::Cow;
 
 use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
 
-/// A **literal** value slot: a number, or an enum symbol string. No wire-ref object — the verbs
-/// that write a literal refuse one by name.
+/// A **literal** value slot: a number, or a string (an enum symbol or a `str` port's text). No
+/// wire-ref object — the verbs that write a literal refuse one by name.
 pub struct Literal;
 
 impl JsonSchema for Literal {

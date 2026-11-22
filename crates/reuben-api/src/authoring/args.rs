@@ -171,7 +171,8 @@ pub struct AddInstrumentNode {
     /// The operator type (must be registered, e.g. `oscillator`).
     #[serde(rename = "type")]
     pub type_name: String,
-    /// Inputs by name: a literal (number or enum symbol) or a wire-ref `{"from": "/node.port"}`.
+    /// Inputs by name: a literal (number, enum symbol, or `str` text) or a wire-ref
+    /// `{"from": "/node.port"}`.
     #[serde(default)]
     #[schemars(with = "BTreeMap<String, crate::schema::NodeInput>")]
     pub inputs: BTreeMap<String, serde_json::Value>,
@@ -253,7 +254,8 @@ pub struct SetInstrumentInput {
     pub address: String,
     /// The input name.
     pub input: String,
-    /// The literal value: a number, or an enum symbol string. (Wiring is `wire_instrument_input`.)
+    /// The literal value: a number, an enum symbol, or a `str` input's text. (Wiring is
+    /// `wire_instrument_input`.)
     #[schemars(with = "crate::schema::Literal")]
     pub value: serde_json::Value,
     #[serde(default)]
@@ -352,15 +354,16 @@ pub struct AddInstrumentInterfaceInput {
     pub source: String,
     /// The pipe name (mints an address `/name` internal nodes consume from).
     pub name: String,
-    /// The declared `Arg` type: `f32_buffer`, `f32`, `i32`, `note`, `harmony`, `pitch`, or an enum
-    /// type name.
+    /// The declared `Arg` type: `f32_buffer`, `f32`, `i32`, `str`, `note`, `harmony`, `pitch`, or
+    /// an enum type name.
     #[serde(rename = "type")]
     pub type_name: String,
     /// Optional logical input channel (signal pipes only).
     #[serde(default)]
     pub channel: Option<usize>,
-    /// The pipe's value when nothing feeds it: a number, or an enum symbol string. Omit for a bare
-    /// signal pipe, which renders silence unfed. Later changed with `set_instrument_input`.
+    /// The pipe's value when nothing feeds it: a number, an enum symbol, or a `str` pipe's text.
+    /// Omit for a bare signal pipe, which renders silence unfed. Later changed with
+    /// `set_instrument_input`.
     #[serde(default)]
     #[schemars(with = "Option<crate::schema::Literal>")]
     pub value: Option<serde_json::Value>,

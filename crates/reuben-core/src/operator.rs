@@ -332,9 +332,9 @@ pub mod form {
     pub struct SignalF32;
 
     /// The held (ZOH latch) Value form over payload `T`: a `f32` control, a vocab enum, a held
-    /// `Harmony`. Reads as `T`, defaulted to the handle's declared default; writes as a
-    /// [`MsgWriter`].
-    pub struct Held<T>(PhantomData<T>);
+    /// `Harmony`, a `str`. Reads as `T` (as `&str` for `Held<str>`, borrowed from the latch),
+    /// defaulted to the handle's declared default; writes as a [`MsgWriter`].
+    pub struct Held<T: ?Sized>(PhantomData<T>);
 
     /// The sparse Event form over payload `T` (`Note`): unlatched, frame-stamped, many-per-frame.
     /// Reads as an [`EventStream`]; writes as an [`EventWriter`].
@@ -393,6 +393,19 @@ pub mod form {
         type Read<'a> = T;
         fn read<'a>(io: &Io<'a>, index: usize, default: T) -> T {
             io.latch_arg(index).and_then(T::from_arg).unwrap_or(default)
+        }
+    }
+
+    // A held string borrows from the latch rather than copying out, so the read is a pointer and a
+    // length — no refcount touch and no allocation. Not covered by the blanket impl above, which
+    // needs a `Sized + Copy` payload.
+    impl InForm for Held<str> {
+        type Default = &'static str;
+        type Read<'a> = &'a str;
+        fn read<'a>(io: &Io<'a>, index: usize, default: &'static str) -> &'a str {
+            io.latch_arg(index)
+                .and_then(<&str>::from_arg)
+                .unwrap_or(default)
         }
     }
 
@@ -701,6 +714,24 @@ mod typed_handles {
         // Unlatched (a hand-built Io; the engine always seeds) → the declared default.
         let bare = Io::new(48_000.0, 1, [None], core::iter::empty::<BlockMut<'_>>());
         assert_eq!(bare.read(SUSTAIN), 0.7);
+    }
+
+    /// A held `str` handle borrows the latched text — the same allocation, not a copy — and an
+    /// unlatched one reads its declared default.
+    #[test]
+    fn read_held_str_borrows_the_latch() {
+        const PAT: In<Held<str>> = In::new(0, "");
+        let latch = [Arg::Str("0 3 <7 5> ~".into())];
+        let io =
+            Io::new(48_000.0, 1, [None], core::iter::empty::<BlockMut<'_>>()).with_latched(&latch);
+        let read = io.read(PAT);
+        assert_eq!(read, "0 3 <7 5> ~");
+        let Arg::Str(held) = &latch[0] else {
+            unreachable!()
+        };
+        assert!(core::ptr::eq(read, &**held));
+        let bare = Io::new(48_000.0, 1, [None], core::iter::empty::<BlockMut<'_>>());
+        assert_eq!(bare.read(PAT), "");
     }
 
     /// A held enum handle defaults to the variant the contract carries (the derive's `DEFAULT`,

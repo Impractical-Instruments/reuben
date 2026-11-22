@@ -500,12 +500,13 @@ fn literal_input(value: Value) -> Result<InputValue, EditError> {
             "a wire-ref belongs on `wire_instrument_input`, not `set_instrument_input`".into(),
         )),
         _ => Err(EditError::Target(
-            "input value must be a number or an enum symbol string".into(),
+            "input value must be a number or a string (an enum symbol or a `str` input's text)"
+                .into(),
         )),
     }
 }
 
-/// Coerce a JSON value into a config constant (a number, or a forward-compatible enum symbol).
+/// Coerce a JSON value into a config constant (a number, or a string: an enum symbol or `str` text).
 fn config_value(value: Value) -> Result<ConfigValue, EditError> {
     match value {
         Value::Number(n) => n
@@ -514,7 +515,7 @@ fn config_value(value: Value) -> Result<ConfigValue, EditError> {
             .ok_or_else(|| EditError::Target("constant value is not a finite number".into())),
         Value::String(s) => Ok(ConfigValue::Symbol(s)),
         _ => Err(EditError::Target(
-            "constant value must be a number or a symbol string".into(),
+            "constant value must be a number or a string".into(),
         )),
     }
 }
@@ -529,10 +530,10 @@ fn any_input(name: &str, value: Value) -> Result<InputValue, EditError> {
     })
 }
 
-/// Coerce a JSON value into a pipe default (number or enum symbol).
+/// Coerce a JSON value into a pipe default (number, enum symbol, or `str` text).
 fn pipe_default(value: Value) -> Result<PipeDefault, EditError> {
     serde_json::from_value(value)
-        .map_err(|e| EditError::Target(format!("pipe default must be a number or a symbol: {e}")))
+        .map_err(|e| EditError::Target(format!("pipe default must be a number or a string: {e}")))
 }
 
 /// The literal forms a value verb reports, collapsed onto the one shape the projection reads them

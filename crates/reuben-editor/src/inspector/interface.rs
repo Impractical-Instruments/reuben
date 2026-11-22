@@ -23,7 +23,15 @@ use super::{Edit, Inspector};
 use crate::edit::Verb;
 
 /// The types an interface input pipe can be declared as, besides an enum type's name.
-const PIPE_TYPES: [&str; 6] = ["f32", "f32_buffer", "i32", "note", "harmony", "pitch"];
+const PIPE_TYPES: [&str; 7] = [
+    "f32",
+    "f32_buffer",
+    "i32",
+    "str",
+    "note",
+    "harmony",
+    "pitch",
+];
 
 /// One change to the interface.
 #[derive(Debug, Clone, PartialEq)]
@@ -197,16 +205,19 @@ impl Adding {
         if name.is_empty() {
             return Err("A new interface input needs a name.".to_string());
         }
+        let type_name = self.input_type.trim();
         let value = self.input_value.trim();
         let value = match value.parse::<f64>() {
             _ if value.is_empty() => None,
+            // A `str` pipe's value is its text, digits included.
+            _ if type_name == "str" => Some(Value::String(value.to_string())),
             Ok(number) => Some(serde_json::json!(number)),
             // An enum pipe's value is one of its type's symbols.
             Err(_) => Some(Value::String(value.to_string())),
         };
         Ok(PipeEdit::AddInput {
             name: name.trim_start_matches('/').to_string(),
-            type_name: self.input_type.trim().to_string(),
+            type_name: type_name.to_string(),
             value,
         })
     }
@@ -297,7 +308,9 @@ pub fn list(
         ui.label("Type");
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut adding.input_type).desired_width(90.0))
-                .on_hover_text("f32, f32_buffer, i32, note, harmony, pitch, or an enum type name");
+                .on_hover_text(
+                    "f32, f32_buffer, i32, str, note, harmony, pitch, or an enum type name",
+                );
             egui::ComboBox::from_id_salt("pipe types")
                 .selected_text("")
                 .width(20.0)
@@ -801,6 +814,13 @@ pub(super) mod tests {
         assert!(matches!(
             adding.input(),
             Ok(PipeEdit::AddInput { value: Some(v), .. }) if v == json!("Saw")
+        ));
+        // A `str` pipe keeps what was typed as text, even when it reads as a number.
+        adding.input_type = "str".into();
+        adding.input_value = "440".into();
+        assert!(matches!(
+            adding.input(),
+            Ok(PipeEdit::AddInput { value: Some(v), .. }) if v == json!("440")
         ));
     }
 
