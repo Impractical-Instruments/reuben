@@ -2,7 +2,7 @@
 
 Deterministic CI performance trend: callgrind **instruction counts (Ir)** for rendering **1 s of audio** (375 × 128-frame blocks @ 48 kHz), recorded on every direct push to `dev`. Instruction counts don't jitter — every visible move is a real code change (or a toolchain bump).
 
-**217 commits** · 2026-07-12 → 2026-11-21 · 18094 data points · last: `123b56c` (2026-11-21T20:40:03-05:00)
+**218 commits** · 2026-07-12 → 2026-11-22 · 18191 data points · last: `9bb271d` (2026-11-22T14:18:37-05:00)
 
 *Companion trend: the **main** series lives on the [`bench-history`](https://github.com/Impractical-Instruments/reuben/tree/bench-history) branch.*
 
@@ -48,7 +48,7 @@ Cost paid **once per Swap**, on the caller's thread — which in the browser is 
 | `deep_n8192` | 258.1M | ±0.0% | **-6.5%** | 2026-07-30 |
 | `nest_n2048` | 45.6M | ±0.0% | **-19.2%** | 2026-07-30 |
 | `nest_n4096` | 93.2M | ±0.0% | **-18.8%** | 2026-07-30 |
-| `nest_n8192` | 188.4M | ±0.0% | **-18.2%** | 2026-07-30 |
+| `nest_n8192` | 188.3M | ±0.0% | **-18.2%** | 2026-07-30 |
 | `wide_n2048` | 53.9M | ±0.0% | -2.1% | 2026-07-30 |
 | `wide_n4096` | 109.6M | ±0.0% | **-5.7%** | 2026-07-30 |
 | `wide_n8192` | 219.8M | ±0.0% | **-6.2%** | 2026-07-30 |
@@ -85,7 +85,7 @@ Cost paid **once per Swap**, on the caller's thread — which in the browser is 
 | `construct/deep_n8192` | 258.1M | ±0.0% | **-6.5%** | 2026-07-30 |
 | `construct/nest_n2048` | 45.6M | ±0.0% | **-19.2%** | 2026-07-30 |
 | `construct/nest_n4096` | 93.2M | ±0.0% | **-18.8%** | 2026-07-30 |
-| `construct/nest_n8192` | 188.4M | ±0.0% | **-18.2%** | 2026-07-30 |
+| `construct/nest_n8192` | 188.3M | ±0.0% | **-18.2%** | 2026-07-30 |
 | `construct/wide_n2048` | 53.9M | ±0.0% | -2.1% | 2026-07-30 |
 | `construct/wide_n4096` | 109.6M | ±0.0% | **-5.7%** | 2026-07-30 |
 | `construct/wide_n8192` | 219.8M | ±0.0% | **-6.2%** | 2026-07-30 |
@@ -208,10 +208,10 @@ The deterministic tier of the eval harness: each task's **reference solution** (
 | `nudge` | grounding tokens | 19,324 | ±0.0% | **+207.6%** | 2026-07-22 |
 | `nudge` | fixed grounding | 17,808 | ±0.0% | **+273.6%** | 2026-07-22 |
 | `nudge` | document chars | 2,098 | ±0.0% | ±0.0% | 2026-07-22 |
-| `repair` | grounding tokens | 22,894 | ±0.0% | **+374.8%** | 2026-07-22 |
+| `repair` | grounding tokens | 22,896 | ±0.0% | **+374.8%** | 2026-07-22 |
 | `repair` | fixed grounding | 22,543 | ±0.0% | **+372.9%** | 2026-07-22 |
 | `repair` | document chars | 0 | — | **-100.0%** | 2026-07-22 |
-| `repair_and_note` | grounding tokens | 22,969 | ±0.0% | **+7.2%** | 2026-11-19 |
+| `repair_and_note` | grounding tokens | 22,971 | ±0.0% | **+7.2%** | 2026-11-19 |
 | `repair_and_note` | fixed grounding | 22,543 | ±0.0% | **+6.6%** | 2026-11-19 |
 | `repair_and_note` | document chars | 0 | — | — | 2026-11-19 |
 | `tweak` | grounding tokens | 22,700 | ±0.0% | **+374.9%** | 2026-07-22 |
