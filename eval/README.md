@@ -14,6 +14,13 @@ until they exist:
 | **(b)** | **repair rounds** | `validate_instrument` calls that came back `ok: false` |
 | **(c)** | **document characters** | instrument-document payload the model had to emit, **echoes included** |
 
+(c) is trended by the live tier only. On the gate tier it is set by the harness — the reference
+solutions' arguments and `DOCUMENT_ARGUMENTS`, both under `eval/`, which the gate never swaps — plus
+one thing the surface decides: whether each verb a reference calls is on the roster, since an
+off-roster call is charged by value. So it moves only when a reference calls a verb one side lacks,
+which says whether a verb exists, not what the surface costs. It is zero on every task today; the
+gate warns when a reference emits a document.
+
 ## Two tiers over one door
 
 Both drive the real `reuben-mcp` sidecar over stdio, so the measured surface is the actual door —
@@ -171,7 +178,8 @@ A verb argument is not a document even when it is structured: `add_instrument_no
 had to compose and hold — not communication, and a node's inputs map is the thing the verbs exist to
 make cheap. The name-keyed roster half is what structurally keeps the value rule from reaching one.
 
-The practical consequence: a passing gate-tier run prices at **zero**, and a non-zero number means
+The practical consequence: a passing run that edits through the verbs prices at **zero**, and on the
+live tier a non-zero number means
 bytes were emitted somewhere — usually a document, sometimes long prose at an invented call. The
 200-character floor is a size heuristic, so it cannot tell the two apart, and it is not trying to:
 the error runs only toward *more* expensive, which is the direction a cost metric may never be fooled

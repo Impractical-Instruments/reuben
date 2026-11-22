@@ -62,8 +62,25 @@ seen=""
 echo "$* |$seen" >>"$PERF_GATE_TEST_LOG"
 [ -n "$PERF_GATE_TEST_SKIP_LOG" ] && echo "${REUBEN_MICRO_BENCH_SKIP-unset}" >>"$PERF_GATE_TEST_SKIP_LOG"
 [ -n "$PERF_GATE_TEST_SLEEP" ] && sleep "$PERF_GATE_TEST_SLEEP"
-exit 1
+rc="${PERF_GATE_TEST_RC:-1}"
+case "$*" in
+  *--no-run*)
+    rc="${PERF_GATE_TEST_RC_PROBE:-$rc}"
+    [ -n "$PERF_GATE_TEST_PROBE_SAYS" ] && echo "$PERF_GATE_TEST_PROBE_SAYS"
+    ;;
+  *--save-baseline*) rc="${PERF_GATE_TEST_RC_SAVE:-$rc}" ;;
+esac
+exit "$rc"
 """
+# Every knob the stub reads, cleared per test so one test's setting cannot leak into the next.
+_STUB_KNOBS = (
+    "PERF_GATE_TEST_SLEEP",
+    "PERF_GATE_TEST_SKIP_LOG",
+    "PERF_GATE_TEST_RC",
+    "PERF_GATE_TEST_RC_PROBE",
+    "PERF_GATE_TEST_RC_SAVE",
+    "PERF_GATE_TEST_PROBE_SAYS",
+)
 
 
 def _git(repo: pathlib.Path, *args: str) -> str:
@@ -107,8 +124,8 @@ class PerfGateWorkingTree(unittest.TestCase):
         self.env["PATH"] = f"{bin_dir}{os.pathsep}{self.env['PATH']}"
         self.env["PERF_GATE_TEST_REPO"] = str(self.repo)
         self.env["PERF_GATE_TEST_LOG"] = str(self.cargo_log)
-        self.env.pop("PERF_GATE_TEST_SLEEP", None)
-        self.env.pop("PERF_GATE_TEST_SKIP_LOG", None)
+        for knob in _STUB_KNOBS:
+            self.env.pop(knob, None)
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -274,6 +291,144 @@ class PerfGateWorkingTree(unittest.TestCase):
                 self.assertEqual(len(self._cargo_calls()), 1, "the gate ran on past the signal")
                 self._assert_exactly_head()
 
+    def test_baselines_are_all_saved_on_one_swap_then_all_compared_on_one(self) -> None:
+        """Each swap rebuilds the closure, so the gate swaps twice per run, not twice per layer."""
+        self.env["PERF_GATE_TEST_RC"] = "0"
+        proc = self._run_gate()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        calls = self._cargo_calls()
+        self.assertEqual(len(calls), 6, calls)
+        for call in calls[:3]:
+            self.assertIn("--save-baseline=base", call)
+            self.assertTrue(call.endswith("| retired added"), call)
+        for call in calls[3:]:
+            self.assertIn("--baseline=base", call)
+            self.assertTrue(call.endswith("| added"), call)
+        self.assertEqual(
+            [c.split("--bench ")[1].split()[0] for c in calls],
+            ["macro_iai", "micro_iai", "construct_iai"] * 2,
+        )
+        self._assert_exactly_head()
+
+    # -- how a failed baseline run is classified ----------------------------------------------------
+
+    def _compare_calls(self) -> list[str]:
+        return [c for c in self._cargo_calls() if "--baseline=base" in c]
+
+    def test_harness_that_postdates_the_baseline_is_a_non_blocking_skip(self) -> None:
+        self.env["PERF_GATE_TEST_RC_SAVE"] = "1"
+        self.env["PERF_GATE_TEST_RC_PROBE"] = "1"
+        proc = self._run_gate()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(proc.stdout.count("title=Perf layer skipped::"), 3)
+        self.assertIn("3/3 layer(s) skipped", proc.stdout)
+        self.assertEqual(self._compare_calls(), [])
+        self._assert_exactly_head()
+
+    def test_baseline_that_compiles_and_then_fails_at_runtime_fails_the_gate(self) -> None:
+        self.env["PERF_GATE_TEST_RC_SAVE"] = "1"
+        self.env["PERF_GATE_TEST_RC_PROBE"] = "0"
+        self.env["PERF_GATE_TEST_RC"] = "0"
+        proc = self._run_gate()
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertEqual(proc.stdout.count("title=Baseline bench broken::"), 3)
+        self.assertNotIn("Perf layer skipped", proc.stdout)
+        self.assertIn("could not run a comparison. Not a pass.", proc.stdout)
+        self.assertEqual(self._compare_calls(), [])
+        self._assert_exactly_head()
+
+    def test_unsatisfied_required_features_fails_the_gate_rather_than_skipping(self) -> None:
+        self.env["PERF_GATE_TEST_RC_SAVE"] = "1"
+        self.env["PERF_GATE_TEST_RC_PROBE"] = "1"
+        self.env["PERF_GATE_TEST_PROBE_SAYS"] = (
+            "error: target `micro_iai` in package `reuben-document` requires the features: `bench`"
+        )
+        proc = self._run_gate()
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertEqual(proc.stdout.count("title=Perf layer never ran::"), 3)
+        self.assertNotIn("Perf layer skipped", proc.stdout)
+        self._assert_exactly_head()
+
+    def test_a_failed_compare_run_fails_the_gate(self) -> None:
+        self.env["PERF_GATE_TEST_RC_SAVE"] = "0"
+        self.env["PERF_GATE_TEST_RC"] = "1"
+        proc = self._run_gate()
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertEqual(len(self._compare_calls()), 3)
+        self.assertIn("regression over 10%", proc.stdout)
+        self._assert_exactly_head()
+
+    def _commit_outside_the_swap_set(self) -> str:
+        """Commit a change no swapped path sees; return the commit it sits on."""
+        under = _git(self.repo, "rev-parse", "HEAD").strip()
+        self._write({"README.md": "docs only\n", "crates/reuben-document/benches/micro_iai.rs": "//\n"})
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-qm", "docs")
+        self.head_tree = self._tracked_state()
+        return under
+
+    def test_identical_engine_benches_head_once_and_compares_nothing(self) -> None:
+        self.env["PERF_GATE_TEST_RC"] = "0"
+        proc = self._run_gate(self._commit_outside_the_swap_set())
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        calls = self._cargo_calls()
+        self.assertEqual(len(calls), 3, calls)
+        for call in calls:
+            self.assertNotIn("baseline", call)
+            self.assertTrue(call.endswith("| added"), call)
+        self.assertIn("identical to the baseline", proc.stdout)
+        self._assert_exactly_head()
+
+    def test_identical_engine_still_fails_when_head_does_not_run(self) -> None:
+        proc = self._run_gate(self._commit_outside_the_swap_set())
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("did not run at HEAD", proc.stdout)
+        self.assertIn("nothing was compared", proc.stdout)
+        self.assertNotIn("regression over", proc.stdout)
+        self._assert_exactly_head()
+
+    def test_every_swapped_path_breaks_identity(self) -> None:
+        """A change under any one swapped pathspec must send the gate down the A/B path."""
+        for rel in (
+            "crates/reuben-document/src/lib.rs",
+            "crates/reuben-core/src/lib.rs",
+            "crates/reuben-macros/src/lib.rs",
+            "crates/reuben-contract/src/lib.rs",
+            "crates/reuben-document/benches/fixtures/pad.json",
+            "instruments/pad.json",
+            ".cargo/config.toml",
+        ):
+            with self.subTest(path=rel):
+                under = _git(self.repo, "rev-parse", "HEAD").strip()
+                self._write({rel: self._read(rel) + "// moved\n"})
+                _git(self.repo, "add", "-A")
+                _git(self.repo, "commit", "-qm", f"move {rel}")
+                self.head_tree = self._tracked_state()
+                if self.cargo_log.exists():
+                    self.cargo_log.unlink()
+                self.env["PERF_GATE_TEST_RC"] = "0"
+                proc = self._run_gate(under)
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                self.assertNotIn("identical to the baseline", proc.stdout)
+                self.assertIn("--save-baseline=base", self._cargo_calls()[0])
+
+    def test_baseline_without_a_closure_crate_skips_every_layer_without_running(self) -> None:
+        """A PR that adds a crate to the closure has a baseline with no such `src/`: no snapshot can be
+        built, so every layer is a reported, non-blocking skip — never a compare against no `base`."""
+        _git(self.repo, "rm", "-rq", "crates/reuben-contract")
+        _git(self.repo, "commit", "-qm", "drop contract")
+        no_contract = _git(self.repo, "rev-parse", "HEAD").strip()
+        _git(self.repo, "checkout", "-q", "HEAD~1", "--", "crates/reuben-contract")
+        _git(self.repo, "commit", "-qm", "restore contract")
+        self.head_tree = self._tracked_state()
+        self.env["PERF_GATE_TEST_RC"] = "0"
+        proc = self._run_gate(no_contract)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(proc.stdout.count("baseline has no crates/reuben-contract/src"), 3)
+        self.assertIn("3/3 layer(s) skipped", proc.stdout)
+        self.assertEqual(self._cargo_calls(), [])
+        self._assert_exactly_head()
+
     def test_baseline_missing_a_required_path_fails_without_writing(self) -> None:
         _git(self.repo, "rm", "-rq", "instruments")
         _git(self.repo, "commit", "-qm", "drop instruments")
@@ -341,8 +496,9 @@ class PerfGateNewOperatorSkip(unittest.TestCase):
         self.env["PATH"] = f"{bin_dir}{os.pathsep}{self.env['PATH']}"
         self.env["PERF_GATE_TEST_REPO"] = str(self.repo)
         self.env["PERF_GATE_TEST_LOG"] = str(root / "cargo.log")
+        for knob in _STUB_KNOBS:
+            self.env.pop(knob, None)
         self.env["PERF_GATE_TEST_SKIP_LOG"] = str(self.skip_log)
-        self.env.pop("PERF_GATE_TEST_SLEEP", None)
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -360,7 +516,9 @@ class PerfGateNewOperatorSkip(unittest.TestCase):
         """Commit `base`, then `head` over it, and run the gate from HEAD against `base`."""
         tree = {k: v for k, v in _BASE_TREE.items() if k != _BENCH_SUPPORT}
         base_sha = self._commit({**tree, **base}, "base")
-        self._commit(head, "head")
+        # HEAD always moves the engine: with the swap set identical to the baseline the gate runs no
+        # baseline at all, and these cases are about the skip list that baseline run is handed.
+        self._commit({"crates/reuben-core/src/lib.rs": "// core head\n", **head}, "head")
         return subprocess.run(
             ["bash", str(SCRIPT), base_sha],
             cwd=self.repo,
@@ -420,6 +578,26 @@ class PerfGateNewOperatorSkip(unittest.TestCase):
         self.assertEqual(skip, _legacy_skip(head, base))
         self.assertEqual(skip, "add_f32_value,zigzag")
 
+    def test_identical_engine_benches_every_kind(self) -> None:
+        """No baseline registry runs, so nothing is missing from it — even a kind the baseline's
+        census lacks is benched."""
+        tree = {k: v for k, v in _BASE_TREE.items() if k != _BENCH_SUPPORT}
+        base_sha = self._commit(
+            {**tree, _KINDS_FILE: _kinds_file("gain"), _BENCH_SUPPORT: _workloads("gain")}, "base"
+        )
+        self._commit({_KINDS_FILE: _kinds_file("delay", "gain")}, "head")
+        self.env["PERF_GATE_TEST_RC"] = "0"
+        proc = subprocess.run(
+            ["bash", str(SCRIPT), base_sha],
+            cwd=self.repo,
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(set(self.skip_log.read_text().splitlines()), {""})
+
     # -- the head census guard ----------------------------------------------------------------------
 
     def _assert_census_refused(self, head: dict[str, str]) -> None:
@@ -434,6 +612,93 @@ class PerfGateNewOperatorSkip(unittest.TestCase):
 
     def test_head_kinds_file_with_no_kinds_fails_before_any_bench(self) -> None:
         self._assert_census_refused({_KINDS_FILE: "# comments only\n"})
+
+_REPO = SCRIPT.parents[2]
+
+
+def _bench_closure() -> set[str]:
+    """Every workspace crate dir in the benched build: reuben-document, its own normal, build and dev
+    path dependencies, and their normal and build ones, transitively — cargo builds dev-dependencies
+    only for the package it benches. Read from the manifests, so a crate that joins the closure joins
+    this."""
+    import tomllib
+
+    root = tomllib.loads((_REPO / "Cargo.toml").read_text())
+    shared = root.get("workspace", {}).get("dependencies", {})
+
+    def path_deps(crate: pathlib.Path, manifest: dict, kinds: tuple[str, ...]) -> list[pathlib.Path]:
+        """Each path dependency's dir. A `workspace = true` entry's path is the root manifest's,
+        relative to the root; any other is relative to the crate."""
+        tables = [manifest, *manifest.get("target", {}).values()]
+        out = []
+        for table in tables:
+            for kind in kinds:
+                for name, spec in table.get(kind, {}).items():
+                    base = crate
+                    if isinstance(spec, dict) and spec.get("workspace"):
+                        spec, base = shared.get(name, {}), _REPO
+                    if isinstance(spec, dict) and "path" in spec:
+                        out.append(base / spec["path"])
+        return out
+
+    seen: set[str] = set()
+    bench_pkg = _REPO / "crates/reuben-document"
+    todo = path_deps(
+        bench_pkg,
+        tomllib.loads((bench_pkg / "Cargo.toml").read_text()),
+        ("dependencies", "dev-dependencies", "build-dependencies"),
+    ) + [bench_pkg]
+    while todo:
+        crate = todo.pop().resolve()
+        rel = crate.relative_to(_REPO).as_posix()
+        if rel in seen:
+            continue
+        seen.add(rel)
+        todo += path_deps(
+            crate,
+            tomllib.loads((crate / "Cargo.toml").read_text()),
+            ("dependencies", "build-dependencies"),
+        )
+    return seen
+
+
+class BenchClosureIsCovered(unittest.TestCase):
+    """The `bench` path filter and the gate's swap set are hand-written copies of the benched build
+    closure. A crate that joins the closure and is missed in either is a gate that cannot see it: the
+    filter skips a PR that touches only that crate, and an unswapped crate is HEAD's on both sides."""
+
+    def test_the_closure_reaches_the_engine(self) -> None:
+        self.assertLessEqual(
+            {"crates/reuben-document", "crates/reuben-core", "crates/reuben-macros",
+             "crates/reuben-contract"},
+            _bench_closure(),
+        )
+
+    def test_every_closure_crate_is_in_the_bench_path_filter(self) -> None:
+        ci = (_REPO / ".github/workflows/ci.yml").read_text()
+        start = ci.index("\n            bench:\n")
+        block = []
+        for line in ci[start + 1 :].splitlines()[1:]:
+            if not line.startswith("              - "):
+                break
+            block.append(line.strip()[2:].strip("'"))
+        for crate in sorted(_bench_closure()):
+            with self.subTest(crate=crate):
+                self.assertIn(f"{crate}/**", block)
+
+    def test_every_closure_crate_is_swapped(self) -> None:
+        src = SCRIPT.read_text()
+        block = src[src.index("SRC=(") : src.index("\n)\n", src.index("SRC=("))]
+        swapped = {
+            line.strip().strip('"').replace("${PKG}", "reuben-document").replace(
+                "${ENGINE_PKG}", "reuben-core"
+            )
+            for line in block.splitlines()[1:]
+        }
+        for crate in sorted(_bench_closure()):
+            with self.subTest(crate=crate):
+                self.assertIn(f"{crate}/src", swapped)
+
 
 # Captured gungraun 0.19 compare-run output, ANSI escapes and all, the way CI's colored log holds it.
 _E = "\x1b"
