@@ -587,10 +587,12 @@ pub(crate) fn held_arg(p: &Port, arg: &Arg) -> Option<Arg> {
             .as_f32()
             .map(|v| Arg::F32(p.meta.as_ref().map(|m| m.clamp(v)).unwrap_or(v))),
         // A held integer control: a runtime message quantizes exactly as an author
-        // literal does through [`Port::coerce`] — round to the nearest integer, then clamp to the
-        // declared range. So an `i32` pipe driven `/steps/in 12.7` latches `13`, not `12.7`; the
-        // "int control" promise holds for live OSC input, not only authored defaults.
-        // An `Arg::I32` clamps directly: through f32 it would lose every integer past 2^24.
+        // literal does through [`Port::coerce`] — an `Arg::I32` clamps directly (through f32 it
+        // would lose every integer past 2^24); any other number rounds to the nearest integer,
+        // then clamps to the declared range. So an `i32` pipe driven `/steps/in 12.7` latches `13`,
+        // not `12.7`; the "int control" promise holds for live OSC input, not only authored
+        // defaults. An authored JSON literal reaches `coerce` already narrowed to f32, so one past
+        // 2^24 has lost precision before either path sees it.
         PortType::I32 { meta } => {
             let i = match arg {
                 Arg::I32(i) => *i,
@@ -1119,6 +1121,35 @@ mod tests {
             held_arg(&narrow, &Arg::I32(i32::MAX)),
             Some(Arg::I32(16_777_216)),
             "an int past the range still clamps"
+        );
+    }
+
+    /// [`held_arg`] and [`Port::coerce`] normalize an `i32` port's value identically, integers past
+    /// f32 precision included.
+    #[test]
+    fn held_arg_and_coerce_agree_on_an_int_port() {
+        use crate::descriptor::{I32Meta, Port};
+        let port = Port::i32(
+            "beat",
+            I32Meta {
+                min: i32::MIN,
+                max: i32::MAX,
+                default: 0,
+            },
+        );
+        for arg in [
+            Arg::I32(16_777_217),
+            Arg::I32(i32::MAX),
+            Arg::I32(i32::MIN + 1),
+            Arg::I32(-3),
+            Arg::F32(12.7),
+            Arg::F32(-0.4),
+        ] {
+            assert_eq!(held_arg(&port, &arg), port.coerce(&arg), "{arg:?}");
+        }
+        assert_eq!(
+            port.coerce(&Arg::I32(16_777_217)),
+            Some(Arg::I32(16_777_217))
         );
     }
 

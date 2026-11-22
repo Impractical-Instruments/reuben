@@ -596,6 +596,133 @@ fn a_beat_consumer_added_mid_set_reads_the_running_beat_in_its_first_block() {
     );
 }
 
+/// A running `/clk` with an audio path for the master tap. With `consumer`, it adds a held `f32`
+/// consumer of `/clk.gate` (`/g`, `gate + 0`) and an `osc_out` sink `/gfb` that reports what `/g`
+/// read every block. With `extra`, it adds an unwired `/osc2`, an edit that leaves the rest alone.
+fn gate_doc(consumer: bool, extra: bool) -> String {
+    let mut nodes = String::new();
+    if consumer {
+        nodes.push_str(
+            r#",
+           { "type": "add_f32_value", "address": "/g",
+             "inputs": { "a": { "from": "/clk.gate" } } },
+           { "type": "osc_out", "address": "/gfb",
+             "inputs": { "in": { "from": "/g.out" } } }"#,
+        );
+    }
+    if extra {
+        nodes.push_str(r#", { "type": "oscillator", "address": "/osc2" }"#);
+    }
+    format!(
+        r#"{{ "format_version": 3, "instrument": "clk",
+             "interface": {{ "outputs": {{ "out": {{ "from": "/out.audio" }} }} }},
+             "nodes": [
+               {{ "type": "clock", "address": "/clk", "inputs": {{ "tempo": 120.0 }} }},
+               {{ "type": "oscillator", "address": "/osc" }},
+               {{ "type": "output", "address": "/out",
+                  "inputs": {{ "audio": {{ "from": "/osc.audio" }} }} }}{nodes} ] }}"#
+    )
+}
+
+/// 120 BPM at 48 kHz: 24000 frames a beat, `gate` high for the first 12000. 956 blocks (122368
+/// frames) is 2368 frames into beat 5, so an install a ramp's worth of blocks later is still in the
+/// high half.
+const GATE_WARM_BLOCKS: usize = 956;
+
+/// Whether global frame `f` falls in the high half of a beat at 120 BPM.
+fn gate_high_at(f: usize) -> bool {
+    f % 24_000 < 12_000
+}
+
+#[test]
+fn a_gate_consumer_added_mid_set_reads_the_high_gate_in_its_first_block() {
+    // A Swap seeds a new node's held latch from its own default (0.0). The Clock re-emits `gate`'s
+    // level at frame 0 of every block, so the consumer reads 1.0 during the high half at once.
+    let (mut coord, mut slot) = setup(&gate_doc(false, false));
+    for _ in 0..GATE_WARM_BLOCKS {
+        render(&mut slot, BLOCK);
+    }
+
+    let report = coord.swap_document(&gate_doc(true, false));
+    assert!(report.report.ok, "swap should install: {:?}", report.report);
+
+    let mut first = None;
+    for block in 0..32 {
+        render(&mut slot, BLOCK);
+        let fb: Vec<_> = slot
+            .drain_outbound()
+            .filter(|m| m.address == "/gfb")
+            .collect();
+        if let Some(m) = fb.first() {
+            first = Some((block, m.frame, m.arg.clone()));
+            break;
+        }
+    }
+    let (block, frame, arg) = first.expect("the consumer reported within 32 blocks");
+    let start = (GATE_WARM_BLOCKS + block) * BLOCK;
+    assert!(
+        gate_high_at(start) && gate_high_at(start + BLOCK - 1),
+        "the consumer's first block lies in a high half (frame {start})"
+    );
+    assert_eq!(frame, 0, "read at the consumer's first frame");
+    assert_eq!(
+        arg,
+        Arg::F32(1.0),
+        "the new consumer reads the high gate, not its default"
+    );
+}
+
+#[test]
+fn a_surviving_gate_consumer_keeps_reading_the_high_gate_across_a_swap() {
+    // A Swap resets a surviving consumer's held latches to their defaults (0.0). The frame-0
+    // re-emit restores the high gate in the consumer's first post-Swap block.
+    let (mut coord, mut slot) = setup(&gate_doc(true, false));
+    for _ in 0..GATE_WARM_BLOCKS {
+        render(&mut slot, BLOCK);
+    }
+    slot.drain_outbound().for_each(drop);
+
+    let report = coord.swap_document(&gate_doc(true, true));
+    assert!(report.report.ok, "swap should install: {:?}", report.report);
+    let diff = report.diff.as_ref().unwrap();
+    assert!(
+        diff.state_reset.is_empty(),
+        "every node survives: {:?}",
+        diff.state_reset
+    );
+    assert_eq!(diff.added, vec!["/osc2".to_string()]);
+
+    // Through the ramp and the install, and some blocks beyond, still inside the high half.
+    let mut ramped = false;
+    let mut reports = 0;
+    for block in 0..64 {
+        render(&mut slot, BLOCK);
+        ramped |= slot.is_ramping();
+        let start = (GATE_WARM_BLOCKS + block) * BLOCK;
+        assert!(
+            gate_high_at(start + BLOCK - 1),
+            "block {block} is in the high half"
+        );
+        for m in slot.drain_outbound().filter(|m| m.address == "/gfb") {
+            assert_eq!(
+                m.arg,
+                Arg::F32(1.0),
+                "block {block}: the surviving consumer read {:?}",
+                m.arg
+            );
+            reports += 1;
+        }
+    }
+    assert!(
+        ramped && !slot.is_ramping(),
+        "the swap installed within the window"
+    );
+    assert!(
+        reports >= 64,
+        "the consumer reported every block: {reports}"
+    );
+}
+
 // ---------------------------------------------------------------------------------------------
 // (b) The callback-side install step allocates and frees nothing (RT-safety).
 // ---------------------------------------------------------------------------------------------

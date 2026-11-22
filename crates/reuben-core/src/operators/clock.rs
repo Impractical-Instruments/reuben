@@ -14,10 +14,15 @@
 //!   narrowed to f32 with a ceiling one ulp below `1.0`: a phase just under 1 would otherwise round
 //!   up to `1.0f32` on the frame before the wrap, where `beat + phase` would equal the next beat's
 //!   start one frame early.
-//! - output 1: `gate` (`Buffer`) — 1.0 for the first half of each **1/`division` sub-beat**, else
+//! - output 1: `gate` (`f32`, held Value) — 1.0 for the first half of each **1/`division` sub-beat**, else
 //!   0.0; its rising edge is a sample-accurate trigger. At the default `division` 1 this is the
 //!   original once-per-beat gate, high for the first half of the beat. At `division` N the gate
-//!   pulses N times per beat — a 16th-note grid is `division` 4.
+//!   pulses N times per beat — a 16th-note grid is `division` 4. Emitted at each edge, and its
+//!   current level re-emitted at the first frame of every `process` call for the same Swap reason
+//!   as `beat` (output 2). The gate consumers (`envelope`, and `euclid`/`sequencer` through
+//!   `EdgeDetector`) find edges by comparing the held level against their own flag kept across
+//!   slices, so re-emitting an unchanged level adds no trigger. A sink that forwards every message,
+//!   such as `osc_out`, does see one per block.
 //! - input 1: `tempo` (BPM).
 //! - input 2: `division` (`i32`) — gate subdivisions per beat (1 = once per beat, default; 4 =
 //!   16ths). Its `1` floor lives in the port contract (`I32Meta` min), so the gate can never
@@ -62,9 +67,8 @@ pub struct Clock {
     /// Held in f64 so the beat grid doesn't drift off the sample timeline over a long
     /// session (f32 accumulation slips audibly within seconds).
     phase: f64,
-    /// Last `gate` level emitted: `gate` is a sparse held Value (`MsgWriter`), so it
-    /// emits one change per rising/falling edge instead of filling a dense buffer. Persists across
-    /// blocks so the first frame of a block only re-emits if the level actually changed.
+    /// The `gate` level at the end of the previous call. Edges within a call are found against it;
+    /// frame 0 emits the current level whether or not it changed.
     gate_high: bool,
     /// This (sub)block's `sync` frames, cleared per call and kept so a burst's capacity survives
     /// into the next block.
@@ -152,10 +156,8 @@ impl Operator for Clock {
             end = phase;
         }
         {
-            // `gate` is a sparse held Value: replay the same accumulator, but emit a
-            // `MsgWriter` change only at each rising/falling edge instead of writing every sample.
-            // The held level carries across blocks (`self.gate_high`), so frame 0 only re-emits on a
-            // genuine change. A downstream Value/materialize bridge ZOH-reconstructs the dense gate.
+            // `gate`: replay the same accumulator, emitting at frame 0 and at each edge. A
+            // downstream Value/materialize bridge ZOH-reconstructs the dense gate.
             let mut out = io.write(OUT_GATE);
             let mut phase = start;
             let mut ri = 0;
@@ -169,7 +171,7 @@ impl Operator for Clock {
                 // half. division 1 reduces to `phase < 0.5` exactly (bit-identical default).
                 let sub = Float::fract(phase * division);
                 let now_high = sub < 0.5;
-                if now_high != high {
+                if i == 0 || now_high != high {
                     out.set(i, if now_high { 1.0 } else { 0.0 });
                     high = now_high;
                 }
