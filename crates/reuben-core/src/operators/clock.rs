@@ -20,8 +20,11 @@
 //!   pulses N times per beat — a 16th-note grid is `division` 4. Emitted only on change (at each
 //!   edge), and never announced: a consumer added in a Swap starts with its edge flag low, so an
 //!   announced high level would be a rising edge at the Swap frame, off the beat grid. Known
-//!   limitation: after a Swap, a consumer's held `gate` input (a new one's, and a surviving one's,
-//!   whose latch the Swap resets) reads its default 0.0 until the next edge.
+//!   limitation, which matters only when a Swap lands while `gate` is high: the Swap resets every
+//!   consumer's held `gate` input to its default 0.0, which holds until the next edge. A new
+//!   consumer simply waits for the next rising edge. A surviving edge consumer sees a falling edge
+//!   at the Swap: a surviving `envelope` releases early, and a `euclid` or `sequencer` sends its
+//!   gate-off early.
 //! - input 1: `tempo` (BPM).
 //! - input 2: `division` (`i32`) — gate subdivisions per beat (1 = once per beat, default; 4 =
 //!   16ths). Its `1` floor lives in the port contract (`I32Meta` min), so the gate can never
@@ -42,7 +45,9 @@
 //! `on_transplant` (a surviving Clock is transplanted into the new Plan). The Clock renders before
 //! its consumers, so each reads the right beat in its first block after the Swap, and nothing
 //! repeats in steady state. A beat count is a position, not a trigger, so announcing it is safe
-//! where announcing `gate` is not.
+//! where announcing `gate` is not. Every internal consumer receives the announcement. An external
+//! OSC listener on an `osc_out` can miss it: when one host callback spans the end of the Swap ramp
+//! and the steady segment after it, `RenderSlot` drops the up-ramp segment's outbound messages.
 //!
 //! `tempo`/`division` are Value inputs: read held, so a change block-slices and takes effect at the
 //! exact sample of the change — and each can be *wired* and modulated (`division` by an `i32`
