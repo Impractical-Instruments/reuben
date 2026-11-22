@@ -395,14 +395,14 @@ pub(crate) mod test_support {
 
     use reuben_api::authoring::{new_instrument, DocumentHistory, NewInstrument, Resources};
     use reuben_api::engine::{
-        install_initial, Channel, Event, InProcess, Request, StructureState, Transport,
+        install_initial, Channel, ChannelState, Event, InProcess, Request, Transport,
     };
     use reuben_api::render::AudioConfig;
     use reuben_api::staged::Staged;
     use reuben_api::FsResolver;
     use reuben_native::control::ring_pair;
     use reuben_native::diagnostics::Diagnostics;
-    use reuben_native::structure::NativeHost;
+    use reuben_native::engine_channel::NativeHost;
     use reuben_native::test_support::FakeCallback;
     use reuben_native::tree_watch::{self, TreeWatch};
 
@@ -584,7 +584,7 @@ pub(crate) mod test_support {
         pub lib: PathBuf,
         pub top: PathBuf,
         pub session: Session,
-        state: StructureState,
+        state: ChannelState,
         calls: Calls,
         follow: Follow,
         _watch: TreeWatch,
@@ -656,7 +656,7 @@ pub(crate) mod test_support {
                     .expect("install the fixture");
             let (control, control_rx) = ring_pair(Diagnostics::new());
             let host = NativeHost::new(Diagnostics::new(), control);
-            let state = StructureState::new(
+            let state = ChannelState::new(
                 coordinator,
                 Arc::new(host),
                 Arc::new(DocumentHistory::with_capacity(staged, states)),
@@ -776,7 +776,7 @@ pub(crate) mod test_support {
     }
 
     fn channel_of(
-        state: &StructureState,
+        state: &ChannelState,
         calls: &Calls,
     ) -> impl Fn() -> Option<Channel> + Send + Clone + 'static {
         let engine = InProcess::new(state.clone());
@@ -1326,7 +1326,7 @@ mod tests {
     /// An engine serving `top` over TCP on `addr`, as `reuben play` does.
     fn served(top: &Path, addr: &str) -> RunningEngine {
         start_headless(EngineConfig {
-            structure: Some(addr.to_string()),
+            engine_addr: Some(addr.to_string()),
             ..crate::engine::test_support::config(top.to_path_buf())
         })
         .expect("the engine starts")
@@ -1348,7 +1348,7 @@ mod tests {
             let lib = scratch.library();
             let top = lib.join("default.json");
             let played = served(&top, "127.0.0.1:0");
-            let addr = played.structure_addr().expect("bound").to_string();
+            let addr = played.engine_addr().expect("bound").to_string();
             let channel = dialed(addr.clone());
             let follow = Follow::start(channel.clone(), || {});
             let mut session = Session::open(&top.display().to_string(), &channel);
@@ -1379,7 +1379,7 @@ mod tests {
             let lib = scratch.library();
             let top = lib.join("default.json");
             let played = served(&top, "127.0.0.1:0");
-            let addr = played.structure_addr().expect("bound").to_string();
+            let addr = played.engine_addr().expect("bound").to_string();
             let channel = dialed(addr);
             let source = top.display().to_string();
             let mut session = Session::open(&source, &channel);
@@ -1423,12 +1423,12 @@ mod tests {
             }
             let played = start_headless(EngineConfig {
                 osc_in: None,
-                structure: Some("127.0.0.1:0".to_string()),
+                engine_addr: Some("127.0.0.1:0".to_string()),
                 instrument_root: voices.parent().map(Path::to_path_buf),
                 ..EngineConfig::new(reuben_native::engine::Instrument::Silent)
             })
             .expect("the engine starts");
-            let addr = played.structure_addr().expect("bound").to_string();
+            let addr = played.engine_addr().expect("bound").to_string();
 
             let mut engine = crate::engine::Engine::attach(addr, None, || {});
             let channel = || engine.channel();

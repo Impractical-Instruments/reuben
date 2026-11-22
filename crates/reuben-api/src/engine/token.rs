@@ -1,4 +1,4 @@
-//! Who may use the structure channel: a loopback peer always, any other peer only with the
+//! Who may use the engine channel: a loopback peer always, any other peer only with the
 //! server's token.
 //!
 //! A connection may open with one credential line, `{"token":"…"}`, before its first request. The
@@ -15,18 +15,18 @@ use serde::{Deserialize, Serialize};
 
 use super::wire::Response;
 
-/// The environment variable a server and every client read the structure channel's token from
+/// The environment variable a server and every client read the engine channel's token from
 /// when no `--token` names one.
-pub const STRUCTURE_TOKEN_ENV: &str = "REUBEN_STRUCTURE_TOKEN";
+pub const ENGINE_TOKEN_ENV: &str = "REUBEN_ENGINE_TOKEN";
 
 /// The refusal a non-loopback peer gets when its first line carries no token.
 pub const TOKEN_REQUIRED: &str = "this engine takes connections from other machines only with \
-                                  its token: pass --token or set REUBEN_STRUCTURE_TOKEN";
+                                  its token: pass --token or set REUBEN_ENGINE_TOKEN";
 
 /// The refusal a peer gets for a token that is not the server's.
 pub const REFUSED_TOKEN: &str = "the engine refused this token";
 
-/// The structure channel's shared secret. Never printed: its `Debug` redacts it, and it is
+/// The engine channel's shared secret. Never printed: its `Debug` redacts it, and it is
 /// compared only through [`matches`](Self::matches).
 #[derive(Clone)]
 pub struct Token(String);
@@ -72,7 +72,7 @@ pub struct EmptyToken;
 
 impl fmt::Display for EmptyToken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("a structure channel token must not be empty")
+        f.write_str("a engine channel token must not be empty")
     }
 }
 

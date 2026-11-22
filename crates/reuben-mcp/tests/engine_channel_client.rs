@@ -1,4 +1,4 @@
-//! Integration test for this door's structure-channel transport: stand up a minimal loopback NDJSON
+//! Integration test for this door's engine-channel transport: stand up a minimal loopback NDJSON
 //! stub speaking the window's wire envelope, and drive the channel's four verbs over the real TCP
 //! boundary — the same socket a live `reuben play`
 //! server presents. `ping` returns Pong; `open` round-trips its report and `get_document` what
@@ -417,7 +417,7 @@ fn engine_link_pings_reachable_only_when_the_engine_answers() {
     let link = EngineLink::new(live.addr.to_string(), None);
     assert!(
         within(Duration::from_secs(5), "link live", move || link
-            .structure()
+            .channel()
             .ping()
             .is_ok()),
         "a live ping-answering engine must read as reachable"
@@ -425,7 +425,7 @@ fn engine_link_pings_reachable_only_when_the_engine_answers() {
 
     let dead = EngineLink::new(dead_addr(), None);
     let err = within(Duration::from_secs(5), "link dead", move || {
-        dead.structure().ping()
+        dead.channel().ping()
     });
     assert!(
         err.is_err_and(|e| e.is_unreachable()),

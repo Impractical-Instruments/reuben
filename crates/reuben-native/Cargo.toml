@@ -8,7 +8,7 @@ repository.workspace = true
 description = "Removable native layer for reuben: live audio (cpal) + OSC-in (UDP)."
 
 [dependencies]
-# The window, and the only way this crate reaches the engine: the engine verbs the structure channel
+# The window, and the only way this crate reaches the engine: the engine verbs the engine channel
 # serves, the client half of that channel the `describe`/`validate`/`new-instrument` subcommands
 # dial (`tcp`), the render pair `play` drives per block, and the reference filesystem resolver
 # (`FsResolver`, which brings `hound` with it) filling the server's resource seam. Both halves, so
@@ -33,7 +33,7 @@ libc.workspace = true
 
 [dev-dependencies]
 approx.workspace = true
-# The client transport, to dial the structure server the tests bind.
+# The client transport, to dial the engine-channel server the tests bind.
 reuben-api = { path = "../reuben-api", features = ["fs-resolver", "tcp"] }
 
 [[bin]]

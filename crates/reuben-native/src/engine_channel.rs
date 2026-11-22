@@ -1,4 +1,4 @@
-//! The structure channel's **host side**: a TCP / NDJSON server, and the native seams the
+//! The engine channel's **host side**: a TCP / NDJSON server, and the native seams the
 //! window's verbs are served over.
 //!
 //! **TCP on `127.0.0.1`** by default, carrying **newline-delimited JSON**, one response per request
@@ -39,8 +39,8 @@ use std::time::{Duration, Instant};
 
 use reuben_api::authoring::Diag;
 use reuben_api::engine::{
-    admit, dispatch, dispatch_request, read_ndjson_line, Admit, ControlMessage, DiagnosticsReport,
-    EngineHost, IngressClosed, ListWhat, MetersReport, Request, Response, StructureState,
+    admit, dispatch, dispatch_request, read_ndjson_line, Admit, ChannelState, ControlMessage,
+    DiagnosticsReport, EngineHost, IngressClosed, ListWhat, MetersReport, Request, Response,
     Subscription, Token, TOKEN_REQUIRED,
 };
 use reuben_api::probe::ProbeSlots;
@@ -52,12 +52,12 @@ use crate::osc::OscIn;
 use crate::probes::{spawn_lease_thread, Probes, LEASE, LEASE_CHECK};
 
 /// How long the accept loop sleeps between polls of its shutdown flag while idle. The listener
-/// is non-blocking so the loop can observe [`StructureServer::shutdown`] without a client ever
+/// is non-blocking so the loop can observe [`ChannelServer::shutdown`] without a client ever
 /// connecting; this cadence is the shutdown latency, not a hot path (never the audio thread).
 const ACCEPT_POLL: Duration = Duration::from_millis(50);
 
 /// How long a connection handler's read blocks before waking to re-check its shutdown flag. A
-/// [`shutdown`](StructureServer::shutdown) does **not** interrupt a `read` already blocked on a
+/// [`shutdown`](ChannelServer::shutdown) does **not** interrupt a `read` already blocked on a
 /// socket on Windows (unlike Unix, where the accept thread's `shutdown(Shutdown::Both)` unblocks
 /// the peer's `read_line`); a blocked recv there strands the handler until an OS-level connection
 /// timeout (~2 min), so every connection torn down while a client is still attached pays that.
@@ -426,7 +426,7 @@ impl NativeHost {
         self
     }
 
-    /// The probe set, which only structure-channel threads lock. A panic while it was held leaves
+    /// The probe set, which only engine-channel threads lock. A panic while it was held leaves
     /// it consistent enough to keep serving.
     fn probes(&self) -> std::sync::MutexGuard<'_, Probes> {
         self.probes.lock().unwrap_or_else(|e| e.into_inner())
@@ -675,22 +675,22 @@ pub fn diagnostics_report(snapshot: &Snapshot) -> DiagnosticsReport {
     }
 }
 
-/// A running structure server: a std thread accepting connections, one handler thread
+/// A running engine-channel server: a std thread accepting connections, one handler thread
 /// per connection, all joined on [`shutdown`](Self::shutdown) (or `Drop`). Holds no audio state
-/// — it only reads the shared [`StructureState`] — so it starts and stops independently of the
+/// — it only reads the shared [`ChannelState`] — so it starts and stops independently of the
 /// audio device, which is what lets it be exercised end-to-end in tests.
-pub struct StructureServer {
+pub struct ChannelServer {
     local_addr: SocketAddr,
     shutdown: Arc<AtomicBool>,
     accept: Option<JoinHandle<()>>,
 }
 
-impl StructureServer {
+impl ChannelServer {
     /// Bind a loopback TCP listener and start serving. Pass `127.0.0.1:0` to let the OS assign
     /// an ephemeral port (read it back with [`local_addr`](Self::local_addr)); this is how tests
     /// avoid port collisions. A non-loopback address is refused: that takes
     /// [`bind_with_token`](Self::bind_with_token).
-    pub fn bind<A: ToSocketAddrs>(addr: A, state: StructureState) -> std::io::Result<Self> {
+    pub fn bind<A: ToSocketAddrs>(addr: A, state: ChannelState) -> std::io::Result<Self> {
         Self::bind_with_token(addr, state, None)
     }
 
@@ -700,7 +700,7 @@ impl StructureServer {
     /// bound, so a name that resolves beyond loopback is caught too.
     pub fn bind_with_token<A: ToSocketAddrs>(
         addr: A,
-        state: StructureState,
+        state: ChannelState,
         token: Option<Token>,
     ) -> std::io::Result<Self> {
         Self::bind_admitting(addr, state, token, ADMIT_WITHIN)
@@ -711,7 +711,7 @@ impl StructureServer {
     /// close a connection without waiting out the real one.
     pub(crate) fn bind_admitting<A: ToSocketAddrs>(
         addr: A,
-        state: StructureState,
+        state: ChannelState,
         token: Option<Token>,
         admit_within: Duration,
     ) -> std::io::Result<Self> {
@@ -719,7 +719,7 @@ impl StructureServer {
         if token.is_none() && !listener.local_addr()?.ip().to_canonical().is_loopback() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "serving the structure channel beyond loopback takes a token",
+                "serving the engine channel beyond loopback takes a token",
             ));
         }
         let token = token.map(Arc::new);
@@ -730,9 +730,9 @@ impl StructureServer {
         let accept = {
             let shutdown = Arc::clone(&shutdown);
             std::thread::Builder::new()
-                .name("structure-accept".to_string())
+                .name("engine-accept".to_string())
                 .spawn(move || accept_loop(listener, state, token, admit_within, shutdown))
-                .expect("spawn structure-accept thread")
+                .expect("spawn engine-accept thread")
         };
         Ok(Self {
             local_addr,
@@ -747,7 +747,7 @@ impl StructureServer {
     }
 
     /// Stop accepting, wake and join every connection handler, then join the accept thread.
-    /// Returns only once all structure threads have exited — the clean, joinable stop that
+    /// Returns only once all engine-channel threads have exited — the clean, joinable stop that
     /// replaces `play`'s park-forever loop. Idempotent with `Drop`.
     pub fn shutdown(mut self) {
         self.signal_and_join();
@@ -761,7 +761,7 @@ impl StructureServer {
     }
 }
 
-impl Drop for StructureServer {
+impl Drop for ChannelServer {
     fn drop(&mut self) {
         self.signal_and_join();
     }
@@ -784,7 +784,7 @@ fn wake_and_join(handle: JoinHandle<()>, wake: Option<TcpStream>) {
 /// hang `play`'s old `loop { thread::park() }` had, removed.
 fn accept_loop(
     listener: TcpListener,
-    state: StructureState,
+    state: ChannelState,
     token: Option<Arc<Token>>,
     admit_within: Duration,
     shutdown: Arc<AtomicBool>,
@@ -804,7 +804,7 @@ fn accept_loop(
                 let handler_shutdown = Arc::clone(&shutdown);
                 let admission = Admission::new(peer.ip(), token.clone(), admit_within);
                 let spawned = std::thread::Builder::new()
-                    .name("structure-conn".to_string())
+                    .name("engine-conn".to_string())
                     .spawn(move || {
                         handle_connection(stream, handler_state, admission, handler_shutdown)
                     });
@@ -845,7 +845,7 @@ fn accept_loop(
 /// is answered and closes the connection.
 fn handle_connection(
     stream: TcpStream,
-    state: StructureState,
+    state: ChannelState,
     admission: Admission,
     shutdown: Arc<AtomicBool>,
 ) {
@@ -1097,7 +1097,7 @@ mod tests {
         "nodes": [] }"#;
 
     /// A document that fails to load — an unknown operator type — so validation rejects it.
-    /// A Coordinator-backed [`StructureState`] with a live [`FakeCallback`] draining its mailbox
+    /// A Coordinator-backed [`ChannelState`] with a live [`FakeCallback`] draining its mailbox
     /// and its control ingress, plus the base document's content hash. `opened_input_channels` sets
     /// the headless render config's input-stream geometry (`0` = output-only, so an input-binding
     /// swap dark-degrades).
@@ -1107,7 +1107,7 @@ mod tests {
     fn swap_fixture(
         base: &str,
         opened_input_channels: usize,
-    ) -> (StructureState, FakeCallback, String) {
+    ) -> (ChannelState, FakeCallback, String) {
         let staged = no_store();
         let (coordinator, side, _warnings) =
             reuben_api::engine::install_initial(base, staged.clone(), cfg())
@@ -1119,7 +1119,7 @@ mod tests {
                 opened_input_channels,
             },
         ));
-        let state = StructureState::new(coordinator, Arc::new(host), served(staged));
+        let state = ChannelState::new(coordinator, Arc::new(host), served(staged));
         (state, FakeCallback::spawn(side, control_rx), base_hash)
     }
 
@@ -1146,7 +1146,7 @@ mod tests {
 
     /// [`swap_fixture`] with `base` playing from a [`Library`] the host offers and the server's
     /// store reads. `case` keeps concurrent tests out of each other's directory.
-    fn open_fixture(base: &str, case: &str) -> (StructureState, FakeCallback, String, Library) {
+    fn open_fixture(base: &str, case: &str) -> (ChannelState, FakeCallback, String, Library) {
         let (state, side, control_rx, base_hash, library) = open_parts(base, case);
         (
             state,
@@ -1161,7 +1161,7 @@ mod tests {
         base: &str,
         case: &str,
     ) -> (
-        StructureState,
+        ChannelState,
         reuben_api::render::RenderSide,
         ControlRing,
         String,
@@ -1189,7 +1189,7 @@ mod tests {
             .with_render_config(Arc::new(HeadlessRenderConfig {
                 opened_input_channels: 0,
             }));
-        let state = StructureState::new(coordinator, Arc::new(host), served(staged))
+        let state = ChannelState::new(coordinator, Arc::new(host), served(staged))
             .with_installed_source(Some(top.display().to_string()));
         (state, side, control_rx, base_hash, library)
     }
@@ -1502,10 +1502,10 @@ mod tests {
                 opened_input_channels: 0,
             },
         ));
-        let state = StructureState::new(coordinator, Arc::new(host), served(staged))
+        let state = ChannelState::new(coordinator, Arc::new(host), served(staged))
             .with_installed_source(Some(source.clone()));
         let cb = FakeCallback::spawn(side, control_rx);
-        let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
+        let server = ChannelServer::bind("127.0.0.1:0", state).expect("bind");
         let transport = TcpTransport::new(server.local_addr().to_string(), DEFAULT_CONNECT_TIMEOUT);
 
         // Read on a thread of its own: a stream with no event blocks for good, and a regression
@@ -1561,7 +1561,7 @@ mod tests {
         use reuben_api::engine::{TcpTransport, DEFAULT_CONNECT_TIMEOUT};
 
         let (state, cb, _) = swap_fixture(BASE_DOC, 0);
-        let server = StructureServer::bind("127.0.0.1:0", state.clone()).expect("bind");
+        let server = ChannelServer::bind("127.0.0.1:0", state.clone()).expect("bind");
         let transport = TcpTransport::new(server.local_addr().to_string(), DEFAULT_CONNECT_TIMEOUT);
 
         let events = transport.subscribe().expect("subscribed");
@@ -1579,7 +1579,7 @@ mod tests {
         use std::io::{BufRead, Read};
 
         let (state, cb, _) = swap_fixture(BASE_DOC, 0);
-        let server = StructureServer::bind("127.0.0.1:0", state.clone()).expect("bind");
+        let server = ChannelServer::bind("127.0.0.1:0", state.clone()).expect("bind");
         let stream = TcpStream::connect(server.local_addr()).expect("connect");
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
@@ -1632,7 +1632,7 @@ mod tests {
 
         let (state, cb, _) = swap_fixture(BASE_DOC, 0);
         let token = Token::new("s3cret").expect("a token");
-        let server = StructureServer::bind_admitting(
+        let server = ChannelServer::bind_admitting(
             "0.0.0.0:0",
             state,
             Some(token),
@@ -1691,7 +1691,7 @@ mod tests {
     /// `get_document` never names a document that was not opened.
     #[test]
     fn installed_source_follows_the_open_and_an_unreadable_one_leaves_it_alone() {
-        fn source_of(state: &StructureState) -> Option<String> {
+        fn source_of(state: &ChannelState) -> Option<String> {
             match dispatch(state, &Request::GetDocument.to_ndjson()) {
                 Response::Document(snapshot) => snapshot.source,
                 other => panic!("expected Document, got {other:?}"),
@@ -1768,7 +1768,7 @@ mod tests {
             Duration::from_millis(30),
             Duration::from_millis(5),
         ));
-        let state = StructureState::new(coordinator, host.clone(), served(staged));
+        let state = ChannelState::new(coordinator, host.clone(), served(staged));
         let cb = FakeCallback::spawn(side, control_rx);
         let resolved = EngineHost::set_probes(&*host, vec![vec!["/osc".to_string()]]).unwrap();
         assert_eq!(resolved.len(), 1);
@@ -1792,7 +1792,7 @@ mod tests {
         // This verb never touches control, but the ingress is a constructor parameter now — there
         // is no such thing as a host that cannot serve `send`.
         let (control_tx, control_rx) = ring_pair(Diagnostics::new());
-        let state = StructureState::new(
+        let state = ChannelState::new(
             coordinator,
             Arc::new(NativeHost::new(Arc::clone(&diagnostics), control_tx)),
             served(staged),

@@ -272,7 +272,7 @@ mod tests {
             EngineConfig {
                 osc_in: None,
                 osc_out,
-                structure: None,
+                engine_addr: None,
                 ..EngineConfig::new(Instrument::Path(instrument.to_path_buf()))
             },
             start_headless,

@@ -51,7 +51,7 @@ pub struct Diagnostics {
     pub input_ring_producer_drops: AtomicU64,
     /// Control batches a producer dropped, counted in **batches**: its ring pair into the render
     /// callback already held [`CONTROL_RING_BATCHES`](crate::control::CONTROL_RING_BATCHES) it had
-    /// not had back. One batch is one UDP datagram or one structure-channel `send`, lost whole.
+    /// not had back. One batch is one UDP datagram or one engine-channel `send`, lost whole.
     /// Diagnosis: control is arriving faster than the callback runs, or the callback has stopped.
     pub control_batches_dropped_full: AtomicU64,
 }

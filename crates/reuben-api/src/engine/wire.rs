@@ -1,4 +1,4 @@
-//! The structure channel's NDJSON wire envelope: the `Request`/`Response` types a server and a
+//! The engine channel's NDJSON wire envelope: the `Request`/`Response` types a server and a
 //! client both serialize, one JSON object per line, one response per request in order.
 //!
 //! No engine, no threads, no sockets. Both ends are doors — `reuben play` serves it, the MCP
@@ -26,10 +26,10 @@ use reuben_core::message::Arg;
 
 use crate::authoring::{Diag, Report};
 
-/// The structure channel's default loopback bind/target: `127.0.0.1` only, shared here so the
+/// The engine channel's default loopback bind/target: `127.0.0.1` only, shared here so the
 /// reuben-native server (`reuben play`) and the reuben-mcp client bind and dial the *same*
 /// address. A taken port is non-fatal on the server side (see `play`).
-pub const DEFAULT_STRUCTURE_ADDR: &str = "127.0.0.1:9124";
+pub const DEFAULT_ENGINE_ADDR: &str = "127.0.0.1:9124";
 
 /// The most paths one [`Request::SetProbes`] may name. It bounds paths, not per-block work: Render
 /// folds a probed node's output once per block, and a path inside a voice once per voice per
@@ -77,7 +77,7 @@ pub fn over_long_probe_set_refusal() -> String {
 /// `Harmony`, `Pitch`, `Enum`, and a whole `F32Buffer` — a vocabulary a control wire would
 /// immediately have to forbid. Every door ships `{address, [Arg]}` in its **own local framing**
 /// (reuben-web hand-rolls a flat codec, `reuben play`'s foreign edge speaks OSC-the-binary-protocol);
-/// this is the structure channel's, and each converges at
+/// this is the engine channel's, and each converges at
 /// [`Engine::queue_osc`](reuben_core::engine::Engine::queue_osc), where the destination port's declared
 /// type drives the conversion to the single typed `Arg` it carries
 /// ([`osc_in_arg`](reuben_core::boundary::osc_in_arg)). So the primitives are all this type needs to
@@ -126,7 +126,7 @@ pub struct ControlMessage {
     pub args: Vec<ControlArg>,
 }
 
-/// One structure-channel request (its twelve verbs), serialized as a single JSON
+/// One engine-channel request (its twelve verbs), serialized as a single JSON
 /// object tagged by `verb`: `{"verb": "ping"}`, `{"verb": "open", "name": …}`, ….
 ///
 /// No request carries a document: a client changes what plays only by
@@ -138,7 +138,7 @@ pub struct ControlMessage {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "verb", rename_all = "snake_case")]
 pub enum Request {
-    /// Liveness — the structure channel's own probe: it proves the structure channel
+    /// Liveness — the engine channel's own probe: it proves the engine channel
     /// itself, which an OSC ping does not.
     Ping,
     /// Read what plays, by source and content hash, so a fresh client attaches in one call. The
@@ -404,7 +404,7 @@ impl SwapReport {
     }
 }
 
-/// One structure-channel response (one per request, in order), serialized as
+/// One engine-channel response (one per request, in order), serialized as
 /// a single JSON object tagged by `reply`. The tag rides *inside* the payload object
 /// (`{"reply": "swap_report", "ok": …}`), so an open's wire shape stays the flat
 /// `SwapReport` object the MCP tool also serializes (the shapes must not
@@ -644,7 +644,7 @@ pub const METER_CEILING_DBFS: f32 = 60.0;
 /// [`ChannelLevel::rms_dbfs`]'s average, in seconds. Defined by the meter in `reuben-core`.
 pub use reuben_core::meter::{PEAK_FALL_DB_PER_SEC, RMS_WINDOW_SECS};
 
-/// The longest line either end of the structure channel reads, newline included. A line is one
+/// The longest line either end of the engine channel reads, newline included. A line is one
 /// request or one response, and the largest is a `call`'s answer describing a whole document: tens
 /// of kilobytes for the largest instruments in the library, so this leaves two
 /// orders of magnitude of headroom while bounding what a peer that never sends a newline can make
@@ -670,7 +670,7 @@ fn read_line_within(reader: &mut impl BufRead, line: &mut String, max: usize) ->
     if limited.limit() == 0 && !line.ends_with('\n') {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("a structure channel line is longer than {max} bytes"),
+            format!("a engine channel line is longer than {max} bytes"),
         ));
     }
     read
@@ -822,16 +822,16 @@ mod tests {
     }
 
     #[test]
-    fn default_structure_addr_is_loopback_9124() {
+    fn default_engine_addr_is_loopback_9124() {
         // The shared bind/dial address: loopback and the fixed M1 port. This one const is the
         // single source both the reuben-native server and the reuben-mcp client reference, so they
         // can never drift; the literal is pinned here so an accidental edit is a red test, not a
         // silent server/client mismatch. Listening beyond loopback takes an explicit address and a
         // token, never the default.
-        assert_eq!(DEFAULT_STRUCTURE_ADDR, "127.0.0.1:9124");
+        assert_eq!(DEFAULT_ENGINE_ADDR, "127.0.0.1:9124");
         assert!(
-            DEFAULT_STRUCTURE_ADDR.starts_with("127.0.0.1:"),
-            "the structure channel's default must stay loopback: {DEFAULT_STRUCTURE_ADDR}"
+            DEFAULT_ENGINE_ADDR.starts_with("127.0.0.1:"),
+            "the engine channel's default must stay loopback: {DEFAULT_ENGINE_ADDR}"
         );
     }
 
@@ -1144,7 +1144,7 @@ mod tests {
 
     #[test]
     fn swap_report_response_stays_the_flat_contract_object() {
-        // The structure channel's swap response and the MCP tool's
+        // The engine channel's swap response and the MCP tool's
         // structuredContent serialize the *same* contract type — the envelope adds only its
         // `reply` tag next to the flat { ok, errors, warnings, content_hash, diff } object,
         // never a nesting level the tool shape doesn't have.

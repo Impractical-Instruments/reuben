@@ -1,5 +1,5 @@
-//! Integration: the structure channel end-to-end over a real loopback TCP socket. Starts a
-//! [`StructureServer`] wired to a real Coordinator — everything `reuben play` wires up except
+//! Integration: the engine channel end-to-end over a real loopback TCP socket. Starts a
+//! [`ChannelServer`] wired to a real Coordinator — everything `reuben play` wires up except
 //! the cpal device (there is none in CI) — binds an **ephemeral** port (`127.0.0.1:0`,
 //! OS-assigned, so parallel CI jobs never collide), then drives a plain `TcpStream` client
 //! speaking NDJSON. The device half is stood in for by [`FakeCallback`] (`crate::test_support`,
@@ -19,16 +19,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use reuben_api::engine::{
-    credential_line, Conflict, ControlArg, ControlMessage, DiagnosticsReport, DocumentSnapshot,
-    MetersReport, Request, Response, StructureState, TcpTransport, Token, Transport,
+    credential_line, ChannelState, Conflict, ControlArg, ControlMessage, DiagnosticsReport,
+    DocumentSnapshot, MetersReport, Request, Response, TcpTransport, Token, Transport,
     DEFAULT_CONNECT_TIMEOUT, MAX_LINE_BYTES, METER_FLOOR_DBFS, REFUSED_TOKEN,
 };
 use reuben_api::render::{Arg, AudioConfig};
 use reuben_native::control::ring_pair;
 use reuben_native::diagnostics::Diagnostics;
+use reuben_native::engine_channel::{ChannelServer, HeadlessRenderConfig, NativeHost};
 use reuben_native::meters::{Bank, Meters};
 use reuben_native::osc::OscIn;
-use reuben_native::structure::{HeadlessRenderConfig, NativeHost, StructureServer};
 use reuben_native::test_support::{no_store, served, FakeCallback};
 
 fn cfg() -> AudioConfig {
@@ -64,15 +64,15 @@ const MIC_PASSTHRU: &str = r#"{ "format_version": 3, "instrument": "mic-passthru
         "outputs": { "out": { "from": "/mic" } } },
     "nodes": [] }"#;
 
-/// A Coordinator-backed [`StructureState`] over `doc`, a live [`FakeCallback`] draining its mailbox
+/// A Coordinator-backed [`ChannelState`] over `doc`, a live [`FakeCallback`] draining its mailbox
 /// and its control ingress, and the base document's content hash. `opened_input_channels` is the
 /// headless render config's input-stream geometry (`0` = output-only, so an input-binding swap
 /// dark-degrades).
 ///
-/// The control sink is wired exactly as `play` wires it — the structure server on the producing end
+/// The control sink is wired exactly as `play` wires it — the engine-channel server on the producing end
 /// of a control ring pair and the callback draining it. The harness is the crate's
 /// [`FakeCallback`], shared with the unit tests, so one mirror of the real callback serves both.
-fn wired(doc: &str, opened_input_channels: usize) -> (StructureState, FakeCallback, String) {
+fn wired(doc: &str, opened_input_channels: usize) -> (ChannelState, FakeCallback, String) {
     wired_watching(doc, opened_input_channels, Diagnostics::new())
 }
 
@@ -82,7 +82,7 @@ fn wired_watching(
     doc: &str,
     opened_input_channels: usize,
     diagnostics: Arc<Diagnostics>,
-) -> (StructureState, FakeCallback, String) {
+) -> (ChannelState, FakeCallback, String) {
     let staged = no_store();
     let (coordinator, side, _warnings) =
         reuben_api::engine::install_initial(doc, staged.clone(), cfg()).expect("initial install");
@@ -93,7 +93,7 @@ fn wired_watching(
             opened_input_channels,
         },
     ));
-    let state = StructureState::new(coordinator, Arc::new(host), served(staged));
+    let state = ChannelState::new(coordinator, Arc::new(host), served(staged));
     (state, FakeCallback::spawn(side, control_rx), base_hash)
 }
 
@@ -124,7 +124,7 @@ impl Library {
 
 /// [`wired`] with `doc` playing from a [`Library`] the host offers and the server's store reads,
 /// so a client can open what it writes there. `case` keeps concurrent tests apart.
-fn wired_library(doc: &str, case: &str) -> (StructureState, FakeCallback, String, Library) {
+fn wired_library(doc: &str, case: &str) -> (ChannelState, FakeCallback, String, Library) {
     use reuben_api::resources::Resources;
     use reuben_api::staged::Staged;
     use reuben_api::FsResolver;
@@ -146,7 +146,7 @@ fn wired_library(doc: &str, case: &str) -> (StructureState, FakeCallback, String
         .with_render_config(Arc::new(HeadlessRenderConfig {
             opened_input_channels: 0,
         }));
-    let state = StructureState::new(coordinator, Arc::new(host), served(staged))
+    let state = ChannelState::new(coordinator, Arc::new(host), served(staged))
         .with_installed_source(Some(top.display().to_string()));
     (
         state,
@@ -208,14 +208,12 @@ fn expected_hash(doc: &str) -> String {
 #[test]
 fn serves_the_read_verbs_over_loopback_ndjson_in_order() {
     let (state, cb, base_hash) = wired(BASE_DOC, 0);
-    let server = StructureServer::bind("127.0.0.1:0", state).expect("bind loopback structure port");
+    let server =
+        ChannelServer::bind("127.0.0.1:0", state).expect("bind loopback engine-channel port");
     let addr = server.local_addr();
-    assert!(
-        addr.ip().is_loopback(),
-        "structure channel is loopback-only"
-    );
+    assert!(addr.ip().is_loopback(), "engine channel is loopback-only");
 
-    let client = TcpStream::connect(addr).expect("connect to structure channel");
+    let client = TcpStream::connect(addr).expect("connect to engine channel");
     let mut writer = client.try_clone().expect("clone client for writing");
     let mut reader = BufReader::new(client);
 
@@ -264,13 +262,13 @@ fn get_meters_reads_the_levels_the_callbacks_metered() {
         inputs: Bank::new(1, 48_000.0),
     };
     let (control_tx, control_rx) = ring_pair(Diagnostics::new());
-    let state = StructureState::new(
+    let state = ChannelState::new(
         coordinator,
         Arc::new(NativeHost::new(Diagnostics::new(), control_tx).with_meters(meters.clone())),
         served(staged),
     );
     let cb = FakeCallback::spawn(side, control_rx);
-    let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
+    let server = ChannelServer::bind("127.0.0.1:0", state).expect("bind");
     let client = TcpStream::connect(server.local_addr()).expect("connect");
     let mut writer = client.try_clone().unwrap();
     let mut reader = BufReader::new(client);
@@ -301,7 +299,7 @@ fn get_meters_reads_the_levels_the_callbacks_metered() {
 #[test]
 fn responses_come_back_one_per_request_in_pipelined_order() {
     let (state, cb, _) = wired(BASE_DOC, 0);
-    let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
+    let server = ChannelServer::bind("127.0.0.1:0", state).expect("bind");
     let client = TcpStream::connect(server.local_addr()).expect("connect");
     let mut writer = client.try_clone().unwrap();
     let mut reader = BufReader::new(client);
@@ -329,13 +327,13 @@ fn get_diagnostics_reflects_live_counter_bumps() {
     let diagnostics = Diagnostics::new();
     // This verb never touches control, but the ingress is a constructor parameter now.
     let (control_tx, control_rx) = ring_pair(Diagnostics::new());
-    let state = StructureState::new(
+    let state = ChannelState::new(
         coordinator,
         Arc::new(NativeHost::new(Arc::clone(&diagnostics), control_tx)),
         served(staged),
     );
     let cb = FakeCallback::spawn(side, control_rx);
-    let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
+    let server = ChannelServer::bind("127.0.0.1:0", state).expect("bind");
     let client = TcpStream::connect(server.local_addr()).expect("connect");
     let mut writer = client.try_clone().unwrap();
     let mut reader = BufReader::new(client);
@@ -364,7 +362,7 @@ fn open_over_the_wire_installs_via_the_mailbox_with_real_survivor_stats() {
     // (both nodes), impossible under an all-cold restart. `get_document` then names the new one.
     let base = envelope_doc("/env");
     let (state, cb, base_hash, library) = wired_library(&base, "survivors");
-    let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
+    let server = ChannelServer::bind("127.0.0.1:0", state).expect("bind");
     let client = TcpStream::connect(server.local_addr()).expect("connect");
     let mut writer = client.try_clone().unwrap();
     let mut reader = BufReader::new(client);
@@ -427,7 +425,7 @@ fn input_binding_open_over_the_wire_dark_degrades_and_stays_alive() {
     // that binds an input channel installs and stays silent-but-alive — a loud swap-report WARNING,
     // never an error or a crash. The FakeCallback keeps rendering (the process stays alive).
     let (state, cb, _, library) = wired_library(BASE_DOC, "dark_degrade");
-    let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
+    let server = ChannelServer::bind("127.0.0.1:0", state).expect("bind");
     let client = TcpStream::connect(server.local_addr()).expect("connect");
     let mut writer = client.try_clone().unwrap();
     let mut reader = BufReader::new(client);
@@ -468,7 +466,7 @@ fn input_binding_open_over_the_wire_dark_degrades_and_stays_alive() {
 fn open_expect_arbitration_conflicts_then_proceeds_over_the_wire() {
     let base = envelope_doc("/env");
     let (state, cb, base_hash, library) = wired_library(&base, "expect");
-    let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
+    let server = ChannelServer::bind("127.0.0.1:0", state).expect("bind");
     let client = TcpStream::connect(server.local_addr()).expect("connect");
     let mut writer = client.try_clone().unwrap();
     let mut reader = BufReader::new(client);
@@ -514,7 +512,7 @@ fn send_over_the_wire_reaches_the_engines_queue_osc() {
     // sidecar ships `{address, [Arg]}` in this channel's framing and OSC-the-binary-protocol never
     // enters the loop.
     let (state, cb, _) = wired(BASE_DOC, 0);
-    let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
+    let server = ChannelServer::bind("127.0.0.1:0", state).expect("bind");
     let client = TcpStream::connect(server.local_addr()).expect("connect");
     let mut writer = client.try_clone().unwrap();
     let mut reader = BufReader::new(client);
@@ -569,7 +567,7 @@ fn concurrent_sends_never_interleave_into_each_others_gestures() {
     // ingress (A1, B1, A2, …) — the multi-client workflow is explicitly supported, so this is not a
     // hypothetical. Handing each batch over as ONE unit is what prevents it.
     let (state, cb, _) = wired(BASE_DOC, 0);
-    let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
+    let server = ChannelServer::bind("127.0.0.1:0", state).expect("bind");
     let addr = server.local_addr();
 
     const CLIENTS: usize = 3;
@@ -645,7 +643,7 @@ fn shuts_down_cleanly_with_an_idle_client_still_connected() {
     // exit-time flush below outlives the state the server consumed.
     let diagnostics = Diagnostics::new();
     let (state, cb, _) = wired_watching(BASE_DOC, 0, Arc::clone(&diagnostics));
-    let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
+    let server = ChannelServer::bind("127.0.0.1:0", state).expect("bind");
     let _idle = TcpStream::connect(server.local_addr()).expect("connect");
 
     within(10, move || {
@@ -659,7 +657,7 @@ fn shuts_down_cleanly_with_an_idle_client_still_connected() {
 #[test]
 fn a_request_line_past_the_cap_is_answered_with_an_error_and_the_connection_closed() {
     let (state, cb, _) = wired(BASE_DOC, 0);
-    let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
+    let server = ChannelServer::bind("127.0.0.1:0", state).expect("bind");
     let client = TcpStream::connect(server.local_addr()).expect("connect");
     let mut writer = client.try_clone().unwrap();
     let mut reader = BufReader::new(client);
@@ -697,7 +695,7 @@ fn a_request_line_past_the_cap_is_answered_with_an_error_and_the_connection_clos
 fn a_swap_line_is_unreadable_and_the_connection_keeps_serving() {
     let (state, cb, base_hash, library) = wired_library(BASE_DOC, "old_swap");
     std::fs::write(library.0.join("x.json"), envelope_doc("/eg")).expect("seed the target");
-    let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
+    let server = ChannelServer::bind("127.0.0.1:0", state).expect("bind");
     let client = TcpStream::connect(server.local_addr()).expect("connect");
     let mut writer = client.try_clone().unwrap();
     let mut reader = BufReader::new(client);
@@ -750,14 +748,14 @@ fn ping_with(addr: std::net::SocketAddr, token: Option<Token>) -> Response {
 }
 
 /// The loopback address of a server bound on every interface.
-fn on_loopback(server: &StructureServer) -> std::net::SocketAddr {
+fn on_loopback(server: &ChannelServer) -> std::net::SocketAddr {
     std::net::SocketAddr::from(([127, 0, 0, 1], server.local_addr().port()))
 }
 
 #[test]
 fn a_bind_beyond_loopback_without_a_token_is_refused() {
     let (state, cb, _) = wired(BASE_DOC, 0);
-    let refused = StructureServer::bind_with_token("0.0.0.0:0", state, None)
+    let refused = ChannelServer::bind_with_token("0.0.0.0:0", state, None)
         .err()
         .expect("refused");
     assert_eq!(
@@ -771,7 +769,7 @@ fn a_bind_beyond_loopback_without_a_token_is_refused() {
 #[test]
 fn a_loopback_client_needs_no_token_on_a_server_that_has_one() {
     let (state, cb, _) = wired(BASE_DOC, 0);
-    let server = StructureServer::bind_with_token("0.0.0.0:0", state, Some(token("good")))
+    let server = ChannelServer::bind_with_token("0.0.0.0:0", state, Some(token("good")))
         .expect("bind with a token");
     assert_eq!(ping_with(on_loopback(&server), None), Response::Pong);
     assert_eq!(
@@ -785,7 +783,7 @@ fn a_loopback_client_needs_no_token_on_a_server_that_has_one() {
 #[test]
 fn a_wrong_token_is_refused_even_from_loopback() {
     let (state, cb, _) = wired(BASE_DOC, 0);
-    let server = StructureServer::bind_with_token("0.0.0.0:0", state, Some(token("good")))
+    let server = ChannelServer::bind_with_token("0.0.0.0:0", state, Some(token("good")))
         .expect("bind with a token");
     assert_eq!(
         ping_with(on_loopback(&server), Some(token("bad"))),
@@ -804,7 +802,7 @@ fn a_wrong_token_is_refused_even_from_loopback() {
 #[test]
 fn a_credential_after_the_first_line_is_unreadable() {
     let (state, cb, _) = wired(BASE_DOC, 0);
-    let server = StructureServer::bind_with_token("0.0.0.0:0", state, Some(token("good")))
+    let server = ChannelServer::bind_with_token("0.0.0.0:0", state, Some(token("good")))
         .expect("bind with a token");
     let client = TcpStream::connect(on_loopback(&server)).expect("connect");
     let mut writer = client.try_clone().expect("clone");
@@ -827,7 +825,7 @@ fn a_credential_after_the_first_line_is_unreadable() {
 #[test]
 fn a_server_without_a_token_ignores_a_credential() {
     let (state, cb, _) = wired(BASE_DOC, 0);
-    let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
+    let server = ChannelServer::bind("127.0.0.1:0", state).expect("bind");
     assert_eq!(
         ping_with(server.local_addr(), Some(token("any"))),
         Response::Pong
@@ -841,7 +839,7 @@ fn a_server_without_a_token_ignores_a_credential() {
 #[test]
 fn a_refusal_survives_a_request_that_arrives_after_it() {
     let (state, cb, _) = wired(BASE_DOC, 0);
-    let server = StructureServer::bind_with_token("0.0.0.0:0", state, Some(token("good")))
+    let server = ChannelServer::bind_with_token("0.0.0.0:0", state, Some(token("good")))
         .expect("bind with a token");
     let client = TcpStream::connect(on_loopback(&server)).expect("connect");
     client

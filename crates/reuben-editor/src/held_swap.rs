@@ -11,14 +11,14 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use reuben_native::structure::SwapHold;
+use reuben_native::engine_channel::SwapHold;
 
 /// How long the prompt's buttons ignore clicks after the source it asks about appears or
 /// changes, so a click the user aimed at what was there before does not answer it.
 const ARMING: Duration = Duration::from_millis(600);
 
 /// The open instrument and the one open waiting on the user, shared between the engine's
-/// structure server, which holds it, and the UI thread, which asks about it.
+/// engine-channel server, which holds it, and the UI thread, which asks about it.
 #[derive(Clone)]
 pub struct HeldSwaps {
     inner: Arc<Inner>,
@@ -51,7 +51,7 @@ pub struct Asked {
 }
 
 impl HeldSwaps {
-    /// `wake` is called from the structure server's thread when an open is held, so the prompt is
+    /// `wake` is called from the engine-channel server's thread when an open is held, so the prompt is
     /// drawn without waiting for input.
     pub fn new(wake: impl Fn() + Send + Sync + 'static) -> Self {
         Self {
@@ -212,7 +212,7 @@ mod tests {
 
     fn headless(mut config: EngineConfig) -> Result<RunningEngine, StartError> {
         config.osc_in = Some("127.0.0.1:0".to_string());
-        config.structure = Some("127.0.0.1:0".to_string());
+        config.engine_addr = Some("127.0.0.1:0".to_string());
         start_headless(config)
     }
 
@@ -257,12 +257,12 @@ mod tests {
                 _scratch: scratch,
             };
             editor.open_file(&top);
-            let structure = editor
+            let engine_addr = editor
                 .engine
                 .running()
-                .and_then(RunningEngine::structure_addr)
-                .expect("the structure server bound");
-            editor.link = EngineLink::new(structure.to_string(), None);
+                .and_then(RunningEngine::engine_addr)
+                .expect("the engine-channel server bound");
+            editor.link = EngineLink::new(engine_addr.to_string(), None);
             editor
         }
 
@@ -290,7 +290,7 @@ mod tests {
                     name: path.to_string(),
                     expect,
                 },
-                self.link.structure(),
+                self.link.channel(),
             )
             .expect("the open reached the engine")
             .output
@@ -299,7 +299,7 @@ mod tests {
         /// What the engine names as playing.
         fn playing(&self) -> String {
             self.link
-                .structure()
+                .channel()
                 .get_document()
                 .expect("the engine answers")
                 .source

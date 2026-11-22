@@ -4,38 +4,38 @@
 //! this door dials, and with which token.
 
 use reuben_api::engine::{
-    Channel, TcpTransport, Token, DEFAULT_CONNECT_TIMEOUT, DEFAULT_STRUCTURE_ADDR,
+    Channel, TcpTransport, Token, DEFAULT_CONNECT_TIMEOUT, DEFAULT_ENGINE_ADDR,
 };
 
 /// The engine link: a handle to the one channel every tool that reads the engine or a file speaks.
 #[derive(Debug)]
 pub struct EngineLink {
-    structure: Channel,
+    channel: Channel,
 }
 
 impl EngineLink {
-    /// A link dialing `structure_addr` over TCP with this door's connect budget, opening each
+    /// A link dialing `engine_addr` over TCP with this door's connect budget, opening each
     /// connection with `token` when given. A server on another machine serves nothing without it.
-    pub fn new(structure_addr: impl Into<String>, token: Option<Token>) -> Self {
+    pub fn new(engine_addr: impl Into<String>, token: Option<Token>) -> Self {
         Self::from_channel(Channel::new(
-            TcpTransport::new(structure_addr, DEFAULT_CONNECT_TIMEOUT).with_token(token),
+            TcpTransport::new(engine_addr, DEFAULT_CONNECT_TIMEOUT).with_token(token),
         ))
     }
 
     /// A link over an already-built channel — the injection point for tests, which pair it with a
     /// fake transport.
-    pub fn from_channel(structure: Channel) -> Self {
-        Self { structure }
+    pub fn from_channel(channel: Channel) -> Self {
+        Self { channel }
     }
 
-    /// The structure channel: the engine requests, and `call` for every document read and edit.
-    pub fn structure(&self) -> &Channel {
-        &self.structure
+    /// The engine channel: the engine requests, and `call` for every document read and edit.
+    pub fn channel(&self) -> &Channel {
+        &self.channel
     }
 
-    /// The structure-channel endpoint address, for `engine_status`.
-    pub fn structure_endpoint(&self) -> String {
-        self.structure.endpoint().to_string()
+    /// The engine-channel endpoint address, for `engine_status`.
+    pub fn engine_endpoint(&self) -> String {
+        self.channel.endpoint().to_string()
     }
 }
 
@@ -43,7 +43,7 @@ impl Default for EngineLink {
     /// A link targeting the shared default address — the same one `reuben play` binds, so the
     /// sidecar and engine can never drift.
     fn default() -> Self {
-        Self::new(DEFAULT_STRUCTURE_ADDR, None)
+        Self::new(DEFAULT_ENGINE_ADDR, None)
     }
 }
 
@@ -55,11 +55,11 @@ mod tests {
     fn the_default_link_dials_exactly_what_reuben_play_binds() {
         // Asserted on the REAL construction path — the one `ReubenServer::new` builds.
         let link = EngineLink::default();
-        assert_eq!(link.structure_endpoint(), DEFAULT_STRUCTURE_ADDR);
+        assert_eq!(link.engine_endpoint(), DEFAULT_ENGINE_ADDR);
         assert!(
-            link.structure_endpoint().starts_with("127.0.0.1:"),
-            "the structure channel must stay loopback-only: {}",
-            link.structure_endpoint()
+            link.engine_endpoint().starts_with("127.0.0.1:"),
+            "the engine channel must stay loopback-only: {}",
+            link.engine_endpoint()
         );
     }
 
@@ -72,7 +72,7 @@ mod tests {
             "studio.tail:9124",
         ] {
             let link = EngineLink::new(addr, None);
-            assert_eq!(link.structure_endpoint(), addr);
+            assert_eq!(link.engine_endpoint(), addr);
         }
     }
 
@@ -97,7 +97,7 @@ mod tests {
         });
         let token = Token::new("s3cret").expect("a token");
         let link = EngineLink::new(addr, Some(token.clone()));
-        link.structure().ping().expect("answered");
+        link.channel().ping().expect("answered");
         let (first, second) = server.join().expect("server");
         assert_eq!(first, credential_line(&token));
         assert_eq!(second, Request::Ping.to_ndjson());

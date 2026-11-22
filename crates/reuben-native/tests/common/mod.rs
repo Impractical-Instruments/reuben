@@ -1,7 +1,7 @@
 //! Helpers the binary tests share: a seeded temp directory, a headless `reuben play` on free
 //! loopback ports, and the `reuben` CLI run in a chosen directory.
 //!
-//! Every process started here has the structure-address and library-root environment variables
+//! Every process started here has the engine-address and library-root environment variables
 //! removed, so a developer's own settings cannot change a result.
 
 // Each test crate that includes this module uses a different part of it.
@@ -14,10 +14,10 @@ use std::process::{Child, Command, Output, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use reuben_api::engine::{STRUCTURE_ADDR_ENV, STRUCTURE_TOKEN_ENV};
+use reuben_api::engine::{ENGINE_ADDR_ENV, ENGINE_TOKEN_ENV};
 use reuben_native::cli::INSTRUMENT_ROOT_ENV;
 
-/// How long the binary may take to bind and announce its structure channel.
+/// How long the binary may take to bind and announce its engine channel.
 const STARTUP: Duration = Duration::from_secs(30);
 
 /// A minimal valid instrument named `name`.
@@ -68,11 +68,11 @@ pub fn free_udp_port() -> u16 {
         .port()
 }
 
-/// Collect `child`'s stdout lines on a thread and wait for its structure channel's announcement.
+/// Collect `child`'s stdout lines on a thread and wait for its engine channel's announcement.
 ///
 /// The thread drains stdout for the child's whole life: a pipe closed under it would fail its next
 /// `println!`, and `reuben play` would die mid-test.
-pub fn announced_structure(child: &mut Child) -> String {
+pub fn announced_engine_addr(child: &mut Child) -> String {
     let stdout = child.stdout.take().expect("piped stdout");
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -83,8 +83,8 @@ pub fn announced_structure(child: &mut Child) -> String {
     loop {
         let line = rx
             .recv_timeout(STARTUP)
-            .expect("reuben play announced its structure channel");
-        if let Some(addr) = line.strip_prefix("structure channel on ") {
+            .expect("reuben play announced its engine channel");
+        if let Some(addr) = line.strip_prefix("engine channel on ") {
             return addr.to_string();
         }
     }
@@ -108,24 +108,24 @@ pub fn spawn_play(cwd: &Path, args: &[&str]) -> Play {
     spawn_play_on(cwd, "127.0.0.1", args)
 }
 
-/// [`spawn_play`] with the structure channel on a port of `ip` the OS picks. The port is read back
+/// [`spawn_play`] with the engine channel on a port of `ip` the OS picks. The port is read back
 /// from the announcement, so no other test can take it between choosing and binding.
 pub fn spawn_play_on(cwd: &Path, ip: &str, args: &[&str]) -> Play {
-    let structure = format!("{ip}:0");
+    let engine_addr = format!("{ip}:0");
     let osc_in = "127.0.0.1:0".to_string();
     let mut child = Command::new(env!("CARGO_BIN_EXE_reuben"))
-        .args(["play", "--headless", "--structure-addr", &structure])
+        .args(["play", "--headless", "--engine-addr", &engine_addr])
         .args(["--osc-in", &osc_in])
         .args(args)
         .env_remove(INSTRUMENT_ROOT_ENV)
-        .env_remove(STRUCTURE_ADDR_ENV)
-        .env_remove(STRUCTURE_TOKEN_ENV)
+        .env_remove(ENGINE_ADDR_ENV)
+        .env_remove(ENGINE_TOKEN_ENV)
         .current_dir(cwd)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
         .expect("spawn reuben play");
-    let addr = announced_structure(&mut child);
+    let addr = announced_engine_addr(&mut child);
     Play { child, addr }
 }
 
@@ -134,8 +134,8 @@ pub fn reuben(cwd: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_reuben"))
         .args(args)
         .env_remove(INSTRUMENT_ROOT_ENV)
-        .env_remove(STRUCTURE_ADDR_ENV)
-        .env_remove(STRUCTURE_TOKEN_ENV)
+        .env_remove(ENGINE_ADDR_ENV)
+        .env_remove(ENGINE_TOKEN_ENV)
         .current_dir(cwd)
         .output()
         .expect("the reuben binary runs")

@@ -1,4 +1,4 @@
-//! The serving side of the structure channel: what each verb *means*, over the seam a host fills.
+//! The serving side of the engine channel: what each verb *means*, over the seam a host fills.
 //!
 //! One [`Response`] per [`Request`], in order. There is no socket here and no thread — a host owns
 //! the listener, the framing loop and the shutdown; this is the part that would otherwise be
@@ -26,7 +26,7 @@
 //!
 //! A client changes what plays only through `Open` and `Call`: no request carries a document.
 //! - [`Request::Subscribe`] is not a request [`dispatch`] answers: it turns a connection into a
-//!   stream of [`Event`]s, which only the host's connection can carry. [`StructureState::subscribe`]
+//!   stream of [`Event`]s, which only the host's connection can carry. [`ChannelState::subscribe`]
 //!   is what that connection streams from, and what [`InProcess::subscribe`] hands back.
 //!
 //! Each install that goes live publishes one [`Event`], under the Coordinator lock, so subscribers
@@ -188,14 +188,14 @@ pub trait EngineHost: Send + Sync {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IngressClosed;
 
-/// The store a [`StructureState`] serves `call` through. Its [`Staged`] is a clone of the one the
+/// The store a [`ChannelState`] serves `call` through. Its [`Staged`] is a clone of the one the
 /// Coordinator resolves through, so an edit waiting in memory is what the next prepare loads.
 pub type ServerStore = DocumentHistory<Staged<Box<dyn Resources + Send + Sync>>>;
 
 /// Everything the channel answers with, cheap to clone (`Arc`-backed) so a host can hand one to
 /// every connection it serves.
 #[derive(Clone)]
-pub struct StructureState {
+pub struct ChannelState {
     coordinator: Arc<Mutex<Coordinator>>,
     host: Arc<dyn EngineHost>,
     /// Where the playing document came from: the instrument last opened, or what the host started
@@ -210,10 +210,10 @@ pub struct StructureState {
     /// What the last successful install read or referenced: the documents an edit may touch.
     /// Written only under the Coordinator lock, as `installed_source` is.
     tree: Arc<Mutex<Tree>>,
-    /// Set by [`close`](StructureState::close) when the host tears the engine down.
+    /// Set by [`close`](ChannelState::close) when the host tears the engine down.
     closed: Arc<AtomicBool>,
     events: Arc<Bus>,
-    /// The errors of the last [`Event::Invalid`] a [`reload`](StructureState::reload) published,
+    /// The errors of the last [`Event::Invalid`] a [`reload`](ChannelState::reload) published,
     /// until something installs or a reload finds the files plan again. Written only under the
     /// Coordinator lock.
     reported_invalid: Arc<Mutex<Option<Vec<Diag>>>>,
@@ -225,7 +225,7 @@ pub struct StructureState {
 /// What plays while the open instrument does not load, or while nothing is open: one output
 /// channel that is always zero. Installed by value through the ordinary swap, so the render side
 /// sees nothing new. A host starting with nothing open builds its Coordinator from it and marks the
-/// state [`with_nothing_open`](StructureState::with_nothing_open).
+/// state [`with_nothing_open`](ChannelState::with_nothing_open).
 pub const SILENCE: &str = r#"{"format_version":3,"instrument":"silence",
     "interface":{"outputs":{"out":{"from":"/silence.audio"}}},
     "nodes":[{"type":"output","address":"/silence"}]}"#;
@@ -242,7 +242,7 @@ pub const COORDINATOR_POISONED: &str =
     "the engine's Coordinator panicked mid-operation and refuses further structure requests; \
      restart the engine";
 
-impl StructureState {
+impl ChannelState {
     /// Wrap a Coordinator the host built (with `install_initial`), the seam it serves through, and
     /// the store `call` reads and writes. The store's [`Staged`] must be a clone of the one handed
     /// to `install_initial`: an edit is checked by loading through the Coordinator's resolver, so
@@ -506,7 +506,7 @@ impl StructureState {
     }
 }
 
-/// What [`StructureState::try_installed`] found.
+/// What [`ChannelState::try_installed`] found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Installed {
     Known {
@@ -522,7 +522,7 @@ pub enum Installed {
     Poisoned,
 }
 
-/// [`StructureState::try_reload`]'s answer while an earlier swap is still in flight: nothing was
+/// [`ChannelState::try_reload`]'s answer while an earlier swap is still in flight: nothing was
 /// read, and the files should be read again shortly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SwapInFlight;
@@ -538,7 +538,7 @@ impl From<Poisoned> for Response {
     }
 }
 
-/// Dispatch one request line to its response. Pure over [`StructureState`], so a host can drive it
+/// Dispatch one request line to its response. Pure over [`ChannelState`], so a host can drive it
 /// without a socket and the framing loop stays the host's.
 ///
 /// A panic under the Coordinator lock unwinds out of this call and poisons the lock; every later
@@ -550,7 +550,7 @@ impl From<Poisoned> for Response {
 ///
 /// This is a client's entry, so an open is offered to [`EngineHost::hold_swap`] first.
 /// [`InProcess`], the host's own transport, never is.
-pub fn dispatch(state: &StructureState, line: &str) -> Response {
+pub fn dispatch(state: &ChannelState, line: &str) -> Response {
     match Request::from_ndjson(line) {
         Ok(request) => dispatch_request(state, request),
         Err(e) => unreadable(e),
@@ -559,7 +559,7 @@ pub fn dispatch(state: &StructureState, line: &str) -> Response {
 
 /// [`dispatch`] for a request the host has already parsed — to see whether it is a
 /// [`Request::Subscribe`] its connection must stream for — so it is not parsed twice.
-pub fn dispatch_request(state: &StructureState, request: Request) -> Response {
+pub fn dispatch_request(state: &ChannelState, request: Request) -> Response {
     serve(state, request, Caller::Client)
 }
 
@@ -577,7 +577,7 @@ enum Caller {
     Host,
 }
 
-fn serve(state: &StructureState, request: Request, caller: Caller) -> Response {
+fn serve(state: &ChannelState, request: Request, caller: Caller) -> Response {
     match request {
         Request::Ping => Response::Pong,
         Request::GetDocument => get_document(state).unwrap_or_else(Response::from),
@@ -603,7 +603,7 @@ const UNSTREAMED_SUBSCRIBE: &str = "subscribe needs a connection that streams ev
 /// What plays, by source and hash, both read under the Coordinator lock so `get_document` never
 /// pairs a source with another install's hash. While the open instrument does not load, the hash
 /// is [`NOTHING_PLAYS`]: [`SILENCE`] is no document's.
-fn get_document(state: &StructureState) -> Result<Response, Poisoned> {
+fn get_document(state: &ChannelState) -> Result<Response, Poisoned> {
     let coordinator = state.coordinator()?;
     Ok(Response::Document(DocumentSnapshot {
         content_hash: state.playing_hash(&coordinator),
@@ -613,9 +613,9 @@ fn get_document(state: &StructureState) -> Result<Response, Poisoned> {
     }))
 }
 
-/// The structure channel with no socket under it: a [`Transport`] that hands each request line to
+/// The engine channel with no socket under it: a [`Transport`] that hands each request line to
 /// the same dispatch a socket client reaches, on the caller's thread, so a host embedding the
-/// engine drives the same verbs over the same [`StructureState`] its loopback server serves.
+/// engine drives the same verbs over the same [`ChannelState`] its loopback server serves.
 ///
 /// The request still crosses the NDJSON envelope. That is the point, not an overhead to optimize
 /// away: the framing and the response classification are then the ones a socket client gets, so an
@@ -623,7 +623,7 @@ fn get_document(state: &StructureState) -> Result<Response, Poisoned> {
 /// the one exception the host asks for: its own opens are never held ([`EngineHost::hold_swap`]).
 ///
 /// `round_trip` fails in exactly the two cases a socket client would see a dead peer: the host has
-/// [closed](StructureState::close) the state (the engine is torn down), or the request panicked —
+/// [closed](ChannelState::close) the state (the engine is torn down), or the request panicked —
 /// which is caught here rather than unwound into the caller's thread, the way a panicking server
 /// thread only drops its connection. Both are an [`io::Error`](std::io::Error), so the channel
 /// reports the engine unreachable. It ignores `read_timeout`, there being no peer to go silent:
@@ -631,12 +631,12 @@ fn get_document(state: &StructureState) -> Result<Response, Poisoned> {
 /// in-flight swap, and its reclaim poll is bounded by the host's [`EngineHost::retire_poll`] gate.
 #[derive(Clone)]
 pub struct InProcess {
-    state: StructureState,
+    state: ChannelState,
 }
 
 impl InProcess {
     /// A transport over `state` — typically a clone of the one the host's server also serves.
-    pub fn new(state: StructureState) -> Self {
+    pub fn new(state: ChannelState) -> Self {
         Self { state }
     }
 
@@ -694,7 +694,7 @@ pub const IN_PROCESS_ENDPOINT: &str = "in-process";
 ///
 /// The Coordinator is untouched: control is not structure, so a `send` never contends for the
 /// single-writer lock and cannot be starved by an in-flight swap's bounded reclaim poll.
-fn handle_send(state: &StructureState, messages: Vec<ControlMessage>) -> Response {
+fn handle_send(state: &ChannelState, messages: Vec<ControlMessage>) -> Response {
     // Bound the batch before it is queued. Its whole cost lands in one render callback, so an
     // unbounded batch is an RT hazard, not merely a large request. The client checks both bounds
     // too and saves the round trip; this is the check that has to hold, because a door is not
@@ -722,7 +722,7 @@ fn handle_send(state: &StructureState, messages: Vec<ControlMessage>) -> Respons
 
 /// Choose the probed nodes. Bounded before the host is asked, so a client cannot make one render
 /// callback fold an unbounded number of nodes.
-fn handle_set_probes(state: &StructureState, paths: Vec<Vec<String>>) -> Response {
+fn handle_set_probes(state: &ChannelState, paths: Vec<Vec<String>>) -> Response {
     if paths.len() > MAX_PROBES {
         return Response::Error {
             message: over_long_probe_set_refusal(),
@@ -751,7 +751,7 @@ fn handle_set_probes(state: &StructureState, paths: Vec<Vec<String>>) -> Respons
 ///    engine and the two mailboxes stay in lockstep.
 /// 6. **Reclaim** the retired Engine off-thread, clearing the mailbox for the next swap.
 fn install_opened(
-    state: &StructureState,
+    state: &ChannelState,
     coordinator: &mut Coordinator,
     json: &str,
     origin: String,
@@ -797,7 +797,7 @@ fn install_opened(
 }
 
 /// The answer to a client's open the host holds: nothing installed, and what plays named.
-fn held(state: &StructureState, coordinator: &Coordinator, requested: String) -> Response {
+fn held(state: &ChannelState, coordinator: &Coordinator, requested: String) -> Response {
     let playing = match state.installed_source() {
         Ok(source) => source.clone(),
         Err(poisoned) => return poisoned.into(),
@@ -816,7 +816,7 @@ fn held(state: &StructureState, coordinator: &Coordinator, requested: String) ->
 /// The answer is a report with `ok: false`, the load's errors, the hash [`NOTHING_PLAYS`], and a
 /// warning that says the document is open. An edit that makes it load starts it playing.
 fn open_silent(
-    state: &StructureState,
+    state: &ChannelState,
     coordinator: &mut Coordinator,
     name: String,
     tree: Tree,
@@ -866,7 +866,7 @@ fn open_silent(
 /// Under the Coordinator lock from the read on, so the `discard` cannot drop another request's
 /// pending write.
 fn handle_open(
-    state: &StructureState,
+    state: &ChannelState,
     name: String,
     expect: Option<String>,
     caller: Caller,
@@ -910,7 +910,7 @@ fn not_offered(name: &str) -> String {
 
 /// What the host offers under `what`, each name one [`Request::Open`] (or, for a sample, a
 /// resource reference) accepts back.
-fn handle_list(state: &StructureState, what: ListWhat) -> Response {
+fn handle_list(state: &ChannelState, what: ListWhat) -> Response {
     let open = match state.installed_source() {
         Ok(source) => source.clone(),
         Err(poisoned) => return poisoned.into(),
@@ -921,7 +921,7 @@ fn handle_list(state: &StructureState, what: ListWhat) -> Response {
 }
 
 /// The open instrument's surface document, as the host reads it.
-fn handle_surface(state: &StructureState) -> Response {
+fn handle_surface(state: &ChannelState) -> Response {
     let open = match state.installed_source() {
         Ok(source) => source.clone(),
         Err(poisoned) => return poisoned.into(),
@@ -962,7 +962,7 @@ impl Tree {
 
 /// Prepare `json`, read from `origin`, and what the load read.
 fn prepare_recording(
-    state: &StructureState,
+    state: &ChannelState,
     coordinator: &Coordinator,
     json: &str,
     origin: &str,
@@ -986,7 +986,7 @@ enum Went {
     OpenedSilent,
     /// An edit through `call`: always [`Event::Changed`] by a client.
     Edited,
-    /// A [`StructureState::reload`] after an outside write: [`Event::Changed`] by
+    /// A [`ChannelState::reload`] after an outside write: [`Event::Changed`] by
     /// [`ChangedBy::Outside`].
     Outside,
 }
@@ -1001,7 +1001,7 @@ enum Went {
 /// config is published BEFORE the reclaim, so the map is in flight before the callback installs
 /// the new engine and the two mailboxes stay in lockstep.
 fn went_live(
-    state: &StructureState,
+    state: &ChannelState,
     coordinator: &mut Coordinator,
     source: Option<String>,
     tree: Tree,
@@ -1063,7 +1063,7 @@ fn reclaim_retired(coordinator: &mut Coordinator, host: &dyn EngineHost) {
 /// A report that installed nothing, for `message`, answering the request `went` names. Called
 /// under the Coordinator lock.
 fn rejected_report(
-    state: &StructureState,
+    state: &ChannelState,
     coordinator: &Coordinator,
     message: String,
     went: Went,
@@ -1090,7 +1090,7 @@ fn rejected_report(
 /// for the refused request's own load failing. `went` is the request that installed nothing.
 /// Called under the Coordinator lock.
 fn installed_nothing(
-    state: &StructureState,
+    state: &ChannelState,
     coordinator: &Coordinator,
     report: &mut SwapReport,
     went: Went,
@@ -1193,7 +1193,7 @@ mod tests {
         }
     }
 
-    fn state(panic_on_publish: bool) -> StructureState {
+    fn state(panic_on_publish: bool) -> ChannelState {
         state_with(Host {
             panic_on_publish,
             hold: false,
@@ -1206,7 +1206,7 @@ mod tests {
         .0
     }
 
-    fn state_with(host: Host) -> (StructureState, Arc<Host>) {
+    fn state_with(host: Host) -> (ChannelState, Arc<Host>) {
         let (coordinator, _side, _) =
             crate::engine::install_initial(DOC, NoStore, reuben_core::AudioConfig::new(48e3, 128))
                 .expect("install");
@@ -1214,13 +1214,12 @@ mod tests {
         let store = Arc::new(DocumentHistory::new(Staged::new(
             Box::new(NoStore) as Box<dyn Resources + Send + Sync>
         )));
-        let state =
-            StructureState::new(coordinator, Arc::clone(&host) as Arc<dyn EngineHost>, store)
-                .with_installed_source(Some("playing.json".to_string()));
+        let state = ChannelState::new(coordinator, Arc::clone(&host) as Arc<dyn EngineHost>, store)
+            .with_installed_source(Some("playing.json".to_string()));
         (state, host)
     }
 
-    fn holding() -> (StructureState, Arc<Host>) {
+    fn holding() -> (ChannelState, Arc<Host>) {
         state_with(Host {
             panic_on_publish: false,
             hold: true,
@@ -1391,7 +1390,7 @@ mod tests {
     /// `get_document` names what plays and its hash, and never hands a client the document.
     #[test]
     fn a_snapshot_carries_no_document() {
-        let fields = |state: &StructureState| {
+        let fields = |state: &ChannelState| {
             let line = dispatch(state, &Request::GetDocument.to_ndjson()).to_ndjson();
             let value: serde_json::Value = serde_json::from_str(&line).expect("a JSON object");
             let mut keys: Vec<String> = value

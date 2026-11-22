@@ -1,4 +1,4 @@
-//! The TCP [`Transport`]: what a process outside the engine dials `reuben play`'s structure
+//! The TCP [`Transport`]: what a process outside the engine dials `reuben play`'s engine
 //! channel with — the MCP sidecar, the CLI, and the editor attached to an engine it did not start,
 //! on this machine or, with the engine's token, another.
 //!
@@ -91,7 +91,7 @@ impl TcpTransport {
         if read_ndjson_line(&mut reader, &mut line)? == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
-                "the structure channel closed before answering",
+                "the engine channel closed before answering",
             ));
         }
         match Response::from_ndjson(&line) {
@@ -178,7 +178,7 @@ impl Transport for TcpTransport {
         if line.len() > MAX_LINE_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("a structure channel request is longer than {MAX_LINE_BYTES} bytes"),
+                format!("a engine channel request is longer than {MAX_LINE_BYTES} bytes"),
             ));
         }
         let stream = self.connect()?;
@@ -202,7 +202,7 @@ impl Transport for TcpTransport {
         if read == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
-                "the structure channel closed before answering",
+                "the engine channel closed before answering",
             ));
         }
         Ok(response)

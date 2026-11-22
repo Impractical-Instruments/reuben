@@ -2,14 +2,14 @@
 //!
 //! [`start`] loads the instrument, opens the audio device (and the input device when the
 //! instrument binds input channels) per the [`DeviceProfile`], binds the OSC-in UDP listener and
-//! the optional OSC-out sender, serves the structure channel every client dials, and
+//! the optional OSC-out sender, serves the engine channel every client dials, and
 //! (unless [`EngineConfig::follow_files`] is off) follows outside edits to the instrument's files.
 //! The [`RunningEngine`] it returns is the whole session: it reaches the engine in-process through
 //! the window's own [`Channel`], and dropping it stops every thread and frees every port.
 //!
 //! In-process and over the socket are the same channel, not two paths: [`RunningEngine::channel`]
-//! is a [`Channel`] over [`InProcess`], which dispatches into the very [`StructureState`] the
-//! [`StructureServer`] serves. A caller drives it with the window's engine verbs
+//! is a [`Channel`] over [`InProcess`], which dispatches into the very [`ChannelState`] the
+//! [`ChannelServer`] serves. A caller drives it with the window's engine verbs
 //! ([`open_instrument`](reuben_api::engine::open_instrument),
 //! [`send_live_controls`](reuben_api::engine::send_live_controls),
 //! [`get_engine_status`](reuben_api::engine::get_engine_status), …), and an open made in-process is
@@ -27,8 +27,8 @@ use std::time::{Duration, Instant};
 
 use reuben_api::authoring::{DocumentHistory, Resources};
 use reuben_api::engine::{
-    Channel, FromDocumentError, InProcess, Installed, LoadWarning, StructureState, Token,
-    DEFAULT_STRUCTURE_ADDR, SILENCE,
+    Channel, ChannelState, FromDocumentError, InProcess, Installed, LoadWarning, Token,
+    DEFAULT_ENGINE_ADDR, SILENCE,
 };
 use reuben_api::render::{self, AudioConfig, Message, RenderSide, RenderSlot};
 use reuben_api::staged::Staged;
@@ -37,13 +37,13 @@ use reuben_api::FsResolver;
 use crate::audio::{self, AudioError};
 use crate::control::{self, ControlDrain, ControlProducer};
 use crate::diagnostics::{self, Diagnostics, PeriodicLogger, Snapshot};
+use crate::engine_channel::{
+    ChannelServer, HeadlessRenderConfig, NativeHost, RenderConfigPublisher, SwapHold,
+};
 use crate::meters::Meters;
 use crate::osc::{self, ControlBatch, DEFAULT_OSC_PORT};
 use crate::profile::DeviceProfile;
 use crate::rigs::DEFAULT_JSON;
-use crate::structure::{
-    HeadlessRenderConfig, NativeHost, RenderConfigPublisher, StructureServer, SwapHold,
-};
 use crate::tree_watch::{self, TreeWatch};
 
 /// The core render block size `reuben play` runs at.
@@ -97,15 +97,15 @@ pub struct EngineConfig {
     pub osc_in: Option<String>,
     /// The `host:port` an `osc_out` node's Messages are sent to; `None` drops them.
     pub osc_out: Option<String>,
-    /// Where the structure server binds; `None` serves no socket, leaving only
+    /// Where the engine-channel server binds; `None` serves no socket, leaving only
     /// [`RunningEngine::channel`]. A non-loopback address takes a [`token`](Self::token).
-    pub structure: Option<String>,
+    pub engine_addr: Option<String>,
     /// What a peer on another machine must open its connection with. Loopback peers need none.
     pub token: Option<Token>,
     /// Log every OSC message received and sent to stdout. Off by default: the stdout lock on the
     /// I/O paths adds jitter.
     pub log_osc: bool,
-    /// Which swaps arriving over the structure socket are held for the host's user rather than
+    /// Which swaps arriving over the engine-channel socket are held for the host's user rather than
     /// installed. `None` holds none, which is `reuben play`.
     pub swap_hold: Option<SwapHold>,
     /// Reload the open instrument when something outside the engine writes its files. On for
@@ -116,7 +116,7 @@ pub struct EngineConfig {
 
 impl EngineConfig {
     /// `instrument` on the default devices, OSC-in on every interface at [`DEFAULT_OSC_PORT`], no
-    /// OSC-out, and the structure channel on [`DEFAULT_STRUCTURE_ADDR`] where the sidecar dials it.
+    /// OSC-out, and the engine channel on [`DEFAULT_ENGINE_ADDR`] where the sidecar dials it.
     pub fn new(instrument: Instrument) -> Self {
         Self {
             instrument,
@@ -125,7 +125,7 @@ impl EngineConfig {
             block_size: DEFAULT_BLOCK_SIZE,
             osc_in: Some(format!("0.0.0.0:{DEFAULT_OSC_PORT}")),
             osc_out: None,
-            structure: Some(DEFAULT_STRUCTURE_ADDR.to_string()),
+            engine_addr: Some(DEFAULT_ENGINE_ADDR.to_string()),
             token: None,
             log_osc: false,
             swap_hold: None,
@@ -148,9 +148,9 @@ pub enum StartError {
     OscOut { target: String, error: io::Error },
     /// The audio device (or the input device the instrument asked for) would not open.
     Audio(AudioError),
-    /// The structure address names a non-loopback interface and the config has no token. The
+    /// The engine address names a non-loopback interface and the config has no token. The
     /// channel edits and opens instruments, so it never serves another machine without one.
-    StructureNeedsToken(String),
+    ChannelNeedsToken(String),
     /// The headless render thread would not start.
     RenderThread(io::Error),
 }
@@ -165,9 +165,9 @@ impl fmt::Display for StartError {
             StartError::OscIn { addr, error } => write!(f, "bind OSC-in {addr}: {error}"),
             StartError::OscOut { target, error } => write!(f, "OSC-out {target}: {error}"),
             StartError::Audio(e) => write!(f, "start audio: {e}"),
-            StartError::StructureNeedsToken(addr) => write!(
+            StartError::ChannelNeedsToken(addr) => write!(
                 f,
-                "structure channel {addr} is not a loopback address, so it needs a token"
+                "engine channel {addr} is not a loopback address, so it needs a token"
             ),
             StartError::RenderThread(e) => write!(f, "start the headless render thread: {e}"),
         }
@@ -183,17 +183,17 @@ impl std::error::Error for StartError {
             | StartError::RenderThread(error) => Some(error),
             StartError::Instrument(e) => Some(e),
             StartError::Audio(e) => Some(e),
-            StartError::StructureNeedsToken(_) => None,
+            StartError::ChannelNeedsToken(_) => None,
         }
     }
 }
 
-/// A running engine: the audio streams, the OSC threads, the structure server and the
+/// A running engine: the audio streams, the OSC threads, the engine-channel server and the
 /// Coordinator behind it.
 ///
 /// Dropping it — or [`shutdown`](Self::shutdown), which also returns the final counters — tears
 /// the session down in order and returns only once every thread it started has exited: the
-/// watcher following outside edits to the instrument's files, the structure server (its
+/// watcher following outside edits to the instrument's files, the engine-channel server (its
 /// connections woken and joined), the OSC-in listener, the audio streams (paused, then dropped —
 /// see [`Streams::pause`](audio::Streams::pause) for why both), the OSC-out sender, then the
 /// diagnostics logger. Every port it bound is free again afterwards.
@@ -201,11 +201,11 @@ impl std::error::Error for StartError {
 /// Not `Send`: cpal's streams are not, on every host. Keep it on the thread that started it and
 /// hand [`channel`](Self::channel)s to any other.
 pub struct RunningEngine {
-    state: Option<StructureState>,
+    state: Option<ChannelState>,
     host: Arc<NativeHost>,
     tree_watch: Option<TreeWatch>,
-    structure: Option<StructureServer>,
-    structure_error: Option<io::Error>,
+    channel_server: Option<ChannelServer>,
+    channel_error: Option<io::Error>,
     osc_in: Option<OscListener>,
     output: Option<Output>,
     osc_out: Option<OscSender>,
@@ -226,8 +226,8 @@ enum Output {
 }
 
 impl RunningEngine {
-    /// A structure channel to this engine with no socket in between — the same verbs, the same
-    /// Coordinator and the same answers as a client dialing [`structure_addr`](Self::structure_addr).
+    /// A engine channel to this engine with no socket in between — the same verbs, the same
+    /// Coordinator and the same answers as a client dialing [`engine_addr`](Self::engine_addr).
     ///
     /// Each call runs on the caller's thread: a swap validates and builds the new Engine there,
     /// behind any swap already holding the Coordinator lock, so a UI thread should not make it.
@@ -267,16 +267,16 @@ impl RunningEngine {
         self.osc_out.as_ref().map(|o| o.target.as_str())
     }
 
-    /// Where the structure server is bound, or `None` when none was asked for or it failed to bind
-    /// (see [`structure_error`](Self::structure_error)).
-    pub fn structure_addr(&self) -> Option<SocketAddr> {
-        self.structure.as_ref().map(StructureServer::local_addr)
+    /// Where the engine-channel server is bound, or `None` when none was asked for or it failed to bind
+    /// (see [`channel_error`](Self::channel_error)).
+    pub fn engine_addr(&self) -> Option<SocketAddr> {
+        self.channel_server.as_ref().map(ChannelServer::local_addr)
     }
 
-    /// Why the structure server did not bind. Non-fatal: the engine plays and
+    /// Why the engine-channel server did not bind. Non-fatal: the engine plays and
     /// [`channel`](Self::channel) still reaches it; only socket clients (the sidecar) cannot.
-    pub fn structure_error(&self) -> Option<&io::Error> {
-        self.structure_error.as_ref()
+    pub fn channel_error(&self) -> Option<&io::Error> {
+        self.channel_error.as_ref()
     }
 
     /// Logical input channels the input stream provides: as many as the instrument the engine
@@ -286,7 +286,7 @@ impl RunningEngine {
     }
 
     /// What the engine has installed now, read without waiting. Its input fits the input stream
-    /// when [`input_stream_fits`](crate::structure::input_stream_fits) says so for its
+    /// when [`input_stream_fits`](crate::engine_channel::input_stream_fits) says so for its
     /// `input_channels` and [`opened_input_channels`](Self::opened_input_channels).
     pub fn installed(&self) -> Installed {
         match &self.state {
@@ -321,10 +321,10 @@ impl RunningEngine {
         if let Some(state) = &self.state {
             state.close();
         }
-        if let Some(server) = self.structure.take() {
+        if let Some(server) = self.channel_server.take() {
             server.shutdown();
         }
-        // The last StructureState this handle holds; dropping it drops the Coordinator (and any
+        // The last ChannelState this handle holds; dropping it drops the Coordinator (and any
         // retired Engine it still holds) here, off the audio thread, unless a caller kept a channel.
         self.state = None;
         if let Some(Output::Device(streams)) = &self.output {
@@ -349,15 +349,15 @@ impl Drop for RunningEngine {
 
 /// Start the engine on the audio device `config.profile` selects. See the [module docs](self).
 ///
-/// The structure server failing to bind is not an error — audio is the primary function — and is
-/// reported by [`RunningEngine::structure_error`]. Everything else that fails is.
+/// The engine-channel server failing to bind is not an error — audio is the primary function — and is
+/// reported by [`RunningEngine::channel_error`]. Everything else that fails is.
 pub fn start(config: EngineConfig) -> Result<RunningEngine, StartError> {
     start_with(config, Render::Device)
 }
 
 /// [`start`] with no audio device: a thread renders blocks at
 /// [`HEADLESS_SAMPLE_RATE`] and [`HEADLESS_BLOCK_SIZE`] and discards the output. Everything else —
-/// the instrument load, the OSC sockets, the structure server, the teardown — is [`start`]'s. The
+/// the instrument load, the OSC sockets, the engine-channel server, the teardown — is [`start`]'s. The
 /// profile and `block_size` are ignored, and no input device opens: bound input pipes read silence.
 pub fn start_headless(config: EngineConfig) -> Result<RunningEngine, StartError> {
     start_with(
@@ -513,15 +513,15 @@ pub(crate) fn start_with(
         block_size,
         osc_in,
         osc_out,
-        structure,
+        engine_addr,
         token,
         log_osc,
         swap_hold,
         follow_files,
     } = config;
 
-    let structure = match structure {
-        Some(addr) => Some(resolve_structure(&addr, token.is_some())?),
+    let engine_addr = match engine_addr {
+        Some(addr) => Some(resolve_engine_addr(&addr, token.is_some())?),
         None => None,
     };
     let library_root = instrument_root.clone();
@@ -533,7 +533,7 @@ pub(crate) fn start_with(
     let diagnostics = Diagnostics::new();
 
     // The control ingress into the render callback: a ring pair for the UDP listener (the foreign
-    // edge) and one the structure channel's `send` connections share. A `send` and an external
+    // edge) and one the engine channel's `send` connections share. A `send` and an external
     // datagram are indistinguishable downstream.
     let (udp_control, udp_ring) = control::ring_pair(Arc::clone(&diagnostics));
     let (send_control, send_ring) = control::ring_pair(Arc::clone(&diagnostics));
@@ -553,7 +553,7 @@ pub(crate) fn start_with(
     };
 
     // One store for the session: the Coordinator resolves through a clone of it, and the
-    // structure channel's `call` writes through the same one, so an edit waiting in memory is what
+    // engine channel's `call` writes through the same one, so an edit waiting in memory is what
     // the check before it goes live loads.
     let staged: Staged<Box<dyn Resources + Send + Sync>> = Staged::new(Box::new(resolver));
     let store = Arc::new(DocumentHistory::new(staged.clone()));
@@ -629,7 +629,7 @@ pub(crate) fn start_with(
     let logger =
         diagnostics::spawn_periodic_logger(Arc::clone(&diagnostics), DIAGNOSTICS_LOG_INTERVAL);
 
-    // The structure channel owns the Coordinator — the single writer of graph structure — and
+    // The engine channel owns the Coordinator — the single writer of graph structure — and
     // publishes each swap's device output map through `render_config`.
     let host = Arc::new(
         NativeHost::new(Arc::clone(&diagnostics), send_control)
@@ -639,15 +639,14 @@ pub(crate) fn start_with(
             .with_library_root(library_root),
     );
     let state =
-        StructureState::new(coordinator, host.clone(), store).with_installed_source(initial_source);
+        ChannelState::new(coordinator, host.clone(), store).with_installed_source(initial_source);
     let state = if nothing_open {
         state.with_nothing_open()
     } else {
         state
     };
-    let (structure, structure_error) = match structure {
-        Some(Ok(addrs)) => match StructureServer::bind_with_token(&addrs[..], state.clone(), token)
-        {
+    let (channel_server, channel_error) = match engine_addr {
+        Some(Ok(addrs)) => match ChannelServer::bind_with_token(&addrs[..], state.clone(), token) {
             Ok(server) => (Some(server), None),
             Err(e) => (None, Some(e)),
         },
@@ -660,8 +659,8 @@ pub(crate) fn start_with(
         state: Some(state),
         host,
         tree_watch,
-        structure,
-        structure_error,
+        channel_server,
+        channel_error,
         osc_in,
         output: Some(output),
         osc_out,
@@ -674,10 +673,10 @@ pub(crate) fn start_with(
     })
 }
 
-/// Resolve the structure address once, refusing one that resolves to anything but loopback unless
+/// Resolve the engine address once, refusing one that resolves to anything but loopback unless
 /// the engine has a token. The inner error is a resolution failure, which is non-fatal like a
 /// failed bind.
-fn resolve_structure(
+fn resolve_engine_addr(
     addr: &str,
     has_token: bool,
 ) -> Result<io::Result<Vec<SocketAddr>>, StartError> {
@@ -690,7 +689,7 @@ fn resolve_structure(
             .iter()
             .any(|candidate| !candidate.ip().to_canonical().is_loopback())
     {
-        return Err(StartError::StructureNeedsToken(addr.to_string()));
+        return Err(StartError::ChannelNeedsToken(addr.to_string()));
     }
     Ok(Ok(resolved))
 }
@@ -716,7 +715,7 @@ fn read_instrument(
                 })?;
             // Absolute, because a client reading it back may run in another directory, and
             // normalized as every name the server publishes is.
-            let source = crate::structure::lexical_absolute(&path)
+            let source = crate::engine_channel::lexical_absolute(&path)
                 .unwrap_or_else(|| path.clone())
                 .display()
                 .to_string();
@@ -889,7 +888,7 @@ mod tests {
     fn a_headless_engine_renders_at_real_time() {
         let config = EngineConfig {
             osc_in: None,
-            structure: None,
+            engine_addr: None,
             follow_files: false,
             ..EngineConfig::new(Instrument::Default)
         };

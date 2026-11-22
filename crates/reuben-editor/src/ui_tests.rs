@@ -57,7 +57,7 @@ fn instrument(scratch: &Scratch) -> PathBuf {
 fn editor(top: &Path, config: &TempConfig) -> Editor {
     let engine = Engine::start_with(
         EngineConfig {
-            structure: None,
+            engine_addr: None,
             osc_in: None,
             ..EngineConfig::new(Instrument::Path(top.to_path_buf()))
         },
@@ -363,7 +363,7 @@ fn an_editor_attached_to_a_running_engine_plays_it_and_swaps_its_saves() {
             ..crate::engine::test_support::config(top.clone())
         })
         .expect("the engine starts");
-        let addr = played.structure_addr().expect("bound").to_string();
+        let addr = played.engine_addr().expect("bound").to_string();
 
         let mut harness = harness(attached(addr, &config, None));
 
@@ -377,7 +377,7 @@ fn an_editor_attached_to_a_running_engine_plays_it_and_swaps_its_saves() {
         assert_eq!(harness.state().controls.binds(), vec!["level"]);
         harness.get_by_label(&format!(
             "Attached to the engine on {}",
-            played.structure_addr().unwrap()
+            played.engine_addr().unwrap()
         ));
 
         // Moving the fader reaches the engine it is attached to.
@@ -423,12 +423,12 @@ fn an_editor_attached_with_the_token_follows_a_token_server() {
     within(crate::engine::test_support::HANG_SECS, move || {
         let token = Token::new("s3cret").expect("a token");
         let played = start_headless(EngineConfig {
-            structure: Some("0.0.0.0:0".to_string()),
+            engine_addr: Some("0.0.0.0:0".to_string()),
             token: Some(token.clone()),
             ..crate::engine::test_support::config(top.clone())
         })
         .expect("the engine starts with a token");
-        let port = played.structure_addr().expect("bound").port();
+        let port = played.engine_addr().expect("bound").port();
         let addr = format!("127.0.0.1:{port}");
 
         let mut admitted = harness(attached_with(addr.clone(), Some(token), &config, None));
@@ -463,7 +463,7 @@ fn an_editor_attached_with_the_token_follows_a_token_server() {
     });
 }
 
-/// A proxy in front of the structure channel at `engine` that forwards every exchange, except that
+/// A proxy in front of the engine channel at `engine` that forwards every exchange, except that
 /// it holds each `Send` while `stalled` is set, as a stopped `reuben play` would. Counts the sends
 /// that reached it.
 struct Stalling {
@@ -545,7 +545,7 @@ fn a_fader_moved_while_the_attached_engine_stalls_never_holds_the_window() {
             ..crate::engine::test_support::config(top.clone())
         })
         .expect("the engine starts");
-        let proxy = Stalling::before(played.structure_addr().expect("bound").to_string());
+        let proxy = Stalling::before(played.engine_addr().expect("bound").to_string());
         let mut harness = harness(attached(proxy.addr.clone(), &config, None));
         step_until(&mut harness, "opened what the engine plays", |editor| {
             editor.session.is_some()
@@ -613,7 +613,7 @@ fn a_file_changed_before_attaching_is_followed_by_the_engine() {
             .expect("the engine starts");
         // Changed on disk before the editor attaches: the engine follows it, not the editor.
         echoing(&scratch, 0.7);
-        let addr = played.structure_addr().expect("bound").to_string();
+        let addr = played.engine_addr().expect("bound").to_string();
         let mut harness = harness(attached(addr, &config, None));
         step_until(&mut harness, "swapped in what is on disk", |_| {
             installed_level(&played) == json!(0.7)
@@ -634,7 +634,7 @@ fn an_engine_playing_another_file_has_it_opened_not_the_shown_one_swapped_over_i
     within(crate::engine::test_support::HANG_SECS, move || {
         let played = start_headless(crate::engine::test_support::config(other.clone()))
             .expect("the engine starts");
-        let addr = played.structure_addr().expect("bound").to_string();
+        let addr = played.engine_addr().expect("bound").to_string();
         // Shown while the engine was down.
         let session = Session::open(&shown.display().to_string(), &|| None);
         assert_eq!(session.status(), &Status::NoEngine);
@@ -665,7 +665,7 @@ fn a_session_saying_nothing_plays_is_current_once_the_engine_answers_with_its_fi
     within(crate::engine::test_support::HANG_SECS, move || {
         let played = start_headless(crate::engine::test_support::config(top.clone()))
             .expect("the engine starts");
-        let addr = played.structure_addr().expect("bound").to_string();
+        let addr = played.engine_addr().expect("bound").to_string();
         // Opened while the engine was not answering; it came back on the same files.
         let session = Session::open(&top.display().to_string(), &|| None);
         assert_eq!(session.status(), &Status::NoEngine);
@@ -688,9 +688,9 @@ fn the_meter_strip_reads_the_engine_the_editor_is_attached_to() {
     within(crate::engine::test_support::HANG_SECS, move || {
         let played =
             start_headless(crate::engine::test_support::config(top)).expect("the engine starts");
-        let addr = played.structure_addr().expect("bound").to_string();
+        let addr = played.engine_addr().expect("bound").to_string();
         let mut harness = harness(attached(addr, &config, None));
-        // A headless engine meters no device, and answers so over the structure channel.
+        // A headless engine meters no device, and answers so over the engine channel.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while harness
             .query_by_label("Meters: the engine has no audio device")
@@ -915,7 +915,7 @@ fn an_attached_edit_keeps_its_level_once_its_swap_lands() {
     within(crate::engine::test_support::HANG_SECS, move || {
         let played = start_headless(crate::engine::test_support::config(top.clone()))
             .expect("the engine starts");
-        let addr = played.structure_addr().expect("bound").to_string();
+        let addr = played.engine_addr().expect("bound").to_string();
         let mut editor = attached(addr, &config, None);
         let session = Session::open(&top.display().to_string(), &|| editor.engine.channel());
         view(&mut editor.canvas, &mut editor.inspector, &session);
@@ -989,7 +989,7 @@ fn an_open_back_to_what_the_link_last_reported_is_still_followed() {
     within(crate::engine::test_support::HANG_SECS, move || {
         let played = start_headless(crate::engine::test_support::config(first.clone()))
             .expect("the engine starts");
-        let addr = played.structure_addr().expect("bound").to_string();
+        let addr = played.engine_addr().expect("bound").to_string();
         let mut harness = harness(attached(addr, &config, None));
         let first_name = first.display().to_string();
         step_until(&mut harness, "opened what the engine plays", |editor| {

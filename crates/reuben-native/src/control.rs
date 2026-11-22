@@ -25,7 +25,7 @@ use crate::osc::ControlBatch;
 
 /// Batches one producer may have outstanding: pushed and not yet returned to it.
 ///
-/// A batch is one UDP datagram or one structure-channel `send`, so this is gestures per producer
+/// A batch is one UDP datagram or one engine-channel `send`, so this is gestures per producer
 /// the callback has not reached yet. 256 holds a controller stream of ~2700 gestures a second
 /// across a 93 ms callback (4096 frames at 44.1 kHz) before anything drops; the ring itself is
 /// `256 * size_of::<ControlBatch>()` bytes, twice.

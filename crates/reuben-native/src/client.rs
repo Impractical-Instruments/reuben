@@ -8,12 +8,12 @@ use std::time::Duration;
 use std::net::{SocketAddr, TcpStream};
 
 use reuben_api::engine::{
-    Channel, ChannelError, TcpTransport, Token, DEFAULT_CONNECT_TIMEOUT, DEFAULT_STRUCTURE_ADDR,
+    Channel, ChannelError, TcpTransport, Token, DEFAULT_CONNECT_TIMEOUT, DEFAULT_ENGINE_ADDR,
     ENGINE_UNREACHABLE_GUIDANCE,
 };
 
 use crate::engine::{start_headless, EngineConfig, Instrument, RunningEngine, StartError};
-use crate::structure::lexical_absolute;
+use crate::engine_channel::lexical_absolute;
 
 /// A validate decodes every sample, and on a large library instrument that takes seconds.
 pub const CLI_READ_TIMEOUT: Duration = Duration::from_secs(30);
@@ -21,7 +21,7 @@ pub const CLI_READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// Where a CLI command looks for its server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
-    /// The default structure address; a temporary server when nothing listens there.
+    /// The default engine address; a temporary server when nothing listens there.
     Default,
     /// An address the user named, and the token to open each connection with. Nothing answering
     /// there is an error, never a fallback.
@@ -122,7 +122,7 @@ impl std::error::Error for ReachError {
 
 /// Reach the server `target` names.
 pub fn reach(target: Target, temporary: Temporary) -> Result<Reached, ReachError> {
-    reach_with(target, temporary, DEFAULT_STRUCTURE_ADDR, CLI_READ_TIMEOUT)
+    reach_with(target, temporary, DEFAULT_ENGINE_ADDR, CLI_READ_TIMEOUT)
 }
 
 pub(crate) fn reach_with(
@@ -211,7 +211,7 @@ fn start_temporary(temporary: Temporary) -> Result<Reached, ReachError> {
         instrument_root: temporary.instrument_root,
         osc_in: None,
         osc_out: None,
-        structure: None,
+        engine_addr: None,
         follow_files: false,
         ..EngineConfig::new(Instrument::Silent)
     })
@@ -328,13 +328,13 @@ mod tests {
     /// A running headless server on a free loopback port, nothing open.
     fn running() -> (RunningEngine, String) {
         let engine = start_headless(EngineConfig {
-            structure: Some("127.0.0.1:0".to_string()),
+            engine_addr: Some("127.0.0.1:0".to_string()),
             osc_in: None,
             follow_files: false,
             ..EngineConfig::new(Instrument::Silent)
         })
         .expect("a headless server starts");
-        let addr = engine.structure_addr().expect("bound").to_string();
+        let addr = engine.engine_addr().expect("bound").to_string();
         (engine, addr)
     }
 
@@ -381,7 +381,7 @@ mod tests {
         )
         .expect("a temporary server");
         let engine = reached.temporary.as_ref().expect("temporary");
-        assert_eq!(engine.structure_addr(), None);
+        assert_eq!(engine.engine_addr(), None);
         assert_eq!(engine.osc_in_addr(), None);
 
         let report = validate(&reached, &inside).expect("an offered doc validates");

@@ -1,4 +1,4 @@
-//! The client side of the structure channel: NDJSON framing out, one response line back,
+//! The client side of the engine channel: NDJSON framing out, one response line back,
 //! classified into the verb's answer.
 //!
 //! Two invariants a caller may rely on: every exchange is bounded (the door's [`Transport`] holds
@@ -38,14 +38,14 @@ const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// answer is [`ChannelError::NoAnswer`], not a dead engine: the request may still be applied.
 const DEFAULT_WORK_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The read budget for `ping` specifically. A pong is **immediate** — the structure server answers
+/// The read budget for `ping` specifically. A pong is **immediate** — the engine-channel server answers
 /// `Ping` with `Pong` doing no work, unlike an `open`'s off-thread engine rebuild — so
 /// the liveness probe (`engine_status`) need not inherit the generous
 /// [`DEFAULT_READ_TIMEOUT`]: a wedged engine surfaces as unreachable ~5× sooner. Still comfortably
 /// above loopback + scheduler jitter, so a live-but-momentarily-busy engine is never misjudged dead.
 const DEFAULT_PING_READ_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// A failed structure-channel exchange.
+/// A failed engine-channel exchange.
 #[derive(Debug)]
 pub enum ChannelError {
     /// The engine could not be reached (connect refused, address unresolved, a write timeout, or a
@@ -88,8 +88,8 @@ impl fmt::Display for ChannelError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ChannelError::Unreachable(m) | ChannelError::NoAnswer(m) => write!(f, "{m}"),
-            ChannelError::Channel(m) => write!(f, "structure channel error: {m}"),
-            ChannelError::Protocol(m) => write!(f, "structure channel protocol error: {m}"),
+            ChannelError::Channel(m) => write!(f, "engine channel error: {m}"),
+            ChannelError::Protocol(m) => write!(f, "engine channel protocol error: {m}"),
         }
     }
 }
@@ -148,7 +148,7 @@ pub fn unanswered(cause: io::Error) -> io::Error {
     io::Error::new(cause.kind(), Unanswered(cause))
 }
 
-/// The one thing a structure channel must be able to do: hand a request line to the engine and
+/// The one thing a engine channel must be able to do: hand a request line to the engine and
 /// return the response line.
 ///
 /// **The injectable seam**, and deliberately the lowest one: everything above it — framing,
@@ -181,7 +181,7 @@ pub trait Transport: Send + Sync + fmt::Debug {
 /// engine closes the stream or a read fails.
 pub type Events = Box<dyn Iterator<Item = Event> + Send>;
 
-/// One engine's structure channel: the NDJSON framing, the response-variant classification, and
+/// One engine's engine channel: the NDJSON framing, the response-variant classification, and
 /// the timeout policy, over the door's [`Transport`].
 #[derive(Debug)]
 pub struct Channel {

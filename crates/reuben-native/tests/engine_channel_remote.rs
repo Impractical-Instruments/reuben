@@ -55,7 +55,10 @@ fn a_client_on_another_interface_does_everything_with_the_token() {
         eprintln!("skipped: no non-loopback interface");
         return;
     };
-    let dir = std::env::temp_dir().join(format!("reuben_structure_remote_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "reuben_engine_channel_remote_{}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("dir");
     let top = dir.join("top.json");
@@ -67,14 +70,14 @@ fn a_client_on_another_interface_does_everything_with_the_token() {
         let token = Token::new("s3cret").expect("a token");
         let engine = start_headless(EngineConfig {
             osc_in: None,
-            structure: Some("0.0.0.0:0".to_string()),
+            engine_addr: Some("0.0.0.0:0".to_string()),
             token: Some(token.clone()),
             follow_files: false,
             ..EngineConfig::new(Instrument::Silent)
         })
         .expect("the engine starts");
         engine.offer_dir(&dir);
-        let addr = SocketAddr::new(ip, engine.structure_addr().expect("bound").port());
+        let addr = SocketAddr::new(ip, engine.engine_addr().expect("bound").port());
 
         assert_eq!(refusal(&channel_to(addr, None)), TOKEN_REQUIRED);
         let guess = Token::new("guess").expect("a token");

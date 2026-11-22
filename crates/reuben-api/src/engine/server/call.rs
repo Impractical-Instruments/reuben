@@ -18,7 +18,7 @@ use crate::authoring::{
 use crate::resources::{Adapter, Anchored, ResolveError, Resources, SampleBuffer};
 
 use super::super::wire::{ChangedBy, Event, Library, LibraryEntry, Response, SwapReport};
-use super::{prepare_recording, went_live, Poisoned, ServerStore, StructureState, Tree, Went};
+use super::{prepare_recording, went_live, ChannelState, Poisoned, ServerStore, Tree, Went};
 
 /// What the document at `origin` reaches, itself included: one load through `store`, building no
 /// Plan. A document that does not load still names the sources it read.
@@ -38,7 +38,7 @@ pub(super) fn read_tree(store: &ServerStore, origin: &str) -> Tree {
 /// client create in. Each entry is read under the Coordinator lock of its own, as [`handle_call`]
 /// reads, so a long library never holds an edit back for longer than one entry takes; each leaves
 /// nothing staged. A document that does not read is an entry with `error` set.
-pub(super) fn handle_library(state: &StructureState) -> Response {
+pub(super) fn handle_library(state: &ChannelState) -> Response {
     let open = match state.installed_source() {
         Ok(source) => source.clone(),
         Err(poisoned) => return poisoned.into(),
@@ -59,7 +59,7 @@ pub(super) fn handle_library(state: &StructureState) -> Response {
 
 /// The library entry for `name`, read under the Coordinator lock. No sample is decoded: the entry
 /// carries only the documents its tree reads.
-fn library_entry(state: &StructureState, name: String) -> Result<LibraryEntry, Poisoned> {
+fn library_entry(state: &ChannelState, name: String) -> Result<LibraryEntry, Poisoned> {
     let _coordinator = state.coordinator()?;
     let store = NoSamples(&*state.store);
     let log = state.store.inner().record_reads();
@@ -128,7 +128,7 @@ impl Resources for NoSamples<'_> {
 ///
 /// [`DocumentHistory`] has already recorded an edit refused here as written. That is harmless: a
 /// later restore to its hash passes through this same check.
-pub(super) fn handle_call(state: &StructureState, tool: &str, args: Value) -> Response {
+pub(super) fn handle_call(state: &ChannelState, tool: &str, args: Value) -> Response {
     let mut coordinator = match state.coordinator() {
         Ok(coordinator) => coordinator,
         Err(poisoned) => return poisoned.into(),
@@ -199,7 +199,7 @@ pub(super) fn handle_call(state: &StructureState, tool: &str, args: Value) -> Re
 }
 
 /// Each file `tool`'s `args` name, as the client spelled it and as the store resolves it.
-fn resolved_names(state: &StructureState, tool: &str, args: &Value) -> Vec<(String, String)> {
+fn resolved_names(state: &ChannelState, tool: &str, args: &Value) -> Vec<(String, String)> {
     let canonical = |name: &str, referrer: Option<&str>| state.store.canonical(name, referrer);
     authoring::named_sources(tool, args)
         .unwrap_or_default()
@@ -222,7 +222,7 @@ fn resolved_names(state: &StructureState, tool: &str, args: &Value) -> Vec<(Stri
 /// in [`edit_or_refuse`]; this keeps a read, a create, or a reference an edit writes from naming
 /// what the client may not.
 fn unoffered_name(
-    state: &StructureState,
+    state: &ChannelState,
     named: &[(String, String)],
 ) -> Result<Option<String>, Poisoned> {
     let open = state.installed_source()?.clone();
@@ -255,7 +255,7 @@ fn in_client_terms(mut message: String, named: &[(String, String)]) -> String {
 /// wrong: that is how a broken document is repaired. The edit that makes it load starts it
 /// playing.
 fn edit_or_refuse(
-    state: &StructureState,
+    state: &ChannelState,
     coordinator: &mut Coordinator,
     output: Value,
     summary: String,
@@ -402,7 +402,7 @@ fn edit_or_refuse(
 }
 
 /// What an edit that wrote nothing leaves sounding: `top`, or nothing while it does not load.
-fn still_playing(state: &StructureState, top: &str) -> String {
+fn still_playing(state: &ChannelState, top: &str) -> String {
     if state.is_silent() {
         format!("nothing plays, since {top} does not load")
     } else {
@@ -414,7 +414,7 @@ fn still_playing(state: &StructureState, top: &str) -> String {
 /// `tree` becomes the documents an edit may touch, and `errors`, what still keeps `top` from
 /// loading, are published and noted.
 fn written_while_silent(
-    state: &StructureState,
+    state: &ChannelState,
     mut result: EditResult,
     source: &str,
     top: &str,
@@ -454,7 +454,7 @@ fn written_while_silent(
 
 /// An edit that was not written: drop what is pending and answer with what `source` still holds.
 fn not_written(
-    state: &StructureState,
+    state: &ChannelState,
     source: &str,
     errors: Vec<Diag>,
     notes: Vec<String>,
@@ -636,7 +636,7 @@ mod tests {
     /// A state serving `top.json` from an in-memory store, through the one `Staged` the Coordinator
     /// also resolves through, and the render side it swaps into.
     struct Served {
-        state: StructureState,
+        state: ChannelState,
         files: Arc<Files>,
         slot: RefCell<RenderSlot>,
     }
@@ -693,7 +693,7 @@ mod tests {
             reuben_core::AudioConfig::new(48e3, 128),
         )
         .expect("install");
-        let state = StructureState::new(
+        let state = ChannelState::new(
             coordinator,
             Arc::new(host),
             Arc::new(DocumentHistory::new(staged)),
@@ -714,7 +714,7 @@ mod tests {
     }
 
     /// Run `tool` and render nothing after it, so a swap it made stays in flight.
-    fn call_undrained(state: &StructureState, tool: &str, args: Value) -> (Value, String) {
+    fn call_undrained(state: &ChannelState, tool: &str, args: Value) -> (Value, String) {
         let line = Request::Call {
             tool: tool.to_string(),
             args,
@@ -726,7 +726,7 @@ mod tests {
         }
     }
 
-    fn installed_hash(state: &StructureState) -> String {
+    fn installed_hash(state: &ChannelState) -> String {
         match state.try_installed() {
             Installed::Known { content_hash, .. } => content_hash,
             other => panic!("{other:?}"),

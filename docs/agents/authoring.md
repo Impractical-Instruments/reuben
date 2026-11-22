@@ -155,7 +155,7 @@ The two doors overlap on the reads, which is where routing collides in practice.
 both a shelled `reuben validate <path>` and the `validate_instrument` tool, and `describe` is
 both `reuben describe` and `describe_instrument`/`describe_operators`. Same authority behind
 both — the engine's own load path — so the answer never differs; only the precondition does.
-The CLI asks the running `reuben play` when one answers at the structure address, and says so on
+The CLI asks the running `reuben play` when one answers at the engine address, and says so on
 stderr; with none running it starts a temporary server of its own. `--temporary-server` forces the
 temporary one: a `reuben play` built before your last operator change lists the old operator set.
 Prefer the sidecar when you are already in the loop, and the CLI when you want a read without a
