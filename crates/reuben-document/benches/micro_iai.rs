@@ -116,6 +116,7 @@ micro_bench_ops! {
     output => "output",
     overhead => "overhead",
     pan => "pan",
+    pattern => "pattern",
     pitch2freq => "pitch2freq",
     plucked_string => "plucked_string",
     power => "power_f32_signal",

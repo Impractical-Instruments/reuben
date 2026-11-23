@@ -211,6 +211,18 @@ impl Engine {
         self.plan.dropped_unprepared += n;
     }
 
+    /// Take what this Engine's Operators counted since the last take, leaving zero. RT-safe: a
+    /// field read and write.
+    pub fn take_operator_counts(&mut self) -> crate::operator::OperatorCounts {
+        self.plan.take_operator_counts()
+    }
+
+    /// Add `counts` to what [`take_operator_counts`](Self::take_operator_counts) returns: an
+    /// install credits the fresh Engine with what the retiring one had not handed on.
+    pub fn credit_operator_counts(&mut self, counts: crate::operator::OperatorCounts) {
+        self.plan.operator_counts += counts;
+    }
+
     /// The addresses whose sends this Engine's Plan expects prepared; see
     /// [`Plan::prepared_routes`].
     pub fn prepared_routes(&self) -> &alloc::sync::Arc<crate::plan::PreparedRoutes> {

@@ -25,6 +25,8 @@ reuben-macros = { path = "../reuben-macros" }
 # The type-wide NUMBER_MIN/NUMBER_MAX sentinels: interface pipes default
 # their declared range to the same one definition the contract macro uses.
 reuben-contract = { path = "../reuben-contract" }
+# The mini-notation compiler and allocation-free cycle query the `pattern` Operator plays.
+reuben-pattern = { path = "../reuben-pattern" }
 
 # num-traits' `Float` backend, selected by TARGET rather than by a feature on this crate, because
 # the two targets want different implementations and neither one is right for both.

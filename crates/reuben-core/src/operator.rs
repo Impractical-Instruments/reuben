@@ -37,6 +37,35 @@ pub struct Stamped<T> {
     pub payload: T,
 }
 
+/// What Operators count on the render thread for the engine diagnostics: each field is a count of
+/// one thing an Operator gave up rather than allocate. An Operator adds to it through
+/// [`Io::counts`]; the render adds each call's counts to its Plan's, and the host takes them with
+/// [`Engine::take_operator_counts`](crate::Engine::take_operator_counts).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OperatorCounts {
+    /// `pattern` cycle queries that returned only part of their cycle's notes: the fixed-capacity
+    /// buffer was full, or a time did not fit.
+    pub pattern_queries_truncated: u64,
+    /// Pattern atoms a `pattern` Operator's `mode` cannot read (a note name outside `Midi` mode, a
+    /// degree that is not a whole number), skipped.
+    pub pattern_atoms_skipped: u64,
+    /// Sounding notes a `pattern` Operator released early to make room in its held-notes list.
+    pub pattern_notes_evicted: u64,
+}
+
+impl core::ops::AddAssign for OperatorCounts {
+    fn add_assign(&mut self, rhs: Self) {
+        let OperatorCounts {
+            pattern_queries_truncated,
+            pattern_atoms_skipped,
+            pattern_notes_evicted,
+        } = rhs;
+        self.pattern_queries_truncated += pattern_queries_truncated;
+        self.pattern_atoms_skipped += pattern_atoms_skipped;
+        self.pattern_notes_evicted += pattern_notes_evicted;
+    }
+}
+
 /// The per-call I/O view handed to [`Operator::process`] for one (sub)block.
 ///
 /// All dense slices are exactly [`Io::frames`] samples long; held values are constant for the
@@ -77,6 +106,8 @@ pub struct Io<'a> {
     /// Where a value this call lets go of goes instead of being dropped on the render thread;
     /// `None` when unattached, and the value is then dropped where it is let go of.
     retire: Option<&'a RetireQueue>,
+    /// What this call counted; the render adds it to the Plan's after the call.
+    counts: OperatorCounts,
 }
 
 impl<'a> Io<'a> {
@@ -101,6 +132,7 @@ impl<'a> Io<'a> {
             frame_offset: 0,
             varying: &[],
             retire: None,
+            counts: OperatorCounts::default(),
         }
     }
 
@@ -115,6 +147,16 @@ impl<'a> Io<'a> {
     /// retire queue is attached. For operator state that holds a copy of a latched value.
     pub fn retire(&self, value: Arg) {
         retire_to(self.retire, value);
+    }
+
+    /// This call's [`OperatorCounts`], to add to. RT-safe: plain fields, no atomics.
+    pub fn counts(&mut self) -> &mut OperatorCounts {
+        &mut self.counts
+    }
+
+    /// What this call counted, for the render to add to its Plan's.
+    pub(crate) fn take_counts(&mut self) -> OperatorCounts {
+        core::mem::take(&mut self.counts)
     }
 
     /// The attached retire queue, for a hosting operator to pass to the sub-renders it runs.
@@ -659,6 +701,13 @@ pub trait Operator: Send {
     /// graphs and turns them into per-voice sub-plans later, at [`Operator::on_instantiate`] (which
     /// has the [`AudioConfig`]). Default no-op — only the Voicer hosts sub-patches.
     fn bind_voices(&mut self, _voices: Vec<Graph>) {}
+
+    /// Receive this node's address within the Instrument (`/melody`, or `/a/melody` inside a
+    /// subpatch), once per Plan build, just before [`Operator::on_instantiate`] and off the hot
+    /// path. For state an operator derives deterministically from which node it is, so it is the
+    /// same on every load and only a rename changes it; the `pattern` Operator's random seed is the
+    /// one user. Default no-op.
+    fn bind_address(&mut self, _address: &str) {}
 
     /// Construct any config-dependent runtime state, after the engine fixes the [`AudioConfig`].
     /// Called once per node from [`Plan::instantiate`](crate::plan::Plan::instantiate)

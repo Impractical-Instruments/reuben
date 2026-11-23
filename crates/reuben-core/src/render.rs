@@ -29,7 +29,7 @@ use crate::coordinator::retire::{retire_to, RetireQueue};
 use crate::descriptor::{Port, PortType};
 use crate::message::{Arg, Emit, Event, Message};
 use crate::meter::Block;
-use crate::operator::Io;
+use crate::operator::{Io, OperatorCounts};
 use crate::plan::{InterfaceOutput, Plan, PlanNode, PortKind};
 use crate::signal::{AudioSample, BlockMut};
 
@@ -395,6 +395,7 @@ fn render_inbound<E: Executor>(
     // Strings an upstream forward carried that a `str` input refused, added to the Plan's count
     // once the node loop's borrows end.
     let mut unprepared = 0u64;
+    let mut counted = OperatorCounts::default();
 
     // Disjoint field borrows so `process_node` can hold `arena` (inputs) and
     // `out_scratch` (outputs) at once while reading `routes`/`order`.
@@ -425,6 +426,7 @@ fn render_inbound<E: Executor>(
             sample_rate,
             block_size,
             retire,
+            &mut counted,
         );
 
         // Measured now or never: once a later node runs, this node's output slots may be
@@ -496,6 +498,7 @@ fn render_inbound<E: Executor>(
         }
     }
     plan.dropped_unprepared += unprepared;
+    plan.operator_counts += counted;
 
     // Sum master taps into the per-channel master: every tapped port's buffer,
     // in fixed order, so output stays deterministic. A broadcast tap
@@ -590,6 +593,7 @@ impl<E: Executor> Renderer<E> {
             sample_rate,
             frames,
             retire,
+            &mut plan.operator_counts,
         );
     }
 
@@ -981,6 +985,7 @@ fn process_node(
     sample_rate: f32,
     block_size: usize,
     retire: Option<&RetireQueue>,
+    counts: &mut OperatorCounts,
 ) {
     // The ZOH fill needs the writes in frame order. Not `sort_by_key`: a stable sort allocates its
     // merge buffer once a burst outgrows the stack scratch; the push index is the tie-break that
@@ -1174,6 +1179,7 @@ fn process_node(
             .with_emit(&mut *emit_scratch, seg_start)
             .with_retire(retire);
         node.op.process(&mut io);
+        *counts += io.take_counts();
     }
 
     *seg_events_slot = recycle_events(seg_events);
