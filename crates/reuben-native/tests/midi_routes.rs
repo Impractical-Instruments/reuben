@@ -287,7 +287,7 @@ fn a_midi_input_matching_no_port_stops_the_start() {
 }
 
 /// A virtual port stands in for a keyboard: `play` opens it by name, its notes route through the
-/// map, and closing it is a lost device whose held note is released. Needs an ALSA sequencer.
+/// map, and closing it is counted as a lost device. Needs an ALSA sequencer.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_device_port_routes_and_its_loss_is_counted() {

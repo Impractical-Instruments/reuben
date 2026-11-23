@@ -118,6 +118,11 @@ impl DeviceProfile {
                 "sample_rate must be at least 1 (0 is not a valid rate)",
             ));
         }
+        if self.midi.inputs.iter().any(String::is_empty) {
+            return Err(ProfileError::OutOfRange(
+                "midi.inputs entries must not be empty (an empty name would select the first port)",
+            ));
+        }
         if self.buffer_size == Some(0) {
             return Err(ProfileError::OutOfRange(
                 "buffer_size must be at least 1 (0 is not a valid buffer size)",
@@ -262,6 +267,15 @@ mod tests {
             serde_json::from_str(r#"{"midi":{"inputs":["Keystep"]}}"#).expect("parse midi");
         assert_eq!(p.midi.inputs, vec!["Keystep".to_string()]);
         assert!(DeviceProfile::default().midi.inputs.is_empty());
+    }
+
+    #[test]
+    fn an_empty_midi_input_name_is_a_load_error() {
+        let err = serde_json::from_str::<DeviceProfile>(r#"{"midi":{"inputs":["KeyStep",""]}}"#)
+            .map(|p| p.validate())
+            .expect("valid JSON shape")
+            .expect_err("an empty name would select the first port");
+        assert!(matches!(err, ProfileError::OutOfRange(_)));
     }
 
     #[test]

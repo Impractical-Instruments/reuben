@@ -38,15 +38,22 @@ pub fn no_match_message(wanted: &str, available: &[String]) -> String {
     )
 }
 
-/// The open MIDI input ports. Dropping it stops the port watch and closes every port.
+/// The open MIDI input ports. Dropping it stops the port watch, closes every port, and prints
+/// what each port read.
 pub(crate) struct MidiInputs {
     // Declared first so it stops before the connections close: a port closing is not a loss.
-    // Held only to be dropped, which stops and joins it.
-    #[allow(dead_code)]
-    watch: Option<PortWatch>,
-    // Held only to be dropped, which closes the port.
-    #[allow(dead_code)]
-    connections: Vec<MidiInputConnection<()>>,
+    _watch: Option<PortWatch>,
+    _connections: Vec<MidiInputConnection<()>>,
+    /// Each opened port's name and the messages its callback has read.
+    read: Vec<(String, Arc<AtomicU64>)>,
+}
+
+impl Drop for MidiInputs {
+    fn drop(&mut self) {
+        for line in received_lines(&self.read) {
+            eprintln!("{line}");
+        }
+    }
 }
 
 impl MidiInputs {
@@ -56,8 +63,9 @@ impl MidiInputs {
     pub(crate) fn open(names: &[String], router: SharedRouter) -> Result<Self, String> {
         if names.is_empty() {
             return Ok(Self {
-                watch: None,
-                connections: Vec::new(),
+                _watch: None,
+                _connections: Vec::new(),
+                read: Vec::new(),
             });
         }
         // Named here because no port can be listed: the system may have no MIDI at all.
@@ -105,11 +113,16 @@ impl MidiInputs {
                 lost: false,
             });
         }
+        let read = opened
+            .iter()
+            .map(|port| (port.name.clone(), Arc::clone(&port.received)))
+            .collect();
         let watch = PortWatch::spawn(opened, router)
             .map_err(|e| format!("start the MIDI port watch: {e}"))?;
         Ok(Self {
-            watch: Some(watch),
-            connections,
+            _watch: Some(watch),
+            _connections: connections,
+            read,
         })
     }
 }
@@ -132,13 +145,25 @@ fn open_failure(name: &str, error: &str) -> String {
     }
 }
 
+/// One line per port with what it read, so "is my keyboard arriving?" has an answer per device.
+fn received_lines(read: &[(String, Arc<AtomicU64>)]) -> Vec<String> {
+    read.iter()
+        .map(|(name, received)| {
+            format!(
+                "midi: {name} read {} messages",
+                received.load(Ordering::Relaxed)
+            )
+        })
+        .collect()
+}
+
 /// One port `play` opened, as the watch follows it.
 struct Opened {
     /// The backend's identity for the port, stable while it stays plugged in, so two devices with
     /// one name are told apart.
     id: String,
     name: String,
-    /// Messages its callback has read, realtime and system messages excepted.
+    /// Messages its callback has read; clock, time code, active sensing and SysEx never reach it.
     received: Arc<AtomicU64>,
     lost: bool,
 }
@@ -166,6 +191,9 @@ impl PortWatch {
                 };
                 while !thread_stop.load(Ordering::SeqCst) {
                     std::thread::park_timeout(PORT_POLL);
+                    if thread_stop.load(Ordering::SeqCst) {
+                        break;
+                    }
                     for port in opened.iter_mut().filter(|port| !port.lost) {
                         if lister.find_port_by_id(&port.id).is_none() {
                             port.lost = true;
@@ -209,6 +237,21 @@ mod tests {
     }
 
     #[test]
+    fn each_port_reports_what_it_read() {
+        let read = [
+            ("KeyStep".to_string(), Arc::new(AtomicU64::new(3))),
+            ("MPC".to_string(), Arc::new(AtomicU64::new(0))),
+        ];
+        assert_eq!(
+            received_lines(&read),
+            vec![
+                "midi: KeyStep read 3 messages".to_string(),
+                "midi: MPC read 0 messages".to_string()
+            ]
+        );
+    }
+
+    #[test]
     fn no_inputs_open_nothing_and_start_no_watch() {
         let diagnostics = crate::diagnostics::Diagnostics::new();
         let (producer, _ring) = crate::control::ring_pair(Arc::clone(&diagnostics));
@@ -218,8 +261,8 @@ mod tests {
             false,
         )));
         let inputs = MidiInputs::open(&[], router).expect("opens nothing");
-        assert!(inputs.watch.is_none());
-        assert!(inputs.connections.is_empty());
+        assert!(inputs._watch.is_none());
+        assert!(inputs._connections.is_empty());
     }
 
     #[test]
