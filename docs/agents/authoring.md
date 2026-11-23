@@ -651,11 +651,12 @@ Full wildcard dispatch (`/drums/*/decay`) is designed but not built — today a 
 most one node.
 
 A pattern reaches the engine as such a string. Send the `pattern` Operator's mini-notation text
-to its `pat` input, or to a `str` interface pipe in front of it (`/pattern/in "0 2 <4 7> ~"` in
-`pattern-melody`), with the engine channel's `send` (`send_live_controls`). A pattern that does not
+to its `pat` input when nothing feeds it, or to the `str` interface input that feeds it (in
+`pattern-melody`, `/pattern/in "0 2 <4 7> ~"`; `/melody/pat` is wired there, so a send to it is
+dropped), with the engine channel's `send` (`send_live_controls`). A pattern that does not
 compile comes back in the `send` reply with its byte span, and the old pattern plays on. The same
 text sent as OSC over UDP is never compiled, so it is dropped. An accepted pattern takes over at
-the next cycle start.
+the next cycle start, or at once when nothing is playing yet.
 
 A node's `address` field is `/` plus **one** non-empty name: printable ASCII, with no whitespace,
 no second `/`, no `.` (it separates a node from its port in a wire-ref), and none of the OSC
