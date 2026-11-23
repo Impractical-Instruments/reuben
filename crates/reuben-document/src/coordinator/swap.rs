@@ -622,6 +622,8 @@ mod tests {
                     .carry_live_values(&mut self.engine, bundle.migration.live_values());
                 let dropped = self.engine.take_dropped_wired_writes();
                 bundle.engine.credit_dropped_wired_writes(dropped);
+                let dropped = self.engine.take_dropped_unprepared();
+                bundle.engine.credit_dropped_unprepared(dropped);
                 let retiring = std::mem::replace(&mut self.engine, bundle.engine);
                 let _ = self.mailbox.post_retiree(Box::new(InstallBundle {
                     engine: retiring,

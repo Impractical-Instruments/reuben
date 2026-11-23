@@ -16,11 +16,12 @@
 //! - **Value** (`f32`, `i32`, `str`, a vocab enum, `harmony`): forward the held latch as a sparse
 //!   Value write. The dedup baseline is **operator state** (not the per-segment `MsgWriter`), so a
 //!   pipe emits its seed once on the first block and then only on change — downstream latches see
-//!   the same change frames a direct wire would have delivered.
+//!   the same change frames a direct wire would have delivered. A `str` pipe holds and forwards
+//!   only the [`Prepared`](crate::message::Arg::Prepared) value its consumers' preparer built
+//!   (Instantiate gives the pipe that preparer); with no preparing consumer it forwards nothing.
 //! - **Event** (`note`): re-emit every routed event at its frame, verbatim.
 
 use alloc::boxed::Box;
-use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -39,11 +40,25 @@ pub struct Pipe {
     /// `MsgWriter`'s dedup is per-call). `None` until the first block, so the seed (declared
     /// default or author literal) is forwarded exactly once at frame 0.
     last: Option<Arg>,
+    /// A `str` pipe: its latch forwards only once it holds a prepared value.
+    text: bool,
 }
 
 impl Pipe {
     pub fn new(kind: PortKind) -> Self {
-        Self { kind, last: None }
+        Self {
+            kind,
+            last: None,
+            text: false,
+        }
+    }
+
+    /// A `str` interface pipe.
+    pub fn text() -> Self {
+        Self {
+            text: true,
+            ..Self::new(PortKind::Value)
+        }
     }
 }
 
@@ -77,8 +92,11 @@ impl Operator for Pipe {
                 // Forward the held latch, type-erased: the pipe's declared type already
                 // normalized it (an enum latches its concrete variant), so the raw Arg is
                 // exactly what a downstream latch wants. Cheap clone — F32 / Enum / Harmony
-                // copy, and a `str` pipe's `Arc<str>` takes a refcount bump.
+                // copy, and a `str` pipe's prepared value takes a refcount bump.
                 let Some(arg) = io.latch_arg(0) else { return };
+                if self.text && !matches!(arg, Arg::Prepared(_)) {
+                    return;
+                }
                 if !self.last.as_ref().is_some_and(|last| unchanged(last, arg)) {
                     let arg = arg.clone();
                     MsgWriter::on(io, 0).set(0, arg.clone());
@@ -100,16 +118,19 @@ impl Operator for Pipe {
     }
 
     fn spawn(&self) -> Box<dyn Operator> {
-        Box::new(Self::new(self.kind))
+        Box::new(Self {
+            last: None,
+            ..*self
+        })
     }
 }
 
-/// The Value pipe's dedup test. A string compares by allocation, not by text: the latch only ever
-/// changes by being replaced, so a different allocation is a new send, and comparing text would
-/// walk the whole string on every block.
+/// The Value pipe's dedup test. A prepared value compares by allocation, not by text: the latch
+/// only ever changes by being replaced, so a different allocation is a new send, and comparing
+/// text would walk the whole string on every block.
 fn unchanged(last: &Arg, latch: &Arg) -> bool {
     match (last, latch) {
-        (Arg::Str(a), Arg::Str(b)) => Arc::ptr_eq(a, b),
+        (Arg::Prepared(a), Arg::Prepared(b)) => a.ptr_eq(b),
         _ => last == latch,
     }
 }
@@ -210,5 +231,49 @@ mod tests {
             "the spawned copy forwards the same value again: its dedup baseline is reset"
         );
         assert_eq!((first[0].frame, &first[0].arg), (0, &Arg::F32(440.0)));
+    }
+
+    /// One block of a Value pipe over `latch`, returning what it forwarded.
+    fn forward(pipe: &mut dyn Operator, latch: Arg) -> Vec<Emit> {
+        let mut sink: Vec<Emit> = Vec::new();
+        let latch = [latch];
+        let mut io = Io::new(48_000.0, 8, [None], core::iter::empty::<&mut [f32]>())
+            .with_latched(&latch)
+            .with_emit(&mut sink, 0);
+        pipe.process(&mut io);
+        drop(io);
+        sink
+    }
+
+    /// A `str` pipe forwards a prepared value once per send: the same allocation is unchanged,
+    /// and a new send of the same text forwards again.
+    #[test]
+    fn text_pipe_forwards_each_prepared_send_once() {
+        use crate::prepare::testing::STEPS;
+        let mut pipe = Pipe::text();
+        let a = Arg::Prepared(STEPS.prepare(&"1 2".into()).unwrap());
+        let first = forward(&mut pipe, a.clone());
+        assert_eq!(first.len(), 1);
+        let (Arg::Prepared(sent), Arg::Prepared(held)) = (&first[0].arg, &a) else {
+            panic!("forwards the prepared value");
+        };
+        assert!(sent.ptr_eq(held), "forwarded by refcount");
+        assert!(
+            forward(&mut pipe, a).is_empty(),
+            "the same send is not re-forwarded"
+        );
+        let again = Arg::Prepared(STEPS.prepare(&"1 2".into()).unwrap());
+        assert_eq!(forward(&mut pipe, again).len(), 1, "a new send forwards");
+    }
+
+    /// A `str` pipe no preparer reads holds a placeholder, which it never forwards; a spawned copy
+    /// stays a `str` pipe.
+    #[test]
+    fn text_pipe_forwards_nothing_but_a_prepared_value() {
+        let mut pipe = Pipe::text();
+        assert!(forward(&mut pipe, Arg::F32(0.0)).is_empty());
+        assert!(forward(&mut pipe, Arg::Str("raw".into())).is_empty());
+        let mut spawned = pipe.spawn();
+        assert!(forward(spawned.as_mut(), Arg::F32(0.0)).is_empty());
     }
 }

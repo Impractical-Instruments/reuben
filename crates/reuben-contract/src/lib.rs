@@ -133,9 +133,11 @@ pub enum PortTy {
     /// `arg` — a type-agnostic pass-through carrying any `Arg`. Input-only
     /// ([`validate`] enforces it — legality needs list context).
     Arg,
-    /// `str` — a held string (`Arg::Str`), read as `&str`; unset, it reads `""`. Input-only
-    /// ([`validate`] enforces it).
-    Str,
+    /// `str(prepare_fn)` — text compiled off the render thread by the named preparer, a path to
+    /// a `fn(&str) -> Result<Prepared, PrepareError>`; the render thread holds only what it built.
+    /// Input-only, and an input names its preparer ([`validate`] enforces both). `None` only
+    /// reaches [`validate`], which refuses it: a raw string has no reader on the render thread.
+    Str(Option<String>),
 }
 
 impl PortTy {
@@ -190,6 +192,8 @@ struct PortSpecFlat {
     i32: Option<I32Meta>,
     #[serde(default)]
     vocab: Option<String>,
+    #[serde(default)]
+    prepare: Option<String>,
 }
 
 impl TryFrom<PortSpecFlat> for PortSpec {
@@ -205,6 +209,7 @@ impl TryFrom<PortSpecFlat> for PortSpec {
             mut f32,
             mut i32,
             mut vocab,
+            mut prepare,
         } = flat;
         // Each arm takes the block(s) its type consumes; whatever is left afterwards is a stray.
         let ty = match ty.as_str() {
@@ -223,7 +228,7 @@ impl TryFrom<PortSpecFlat> for PortSpec {
             "note" => PortTy::Note,
             "harmony" => PortTy::Harmony,
             "pitch" => PortTy::Pitch,
-            "str" => PortTy::Str,
+            "str" => PortTy::Str(prepare.take()),
             "arg" => PortTy::Arg,
             other => {
                 return Err(format!(
@@ -245,6 +250,9 @@ impl TryFrom<PortSpecFlat> for PortSpec {
             return Err(format!(
                 "port {name:?}: only an `enum` port names a vocab type"
             ));
+        }
+        if prepare.is_some() {
+            return Err(format!("port {name:?}: only a `str` port names a preparer"));
         }
         Ok(PortSpec { name, ty })
     }
@@ -311,6 +319,11 @@ fn is_snake_case(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// A Rust path to a function, `name` or `a::b::name`, each segment an identifier.
+fn is_path(path: &str) -> bool {
+    path.split("::").all(is_ident)
 }
 
 /// A non-empty Rust type identifier: an ASCII letter then `[A-Za-z0-9_]`. The rule for the `vocab`
@@ -388,7 +401,7 @@ fn validate_port(at: Locus, label: &str, p: &PortSpec) -> Result<(), ContractErr
         // allocates. A string enters only from outside the graph: a document value or a live
         // control message. Not a constant either: no Operator reads a constant's value, so a
         // `str` one would validate, save and do nothing.
-        PortTy::Str => {
+        PortTy::Str(prepare) => {
             if label != "input" {
                 let why = if label == "output" {
                     "an operator cannot build a string on the render thread without allocating"
@@ -399,6 +412,30 @@ fn validate_port(at: Locus, label: &str, p: &PortSpec) -> Result<(), ContractErr
                     at,
                     format!("{label} {:?}: `str` is an input type only ({why})", p.name),
                 ));
+            }
+            // The render thread never holds raw text, so a `str` input with nothing to compile it
+            // would have nothing to read.
+            match prepare.as_deref() {
+                None => {
+                    return Err(ContractError::new(
+                        at,
+                        format!(
+                            "input {:?}: a `str` input names the function that prepares its text, \
+                             `str(prepare_fn)`, a `fn(&str) -> Result<Prepared, PrepareError>`",
+                            p.name
+                        ),
+                    ))
+                }
+                Some(path) if !is_path(path) => {
+                    return Err(ContractError::new(
+                        at,
+                        format!(
+                            "input {:?}: preparer {path:?} must be a path to a function",
+                            p.name
+                        ),
+                    ))
+                }
+                Some(_) => {}
             }
         }
         PortTy::F32Buffer(None) | PortTy::Note | PortTy::Harmony | PortTy::Pitch => {}
@@ -514,15 +551,40 @@ mod tests {
 
     #[test]
     fn str_is_an_input_type_only() {
-        let ok = spec(r#"{ "type_name": "x", "inputs": [ {"name":"pat","ty":"str"} ] }"#);
+        let ok = spec(
+            r#"{ "type_name": "x", "inputs": [ {"name":"pat","ty":"str","prepare":"compile"} ] }"#,
+        );
         assert!(validate(&ok).is_ok());
-        assert_eq!(ok.inputs[0].ty, PortTy::Str);
+        assert_eq!(ok.inputs[0].ty, PortTy::Str(Some("compile".to_string())));
         let e = err(r#"{ "type_name": "x", "outputs": [ {"name":"pat","ty":"str"} ] }"#);
         assert_eq!(e.locus, Locus::Output(0));
         assert!(e.message.contains("input type only"), "{}", e.message);
         let e = err(r#"{ "type_name": "x", "constants": [ {"name":"label","ty":"str"} ] }"#);
         assert_eq!(e.locus, Locus::Constant(0));
         assert!(e.message.contains("declare a `str` input"), "{}", e.message);
+    }
+
+    #[test]
+    fn a_str_input_names_its_preparer() {
+        let e = err(r#"{ "type_name": "x", "inputs": [ {"name":"pat","ty":"str"} ] }"#);
+        assert_eq!(e.locus, Locus::Input(0));
+        assert!(e.message.contains("str(prepare_fn)"), "{}", e.message);
+        let e =
+            err(r#"{ "type_name": "x", "inputs": [ {"name":"pat","ty":"str","prepare":"a b"} ] }"#);
+        assert!(e.message.contains("path to a function"), "{}", e.message);
+        let ok = spec(
+            r#"{ "type_name": "x", "inputs": [ {"name":"pat","ty":"str","prepare":"crate::p::compile"} ] }"#,
+        );
+        assert!(validate(&ok).is_ok());
+        let stray = serde_json::from_str::<OperatorSpec>(
+            r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"note","prepare":"compile"} ] }"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            stray.contains("only a `str` port names a preparer"),
+            "{stray}"
+        );
     }
 
     #[test]

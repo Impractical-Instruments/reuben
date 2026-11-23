@@ -148,17 +148,26 @@ impl Operator for Filter {
 - **`name: note`** / **`name: harmony`** / **`name: pitch`** — `Note` (Event) / `Harmony` (Value) /
   `Pitch` (Value) ports (`Port::note` / `Port::harmony` / `Port::pitch`). `pitch` is a held `Pitch`
   leaf — the wire-internal output an `unpack_<type>` op emits, consumed by `pitch2freq`.
-- **`name: str`** — a held string (Value) input (`Port::str`), read through its
-  `In<Held<str>>` handle as a `&str` borrowed from the latch (no copy, no allocation); unset, it
-  reads `""`. **Input-only**: the validator refuses a `str` output, because building a string on
-  the render thread allocates, and a `str` constant, because no operator reads a constant's
-  value. Read it, don't keep it — a `&str` cannot outlive the `process` call,
-  and copying it into operator state would allocate. A value overwriting the latch does not free
-  the replaced string on the render thread: the engine moves it into the Engine's retire queue and
-  the Coordinator drops it off-thread — a live send, a seed or authored value overwritten after a
-  Swap, and a rendered `str` pipe's first block over each consumer's seed alike. Only a full queue
-  drops one there, counted in the engine diagnostics (`retire_queue_dropped_full`), or an Engine
-  built without a Coordinator (the class `Arg::Str` in `message.rs` documents).
+- **`name: str(prepare_fn)`** — text the render thread never parses (`Port::str_prepared`).
+  `prepare_fn` is a path to a `no_std` `fn(&str) -> Result<Prepared, PrepareError>`: it compiles
+  the text into a payload wrapped by `Prepared::new(payload)`, or refuses it with a
+  `PrepareError` carrying the byte span at fault and a short message
+  ([`prepare.rs`](../../crates/reuben-core/src/prepare.rs)). It runs off the render thread: at
+  Plan build for a document default (an unset input compiles `""`), so a default it refuses fails
+  validation and the edit is refused; and in the producer for a live send. The input then holds an
+  `Arg::Prepared`, read through its `In<Held<Prepared>>` handle as `Option<&Prepared>` borrowed
+  from the latch, the payload by `.payload::<T>()` — no copy, no allocation. Routing delivers only
+  a value this preparer built (the kind tag the macro derives from the declaring module and the
+  path); raw text or another preparer's value is dropped and counted
+  (`unprepared_writes_dropped`). A bare `str` input is refused at build: nothing on the render
+  thread reads raw text. **Input-only**: the validator refuses a `str` output, because building a
+  string on the render thread allocates, and a `str` constant, because no operator reads a
+  constant's value. Keep the reference only for the `process` call. A value overwriting the latch
+  does not free the replaced one on the render thread: the engine moves it into the Engine's
+  retire queue and the Coordinator drops it off-thread — a live send, a seed or authored value
+  overwritten after a Swap, and a rendered `str` pipe's first block over each consumer's seed
+  alike. Only a full queue drops one there, counted in the engine diagnostics
+  (`retire_queue_dropped_full`), or an Engine built without a Coordinator.
 - **`name: arg`** — a **type-agnostic pass-through** (issue #141): carries *any* `Arg` as a raw
   Event stream (`Port::arg`), read via its `In<Raw>` handle (`io.read(IN)` yields undecoded
   `&Arg` payloads) and re-emitted through the sink's local `Out<Raw>` tap handle

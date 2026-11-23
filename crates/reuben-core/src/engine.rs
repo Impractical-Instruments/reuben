@@ -198,6 +198,25 @@ impl Engine {
         self.plan.dropped_wired_writes += n;
     }
 
+    /// Take the count of strings dropped at a `str` input for not being a value its preparer
+    /// built (raw text that skipped a producer's prepare, or another preparer's value), leaving
+    /// zero. RT-safe: a field read and write.
+    pub fn take_dropped_unprepared(&mut self) -> u64 {
+        self.plan.take_dropped_unprepared()
+    }
+
+    /// Add `n` to the count [`take_dropped_unprepared`](Self::take_dropped_unprepared) returns: an
+    /// install credits the fresh Engine with what the retiring one had not handed on.
+    pub fn credit_dropped_unprepared(&mut self, n: u64) {
+        self.plan.dropped_unprepared += n;
+    }
+
+    /// The addresses whose sends this Engine's Plan expects prepared; see
+    /// [`Plan::prepared_routes`].
+    pub fn prepared_routes(&self) -> &alloc::sync::Arc<crate::plan::PreparedRoutes> {
+        self.plan.prepared_routes()
+    }
+
     /// Fill `out` with **interleaved logical** samples, rendering core blocks as needed.
     /// `out.len()` must be a multiple of [`Engine::channels`]; frame `f`, channel `c` lands at
     /// `out[f * channels + c]`. The no-input convenience: an instrument's bound input pipes

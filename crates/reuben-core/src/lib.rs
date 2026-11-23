@@ -85,6 +85,7 @@ pub mod meter;
 pub mod operator;
 pub mod operators;
 pub mod plan;
+pub mod prepare;
 pub mod probe;
 pub mod registry;
 pub mod render;

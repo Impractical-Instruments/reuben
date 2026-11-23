@@ -202,7 +202,7 @@ read's fallback **is** the contract default (no second literal to drift).
 | **enum** (a *vocab* type, a Value, `In<Held<E>>`) | a named discrete choice — `FilterMode`, `Waveform` | read: the real Rust enum (not an index), defaulted to its `#[default]` variant |
 | **`Harmony`** (vocab struct, a Value, `In<Held<Harmony>>`) | the tonal-context struct: `root`/`scale`/`chord` + resolvers `hz()`/`snap()`/`chord_tone()` | read: `Harmony`, defaulted to C-major 12-TET (`Harmony::DEFAULT`) · write: `MsgWriter` (`.set(frame, h)`) |
 | **`Note`** (vocab struct, an Event, `In<Event<Note>>`) | a pitch/velocity event | read: `EventStream<Note>` of `Stamped<Note>` (`.frame`, `.payload`) · write: `EventWriter` (`.emit(frame, note)`) |
-| **`str`** (a held *Value*, `In<Held<str>>`) | a string — text an operator interprets, set from a document literal or a live send | read: `&str` borrowed from the latch, `""` when unset · **input only**: an operator cannot build a string on the render thread without allocating, so no Operator declares a `str` output (an interface pipe's `out` and a subpatch face do carry one, forwarding what came in) |
+| **`str`** (a held *Value*, `In<Held<Prepared>>`) | text an operator interprets, set from a document literal or a live send, and compiled off the render thread by the preparer the input declares | read: `Option<&Prepared>` borrowed from the latch, its payload by `.payload::<T>()`; the render thread never holds the text · **input only**: an operator cannot build a string on the render thread without allocating, so no Operator declares a `str` output (an interface pipe's `out` and a subpatch face do carry one, forwarding what came in, compiled for the inputs it feeds) |
 
 A port's **form** is one of three — **Signal** (`f32_buffer`), **Value**
 (`f32`/enum/`Harmony`/`str`, a held latch read once per slice), **Event** (`Note`, a sparse
@@ -260,7 +260,11 @@ Each wire is checked **locally** at Instantiate against the two ports' forms (`c
 - **`str` wires only to `str`** (and into `osc_out`'s pass-through). There is no implicit
   conversion either way: a number never becomes text, and text never parses into a number. A live
   send of the wrong type to a `str` input is dropped, and a number literal on one is refused at
-  load.
+  load. Text that the input's preparer refuses is refused too: a document default that does not
+  compile fails validation with the byte span at fault, so the edit is refused. A kept `str`
+  interface input (one feeding several inputs) compiles its text once for all of them, so feeding
+  inputs whose preparers differ is refused; one feeding no preparing input holds nothing a send
+  can set.
 
 Every *other* cross-*type* crossing still needs an operator: `f32 → enum` is a quantizer; `f32 →
 Note` is a threshold/trigger; `slew`/`glide` are `f32 → f32` shapers (the `m2s` gap-filling modes).
@@ -625,7 +629,9 @@ input takes a scalar (`/filt/cutoff 1500`). An enum input takes a **symbol** —
 (`/filt/mode "Hp"`; the JSON literal `"mode": "Hp"` is the same form) — with an in-range integer
 index accepted as a fallback, quoted (`"1"`) or bare (`1`); an unknown symbol or out-of-range
 index is an **error**, never a silent snap to the default. A `str` input takes one string
-(`/seq/pat "0 3 ~"`); anything else sent to it is dropped. A `Note` input takes its args
+(`/seq/pat "0 3 ~"`), which its preparer compiles before the render thread holds it: text that
+reaches the render thread uncompiled is dropped and counted (`unprepared_writes_dropped`), and
+anything else sent to it is dropped. A `Note` input takes its args
 (`/notes/in [69.0, 1.0]` on a `notes` interface input, or `/voicer/notes [69.0, 1.0]` on a voicer
 nothing feeds). An input a wire or an interface input feeds takes no message: one sent to it is
 dropped and counted (`wired_writes_dropped`), so a `notes` interface input feeding

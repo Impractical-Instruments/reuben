@@ -15,6 +15,8 @@ use num_traits::Float;
 // `reuben-contract` on the bare-metal target, which is why that crate builds without an OS too.
 pub use reuben_contract::{Curve, F32Meta, I32Meta};
 
+use crate::prepare::Preparer;
+
 /// What a port carries — **the port's [`Arg`](crate::message::Arg) type**. Replaces
 /// the retired `Shape`: delivery and read-style are no longer a declared axis, they follow from
 /// the Arg type plus the handle's form (`io.read` on an `Event<Note>` / `Held<T>` handle). One variant per `Arg` *family*; a
@@ -32,12 +34,12 @@ pub enum PortType {
     /// integer (a count like the voicer's `voices` pool size), carrying its range + default in
     /// [`I32Meta`]; `None` for a bare integer atom with no declared range.
     I32 { meta: Option<I32Meta> },
-    /// A held string — a latched [`Value`](crate::plan::PortKind::Value) whose `Arg` is
-    /// `Arc<str>`-backed, so forwarding one across the render thread is a refcount bump.
-    /// Construction allocates and stays on the cold paths (the OSC decode thread, document load);
-    /// where the render thread may *free* one is [`Arg::Str`](crate::message::Arg::Str)'s to say.
-    /// Unwired and unset, it reads as `""`.
-    Str,
+    /// Text: a latched [`Value`](crate::plan::PortKind::Value) the document and a live send spell
+    /// as a string, and the render thread holds as the [`Prepared`](crate::message::Arg::Prepared)
+    /// value its `preparer` built. An Operator's `str` input always names one (the contract
+    /// refuses one that does not); an interface pipe's ports start with none and take their
+    /// consumers' at Instantiate. Unset, the input holds its preparer's compile of `""`.
+    Str { preparer: Option<Preparer> },
     /// A dense per-sample signal (audio): the **only** Arg with a buffer form. A `Buffer`-source
     /// wired into a scalar port is illegal — it needs an explicit sampler op. Not
     /// boundary-crossable (no OSC form), which is how audio is kept off the wire by construction.
@@ -114,7 +116,7 @@ impl core::fmt::Display for PortType {
         match self {
             PortType::F32 => write!(f, "F32"),
             PortType::I32 { .. } => write!(f, "I32"),
-            PortType::Str => write!(f, "Str"),
+            PortType::Str { .. } => write!(f, "Str"),
             PortType::F32Buffer => write!(f, "F32Buffer"),
             PortType::Vocab { name, .. } => write!(f, "{name}"),
             PortType::Arg => write!(f, "Arg"),
@@ -288,13 +290,42 @@ impl Port {
         Self::vocab(name, "Pitch", false)
     }
 
-    /// A held string port — [`PortType::Str`]. Reads as `&str` through an `In<Held<str>>` handle.
+    /// A `str` port with no preparer: an interface pipe's, until Instantiate gives it its
+    /// consumers' ([`with_preparer`](Self::with_preparer)).
     pub const fn str(name: &'static str) -> Self {
         Self {
             name,
-            ty: PortType::Str,
+            ty: PortType::Str { preparer: None },
             meta: None,
         }
+    }
+
+    /// An Operator's `str` input, prepared by `preparer`. Read through an `In<Held<Prepared>>`
+    /// handle.
+    pub const fn str_prepared(name: &'static str, preparer: Preparer) -> Self {
+        Self {
+            name,
+            ty: PortType::Str {
+                preparer: Some(preparer),
+            },
+            meta: None,
+        }
+    }
+
+    /// The preparer of a `str` port, if it has one.
+    pub fn preparer(&self) -> Option<&Preparer> {
+        match &self.ty {
+            PortType::Str { preparer } => preparer.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// This `str` port prepared by `preparer`; any other port unchanged.
+    pub fn with_preparer(mut self, preparer: Preparer) -> Self {
+        if let PortType::Str { preparer: p } = &mut self.ty {
+            *p = Some(preparer);
+        }
+        self
     }
 
     /// A scalar [`F32`](PortType::F32) control input: one input declared once, carrying
@@ -400,8 +431,9 @@ impl Port {
                 enum_meta: Some(e), ..
             } => e.resolve_arg(raw),
             // Only a string sets a string port: no number spells one, so a numeric literal on a
-            // `str` port is refused rather than formatted.
-            PortType::Str => match raw {
+            // `str` port is refused rather than formatted. The text is the document's value; the
+            // Plan prepares it when it seeds the input's latch.
+            PortType::Str { .. } => match raw {
                 Arg::Str(s) => Some(Arg::Str(s.clone())),
                 _ => None,
             },
@@ -563,7 +595,7 @@ mod tests {
         for ty in [
             PortType::F32,
             PortType::I32 { meta: None },
-            PortType::Str,
+            PortType::Str { preparer: None },
             PortType::Arg,
         ] {
             assert!(!ty.is_buffer(), "{ty} must not classify as a buffer");

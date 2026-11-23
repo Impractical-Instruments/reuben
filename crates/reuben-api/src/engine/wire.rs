@@ -580,6 +580,12 @@ pub struct DiagnosticsReport {
     /// predates it, and then zero.
     #[serde(default)]
     pub retire_queue_dropped_full: u64,
+    /// Strings dropped at a `str` input that compiles its text, for not being a value its
+    /// preparer built: raw text that reached it without a `send` preparing it (OSC over UDP), or
+    /// text prepared for an input the instrument no longer routes there (messages). Absent from a
+    /// report by an engine that predates it, and then zero.
+    #[serde(default)]
+    pub unprepared_writes_dropped: u64,
 }
 
 /// The engine's levels at the device: what it sends out, after the output map, and what the input
@@ -753,6 +759,7 @@ mod tests {
             control_batches_dropped_full: 7,
             wired_writes_dropped: 3,
             retire_queue_dropped_full: 3,
+            unprepared_writes_dropped: 2,
         }
     }
 
@@ -1212,7 +1219,8 @@ mod tests {
                 "input_ring_producer_drops": 96,
                 "control_batches_dropped_full": 7,
                 "wired_writes_dropped": 3,
-                "retire_queue_dropped_full": 3
+                "retire_queue_dropped_full": 3,
+                "unprepared_writes_dropped": 2
             })
         );
     }
@@ -1229,6 +1237,7 @@ mod tests {
         assert_eq!(report.control_batches_dropped_full, 0);
         assert_eq!(report.wired_writes_dropped, 0);
         assert_eq!(report.retire_queue_dropped_full, 0);
+        assert_eq!(report.unprepared_writes_dropped, 0);
     }
 
     #[test]

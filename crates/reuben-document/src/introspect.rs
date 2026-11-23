@@ -86,7 +86,7 @@ fn port_kind(ty: &PortType) -> &'static str {
         } => "enum",
         PortType::Vocab { .. } => "vocab",
         PortType::I32 { .. } => "int",
-        PortType::Str => "string",
+        PortType::Str { .. } => "string",
         // The type-agnostic pass-through — any Arg, the `osc_out` sink's input.
         PortType::Arg => "arg",
     }
@@ -763,6 +763,41 @@ fn faulted(
                 vec![fault],
             )
         }
+        // The document holds text its preparer refuses: a node literal, an interface input's
+        // default, or an unset input's `""`. Not attributed to an edit: the planner reports the
+        // first such value only.
+        Err(PlanError::Prepare { node, port, error }) => (
+            Report {
+                ok: false,
+                errors: vec![Diag {
+                    message: format!(
+                        "{node}.{port}: the text does not compile at bytes {}..{}: {}",
+                        error.span.start, error.span.end, error.message
+                    ),
+                    node: Some(node),
+                    port: Some(port),
+                }],
+                warnings,
+            },
+            vec![None],
+        ),
+        Err(PlanError::PreparerConflict { pipe, kinds }) => (
+            Report {
+                ok: false,
+                errors: vec![Diag {
+                    message: format!(
+                        "interface input {pipe} feeds `str` inputs that compile their text \
+                         differently ({} and {}), so no one compiled value suits them all; give \
+                         each kind of input its own interface input",
+                        kinds.0, kinds.1
+                    ),
+                    node: Some(pipe),
+                    port: None,
+                }],
+                warnings,
+            },
+            vec![None],
+        ),
         // Unreachable from a document: the loader hands Instantiate only keys it minted. A backstop
         // like the arms above, never attributed. No `node`: a missing node has no address.
         Err(PlanError::UnknownNode { position }) => (

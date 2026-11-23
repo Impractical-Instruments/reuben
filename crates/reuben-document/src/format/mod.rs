@@ -2098,11 +2098,12 @@ impl InstrumentDoc {
                 // so unlike an operator type there is nothing registry-wide to share.
                 let descriptor = Arc::new(descriptor);
                 let bare_signal = kind == PortKind::Signal && descriptor.inputs[0].meta.is_none();
-                let key = graph.add_boxed(
-                    Arc::clone(&address),
-                    Box::new(Pipe::new(kind)),
-                    Arc::clone(&descriptor),
-                );
+                let op = match descriptor.inputs[0].ty {
+                    PortType::Str { .. } => Pipe::text(),
+                    _ => Pipe::new(kind),
+                };
+                let key =
+                    graph.add_boxed(Arc::clone(&address), Box::new(op), Arc::clone(&descriptor));
                 // An enum or `str` pipe's declared default seeds the pipe's latch as a
                 // value-override; numeric pipes carry theirs inside the port's own meta. Seeded with what
                 // `pipe_descriptor` resolved, not with the symbol as written: `set_value` drops a
@@ -2663,7 +2664,7 @@ impl InstrumentDoc {
                 // instrument's message-domain outputs, and a `str` one gets no captured slot
                 // besides (`Plan::instantiate`). It works when a parent wires it through a
                 // `subpatch` node, which is what this document is for.
-                if top_level && matches!(ty, PortType::Str) {
+                if top_level && matches!(ty, PortType::Str { .. }) {
                     warnings.push(LoadWarning::InertStrOutput { name: name.clone() });
                 }
                 match feed.channel {
@@ -2906,7 +2907,7 @@ fn pipe_doc_from_descriptor(
     if pipe.ty == "note" || pipe.ty == "harmony" || pipe.ty == "pitch" {
         return pipe;
     }
-    if let PortType::Str = &p.ty {
+    if let PortType::Str { .. } = &p.ty {
         if let Some((_, Arg::Str(s))) = node.value_overrides.first() {
             pipe.default = Some(PipeDefault::Symbol(s.to_string()));
         }
@@ -2992,7 +2993,7 @@ fn pipe_type_name(ty: &PortType) -> Option<String> {
         PortType::F32Buffer => Some("f32_buffer".to_string()),
         PortType::F32 => Some("f32".to_string()),
         PortType::I32 { .. } => Some("i32".to_string()),
-        PortType::Str => Some("str".to_string()),
+        PortType::Str { .. } => Some("str".to_string()),
         PortType::Vocab {
             name: "Note",
             is_event: true,
@@ -3148,7 +3149,7 @@ fn expected_literal(port: &Port, nothing: &str) -> String {
     if port.accepts_number_literal() {
         return "a number".to_string();
     }
-    if matches!(port.ty, PortType::Str) {
+    if matches!(port.ty, PortType::Str { .. }) {
         return "a string".to_string();
     }
     nothing.to_string()
@@ -3271,7 +3272,7 @@ fn coerce_literal(
         }
         // Through `coerce` like every other literal, so a `str` port stores exactly the
         // `Arg::Str` it validated. No length cap: the text is the value.
-        InputValue::Symbol(s) if matches!(port.ty, PortType::Str) => port
+        InputValue::Symbol(s) if matches!(port.ty, PortType::Str { .. }) => port
             .coerce(&Arg::Str(s.as_str().into()))
             .ok_or_else(|| bad_value(got_symbol(s))),
         InputValue::Symbol(s) => {
@@ -3564,6 +3565,7 @@ pub fn doc_value(port: &reuben_core::descriptor::Port, arg: &Arg) -> DocValue {
         Arg::F32(v) => DocValue::Number(widen_f32(*v)),
         Arg::I32(v) => DocValue::Number(*v as f64),
         Arg::Str(s) => DocValue::Symbol(s.to_string()),
+        Arg::Prepared(p) => DocValue::Symbol(p.source().to_string()),
         other => DocValue::Symbol(
             port.enum_meta()
                 .and_then(|e| e.symbol_of(other))
@@ -6901,11 +6903,16 @@ mod tests {
         mod str_witness {
             use reuben_core::descriptor::Descriptor;
             use reuben_core::operator::{Io, Operator};
+            use reuben_core::prepare::{PrepareError, Prepared};
+
+            fn any_text(_: &str) -> Result<Prepared, PrepareError> {
+                Ok(Prepared::new(()))
+            }
 
             pub struct StrWitness;
             reuben_core::operator_contract!(StrWitness {
                 type_name: "str_witness",
-                inputs: { text: str },
+                inputs: { text: str(any_text) },
                 outputs: { },
             });
             impl Operator for StrWitness {
@@ -6977,7 +6984,7 @@ mod tests {
                 (PortType::Arg, _) => LiteralPort::PassThrough,
                 (PortType::F32, false) => return Err("an F32 port carrying no F32Meta"),
                 (PortType::I32 { meta: None }, _) => return Err("an I32 port carrying no I32Meta"),
-                (PortType::Str, _) => LiteralPort::Str,
+                (PortType::Str { .. }, _) => LiteralPort::Str,
             })
         }
 

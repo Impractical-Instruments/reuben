@@ -60,6 +60,11 @@ pub struct Diagnostics {
     /// input a wire or an interface pipe feeds, whose value is its feeder's. Diagnosis: a
     /// controller writes a node input it should reach through the interface input feeding it.
     pub wired_writes_dropped: AtomicU64,
+    /// Strings the engine dropped at a `str` input that compiles its text, counted in
+    /// **messages**: raw text no `send` prepared, or text prepared for an input the instrument no
+    /// longer routes there. Diagnosis: a controller sends a pattern over OSC/UDP, which carries
+    /// raw text; send it through the engine channel instead.
+    pub unprepared_writes_dropped: AtomicU64,
     /// The Coordinator's retire queue, once [`watch_retire_queue`](Self::watch_retire_queue) is
     /// given it: its overflow count is the engine's, read here so the log line carries it too.
     retired: OnceLock<RetireDrain>,
@@ -113,6 +118,15 @@ impl Diagnostics {
         }
     }
 
+    /// Count `n` strings the engine dropped at a `str` input for not being prepared for it. A
+    /// single atomic add, skipped for zero.
+    pub fn record_unprepared_writes_dropped(&self, n: u64) {
+        if n > 0 {
+            self.unprepared_writes_dropped
+                .fetch_add(n, Ordering::Relaxed);
+        }
+    }
+
     /// Read the retire overflow from `drain` from now on. Only the first call takes effect: a
     /// session has one Coordinator.
     pub fn watch_retire_queue(&self, drain: RetireDrain) {
@@ -129,6 +143,7 @@ impl Diagnostics {
             control_batches_dropped_full: self.control_batches_dropped_full.load(Ordering::Relaxed),
             wired_writes_dropped: self.wired_writes_dropped.load(Ordering::Relaxed),
             retire_queue_dropped_full: self.retired.get().map_or(0, RetireDrain::dropped_full),
+            unprepared_writes_dropped: self.unprepared_writes_dropped.load(Ordering::Relaxed),
         }
     }
 }
@@ -147,6 +162,7 @@ pub struct Snapshot {
     /// full (values). Diagnosis: control that bypasses the engine channel's `send` (OSC over UDP)
     /// is not drained between batches.
     pub retire_queue_dropped_full: u64,
+    pub unprepared_writes_dropped: u64,
 }
 
 impl Snapshot {
@@ -163,14 +179,15 @@ pub fn log_snapshot(s: &Snapshot) {
     eprintln!(
         "diagnostics: output_xruns={} input_ring_underruns={} input_ring_overruns={} \
          input_ring_producer_drops={} control_batches_dropped_full={} wired_writes_dropped={} \
-         retire_queue_dropped_full={}",
+         retire_queue_dropped_full={} unprepared_writes_dropped={}",
         s.output_xruns,
         s.input_ring_underruns,
         s.input_ring_overruns,
         s.input_ring_producer_drops,
         s.control_batches_dropped_full,
         s.wired_writes_dropped,
-        s.retire_queue_dropped_full
+        s.retire_queue_dropped_full,
+        s.unprepared_writes_dropped
     );
 }
 

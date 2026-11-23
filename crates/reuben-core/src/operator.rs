@@ -347,6 +347,7 @@ pub mod form {
 
     use super::{EventStream, EventWriter, Io, MsgWriter};
     use crate::message::{Arg, FromArg};
+    use crate::prepare::Prepared;
     use crate::signal::{BlockMut, BlockView};
 
     /// The dense Signal form: a `f32_buffer` port (bare audio or a meta-carrying signal
@@ -355,8 +356,9 @@ pub mod form {
     pub struct SignalF32;
 
     /// The held (ZOH latch) Value form over payload `T`: a `f32` control, a vocab enum, a held
-    /// `Harmony`, a `str`. Reads as `T` (as `&str` for `Held<str>`, borrowed from the latch),
-    /// defaulted to the handle's declared default; writes as a [`MsgWriter`].
+    /// `Harmony`, a prepared `str`. Reads as `T` (as `Option<&Prepared>` for `Held<Prepared>`,
+    /// borrowed from the latch), defaulted to the handle's declared default; writes as a
+    /// [`MsgWriter`].
     pub struct Held<T: ?Sized>(PhantomData<T>);
 
     /// The sparse Event form over payload `T` (`Note`): unlatched, frame-stamped, many-per-frame.
@@ -419,16 +421,17 @@ pub mod form {
         }
     }
 
-    // A held string borrows from the latch rather than copying out, so the read is a pointer and a
-    // length — no refcount touch and no allocation. Not covered by the blanket impl above, which
-    // needs a `Sized + Copy` payload.
-    impl InForm for Held<str> {
-        type Default = &'static str;
-        type Read<'a> = &'a str;
-        fn read<'a>(io: &Io<'a>, index: usize, default: &'static str) -> &'a str {
-            io.latch_arg(index)
-                .and_then(<&str>::from_arg)
-                .unwrap_or(default)
+    // A prepared `str` input borrows the latched value, so the read is a reference: no refcount
+    // touch, no allocation. `None` until the latch holds one, which a Plan-built Engine never
+    // leaves it without. Not covered by the blanket impl above, which needs a `Copy` payload.
+    impl InForm for Held<Prepared> {
+        type Default = ();
+        type Read<'a> = Option<&'a Prepared>;
+        fn read<'a>(io: &Io<'a>, index: usize, _default: ()) -> Option<&'a Prepared> {
+            match io.latch_arg(index) {
+                Some(Arg::Prepared(p)) => Some(p),
+                _ => None,
+            }
         }
     }
 
@@ -739,22 +742,28 @@ mod typed_handles {
         assert_eq!(bare.read(SUSTAIN), 0.7);
     }
 
-    /// A held `str` handle borrows the latched text — the same allocation, not a copy — and an
-    /// unlatched one reads its declared default.
+    /// A prepared `str` handle borrows the latched value, and reads nothing from anything else.
     #[test]
-    fn read_held_str_borrows_the_latch() {
-        const PAT: In<Held<str>> = In::new(0, "");
-        let latch = [Arg::Str("0 3 <7 5> ~".into())];
+    fn read_held_prepared_borrows_the_latch() {
+        use crate::prepare::{testing, Prepared};
+        const PAT: In<Held<Prepared>> = In::new(0, ());
+        let prepared = testing::STEPS.prepare(&"1 2".into()).unwrap();
+        let latch = [Arg::Prepared(prepared)];
         let io =
             Io::new(48_000.0, 1, [None], core::iter::empty::<BlockMut<'_>>()).with_latched(&latch);
-        let read = io.read(PAT);
-        assert_eq!(read, "0 3 <7 5> ~");
-        let Arg::Str(held) = &latch[0] else {
+        let read = io.read(PAT).expect("prepared");
+        let Arg::Prepared(held) = &latch[0] else {
             unreachable!()
         };
-        assert!(core::ptr::eq(read, &**held));
-        let bare = Io::new(48_000.0, 1, [None], core::iter::empty::<BlockMut<'_>>());
-        assert_eq!(bare.read(PAT), "");
+        assert!(core::ptr::eq(read, held));
+        assert_eq!(read.payload::<testing::Steps>().map(|s| s.0.len()), Some(2));
+        let raw = [Arg::Str("1 2".into())];
+        let io =
+            Io::new(48_000.0, 1, [None], core::iter::empty::<BlockMut<'_>>()).with_latched(&raw);
+        assert!(
+            io.read(PAT).is_none(),
+            "a raw string is not a prepared value"
+        );
     }
 
     /// A held enum handle defaults to the variant the contract carries (the derive's `DEFAULT`,

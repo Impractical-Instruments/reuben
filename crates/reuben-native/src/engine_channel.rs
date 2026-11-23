@@ -667,6 +667,7 @@ pub fn diagnostics_report(snapshot: &Snapshot) -> DiagnosticsReport {
         control_batches_dropped_full,
         wired_writes_dropped,
         retire_queue_dropped_full,
+        unprepared_writes_dropped,
     } = *snapshot;
     DiagnosticsReport {
         output_xruns,
@@ -676,6 +677,7 @@ pub fn diagnostics_report(snapshot: &Snapshot) -> DiagnosticsReport {
         control_batches_dropped_full,
         wired_writes_dropped,
         retire_queue_dropped_full,
+        unprepared_writes_dropped,
     }
 }
 
@@ -1214,6 +1216,8 @@ mod tests {
         }
         d.record_wired_writes_dropped(5);
         d.record_wired_writes_dropped(0);
+        d.record_unprepared_writes_dropped(6);
+        d.record_unprepared_writes_dropped(0);
         let report = diagnostics_report(&d.snapshot());
         assert_eq!(report.output_xruns, 3);
         assert_eq!(report.input_ring_underruns, 11);
@@ -1221,6 +1225,7 @@ mod tests {
         assert_eq!(report.input_ring_producer_drops, 33);
         assert_eq!(report.control_batches_dropped_full, 4);
         assert_eq!(report.wired_writes_dropped, 5);
+        assert_eq!(report.unprepared_writes_dropped, 6);
         assert_eq!(
             report.retire_queue_dropped_full, 0,
             "no retire queue watched yet"
@@ -1241,8 +1246,9 @@ mod tests {
         d.watch_retire_queue(coordinator.retired());
         let mut slot = RenderSlot::new(side);
         let mut out = vec![0.0f32; 128 * slot.channels()];
-        // Nothing drains between these sends, as for OSC over UDP.
-        for i in 0..reuben_api::engine::RETIRE_QUEUE_CAPACITY {
+        // Nothing drains between these sends, as for OSC over UDP. Each raw string is retired
+        // once, from the pending-control queue, so twice the capacity overflows it.
+        for i in 0..2 * reuben_api::engine::RETIRE_QUEUE_CAPACITY {
             slot.queue_osc("/pat/in", &[Arg::Str(format!("pattern {i}").into())]);
             slot.fill(&mut out);
             slot.drain_outbound().for_each(drop);
