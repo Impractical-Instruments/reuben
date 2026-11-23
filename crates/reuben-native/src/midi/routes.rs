@@ -33,7 +33,7 @@ pub fn build_routes(doc: &SurfaceDoc, boundary: &Boundary) -> (RouteTable, Vec<S
                 Some(route)
             }
             Err(why) => {
-                warnings.push(format!("control \"{}\" skipped: {why}", control.bind));
+                warnings.push(why);
                 None
             }
         })

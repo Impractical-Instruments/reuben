@@ -73,8 +73,15 @@ pub struct MidiRoute {
 }
 
 /// Checks one control of a MIDI map against `boundary`. `Err` is why the control cannot be used;
-/// `Ok` carries the route and a warning for each adjustment made to it.
+/// `Ok` carries the route and a warning for each adjustment made to it. The `Err` names the control.
 pub fn check_midi_control(
+    control: &SurfaceControl,
+    boundary: &Boundary,
+) -> Result<(MidiRoute, Vec<String>), String> {
+    check(control, boundary).map_err(|why| format!("control \"{}\" skipped: {why}", control.bind))
+}
+
+fn check(
     control: &SurfaceControl,
     boundary: &Boundary,
 ) -> Result<(MidiRoute, Vec<String>), String> {
@@ -195,6 +202,10 @@ mod tests {
         let (route, warnings) = one(control);
         let why = route.expect_err(&format!("{bind} kept"));
         assert!(why.contains(reason), "{why:?} lacks {reason:?}");
+        assert!(
+            why.contains(&format!("\"{bind}\"")),
+            "{why:?} lacks the bind"
+        );
         assert!(warnings.is_empty(), "{warnings:?}");
     }
 
