@@ -57,6 +57,18 @@ rmcp (`reuben-mcp`), eframe/egui (`reuben-editor`).
    that is not the open top instrument's, so it is refused, and the editor drops the step
    (`Restored::Forgotten`). Test in Task 6.
 
+## PR grouping
+
+Issues: epic #958, Task N = the sub-issue listed below.
+
+The work ships as three PRs, each against `dev`, each closing the issues it covers ("Closes #N" for each):
+
+1. **Groundwork:** #959, #960, #961, #962. Moves into `reuben-api`, plus the store lookup and edit history. No visible change.
+2. **Verbs:** #963, #964, #965. The four verbs, engine handling, and the MCP tools. After this, models can edit MIDI maps.
+3. **Editor and docs:** #966, #967, #968. The controls panel switch, the MIDI map table, and the doc updates.
+
+Each PR's tasks run in plan order (subagent-driven: a fresh implementer and reviewer per task). The next PR branches from `dev` after the previous one merges.
+
 ---
 
 ### Task 1: Surface doc types and the screen check move into `reuben-api`
