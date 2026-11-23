@@ -69,6 +69,10 @@ and event outputs (append-only) need nothing.
     survive. A Signal write (`io.write(OUT) -> &mut [f32]`) fills the buffer in place.
   - **No `enum_index`/`from_index` on the hot path** — an enum handle reads the real vocab
     type directly (`io.read(IN_WAVEFORM) == Waveform::Saw`), constant for the (sub)block.
+  - **Count what you give up instead of allocating.** An operator that truncates or drops work
+    to stay inside a fixed capacity adds to a field of `io.counts()` (`OperatorCounts`); the
+    render folds each call's counts into the Engine's, and the host reports them in
+    `get_engine_diagnostics`. A new kind of count is a new field, named for its operator.
   - **Internal wires are addressless** — routed by connection, not name. Exemplars:
     `sequencer.rs` / `snap.rs` for `Note` events; the Voicer and `snap.rs` read `Harmony`,
     `harmony.rs` emits it.

@@ -6,9 +6,9 @@
 //! that, so this test runs the real CLI against a copy of `reuben-core` and lints the copy with
 //! `cargo clippy -D warnings`, the same verdict the author's own gate reaches.
 //!
-//! The copy is a three-crate workspace (`reuben-core` plus the two path crates it depends on)
+//! The copy is a four-crate workspace (`reuben-core` plus the three path crates it depends on)
 //! under `CARGO_TARGET_TMPDIR`, recopied from the real sources on every run. Its target dir
-//! persists, so registry dependencies build once; the three copied crates rebuild each run.
+//! persists, so registry dependencies build once; the four copied crates rebuild each run.
 //! `CARGO_TARGET_TMPDIR` is shared by every profile and by any worktree on the same target dir,
 //! so a file lock serializes runs that would otherwise rewrite one copy under each other.
 
@@ -16,7 +16,12 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const CRATES: [&str; 3] = ["reuben-contract", "reuben-macros", "reuben-core"];
+const CRATES: [&str; 4] = [
+    "reuben-contract",
+    "reuben-macros",
+    "reuben-pattern",
+    "reuben-core",
+];
 
 /// One spec per template branch: a single signal output (the plain silence write), a
 /// resource-bearing one with two signal outputs (the silence loop), and one with no signal

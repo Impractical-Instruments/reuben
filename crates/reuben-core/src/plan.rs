@@ -480,6 +480,9 @@ pub struct Plan {
     /// `str` input that is not a value its preparer built: a raw `Arg::Str`, or a
     /// [`Prepared`](crate::prepare::Prepared) of another kind.
     pub(crate) dropped_unprepared: u64,
+    /// What this Plan's Operators counted since the last take; see
+    /// [`OperatorCounts`](crate::operator::OperatorCounts).
+    pub(crate) operator_counts: crate::operator::OperatorCounts,
     /// Which addresses reach an input that prepares its text, and with what preparer. Built here
     /// and never changed, so a producer thread can hold it while this Plan renders.
     prepared_routes: Arc<PreparedRoutes>,
@@ -1183,6 +1186,7 @@ impl Plan {
             hosted: false,
             dropped_wired_writes: 0,
             dropped_unprepared: 0,
+            operator_counts: Default::default(),
             prepared_routes,
         })
     }
@@ -1420,6 +1424,12 @@ impl Plan {
     /// preparer built, leaving zero.
     pub(crate) fn take_dropped_unprepared(&mut self) -> u64 {
         core::mem::take(&mut self.dropped_unprepared)
+    }
+
+    /// Take what this Plan's Operators counted, leaving zero. A hosting Operator (the Voicer) adds
+    /// its sub-Plans' counts to its own call's this way.
+    pub(crate) fn take_operator_counts(&mut self) -> crate::operator::OperatorCounts {
+        core::mem::take(&mut self.operator_counts)
     }
 
     /// The addresses whose sends a producer prepares before they reach this Plan, with the

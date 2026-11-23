@@ -56,6 +56,7 @@ oscillator
 output
 overhead
 pan
+pattern
 pitch2freq
 plucked_string
 power_f32_signal

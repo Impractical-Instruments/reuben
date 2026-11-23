@@ -1,0 +1,96 @@
+{
+  "format_version": 3,
+  "instrument": "pattern-melody",
+  "doc": "Live-coded melody: a Clock drives a `pattern` Operator that plays the `pattern` pipe's mini-notation text as scale degrees through an 8-voice Voicer, so it opens playing a default tune. Send new text to /pattern/in through the engine channel's `send` (the one path that compiles it; a compile error comes back in the reply) and it takes over at the next cycle of 4 beats. `tempo` sets the Clock; `key` (MIDI tonic) the scale the degrees resolve against.",
+  "resources": {
+    "default-voice": "voices/default-voice.json"
+  },
+  "interface": {
+    "inputs": {
+      "key": {
+        "type": "i32",
+        "default": 60.0,
+        "min": 48.0,
+        "max": 72.0,
+        "unit": "MIDI"
+      },
+      "pattern": {
+        "type": "str",
+        "default": "0 2 4 <7 5> [4 2] 0 ~ <2 [1 0]>"
+      },
+      "tempo": {
+        "type": "f32",
+        "default": 110.0,
+        "min": 40.0,
+        "max": 240.0,
+        "unit": "BPM"
+      }
+    },
+    "outputs": {
+      "out": {
+        "from": "/out.audio"
+      }
+    }
+  },
+  "nodes": [
+    {
+      "type": "clock",
+      "address": "/clock",
+      "doc": "The beat grid the pattern plays against: `phase` and `beat` together are the musical position.",
+      "inputs": {
+        "tempo": {
+          "from": "/tempo"
+        }
+      }
+    },
+    {
+      "type": "pattern",
+      "address": "/melody",
+      "doc": "Plays the `pattern` pipe's text, one cycle per 4 beats, as scale-degree notes. A new pattern starts at the next cycle; the old one plays out its cycle first.",
+      "inputs": {
+        "beat": {
+          "from": "/clock.beat"
+        },
+        "pat": {
+          "from": "/pattern"
+        },
+        "phase": {
+          "from": "/clock.phase"
+        }
+      }
+    },
+    {
+      "type": "harmony",
+      "address": "/harmony",
+      "doc": "The tonal context the voicer resolves the pattern's degrees against: the `key` pipe sets the tonic, default C major.",
+      "inputs": {
+        "root": {
+          "from": "/key"
+        }
+      }
+    },
+    {
+      "type": "voicer",
+      "address": "/voicer",
+      "doc": "Hosts 8 default-voice sub-patches; resolves the pattern's degrees through /harmony, allocates them across the voices and sums their audio.",
+      "inputs": {
+        "harmony": {
+          "from": "/harmony"
+        },
+        "notes": {
+          "from": "/melody.notes"
+        }
+      },
+      "voice": "default-voice"
+    },
+    {
+      "type": "output",
+      "address": "/out",
+      "inputs": {
+        "audio": {
+          "from": "/voicer.audio"
+        }
+      }
+    }
+  ]
+}

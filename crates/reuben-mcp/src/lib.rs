@@ -1987,6 +1987,9 @@ mod tests {
             retire_queue_dropped_full: 1,
             unprepared_writes_dropped: 4,
             stale_sends_dropped: 6,
+            pattern_queries_truncated: 7,
+            pattern_atoms_skipped: 8,
+            pattern_notes_evicted: 9,
         };
         let result = block_on(
             server_with(FakeTransport::reachable().with_diagnostics(report))
@@ -2006,6 +2009,9 @@ mod tests {
         assert_eq!(s["retire_queue_dropped_full"], serde_json::json!(1));
         assert_eq!(s["unprepared_writes_dropped"], serde_json::json!(4));
         assert_eq!(s["stale_sends_dropped"], serde_json::json!(6));
+        assert_eq!(s["pattern_queries_truncated"], serde_json::json!(7));
+        assert_eq!(s["pattern_atoms_skipped"], serde_json::json!(8));
+        assert_eq!(s["pattern_notes_evicted"], serde_json::json!(9));
     }
 
     #[test]

@@ -79,6 +79,10 @@ pub enum Recipe {
     /// the first half of its numbered `gain` inputs driven per sample, so the bench pays for both
     /// the held-gain and the per-sample-gain paths.
     Sources,
+    /// `Default`, plus a pattern set on `pat` and a clock driven into `phase` and `beat` (a beat
+    /// every 3000 frames, so the second crosses four cycles) — for the `pattern`
+    /// Operator, which fires nothing on an empty pattern or a still clock.
+    Pattern,
 }
 
 /// One micro-bench workload: its kind and how to drive it.
@@ -106,6 +110,7 @@ pub const WORKLOADS: &[Workload] = &[
     w("m2s", Recipe::Value),
     w("mix", Recipe::Sources),
     w("osc_out", Recipe::Value),
+    w("pattern", Recipe::Pattern),
     w("plucked_string", Recipe::Gate),
     w("resonator", Recipe::Gate),
     w("sample", Recipe::Sample),
@@ -288,6 +293,7 @@ fn apply_recipe(driver: &mut OpDriver, desc: &Descriptor, recipe: Recipe) {
                 push_note(driver, desc, "in", Note::new(Pitch::Absolute(60.0), 1.0));
             }
         }
+        Recipe::Pattern => drive_pattern(driver, desc),
         Recipe::Sources => {
             for (i, p) in desc.inputs.iter().enumerate() {
                 let numbered = p
@@ -362,6 +368,32 @@ fn drive_clock(driver: &mut OpDriver, desc: &Descriptor, name: &str) {
     }
 }
 
+/// Frames per beat in [`Recipe::Pattern`]'s clock: 16 beats in the fixed second.
+const PATTERN_BEAT: usize = 3_000;
+
+/// Set `pat` to a pattern compiled by the port's own preparer, and drive `phase` and `beat` as a
+/// Clock would: `phase` ramping over each [`PATTERN_BEAT`] frames, `beat` stepping where it wraps.
+fn drive_pattern(driver: &mut OpDriver, desc: &Descriptor) {
+    let pat = input_index(desc, "pat");
+    let preparer = desc.inputs[pat]
+        .preparer()
+        .expect("the Pattern recipe needs a prepared `pat` input");
+    let text = "0 [3 5] <7 ~> 2*2, 0(3,8) [1 ~]/2";
+    let prepared = preparer
+        .prepare(&text.into())
+        .expect("the bench pattern compiles");
+    driver.set(pat, crate::message::Arg::Prepared(prepared));
+    let frames = BLOCKS * BLOCK_SIZE;
+    let phase: Vec<f32> = (0..frames)
+        .map(|f| (f % PATTERN_BEAT) as f32 / PATTERN_BEAT as f32)
+        .collect();
+    driver.drive(input_index(desc, "phase"), &phase);
+    let beat = input_index(desc, "beat");
+    for f in (PATTERN_BEAT..frames).step_by(PATTERN_BEAT) {
+        driver.push(beat, f, (f / PATTERN_BEAT) as i32);
+    }
+}
+
 /// Build a synthetic decoded sample (a 1 s sine, longer than the workload so the read loop never
 /// runs dry) and bind it to the operator's first resource slot through the real loader path.
 fn bind_synthetic_sample(driver: &mut OpDriver, desc: &Descriptor) {
@@ -433,6 +465,17 @@ mod tests {
     /// Every workload builds and renders a full block schedule without panicking — a cheap smoke
     /// test that the harness wires each operator's `Io` correctly (right slice lengths, resource
     /// bound, latch/streams attached) regardless of its port shape.
+    #[test]
+    fn the_pattern_recipe_fires_notes_every_cycle() {
+        let mut h = OpHarness::for_kind("pattern");
+        h.driver.render(h.frames);
+        let ons = (h.driver.emits().iter())
+            .filter(|e| matches!(e.arg, crate::message::Arg::Note(n) if !n.is_off()))
+            .count();
+        // Per cycle: `0 [3 5] <7 ~> 2*2` plays five or six, `0(3,8)` three, `[1 ~]/2` one in two.
+        assert!(ons >= 4 * 8, "the recipe plays its pattern: {ons} note-ons");
+    }
+
     #[test]
     fn every_workload_renders() {
         for w in all_workloads() {

@@ -23,8 +23,8 @@
 # symmetrically while every operator that existed at the base is still benched and gated.
 #
 # What we DO swap to the baseline ref: the engine source of EVERY crate in reuben-core's build
-# closure (reuben-core + reuben-macros + reuben-contract `src/`), the instrument fixtures
-# (`instruments/`), AND the build config (`.cargo/config.toml`), together. Swapping reuben-core/src
+# closure (reuben-core + reuben-macros + reuben-contract + reuben-pattern `src/`), the instrument
+# fixtures (`instruments/`), AND the build config (`.cargo/config.toml`), together. Swapping reuben-core/src
 # alone is not enough: its operators call
 # `Self::contract()`, emitted by the reuben-macros proc-macro — so a PR that changes that macro
 # (as a past macro-changing PR did) leaves baseline reuben-core/src compiled against HEAD's macro, which no longer
@@ -102,6 +102,7 @@ SRC=(
   "crates/${ENGINE_PKG}/src"
   crates/reuben-macros/src
   crates/reuben-contract/src
+  crates/reuben-pattern/src
 )
 # Version-locked fixtures the harness embeds via `include_str!`. Swapped with `src/` so each
 # side reads JSON valid for its own engine (see header). Space-separated list of pathspecs.

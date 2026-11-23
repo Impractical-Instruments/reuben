@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use reuben_api::engine::RetireDrain;
+use reuben_api::render::OperatorCounts;
 use std::time::{Duration, Instant};
 
 /// Atomic counters for the conditions reuben must "know and say": an output
@@ -75,6 +76,16 @@ pub struct Diagnostics {
     /// with `Acquire` by whatever names the drops, so a reader that sees the count move finds
     /// those batches back at their producer.
     pub stale_sends_dropped: AtomicU64,
+    /// `pattern` cycle queries that returned only part of their cycle's notes, counted in
+    /// **queries**. Diagnosis: a pattern plays more notes per cycle than the Operator holds; thin
+    /// it, or split it across more cycles.
+    pub pattern_queries_truncated: AtomicU64,
+    /// Pattern atoms a `pattern` Operator's `mode` cannot read, skipped, counted in **atoms**.
+    /// Diagnosis: a note name sent to a pattern outside `Midi` mode, or a fractional degree.
+    pub pattern_atoms_skipped: AtomicU64,
+    /// Sounding pattern notes released early to make room for a new one, counted in **notes**.
+    /// Diagnosis: a pattern holds more overlapping notes than the Operator tracks.
+    pub pattern_notes_evicted: AtomicU64,
     /// The Coordinator's retire queue, once [`watch_retire_queue`](Self::watch_retire_queue) is
     /// given it: its overflow count is the engine's, read here so the log line carries it too.
     retired: OnceLock<RetireDrain>,
@@ -145,6 +156,24 @@ impl Diagnostics {
         }
     }
 
+    /// Add what the render thread's Operators counted. One atomic add per non-zero count.
+    pub fn record_operator_counts(&self, counts: OperatorCounts) {
+        let OperatorCounts {
+            pattern_queries_truncated,
+            pattern_atoms_skipped,
+            pattern_notes_evicted,
+        } = counts;
+        for (counter, n) in [
+            (&self.pattern_queries_truncated, pattern_queries_truncated),
+            (&self.pattern_atoms_skipped, pattern_atoms_skipped),
+            (&self.pattern_notes_evicted, pattern_notes_evicted),
+        ] {
+            if n > 0 {
+                counter.fetch_add(n, Ordering::Relaxed);
+            }
+        }
+    }
+
     /// The running count of stale sends dropped, read with `Acquire`; see
     /// [`stale_sends_dropped`](Self::stale_sends_dropped).
     pub fn load_stale_sends_dropped(&self) -> u64 {
@@ -169,6 +198,9 @@ impl Diagnostics {
             retire_queue_dropped_full: self.retired.get().map_or(0, RetireDrain::dropped_full),
             unprepared_writes_dropped: self.unprepared_writes_dropped.load(Ordering::Relaxed),
             stale_sends_dropped: self.stale_sends_dropped.load(Ordering::Relaxed),
+            pattern_queries_truncated: self.pattern_queries_truncated.load(Ordering::Relaxed),
+            pattern_atoms_skipped: self.pattern_atoms_skipped.load(Ordering::Relaxed),
+            pattern_notes_evicted: self.pattern_notes_evicted.load(Ordering::Relaxed),
         }
     }
 }
@@ -189,6 +221,9 @@ pub struct Snapshot {
     pub retire_queue_dropped_full: u64,
     pub unprepared_writes_dropped: u64,
     pub stale_sends_dropped: u64,
+    pub pattern_queries_truncated: u64,
+    pub pattern_atoms_skipped: u64,
+    pub pattern_notes_evicted: u64,
 }
 
 impl Snapshot {
@@ -205,7 +240,8 @@ pub fn log_snapshot(s: &Snapshot) {
     eprintln!(
         "diagnostics: output_xruns={} input_ring_underruns={} input_ring_overruns={} \
          input_ring_producer_drops={} control_batches_dropped_full={} wired_writes_dropped={} \
-         retire_queue_dropped_full={} unprepared_writes_dropped={} stale_sends_dropped={}",
+         retire_queue_dropped_full={} unprepared_writes_dropped={} stale_sends_dropped={} \
+         pattern_queries_truncated={} pattern_atoms_skipped={} pattern_notes_evicted={}",
         s.output_xruns,
         s.input_ring_underruns,
         s.input_ring_overruns,
@@ -214,7 +250,10 @@ pub fn log_snapshot(s: &Snapshot) {
         s.wired_writes_dropped,
         s.retire_queue_dropped_full,
         s.unprepared_writes_dropped,
-        s.stale_sends_dropped
+        s.stale_sends_dropped,
+        s.pattern_queries_truncated,
+        s.pattern_atoms_skipped,
+        s.pattern_notes_evicted
     );
 }
 

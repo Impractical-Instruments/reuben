@@ -678,6 +678,9 @@ pub fn diagnostics_report(snapshot: &Snapshot) -> DiagnosticsReport {
         retire_queue_dropped_full,
         unprepared_writes_dropped,
         stale_sends_dropped,
+        pattern_queries_truncated,
+        pattern_atoms_skipped,
+        pattern_notes_evicted,
     } = *snapshot;
     DiagnosticsReport {
         output_xruns,
@@ -689,6 +692,9 @@ pub fn diagnostics_report(snapshot: &Snapshot) -> DiagnosticsReport {
         retire_queue_dropped_full,
         unprepared_writes_dropped,
         stale_sends_dropped,
+        pattern_queries_truncated,
+        pattern_atoms_skipped,
+        pattern_notes_evicted,
     }
 }
 
@@ -1255,6 +1261,11 @@ mod tests {
         d.record_unprepared_writes_dropped(0);
         d.record_stale_sends_dropped(7);
         d.record_stale_sends_dropped(0);
+        d.record_operator_counts(reuben_api::render::OperatorCounts {
+            pattern_queries_truncated: 8,
+            pattern_atoms_skipped: 9,
+            pattern_notes_evicted: 10,
+        });
         let report = diagnostics_report(&d.snapshot());
         assert_eq!(report.output_xruns, 3);
         assert_eq!(report.input_ring_underruns, 11);
@@ -1264,6 +1275,9 @@ mod tests {
         assert_eq!(report.wired_writes_dropped, 5);
         assert_eq!(report.unprepared_writes_dropped, 6);
         assert_eq!(report.stale_sends_dropped, 7);
+        assert_eq!(report.pattern_queries_truncated, 8);
+        assert_eq!(report.pattern_atoms_skipped, 9);
+        assert_eq!(report.pattern_notes_evicted, 10);
         assert_eq!(
             report.retire_queue_dropped_full, 0,
             "no retire queue watched yet"

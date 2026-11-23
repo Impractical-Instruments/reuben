@@ -7741,7 +7741,7 @@ mod tests {
                     "interface pipe \"p\": unknown pipe type \"FilterMod\" — one of \
                      \"f32_buffer\", \"f32\", \"i32\", \"str\", \"note\", \"harmony\", \"pitch\", \
                      \"GateMode\", \"FilterMode\", \"Waveform\", \"GrainWindow\", \"M2sMode\", \
-                     \"MapCurve\", \"SnapDir\", \"SnapTarget\"",
+                     \"MapCurve\", \"PatternMode\", \"SnapDir\", \"SnapTarget\"",
                 ),
             ];
             for (json, expected) in cases {

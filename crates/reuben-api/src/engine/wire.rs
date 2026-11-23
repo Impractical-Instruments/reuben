@@ -701,6 +701,20 @@ pub struct DiagnosticsReport {
     /// Absent from a report by an engine that predates it, and then zero.
     #[serde(default)]
     pub stale_sends_dropped: u64,
+    /// `pattern` cycle queries that returned only part of their cycle's notes, because the
+    /// Operator's fixed-capacity buffer was full (queries). Absent from a report by an engine that
+    /// predates it, and then zero.
+    #[serde(default)]
+    pub pattern_queries_truncated: u64,
+    /// Pattern atoms a `pattern` Operator's `mode` cannot read, skipped: a note name outside
+    /// `Midi` mode, or a degree that is not a whole number (atoms). Absent from a report by an
+    /// engine that predates it, and then zero.
+    #[serde(default)]
+    pub pattern_atoms_skipped: u64,
+    /// Sounding pattern notes released early because the Operator's held-notes list was full
+    /// (notes). Absent from a report by an engine that predates it, and then zero.
+    #[serde(default)]
+    pub pattern_notes_evicted: u64,
 }
 
 /// The engine's levels at the device: what it sends out, after the output map, and what the input
@@ -960,6 +974,9 @@ mod tests {
             retire_queue_dropped_full: 3,
             unprepared_writes_dropped: 2,
             stale_sends_dropped: 4,
+            pattern_queries_truncated: 5,
+            pattern_atoms_skipped: 6,
+            pattern_notes_evicted: 7,
         }
     }
 
@@ -1428,7 +1445,10 @@ mod tests {
                 "wired_writes_dropped": 3,
                 "retire_queue_dropped_full": 3,
                 "unprepared_writes_dropped": 2,
-                "stale_sends_dropped": 4
+                "stale_sends_dropped": 4,
+                "pattern_queries_truncated": 5,
+                "pattern_atoms_skipped": 6,
+                "pattern_notes_evicted": 7
             })
         );
     }
@@ -1447,6 +1467,9 @@ mod tests {
         assert_eq!(report.retire_queue_dropped_full, 0);
         assert_eq!(report.unprepared_writes_dropped, 0);
         assert_eq!(report.stale_sends_dropped, 0);
+        assert_eq!(report.pattern_queries_truncated, 0);
+        assert_eq!(report.pattern_atoms_skipped, 0);
+        assert_eq!(report.pattern_notes_evicted, 0);
     }
 
     #[test]

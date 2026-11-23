@@ -650,6 +650,13 @@ dropped and counted (`wired_writes_dropped`), so a `notes` interface input feedi
 Full wildcard dispatch (`/drums/*/decay`) is designed but not built — today a Message targets at
 most one node.
 
+A pattern reaches the engine as such a string. Send the `pattern` Operator's mini-notation text
+to its `pat` input, or to a `str` interface pipe in front of it (`/pattern/in "0 2 <4 7> ~"` in
+`pattern-melody`), with the engine channel's `send` (`send_live_controls`). A pattern that does not
+compile comes back in the `send` reply with its byte span, and the old pattern plays on. The same
+text sent as OSC over UDP is never compiled, so it is dropped. An accepted pattern takes over at
+the next cycle start.
+
 A node's `address` field is `/` plus **one** non-empty name: printable ASCII, with no whitespace,
 no second `/`, no `.` (it separates a node from its port in a wire-ref), and none of the OSC
 pattern characters `#*,?[]{}`. `/filter`, `/kick_2` and `/env-amp` pass; `/`, `//x`,
