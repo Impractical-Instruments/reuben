@@ -490,12 +490,13 @@ fn collect_with_extension(
     }
 }
 
-/// The surface document of the instrument at `instrument`: `surfaces/<stem>.json` in the first of
-/// [`SURFACE_SEARCH_DEPTH`] directories, the instrument's own and then its ancestors, that has one.
-fn locate_surface(instrument: &Path) -> Option<PathBuf> {
+/// The surface document of the instrument at `instrument`: `surfaces/<stem><suffix>.json` in the
+/// first of [`SURFACE_SEARCH_DEPTH`] directories, the instrument's own and then its ancestors, that
+/// has one. `suffix` is `""` for the on-screen doc and `".midi"` for the MIDI map.
+pub(crate) fn locate_surface(instrument: &Path, suffix: &str) -> Option<PathBuf> {
     // Appended, not `with_extension`: a stem with a dot in it (`my.synth`) would lose its last
     // segment and name another instrument's doc.
-    let name = format!("{}.json", instrument.file_stem()?.to_str()?);
+    let name = format!("{}{suffix}.json", instrument.file_stem()?.to_str()?);
     // Absolute so the ancestors are real directories, and `..` folded so each one is not counted
     // as a directory searched.
     lexical_absolute(instrument)?
@@ -576,7 +577,7 @@ impl EngineHost for NativeHost {
     }
 
     fn surface(&self, open: &str) -> Result<Option<String>, String> {
-        let Some(path) = locate_surface(Path::new(open)) else {
+        let Some(path) = locate_surface(Path::new(open), "") else {
             return Ok(None);
         };
         std::fs::read_to_string(&path)
@@ -1551,6 +1552,24 @@ mod tests {
             Ok(Some("the pad surface".to_string()))
         );
         assert_eq!(host.surface(&abs("a/other.json")), Ok(None));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn midi_surface_is_found_beside_the_on_screen_one() {
+        let (base, abs) = scratch_dir("midi-surface-test");
+        std::fs::create_dir_all(base.join("surfaces")).unwrap();
+        std::fs::write(abs("surfaces/a.json"), "on screen").unwrap();
+        std::fs::write(abs("surfaces/a.midi.json"), "midi").unwrap();
+        let instrument = abs("a.json");
+        assert_eq!(
+            locate_surface(Path::new(&instrument), ".midi"),
+            Some(PathBuf::from(abs("surfaces/a.midi.json")))
+        );
+        assert_eq!(
+            locate_surface(Path::new(&instrument), ""),
+            Some(PathBuf::from(abs("surfaces/a.json")))
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 

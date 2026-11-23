@@ -8,7 +8,7 @@ use reuben_api::authoring::{Boundary, PortInfo};
 use reuben_api::engine::ControlSendMessage;
 use serde_json::json;
 
-use super::surface::{SurfaceControl, SurfaceDoc};
+use reuben_native::surface::{SurfaceControl, SurfaceDoc};
 
 /// Widgets per row for controls with no `group`, when the surface doc gives no `cols`.
 pub const DEFAULT_COLS: usize = 4;
