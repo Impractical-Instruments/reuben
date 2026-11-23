@@ -321,17 +321,23 @@ fn is_snake_case(name: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
-/// A Rust path to a function, `name` or `a::b::name`, each segment an identifier.
+/// A Rust path to a function, `name`, `a::b::name` or `::a::name`, each segment an identifier.
 fn is_path(path: &str) -> bool {
-    path.split("::").all(is_ident)
+    path.strip_prefix("::")
+        .unwrap_or(path)
+        .split("::")
+        .all(is_ident)
 }
 
-/// A non-empty Rust type identifier: an ASCII letter then `[A-Za-z0-9_]`. The rule for the `vocab`
-/// type an `enum` port names (`FilterMode`, `SnapDir`) — emitted as a path segment, so it must be a
-/// valid identifier (PascalCase is conventional but not enforced here).
+/// A non-empty Rust identifier: an ASCII letter, or `_` with more after it, then `[A-Za-z0-9_]`.
+/// The rule for the `vocab` type an `enum` port names (`FilterMode`, `SnapDir`) and for each
+/// segment of a preparer's path — emitted as a path segment, so it must be a valid identifier
+/// (PascalCase is conventional for a type but not enforced here).
 fn is_ident(name: &str) -> bool {
     let mut chars = name.chars();
-    chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || (c == '_' && name.len() > 1))
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
@@ -572,10 +578,15 @@ mod tests {
         let e =
             err(r#"{ "type_name": "x", "inputs": [ {"name":"pat","ty":"str","prepare":"a b"} ] }"#);
         assert!(e.message.contains("path to a function"), "{}", e.message);
-        let ok = spec(
-            r#"{ "type_name": "x", "inputs": [ {"name":"pat","ty":"str","prepare":"crate::p::compile"} ] }"#,
-        );
-        assert!(validate(&ok).is_ok());
+        for path in ["crate::p::compile", "::other::compile", "_compile"] {
+            let ok = spec(&format!(
+                r#"{{ "type_name": "x", "inputs": [ {{"name":"pat","ty":"str","prepare":"{path}"}} ] }}"#
+            ));
+            assert!(validate(&ok).is_ok(), "{path}");
+        }
+        let e =
+            err(r#"{ "type_name": "x", "inputs": [ {"name":"pat","ty":"str","prepare":"_"} ] }"#);
+        assert!(e.message.contains("path to a function"), "{}", e.message);
         let stray = serde_json::from_str::<OperatorSpec>(
             r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"note","prepare":"compile"} ] }"#,
         )

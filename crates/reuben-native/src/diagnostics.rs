@@ -61,9 +61,9 @@ pub struct Diagnostics {
     /// controller writes a node input it should reach through the interface input feeding it.
     pub wired_writes_dropped: AtomicU64,
     /// Strings the engine dropped at a `str` input that compiles its text, counted in
-    /// **messages**: raw text no `send` prepared, or text prepared for an input the instrument no
-    /// longer routes there. Diagnosis: a controller sends a pattern over OSC/UDP, which carries
-    /// raw text; send it through the engine channel instead.
+    /// **messages**: raw text, or a value another preparer built. No path prepares a live send yet
+    /// (OSC over UDP and the engine channel's `send` both carry raw text), so every live string sent
+    /// to such an input counts here; set the text in the document instead.
     pub unprepared_writes_dropped: AtomicU64,
     /// The Coordinator's retire queue, once [`watch_retire_queue`](Self::watch_retire_queue) is
     /// given it: its overflow count is the engine's, read here so the log line carries it too.

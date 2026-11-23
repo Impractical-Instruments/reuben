@@ -38,7 +38,8 @@ pub enum PortType {
     /// as a string, and the render thread holds as the [`Prepared`](crate::message::Arg::Prepared)
     /// value its `preparer` built. An Operator's `str` input always names one (the contract
     /// refuses one that does not); an interface pipe's ports start with none and take their
-    /// consumers' at Instantiate. Unset, the input holds its preparer's compile of `""`.
+    /// consumers' at Instantiate. Unset and unfed, the input holds its preparer's compile of `""`;
+    /// fed, it holds a placeholder until its feeder's first forward.
     Str { preparer: Option<Preparer> },
     /// A dense per-sample signal (audio): the **only** Arg with a buffer form. A `Buffer`-source
     /// wired into a scalar port is illegal — it needs an explicit sampler op. Not

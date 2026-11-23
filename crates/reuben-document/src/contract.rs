@@ -130,6 +130,7 @@ impl Diag {
             | LoadWarning::UnboundInputPipe { name }
             | LoadWarning::InertChannelBinding { name }
             | LoadWarning::InertStrOutput { name }
+            | LoadWarning::UnreadStrInput { name }
             | LoadWarning::DeprecatedPipePresentation { name, .. }
             | LoadWarning::RenamedPipe { to: name, .. } => (None, Some(name.clone())),
             LoadWarning::ResolveFailed { .. } => (None, None),

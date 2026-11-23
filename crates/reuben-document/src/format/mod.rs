@@ -1133,6 +1133,10 @@ pub enum LoadWarning {
     /// it through a `subpatch` node, so this is a warning, not an error. Named `active`, it says
     /// that a Voicer refuses it.
     InertStrOutput { name: String },
+    /// A top-level `str` interface input feeds no input that compiles its text (only `osc_out`, an
+    /// output, or nothing). Its value is never compiled, so it holds nothing a send can set: a
+    /// send to it is dropped and counted, and it forwards nothing. Warned, never fatal.
+    UnreadStrInput { name: String },
     /// A pre-v4 node address broke the node address rule and was renamed at parse, every
     /// reference to it rewritten. Its OSC control address moved with it.
     RenamedAddress { from: String, to: String },
@@ -1202,6 +1206,12 @@ impl fmt::Display for LoadWarning {
                 f,
                 "interface output {name:?} carries a `str`, which nothing reads at the top level; \
                  it only works when a parent wires it through a `subpatch` node"
+            ),
+            LoadWarning::UnreadStrInput { name } => write!(
+                f,
+                "interface input {name:?} is a `str` that feeds no input which compiles its text, \
+                 so it holds nothing: a send to \"/{name}/in\" is dropped, and it forwards \
+                 nothing (to `osc_out` included)"
             ),
             LoadWarning::InertChannelBinding { name } => write!(
                 f,
@@ -1388,6 +1398,46 @@ pub fn load_instrument(
     load_instrument_guarded(json, registry, resolver, &mut LoadCtx::default(), None)
 }
 
+/// Warn [`LoadWarning::UnreadStrInput`] for each of `graph`'s own `str` interface inputs whose
+/// value reaches no preparing input, through any pipes after it.
+fn warn_unread_str_inputs(graph: &Graph, warnings: &mut Vec<LoadWarning>) {
+    let is_str = |k: reuben_core::NodeKey| {
+        graph.nodes.get(k).is_some_and(|n| {
+            n.descriptor.type_name == "pipe"
+                && matches!(
+                    n.descriptor.inputs.first().map(|p| &p.ty),
+                    Some(PortType::Str { .. })
+                )
+        })
+    };
+    for (name, &(key, _)) in &graph.interface.inputs {
+        if !is_str(key) {
+            continue;
+        }
+        let mut stack = vec![key];
+        let mut seen = BTreeSet::new();
+        let mut read = false;
+        while let Some(at) = stack.pop() {
+            if !seen.insert(at) {
+                continue;
+            }
+            for c in graph.connections.iter().filter(|c| c.src == at) {
+                if is_str(c.dst) {
+                    stack.push(c.dst);
+                } else if (graph.nodes.get(c.dst))
+                    .and_then(|n| n.descriptor.inputs.get(c.dst_port))
+                    .is_some_and(|p| p.preparer().is_some())
+                {
+                    read = true;
+                }
+            }
+        }
+        if !read {
+            warnings.push(LoadWarning::UnreadStrInput { name: name.clone() });
+        }
+    }
+}
+
 /// [`load_instrument`] from an already-minted document — the parse-once entry point for a
 /// caller that needs both the document (e.g. for its `interface` overrides,
 /// [`crate::describe::describe_boundary`]) and the built graph, without re-parsing the JSON.
@@ -1443,6 +1493,9 @@ fn load_doc_guarded(
         mut graph,
         mut warnings,
     } = doc.build_found(registry, Some(resolver), ctx, referrer, &mut found);
+    if referrer.is_none() {
+        warn_unread_str_inputs(&graph, &mut warnings);
+    }
 
     // Resolve every referenced id once into the store; record id -> handle for binding. The
     // fetch + decode goes through the load-wide source cache (`LoadCtx::samples`), so N

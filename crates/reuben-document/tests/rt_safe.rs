@@ -740,17 +740,15 @@ fn replacing_prepared_values_frees_nothing_on_the_render_thread() {
     let mut out = vec![0.0f32; STR_BLOCK * slot.channels()];
     assert_counter_is_live();
 
-    // The first block of a fresh Plan: the pipe forwards "1 2" over both consumers' seeds.
+    // The first block of a fresh Plan: the pipe forwards "1 2" over both consumers' latches. A
+    // fed input holds a placeholder that owns nothing, so nothing is freed anywhere.
     let first = measure(|| slot.fill(&mut out));
     assert_eq!(first.frees, 0, "first block freed {} time(s)", first.frees);
     let freed_off = measure(|| {
         retired.drain();
     })
     .frees;
-    assert!(
-        freed_off > 0,
-        "both consumers' seeds, freed off the render thread"
-    );
+    assert_eq!(freed_off, 0, "the consumers' placeholders own nothing");
 
     // Grow each node's routed-held scratch to its steady-state size.
     for i in 0..4 {
@@ -795,9 +793,15 @@ fn replacing_prepared_values_frees_nothing_on_the_render_thread() {
         (0, 0),
         "{SENDS} blocks of prepared sends touched the heap on the render thread"
     );
-    assert!(
-        freed_off >= 2 * SENDS,
-        "each replaced value is freed off the render thread: {freed_off} free(s)"
+    // Each send replaces two values the test let go of: the pipe's (held by its latch, its dedup
+    // baseline, both consumers' latches and a forwarded copy, all retired) and `/direct`'s. Each
+    // value owns its `Arc`, its source text and its non-empty `Compiled` list, so it is freed in
+    // exactly one drain, three frees apiece: fewer is a leak, more a double retire.
+    const FREES_PER_VALUE: usize = 3;
+    assert_eq!(
+        freed_off,
+        2 * FREES_PER_VALUE * SENDS,
+        "each replaced value is freed exactly once, off the render thread"
     );
 
     // A Swap's install window: a fresh Plan's first block replaces the consumers' seeds again.

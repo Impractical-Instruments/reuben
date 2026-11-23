@@ -1503,6 +1503,133 @@ mod tests {
         );
     }
 
+    /// Hand-built nodes for the prepared-value guards: an Operator emitting one prepared value
+    /// on a `str` output (no contract-built Operator can declare one), and one reading a `str`
+    /// input. Neither does anything else.
+    mod prepared_nodes {
+        use alloc::boxed::Box;
+        use alloc::sync::Arc;
+        use alloc::vec;
+
+        use crate::descriptor::{Descriptor, Port};
+        use crate::message::Arg;
+        use crate::operator::{Io, MsgWriter, Operator};
+        use crate::prepare::{Prepared, Preparer};
+
+        pub(super) fn desc(inputs: vec::Vec<Port>, outputs: vec::Vec<Port>) -> Arc<Descriptor> {
+            Arc::new(Descriptor {
+                type_name: "hand_built",
+                inputs,
+                outputs,
+                constants: vec![],
+                resources: vec![],
+            })
+        }
+
+        /// Emits `value` once, at frame 0 of its first block.
+        pub(super) struct Emitter(pub Option<Prepared>);
+        impl Operator for Emitter {
+            fn descriptor() -> Descriptor {
+                Descriptor {
+                    type_name: "hand_built",
+                    inputs: vec![],
+                    outputs: vec![],
+                    constants: vec![],
+                    resources: vec![],
+                }
+            }
+            fn process(&mut self, io: &mut Io) {
+                if let Some(p) = self.0.take() {
+                    MsgWriter::on(io, 0).set(0, Arg::Prepared(p));
+                }
+            }
+            fn spawn(&self) -> Box<dyn Operator> {
+                Box::new(Emitter(None))
+            }
+        }
+
+        pub(super) struct Sink;
+        impl Operator for Sink {
+            fn descriptor() -> Descriptor {
+                Emitter::descriptor()
+            }
+            fn process(&mut self, _io: &mut Io) {}
+            fn spawn(&self) -> Box<dyn Operator> {
+                Box::new(Sink)
+            }
+        }
+
+        pub(super) fn sink(preparer: Preparer) -> Arc<Descriptor> {
+            desc(vec![Port::str_prepared("in", preparer)], vec![])
+        }
+    }
+
+    /// An upstream node's forward of another preparer's value is dropped at the `str` input and
+    /// counted, like a send.
+    #[test]
+    fn a_refused_forward_is_counted() {
+        use crate::graph::Graph;
+        use crate::prepare::testing::{STEPS, WORDS};
+        use prepared_nodes::*;
+
+        let mut g = Graph::new();
+        let value = STEPS.prepare(&"1".into()).unwrap();
+        let src = g.add_boxed(
+            "/src",
+            Box::new(Emitter(Some(value))),
+            desc(vec![], vec![Port::str_prepared("out", STEPS)]),
+        );
+        let dst = g.add_boxed("/dst", Box::new(Sink), sink(WORDS));
+        g.connect(src, 0usize, dst, 0usize);
+        let cfg = AudioConfig::new(48_000.0, 64);
+        let mut plan = Plan::instantiate(g, cfg).expect("instantiate");
+        let mut r = Renderer::new(&plan);
+        let mut master = vec![vec![0.0; cfg.block_size]; plan.config.channels];
+        let mut outbound = Vec::new();
+        r.render_block_multi(&mut plan, &[], &[], &mut master, &mut outbound);
+        assert_eq!(plan.take_dropped_unprepared(), 1);
+        assert!(!matches!(plan.nodes[1].latch[0], Arg::Prepared(_)));
+    }
+
+    /// A dissolved pipe's two hops each check the kind. No document can give the pipe's port and
+    /// its consumer different preparers (Instantiate gives the pipe its consumer's), so the alias
+    /// is edited after Instantiate to reach the consumer's own check.
+    #[test]
+    fn the_consumer_hop_of_a_dissolved_pipe_counts_a_refusal() {
+        use crate::descriptor::Descriptor;
+        use crate::graph::Graph;
+        use crate::operators::pipe::Pipe;
+        use crate::prepare::testing::{STEPS, WORDS};
+        use alloc::sync::Arc;
+        use prepared_nodes::*;
+
+        let mut g = Graph::new();
+        let pipe = g.add_boxed(
+            "/pat",
+            Box::new(Pipe::text()),
+            Arc::new(Descriptor {
+                type_name: "pipe",
+                inputs: vec![Port::str("in")],
+                outputs: vec![Port::str("out")],
+                constants: vec![],
+                resources: vec![],
+            }),
+        );
+        let dst = g.add_boxed("/dst", Box::new(Sink), sink(STEPS));
+        g.connect(pipe, 0usize, dst, 0usize);
+        let cfg = AudioConfig::new(48_000.0, 64);
+        let mut plan = Plan::instantiate(g, cfg).expect("instantiate");
+        assert_eq!(plan.input_aliases.len(), 1, "the pipe dissolved");
+        plan.input_aliases[0].port = Port::str_prepared("in", WORDS);
+        let mut r = Renderer::new(&plan);
+        let mut master = vec![vec![0.0; cfg.block_size]; plan.config.channels];
+        let mut outbound = Vec::new();
+        let words = Arg::Prepared(WORDS.prepare(&"ab".into()).unwrap());
+        let messages = [Message::new("/pat/in", words, 0)];
+        r.render_block_multi(&mut plan, &messages, &[], &mut master, &mut outbound);
+        assert_eq!(plan.take_dropped_unprepared(), 1);
+    }
+
     /// A wired port takes only its upstream node's emissions, in emission order: an external
     /// Message addressed to it is dropped and counted, while one to an unwired port is delivered.
     #[test]

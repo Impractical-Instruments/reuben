@@ -221,6 +221,22 @@ fn output_handle(p: &model::PortModel) -> TokenStream {
     }
 }
 
+/// The kind tag expression for a preparer named by `path`: the function's crate-rooted path where
+/// the spelling gives it (`crate::a::f` in this crate, `::k::f` in crate `k`), else the declaring
+/// module's path plus the path as written. So one function named from crate root by every Operator
+/// that uses it, or by its bare name in its own module, has one kind; one reached through `super::`
+/// or a `use` alias has another.
+fn preparer_kind(path: &str) -> TokenStream {
+    if let Some(rest) = path.strip_prefix("crate::") {
+        quote! { ::core::concat!(::core::env!("CARGO_CRATE_NAME"), "::", #rest) }
+    } else if let Some(rest) = path.strip_prefix("::") {
+        quote! { #rest }
+    } else {
+        let rest = path.strip_prefix("self::").unwrap_or(path);
+        quote! { ::core::concat!(::core::module_path!(), "::", #rest) }
+    }
+}
+
 /// Render a resolved [`ContractModel`] to the `IN_`/`OUT_`/`C_` const block + the inherent
 /// `impl T { fn contract() }`. Free function so both `operator_contract!` and the
 /// derived `number_operator_contract!` variants emit the identical contract from the same code.
@@ -277,18 +293,14 @@ pub(crate) fn render_contract(struct_ident: &Ident, model: &ContractModel) -> To
                             quote! { ::reuben_core::descriptor::Port::pitch(#name) }
                         }
                         PortTy::Arg => quote! { ::reuben_core::descriptor::Port::arg(#name) },
-                        // The kind tag is the declaring module plus the path as written, so no two
-                        // preparers share one.
                         PortTy::Str(Some(path)) => {
                             let f: syn::Path =
                                 syn::parse_str(path).expect("the validator admitted only a path");
+                            let kind = preparer_kind(path);
                             quote! {
                                 ::reuben_core::descriptor::Port::str_prepared(
                                     #name,
-                                    ::reuben_core::prepare::Preparer::new(
-                                        ::core::concat!(::core::module_path!(), "::", #path),
-                                        #f,
-                                    ),
+                                    ::reuben_core::prepare::Preparer::new(#kind, #f),
                                 )
                             }
                         }
@@ -429,6 +441,16 @@ fn parse_ports(input: ParseStream) -> syn::Result<Vec<PortAst>> {
                     let inner;
                     parenthesized!(inner in body);
                     let path: syn::Path = inner.parse()?;
+                    if let Some(s) = path.segments.iter().find(|s| !s.arguments.is_none()) {
+                        return Err(Error::new_spanned(
+                            &s.arguments,
+                            "a preparer is named by a plain function path, without generic \
+                             arguments: wrap a generic function in a non-generic one",
+                        ));
+                    }
+                    if !inner.is_empty() {
+                        return Err(inner.error("expected one function path, e.g. `str(compile)`"));
+                    }
                     let segments: Vec<String> =
                         path.segments.iter().map(|s| s.ident.to_string()).collect();
                     let leading = if path.leading_colon.is_some() { "::" } else { "" };
@@ -643,11 +665,35 @@ mod tests {
             out.contains("concat ! (:: core :: module_path ! () , \"::\" , \"compile::pattern\")"),
             "{out}"
         );
+        let rooted = render("Pat { inputs: { pat: str(crate::p::compile) }, outputs: { } }");
+        assert!(
+            rooted.contains(
+                "concat ! (:: core :: env ! (\"CARGO_CRATE_NAME\") , \"::\" , \"p::compile\")"
+            ),
+            "{rooted}"
+        );
         assert!(out.contains("compile :: pattern"), "{out}");
         assert!(
             out.contains("form :: Held < :: reuben_core :: prepare :: Prepared >"),
             "{out}"
         );
+    }
+
+    /// A generic preparer path is refused rather than losing its arguments, and a path from the
+    /// crate root (`::a::b`) is kept whole.
+    #[test]
+    fn a_preparer_path_is_plain_and_may_start_at_the_root() {
+        let out = render("Pat { inputs: { pat: str(compile::<u8>) }, outputs: { } }");
+        assert!(out.contains("compile_error !"), "{out}");
+        assert!(out.contains("without generic"), "{out}");
+        let out = render("Pat { inputs: { pat: str(::crate_x::compile) }, outputs: { } }");
+        assert!(!out.contains("compile_error"), "{out}");
+        assert!(
+            out.contains("Preparer :: new (\"crate_x::compile\""),
+            "{out}"
+        );
+        let out = render("Pat { inputs: { pat: str(_compile) }, outputs: { } }");
+        assert!(!out.contains("compile_error"), "{out}");
     }
 
     #[test]

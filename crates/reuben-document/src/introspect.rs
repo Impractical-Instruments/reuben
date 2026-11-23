@@ -763,24 +763,31 @@ fn faulted(
                 vec![fault],
             )
         }
-        // The document holds text its preparer refuses: a node literal, an interface input's
-        // default, or an unset input's `""`. Not attributed to an edit: the planner reports the
-        // first such value only.
-        Err(PlanError::Prepare { node, port, error }) => (
-            Report {
-                ok: false,
-                errors: vec![Diag {
+        // The document holds text its preparer refuses: node literals, interface inputs'
+        // defaults, or an unset input's `""`. Every refusal is reported. Not attributed to an
+        // edit: the planner names no fault apart from the message.
+        Err(PlanError::Prepare { failures }) => {
+            let errors: Vec<Diag> = failures
+                .into_iter()
+                .map(|f| Diag {
                     message: format!(
-                        "{node}.{port}: the text does not compile at bytes {}..{}: {}",
-                        error.span.start, error.span.end, error.message
+                        "{}.{}: the text does not compile at bytes {}..{}: {}",
+                        f.node, f.port, f.error.span.start, f.error.span.end, f.error.message
                     ),
-                    node: Some(node),
-                    port: Some(port),
-                }],
-                warnings,
-            },
-            vec![None],
-        ),
+                    node: Some(f.node),
+                    port: Some(f.port),
+                })
+                .collect();
+            let faults = vec![None; errors.len()];
+            (
+                Report {
+                    ok: false,
+                    errors,
+                    warnings,
+                },
+                faults,
+            )
+        }
         Err(PlanError::PreparerConflict { pipe, kinds }) => (
             Report {
                 ok: false,

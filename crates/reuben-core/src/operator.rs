@@ -113,7 +113,7 @@ impl<'a> Io<'a> {
 
     /// Let go of `value` without dropping it on the render thread, when it owns heap memory and a
     /// retire queue is attached. For operator state that holds a copy of a latched value.
-    pub(crate) fn retire(&self, value: Arg) {
+    pub fn retire(&self, value: Arg) {
         retire_to(self.retire, value);
     }
 
@@ -422,8 +422,9 @@ pub mod form {
     }
 
     // A prepared `str` input borrows the latched value, so the read is a reference: no refcount
-    // touch, no allocation. `None` until the latch holds one, which a Plan-built Engine never
-    // leaves it without. Not covered by the blanket impl above, which needs a `Copy` payload.
+    // touch, no allocation. `None` while the latch holds no prepared value: an input a wire or
+    // kept pipe feeds, before its feeder's first forward reaches it. Not covered by the blanket
+    // impl above, which needs a `Copy` payload.
     impl InForm for Held<Prepared> {
         type Default = ();
         type Read<'a> = Option<&'a Prepared>;

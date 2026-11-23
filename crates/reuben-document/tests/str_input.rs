@@ -313,29 +313,40 @@ fn save_round_trips_every_str_value() {
 /// with the byte span its preparer named: a node literal, and an interface input's default.
 #[test]
 fn a_document_default_that_does_not_compile_fails_to_plan_with_its_span() {
+    let failures = |doc: &str| {
+        let graph = load_instrument(doc, &registry(), &MemoryResolver::new())
+            .expect("the text is a well-typed str")
+            .graph;
+        match Plan::instantiate(graph, AudioConfig::new(48_000.0, 64)) {
+            Err(PlanError::Prepare { failures }) => failures
+                .into_iter()
+                .map(|f| (f.node, f.port, f.error.span))
+                .collect::<Vec<_>>(),
+            Err(other) => panic!("{other:?}"),
+            Ok(_) => panic!("a value that does not compile fails to plan"),
+        }
+    };
     let bad_literal = DOC.replace(r#""steps": "4 5""#, r#""steps": "4 x5""#);
-    let graph = load_instrument(&bad_literal, &registry(), &MemoryResolver::new())
-        .expect("the text is a well-typed str")
-        .graph;
-    let Err(PlanError::Prepare { node, port, error }) =
-        Plan::instantiate(graph, AudioConfig::new(48_000.0, 64))
-    else {
-        panic!("a literal that does not compile fails to plan");
-    };
-    assert_eq!((node.as_str(), port.as_str()), ("/literal", "steps"));
-    assert_eq!(error.span, 2..4);
-
+    assert_eq!(
+        failures(&bad_literal),
+        [("/literal".into(), "steps".into(), 2..4)]
+    );
     let bad_default = DOC.replace(r#""default": "1 2 3""#, r#""default": "1 2 ?""#);
-    let graph = load_instrument(&bad_default, &registry(), &MemoryResolver::new())
-        .expect("loads")
-        .graph;
-    let Err(PlanError::Prepare { node, port, error }) =
-        Plan::instantiate(graph, AudioConfig::new(48_000.0, 64))
-    else {
-        panic!("a pipe default that does not compile fails to plan");
-    };
-    assert_eq!((node.as_str(), port.as_str()), ("/pat", "in"));
-    assert_eq!(error.span, 4..5);
+    assert_eq!(failures(&bad_default), [("/pat".into(), "in".into(), 4..5)]);
+
+    // Every refusal at once, not the first.
+    let both = bad_literal.replace(r#""default": "1 2 3""#, r#""default": "1 2 ?""#);
+    let mut got = failures(&both);
+    got.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        got,
+        [
+            ("/literal".into(), "steps".into(), 2..4),
+            ("/pat".into(), "in".into(), 4..5)
+        ]
+    );
+    let report = reuben_document::introspect::validate(&both, &registry(), &MemoryResolver::new());
+    assert_eq!(report.errors.len(), 2, "{report:?}");
 }
 
 const SRC: &str = "doc.json";
@@ -665,12 +676,11 @@ fn without_a_retire_queue_the_render_thread_frees_a_replaced_value() {
 }
 
 /// A `str` pipe with two consumers is rendered, not dissolved. Its first block forwards its
-/// prepared default onto each consumer's latch, which holds that consumer's own compiled `""`:
-/// with no send at all, a value per consumer is replaced. That happens in the first block of every
-/// freshly built Plan, so in every Swap's install window too, and none of it is freed on the render
-/// thread.
+/// prepared default onto each consumer's latch. A fed consumer's latch holds a placeholder, not a
+/// compiled value of its own, so that first forward frees nothing anywhere. It happens in the first
+/// block of every freshly built Plan, so in every Swap's install window too.
 #[test]
-fn a_rendered_str_pipe_retires_each_consumer_seed_in_its_first_block() {
+fn a_rendered_str_pipe_forwards_over_placeholders_in_its_first_block() {
     use reuben_core::coordinator::RenderSlot;
     use reuben_document::coordinator::Coordinator;
 
@@ -686,9 +696,10 @@ fn a_rendered_str_pipe_retires_each_consumer_seed_in_its_first_block() {
     assert_counter_is_live();
     let first = measure(|| e.fill(&mut out));
     assert_eq!(first.frees, 0, "nothing freed on render");
-    assert!(
-        drained_frees(&retired) > 0,
-        "the consumers' seeds, freed at the drain"
+    assert_eq!(
+        drained_frees(&retired),
+        0,
+        "the consumers' placeholders own nothing"
     );
     let next = measure(|| e.fill(&mut out));
     assert_eq!((next.allocs, next.frees), (0, 0), "then nothing");
@@ -724,7 +735,10 @@ fn a_rendered_str_pipe_retires_each_consumer_seed_in_its_first_block() {
             "the swap installed inside the window"
         );
         assert_eq!(frees, 0, "edit {edit}: nothing freed on render");
-        assert!(!retired.is_empty(), "edit {edit}: the case is real");
+        assert!(
+            !retired.is_empty(),
+            "edit {edit}: the forwarded copies were retired"
+        );
         assert!(coord.try_reclaim().is_some(), "a retiree came home");
         assert!(
             retired.is_empty(),
@@ -857,11 +871,11 @@ const HOST: &str = r#"{ "format_version": 3, "instrument": "host",
   "nodes": [ { "type": "voicer", "address": "/v", "config": { "voices": 4 }, "voice": "voice",
                "inputs": { "notes": { "from": "/notes" } } } ] }"#;
 
-/// An idle hosted voice is not rendered, so its rendered pipe's first block — and the consumer
-/// seeds it replaces — comes at that voice's first note, not at install. The Voicer hands its
-/// voices the Engine's retire queue, so those seeds are not freed on the render thread either.
+/// An idle hosted voice is not rendered, so its rendered pipe's first block comes at that voice's
+/// first note, not at install. It forwards over its consumers' placeholders, which own nothing, so
+/// it frees nothing on the render thread or at the drain.
 #[test]
-fn a_hosted_voice_retires_its_pipe_consumer_seeds_at_its_first_note() {
+fn a_hosted_voice_pipe_first_block_frees_nothing() {
     let mut r = MemoryResolver::new();
     r.insert_text("voice.json", voice_patch("/env.active"));
     let graph = load_instrument(HOST, &registry(), &r).expect("loads").graph;
@@ -877,7 +891,7 @@ fn a_hosted_voice_retires_its_pipe_consumer_seeds_at_its_first_note() {
         e.queue_osc("/notes/in", &[Arg::F32(pitch), Arg::F32(1.0)]);
         let frees = measure(|| e.fill(&mut out)).frees;
         assert_eq!(frees, 0, "voice {i}'s first note frees nothing on render");
-        assert!(drained_frees(&retired) > 0, "voice {i}'s seeds");
+        assert_eq!(drained_frees(&retired), 0, "voice {i}: nothing to free");
     }
 }
 
@@ -953,9 +967,10 @@ fn a_str_active_validated_alone_says_a_voicer_refuses_it() {
     assert!(warning.message.contains("Voicer"), "{}", warning.message);
 }
 
-/// An interface output reading a single-consumer `str` pipe keeps the pipe rendered, so its first
-/// block replaces the consumer's seed, which the drain frees; without the output the pipe
-/// dissolves and nothing is replaced.
+/// An interface output reading a single-consumer `str` pipe keeps the pipe rendered; without the
+/// output the pipe dissolves. Either way the consumer's first value costs nothing in its first
+/// block: rendered, the pipe forwards over the consumer's placeholder; dissolved, the consumer
+/// holds the pipe's prepared default from the start.
 #[test]
 fn an_interface_output_keeps_a_str_pipe_rendered() {
     const WITH: &str = r#"{ "format_version": 3, "instrument": "t",
@@ -975,12 +990,9 @@ fn an_interface_output_keeps_a_str_pipe_rendered() {
         let render = measure(|| e.fill(&mut out)).frees;
         (render, drained_frees(&retired))
     };
-    let (render, drained) = first_block(WITH);
-    assert_eq!(render, 0, "rendered: nothing freed on render");
-    assert!(
-        drained > 0,
-        "rendered: the consumer's seed, freed at the drain"
-    );
+    let kept = |doc: &str| plan(doc).nodes().iter().any(|n| &*n.address == "/pat");
+    assert!(kept(WITH) && !kept(&without));
+    assert_eq!(first_block(WITH), (0, 0), "rendered: nothing to free");
     assert_eq!(
         first_block(&without),
         (0, 0),
@@ -1052,5 +1064,167 @@ fn a_survivor_keeps_its_prepared_value_unless_the_edit_changed_its_default() {
     let after = run(&mut slot, 16);
     assert_eq!(sent(&after, "/literal_sum"), [6.0], "{after:?}");
     assert_eq!(sent(&after, "/pipe_sum"), [2.0], "{after:?}");
+    assert_eq!(slot.take_dropped_unprepared(), 0);
+}
+
+fn instantiate(doc: &str, r: &MemoryResolver) -> Result<Plan, PlanError> {
+    let graph = load_instrument(doc, &registry(), r).expect("loads").graph;
+    Plan::instantiate(graph, AudioConfig::new(48_000.0, 64))
+}
+
+/// A fed input never compiles a value of its own: a kept pipe with a valid default feeds two
+/// inputs whose preparer refuses `""`, and the instrument plans.
+#[test]
+fn wired_consumer_of_a_kept_pipe_compiles_empty_seed() {
+    const DOC: &str = r#"{ "format_version": 3, "instrument": "t",
+      "interface": { "inputs": { "pat": { "type": "str", "default": "abc" } } },
+      "nodes": [ { "type": "nonempty", "address": "/a", "inputs": { "text": { "from": "/pat" } } },
+                 { "type": "nonempty", "address": "/b", "inputs": { "text": { "from": "/pat" } } } ] }"#;
+    let p = instantiate(DOC, &MemoryResolver::new());
+    assert!(p.is_ok(), "{:?}", p.err());
+
+    // An unfed input still compiles `""`, and is refused for it.
+    const UNSET: &str = r#"{ "format_version": 3, "instrument": "t",
+      "nodes": [ { "type": "nonempty", "address": "/a" } ] }"#;
+    assert!(matches!(
+        instantiate(UNSET, &MemoryResolver::new()),
+        Err(PlanError::Prepare { .. })
+    ));
+}
+
+/// A child's `str` interface input the parent feeds compiles nothing of its own either.
+#[test]
+fn fed_nested_pipe_compiles_empty_seed() {
+    const CHILD: &str = r#"{ "format_version": 3, "instrument": "c",
+      "interface": { "inputs": { "inner": { "type": "str" } } },
+      "nodes": [ { "type": "nonempty", "address": "/w", "inputs": { "text": { "from": "/inner" } } } ] }"#;
+    const DOC: &str = r#"{ "format_version": 3, "instrument": "t", "resources": { "c": "c.json" },
+      "interface": { "inputs": { "nested": { "type": "str", "default": "abc" } } },
+      "nodes": [ { "type": "subpatch", "address": "/sub", "patch": "c",
+          "inputs": { "inner": { "from": "/nested" } } } ] }"#;
+    let mut r = MemoryResolver::new();
+    r.insert_text("c.json", CHILD);
+    let p = instantiate(DOC, &r);
+    assert!(p.is_ok(), "{:?}", p.err());
+}
+
+/// A child's interface input the parent feeds takes no send: routing drops it as a wired write, so
+/// the routing table has no route there for a producer to prepare.
+#[test]
+fn routes_omit_a_fed_nested_pipe() {
+    const CHILD: &str = r#"{ "format_version": 3, "instrument": "c",
+      "interface": { "inputs": { "inner": { "type": "str" } } },
+      "nodes": [ { "type": "words", "address": "/w", "inputs": { "text": { "from": "/inner" } } } ] }"#;
+    const DOC: &str = r#"{ "format_version": 3, "instrument": "t", "resources": { "c": "c.json" },
+      "interface": { "inputs": { "nested": { "type": "str" } } },
+      "nodes": [ { "type": "subpatch", "address": "/sub", "patch": "c",
+          "inputs": { "inner": { "from": "/nested" } } } ] }"#;
+    let mut r = MemoryResolver::new();
+    r.insert_text("c.json", CHILD);
+    let p = instantiate(DOC, &r).expect("plans");
+    let addresses: Vec<String> = p
+        .prepared_routes()
+        .iter()
+        .map(|r| r.address.clone())
+        .collect();
+    assert_eq!(addresses, ["/nested/in"], "only the parent's own input");
+    let mut e = Engine::new(p);
+    block(&mut e);
+    e.queue_osc("/sub/inner/in", &[words_arg("x")]);
+    block(&mut e);
+    assert_eq!(
+        e.take_dropped_wired_writes(),
+        1,
+        "the send is a wired write"
+    );
+}
+
+/// One preparer named by its crate-rooted path from two Operators has one kind, so a kept pipe
+/// feeding both plans; reached through `super::` it has another, and the pipe is refused.
+#[test]
+fn a_preparer_named_by_its_crate_rooted_path_has_one_kind() {
+    let doc = |second: &str| {
+        format!(
+            r#"{{ "format_version": 3, "instrument": "t",
+      "interface": {{ "inputs": {{ "pat": {{ "type": "str", "default": "abc" }} }} }},
+      "nodes": [ {{ "type": "nonempty", "address": "/a", "inputs": {{ "text": {{ "from": "/pat" }} }} }},
+                 {{ "type": "{second}", "address": "/b", "inputs": {{ "text": {{ "from": "/pat" }} }} }} ] }}"#
+        )
+    };
+    let p = instantiate(&doc("nonempty_too"), &MemoryResolver::new());
+    assert!(p.is_ok(), "{:?}", p.err());
+    assert!(matches!(
+        instantiate(&doc("nonempty_super"), &MemoryResolver::new()),
+        Err(PlanError::PreparerConflict { .. })
+    ));
+}
+
+/// A top-level `str` interface input that feeds no preparing input loads with a warning saying a
+/// send to it is dropped; one that does feed one loads clean.
+#[test]
+fn a_str_input_feeding_no_preparing_input_warns() {
+    const ALONE: &str = r#"{ "format_version": 3, "instrument": "t",
+      "interface": { "inputs": { "pat": { "type": "str", "default": "1" } } },
+      "nodes": [ { "type": "osc_out", "address": "/o", "inputs": { "in": { "from": "/pat" } } } ] }"#;
+    let loaded = load_instrument(ALONE, &registry(), &MemoryResolver::new()).expect("loads");
+    assert!(
+        matches!(loaded.warnings.as_slice(),
+            [reuben_document::format::LoadWarning::UnreadStrInput { name }] if name == "pat"),
+        "{:?}",
+        loaded.warnings
+    );
+    let report = reuben_document::introspect::validate(ALONE, &registry(), &MemoryResolver::new());
+    assert!(report.ok);
+    assert!(report.warnings[0].message.contains("dropped"), "{report:?}");
+    let loaded = load_instrument(DOC, &registry(), &MemoryResolver::new()).expect("loads");
+    assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+}
+
+/// A dissolved interface input carried across a Swap: the install window and the first send after
+/// it touch no heap on the render thread.
+#[test]
+fn dissolved_alias_carry_then_first_send_is_heap_free() {
+    use reuben_core::coordinator::RenderSlot;
+    use reuben_document::coordinator::Coordinator;
+    const ONE: &str = r#"{ "format_version": 3, "instrument": "t",
+      "interface": { "inputs": { "pat": { "type": "str", "default": "1" } } },
+      "nodes": [ { "type": "steps", "address": "/a", "inputs": { "steps": { "from": "/pat" } } },
+                 { "type": "steps", "address": "/z", "inputs": { "steps": "4" } } ] }"#;
+    let (mut coord, side, _) = Coordinator::install_initial(
+        ONE,
+        registry(),
+        Box::new(MemoryResolver::new()),
+        AudioConfig::new(48_000.0, 128),
+    )
+    .expect("installs");
+    let retired = coord.retired();
+    let mut slot = RenderSlot::new(side);
+    let mut out = vec![0.0f32; 128 * slot.channels()];
+    for i in 0..4 {
+        slot.queue_osc("/pat/in", &[steps_arg(&format!("{i}"))]);
+        slot.fill(&mut out);
+    }
+    retired.drain();
+    assert_counter_is_live();
+    for round in 1..4 {
+        let doc = ONE.replace(r#""steps": "4""#, &format!(r#""steps": "4 {round}""#));
+        assert!(coord.swap_document(&doc).report.ok);
+        let (mut allocs, mut frees) = (0, 0);
+        for _ in 0..16 {
+            let c = measure(|| slot.fill(&mut out));
+            allocs += c.allocs;
+            frees += c.frees;
+        }
+        assert_eq!((allocs, frees), (0, 0), "install window {round}");
+        coord.try_reclaim();
+        retired.drain();
+        let send = [steps_arg("7 7")];
+        let c = measure(|| {
+            slot.queue_osc("/pat/in", &send);
+            slot.fill(&mut out);
+        });
+        assert_eq!((c.allocs, c.frees), (0, 0), "round {round}");
+        retired.drain();
+    }
     assert_eq!(slot.take_dropped_unprepared(), 0);
 }

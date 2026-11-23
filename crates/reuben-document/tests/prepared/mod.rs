@@ -2,7 +2,7 @@
 //! [`registry`]. No built-in Operator prepares its text yet.
 //!
 //! `steps` compiles whitespace-separated whole numbers and reports their sum; `words` compiles
-//! words with no digits and reports how many. Each refuses bad text with the byte span at fault,
+//! words with no digits and reports how many; the `nonempty` family refuses empty text. Each refuses bad text with the byte span at fault,
 //! and a value one prepares is the wrong kind for the other.
 #![allow(dead_code)] // not every including binary uses every helper.
 
@@ -114,7 +114,60 @@ pub mod words {
     }
 }
 
-/// The built-ins plus `steps` and `words`.
+/// Refuses empty text, so an input whose `""` is compiled fails to plan.
+pub fn parse_nonempty(source: &str) -> Result<Prepared, PrepareError> {
+    if source.is_empty() {
+        return Err(PrepareError::new(0..0, "empty"));
+    }
+    Ok(Prepared::new(source.len()))
+}
+
+/// An Operator with no outputs whose input refuses `""`, its preparer named by `$path`.
+macro_rules! nonempty_op {
+    ($module:ident, $ty:ident, $name:literal, $path:path) => {
+        pub mod $module {
+            use super::*;
+            pub struct $ty;
+            reuben_core::operator_contract!($ty {
+                type_name: $name,
+                inputs: { text: str($path) },
+                outputs: { },
+            });
+            impl Operator for $ty {
+                fn descriptor() -> Descriptor {
+                    Self::contract()
+                }
+                fn process(&mut self, _io: &mut Io) {}
+                fn spawn(&self) -> Box<dyn Operator> {
+                    Box::new($ty)
+                }
+            }
+        }
+    };
+}
+
+// Two Operators naming one preparer by its crate-rooted path, which gives them one kind; a third
+// reaching it through `super::`, which gives it another.
+nonempty_op!(
+    nonempty,
+    NonEmpty,
+    "nonempty",
+    crate::prepared::parse_nonempty
+);
+nonempty_op!(
+    nonempty_too,
+    NonEmptyToo,
+    "nonempty_too",
+    crate::prepared::parse_nonempty
+);
+nonempty_op!(
+    nonempty_super,
+    NonEmptySuper,
+    "nonempty_super",
+    super::parse_nonempty
+);
+
+/// The built-ins plus `steps`, `words` and the three `nonempty` Operators.
 pub fn registry() -> Registry {
     let mut r = Registry::builtin();
     r.register(
@@ -124,6 +177,18 @@ pub fn registry() -> Registry {
     r.register(
         || Box::new(words::Words(None)),
         <words::Words as Operator>::descriptor(),
+    );
+    r.register(
+        || Box::new(nonempty::NonEmpty),
+        <nonempty::NonEmpty as Operator>::descriptor(),
+    );
+    r.register(
+        || Box::new(nonempty_too::NonEmptyToo),
+        <nonempty_too::NonEmptyToo as Operator>::descriptor(),
+    );
+    r.register(
+        || Box::new(nonempty_super::NonEmptySuper),
+        <nonempty_super::NonEmptySuper as Operator>::descriptor(),
     );
     r
 }

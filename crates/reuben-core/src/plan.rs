@@ -82,18 +82,22 @@ pub(crate) fn port_kind(p: &Port) -> PortKind {
 /// a `str` input's text compiled by its preparer, or a harmless placeholder for ports with no held
 /// value (`Note`, `Buffer`, a `str` port no preparer reads).
 ///
+/// A `fed` `str` input — a wire or a kept pipe feeds it — takes the placeholder too: its feeder
+/// forwards what it reads before it first runs, so its own value is never compiled.
+///
 /// Fails only where a preparer refuses the text, an unset input's `""` included.
 fn seed_latch(
     p: &Port,
     port: usize,
     value_overrides: &[(usize, Arg)],
+    fed: bool,
 ) -> Result<Arg, PrepareError> {
     let set = value_overrides
         .iter()
         .find(|(po, _)| *po == port)
         .map(|(_, a)| a);
     if let PortType::Str { preparer } = &p.ty {
-        let Some(preparer) = preparer else {
+        let Some(preparer) = preparer.filter(|_| !fed) else {
             return Ok(Arg::F32(0.0));
         };
         return match set {
@@ -134,12 +138,52 @@ fn seed_latch(
     })
 }
 
-/// A seed's [`PrepareError`] as Instantiate reports it: at the node and input whose value it is.
-fn prepare_error(node: &str, port: &Port, error: PrepareError) -> PlanError {
-    PlanError::Prepare {
+/// A seed's [`PrepareError`] at the node and input whose value it is.
+fn prepare_failure(node: &str, port: &Port, error: PrepareError) -> PrepareFailure {
+    PrepareFailure {
         node: node.to_string(),
         port: port.name.to_string(),
         error,
+    }
+}
+
+/// Compile the document value of every unfed input that prepares its text, interface pipes
+/// included, and keep each result as the input's value override, so seeding later clones it. Runs
+/// once the pipes have their preparers and before dissolution, which seeds a dissolved pipe's
+/// consumer from the pipe. Every refusal is collected, so a document with several bad values
+/// hears about all of them at once.
+fn prepare_seeds(graph: &mut Graph) -> Result<(), PlanError> {
+    let preparing: Vec<(NodeKey, usize)> = (graph.nodes.iter())
+        .flat_map(|(k, n)| {
+            (n.descriptor.inputs.iter().enumerate())
+                .filter(|(_, p)| p.preparer().is_some())
+                .map(move |(i, _)| (k, i))
+        })
+        .collect();
+    if preparing.is_empty() {
+        return Ok(());
+    }
+    let fed: BTreeSet<(NodeKey, usize)> = (graph.connections.iter())
+        .map(|c| (c.dst, c.dst_port))
+        .collect();
+    let mut failures = Vec::new();
+    for (key, port) in preparing {
+        if fed.contains(&(key, port)) {
+            continue;
+        }
+        let node = &mut graph.nodes[key];
+        let p = &node.descriptor.inputs[port];
+        match seed_latch(p, port, &node.value_overrides, false) {
+            Ok(seed) => {
+                node.value_overrides.retain(|(po, _)| *po != port);
+                node.value_overrides.push((port, seed));
+            }
+            Err(e) => failures.push(prepare_failure(&node.address, p, e)),
+        }
+    }
+    match failures.is_empty() {
+        true => Ok(()),
+        false => Err(PlanError::Prepare { failures }),
     }
 }
 
@@ -495,6 +539,10 @@ impl PreparedRoutes {
             let Some(preparer) = a.port.preparer() else {
                 continue;
             };
+            // A fed pipe's value is its feeder's: routing drops a send to it.
+            if a.seed.is_none() {
+                continue;
+            }
             let Some(consumer) = nodes.get(a.node) else {
                 continue;
             };
@@ -595,19 +643,23 @@ pub enum PlanError {
     /// left over from a removed node, or minted by another `Graph`. The loader resolves names, so
     /// only a hand-built graph reaches this.
     UnknownNode { position: PortPosition },
-    /// A `str` input's value did not compile: its preparer refused the text. `node` and `port`
-    /// name the input holding it, an interface input's pipe and `in` for a pipe's default.
-    Prepare {
-        node: String,
-        port: String,
-        error: PrepareError,
-    },
+    /// `str` values that did not compile: each preparer's refusal, every one in the document.
+    Prepare { failures: Vec<PrepareFailure> },
     /// A kept interface `str` pipe feeds `str` inputs whose preparers differ, so no one prepared
     /// value suits every input it forwards to. `kinds` are two of the preparers' kind tags.
     PreparerConflict {
         pipe: String,
         kinds: (&'static str, &'static str),
     },
+}
+
+/// One `str` value its preparer refused. `node` and `port` name the input holding it, an
+/// interface input's pipe and `in` for a pipe's default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrepareFailure {
+    pub node: String,
+    pub port: String,
+    pub error: PrepareError,
 }
 
 /// Where a graph named an out-of-range port ([`PlanError::PortOutOfRange`]) or a missing node
@@ -719,6 +771,7 @@ impl Plan {
         check_endpoints(&graph)?;
         check_wire_forms(&graph)?;
         assign_pipe_preparers(&mut graph)?;
+        prepare_seeds(&mut graph)?;
         let dissolved = dissolve_interface_pipes(&mut graph)?;
         // Index the (now final) wire list once; every per-node wire question below asks it
         // instead of rescanning the flat list.
@@ -837,8 +890,10 @@ impl Plan {
                 .iter()
                 .enumerate()
                 .map(|(port, p)| {
-                    seed_latch(p, port, overrides)
-                        .map_err(|e| prepare_error(&graph.nodes[*key].address, p, e))
+                    let fed = adj.feeder(*key, port).is_some();
+                    seed_latch(p, port, overrides, fed).map_err(|e| PlanError::Prepare {
+                        failures: vec![prepare_failure(&graph.nodes[*key].address, p, e)],
+                    })
                 })
                 .collect::<Result<_, _>>()?;
 
@@ -1626,22 +1681,23 @@ fn dissolve_interface_pipes(graph: &mut Graph) -> Result<Vec<DissolvedPipe>, Pla
         let pipe_port = node.descriptor.inputs[0].clone();
         let kind = port_kind(&pipe_port);
         let address = node.address.clone();
-        // What the pipe held at rest: its declared default (or an author/boundary override),
-        // via the same seeding rule Instantiate applies below.
-        let seed = match seed_latch(&pipe_port, 0, &node.value_overrides) {
-            Ok(seed) => seed,
-            Err(e) => {
-                let e = prepare_error(&address, &pipe_port, e);
-                wires.finish(graph);
-                return Err(e);
-            }
-        };
-
         // Splice the pipe out of the wiring: its feeder (if any) takes over the consumer edge.
         // Legality is transitive — the pipe's `in`/`out` share one declared type, so every
         // rewired pair is a combination `check_wire_forms` already admitted (the one crossing it
         // would not, Value-source→Arg-input, is excluded by the Event-consumer guard above).
         let feeder = wires.feeder(key);
+        // What the pipe held at rest: its declared default (or an author/boundary override),
+        // via the same seeding rule Instantiate applies below.
+        let seed = match seed_latch(&pipe_port, 0, &node.value_overrides, feeder.is_some()) {
+            Ok(seed) => seed,
+            Err(e) => {
+                let e = PlanError::Prepare {
+                    failures: vec![prepare_failure(&address, &pipe_port, e)],
+                };
+                wires.finish(graph);
+                return Err(e);
+            }
+        };
         // Removing this pipe re-opens exactly one question, and only for the nodes wired *into*
         // it: their single consumer stops being this pipe's input port and becomes whatever this
         // pipe fed, which is the port kind the Value→Event rule above reads. Rewinding the cursor
@@ -3144,5 +3200,119 @@ mod hosted_probes {
             peak > 0.5,
             "the live Voicer measured elsewhere: peak {peak}"
         );
+    }
+}
+
+/// A carried live value never lands in a `str` input of another preparer. The Coordinator's
+/// manifest only pairs inputs of one type, so these call the carry directly with mismatched pairs.
+#[cfg(test)]
+mod carry_kind {
+    use alloc::boxed::Box;
+    use alloc::sync::Arc;
+
+    use super::{AudioConfig, Descriptor, Graph, InterfaceAt, LiveCarry, Plan, Port};
+    use crate::message::Arg;
+    use crate::operator::{Io, Operator};
+    use crate::operators::pipe::Pipe;
+    use crate::prepare::testing::{STEPS, WORDS};
+    use crate::prepare::Preparer;
+
+    struct Sink;
+    impl Operator for Sink {
+        fn descriptor() -> Descriptor {
+            desc(vec![], "hand_built")
+        }
+        fn process(&mut self, _io: &mut Io) {}
+        fn spawn(&self) -> Box<dyn Operator> {
+            Box::new(Sink)
+        }
+    }
+
+    fn desc(inputs: Vec<Port>, type_name: &'static str) -> Descriptor {
+        let outputs = match type_name {
+            "pipe" => vec![Port::str("out")],
+            _ => vec![],
+        };
+        Descriptor {
+            type_name,
+            inputs,
+            outputs,
+            constants: vec![],
+            resources: vec![],
+        }
+    }
+
+    /// One unwired `str` input prepared by `preparer`.
+    fn lone(preparer: Preparer) -> Plan {
+        let mut g = Graph::new();
+        g.add_boxed(
+            "/n",
+            Box::new(Sink),
+            Arc::new(desc(vec![Port::str_prepared("in", preparer)], "hand_built")),
+        );
+        Plan::instantiate(g, AudioConfig::new(48_000.0, 64)).expect("instantiate")
+    }
+
+    /// A `str` interface pipe dissolved into one input prepared by `preparer`.
+    fn piped(preparer: Preparer) -> Plan {
+        let mut g = Graph::new();
+        let pipe = g.add_boxed(
+            "/pat",
+            Box::new(Pipe::text()),
+            Arc::new(desc(vec![Port::str("in")], "pipe")),
+        );
+        let n = g.add_boxed(
+            "/n",
+            Box::new(Sink),
+            Arc::new(desc(vec![Port::str_prepared("in", preparer)], "hand_built")),
+        );
+        g.connect(pipe, 0usize, n, 0usize);
+        let plan = Plan::instantiate(g, AudioConfig::new(48_000.0, 64)).expect("instantiate");
+        assert_eq!(plan.input_aliases.len(), 1, "the pipe dissolved");
+        plan
+    }
+
+    fn kind(plan: &Plan) -> &'static str {
+        match &plan.nodes[0].latch[0] {
+            Arg::Prepared(p) => p.kind(),
+            other => panic!("not prepared: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_latch_carry_skips_another_preparers_value() {
+        let mut old = lone(STEPS);
+        let mut new = lone(WORDS);
+        new.carry_live_values(
+            &mut old,
+            &[LiveCarry::Latch {
+                from: (0, 0),
+                to: (0, 0),
+            }],
+        );
+        assert_eq!(kind(&new), WORDS.kind);
+        let carried = old.nodes[0].latch[0].clone();
+        let mut same = lone(STEPS);
+        same.carry_live_values(
+            &mut old,
+            &[LiveCarry::Latch {
+                from: (0, 0),
+                to: (0, 0),
+            }],
+        );
+        let (Arg::Prepared(landed), Arg::Prepared(carried)) = (&same.nodes[0].latch[0], &carried)
+        else {
+            panic!("prepared values");
+        };
+        assert!(landed.ptr_eq(carried), "a carry of one kind still lands");
+    }
+
+    #[test]
+    fn an_interface_carry_skips_another_preparers_value() {
+        let at = InterfaceAt::Alias(0);
+        let mut old = piped(STEPS);
+        let mut new = piped(WORDS);
+        new.carry_live_values(&mut old, &[LiveCarry::Interface { from: at, to: at }]);
+        assert_eq!(kind(&new), WORDS.kind);
     }
 }

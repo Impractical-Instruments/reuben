@@ -31,13 +31,12 @@ use reuben_core::coordinator::mailbox::{swap_pair, CoordinatorMailbox, ReclaimEr
 /// one itself.
 ///
 /// The window drains at the top of every engine-channel `send`, so the ring has to hold what one
-/// batch displaces. A batch is at most 256 messages (the window's `MAX_SEND_BATCH`). A string sent
+/// batch displaces. A batch is at most 256 messages (the window's `MAX_SEND_BATCH`). A value sent
 /// straight to an input displaces two values: its queued copy and the latch it overwrites. Sent
 /// through a kept `str` pipe with `k` consumers it displaces `4 + k`: the queued copy, the pipe's
 /// latch, the pipe's dedup baseline, its forwarded emission, and one latch per consumer. 2048 is a
-/// full batch through a kept pipe with four consumers (256 × 8), with the seeds a fresh Plan's
-/// first block overwrites (one per consumer of a kept pipe) fitting in what a real batch leaves
-/// over.
+/// full batch through a kept pipe with four consumers (256 × 8). A fresh Plan's first block adds
+/// nothing: a kept pipe forwards over its consumers' placeholders, which own no heap.
 ///
 /// The bound assumes one batch per drain, and nothing enforces that. Native lets a producer have
 /// up to 256 batches outstanding between two callbacks, so sends arriving faster than the callback

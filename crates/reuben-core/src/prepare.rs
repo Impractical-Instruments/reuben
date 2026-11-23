@@ -4,9 +4,10 @@
 //! A `str` input is the boundary type: what a document default spells, what a live send carries,
 //! and what an interface pipe declares. Inside the render thread the input holds a [`Prepared`]
 //! instead, built by the [`Preparer`] its Operator declares (`pat: str(compile)` in
-//! `operator_contract!`). The Plan prepares document defaults when it is built; a producer prepares
-//! a live string before it reaches the control ring. Render delivers a prepared value only to an
-//! input whose preparer made it ([`Prepared::kind`]), and drops anything else.
+//! `operator_contract!`). The Plan prepares document defaults when it is built. Render delivers a
+//! prepared value only to an input whose preparer made it ([`Prepared::kind`]), and drops anything
+//! else — raw text included, so a live string reaches an input only once something off the render
+//! thread has prepared it.
 
 use alloc::borrow::Cow;
 use alloc::sync::Arc;
@@ -122,8 +123,12 @@ impl fmt::Display for PrepareError {
 
 /// The preparer a `str` input declares: its function and the kind tag it stamps on what it builds.
 ///
-/// `operator_contract!` derives the tag from the declaring module and the function's path, so two
-/// preparers never share one. Equality is by tag.
+/// `operator_contract!` derives the tag from the function's path: its crate-rooted path when the
+/// declaration spells one (`str(crate::m::compile)`), else the declaring module's path plus the path
+/// as written. Two functions never share a tag, but one function can have several: named
+/// `super::compile` from one Operator and `crate::m::compile` from another, its values are two
+/// kinds, and a kept pipe feeding both is refused. Name a shared preparer by its crate-rooted path
+/// everywhere. Equality is by tag.
 #[derive(Clone, Copy)]
 pub struct Preparer {
     pub kind: &'static str,

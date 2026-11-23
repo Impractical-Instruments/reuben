@@ -257,14 +257,15 @@ Each wire is checked **locally** at Instantiate against the two ports' forms (`c
   themselves `i32`: an `i32` pipe or source wires in cleanly, and a genuine `f32` modulation must
   route through an explicit converter rather than silently truncating.
 - **`Event` mismatched** against a Signal/Value is an error (needs an explicit latch / change-detect).
-- **`str` wires only to `str`** (and into `osc_out`'s pass-through). There is no implicit
+- **`str` wires only to `str`** (and into `osc_out`'s pass-through, which sends a `str` interface
+  input's text only while that input also feeds an input that compiles it). There is no implicit
   conversion either way: a number never becomes text, and text never parses into a number. A live
   send of the wrong type to a `str` input is dropped, and a number literal on one is refused at
   load. Text that the input's preparer refuses is refused too: a document default that does not
   compile fails validation with the byte span at fault, so the edit is refused. A kept `str`
   interface input (one feeding several inputs) compiles its text once for all of them, so feeding
   inputs whose preparers differ is refused; one feeding no preparing input holds nothing a send
-  can set.
+  can set, and loading warns that sends to it are dropped.
 
 Every *other* cross-*type* crossing still needs an operator: `f32 → enum` is a quantizer; `f32 →
 Note` is a threshold/trigger; `slew`/`glide` are `f32 → f32` shapers (the `m2s` gap-filling modes).
@@ -629,9 +630,9 @@ input takes a scalar (`/filt/cutoff 1500`). An enum input takes a **symbol** —
 (`/filt/mode "Hp"`; the JSON literal `"mode": "Hp"` is the same form) — with an in-range integer
 index accepted as a fallback, quoted (`"1"`) or bare (`1`); an unknown symbol or out-of-range
 index is an **error**, never a silent snap to the default. A `str` input takes one string
-(`/seq/pat "0 3 ~"`), which its preparer compiles before the render thread holds it: text that
-reaches the render thread uncompiled is dropped and counted (`unprepared_writes_dropped`), and
-anything else sent to it is dropped. A `Note` input takes its args
+(`/seq/pat "0 3 ~"`), but the render thread holds only text its preparer has compiled, and nothing
+compiles a live send yet: a string sent to one is dropped and counted
+(`unprepared_writes_dropped`), as is anything else sent to it. Set its text in the document. A `Note` input takes its args
 (`/notes/in [69.0, 1.0]` on a `notes` interface input, or `/voicer/notes [69.0, 1.0]` on a voicer
 nothing feeds). An input a wire or an interface input feeds takes no message: one sent to it is
 dropped and counted (`wired_writes_dropped`), so a `notes` interface input feeding

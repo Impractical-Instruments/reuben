@@ -581,8 +581,8 @@ pub struct DiagnosticsReport {
     #[serde(default)]
     pub retire_queue_dropped_full: u64,
     /// Strings dropped at a `str` input that compiles its text, for not being a value its
-    /// preparer built: raw text that reached it without a `send` preparing it (OSC over UDP), or
-    /// text prepared for an input the instrument no longer routes there (messages). Absent from a
+    /// preparer built: raw text, or a value another preparer built (messages). No path prepares a
+    /// live send yet, so every live string sent to such an input is counted here. Absent from a
     /// report by an engine that predates it, and then zero.
     #[serde(default)]
     pub unprepared_writes_dropped: u64,
