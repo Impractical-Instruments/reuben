@@ -114,8 +114,8 @@ fn route(
 }
 
 /// The range to scale into: the control's narrowing, clamped into the input's, else the input's.
-/// An input with no declared range has the type-wide one, which a knob's travel cannot usefully
-/// span, so the control must narrow it.
+/// A bound the input leaves undeclared is the type-wide one (`i32`'s own limits for an `i32`), which
+/// a knob's travel cannot usefully reach, so both ends must be declared or narrowed.
 fn range(
     control: &SurfaceControl,
     input: &PortInfo,
@@ -126,6 +126,13 @@ fn range(
     let clamp = |v: f64| v.clamp(input_min, input_max);
     let min = control.min.map_or(input_min, clamp);
     let max = control.max.map_or(input_max, clamp);
+    let unbounded = |v: f64| v <= f64::from(NUMBER_MIN) || v >= f64::from(NUMBER_MAX);
+    if unbounded(min) || unbounded(max) {
+        return Err(
+            "no range to scale into: the input is unbounded on at least one side; set min and max on the control"
+                .into(),
+        );
+    }
     if control.min.is_some_and(|v| v != min) || control.max.is_some_and(|v| v != max) {
         warnings.push(format!(
             "control \"{}\": range {}..{} clamped into the input's {input_min}..{input_max}",
@@ -133,11 +140,6 @@ fn range(
             control.min.map_or("".into(), |v| v.to_string()),
             control.max.map_or("".into(), |v| v.to_string()),
         ));
-    }
-    if min <= f64::from(NUMBER_MIN) && max >= f64::from(NUMBER_MAX) {
-        return Err(
-            "the input declares no range and the control gives none (set min and max)".into(),
-        );
     }
     Ok((min, max))
 }
@@ -184,6 +186,9 @@ mod tests {
                 {"name": "level", "kind": "value", "min": 0.0, "max": 1.0, "curve": "linear"},
                 {"name": "free", "kind": "value", "min": -1_000_000.0, "max": 1_000_000.0, "curve": "linear"},
                 {"name": "steps", "kind": "int", "min": 0.0, "max": 16.0},
+                {"name": "count", "kind": "int", "min": -2147483648.0, "max": 2147483647.0},
+                {"name": "upto", "kind": "int", "min": -2147483648.0, "max": 16.0},
+                {"name": "from", "kind": "value", "min": 0.0, "max": 1_000_000.0, "curve": "linear"},
                 {"name": "sig", "kind": "signal"},
                 {"name": "ranged_sig", "kind": "signal", "min": 0.0, "max": 1.0, "curve": "linear"},
                 {"name": "notes", "kind": "message"},
@@ -254,6 +259,31 @@ mod tests {
         );
         skipped(json!({"bind": "sig", "midi": "/midi/1/cc/1"}), "no range");
         skipped(json!({"bind": "free", "midi": "/midi/1/bend"}), "no range");
+    }
+
+    #[test]
+    fn a_range_unbounded_on_either_side_is_refused() {
+        skipped(json!({"bind": "count", "midi": "/midi/1/cc/1"}), "no range");
+        skipped(json!({"bind": "upto", "midi": "/midi/1/cc/1"}), "no range");
+        skipped(json!({"bind": "from", "midi": "/midi/1/cc/1"}), "no range");
+        skipped(
+            json!({"bind": "free", "midi": "/midi/1/cc/1", "min": 0}),
+            "no range",
+        );
+        // One warning, the skip, even when the narrowing was also clamped.
+        skipped(
+            json!({"bind": "free", "midi": "/midi/1/cc/1", "min": -2e6}),
+            "no range",
+        );
+        let (route, _) = one(json!({"bind": "upto", "midi": "/midi/1/cc/1", "min": 0}));
+        assert_eq!(
+            route.unwrap().scale,
+            Scale::Linear {
+                min: 0.0,
+                max: 16.0,
+                int: true
+            }
+        );
     }
 
     #[test]
