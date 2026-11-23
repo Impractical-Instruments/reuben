@@ -1,5 +1,6 @@
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
+use alloc::vec;
 use alloc::vec::Vec;
 
 use std::cell::RefCell;
@@ -713,4 +714,73 @@ fn a_create_goes_to_the_wrapped_store_and_what_it_created_is_held() {
         seed(),
         "a taken source is left as it was"
     );
+}
+
+const MAP: &str = "inst.midi.json";
+
+fn surface_text(bind: &str) -> String {
+    use crate::surface::{SurfaceControl, SurfaceDoc};
+    let doc = SurfaceDoc {
+        instrument: "inst".to_string(),
+        controls: vec![SurfaceControl {
+            bind: bind.to_string(),
+            midi: Some("cc1".to_string()),
+            ..SurfaceControl::default()
+        }],
+        ..SurfaceDoc::default()
+    };
+    format!("{}\n", doc.to_json_pretty())
+}
+
+fn surface_hash_of(text: &str) -> String {
+    use crate::surface::{surface_hash, SurfaceDoc};
+    surface_hash(&SurfaceDoc::parse(text).expect("a surface doc"))
+}
+
+#[test]
+fn a_surface_write_is_held_and_restorable() {
+    let history = history();
+    let (a, b) = (surface_text("/freq/in"), surface_text("/gain/in"));
+    let (hash_a, hash_b) = (surface_hash_of(&a), surface_hash_of(&b));
+    history.write_text(MAP, &a).expect("write A");
+    history.write_text(MAP, &b).expect("write B");
+
+    let back = restore_instrument(&restore(MAP, &hash_a, &hash_b), &history)
+        .expect("A is held")
+        .output;
+    assert!(back.written, "{back:?}");
+    assert_eq!(back.hash, hash_a);
+    assert_eq!(history.inner().read(MAP), a);
+}
+
+#[test]
+fn a_surface_restore_with_a_stale_expect_is_a_conflict() {
+    let history = history();
+    let (a, b) = (surface_text("/freq/in"), surface_text("/gain/in"));
+    let (hash_a, hash_b) = (surface_hash_of(&a), surface_hash_of(&b));
+    history.write_text(MAP, &a).expect("write A");
+    history.write_text(MAP, &b).expect("write B");
+
+    let missed = restore_instrument(&restore(MAP, &hash_a, &hash_a), &history)
+        .expect("a guard miss is an answer, not a refusal")
+        .output;
+    assert!(!missed.written);
+    assert_eq!(missed.hash, hash_b);
+    assert!(missed.report.errors[0].message.starts_with("expect guard:"));
+    assert_eq!(history.inner().read(MAP), b);
+}
+
+#[test]
+fn a_surface_restore_is_not_checked_against_any_instrument() {
+    let history = history();
+    let (a, b) = (surface_text("/nothing/has/this"), surface_text("/gain/in"));
+    let (hash_a, hash_b) = (surface_hash_of(&a), surface_hash_of(&b));
+    history.write_text(MAP, &a).expect("write A");
+    history.write_text(MAP, &b).expect("write B");
+
+    let back = restore_instrument(&restore(MAP, &hash_a, &hash_b), &history)
+        .expect("A is held")
+        .output;
+    assert!(back.written, "{back:?}");
+    assert_eq!(history.inner().read(MAP), a);
 }

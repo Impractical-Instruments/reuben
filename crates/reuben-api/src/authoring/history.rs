@@ -8,6 +8,7 @@
 use alloc::collections::VecDeque;
 use alloc::format;
 use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -17,9 +18,10 @@ use reuben_document::{content_hash, NormalizedDoc};
 
 use super::args::RestoreInstrument;
 use super::result::EditResult;
-use super::verbs::{edit_summary, expect_conflict, Answer, Refusal};
+use super::result::Report;
+use super::verbs::{edit_summary, expect_conflict, expect_miss, Answer, Refusal};
 use crate::resources::{Adapter, Created, ResolveError, Resources, SampleBuffer};
-use crate::surface::SurfaceKind;
+use crate::surface::{render_surface, surface_hash, SurfaceDoc, SurfaceKind};
 
 /// A [`Resources`] that remembers the documents written through it, so
 /// [`restore_instrument`] can put one back.
@@ -99,10 +101,17 @@ impl<R: Resources> DocumentHistory<R> {
     /// The canonical text is what gets held, not `text`: an older-format document takes part of
     /// its meaning from the files it references when it is normalized, so the same raw text read
     /// again later can normalize to a different document than the one this hash names.
+    ///
+    /// A surface doc has no Instrument to normalize against, so text that is not an Instrument is
+    /// tried as one.
     fn mint(&self, text: &str) -> Option<(String, String)> {
-        let doc = NormalizedDoc::from_json(text, &Registry::builtin(), Some(&Adapter(&self.inner)))
-            .ok()?;
-        Some((content_hash(&doc), doc.to_json_pretty()))
+        if let Ok(doc) =
+            NormalizedDoc::from_json(text, &Registry::builtin(), Some(&Adapter(&self.inner)))
+        {
+            return Some((content_hash(&doc), doc.to_json_pretty()));
+        }
+        let doc = SurfaceDoc::parse(text).ok()?;
+        Some((surface_hash(&doc), doc.to_json_pretty()))
     }
 
     fn record(&self, source: &str, hash: String, text: String) {
@@ -220,6 +229,9 @@ pub(crate) fn restore_instrument_through<R: Resources>(
             args.to, args.source
         ))
     })?;
+    if let Ok(held) = SurfaceDoc::parse(&prior) {
+        return restore_surface(args, &prior, &held, resources);
+    }
     let registry = Registry::builtin();
     let resolver = Adapter(resources);
     let expect = Some(args.expect.clone());
@@ -249,6 +261,54 @@ pub(crate) fn restore_instrument_through<R: Resources>(
             ))
         }),
     }
+}
+
+/// The restore of a surface doc: no Instrument validation, because a surface doc is allowed to
+/// name controls its Instrument lacks, and refusing the way back to one would strand an undo.
+fn restore_surface(
+    args: &RestoreInstrument,
+    prior: &str,
+    held: &SurfaceDoc,
+    resources: &dyn Resources,
+) -> Result<Answer<EditResult>, Refusal> {
+    let kind = if args.source.ends_with(".midi.json") {
+        SurfaceKind::Midi
+    } else {
+        SurfaceKind::Screen
+    };
+    let current = resources
+        .read_text(&args.source)
+        .map_err(|e| Refusal::new(format!("could not read `{}`: {e}", args.source)))
+        .and_then(|text| {
+            SurfaceDoc::parse(&text).map_err(|e| {
+                Refusal::new(format!(
+                    "`{}` is not a surface doc, so there is no hash for `expect` to match: {e}",
+                    args.source
+                ))
+            })
+        })?;
+    let actual = surface_hash(&current);
+    if actual != args.expect {
+        let zoom = render_surface(&current, kind);
+        return Ok(expect_miss(actual, &args.expect, zoom));
+    }
+    resources
+        .write_text(&args.source, &format!("{prior}\n"))
+        .map_err(|e| Refusal::new(format!("could not write `{}`: {e}", args.source)))?;
+    let output = EditResult {
+        report: Report {
+            ok: true,
+            errors: Vec::new(),
+            warnings: Vec::new(),
+        },
+        pre_existing: Vec::new(),
+        written: true,
+        hash: args.to.clone(),
+        notes: Vec::new(),
+        zoom: render_surface(held, kind),
+    };
+    let summary = edit_summary(&output);
+    Ok(Answer { output, summary })
 }
 
 #[cfg(test)]
