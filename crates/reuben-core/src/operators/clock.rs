@@ -42,8 +42,8 @@
 //!   input's declared range: the `*_i32_value` arithmetic operators declare ±1,000,000, so a `beat`
 //!   routed through one pins at 1,000,000 (about 5.8 days at 120 BPM).
 //!
-//! **Announcing `beat`.** Every Swap builds a Plan whose held latches start at their defaults: a
-//! new consumer's, and a surviving consumer's too. So the Clock *announces* `beat`'s current value
+//! **Announcing `beat`.** Every Swap builds a Plan whose wired held latches start at their
+//! defaults: a new consumer's, and a surviving consumer's too. So the Clock *announces* `beat`'s current value
 //! at frame 0 of its first `process` call after construction and of its first call after
 //! `on_transplant` (a surviving Clock is transplanted into the new Plan). The Clock renders before
 //! its consumers, so each reads the right beat in its first block after the Swap, and nothing
