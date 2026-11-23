@@ -12,12 +12,14 @@ Two tasks and two key bindings that drive a running `reuben play` from VS Code w
 
 A set file holds one send per line: an address, whitespace, then the pattern text to the end of the
 line. Blank lines and lines starting with `#` are skipped. These recipes use the `.reuben`
-extension, and the key bindings only fire in files that have it. [`example.reuben`](example.reuben)
-is a starting point.
+extension, and the key bindings only fire in files that have it.
 
-`example.reuben` and the address prompt's default target `/pattern/in`, the pattern input of the
-`pattern-melody` library instrument. For another instrument, `reuben describe <instrument> --view
-pipes` lists its inputs.
+The repo's [`sets/`](../../sets) directory holds two starting points, each naming the instrument to
+play and listing alternatives to swap in: [`pattern-melody.reuben`](../../sets/pattern-melody.reuben)
+(scale degrees, `/pattern/in`) and [`pattern-lab.reuben`](../../sets/pattern-lab.reuben) (note
+names, Hz and cutoff patterns). The address prompt's default is `/pattern/in`, the pattern input of
+`pattern-melody`. For another instrument, `reuben describe <instrument> --view pipes` lists its
+inputs.
 
 ## Setup
 

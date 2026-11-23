@@ -35,6 +35,8 @@ libc.workspace = true
 approx.workspace = true
 # The client transport, to dial the engine-channel server the tests bind.
 reuben-api = { path = "../reuben-api", features = ["fs-resolver", "tcp"] }
+# The pattern compiler, to check that every line of the example sets compiles for its input.
+reuben-pattern = { path = "../reuben-pattern" }
 
 [[bin]]
 name = "reuben"

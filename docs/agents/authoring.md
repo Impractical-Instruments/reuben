@@ -205,6 +205,9 @@ reachable they exit at once and say so. `--engine-addr` and `--token` (or `REUBE
   stale prints `<file>:<line>:<col>: warning: dropped: instrument changed, resend <address>`. The
   next save sends it again, as it does any value an edit reset or an `open` replaced.
 
+The repo's [`sets/`](../../sets) directory holds example set files for `pattern-melody` and
+`pattern-lab`: each names the instrument to play and lists alternative patterns to swap in.
+
 Because `send` reads stdin, "evaluate the selection" needs no plugin:
 
 | Editor | Recipe |

@@ -1,7 +1,0 @@
-# A reuben set file: one send per line, an address, whitespace, then the pattern to the end of
-# the line. `reuben live example.reuben` sends every line, then each line you change on save.
-#
-# `/pattern/in` is the pattern input of the `pattern-melody` library instrument:
-# `reuben play instruments/pattern-melody.json` from the repo root plays it.
-/pattern/in  0 2 4 <7 5> [4 2] 0 ~ <2 [1 0]>
-# /pattern/in  0*2 [2 4]?  <0 7>(3,8)  ~ 4
