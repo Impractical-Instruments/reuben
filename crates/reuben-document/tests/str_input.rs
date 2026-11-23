@@ -1228,3 +1228,72 @@ fn dissolved_alias_carry_then_first_send_is_heap_free() {
     }
     assert_eq!(slot.take_dropped_unprepared(), 0);
 }
+
+/// A Swap refused for text that does not compile reports each failing value at its node and input,
+/// as validation does.
+#[test]
+fn a_swap_refused_for_text_that_does_not_compile_attributes_every_failure() {
+    use reuben_document::coordinator::Coordinator;
+    let (mut coord, _side, _) = Coordinator::install_initial(
+        DOC,
+        registry(),
+        Box::new(MemoryResolver::new()),
+        AudioConfig::new(48_000.0, 64),
+    )
+    .expect("installs");
+    let both = DOC
+        .replace(r#""steps": "4 5""#, r#""steps": "4 x5""#)
+        .replace(r#""default": "1 2 3""#, r#""default": "1 2 ?""#);
+    let refused = coord.swap_document(&both);
+    assert!(!refused.report.ok);
+    let mut at: Vec<(Option<&str>, Option<&str>)> = refused
+        .report
+        .errors
+        .iter()
+        .map(|d| (d.node.as_deref(), d.port.as_deref()))
+        .collect();
+    at.sort();
+    assert_eq!(
+        at,
+        [
+            (Some("/literal"), Some("steps")),
+            (Some("/pat"), Some("in"))
+        ],
+        "{:?}",
+        refused.report
+    );
+    assert!(refused
+        .report
+        .errors
+        .iter()
+        .all(|d| d.message.contains("bytes")));
+}
+
+/// A `str` input wired into a subpatch whose child did not load warns about the missing child, not
+/// that the input is unread.
+#[test]
+fn a_str_input_beside_a_missing_subpatch_warns_only_about_the_child() {
+    use reuben_document::format::LoadWarning;
+    const DOC: &str = r#"{ "format_version": 3, "instrument": "t", "resources": { "c": "missing.json" },
+      "interface": { "inputs": { "pat": { "type": "str", "default": "1" } } },
+      "nodes": [ { "type": "subpatch", "address": "/sub", "patch": "c",
+          "inputs": { "inner": { "from": "/pat" } } } ] }"#;
+    let loaded = load_instrument(DOC, &registry(), &MemoryResolver::new()).expect("loads dark");
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|w| matches!(w, LoadWarning::Nested { warning, .. }
+                if matches!(**warning, LoadWarning::ResolveFailed { .. }))),
+        "{:?}",
+        loaded.warnings
+    );
+    assert!(
+        !loaded
+            .warnings
+            .iter()
+            .any(|w| matches!(w, LoadWarning::UnreadStrInput { .. })),
+        "{:?}",
+        loaded.warnings
+    );
+}

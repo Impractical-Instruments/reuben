@@ -321,24 +321,46 @@ fn is_snake_case(name: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
-/// A Rust path to a function, `name`, `a::b::name` or `::a::name`, each segment an identifier.
+/// A Rust path to a function, `name`, `a::b::name` or `::a::name`, each segment an identifier. The
+/// path may start at `crate`, `self` or `super` (then any further `super`s), as the macro accepts
+/// them there; it ends in the function's own name.
 fn is_path(path: &str) -> bool {
-    path.strip_prefix("::")
-        .unwrap_or(path)
-        .split("::")
-        .all(is_ident)
+    let (rooted, rest) = match path.strip_prefix("::") {
+        Some(rest) => (true, rest),
+        None => (false, path),
+    };
+    let segments: Vec<&str> = rest.split("::").collect();
+    let lead = match (rooted, segments.first().copied()) {
+        (false, Some("crate")) => 1,
+        (false, Some("self" | "super")) => {
+            1 + segments[1..].iter().take_while(|s| **s == "super").count()
+        }
+        _ => 0,
+    };
+    lead < segments.len() && segments[lead..].iter().all(|s| is_ident(s))
 }
 
-/// A non-empty Rust identifier: an ASCII letter, or `_` with more after it, then `[A-Za-z0-9_]`.
-/// The rule for the `vocab` type an `enum` port names (`FilterMode`, `SnapDir`) and for each
-/// segment of a preparer's path — emitted as a path segment, so it must be a valid identifier
-/// (PascalCase is conventional for a type but not enforced here).
+/// The words Rust reserves (strict, edition-dependent and reserved), none of which names a type or
+/// a function.
+const KEYWORDS: [&str; 52] = [
+    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern",
+    "false", "fn", "for", "gen", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut",
+    "pub", "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type",
+    "unsafe", "use", "where", "while", "abstract", "become", "box", "do", "final", "macro",
+    "override", "priv", "typeof", "unsized", "virtual", "yield", "try",
+];
+
+/// A non-empty Rust identifier that is not a keyword: an ASCII letter, or `_` with more after it,
+/// then `[A-Za-z0-9_]`. The rule for the `vocab` type an `enum` port names (`FilterMode`,
+/// `SnapDir`) and for each name in a preparer's path — emitted as a path segment, so it must be a
+/// valid identifier (PascalCase is conventional for a type but not enforced here).
 fn is_ident(name: &str) -> bool {
     let mut chars = name.chars();
     chars
         .next()
         .is_some_and(|c| c.is_ascii_alphabetic() || (c == '_' && name.len() > 1))
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !KEYWORDS.contains(&name)
 }
 
 /// Validate one port's **data** rules: coherent ranges, in-range defaults, an
@@ -578,7 +600,13 @@ mod tests {
         let e =
             err(r#"{ "type_name": "x", "inputs": [ {"name":"pat","ty":"str","prepare":"a b"} ] }"#);
         assert!(e.message.contains("path to a function"), "{}", e.message);
-        for path in ["crate::p::compile", "::other::compile", "_compile"] {
+        for path in [
+            "crate::p::compile",
+            "::other::compile",
+            "_compile",
+            "self::compile",
+            "super::super::m::compile",
+        ] {
             let ok = spec(&format!(
                 r#"{{ "type_name": "x", "inputs": [ {{"name":"pat","ty":"str","prepare":"{path}"}} ] }}"#
             ));

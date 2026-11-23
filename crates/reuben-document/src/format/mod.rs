@@ -1399,8 +1399,24 @@ pub fn load_instrument(
 }
 
 /// Warn [`LoadWarning::UnreadStrInput`] for each of `graph`'s own `str` interface inputs whose
-/// value reaches no preparing input, through any pipes after it.
-fn warn_unread_str_inputs(graph: &Graph, warnings: &mut Vec<LoadWarning>) {
+/// value reaches no preparing input, through any pipes after it. An input `doc` wires into a node
+/// that built nothing (a subpatch whose child did not load, already warned for) is skipped: the
+/// missing child is the cause, not the input.
+fn warn_unread_str_inputs(doc: &NormalizedDoc, graph: &Graph, warnings: &mut Vec<LoadWarning>) {
+    let built = |address: &str| {
+        let nested = format!("{address}/");
+        (graph.nodes.values()).any(|n| &*n.address == address || n.address.starts_with(&nested))
+    };
+    let feeds_unbuilt = |name: &str| {
+        let pipe = format!("/{name}");
+        let out = format!("/{name}.");
+        doc.nodes.iter().any(|n| {
+            !built(&n.address)
+                && n.inputs.values().any(|v| {
+                    matches!(v, InputValue::Wire { from } if *from == pipe || from.starts_with(&out))
+                })
+        })
+    };
     let is_str = |k: reuben_core::NodeKey| {
         graph.nodes.get(k).is_some_and(|n| {
             n.descriptor.type_name == "pipe"
@@ -1432,7 +1448,7 @@ fn warn_unread_str_inputs(graph: &Graph, warnings: &mut Vec<LoadWarning>) {
                 }
             }
         }
-        if !read {
+        if !read && !feeds_unbuilt(name) {
             warnings.push(LoadWarning::UnreadStrInput { name: name.clone() });
         }
     }
@@ -1494,7 +1510,7 @@ fn load_doc_guarded(
         mut warnings,
     } = doc.build_found(registry, Some(resolver), ctx, referrer, &mut found);
     if referrer.is_none() {
-        warn_unread_str_inputs(&graph, &mut warnings);
+        warn_unread_str_inputs(doc, &graph, &mut warnings);
     }
 
     // Resolve every referenced id once into the store; record id -> handle for binding. The

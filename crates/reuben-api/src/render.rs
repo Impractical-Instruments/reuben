@@ -48,7 +48,7 @@ pub use reuben_core::operator::{InPort, OutPort};
 /// type by string.
 pub use reuben_core::operators;
 /// Why [`install_graph`] refused a graph, and where it named an undeclared port or a missing node.
-pub use reuben_core::plan::{PlanError, PortPosition};
+pub use reuben_core::plan::{PlanError, PortPosition, PrepareFailure};
 /// The sample rate and block size a Plan is instantiated against — a host's device geometry,
 /// which is why it is a parameter rather than a policy.
 pub use reuben_core::AudioConfig;

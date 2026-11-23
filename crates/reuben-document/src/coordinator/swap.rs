@@ -356,11 +356,7 @@ impl Coordinator {
                     return Err(self.reject(errors.iter().map(Diag::from_load).collect()))
                 }
                 Err(FromDocumentError::Plan(e)) => {
-                    return Err(self.reject(vec![Diag {
-                        node: None,
-                        port: None,
-                        message: format!("instantiate plan: {e:?}"),
-                    }]))
+                    return Err(self.reject(crate::introspect::plan_error_diags(e)))
                 }
             };
 
