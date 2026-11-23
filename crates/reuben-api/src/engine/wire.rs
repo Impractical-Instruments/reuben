@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use reuben_core::message::Arg;
 
 use crate::authoring::{Diag, Report};
+use crate::surface::SurfaceKind;
 
 /// The engine channel's default loopback bind/target: `127.0.0.1` only, shared here so the
 /// reuben-native server (`reuben play`) and the reuben-mcp client bind and dial the *same*
@@ -644,6 +645,10 @@ pub enum Event {
     /// applied in part to what plays now. `addresses` lists, sorted and once each, every address
     /// it carried; send it again.
     SendsDropped { addresses: Vec<String> },
+    /// One of the open instrument's surface docs was written through the channel. Nothing was
+    /// swapped: what plays is as it was. `hash` is the doc's own content hash, as the edit's
+    /// result carries it.
+    SurfaceChanged { surface: SurfaceKind, hash: String },
 }
 
 /// Who made a [`Event::Changed`] change.
@@ -1473,6 +1478,14 @@ mod tests {
                     addresses: vec!["/seq/steps".to_string()],
                 },
                 serde_json::json!({"event": "sends_dropped", "addresses": ["/seq/steps"]}),
+            ),
+            (
+                Event::SurfaceChanged {
+                    surface: SurfaceKind::Midi,
+                    hash: "00c0ffee00c0ffee".to_string(),
+                },
+                serde_json::json!({"event": "surface_changed", "surface": "midi",
+                                   "hash": "00c0ffee00c0ffee"}),
             ),
         ];
         for (event, wire) in &events {

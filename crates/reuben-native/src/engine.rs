@@ -754,6 +754,7 @@ pub(crate) fn start_with(
         Channel::new(InProcess::new(state.clone())),
         midi_router,
         follow_files,
+        host.midi_map_generation(),
     )
     .map_err(StartError::RouteWatch)?;
 

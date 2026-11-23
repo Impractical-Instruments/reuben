@@ -58,6 +58,7 @@ use reuben_document::coordinator::Coordinator;
 use crate::authoring::{Diag, DocumentHistory, Report};
 use crate::resources::Resources;
 use crate::staged::{Reads, Staged};
+use crate::surface::SurfaceKind;
 
 use super::channel::Transport;
 use super::events::{Bus, Subscription};
@@ -140,6 +141,10 @@ pub trait EngineHost: Send + Sync {
     fn within(&self, _name: &str, _open: Option<&str>) -> bool {
         true
     }
+
+    /// The open instrument's surface doc of `surface` kind was just written through the channel,
+    /// under the Coordinator lock, so it must not wait. Defaults to doing nothing.
+    fn surface_written(&self, _surface: SurfaceKind) {}
 
     /// Hand a control batch to the engine's ingress **as one unit**, so a gesture cannot straddle
     /// a rendered block. `Err` means the ingress is gone (audio torn down) and nothing was queued.

@@ -349,7 +349,7 @@ impl Live {
                     )?;
                 }
             }
-            Event::Invalid { .. } => {}
+            Event::Invalid { .. } | Event::SurfaceChanged { .. } => {}
         }
         out.flush()
     }
