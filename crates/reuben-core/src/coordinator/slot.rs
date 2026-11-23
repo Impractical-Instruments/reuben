@@ -172,6 +172,12 @@ impl RenderSlot {
         self.engine.take_dropped_unprepared()
     }
 
+    /// Take what the live Engine's Operators counted since the last take, leaving zero. RT-safe: a
+    /// field read and write.
+    pub fn take_operator_counts(&mut self) -> crate::operator::OperatorCounts {
+        self.engine.take_operator_counts()
+    }
+
     /// Whether a swap is waiting to install or ramping down toward its install: the live Engine
     /// is about to retire, and control queued on it now leaves with it unrendered if it renders no
     /// further block first. A host's control drain holds its batches while this is true, for the
@@ -378,6 +384,8 @@ impl RenderSlot {
         bundle.engine.credit_dropped_wired_writes(dropped);
         let dropped = self.engine.take_dropped_unprepared();
         bundle.engine.credit_dropped_unprepared(dropped);
+        let counted = self.engine.take_operator_counts();
+        bundle.engine.credit_operator_counts(counted);
         // Swap the fresh Engine live; `bundle.engine` now holds the retiring one. Reusing the box's
         // storage (rather than `Box::new`) is what keeps the post allocation-free.
         core::mem::swap(&mut self.engine, &mut bundle.engine);

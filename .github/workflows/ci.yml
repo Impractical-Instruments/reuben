@@ -116,8 +116,9 @@ jobs:
               - '.github/workflows/ci.yml'
               - '.github/actions/setup-rust/**'
             # Deliberately NARROWER than *workspace: the benches build `reuben-document` and its
-            # build closure (reuben-core, reuben-macros, reuben-contract) and nothing above it, so a
-            # change to reuben-api, reuben-native, reuben-mcp or reuben-guide cannot move an Ir count.
+            # build closure (reuben-core, reuben-macros, reuben-contract, reuben-pattern) and
+            # nothing above it, so a change to reuben-api, reuben-native, reuben-mcp or reuben-guide
+            # cannot move an Ir count.
             # A crate joining that closure must join this list (perf-gate.sh's SRC says the same).
             # The crate dirs are whole, not `src/`: the benches, their fixtures and the manifests that
             # declare them live there too. instruments/ and .cargo/config.toml are swapped into the
@@ -127,6 +128,7 @@ jobs:
               - 'crates/reuben-macros/**'
               - 'crates/reuben-core/**'
               - 'crates/reuben-document/**'
+              - 'crates/reuben-pattern/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'

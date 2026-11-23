@@ -40,6 +40,9 @@ pub use reuben_core::graph::{Graph, NodeKey};
 /// edge (an OSC datagram, a MIDI event) and hands them to [`RenderSlot::queue_osc`]; a [`Message`]
 /// is what comes back out of [`RenderSlot::drain_outbound`].
 pub use reuben_core::message::{Arg, Message};
+/// What the render thread's Operators counted since the last
+/// [`RenderSlot::take_operator_counts`], for a host to add to its diagnostics.
+pub use reuben_core::operator::OperatorCounts;
 /// The port bounds [`Graph::connect`] and [`Graph::tap_output`] take, for a host writing its own
 /// wiring helper over them: an `OUT_*` handle or a `usize` is an [`OutPort`], an `IN_*` handle or
 /// a `usize` an [`InPort`].

@@ -109,6 +109,20 @@ pub enum MapCurve {
     Exponential,
 }
 
+/// How the `pattern` Operator reads a pattern's atoms (its `mode`). A shared *vocab* enum
+/// (`Arg::Enum`). `Degree` is the default: a number is a scale degree, resolved downstream through
+/// the harmony context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, reuben_macros::ArgValue)]
+pub enum PatternMode {
+    /// A number is a scale degree (`Pitch::Degree`); a note name is unreadable.
+    #[default]
+    Degree,
+    /// A number is a MIDI note (`Pitch::Absolute`), and a note name (`c4`, `eb3`) is read too.
+    Midi,
+    /// A number sets the held `value` output; no notes are emitted. A note name is unreadable.
+    Value,
+}
+
 /// One row of [`PIPEABLE_ENUMS`]: the type name a document may declare, and the derive-generated
 /// constructor for its [`EnumMeta`](crate::descriptor::EnumMeta) at a given port.
 type PipeableEnum = (
@@ -132,6 +146,7 @@ const PIPEABLE_ENUMS: &[PipeableEnum] = &[
     ("GrainWindow", GrainWindow::enum_meta),
     ("M2sMode", M2sMode::enum_meta),
     ("MapCurve", MapCurve::enum_meta),
+    ("PatternMode", PatternMode::enum_meta),
     ("SnapDir", SnapDir::enum_meta),
     ("SnapTarget", SnapTarget::enum_meta),
 ];

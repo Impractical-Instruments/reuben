@@ -416,6 +416,7 @@ impl Operator for Voicer {
         // this block. Only when `active` is observable — without it we can't know the tail, so we
         // render every voice (today's behaviour) to avoid cutting a release.
         let can_skip = active_cap.is_some();
+        let mut counted = crate::operator::OperatorCounts::default();
         for (i, slot) in slots.iter_mut().enumerate() {
             let v = pool.voices[i];
             if can_skip && !v.on && !v.active && !touched[i] {
@@ -458,6 +459,7 @@ impl Operator for Voicer {
                 outbound,
                 retire,
             );
+            counted += slot.plan.take_operator_counts();
             // Read this voice's audio from its `audio` interface output buffer,
             // falling back to the master tap for a patch without one (e.g. driven bare).
             let audio = match *audio_buf {
@@ -476,6 +478,7 @@ impl Operator for Voicer {
                 None => pool.voices[i].on,
             };
         }
+        *io.counts() += counted;
         // Every block, sounding voices or none, so an idle Voicer's meters still fall.
         if let Some(probes) = probes.as_deref().filter(|p| p.any_on()) {
             probes.commit(n);

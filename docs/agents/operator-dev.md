@@ -38,12 +38,14 @@ pub trait Operator: Send {
 }
 ```
 
-Two optional lifecycle hooks, both default no-ops: `bind_voices(Vec<Graph>)` receives the Voicer's
-N built voice sub-patches at load, and `on_instantiate(&AudioConfig) -> Result<(), PlanError>` runs
+Three optional lifecycle hooks, all default no-ops: `bind_voices(Vec<Graph>)` receives the Voicer's
+N built voice sub-patches at load, `bind_address(&str)` receives the node's address within the
+Instrument once per Plan build, just before `on_instantiate` and off the render thread (the
+`pattern` Operator derives its random seed from it), and `on_instantiate(&AudioConfig) -> Result<(), PlanError>` runs
 per node from `Plan::instantiate` (the one place with the audio config) so config-dependent state is
 built off the hot path — the Voicer's per-voice sub-`Plan` + arena, the Delay's line.
 
-A third default-no-op hook, `on_transplant(&mut self)`, runs on a **survivor** box just after it is
+A fourth default-no-op hook, `on_transplant(&mut self)`, runs on a **survivor** box just after it is
 transplanted across a hot-swap. A Swap
 rebuilds every wired input latch from the new document, so a downstream consumer's held-input latch
 resets to its default. An operator that publishes a **held output on change** (emit-on-change) against a baseline it keeps in its box would then see
@@ -69,6 +71,10 @@ and event outputs (append-only) need nothing.
     survive. A Signal write (`io.write(OUT) -> &mut [f32]`) fills the buffer in place.
   - **No `enum_index`/`from_index` on the hot path** — an enum handle reads the real vocab
     type directly (`io.read(IN_WAVEFORM) == Waveform::Saw`), constant for the (sub)block.
+  - **Count what you give up instead of allocating.** An operator that truncates or drops work
+    to stay inside a fixed capacity adds to a field of `io.counts()` (`OperatorCounts`); the
+    render folds each call's counts into the Engine's, and the host reports them in
+    `get_engine_diagnostics`. A new kind of count is a new field, named for its operator.
   - **Internal wires are addressless** — routed by connection, not name. Exemplars:
     `sequencer.rs` / `snap.rs` for `Note` events; the Voicer and `snap.rs` read `Harmony`,
     `harmony.rs` emits it.

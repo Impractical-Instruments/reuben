@@ -1080,3 +1080,106 @@ fn a_plans_first_block_touches_no_heap_with_kept_pipes_forwarding() {
         );
     }
 }
+
+/// A resolver rooted at the repo's `instruments/`, for the library instrument the pattern run plays.
+struct LibraryDir;
+
+impl ResourceResolver for LibraryDir {
+    fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+        Err(ResolveError::NotFound(source.to_string()))
+    }
+    fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
+        let path = format!("{}/../../instruments/{source}", env!("CARGO_MANIFEST_DIR"));
+        std::fs::read_to_string(&path).map_err(|e| ResolveError::NotFound(format!("{path}: {e}")))
+    }
+}
+
+/// `text` compiled by the built-in `pattern` Operator's own preparer, as a live `send` prepares it.
+fn pattern_arg(text: &str) -> Arg {
+    let registry = Registry::builtin();
+    let entry = registry.get("pattern").expect("`pattern` is built in");
+    let pat = (entry.descriptor.inputs.iter())
+        .find(|p| p.name == "pat")
+        .and_then(|p| p.preparer())
+        .expect("`pat` prepares its text");
+    Arg::Prepared(pat.prepare(&Arc::from(text)).expect("the pattern compiles"))
+}
+
+/// The `pattern` Operator over a long run: cycle queries, note-ons and note-offs, evictions from
+/// a full held-notes list, and new patterns sent mid-cycle that swap in at the next cycle start.
+/// None of it allocates or frees on the render thread; every pattern let go of is freed off it.
+#[test]
+fn a_long_pattern_run_with_replacements_touches_no_heap_on_the_render_thread() {
+    const BLOCK: usize = 128;
+    let doc = include_str!("../../../instruments/pattern-melody.json");
+    let (coord, side, _) = reuben_document::coordinator::Coordinator::install_initial(
+        doc,
+        Registry::builtin(),
+        Box::new(LibraryDir),
+        AudioConfig::new(48_000.0, BLOCK),
+    )
+    .expect("the library instrument installs");
+    let mut slot = reuben_core::coordinator::RenderSlot::new(side);
+    let retired = coord.retired();
+    let mut out = vec![0.0f32; BLOCK * slot.channels()];
+
+    // 240 BPM: a cycle of four beats is one second, 375 blocks.
+    slot.queue_osc("/tempo/in", &[Arg::F32(240.0)]);
+
+    // Patterns alternating with one denser than the held-notes list (40 stacked notes), each built
+    // outside the measured window.
+    let stack: Vec<String> = (0..40).map(|d| d.to_string()).collect();
+    let texts = [
+        "0 [3 5] <7 ~> 2*2".to_string(),
+        stack.join(", "),
+        "0/1.5 [1 2]*4".to_string(),
+        "0*32 ~ 4?".to_string(),
+    ];
+    // Warm up: two cycles of each, so the engine's per-node event scratch and the Voicer's grow to
+    // the densest block's size. The Operator's own buffers are sized at construction.
+    for text in &texts {
+        slot.queue_osc("/pattern/in", &[pattern_arg(text)]);
+        for _ in 0..750 {
+            slot.fill(&mut out);
+        }
+    }
+    retired.drain();
+    const SENDS: usize = 24;
+    let mut values: Vec<Arg> = (0..SENDS)
+        .map(|i| pattern_arg(&texts[i % texts.len()]))
+        .collect();
+    assert_counter_is_live();
+    let mut render = rt_alloc::Counts {
+        allocs: 0,
+        frees: 0,
+    };
+    let mut freed_off = 0;
+    for v in values.drain(..) {
+        let args = [v];
+        // A send lands mid-cycle; 160 blocks later most sends have crossed a cycle start.
+        let c = measure(|| {
+            slot.queue_osc("/pattern/in", &args);
+            for _ in 0..160 {
+                slot.fill(&mut out);
+            }
+        });
+        render.allocs += c.allocs;
+        render.frees += c.frees;
+        drop(args);
+        freed_off += measure(|| {
+            retired.drain();
+        })
+        .frees;
+    }
+    assert_eq!(
+        (render.allocs, render.frees),
+        (0, 0),
+        "{SENDS} pattern sends over {} blocks touched the heap on the render thread",
+        SENDS * 160
+    );
+    assert!(
+        freed_off > 0,
+        "the replaced patterns were freed off the render thread"
+    );
+    assert_eq!(retired.dropped_full(), 0);
+}
