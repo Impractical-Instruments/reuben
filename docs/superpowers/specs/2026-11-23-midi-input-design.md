@@ -252,8 +252,9 @@ spelling is the builder's. MCP exposure comes with the later MCP surface work.
 ### 7. Diagnostics
 
 Engine diagnostics gain MIDI counters: messages received per device, translated, dropped
-(unsupported kind), routed, unmatched; and the skipped-control warnings from §2, surfaced at
-startup, at every rebuild, and in `get_engine_diagnostics`. The existing OSC logging flag (or a
+(unsupported kind), routed, unmatched; and the skipped-control warnings from §2, printed to `play`'s
+stderr at startup and at every rebuild. (The warnings stay out of `get_engine_diagnostics`: its
+report is a fixed set of counters.) The existing OSC logging flag (or a
 sibling) logs translated MIDI messages and their routes, so "is my keyboard arriving, and where is
 it going?" has an answer.
 
