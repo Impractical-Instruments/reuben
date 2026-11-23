@@ -50,6 +50,9 @@ pub(crate) struct MidiInputs {
 
 impl Drop for MidiInputs {
     fn drop(&mut self) {
+        // Closed first, so the counts printed are final.
+        self._watch = None;
+        self._connections.clear();
         for line in received_lines(&self.read) {
             eprintln!("{line}");
         }

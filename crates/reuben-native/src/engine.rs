@@ -213,7 +213,8 @@ impl std::error::Error for StartError {
 /// keeping the MIDI routes in step with what plays, the MIDI input ports (each printing what it
 /// read), the engine-channel server (its connections woken and joined), the OSC-in listener, the
 /// audio streams (paused, then dropped — see [`Streams::pause`](audio::Streams::pause) for why
-/// both), the OSC-out sender, then the diagnostics logger. Every port it bound is free again afterwards.
+/// both), the OSC-out sender, then the diagnostics logger. Every port it bound is free again
+/// afterwards.
 ///
 /// Not `Send`: cpal's streams are not, on every host. Keep it on the thread that started it and
 /// hand [`channel`](Self::channel)s to any other.
