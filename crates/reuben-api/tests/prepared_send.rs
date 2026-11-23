@@ -25,6 +25,7 @@ use reuben_api::engine::{
 };
 use reuben_api::render::{Arg, AudioConfig, RenderSlot};
 use reuben_api::staged::Staged;
+use reuben_core::signal::AudioSample;
 use rt_alloc::{assert_counter_is_live, measure, Counting};
 
 #[global_allocator]
@@ -125,7 +126,7 @@ struct Rig {
     state: ChannelState,
     host: Arc<Host>,
     slot: RenderSlot,
-    out: Vec<f32>,
+    out: Vec<AudioSample>,
 }
 
 /// [`RIG`] with no `osc_out` sinks, which allocate to send: the rig the heap is measured on.
@@ -213,11 +214,12 @@ fn str_message(address: &str, text: &str) -> ControlMessage {
     }
 }
 
-fn sent(pairs: &[(String, f32)], sink: &str) -> Vec<f32> {
+/// The values `sink` sent, widened so they read as control values rather than audio.
+fn sent(pairs: &[(String, f32)], sink: &str) -> Vec<f64> {
     pairs
         .iter()
         .filter(|(a, _)| a == sink)
-        .map(|(_, v)| *v)
+        .map(|(_, v)| f64::from(*v))
         .collect()
 }
 
@@ -299,7 +301,7 @@ fn a_bad_value_refuses_the_whole_batch_with_its_span() {
     assert_eq!(r.host.delivered(), 0, "nothing was delivered");
     let after = r.block();
     for sink in ["/d_sum", "/w_n", "/a_sum", "/b_sum"] {
-        assert_eq!(sent(&after, sink), Vec::<f32>::new(), "{sink} changed");
+        assert_eq!(sent(&after, sink), Vec::<f64>::new(), "{sink} changed");
     }
     assert!(!sent(&after, "/abs_out").contains(&5.0), "/abs/x changed");
 }
@@ -356,7 +358,7 @@ fn raw_text_from_udp_is_still_dropped_and_counted() {
         .drain_outbound()
         .map(|m| (m.address, m.arg.as_f32().expect("a number")))
         .collect();
-    assert_eq!(sent(&pairs, "/d_sum"), Vec::<f32>::new());
+    assert_eq!(sent(&pairs, "/d_sum"), Vec::<f64>::new());
     assert_eq!(r.slot.take_dropped_unprepared(), 1);
 }
 
@@ -390,7 +392,7 @@ fn a_swap_between_prepare_and_apply_drops_counts_and_names_the_send() {
     let after = r.block();
     assert_eq!(
         sent(&after, "/d_sum"),
-        Vec::<f32>::new(),
+        Vec::<f64>::new(),
         "the stale value was not applied"
     );
     assert_eq!(
