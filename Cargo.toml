@@ -9,6 +9,7 @@ members = [
     "crates/reuben-native",
     "crates/reuben-mcp",
     "crates/reuben-guide",
+    "crates/reuben-pattern",
     "crates/reuben-editor",
 ]
 # Every member but `reuben-editor`: a bare `cargo build`/`test`/`clippy` never compiles the egui
@@ -23,6 +24,7 @@ default-members = [
     "crates/reuben-native",
     "crates/reuben-mcp",
     "crates/reuben-guide",
+    "crates/reuben-pattern",
 ]
 
 [workspace.package]

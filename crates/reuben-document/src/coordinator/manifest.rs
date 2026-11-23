@@ -1,18 +1,19 @@
 //! The installed-Plan **manifest** and the swap **survivor key** — per node, its fully-qualified
 //! address, operator type, and instantiate-time identity fingerprint (a content hash over its
-//! normalized `config` plus everything it resolved at Instantiate). [`Manifest::diff`] turns two
-//! manifests into the migration table the render side transplants by box swap.
+//! normalized `config` plus everything it resolved at Instantiate) — and every input latch a live
+//! message can set, with what it holds at rest. [`Manifest::diff`] turns two manifests into the
+//! migration table the render side transplants by box swap.
 //!
 //! This is off-thread load-time work (no RT constraint) and, like the rest of core, OS-free.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::format::{NodeDoc, NormalizedDoc, ResourceSource};
 use crate::resources::ResourceResolver;
 use crate::DiffSummary;
 use reuben_core::coordinator::MigrationTable;
-use reuben_core::descriptor::Descriptor;
-use reuben_core::plan::Plan;
+use reuben_core::descriptor::{Descriptor, PortType};
+use reuben_core::plan::{InterfaceAt, LatchRoute, LiveCarry, LiveSlot, Plan};
 use reuben_core::registry::Registry;
 use reuben_core::resources::SampleBuffer;
 
@@ -35,9 +36,12 @@ pub struct NodeIdentity {
 /// The installed Plan's per-node survivor identities, in Plan execution order (index = Plan node
 /// index). Built by [`build_manifest`]; diffed against a new Plan's manifest by [`Manifest::diff`]
 /// to precompute the migration table.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Manifest {
     pub nodes: Vec<NodeIdentity>,
+    /// Every unwired input latch, by the address a live message names it with. Read from the Plan
+    /// before it renders ([`Plan::live_slots`]), so each `seed` is the document's value.
+    pub slots: Vec<LiveSlot>,
 }
 
 impl Manifest {
@@ -47,6 +51,18 @@ impl Manifest {
     /// operator type** and the **same instantiate-time fingerprint** (both present). Everything
     /// else at a shared address is a `state_reset` (a type change or a fingerprint change — the
     /// edit always wins); addresses only in `new` are `added`, only in `old` are `removed`.
+    ///
+    /// Live values carry by address, in two kinds:
+    ///
+    /// - An **interface input** nothing feeds keeps its value wherever each Plan keeps it — a
+    ///   pipe node of its own or a dissolved pipe, whatever it feeds — while its seed (the
+    ///   document's default) and its type are unchanged. The render side clamps a numeric value
+    ///   to the fresh range, so a range edit keeps the value inside it.
+    /// - An **unwired node input** keeps its value while its node survives (same address, type and
+    ///   instantiate-time identity, so the same port) and its seed is unchanged.
+    ///
+    /// Everything else takes the new document's value, including a value that compares unequal
+    /// to itself (a NaN seed).
     pub fn diff(&self, new: &Manifest) -> (MigrationTable, DiffSummary) {
         // Addresses are unique within a Plan (the loader rejects duplicates), so an address keys a
         // node unambiguously. Old side maps address -> (plan index, identity).
@@ -95,7 +111,91 @@ impl Manifest {
             added,
             removed,
         };
-        (MigrationTable::new(survivors), diff)
+        let live_values = self.carried(new, &survivors);
+        (MigrationTable::new(survivors, live_values), diff)
+    }
+
+    /// The addresses of this (new) manifest's interface inputs that `carried` lands no live value
+    /// in, sorted.
+    pub fn interface_resets(&self, carried: &[LiveCarry]) -> Vec<String> {
+        let landed: BTreeSet<InterfaceAt> = (carried.iter())
+            .filter_map(|c| match *c {
+                LiveCarry::Interface { to, .. } => Some(to),
+                LiveCarry::Latch { .. } => None,
+            })
+            .collect();
+        let mut reset: Vec<String> = (self.slots.iter())
+            .filter(|s| matches!(s.route, LatchRoute::Interface(at) if !landed.contains(&at)))
+            .map(|s| s.address.clone())
+            .collect();
+        reset.sort();
+        reset
+    }
+
+    /// The live values [`Manifest::diff`] carries (see there for the rule). An address names one
+    /// place per side and pairs once, so no place is written twice.
+    fn carried(&self, new: &Manifest, survivors: &[(usize, usize)]) -> Vec<LiveCarry> {
+        let old_by_addr: BTreeMap<&str, &LiveSlot> =
+            self.slots.iter().map(|s| (s.address.as_str(), s)).collect();
+        let survivors: BTreeSet<(usize, usize)> = survivors.iter().copied().collect();
+        let mut carried = Vec::new();
+        for ns in &new.slots {
+            let Some(os) = old_by_addr.get(ns.address.as_str()) else {
+                continue;
+            };
+            if os.seed != ns.seed {
+                continue;
+            }
+            match (os.route, ns.route) {
+                // A survivor shares its operator type, so its port is the same port.
+                (
+                    LatchRoute::Node { node: on, port: op },
+                    LatchRoute::Node { node: nn, port: np },
+                ) if survivors.contains(&(on, nn)) => {
+                    carried.push(LiveCarry::Latch {
+                        from: (on, op),
+                        to: (nn, np),
+                    });
+                }
+                (LatchRoute::Interface(from), LatchRoute::Interface(to))
+                    if same_type(&os.typed_by.ty, &ns.typed_by.ty) =>
+                {
+                    carried.push(LiveCarry::Interface { from, to });
+                }
+                _ => {}
+            }
+        }
+        carried
+    }
+}
+
+/// Whether a value of type `old` is still a value of type `new`: the same type, an enum keeping
+/// its type and variants. An integer's range and either's default do not count; the render side
+/// clamps into the range, and the default is compared as the seed.
+fn same_type(old: &PortType, new: &PortType) -> bool {
+    match (old, new) {
+        (PortType::I32 { .. }, PortType::I32 { .. }) => true,
+        (
+            PortType::Vocab {
+                name: an,
+                is_event: ae,
+                enum_meta: am,
+            },
+            PortType::Vocab {
+                name: bn,
+                is_event: be,
+                enum_meta: bm,
+            },
+        ) => {
+            an == bn
+                && ae == be
+                && match (am, bm) {
+                    (Some(a), Some(b)) => a.type_name == b.type_name && a.variants == b.variants,
+                    (None, None) => true,
+                    _ => false,
+                }
+        }
+        _ => old == new,
     }
 }
 
@@ -126,7 +226,10 @@ pub fn build_manifest(
             fingerprint: fingerprints.get(&*node.address).copied(),
         })
         .collect();
-    Manifest { nodes }
+    Manifest {
+        nodes,
+        slots: plan.live_slots(),
+    }
 }
 
 /// Depth cap for the recursive content walk. A document that successfully built has no resource
@@ -190,8 +293,8 @@ fn walk_document(
 
 /// One node's instantiate-time fingerprint: its normalized `config` block, plus the
 /// content identity of what it resolved at Instantiate — a `sample`'s decoded bytes, a `voice`'s
-/// hosted document (recursively). Runtime `inputs` are deliberately excluded: the new
-/// Plan's latches win, so a param edit survives.
+/// hosted document (recursively). Runtime `inputs` are deliberately excluded: they are diffed
+/// per latch in [`Manifest::diff`], so a param edit leaves the node a survivor.
 fn node_fingerprint(
     doc: &NormalizedDoc,
     node: &NodeDoc,
@@ -451,6 +554,7 @@ mod tests {
     use crate::format::load_instrument_doc;
     use crate::resources::MemoryResolver;
     use reuben_core::config::AudioConfig;
+    use reuben_core::descriptor::Port;
     use reuben_core::resources::SampleBuffer;
 
     const DEFAULT_VOICE_JSON: &str =
@@ -754,5 +858,93 @@ mod tests {
         let out_old = old.nodes.iter().position(|n| n.address == "/out").unwrap();
         let out_new = new.nodes.iter().position(|n| n.address == "/out").unwrap();
         assert_eq!(table.survivors(), &[(out_old, out_new)]);
+    }
+
+    /// `/m.a` is fed `a`, `/m.b` is wired from `/k` when `b_wired`, else the constant `1.0`.
+    fn product_doc(a: f32, b_wired: bool) -> String {
+        let b = if b_wired {
+            r#"{ "from": "/k.out" }"#.to_string()
+        } else {
+            "1.0".to_string()
+        };
+        format!(
+            r#"{{ "format_version": 3, "instrument": "p",
+                 "interface": {{ "outputs": {{ "out": {{ "from": "/out.audio" }} }} }},
+                 "nodes": [
+                   {{ "type": "mul_f32_signal", "address": "/k", "inputs": {{ "a": 1.0 }} }},
+                   {{ "type": "mul_f32_signal", "address": "/m", "inputs": {{ "a": {a}, "b": {b} }} }},
+                   {{ "type": "output", "address": "/out",
+                      "inputs": {{ "audio": {{ "from": "/m.out" }} }} }} ] }}"#
+        )
+    }
+
+    /// The ports of `address` whose latch the table carries onto the same port.
+    fn carried(old: &Manifest, new: &Manifest, address: &str) -> Vec<usize> {
+        let (table, _) = old.diff(new);
+        let old_idx = old.nodes.iter().position(|n| n.address == address).unwrap();
+        let new_idx = new.nodes.iter().position(|n| n.address == address).unwrap();
+        (table.live_values().iter())
+            .filter_map(|c| match *c {
+                LiveCarry::Latch {
+                    from: (o, op),
+                    to: (n, np),
+                } if (o, n) == (old_idx, new_idx) && op == np => Some(np),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_survivor_carries_exactly_the_inputs_whose_document_value_held() {
+        let resolver = MemoryResolver::new();
+        let base = manifest_for(&product_doc(0.3, false), &resolver);
+        // `mul_f32_signal` declares `a` (port 0) then `b` (port 1).
+        assert_eq!(carried(&base, &base, "/m"), vec![0, 1], "nothing edited");
+        let a_edited = manifest_for(&product_doc(0.5, false), &resolver);
+        assert_eq!(carried(&base, &a_edited, "/m"), vec![1], "a edited");
+        let b_wired = manifest_for(&product_doc(0.3, true), &resolver);
+        assert_eq!(carried(&base, &b_wired, "/m"), vec![0], "b gained a wire");
+        assert_eq!(carried(&b_wired, &base, "/m"), vec![0], "b lost its wire");
+        assert_eq!(
+            carried(&b_wired, &b_wired, "/m"),
+            vec![0],
+            "a wired input carries nothing"
+        );
+    }
+
+    #[test]
+    fn a_node_input_and_an_interface_input_never_carry_into_each_other() {
+        // One address, one surviving node, equal values: only the route differs.
+        let slot = |route: LatchRoute| LiveSlot {
+            address: "/level/in".to_string(),
+            seed: reuben_core::message::Arg::F32(0.3),
+            typed_by: Port::f32_buffer("in"),
+            route,
+        };
+        let manifest = |route: LatchRoute| Manifest {
+            nodes: vec![NodeIdentity {
+                address: "/level".to_string(),
+                type_name: "m2s".to_string(),
+                fingerprint: Some(1),
+            }],
+            slots: vec![slot(route)],
+        };
+        let node = LatchRoute::Node { node: 0, port: 0 };
+        let pipe = LatchRoute::Interface(InterfaceAt::Pipe(0));
+        let alias = LatchRoute::Interface(InterfaceAt::Alias(0));
+        let carries = |old: LatchRoute, new: LatchRoute| {
+            !(manifest(old).diff(&manifest(new)).0)
+                .live_values()
+                .is_empty()
+        };
+        for (old, new, expected) in [
+            (node, node, true),
+            (pipe, alias, true),
+            (alias, pipe, true),
+            (node, pipe, false),
+            (alias, node, false),
+        ] {
+            assert_eq!(carries(old, new), expected, "{old:?} -> {new:?}");
+        }
     }
 }

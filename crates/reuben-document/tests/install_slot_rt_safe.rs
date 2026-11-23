@@ -1,10 +1,11 @@
 //! RT-safety invariant for the install slot: a render callback driven through [`RenderSlot`]
 //! performs **zero** heap allocation and **zero** frees — at steady state and across a full
-//! swap (drain the install bundle, run the master-gain ramp, box-transplant the survivors, post
-//! the retiree). Every one of those is a pointer swap: the transplant is `mem::swap` over the
-//! operator boxes, and the retiree is posted **in the same box** it arrived in, so its
-//! allocation is reused, never freed on the render thread — the only free is the Coordinator's
-//! off-thread reclaim, outside every measured window here.
+//! swap (drain the install bundle, run the master-gain ramp, box-transplant the survivors, carry
+//! their live input values, post the retiree). Every one of those is a pointer swap or a write
+//! into a latch that owns nothing: the transplant is `mem::swap` over the operator boxes, and the
+//! retiree is posted **in the same box** it arrived in, so its allocation is reused, never freed
+//! on the render thread — the only free is the Coordinator's off-thread reclaim, outside every
+//! measured window here.
 //!
 //! Counted by the shared [`rt_alloc`] harness; window sizing and live-probe/reclaim checks live
 //! in the shared [`swap_rt_safe`] helper.
@@ -16,6 +17,7 @@ use rt_alloc::{measure, Counting};
 use swap_rt_safe::{assert_counter_is_live, assert_install_step_heap_neutral};
 
 use reuben_core::coordinator::RenderSlot;
+use reuben_core::message::Arg;
 use reuben_core::{AudioConfig, Registry};
 use reuben_document::coordinator::Coordinator;
 use reuben_document::resources::MemoryResolver;
@@ -103,4 +105,66 @@ fn install_slot_callback_never_allocates_or_frees() {
     // Measured window: fills spanning the whole ramp (down → install-at-zero → up), asserting the
     // drain/ramp/transplant/post is heap-neutral and that the window was non-vacuous.
     assert_install_step_heap_neutral(&mut coord, &mut slot, BLOCK);
+}
+
+/// `level` (a Signal pipe) feeds `/m.a` and `/m2.a`, so it renders as a node of its own; `k` (a
+/// held pipe) feeds only `/v.a`, so it dissolves into it.
+fn piped_doc(b: f32) -> String {
+    format!(
+        r#"{{ "format_version": 3, "instrument": "p",
+             "interface": {{
+               "inputs": {{ "level": {{ "type": "f32_buffer", "default": 0.3 }},
+                            "k": {{ "type": "f32", "default": 0.5 }} }},
+               "outputs": {{ "out": {{ "from": "/out.audio" }} }} }},
+             "nodes": [
+               {{ "type": "mul_f32_signal", "address": "/m",
+                  "inputs": {{ "a": {{ "from": "/level" }}, "b": {b} }} }},
+               {{ "type": "mul_f32_value", "address": "/v",
+                  "inputs": {{ "a": {{ "from": "/k" }}, "b": 1.0 }} }},
+               {{ "type": "output", "address": "/out",
+                  "inputs": {{ "audio": {{ "from": "/m.out" }} }} }},
+               {{ "type": "mul_f32_signal", "address": "/m2",
+                  "inputs": {{ "a": {{ "from": "/level" }}, "b": 1.0 }} }} ] }}"#
+    )
+}
+
+#[test]
+fn carrying_live_values_across_a_swap_never_allocates_or_frees() {
+    let (one, two) = (piped_doc(1.0), piped_doc(2.0));
+    let (mut coord, side, _w) = Coordinator::install_initial(
+        &one,
+        Registry::builtin(),
+        Box::new(MemoryResolver::new()),
+        cfg(),
+    )
+    .expect("initial install");
+    let mut slot = RenderSlot::new(side);
+    let ch = slot.channels();
+    let mut out = vec![0.0f32; 64 * BLOCK * ch];
+    slot.queue_osc("/level/in", &[Arg::F32(0.7)]);
+    slot.queue_osc("/k/in", &[Arg::F32(0.9)]);
+    for _ in 0..8 {
+        slot.fill(&mut out);
+    }
+    assert_counter_is_live();
+
+    let mut block = vec![0.0f32; BLOCK * ch];
+    for next in [&two, &one, &two] {
+        let report = coord.swap_document(next);
+        assert!(report.report.ok, "swap should install: {:?}", report.report);
+        assert_install_step_heap_neutral(&mut coord, &mut slot, BLOCK);
+        // The first blocks after the install render the carried values.
+        let after = measure(|| {
+            for _ in 0..4 {
+                slot.fill(&mut block);
+            }
+        });
+        assert_eq!((after.allocs, after.frees), (0, 0), "post-install blocks");
+    }
+    slot.fill(&mut block);
+    let peak = block.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
+    assert!(
+        (peak - 1.4).abs() < 1e-4,
+        "level=0.7 carried through: peak {peak}"
+    );
 }

@@ -20,6 +20,7 @@ use alloc::string::ToString;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
+use num_traits::Float;
 
 use slotmap::SecondaryMap;
 
@@ -185,6 +186,9 @@ pub struct PlanNode {
     pub out_targets: Vec<Vec<(usize, usize)>>,
     /// This node's slot in [`Plan::probes`], or `None` for a node with no Signal output.
     pub probe: Option<usize>,
+    /// Per input port: `true` where a wire or a dissolved interface pipe feeds it. Its value is
+    /// its feeder's, so routing drops a message addressed to it.
+    pub wired: Vec<bool>,
 }
 
 /// One outbound (OSC-out) sink: a node whose emitted Messages leave the
@@ -217,7 +221,8 @@ pub struct InterfaceOutput {
     /// `Some(arena buffer index)` for a Signal output — the host reads the rendered buffer there.
     pub signal_buf: Option<usize>,
     /// `Some(index into [`Plan::captured`])` for a Value output — `render_plan` writes the port's
-    /// last-emitted scalar there each block (held ZOH across blocks).
+    /// last-emitted scalar there each block (held ZOH across blocks). `None` for a `str` output,
+    /// which has no scalar to capture.
     pub captured_slot: Option<usize>,
 }
 
@@ -242,6 +247,18 @@ pub struct InputAlias {
     pub node: usize,
     /// The consumer's input port index.
     pub dst_port: usize,
+    /// What the pipe held at rest, in the pipe port's own form — not the consumer's, which may
+    /// clamp or resolve it differently. `None` when the pipe was fed: by a wire as it dissolved,
+    /// or by another pipe that dissolved into it first. Its value was then the feeder's, and
+    /// routing drops a message addressed to it.
+    pub seed: Option<Arg>,
+    /// A numeric pipe's latest value, in the pipe port's own form: the consumer's latch holds it
+    /// as the consumer clamped it, which a Swap into another consumer must not inherit. The seed
+    /// until a message arrives. Unused by a non-numeric pipe, whose consumer holds it unchanged.
+    pub last: Arg,
+    /// The frame `last` was written at this block, so the latest frame wins as it does in a
+    /// latch. Cleared by routing at the start of each block that carries messages.
+    pub(crate) last_frame: Option<usize>,
 }
 
 /// A pipe collapsed by [`dissolve_interface_pipes`], keyed by its (pre-instantiate) consumer.
@@ -251,6 +268,53 @@ struct DissolvedPipe {
     kind: PortKind,
     consumer: NodeKey,
     consumer_port: usize,
+    seed: Option<Arg>,
+}
+
+/// Where a Plan keeps an interface input's live value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum InterfaceAt {
+    /// A pipe rendered as a node of its own (this node index): its `in` latch.
+    Pipe(usize),
+    /// A dissolved pipe (this [`InputAlias`] index): its `last` value for a numeric pipe, its
+    /// consumer's latch otherwise.
+    Alias(usize),
+}
+
+/// One live value a Swap carries from the retiring Plan into the fresh one, as
+/// [`Engine::carry_live_values`](crate::engine::Engine::carry_live_values) applies it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveCarry {
+    /// A node input's latch, `(node, port)` to `(node, port)`, moved as it is.
+    Latch {
+        from: (usize, usize),
+        to: (usize, usize),
+    },
+    /// An interface input's value, from where the retiring Plan keeps it to where the fresh one
+    /// does, clamped to the fresh pipe's range.
+    Interface { from: InterfaceAt, to: InterfaceAt },
+}
+
+/// Where a [`LiveSlot`]'s value lives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LatchRoute {
+    /// A node's own input `(node, port)`, nothing feeding it.
+    Node { node: usize, port: usize },
+    /// An interface input nothing feeds, however it renders.
+    Interface(InterfaceAt),
+}
+
+/// A live value a message can set and nothing feeds, as [`Plan::live_slots`] reports it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiveSlot {
+    /// The address a live message reaches it by: `<node>/<port>`, or an interface pipe's
+    /// `<pipe>/in`.
+    pub address: String,
+    /// What it holds at rest. For an interface input, the pipe's own seed.
+    pub seed: Arg,
+    /// The port that types its messages: the node's own, or the pipe's.
+    pub typed_by: Port,
+    pub route: LatchRoute,
 }
 
 /// One input-master tap — the dual of [`OutputTap`]: a **top-level** signal
@@ -332,6 +396,9 @@ pub struct Plan {
     /// whose host commits them once after rendering all of them; `render_plan` then leaves the
     /// commit to it.
     pub(crate) hosted: bool,
+    /// Messages routing dropped since the host last took the count, for addressing an input a
+    /// wire or a pipe feeds.
+    pub(crate) dropped_wired_writes: u64,
 }
 
 /// Why Instantiate failed.
@@ -718,6 +785,7 @@ impl Plan {
                 recycled_outputs,
                 out_targets,
                 probe,
+                wired: vec![false; n_inputs],
             });
 
             // Every buffer whose last reader was this node returns to the free list, for a
@@ -810,9 +878,13 @@ impl Plan {
             .iter()
             .map(|(name, &(key, port))| {
                 let node = index_of[key];
-                let is_signal = nodes[node].descriptor.outputs[port].ty.is_buffer();
-                let (kind, signal_buf, captured_slot) = if is_signal {
+                let ty = &nodes[node].descriptor.outputs[port].ty;
+                let (kind, signal_buf, captured_slot) = if ty.is_buffer() {
                     (PortKind::Signal, out_buffers[key][port], None)
+                } else if matches!(ty, PortType::Str) {
+                    // A captured slot holds a number; a string has none to give, so the output
+                    // gets no slot rather than one that always reads 0.0.
+                    (PortKind::Value, None, None)
                 } else {
                     let slot = captured_len;
                     captured_len += 1;
@@ -840,8 +912,12 @@ impl Plan {
                 kind: d.kind,
                 node: index_of[d.consumer],
                 dst_port: d.consumer_port,
+                last: d.seed.clone().unwrap_or(Arg::F32(0.0)),
+                seed: d.seed,
+                last_frame: None,
             })
             .collect();
+        mark_wired(&mut nodes, &input_aliases);
 
         // A slot set this Plan built is still unshared here. One passed in by a host is shared
         // with the host's other copies and stays as built: the copy whose Plan built it already
@@ -865,6 +941,7 @@ impl Plan {
             input_aliases,
             probes,
             hosted: false,
+            dropped_wired_writes: 0,
         })
     }
 
@@ -924,6 +1001,216 @@ impl Plan {
             self.nodes[new_index].op.on_transplant();
         }
     }
+
+    /// Carry live input values from a `from` Plan into this (freshly built) one. A
+    /// [`LiveCarry::Latch`] swaps the two latches; a [`LiveCarry::Interface`] moves the
+    /// interface input's value to where this Plan keeps it, clamping a numeric value to this
+    /// Plan's pipe range and landing it in a dissolved pipe's consumer as routing would. Which
+    /// values carry is the caller's rule, and the caller names each place at most once per side.
+    /// An entry out of range, or whose two places do not hold the same kind of value, is skipped.
+    ///
+    /// Caller contract: this Plan has not rendered. A materialized port's scratch is then still
+    /// marked dirty, so the first block fills it from the carried value.
+    ///
+    /// **RT-safe:** a bounded loop. A non-numeric value is moved by [`core::mem::swap`], its
+    /// displaced seed landing in `from` to free off-thread with it; a numeric one overwrites an
+    /// `F32`/`I32` latch, which owns nothing. No allocation, no drop that frees.
+    pub(crate) fn carry_live_values(&mut self, from: &mut Plan, carries: &[LiveCarry]) {
+        for &carry in carries {
+            match carry {
+                LiveCarry::Latch {
+                    from: (old_node, old_port),
+                    to: (new_node, new_port),
+                } => {
+                    let old = from.latch_mut(old_node, old_port);
+                    let new = self.latch_mut(new_node, new_port);
+                    if let (Some(old), Some(new)) = (old, new) {
+                        core::mem::swap(old, new);
+                    }
+                }
+                LiveCarry::Interface { from: at, to } => self.carry_interface(from, at, to),
+            }
+        }
+    }
+
+    fn latch_mut(&mut self, node: usize, port: usize) -> Option<&mut Arg> {
+        self.nodes.get_mut(node)?.latch.get_mut(port)
+    }
+
+    /// The pipe port typing interface input `at`.
+    fn interface_port(&self, at: InterfaceAt) -> Option<&Port> {
+        match at {
+            InterfaceAt::Pipe(node) => self.nodes.get(node)?.descriptor.inputs.first(),
+            InterfaceAt::Alias(i) => self.input_aliases.get(i).map(|a| &a.port),
+        }
+    }
+
+    /// The latch holding interface input `at`'s value when it is not numeric: the pipe's own,
+    /// or a dissolved pipe's consumer's, which a non-numeric pipe passes through unchanged.
+    fn interface_latch_mut(&mut self, at: InterfaceAt) -> Option<&mut Arg> {
+        match at {
+            InterfaceAt::Pipe(node) => self.latch_mut(node, 0),
+            InterfaceAt::Alias(i) => {
+                let (node, port) = self.input_aliases.get(i).map(|a| (a.node, a.dst_port))?;
+                self.latch_mut(node, port)
+            }
+        }
+    }
+
+    fn carry_interface(&mut self, from: &mut Plan, at: InterfaceAt, to: InterfaceAt) {
+        let Some(numeric) = from.interface_port(at).map(is_numeric) else {
+            return;
+        };
+        if !numeric {
+            if let (Some(old), Some(new)) =
+                (from.interface_latch_mut(at), self.interface_latch_mut(to))
+            {
+                core::mem::swap(old, new);
+            }
+            return;
+        }
+        let value = match at {
+            InterfaceAt::Pipe(node) => from.nodes.get(node).and_then(|n| n.latch.first()),
+            InterfaceAt::Alias(i) => from.input_aliases.get(i).map(|a| &a.last),
+        };
+        let Some(v) = value.and_then(Arg::as_f32) else {
+            return;
+        };
+        match to {
+            InterfaceAt::Pipe(node) => {
+                let Some(n) = self.nodes.get_mut(node) else {
+                    return;
+                };
+                let Some(port) = n.descriptor.inputs.first() else {
+                    return;
+                };
+                let landed = numeric_arg(port, v);
+                if let Some(latch) = n.latch.first_mut().filter(|l| is_numeric_arg(l)) {
+                    *latch = landed;
+                }
+            }
+            InterfaceAt::Alias(i) => {
+                let Some(a) = self.input_aliases.get_mut(i) else {
+                    return;
+                };
+                let held = numeric_arg(&a.port, v);
+                let (kind, node, port) = (a.kind, a.node, a.dst_port);
+                if is_numeric_arg(&a.last) {
+                    a.last = held.clone();
+                }
+                let Some(consumer) = self.nodes.get_mut(node) else {
+                    return;
+                };
+                // As routing lands a message sent to the pipe: a Signal pipe, or any pipe into a
+                // Signal input, materializes the raw scalar; a Value pipe into a Value input is
+                // held by the consumer's port too.
+                let landed = match (kind, consumer.input_kinds.get(port)) {
+                    (PortKind::Signal, _) | (_, Some(PortKind::Signal)) => {
+                        held.as_f32().map(Arg::F32)
+                    }
+                    (PortKind::Value, Some(PortKind::Value)) => consumer
+                        .descriptor
+                        .inputs
+                        .get(port)
+                        .filter(|p| is_numeric(p))
+                        .and_then(|p| crate::render::held_arg(p, &held)),
+                    _ => None,
+                };
+                if let (Some(landed), Some(latch)) = (
+                    landed,
+                    consumer.latch.get_mut(port).filter(|l| is_numeric_arg(l)),
+                ) {
+                    *latch = landed;
+                }
+            }
+        }
+    }
+
+    /// Every live value a message can set and nothing feeds, each under the one address that
+    /// reaches it, with what it holds at rest: each unwired node input, and each interface input
+    /// nothing feeds, however it renders. A pipe fed by a wire or by another pipe offers none, its
+    /// value being its feeder's; nor does an Event input, which holds nothing. Only meaningful
+    /// before the first block renders: rendering overwrites a value with whatever is sent to it.
+    pub fn live_slots(&self) -> Vec<LiveSlot> {
+        let mut slots = Vec::new();
+        for (i, a) in self.input_aliases.iter().enumerate() {
+            let Some(seed) = &a.seed else { continue };
+            if a.kind != PortKind::Event {
+                slots.push(LiveSlot {
+                    address: alloc::format!("{}/{}", a.address, a.port.name),
+                    seed: seed.clone(),
+                    typed_by: a.port.clone(),
+                    route: LatchRoute::Interface(InterfaceAt::Alias(i)),
+                });
+            }
+        }
+        for (i, n) in self.nodes.iter().enumerate() {
+            let pipe = n.descriptor.type_name == "pipe";
+            for (p, (port, seed)) in n.descriptor.inputs.iter().zip(&n.latch).enumerate() {
+                if n.wired[p] || n.input_kinds[p] == PortKind::Event {
+                    continue;
+                }
+                slots.push(LiveSlot {
+                    address: alloc::format!("{}/{}", n.address, port.name),
+                    seed: seed.clone(),
+                    typed_by: port.clone(),
+                    route: match pipe {
+                        true => LatchRoute::Interface(InterfaceAt::Pipe(i)),
+                        false => LatchRoute::Node { node: i, port: p },
+                    },
+                });
+            }
+        }
+        slots
+    }
+
+    /// Take the count of messages routing dropped for addressing an input a wire or a pipe
+    /// feeds, leaving zero.
+    pub(crate) fn take_dropped_wired_writes(&mut self) -> u64 {
+        core::mem::take(&mut self.dropped_wired_writes)
+    }
+}
+
+/// Whether a value typed by `p` is a plain number, which a Swap clamps rather than moves.
+fn is_numeric(p: &Port) -> bool {
+    matches!(
+        p.ty,
+        PortType::F32 | PortType::I32 { .. } | PortType::F32Buffer
+    )
+}
+
+fn is_numeric_arg(a: &Arg) -> bool {
+    matches!(a, Arg::F32(_) | Arg::I32(_))
+}
+
+/// `v` as port `p` holds it: rounded for an integer, clamped to the declared range.
+fn numeric_arg(p: &Port, v: f32) -> Arg {
+    match &p.ty {
+        PortType::I32 { meta } => {
+            let i = Float::round(v) as i32;
+            Arg::I32(meta.as_ref().map(|m| m.clamp(i)).unwrap_or(i))
+        }
+        _ => Arg::F32(p.meta.as_ref().map(|m| m.clamp(v)).unwrap_or(v)),
+    }
+}
+
+/// Mark each input a Signal edge, a message edge or a dissolved pipe feeds as wired.
+fn mark_wired(nodes: &mut [PlanNode], aliases: &[InputAlias]) {
+    for n in nodes.iter_mut() {
+        for p in 0..n.wired.len() {
+            n.wired[p] = n.inputs.get(p).is_some_and(Option::is_some)
+                && !n.materialize.iter().any(|&(mp, _)| mp == p);
+        }
+    }
+    let targets: Vec<(usize, usize)> = (nodes.iter())
+        .flat_map(|n| n.out_targets.iter().flatten().copied())
+        .chain(aliases.iter().map(|a| (a.node, a.dst_port)))
+        .collect();
+    for (node, port) in targets {
+        if let Some(w) = nodes.get_mut(node).and_then(|n| n.wired.get_mut(port)) {
+            *w = true;
+        }
+    }
 }
 
 /// Collapse pass-through **interface pipes** out of the execution schedule, so the rendered
@@ -968,6 +1255,9 @@ fn dissolve_interface_pipes(graph: &mut Graph) -> Vec<DissolvedPipe> {
     // recorded so far at every dissolve is quadratic in the pipe count, and a spliced document's
     // pipe count is its subpatch count times their boundary width — the number that grows.
     let mut aliases_of: SecondaryMap<NodeKey, Vec<usize>> = SecondaryMap::new();
+    // Pipes another pipe dissolved into: the feeder's value now rests in them, so a later dissolve
+    // of one records no value of its own, as it would have had the feeder still been a wire.
+    let mut fed_by_pipe: SecondaryMap<NodeKey, ()> = SecondaryMap::new();
     // The two "kept as a rendered node" reasons that are fixed for the whole fixpoint: nothing
     // dissolution does adds a channel binding or a tap, and a pipe carrying either never
     // dissolves, so both sets are read out of the graph once instead of re-derived per candidate.
@@ -1100,6 +1390,9 @@ fn dissolve_interface_pipes(graph: &mut Graph) -> Vec<DissolvedPipe> {
             }
         }
 
+        if graph.nodes[dst].descriptor.type_name == "pipe" {
+            fed_by_pipe.insert(dst, ());
+        }
         graph.nodes.remove(key);
         graph.interface.inputs.retain(|_, (k, _)| *k != key);
         // A chained alias (this pipe was another dissolved pipe's consumer) follows through to
@@ -1117,6 +1410,7 @@ fn dissolve_interface_pipes(graph: &mut Graph) -> Vec<DissolvedPipe> {
             kind,
             consumer: dst,
             consumer_port: dst_port,
+            seed: (feeder.is_none() && !fed_by_pipe.contains_key(key)).then_some(seed),
         });
         // The moved aliases and this pipe's own now all name `dst`, so a later dissolve of `dst`
         // finds them together under one key.
@@ -1901,6 +2195,7 @@ mod transplant_tests {
     use crate::config::AudioConfig;
     use crate::descriptor::Descriptor;
     use crate::graph::Graph;
+    use crate::message::Arg;
     use crate::operator::{Io, Operator};
 
     // Carries a byte of state so it is **not** a ZST: a `Box<ZST>` is a shared dangling pointer,
@@ -1993,6 +2288,61 @@ mod transplant_tests {
         let mut fresh = one_node_plan();
         let mut retiring = one_node_plan();
         fresh.transplant_survivors(&mut retiring, &[(0, 5)]);
+    }
+
+    /// A one-node plan whose node has one unwired held input, seeded `0.25`.
+    fn one_input_plan() -> Plan {
+        let mut desc = Probe::descriptor();
+        let meta = crate::descriptor::F32Meta {
+            min: 0.0,
+            max: 1.0,
+            default: 0.25,
+            unit: String::new(),
+            curve: crate::descriptor::Curve::default(),
+        };
+        desc.inputs = vec![crate::descriptor::Port::f32("x", meta)];
+        let mut g = Graph::new();
+        g.add_boxed("/n", Box::new(Probe { _state: 0 }), Arc::new(desc));
+        Plan::instantiate(g, AudioConfig::new(48_000.0, 128)).expect("one-node plan instantiates")
+    }
+
+    #[test]
+    fn carrying_a_latch_swaps_it_and_skips_a_pair_out_of_range() {
+        let mut fresh = one_input_plan();
+        let mut retiring = one_input_plan();
+        let slots = fresh.live_slots();
+        assert_eq!(
+            slots
+                .iter()
+                .map(|s| (s.address.as_str(), s.route, &s.seed))
+                .collect::<Vec<_>>(),
+            vec![(
+                "/n/x",
+                super::LatchRoute::Node { node: 0, port: 0 },
+                &Arg::F32(0.25)
+            )],
+            "an unwired held input reports its seed"
+        );
+        retiring.nodes[0].latch[0] = Arg::F32(0.75);
+        let latch = |from, to| super::LiveCarry::Latch { from, to };
+        fresh.carry_live_values(
+            &mut retiring,
+            &[
+                latch((0, 0), (0, 0)),
+                latch((0, 1), (0, 0)),
+                latch((3, 0), (0, 0)),
+            ],
+        );
+        assert_eq!(
+            fresh.nodes[0].latch[0],
+            Arg::F32(0.75),
+            "the live value crosses"
+        );
+        assert_eq!(
+            retiring.nodes[0].latch[0],
+            Arg::F32(0.25),
+            "the seed lands in `from`, to free off-thread with the retiree"
+        );
     }
 }
 
@@ -2374,6 +2724,86 @@ mod hosted_probes {
             hosted.find("/freq").is_none(),
             "a pipe dissolved out of every voice has no slot"
         );
+    }
+
+    /// A pipe whose `in` port defaults to `default`.
+    fn pipe_with_default(default: f32) -> (Box<Pipe>, Arc<crate::descriptor::Descriptor>) {
+        let mut desc = Pipe::descriptor();
+        desc.inputs = vec![crate::descriptor::Port::f32_buffer_meta(
+            "in",
+            crate::descriptor::F32Meta {
+                min: 0.0,
+                max: 1.0,
+                default,
+                unit: alloc::string::String::new(),
+                curve: crate::descriptor::Curve::default(),
+            },
+        )];
+        (Box::new(Pipe::new(PortKind::Signal)), Arc::new(desc))
+    }
+
+    #[test]
+    fn a_pipe_fed_by_a_pipe_offers_no_live_value_of_its_own() {
+        // Whichever of the two dissolves first, both addresses reach `/osc.freq`, whose document
+        // value is the outer default: only the outer pipe's address is a route for a live value.
+        for inner_first in [true, false] {
+            let mut g = Graph::new();
+            let (inner_op, inner_desc) = pipe_with_default(0.5);
+            let (outer_op, outer_desc) = pipe_with_default(0.3);
+            let (inner, outer) = match inner_first {
+                true => {
+                    let inner = g.add_boxed("/a/freq", inner_op, inner_desc);
+                    (inner, g.add_boxed("/freq", outer_op, outer_desc))
+                }
+                false => {
+                    let outer = g.add_boxed("/freq", outer_op, outer_desc);
+                    (g.add_boxed("/a/freq", inner_op, inner_desc), outer)
+                }
+            };
+            let osc = g.add("/osc", Oscillator::new());
+            g.connect(outer, 0usize, inner, 0usize);
+            g.connect(inner, 0usize, osc, oscillator::IN_FREQ);
+            g.tap_output(osc, oscillator::OUT_AUDIO);
+            let plan = Plan::instantiate(g, AudioConfig::new(48_000.0, 128)).expect("instantiate");
+            assert_eq!(plan.input_aliases.len(), 2, "both pipes dissolve");
+            let slots = plan.live_slots();
+            let addresses: Vec<&str> = slots.iter().map(|s| s.address.as_str()).collect();
+            assert!(
+                !addresses.contains(&"/a/freq/in") && !addresses.contains(&"/osc/freq"),
+                "inner_first={inner_first}: {addresses:?}"
+            );
+            let outer_slot = slots.iter().find(|s| s.address == "/freq/in");
+            assert_eq!(
+                outer_slot.map(|s| &s.seed),
+                Some(&crate::message::Arg::F32(0.3)),
+                "inner_first={inner_first}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_event_input_offers_no_live_value() {
+        // `/t`'s notes come straight in; `/u`'s through a `notes` pipe that dissolves into it.
+        let mut g = Graph::new();
+        g.add("/t", crate::operators::Transpose::new());
+        let u = g.add("/u", crate::operators::Transpose::new());
+        let mut desc = Pipe::descriptor();
+        desc.inputs = vec![crate::descriptor::Port::note("in")];
+        desc.outputs = vec![crate::descriptor::Port::note("out")];
+        let notes = g.add_boxed(
+            "/notes",
+            Box::new(Pipe::new(PortKind::Event)),
+            Arc::new(desc),
+        );
+        g.connect(notes, 0usize, u, crate::operators::transpose::IN_NOTES);
+        let osc = g.add("/osc", Oscillator::new());
+        g.tap_output(osc, oscillator::OUT_AUDIO);
+        let plan = Plan::instantiate(g, AudioConfig::new(48_000.0, 128)).expect("instantiate");
+        assert_eq!(plan.input_aliases.len(), 1, "the notes pipe dissolves");
+        let addresses: Vec<String> = plan.live_slots().into_iter().map(|s| s.address).collect();
+        assert!(addresses.contains(&"/t/amount".into()), "{addresses:?}");
+        assert!(!addresses.contains(&"/t/notes".into()), "{addresses:?}");
+        assert!(!addresses.contains(&"/notes/in".into()), "{addresses:?}");
     }
 
     /// `/v`, a Voicer with two voices, summed to the master; with `extra`, an outer oscillator

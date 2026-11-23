@@ -665,6 +665,7 @@ pub fn diagnostics_report(snapshot: &Snapshot) -> DiagnosticsReport {
         input_ring_overruns,
         input_ring_producer_drops,
         control_batches_dropped_full,
+        wired_writes_dropped,
     } = *snapshot;
     DiagnosticsReport {
         output_xruns,
@@ -672,6 +673,7 @@ pub fn diagnostics_report(snapshot: &Snapshot) -> DiagnosticsReport {
         input_ring_overruns,
         input_ring_producer_drops,
         control_batches_dropped_full,
+        wired_writes_dropped,
     }
 }
 
@@ -1208,12 +1210,15 @@ mod tests {
         for _ in 0..4 {
             d.record_control_batch_dropped_full();
         }
+        d.record_wired_writes_dropped(5);
+        d.record_wired_writes_dropped(0);
         let report = diagnostics_report(&d.snapshot());
         assert_eq!(report.output_xruns, 3);
         assert_eq!(report.input_ring_underruns, 11);
         assert_eq!(report.input_ring_overruns, 22);
         assert_eq!(report.input_ring_producer_drops, 33);
         assert_eq!(report.control_batches_dropped_full, 4);
+        assert_eq!(report.wired_writes_dropped, 5);
     }
 
     #[test]
@@ -1533,7 +1538,7 @@ mod tests {
             .recv_timeout(Duration::from_secs(10))
             .expect("an event within the deadline")
         {
-            Some(Ok(Event::Changed { hash, by })) => {
+            Some(Ok(Event::Changed { hash, by, .. })) => {
                 assert_eq!(by, ChangedBy::Client);
                 assert_eq!(serde_json::json!(hash), output["hash"]);
             }

@@ -500,7 +500,8 @@ fn literal_input(value: Value) -> Result<InputValue, EditError> {
             "a wire-ref belongs on `wire_instrument_input`, not `set_instrument_input`".into(),
         )),
         _ => Err(EditError::Target(
-            "input value must be a number or an enum symbol string".into(),
+            "input value must be a number or a string (an enum symbol or a `str` input's text)"
+                .into(),
         )),
     }
 }
@@ -529,10 +530,10 @@ fn any_input(name: &str, value: Value) -> Result<InputValue, EditError> {
     })
 }
 
-/// Coerce a JSON value into a pipe default (number or enum symbol).
+/// Coerce a JSON value into a pipe default (number, enum symbol, or `str` text).
 fn pipe_default(value: Value) -> Result<PipeDefault, EditError> {
     serde_json::from_value(value)
-        .map_err(|e| EditError::Target(format!("pipe default must be a number or a symbol: {e}")))
+        .map_err(|e| EditError::Target(format!("pipe default must be a number or a string: {e}")))
 }
 
 /// The literal forms a value verb reports, collapsed onto the one shape the projection reads them

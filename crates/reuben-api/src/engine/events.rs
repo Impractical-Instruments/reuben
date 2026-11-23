@@ -117,6 +117,7 @@ mod tests {
         Event::Changed {
             hash: hash.to_string(),
             by: ChangedBy::Client,
+            reset: None,
         }
     }
 

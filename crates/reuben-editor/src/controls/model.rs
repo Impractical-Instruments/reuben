@@ -144,7 +144,7 @@ fn gate(on: bool) -> f64 {
     }
 }
 
-fn clamp(value: f64, min: Option<f64>, max: Option<f64>) -> f64 {
+pub fn clamp(value: f64, min: Option<f64>, max: Option<f64>) -> f64 {
     let value = min.map_or(value, |min| value.max(min));
     max.map_or(value, |max| value.min(max))
 }

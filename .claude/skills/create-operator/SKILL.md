@@ -113,11 +113,13 @@ Run all `reuben`/`cargo` commands from the repo root.
 }
 ```
 
-- **`ty`** ∈ `f32_buffer` | `f32` | `i32` | `enum` | `note` | `harmony` | `pitch` | `arg` — the port's `Arg` type. A
-  `f32_buffer` port is a dense audio/CV Signal (no settable default *in the spec* — see the
-  Signal-with-default bullet below). A `f32` port is a held Value and
+- **`ty`** ∈ `f32_buffer` | `f32` | `i32` | `enum` | `note` | `harmony` | `pitch` | `str` |
+  `arg` — the port's `Arg` type. A `f32_buffer` port is a dense audio/CV Signal (no settable
+  default *in the spec* — see the Signal-with-default bullet below). A `f32` port is a held Value and
   adds `"f32": { min, max, default, unit, curve }` for its materialized default; `curve` ∈ `linear` |
-  `exponential` (default linear), `unit` defaults `""`.
+  `exponential` (default linear), `unit` defaults `""`. A `str` port is a held string **input**
+  (never an output or constant), read in `process` as `io.read(IN_X)` → `&str` borrowed from the
+  latch: read it, never copy it into operator state (that allocates).
 - A **Signal input with a scalar default** (knob-set it materializes as a held buffer,
   an LFO/envelope wires straight in; `filter.cutoff`, `saturator.drive`) can't carry its `{ .. }`
   meta in the spec JSON: declare it as a bare `f32_buffer`, scaffold, then hand-add the meta to the

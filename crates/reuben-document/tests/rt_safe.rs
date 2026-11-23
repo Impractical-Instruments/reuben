@@ -65,7 +65,7 @@ fn render_block_is_allocation_free_after_warmup() {
 
     // Build the note-on message up front — its address String allocates here, off the measured path.
     let note_on = [Message::new(
-        "/voicer/notes",
+        "/notes/in",
         Note::new(Pitch::Absolute(60.0), 1.0),
         0,
     )];
@@ -354,7 +354,7 @@ fn render_with_every_probe_on_allocates_nothing() {
     let mut r = Renderer::new(&plan);
     let mut out = vec![0.0f32; cfg.block_size];
     let note_on = [Message::new(
-        "/voicer/notes",
+        "/notes/in",
         Note::new(Pitch::Absolute(60.0), 1.0),
         0,
     )];
@@ -471,7 +471,7 @@ fn an_event_burst_on_one_port_is_allocation_free_after_warmup() {
                 (0..n)
                     .map(|i| {
                         let pitch = Pitch::Absolute(36.0 + (i % 48) as f32);
-                        Message::new("/voicer/notes", Note::new(pitch, vel), i % cfg.block_size)
+                        Message::new("/notes/in", Note::new(pitch, vel), i % cfg.block_size)
                     })
                     .collect()
             })
@@ -594,8 +594,7 @@ fn engine_fill_with_queued_messages_is_allocation_free_after_warmup() {
     const PER_BLOCK: usize = 2;
     // Every Message is built outside the measured window: its address `String` is the caller's
     // allocation, not the handoff's.
-    let note =
-        |pitch: f32| Message::new("/voicer/notes", Note::new(Pitch::Absolute(pitch), 1.0), 0);
+    let note = |pitch: f32| Message::new("/notes/in", Note::new(Pitch::Absolute(pitch), 1.0), 0);
     let mut batches: Vec<Vec<Message>> = (0..BLOCKS + 16)
         .map(|b| {
             (0..PER_BLOCK)
@@ -650,8 +649,9 @@ fn engine_queue_osc_and_fill_is_heap_neutral_after_warmup() {
 
     const BLOCKS: usize = 100;
     const PER_BLOCK: usize = 2;
-    // Both inbound targets a host reaches: the dissolved `notes` pipe's address and the node port
-    // it collapsed into. A note-on then a note-off per block, so the voice pool cycles.
+    // Both inbound targets a host reaches: the dissolved `notes` pipe's address, and the node port
+    // it collapsed into, which routing drops. A note-on then a note-off per block, so the voice
+    // pool cycles.
     const ADDRESSES: [&str; PER_BLOCK] = ["/notes/in", "/voicer/notes"];
     let args = |b: usize, i: usize| {
         [

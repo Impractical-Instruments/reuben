@@ -45,8 +45,18 @@ fn load_res(json: &str) -> Graph {
         .graph
 }
 
+/// Where `graph` takes notes from outside: its `notes` interface input, else the voicer's own
+/// unwired `notes` port.
+fn notes_address(graph: &Graph) -> &'static str {
+    match graph.interface.inputs.contains_key("notes") {
+        true => "/notes/in",
+        false => "/voicer/notes",
+    }
+}
+
 /// Render `seconds` of `graph`, holding note A4 (MIDI 69) from frame 0.
 fn render(graph: Graph, cfg: AudioConfig, seconds: f32) -> Vec<f32> {
+    let notes = notes_address(&graph);
     let mut plan = Plan::instantiate(graph, cfg).expect("instantiate");
     let mut r = Renderer::new(&plan);
     let blocks = (cfg.sample_rate * seconds) as usize / cfg.block_size;
@@ -55,7 +65,7 @@ fn render(graph: Graph, cfg: AudioConfig, seconds: f32) -> Vec<f32> {
     for b in 0..blocks {
         let msgs: Vec<Message> = if b == 0 {
             vec![Message::new(
-                "/voicer/notes",
+                notes,
                 Note::new(Pitch::Absolute(69.0), 1.0),
                 0,
             )]
@@ -70,6 +80,7 @@ fn render(graph: Graph, cfg: AudioConfig, seconds: f32) -> Vec<f32> {
 
 /// Render `seconds` of `graph`, holding every MIDI note in `midis` from frame 0.
 fn render_notes(graph: Graph, cfg: AudioConfig, seconds: f32, midis: &[f32]) -> Vec<f32> {
+    let notes = notes_address(&graph);
     let mut plan = Plan::instantiate(graph, cfg).expect("instantiate");
     let mut r = Renderer::new(&plan);
     let blocks = (cfg.sample_rate * seconds) as usize / cfg.block_size;
@@ -79,7 +90,7 @@ fn render_notes(graph: Graph, cfg: AudioConfig, seconds: f32, midis: &[f32]) -> 
         let msgs: Vec<Message> = if b == 0 {
             midis
                 .iter()
-                .map(|&m| Message::new("/voicer/notes", Note::new(Pitch::Absolute(m), 1.0), 0))
+                .map(|&m| Message::new(notes, Note::new(Pitch::Absolute(m), 1.0), 0))
                 .collect()
         } else {
             Vec::new()
@@ -230,6 +241,7 @@ fn plays_a_chord_polyphonically() {
 /// Render `seconds` of `graph`, holding note A4 from frame 0 and sending one extra control
 /// Message (e.g. a Good Button value) at frame 0 of the first block.
 fn render_with_control(graph: Graph, cfg: AudioConfig, seconds: f32, control: Message) -> Vec<f32> {
+    let notes = notes_address(&graph);
     let mut plan = Plan::instantiate(graph, cfg).expect("instantiate");
     let mut r = Renderer::new(&plan);
     let blocks = (cfg.sample_rate * seconds) as usize / cfg.block_size;
@@ -238,7 +250,7 @@ fn render_with_control(graph: Graph, cfg: AudioConfig, seconds: f32, control: Me
     for b in 0..blocks {
         let msgs: Vec<Message> = if b == 0 {
             vec![
-                Message::new("/voicer/notes", Note::new(Pitch::Absolute(57.0), 1.0), 0),
+                Message::new(notes, Note::new(Pitch::Absolute(57.0), 1.0), 0),
                 control.clone(),
             ]
         } else {

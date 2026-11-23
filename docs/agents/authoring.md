@@ -83,10 +83,22 @@ Why the steps are what they are:
   an edit changes: the edit is refused if that document keeps its own errors. Any other edit is
   written even though the whole instrument does not plan yet, and nothing plays until the edit
   that makes it load and plan — that edit starts it playing.
-- **Sending is ephemeral audition.** A live control message (`/filt/cutoff 1500`) changes
-  render state only — sweep a cutoff, try a tempo. The next edit re-reads inputs from the
-  document, so an un-folded tweak is **reset by design**. (The MCP tool is
-  `send_live_controls`; the name says which half of the loop it is on.)
+- **Sending is audition, not authoring.** A live control message changes render state only —
+  sweep a cutoff, try a tempo; the document never sees it. A live value enters two ways, and
+  each lasts through an edit (any edit verb, undo or redo, or a change to the file on disk):
+  - **An interface input** (`/cutoff/in`, or a subpatch's boundary input such as
+    `/a/level/in`) keeps its value however many nodes it feeds, and through a range edit, which
+    clamps it into the new range (1.8 with `max` lowered to 1.0 plays 1.0). It starts over from
+    the document when the edit changes its type, edits its default, or renames or removes it.
+  - **A node input nothing feeds** (`/filt/cutoff` while nothing is wired into `/filt.cutoff`)
+    keeps its value while the node survives (same address and type, see below) and its value in
+    the document is unchanged.
+
+  Writing an input a wire or an interface input feeds is unsupported: the message is dropped and
+  counted in `get_engine_diagnostics` as `wired_writes_dropped`. Send to the interface input
+  instead. `open_instrument`, of another instrument or again of the one playing, starts every
+  input from the document. Nothing live is saved. (The MCP tool is `send_live_controls`; the name
+  says which half of the loop it is on.)
 - **Try, then commit.** Send to explore; when a value is a keeper, fold it into the document with
   `set_instrument_input`. Never let the sound and the document drift apart — the document is the
   save source of truth.
@@ -190,10 +202,11 @@ read's fallback **is** the contract default (no second literal to drift).
 | **enum** (a *vocab* type, a Value, `In<Held<E>>`) | a named discrete choice — `FilterMode`, `Waveform` | read: the real Rust enum (not an index), defaulted to its `#[default]` variant |
 | **`Harmony`** (vocab struct, a Value, `In<Held<Harmony>>`) | the tonal-context struct: `root`/`scale`/`chord` + resolvers `hz()`/`snap()`/`chord_tone()` | read: `Harmony`, defaulted to C-major 12-TET (`Harmony::DEFAULT`) · write: `MsgWriter` (`.set(frame, h)`) |
 | **`Note`** (vocab struct, an Event, `In<Event<Note>>`) | a pitch/velocity event | read: `EventStream<Note>` of `Stamped<Note>` (`.frame`, `.payload`) · write: `EventWriter` (`.emit(frame, note)`) |
+| **`str`** (a held *Value*, `In<Held<str>>`) | a string — text an operator interprets, set from a document literal or a live send | read: `&str` borrowed from the latch, `""` when unset · **input only**: an operator cannot build a string on the render thread without allocating, so no Operator declares a `str` output (an interface pipe's `out` and a subpatch face do carry one, forwarding what came in) |
 
-A port's **form** is one of three — **Signal** (`f32_buffer`), **Value** (`f32`/enum/`Harmony`, a
-held latch read once per slice), **Event** (`Note`, a sparse frame-stamped stream) — and follows from
-the declared `Arg` type (`PortKind` in `plan.rs`). Reading older code: **Signal** = `f32_buffer`;
+A port's **form** is one of three — **Signal** (`f32_buffer`), **Value**
+(`f32`/enum/`Harmony`/`str`, a held latch read once per slice), **Event** (`Note`, a sparse
+frame-stamped stream) — and follows from the declared `Arg` type (`PortKind` in `plan.rs`). Reading older code: **Signal** = `f32_buffer`;
 **param** = an `f32` Value or held enum; **Context** = `Harmony`; **Message events** = `Note` (the
 old `shape`/temporality axis is gone). A runtime integer is a rounded `f32` or an enum; `I32` is
 an OSC primitive `Arg`, but no operator declares an `Int` port.
@@ -244,6 +257,10 @@ Each wire is checked **locally** at Instantiate against the two ports' forms (`c
   themselves `i32`: an `i32` pipe or source wires in cleanly, and a genuine `f32` modulation must
   route through an explicit converter rather than silently truncating.
 - **`Event` mismatched** against a Signal/Value is an error (needs an explicit latch / change-detect).
+- **`str` wires only to `str`** (and into `osc_out`'s pass-through). There is no implicit
+  conversion either way: a number never becomes text, and text never parses into a number. A live
+  send of the wrong type to a `str` input is dropped, and a number literal on one is refused at
+  load.
 
 Every *other* cross-*type* crossing still needs an operator: `f32 → enum` is a quantizer; `f32 →
 Note` is a threshold/trigger; `slew`/`glide` are `f32 → f32` shapers (the `m2s` gap-filling modes).
@@ -279,7 +296,8 @@ and is here so you can *read* a document, not so you can emit one.
 
 Each entry in a node's **`inputs`** map is one of:
 
-- a **literal** — `"resonance": 0.4` (an `F32` control default) or `"mode": "Hp"` (an enum by symbol);
+- a **literal** — `"resonance": 0.4` (an `F32` control default), `"mode": "Hp"` (an enum by symbol),
+  or `"pat": "0 3 ~"` (a `str` input's text, taken verbatim);
 - a **wire-ref** — `{ "from": "/osc.audio" }`, or the sole-output sugar `{ "from": "/osc" }` when
   the source has exactly one output.
 
@@ -332,8 +350,10 @@ target-pointing form (no entry points inward anymore):
   collision with a real node is the fatal `DuplicateAddress`) and behaves like a source node:
   internal consumers wire from it with ordinary wire-refs (`"audio": { "from": "/in" }`),
   fan-out free. Because nothing is pointed at, **the entry declares its own `Arg` type** —
-  `"type"`: `"f32_buffer"`, `"f32"`, `"i32"`, `"note"`, `"harmony"`, or a vocab enum name —
-  enforced against every consumer wire by the ordinary pass-2 wire check. An `i32` pipe is an
+  `"type"`: `"f32_buffer"`, `"f32"`, `"i32"`, `"str"`, `"note"`, `"harmony"`, `"pitch"`, or a
+  vocab enum name — enforced against every consumer wire by the ordinary pass-2 wire check. A
+  `str` pipe's `default` is its text (`"default": "0 3 <7 5> ~"`); it takes no `min`/`max`/`curve`
+  or `channel`, and is sent new text at `/<name>/in`. An `i32` pipe is an
   **integer control**: a count
   like euclid's `steps`/`pulses`/`rotation`, whole-numbered `default`/`min`/`max` (no `curve`), that
   wires straight into a consumer's integer (`i32`) port — or widens losslessly into an `f32` one —
@@ -351,6 +371,14 @@ target-pointing form (no entry points inward anymore):
   internal consumers do.
 - An **output pipe is fed from an internal port**: `"main_l": { "from": "/pan.left" }`.
   Signal output pipes drive the logical master channels.
+- A **`str` output pipe** works only nested: a parent wires `/<sub>.<name>` into a `str` input
+  like any port. In the document played (or validated) on its own it is **inert** — nothing reads
+  a top-level instrument's message outputs; only a parent's `subpatch` node (or a Voicer, for
+  `active`) consumes them — and validation warns, without failing. It also keeps a pipe it reads
+  from rendered as a node. A Voicer-hosted voice's held `active` output must be a number (`f32`
+  or `i32`): a `str`, enum, `note`, `harmony` or `pitch` one is a load error, since the Voicer
+  reads it as a number to know when a release tail has finished. (A signal `active` falls back to
+  the gate.)
 - A **signal** pipe may carry an optional logical **`channel: <int>`** binding — **honored
   only on the graph actually played at top level**: an input pipe with `channel: k` reads
   logical input channel `k` (real device audio via the input stream); an output pipe with
@@ -596,7 +624,12 @@ node by address prefix and an **input port by name** — always addressed explic
 input takes a scalar (`/filt/cutoff 1500`). An enum input takes a **symbol** — its variant name
 (`/filt/mode "Hp"`; the JSON literal `"mode": "Hp"` is the same form) — with an in-range integer
 index accepted as a fallback, quoted (`"1"`) or bare (`1`); an unknown symbol or out-of-range
-index is an **error**, never a silent snap to the default. A `Note` input takes its args (`/voicer/notes [69.0, 1.0]`).
+index is an **error**, never a silent snap to the default. A `str` input takes one string
+(`/seq/pat "0 3 ~"`); anything else sent to it is dropped. A `Note` input takes its args
+(`/notes/in [69.0, 1.0]` on a `notes` interface input, or `/voicer/notes [69.0, 1.0]` on a voicer
+nothing feeds). An input a wire or an interface input feeds takes no message: one sent to it is
+dropped and counted (`wired_writes_dropped`), so a `notes` interface input feeding
+`/voicer.notes` is played at `/notes/in`, not `/voicer/notes`.
 Full wildcard dispatch (`/drums/*/decay`) is designed but not built — today a Message targets at
 most one node.
 

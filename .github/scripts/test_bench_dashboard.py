@@ -83,7 +83,7 @@ class TestLoadEval(unittest.TestCase):
             order, series = dashboard.load_eval(str(path))
         self.assertEqual([entry["sha"] for entry in order], ["aaa"])
         self.assertEqual(order[0]["reference_revision"], 2)
-        self.assertEqual(series[("payload_characters", "tweak")], {0: 0})
+        self.assertEqual(series[("tokens_total", "tweak")], {0: 17868})
 
     def test_a_record_predating_the_field_loads_as_none(self) -> None:
         record = {"sha": "bbb", "date": "2026-06-01T00:00:00Z", "task": "tweak",

@@ -54,6 +54,10 @@ pub struct Diagnostics {
     /// not had back. One batch is one UDP datagram or one engine-channel `send`, lost whole.
     /// Diagnosis: control is arriving faster than the callback runs, or the callback has stopped.
     pub control_batches_dropped_full: AtomicU64,
+    /// Inbound control messages the engine dropped, counted in **messages**: each addressed an
+    /// input a wire or an interface pipe feeds, whose value is its feeder's. Diagnosis: a
+    /// controller writes a node input it should reach through the interface input feeding it.
+    pub wired_writes_dropped: AtomicU64,
 }
 
 impl Diagnostics {
@@ -96,6 +100,14 @@ impl Diagnostics {
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Count `n` control messages the engine dropped for addressing a fed input. A single atomic
+    /// add, skipped for zero.
+    pub fn record_wired_writes_dropped(&self, n: u64) {
+        if n > 0 {
+            self.wired_writes_dropped.fetch_add(n, Ordering::Relaxed);
+        }
+    }
+
     /// A point-in-time copy of every counter, cheap enough to take on every logging tick.
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
@@ -104,6 +116,7 @@ impl Diagnostics {
             input_ring_overruns: self.input_ring_overruns.load(Ordering::Relaxed),
             input_ring_producer_drops: self.input_ring_producer_drops.load(Ordering::Relaxed),
             control_batches_dropped_full: self.control_batches_dropped_full.load(Ordering::Relaxed),
+            wired_writes_dropped: self.wired_writes_dropped.load(Ordering::Relaxed),
         }
     }
 }
@@ -117,6 +130,7 @@ pub struct Snapshot {
     pub input_ring_overruns: u64,
     pub input_ring_producer_drops: u64,
     pub control_batches_dropped_full: u64,
+    pub wired_writes_dropped: u64,
 }
 
 impl Snapshot {
@@ -132,12 +146,13 @@ impl Snapshot {
 pub fn log_snapshot(s: &Snapshot) {
     eprintln!(
         "diagnostics: output_xruns={} input_ring_underruns={} input_ring_overruns={} \
-         input_ring_producer_drops={} control_batches_dropped_full={}",
+         input_ring_producer_drops={} control_batches_dropped_full={} wired_writes_dropped={}",
         s.output_xruns,
         s.input_ring_underruns,
         s.input_ring_overruns,
         s.input_ring_producer_drops,
-        s.control_batches_dropped_full
+        s.control_batches_dropped_full,
+        s.wired_writes_dropped
     );
 }
 

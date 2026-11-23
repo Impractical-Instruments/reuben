@@ -154,6 +154,12 @@ impl RenderSlot {
         self.engine.queue(msg);
     }
 
+    /// Take the count of inbound messages dropped for addressing an input a wire or an interface
+    /// pipe feeds, since the last take, leaving zero. RT-safe: a field read and write.
+    pub fn take_dropped_wired_writes(&mut self) -> u64 {
+        self.engine.take_dropped_wired_writes()
+    }
+
     /// Drain the outbound Messages the most recent fill produced, in emission order.
     pub fn drain_outbound(&mut self) -> alloc::vec::Drain<'_, Message> {
         self.engine.drain_outbound()
@@ -308,6 +314,14 @@ impl RenderSlot {
         bundle
             .engine
             .transplant_survivors(&mut self.engine, bundle.migration.survivors());
+        // Survivors keep the values last sent to their inputs, where the table says so; the fresh
+        // Engine's seeds for those ports land in `bundle.engine` with the cold boxes.
+        bundle
+            .engine
+            .carry_live_values(&mut self.engine, bundle.migration.live_values());
+        // The retiring Engine's uncollected drop count goes on under the fresh one.
+        let dropped = self.engine.take_dropped_wired_writes();
+        bundle.engine.credit_dropped_wired_writes(dropped);
         // Swap the fresh Engine live; `bundle.engine` now holds the retiring one. Reusing the box's
         // storage (rather than `Box::new`) is what keeps the post allocation-free.
         core::mem::swap(&mut self.engine, &mut bundle.engine);

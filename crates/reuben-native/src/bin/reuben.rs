@@ -3,12 +3,13 @@
 //! Five subcommands — `play`, `describe`, `validate`, `scaffold-operator`, `new-instrument` —
 //! each documented on its own `--help`. `play` is the server. `describe`, `validate` and
 //! `new-instrument` are its clients: they ask the running `reuben play` when one answers, and
-//! otherwise a temporary headless server they start in this process. Send notes to a playing
-//! instrument with:
+//! otherwise a temporary headless server they start in this process. A playing instrument takes
+//! control at its interface inputs, `/<name>/in`; the default instrument plays notes at its
+//! `notes` input:
 //!
 //! ```text
-//! /voicer/notes  [69.0, 1.0]   # note-on  (MIDI 69 = A4, gate 1)
-//! /voicer/notes  [69.0, 0.0]   # note-off (gate 0)
+//! /notes/in  [69.0, 1.0]   # note-on  (MIDI 69 = A4, gate 1)
+//! /notes/in  [69.0, 0.0]   # note-off (gate 0)
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -697,7 +698,10 @@ fn play(path: Option<PathBuf>, flags: EngineFlags, root: Option<PathBuf>) -> Exi
         println!("OSC-out sending to {target}");
     }
     if let Some(addr) = running.osc_in_addr() {
-        println!("OSC-in listening on {addr}  (send /voicer/notes [midi, gate])");
+        println!(
+            "OSC-in listening on {addr}  (send to an interface input, /<name>/in; \
+             the default instrument plays /notes/in [midi, gate])"
+        );
         if !log_osc {
             println!("  (set {LOG_OSC_ENV}=1 to log received OSC)");
         }

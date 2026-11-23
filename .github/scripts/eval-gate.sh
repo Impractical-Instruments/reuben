@@ -6,8 +6,9 @@
 # currently invisible regression — anyone adding a paragraph to a tool description or the authoring
 # guide makes every turn of every task more expensive, and no existing check sees it.
 #
-# What it measures: (a) grounding tokens the sidecar hands back, (b) failed
-# `validate` rounds, (c) freehand-JSON characters the model must emit. Each task carries a
+# What it measures: (a) grounding tokens the sidecar hands back and (b) failed `validate` rounds.
+# (c), freehand-JSON characters, is set by the harness on this tier (see eval/reuben_eval/gate.py), so
+# it is a warning here and a metric on the live tier. Each task carries a
 # hand-written REFERENCE SOLUTION — the ideal call sequence a perfect model would make — replayed
 # against the real sidecar with NO inference. So this is the surface's COST FLOOR, and a prototype's
 # claim on the wayfinder map is checkable before a single token is bought.
@@ -94,8 +95,17 @@ fi
 
 # 1) Baseline side. Swap the surface, rebuild the sidecar against it, measure with THIS PR's harness.
 #    `--no-gate` because the baseline is compared against nothing; we only want its numbers.
+# Only SURFACE moves between the two sides, so when it is byte-identical across the refs the two
+# measurements are the same by construction: the baseline sidecar build — a second full build of the
+# workspace's debug graph — and its measurement buy nothing. HEAD is measured once, absolute numbers
+# only, and still records its trend point. `diff-tree` exits 0 only when nothing differs; an error
+# reads as "differs", the safe side.
 have_baseline=0
-if [ -n "$BASE_SHA" ] && git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+if [ -n "$BASE_SHA" ] && git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null \
+  && git diff-tree --quiet -r "$BASE_SHA" HEAD -- "${SURFACE[@]}"; then
+  note "_The measured surface (\`${SURFACE[*]}\`) is identical to the baseline — measured once, nothing to compare._"
+  note ""
+elif [ -n "$BASE_SHA" ] && git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
   swap_surface "$BASE_SHA"
   if build_sidecar; then
     if (cd eval && run_eval --no-gate --json "$BASE_JSON" --summary /dev/null) >/dev/null 2>&1; then
