@@ -682,6 +682,10 @@ pub fn diagnostics_report(snapshot: &Snapshot) -> DiagnosticsReport {
         pattern_queries_truncated,
         pattern_atoms_skipped,
         pattern_notes_evicted,
+        midi_received: _,
+        midi_unsupported: _,
+        midi_routed: _,
+        midi_unmatched: _,
     } = *snapshot;
     DiagnosticsReport {
         output_xruns,
