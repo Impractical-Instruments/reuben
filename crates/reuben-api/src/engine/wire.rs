@@ -575,6 +575,11 @@ pub struct DiagnosticsReport {
     /// (messages). Absent from a report by an engine that predates it, and then zero.
     #[serde(default)]
     pub wired_writes_dropped: u64,
+    /// Replaced values that own heap memory (strings) the render thread dropped itself, because
+    /// the queue that hands them off it was full (values). Absent from a report by an engine that
+    /// predates it, and then zero.
+    #[serde(default)]
+    pub retire_queue_dropped_full: u64,
 }
 
 /// The engine's levels at the device: what it sends out, after the output map, and what the input
@@ -747,6 +752,7 @@ mod tests {
             input_ring_producer_drops: 96,
             control_batches_dropped_full: 7,
             wired_writes_dropped: 3,
+            retire_queue_dropped_full: 3,
         }
     }
 
@@ -1205,13 +1211,14 @@ mod tests {
                 "input_ring_overruns": 0,
                 "input_ring_producer_drops": 96,
                 "control_batches_dropped_full": 7,
-                "wired_writes_dropped": 3
+                "wired_writes_dropped": 3,
+                "retire_queue_dropped_full": 3
             })
         );
     }
 
     #[test]
-    fn a_diagnostics_report_without_the_control_drop_count_reads_it_as_zero() {
+    fn a_diagnostics_report_without_the_drop_counts_reads_them_as_zero() {
         let report: DiagnosticsReport = serde_json::from_value(serde_json::json!({
             "output_xruns": 2,
             "input_ring_underruns": 480,
@@ -1221,6 +1228,7 @@ mod tests {
         .expect("an older engine's report still reads");
         assert_eq!(report.control_batches_dropped_full, 0);
         assert_eq!(report.wired_writes_dropped, 0);
+        assert_eq!(report.retire_queue_dropped_full, 0);
     }
 
     #[test]

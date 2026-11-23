@@ -17,7 +17,7 @@ use crate::format::{load_instrument_doc, LoadWarning, NormalizedDoc};
 use crate::projection::Rebased;
 use crate::resources::ResourceResolver;
 use reuben_core::config::AudioConfig;
-use reuben_core::coordinator::{InstallBundle, RenderSide};
+use reuben_core::coordinator::{retire_queue, InstallBundle, RenderSide, RetireDrain, RetireQueue};
 use reuben_core::plan::Plan;
 use reuben_core::probe::ProbeSlots;
 use reuben_core::registry::Registry;
@@ -26,6 +26,26 @@ use std::sync::Arc;
 
 use super::manifest::{build_manifest, Manifest};
 use reuben_core::coordinator::mailbox::{swap_pair, CoordinatorMailbox, ReclaimError};
+
+/// How many displaced values the render thread can retire between two drains before it has to drop
+/// one itself.
+///
+/// The window drains at the top of every engine-channel `send`, so the ring has to hold what one
+/// batch displaces. A batch is at most 256 messages (the window's `MAX_SEND_BATCH`). A string sent
+/// straight to an input displaces two values: its queued copy and the latch it overwrites. Sent
+/// through a kept `str` pipe with `k` consumers it displaces `4 + k`: the queued copy, the pipe's
+/// latch, the pipe's dedup baseline, its forwarded emission, and one latch per consumer. 2048 is a
+/// full batch through a kept pipe with four consumers (256 × 8), with the seeds a fresh Plan's
+/// first block overwrites (one per consumer of a kept pipe) fitting in what a real batch leaves
+/// over.
+///
+/// The bound assumes one batch per drain, and nothing enforces that. Native lets a producer have
+/// up to 256 batches outstanding between two callbacks, so sends arriving faster than the callback
+/// runs can stack several batches between drains. OSC over UDP never drains at all: a UDP-only session
+/// fills the ring after about 1024 strings sent straight to an input, and from then on each
+/// replaced string is the counted drop on the render thread, until the next `send`, reclaim or
+/// Swap drains it.
+pub const RETIRE_QUEUE_CAPACITY: usize = 2048;
 
 /// A validated, fully built swap that has **not** been handed to the render side: everything
 /// [`Coordinator::swap_document`] does *except* filling the install mailbox, stopped one step short
@@ -131,6 +151,10 @@ pub struct Coordinator {
     /// The interface input addresses whose live value the last committed swap replaced with the
     /// document's.
     live_reset: Vec<String>,
+    /// Handed to every Engine before it is installed, so whichever is live retires into it.
+    retire: RetireQueue,
+    /// Drained at every reclaim, and by whoever holds a [`retired`](Self::retired) handle.
+    retired: RetireDrain,
 }
 
 impl Coordinator {
@@ -147,8 +171,10 @@ impl Coordinator {
     ) -> Result<(Coordinator, RenderSide, Vec<LoadWarning>), FromDocumentError> {
         let doc = NormalizedDoc::from_json(doc_json, &registry, Some(&*resolver))
             .map_err(|e| FromDocumentError::Load(e.into()))?;
-        let (engine, manifest, warnings, installed_probes) =
+        let (mut engine, manifest, warnings, installed_probes) =
             build_engine(&doc, &registry, &*resolver, config)?;
+        let (retire, retired) = retire_queue(RETIRE_QUEUE_CAPACITY);
+        engine.set_retire_queue(retire.clone());
         // Record the initial engine's logical geometry before it moves into the RenderSide:
         // the native shell reads it to build the first device output map.
         let installed_channels = engine.channels();
@@ -167,6 +193,8 @@ impl Coordinator {
             installed_input_channels,
             installed_probes,
             live_reset: Vec::new(),
+            retire,
+            retired,
         };
         let render_side = RenderSide {
             engine,
@@ -259,7 +287,7 @@ impl Coordinator {
         // new. That extra Engine is a real cost to a wasm door under a memory cap. Doing it here
         // keeps the one-call form byte-for-byte the swap it was; the second call is then a
         // no-op load on an empty slot.
-        self.mailbox.try_reclaim();
+        self.try_reclaim();
         let prepared = match origin {
             Some(origin) => self.prepare_document_from(source, origin),
             None => self.prepare_document(source),
@@ -403,16 +431,19 @@ impl Coordinator {
 
         // Opportunistically clear a previous swap whose retiree has come home, so a caller that
         // drove the render side between swaps can install the next one without a separate reclaim.
-        self.mailbox.try_reclaim();
+        self.try_reclaim();
 
         let PreparedSwap {
             doc,
             manifest,
-            engine,
+            mut engine,
             warnings,
             content_hash,
             probes,
         } = prepared;
+        // Here rather than at the build: a swap prepared by another Coordinator retires into this
+        // one's queue, which is the one this Coordinator drains.
+        engine.set_retire_queue(self.retire.clone());
 
         // The new engine's logical geometry, captured before it is boxed into the mailbox — the
         // native shell reads it back (via the installed-geometry accessors) to rebuild the device
@@ -467,9 +498,18 @@ impl Coordinator {
 
     /// Non-blocking reclaim of the retired [`InstallBundle`] (deferred free): take it back
     /// so the caller can drop it off the audio thread, and open the slot for the next swap. `None`
-    /// if the render side has not posted the retiree yet.
+    /// if the render side has not posted the retiree yet. Drains the retire queue here too.
     pub fn try_reclaim(&mut self) -> Option<Box<InstallBundle>> {
+        self.retired.drain();
         self.mailbox.try_reclaim()
+    }
+
+    /// A handle on the retire queue every Engine this Coordinator installs retires into, for a
+    /// caller that drains it without holding the Coordinator: dropping what it drains is the
+    /// off-thread free. Its [`dropped_full`](RetireDrain::dropped_full) counts the values the
+    /// render thread had to drop itself.
+    pub fn retired(&self) -> RetireDrain {
+        self.retired.clone()
     }
 
     /// Whether a previous swap is still in flight, after reclaiming its retiree if it has come
@@ -481,7 +521,7 @@ impl Coordinator {
     /// changes whether a swap is in flight. So a caller that holds the Coordinator's lock from
     /// this check to the commit cannot be refused in between.
     pub fn swap_in_flight(&mut self) -> bool {
-        drop(self.mailbox.try_reclaim());
+        drop(self.try_reclaim());
         self.mailbox.in_flight()
     }
 
@@ -492,7 +532,9 @@ impl Coordinator {
         &mut self,
         timed_out: impl FnMut() -> bool,
     ) -> Result<Box<InstallBundle>, ReclaimError> {
-        self.mailbox.reclaim(timed_out)
+        let reclaimed = self.mailbox.reclaim(timed_out);
+        self.retired.drain();
+        reclaimed
     }
 
     /// A rejected swap installs nothing: `ok: false`, the given diagnostics, no

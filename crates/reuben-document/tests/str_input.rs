@@ -12,11 +12,13 @@ use rt_alloc::{assert_counter_is_live, measure, Counting};
 
 use std::sync::Arc;
 
+use reuben_core::coordinator::{retire_queue, RetireDrain};
 use reuben_core::descriptor::Descriptor;
 use reuben_core::message::{Arg, Message};
 use reuben_core::operator::{Io, Operator};
 use reuben_core::plan::Plan;
 use reuben_core::{AudioConfig, Engine, Registry};
+use reuben_document::coordinator::RETIRE_QUEUE_CAPACITY;
 use reuben_document::edit::{add_instrument_interface_input, set_instrument_input};
 use reuben_document::{load_instrument, LoadError, MemoryResolver, NormalizedDoc};
 use serde_json::json;
@@ -89,6 +91,21 @@ fn engine(doc: &str) -> Engine {
         .expect("loads")
         .graph;
     Engine::new(Plan::instantiate(graph, AudioConfig::new(48_000.0, 64)).expect("instantiates"))
+}
+
+/// [`engine`] retiring into a queue, as a Coordinator-built Engine does, and the queue's drain.
+fn retiring(mut e: Engine) -> (Engine, RetireDrain) {
+    let (queue, drain) = retire_queue(RETIRE_QUEUE_CAPACITY);
+    e.set_retire_queue(queue);
+    (e, drain)
+}
+
+/// Drain `d` under the counting allocator: the frees the render thread handed off it.
+fn drained_frees(d: &RetireDrain) -> usize {
+    measure(|| {
+        d.drain();
+    })
+    .frees
 }
 
 /// One block; the `(sink address, f32)` pairs it sent, in order.
@@ -324,14 +341,12 @@ fn the_authoring_verbs_write_and_refuse_str_values() {
     assert_eq!(readback(&r), v);
 }
 
-/// The render thread never allocates a string. It may free one: when a value overwrites a `str`
-/// latch and nothing else still holds the replaced string, the render thread drops the last
-/// reference. That is the class `Arg::Str` documents — at most one free per overwrite, fewer where
-/// something else also holds the replaced value. A latch's seed and an authored value count: in a
-/// freshly built Plan (every Swap builds one) the first send to an input can free what it held,
-/// whatever the sender keeps.
+/// The render thread neither allocates nor frees a string. Each value it lets go of while strings
+/// change under it — a latch's seed, an authored value, a string a send replaced, its own copies in
+/// the control queue and routing scratch — goes to the retire queue, and the strings that were last
+/// held there are freed where the queue is drained.
 #[test]
-fn changing_strings_allocate_nothing_and_free_only_the_replaced_ones() {
+fn changing_strings_allocate_and_free_nothing_on_the_render_thread() {
     // No `osc_out` sinks: each outbound send builds a Message on the render thread, which is that
     // sink's own documented cost, not a string's.
     const QUIET: &str = r#"{
@@ -341,7 +356,7 @@ fn changing_strings_allocate_nothing_and_free_only_the_replaced_ones() {
         { "type": "str_len", "address": "/from_pipe", "inputs": { "text": { "from": "/pat" } } },
         { "type": "str_len", "address": "/direct", "inputs": { "text": "x" } },
         { "type": "str_len", "address": "/unset" } ] }"#;
-    let mut e = engine(QUIET);
+    let (mut e, retired) = retiring(engine(QUIET));
     let mut out = vec![0.0f32; e.block_size() * e.channels()];
     for _ in 0..4 {
         e.fill(&mut out);
@@ -357,98 +372,126 @@ fn changing_strings_allocate_nothing_and_free_only_the_replaced_ones() {
     assert_eq!((idle.allocs, idle.frees), (0, 0), "idle blocks");
 
     // The first send to each input, one input per block, with the sender keeping every string it
-    // sends. Each block makes one allocation: a node's routed-held scratch grows on the first
-    // message it is ever routed — once per node per Plan, the same for any held control, and not a
-    // string.
+    // sends. No allocation: each node's routed-held scratch is presized for one change per input.
     let warm: Arc<str> = "first send".into();
     let mut first_send = |addr: &str| {
-        measure(|| {
+        let render = measure(|| {
             e.queue_osc(addr, &[Arg::Str(warm.clone())]);
             e.fill(&mut out);
-        })
+        });
+        (render, drained_frees(&retired))
     };
-    // An unset input's seed `""` and a node literal are held by nothing but their latch, so the
-    // overwrite frees each.
-    let unset = first_send("/unset/text");
-    assert_eq!((unset.allocs, unset.frees), (1, 1), "unset seed");
-    let literal = first_send("/direct/text");
-    assert_eq!((literal.allocs, literal.frees), (1, 1), "node literal");
+    // An unset input's seed `""` and a node literal are held by nothing but their latch: the
+    // overwrite retires each, and the drain frees it.
+    let (unset, unset_drained) = first_send("/unset/text");
+    assert_eq!(
+        (unset.allocs, unset.frees, unset_drained),
+        (0, 0, 1),
+        "unset seed"
+    );
+    let (literal, literal_drained) = first_send("/direct/text");
+    assert_eq!(
+        (literal.allocs, literal.frees, literal_drained),
+        (0, 0, 1),
+        "node literal"
+    );
     // A pipe's default handed to the input it dissolved into: whether anything else still holds
     // it depends on what the Plan keeps for the pipe's address, so only the bound is pinned.
-    let piped = first_send("/pat/in");
+    let (piped, piped_drained) = first_send("/pat/in");
     assert_eq!(
-        piped.allocs, 1,
-        "pipe default: first-message scratch growth"
+        (piped.allocs, piped.frees),
+        (0, 0),
+        "pipe default: no allocation and no free"
     );
     assert!(
-        piped.frees <= 1,
-        "pipe default: at most one free, got {}",
-        piped.frees
+        piped_drained <= 1,
+        "pipe default: at most one free, got {piped_drained}"
     );
 
     // Past the first send, a sender that keeps its own reference to every string it sends leaves
-    // the render thread never the last owner of a replaced one: nothing is freed there.
+    // the queue never the last owner of a replaced one: nothing is freed anywhere.
     let kept: Vec<Arc<str>> = (0..16).map(|i| format!("kept {i}").into()).collect();
-    let mut keeping = rt_alloc::Counts {
-        allocs: 0,
-        frees: 0,
-    };
+    let mut keeping = (0, 0, 0);
     for s in &kept {
         let c = measure(|| {
             e.queue_osc("/pat/in", &[Arg::Str(s.clone())]);
             e.queue_osc("/direct/text", &[Arg::Str(s.clone())]);
             e.fill(&mut out);
         });
-        keeping.allocs += c.allocs;
-        keeping.frees += c.frees;
+        keeping.0 += c.allocs;
+        keeping.1 += c.frees;
+        keeping.2 += drained_frees(&retired);
     }
-    assert_eq!((keeping.allocs, keeping.frees), (0, 0), "sender retains");
+    assert_eq!(keeping, (0, 0, 0), "sender retains");
 
     // The sender lets go of each string as soon as it is queued, so the graph holds the last
-    // reference to whatever is latched. Each block then frees exactly the strings its sends
-    // replaced: the first block one (both ports held the same last `kept` string), every later
-    // block two (the previous block's pair).
+    // reference to whatever is latched. Repeated sends to the same two inputs: the render thread
+    // frees nothing, and each drain frees exactly the strings that block's sends replaced — the
+    // first block one (both ports held the same last `kept` string), every later block two (the
+    // previous block's pair).
     drop((warm, kept));
-    let mut per_block = Vec::new();
+    let mut render = Vec::new();
+    let mut drained = Vec::new();
     for i in 0..16 {
         let a: Arc<str> = format!("pipe {i}").into();
         let b: Arc<str> = format!("direct {i}").into();
         e.queue_osc("/pat/in", &[Arg::Str(a)]);
         e.queue_osc("/direct/text", &[Arg::Str(b)]);
-        per_block.push(measure(|| e.fill(&mut out)));
+        render.push(measure(|| e.fill(&mut out)));
+        drained.push(drained_frees(&retired));
     }
     assert!(
-        per_block.iter().all(|c| c.allocs == 0),
-        "the render thread never allocates a string: {per_block:?}"
+        render.iter().all(|c| (c.allocs, c.frees) == (0, 0)),
+        "the render thread never allocates or frees a string: {render:?}"
     );
-    let frees: Vec<usize> = per_block.iter().map(|c| c.frees).collect();
     let mut owed = vec![2; 16];
     owed[0] = 1;
-    assert_eq!(frees, owed, "one free per replaced string, and no other");
+    assert_eq!(drained, owed, "one free per replaced string, and no other");
 
-    // A block with no send frees nothing, even right after a replacement.
+    // A block with no send hands off nothing, even right after a replacement.
     let after = measure(|| e.fill(&mut out));
     assert_eq!((after.allocs, after.frees), (0, 0), "after the sends");
+    assert!(retired.is_empty(), "nothing retired without a send");
 
-    // Two sends to one port in one block: the first is overwritten within the block, but the
-    // routed copy still holds it until the next block clears its scratch. Its block frees the
-    // previously latched string; the next frees the overwritten one; then nothing.
+    // Two sends to one port in one block: the first is overwritten within the block. Both the
+    // previously latched string and the overwritten one are freed at the next drain.
     e.queue_osc("/direct/text", &[Arg::Str("first".into())]);
     e.queue_osc("/direct/text", &[Arg::Str("second".into())]);
     let frees: Vec<usize> = (0..3).map(|_| measure(|| e.fill(&mut out)).frees).collect();
     assert_eq!(
         frees,
-        [1, 1, 0],
-        "an overwrite within a block frees one block late"
+        [0, 0, 0],
+        "an overwrite within a block frees nothing on render"
+    );
+    assert_eq!(drained_frees(&retired), 2, "the drain frees both");
+    assert_eq!(retired.dropped_full(), 0);
+}
+
+/// An Engine with no retire queue (one no Coordinator built) drops what it replaces on the render
+/// thread: the fallback the queue exists to remove.
+#[test]
+fn without_a_retire_queue_the_render_thread_frees_a_replaced_string() {
+    const ONE: &str = r#"{ "format_version": 3, "instrument": "one",
+      "nodes": [ { "type": "str_len", "address": "/direct", "inputs": { "text": "x" } } ] }"#;
+    let mut e = engine(ONE);
+    let mut out = vec![0.0f32; e.block_size() * e.channels()];
+    e.queue_osc("/direct/text", &[Arg::Str("warm".into())]);
+    e.fill(&mut out);
+    assert_counter_is_live();
+    e.queue_osc("/direct/text", &[Arg::Str("next".into())]);
+    assert_eq!(
+        measure(|| e.fill(&mut out)).frees,
+        1,
+        "the replaced \"warm\""
     );
 }
 
 /// A `str` pipe with two consumers is rendered, not dissolved. Its first block forwards its
 /// default onto each consumer's latch, which holds that consumer's own `""` seed: with no send at
-/// all, the render thread frees up to one string per consumer. That happens in the first block of
-/// every freshly built Plan, so in every Swap's install window too.
+/// all, up to one string per consumer is replaced. That happens in the first block of every freshly
+/// built Plan, so in every Swap's install window too, and none of it is freed on the render thread.
 #[test]
-fn a_rendered_str_pipe_frees_each_consumer_seed_in_its_first_block() {
+fn a_rendered_str_pipe_retires_each_consumer_seed_in_its_first_block() {
     use reuben_core::coordinator::RenderSlot;
     use reuben_document::coordinator::Coordinator;
 
@@ -461,19 +504,24 @@ fn a_rendered_str_pipe_frees_each_consumer_seed_in_its_first_block() {
     const CONSUMERS: usize = 2;
 
     // A fresh Plan, measured from its very first block: no warm-up, no send.
-    let mut e = engine(FAN_OUT);
+    let (mut e, retired) = retiring(engine(FAN_OUT));
     let mut out = vec![0.0f32; e.block_size() * e.channels()];
     assert_counter_is_live();
     let first = measure(|| e.fill(&mut out));
+    assert_eq!(first.frees, 0, "nothing freed on render");
     assert_eq!(
-        first.frees, CONSUMERS,
-        "each consumer's own seed, freed once"
+        drained_frees(&retired),
+        CONSUMERS,
+        "each consumer's own seed, freed at the drain"
     );
     let next = measure(|| e.fill(&mut out));
     assert_eq!((next.allocs, next.frees), (0, 0), "then nothing");
+    // The forwarded copy left in the first block's emit scratch is retired here; the pipe and the
+    // consumers still hold that string, so draining it frees nothing.
+    assert_eq!(drained_frees(&retired), 0);
 
-    // Each Swap builds a fresh Plan, so its install window repeats it: at most one free per
-    // consumer, with nothing sent.
+    // Each Swap builds a fresh Plan, so its install window repeats it: the Coordinator's Engine
+    // retires into the Coordinator's queue, and its reclaim frees the seeds.
     const BLOCK: usize = 128;
     let (mut coord, side, _) = Coordinator::install_initial(
         FAN_OUT,
@@ -482,6 +530,7 @@ fn a_rendered_str_pipe_frees_each_consumer_seed_in_its_first_block() {
         AudioConfig::new(48_000.0, BLOCK),
     )
     .expect("initial install");
+    let retired = coord.retired();
     let mut slot = RenderSlot::new(side);
     let mut out = vec![0.0f32; BLOCK * slot.channels()];
     for _ in 0..8 {
@@ -500,12 +549,15 @@ fn a_rendered_str_pipe_frees_each_consumer_seed_in_its_first_block() {
             saw_ramp && !slot.is_ramping(),
             "the swap installed inside the window"
         );
-        assert!(
-            (1..=CONSUMERS).contains(&frees),
-            "edit {edit}: at most one free per consumer, and the case is real; got {frees}"
-        );
+        assert_eq!(frees, 0, "edit {edit}: nothing freed on render");
+        assert!(!retired.is_empty(), "edit {edit}: the case is real");
         assert!(coord.try_reclaim().is_some(), "a retiree came home");
+        assert!(
+            retired.is_empty(),
+            "edit {edit}: the reclaim drained the queue"
+        );
     }
+    assert_eq!(retired.dropped_full(), 0);
 }
 
 /// A child that exposes a `str` output is authored, validated and edited on its own — where the
@@ -630,24 +682,29 @@ const HOST: &str = r#"{ "format_version": 3, "instrument": "host",
                "inputs": { "notes": { "from": "/notes" } } } ] }"#;
 
 /// An idle hosted voice is not rendered, so its rendered pipe's first block — and the consumer
-/// seed frees it brings — comes at that voice's first note, not at install.
+/// seeds it replaces — comes at that voice's first note, not at install. The Voicer hands its
+/// voices the Engine's retire queue, so those seeds are not freed on the render thread either.
 #[test]
-fn a_hosted_voice_frees_its_pipe_consumer_seeds_at_its_first_note() {
+fn a_hosted_voice_retires_its_pipe_consumer_seeds_at_its_first_note() {
     const CONSUMERS: usize = 2;
     let mut r = MemoryResolver::new();
     r.insert_text("voice.json", voice_patch("/env.active"));
     let graph = load_instrument(HOST, &registry(), &r).expect("loads").graph;
-    let mut e = Engine::new(Plan::instantiate(graph, AudioConfig::new(48_000.0, 64)).unwrap());
+    let (mut e, retired) = retiring(Engine::new(
+        Plan::instantiate(graph, AudioConfig::new(48_000.0, 64)).unwrap(),
+    ));
     let mut out = vec![0.0f32; e.block_size() * e.channels()];
     assert_counter_is_live();
     let idle: usize = (0..8).map(|_| measure(|| e.fill(&mut out)).frees).sum();
     assert_eq!(idle, 0, "no voice has rendered yet");
-    // Four held notes take four fresh voices; each one's first rendered block frees its two
-    // consumers' seeds.
+    assert!(retired.is_empty());
+    // Four held notes take four fresh voices; each one's first rendered block replaces its two
+    // consumers' seeds, and the drain frees them.
     for (i, pitch) in [60.0f32, 62.0, 64.0, 65.0].into_iter().enumerate() {
         e.queue_osc("/notes/in", &[Arg::F32(pitch), Arg::F32(1.0)]);
         let frees = measure(|| e.fill(&mut out)).frees;
-        assert_eq!(frees, CONSUMERS, "voice {i}'s first note");
+        assert_eq!(frees, 0, "voice {i}'s first note frees nothing on render");
+        assert_eq!(drained_frees(&retired), CONSUMERS, "voice {i}'s seeds");
     }
 }
 
@@ -724,7 +781,8 @@ fn a_str_active_validated_alone_says_a_voicer_refuses_it() {
 }
 
 /// An interface output reading a single-consumer `str` pipe keeps the pipe rendered, so its first
-/// block frees the consumer's seed; without the output the pipe dissolves and nothing is freed.
+/// block replaces the consumer's seed, which the drain frees; without the output the pipe
+/// dissolves and nothing is replaced.
 #[test]
 fn an_interface_output_keeps_a_str_pipe_rendered() {
     const WITH: &str = r#"{ "format_version": 3, "instrument": "t",
@@ -739,10 +797,15 @@ fn an_interface_output_keeps_a_str_pipe_rendered() {
     assert_ne!(without, WITH);
     assert_counter_is_live();
     let first_block = |doc: &str| {
-        let mut e = engine(doc);
+        let (mut e, retired) = retiring(engine(doc));
         let mut out = vec![0.0f32; e.block_size() * e.channels()];
-        measure(|| e.fill(&mut out)).frees
+        let render = measure(|| e.fill(&mut out)).frees;
+        (render, drained_frees(&retired))
     };
-    assert_eq!(first_block(WITH), 1, "rendered: the consumer's seed");
-    assert_eq!(first_block(&without), 0, "dissolved: nothing to overwrite");
+    assert_eq!(first_block(WITH), (0, 1), "rendered: the consumer's seed");
+    assert_eq!(
+        first_block(&without),
+        (0, 0),
+        "dissolved: nothing to overwrite"
+    );
 }

@@ -82,7 +82,9 @@ impl Operator for Pipe {
                 if !self.last.as_ref().is_some_and(|last| unchanged(last, arg)) {
                     let arg = arg.clone();
                     MsgWriter::on(io, 0).set(0, arg.clone());
-                    self.last = Some(arg);
+                    if let Some(replaced) = self.last.replace(arg) {
+                        io.retire(replaced);
+                    }
                 }
             }
             PortKind::Event => {

@@ -25,6 +25,7 @@ use num_traits::Float;
 
 use smallvec::SmallVec;
 
+use crate::coordinator::retire::{retire_to, RetireQueue};
 use crate::descriptor::{Port, PortType};
 use crate::message::{Arg, Emit, Event, Message};
 use crate::meter::Block;
@@ -98,9 +99,7 @@ pub struct RenderScratch {
 impl RenderScratch {
     /// Preallocate scratch sized to `plan` so the steady-state render path never grows it.
     pub fn new(plan: &Plan) -> Self {
-        let routes = (0..plan.nodes.len())
-            .map(|_| NodeRoute::default())
-            .collect();
+        let routes = plan.nodes().iter().map(NodeRoute::presized).collect();
         let max_out_bufs = plan
             .nodes()
             .iter()
@@ -145,6 +144,9 @@ pub struct Renderer<E: Executor = SerialExecutor> {
     /// The pluggable executor. Decides node order each block.
     executor: E,
     block_size: usize,
+    /// Where a displaced heap-owning value goes instead of being dropped on the render thread.
+    /// `None` until a Coordinator attaches one; values are then dropped where they are replaced.
+    retire: Option<RetireQueue>,
 }
 
 impl Renderer<SerialExecutor> {
@@ -170,7 +172,19 @@ impl<E: Executor> Renderer<E> {
                 .collect(),
             executor,
             block_size,
+            retire: None,
         }
+    }
+
+    /// Retire the values this renderer displaces into `queue`. Off the render thread: it drops the
+    /// handle it replaces.
+    pub fn set_retire_queue(&mut self, queue: RetireQueue) {
+        self.retire = Some(queue);
+    }
+
+    /// The queue attached with [`set_retire_queue`](Self::set_retire_queue), if any.
+    pub fn retire_queue(&self) -> Option<&RetireQueue> {
+        self.retire.as_ref()
     }
 
     /// Render one block into a mono buffer — the historical convenience, kept for tests,
@@ -266,6 +280,7 @@ impl<E: Executor> Renderer<E> {
             inputs,
             master,
             outbound,
+            self.retire.as_ref(),
         );
     }
 }
@@ -282,7 +297,8 @@ impl<E: Executor> Renderer<E> {
 /// `(plan, arena, scratch)`, not nested mutable renderer state. The top-level [`Renderer`] calls it
 /// with the rig's arena; a hosting operator (`Voicer`) calls the *same* function per
 /// active voice with that voice's own arena, reusing one shared `RenderScratch`. Allocation-free in
-/// steady state when `scratch` was [`RenderScratch::new`]-sized to `plan`.
+/// steady state when `scratch` was [`RenderScratch::new`]-sized to `plan`. A value the render
+/// displaces goes to `retire`, which a hosting operator passes on from its own [`Io`].
 /// The [`Plan::captured`] slot a Value `interface` output `(node, port)` writes to, or `None` if the
 /// emitting port is not a captured Value boundary output. Linear scan over the (tiny) interface list.
 fn capture_slot(outs: &[InterfaceOutput], node: usize, port: usize) -> Option<usize> {
@@ -302,6 +318,7 @@ pub fn render_plan<E: Executor>(
     inputs: &[Vec<AudioSample>],
     master: &mut [Vec<AudioSample>],
     outbound: &mut Vec<Message>,
+    retire: Option<&RetireQueue>,
 ) {
     render_inbound(
         plan,
@@ -313,6 +330,7 @@ pub fn render_plan<E: Executor>(
         inputs,
         master,
         outbound,
+        retire,
     );
 }
 
@@ -327,6 +345,7 @@ fn render_inbound<E: Executor>(
     inputs: &[Vec<AudioSample>],
     master: &mut [Vec<AudioSample>],
     outbound: &mut Vec<Message>,
+    retire: Option<&RetireQueue>,
 ) {
     // Fresh edge buffers each block (upstream writes before downstream reads). Materialize
     // scratch buffers are excluded: they are fully written by the materialize step
@@ -361,8 +380,11 @@ fn render_inbound<E: Executor>(
 
     // Route external messages to node input ports, classified by port kind. Reuses scratch.
     // Operator-emitted messages are routed later, interleaved with execution.
-    route_messages(&mut scratch.routes, plan, messages);
-    scratch.emitted.clear();
+    route_messages(&mut scratch.routes, plan, messages, retire);
+    // Last block's emissions: a forwarded string here may outlive every latch it was copied into.
+    for e in scratch.emitted.drain(..) {
+        retire_to(retire, e.arg);
+    }
 
     // Executor decides node order for the block (into reused capacity).
     executor.order(plan, &mut scratch.order);
@@ -399,6 +421,7 @@ fn render_inbound<E: Executor>(
             emit_scratch,
             sample_rate,
             block_size,
+            retire,
         );
 
         // Measured now or never: once a later node runs, this node's output slots may be
@@ -529,8 +552,11 @@ impl<E: Executor> Renderer<E> {
             buf.iter_mut().for_each(|s| *s = 0.0);
         }
         let messages = Inbound::Addressed(messages);
-        route_messages(&mut self.scratch.routes, plan, messages);
-        self.scratch.emitted.clear();
+        let retire = self.retire.as_ref();
+        route_messages(&mut self.scratch.routes, plan, messages, retire);
+        for e in self.scratch.emitted.drain(..) {
+            retire_to(retire, e.arg);
+        }
         let sample_rate = plan.config.sample_rate;
 
         let arena = &mut self.arena;
@@ -558,6 +584,7 @@ impl<E: Executor> Renderer<E> {
             emit_scratch,
             sample_rate,
             frames,
+            retire,
         );
     }
 
@@ -633,6 +660,11 @@ struct RoutedEvent {
     src: EventSrc,
 }
 
+/// The fewest routed changes a [`NodeRoute`] bucket is presized for: a gesture of a few controls
+/// can land several changes on one node in a block, and 4 is what a `Vec`'s first growth would
+/// have reserved anyway, so the presize costs no more than the growth it replaces.
+const ROUTED_CHANGES_MIN: usize = 4;
+
 /// Per-node routed messages for one block, one bucket per [`PortKind`].
 #[derive(Default)]
 struct NodeRoute {
@@ -650,6 +682,26 @@ struct NodeRoute {
 }
 
 impl NodeRoute {
+    /// Buckets sized so a Plan's first block allocates nothing: one routed change per input port of
+    /// their kind, and never fewer than [`ROUTED_CHANGES_MIN`] for a kind the node has at all. One
+    /// per port is what a send or a pipe's forward delivers, and a pipe forwards only on change, so
+    /// its first block (each consumer's first held change) is the case this exists for. Nothing
+    /// bounds a block's changes to one port — an upstream node may emit at every frame, and a batch
+    /// may address one port many times — so past this a bucket grows once on the render thread and
+    /// keeps the capacity, the policy `EMIT_POOL_CAP` states for the emit pool.
+    fn presized(node: &PlanNode) -> Self {
+        let capacity =
+            |kind: PortKind| match node.input_kinds.iter().filter(|&&k| k == kind).count() {
+                0 => 0,
+                n => n.max(ROUTED_CHANGES_MIN),
+            };
+        Self {
+            materialize_writes: Vec::with_capacity(capacity(PortKind::Signal)),
+            held: Vec::with_capacity(capacity(PortKind::Value)),
+            events: Vec::with_capacity(capacity(PortKind::Event)),
+        }
+    }
+
     fn push_materialize(&mut self, frame: usize, port: usize, value: f32) {
         let seq = self.materialize_writes.len();
         self.materialize_writes.push((frame, seq, port, value));
@@ -717,14 +769,23 @@ impl<'a> Inbound<'a> {
 
 /// Deliver each message to its [`Target`], classified by the destination port's [`PortKind`].
 /// Reuses `routes` (one entry per node); clears and refills.
-fn route_messages(routes: &mut Vec<NodeRoute>, plan: &mut Plan, messages: Inbound<'_>) {
+fn route_messages(
+    routes: &mut Vec<NodeRoute>,
+    plan: &mut Plan,
+    messages: Inbound<'_>,
+    retire: Option<&RetireQueue>,
+) {
     // Steady-state no-op: the Renderer presizes `routes` to the node count.
     if routes.len() != plan.nodes.len() {
         routes.resize_with(plan.nodes.len(), NodeRoute::default);
     }
     for r in routes.iter_mut() {
         r.materialize_writes.clear();
-        r.held.clear();
+        // `process_node` moves each applied value into its latch, so what is left is a placeholder
+        // or a change framed past the block, which was never applied.
+        for (_, _, arg) in r.held.drain(..) {
+            retire_to(retire, arg);
+        }
         r.events.clear();
     }
 
@@ -901,6 +962,7 @@ fn process_node(
     emit_scratch: &mut Vec<Emit>,
     sample_rate: f32,
     block_size: usize,
+    retire: Option<&RetireQueue>,
 ) {
     // The ZOH fill needs the writes in frame order. Not `sort_by_key`: a stable sort allocates its
     // merge buffer once a burst outgrows the stack scratch; the push index is the tie-break that
@@ -1016,10 +1078,12 @@ fn process_node(
 
         // Apply Held changes landing at this segment's start: update the per-port latch, read via
         // `io.read` on a `Held<T>` handle. Persists across blocks (the latch is next block's frame-0 baseline).
-        // Last-write-wins on equal frames.
-        for (f, port, arg) in route.held.iter() {
+        // Last-write-wins on equal frames. Each value is moved out of `route.held`, so the routing
+        // scratch holds no second reference, and the value it displaces is retired.
+        for (f, port, arg) in route.held.iter_mut() {
             if *f == seg_start {
-                node.latch[*port] = arg.clone();
+                let new = core::mem::replace(arg, Arg::F32(0.0));
+                retire_to(retire, core::mem::replace(&mut node.latch[*port], new));
             }
         }
 
@@ -1089,7 +1153,8 @@ fn process_node(
             .with_latched(&node.latch)
             .with_streams(&stream_refs)
             .with_varying(&node.varying)
-            .with_emit(&mut *emit_scratch, seg_start);
+            .with_emit(&mut *emit_scratch, seg_start)
+            .with_retire(retire);
         node.op.process(&mut io);
     }
 
@@ -1294,7 +1359,7 @@ mod tests {
             let msg = plan
                 .osc_in_message(addr, &[Arg::F32(0.25)])
                 .unwrap_or_else(|| panic!("{addr}: the boundary dropped the message"));
-            route_messages(&mut routes, &mut plan, Inbound::Addressed(&[msg]));
+            route_messages(&mut routes, &mut plan, Inbound::Addressed(&[msg]), None);
             assert_eq!(
                 delivered(&routes, &plan),
                 [want],
@@ -1307,7 +1372,7 @@ mod tests {
                 frame: 0,
                 arg,
             }];
-            route_messages(&mut routes, &mut plan, Inbound::Resolved(&resolved));
+            route_messages(&mut routes, &mut plan, Inbound::Resolved(&resolved), None);
             assert_eq!(
                 delivered(&routes, &plan),
                 [want],
