@@ -62,6 +62,14 @@ impl Resources for MemoryStore {
     }
 }
 
+#[test]
+fn the_default_store_keeps_no_surface_docs() {
+    use crate::surface::SurfaceKind;
+    let store = MemoryStore::with(SRC, &seed());
+    assert_eq!(store.surface_source(SRC, SurfaceKind::Screen), None);
+    assert_eq!(store.surface_source(SRC, SurfaceKind::Midi), None);
+}
+
 const SRC: &str = "inst.json";
 
 fn seed() -> String {

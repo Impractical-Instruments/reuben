@@ -14,6 +14,7 @@ use alloc::vec::Vec;
 use std::path::{Component, Path, PathBuf};
 
 use crate::resources::Resources;
+use crate::surface::SurfaceKind;
 use reuben_core::resources::SampleBuffer;
 use reuben_document::resources::{Created, ResolveError};
 
@@ -98,6 +99,41 @@ impl FsResolver {
             _ => self.base_dir.join(source),
         }
     }
+}
+
+/// How many directories, starting at an instrument's own, are searched for its surface docs.
+const SURFACE_SEARCH_DEPTH: usize = 3;
+
+/// The directories searched for the surface docs of the instrument at `instrument`, nearest first.
+fn surface_search_dirs(instrument: &Path) -> impl Iterator<Item = PathBuf> {
+    // Absolute and `..` folded, so each ancestor is a real directory and none is counted twice.
+    absolute(instrument.to_path_buf())
+        .ancestors()
+        .skip(1)
+        .take(SURFACE_SEARCH_DEPTH)
+        .map(Path::to_path_buf)
+        .collect::<Vec<_>>()
+        .into_iter()
+}
+
+/// The file name of an instrument's surface doc of `surface` kind.
+fn surface_file_name(instrument: &Path, surface: SurfaceKind) -> Option<String> {
+    // Appended, not `with_extension`: a stem with a dot in it (`my.synth`) would lose its last
+    // segment and name another instrument's doc.
+    Some(format!(
+        "{}{}.json",
+        instrument.file_stem()?.to_str()?,
+        surface.suffix()
+    ))
+}
+
+/// The surface doc of the instrument at `instrument` that exists: `surfaces/<stem><suffix>.json`
+/// in the first of the instrument's own directory and its two ancestors that has one.
+pub fn find_surface(instrument: &Path, surface: SurfaceKind) -> Option<PathBuf> {
+    let name = surface_file_name(instrument, surface)?;
+    surface_search_dirs(instrument)
+        .map(|dir| dir.join("surfaces").join(&name))
+        .find(|candidate| candidate.is_file())
 }
 
 /// Make `p` absolute against the current directory and lexically normalize it (collapse
@@ -254,6 +290,31 @@ impl Resources for FsResolver {
             }
         }
         sibling.display().to_string()
+    }
+
+    /// Where the doc is, or where the first write creates it, in `canonical`'s spelling: beside the
+    /// instrument's other surface doc when it has one, else in the nearest searched directory
+    /// that already has a `surfaces/`, else in a `surfaces/` beside the instrument.
+    fn surface_source(&self, instrument: &str, surface: SurfaceKind) -> Option<String> {
+        let instrument = PathBuf::from(self.canonical(instrument, None));
+        let name = surface_file_name(&instrument, surface)?;
+        let other = match surface {
+            SurfaceKind::Screen => SurfaceKind::Midi,
+            SurfaceKind::Midi => SurfaceKind::Screen,
+        };
+        let path = find_surface(&instrument, surface)
+            .or_else(|| {
+                let beside = find_surface(&instrument, other)?;
+                Some(beside.parent()?.join(&name))
+            })
+            .or_else(|| {
+                surface_search_dirs(&instrument)
+                    .map(|dir| dir.join("surfaces"))
+                    .find(|dir| dir.is_dir())
+                    .map(|dir| dir.join(&name))
+            })
+            .or_else(|| Some(instrument.parent()?.join("surfaces").join(&name)))?;
+        Some(path.display().to_string())
     }
 }
 
@@ -692,5 +753,164 @@ mod tests {
         assert!(loaded.graph.interface.inputs.contains_key("freq"));
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// A scratch directory under the temp dir, removed on drop, with `path` building absolute
+    /// strings beneath it.
+    struct Tree(PathBuf);
+
+    impl Tree {
+        fn new(case: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("reuben_{case}_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+
+        fn path(&self, relative: &str) -> String {
+            self.0.join(relative).display().to_string()
+        }
+
+        fn touch(&self, relative: &str) {
+            let path = self.0.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "{}").unwrap();
+        }
+    }
+
+    impl Drop for Tree {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn surface_source(tree: &Tree, instrument: &str, kind: SurfaceKind) -> Option<String> {
+        let instrument = tree.path(instrument);
+        FsResolver::for_instrument(Path::new(&instrument)).surface_source(&instrument, kind)
+    }
+
+    #[test]
+    fn finds_an_existing_doc_up_to_two_ancestors_up() {
+        let tree = Tree::new("surface_ancestors");
+        std::fs::create_dir_all(tree.0.join("a/b/c/d")).unwrap();
+        tree.touch("a/surfaces/pad.json");
+        let found = |instrument: &str| surface_source(&tree, instrument, SurfaceKind::Screen);
+
+        assert_eq!(found("a/pad.json"), Some(tree.path("a/surfaces/pad.json")));
+        assert_eq!(
+            found("a/b/c/pad.json"),
+            Some(tree.path("a/surfaces/pad.json"))
+        );
+        assert_eq!(
+            found("a/b/c/d/../pad.json"),
+            Some(tree.path("a/surfaces/pad.json"))
+        );
+        // Four levels down the search ends, and a new doc is placed beside the instrument.
+        assert_eq!(
+            found("a/b/c/d/pad.json"),
+            Some(tree.path("a/b/c/d/surfaces/pad.json"))
+        );
+        assert_eq!(
+            find_surface(
+                Path::new(&tree.path("a/b/c/d/pad.json")),
+                SurfaceKind::Screen
+            ),
+            None
+        );
+        assert_eq!(
+            find_surface(Path::new(&tree.path("a/other.json")), SurfaceKind::Screen),
+            None
+        );
+    }
+
+    #[test]
+    fn a_new_map_goes_beside_the_screen_doc() {
+        let tree = Tree::new("surface_beside");
+        tree.touch("root/instruments/a.json");
+        tree.touch("root/surfaces/a.json");
+        assert_eq!(
+            surface_source(&tree, "root/instruments/a.json", SurfaceKind::Midi),
+            Some(tree.path("root/surfaces/a.midi.json"))
+        );
+    }
+
+    #[test]
+    fn a_new_doc_goes_in_the_nearest_existing_surfaces_dir() {
+        let tree = Tree::new("surface_nearest");
+        std::fs::create_dir_all(tree.0.join("root/surfaces")).unwrap();
+        std::fs::create_dir_all(tree.0.join("root/instruments/deep/surfaces")).unwrap();
+        tree.touch("root/instruments/deep/a.json");
+        assert_eq!(
+            surface_source(&tree, "root/instruments/deep/a.json", SurfaceKind::Midi),
+            Some(tree.path("root/instruments/deep/surfaces/a.midi.json"))
+        );
+        std::fs::remove_dir(tree.0.join("root/instruments/deep/surfaces")).unwrap();
+        assert_eq!(
+            surface_source(&tree, "root/instruments/deep/a.json", SurfaceKind::Midi),
+            Some(tree.path("root/surfaces/a.midi.json"))
+        );
+    }
+
+    #[test]
+    fn a_new_doc_with_no_surfaces_dir_goes_beside_the_instrument() {
+        let tree = Tree::new("surface_none");
+        tree.touch("lib/a.json");
+        assert_eq!(
+            surface_source(&tree, "lib/a.json", SurfaceKind::Screen),
+            Some(tree.path("lib/surfaces/a.json"))
+        );
+    }
+
+    #[test]
+    fn a_dotted_stem_keeps_its_dots() {
+        let tree = Tree::new("surface_dotted");
+        assert_eq!(
+            surface_source(&tree, "my.synth.json", SurfaceKind::Midi),
+            Some(tree.path("surfaces/my.synth.midi.json"))
+        );
+        assert_eq!(
+            surface_source(&tree, "my.synth.json", SurfaceKind::Screen),
+            Some(tree.path("surfaces/my.synth.json"))
+        );
+    }
+
+    #[test]
+    fn a_stem_ending_midi_is_not_taken_for_a_map() {
+        let tree = Tree::new("surface_midi_stem");
+        assert_eq!(
+            surface_source(&tree, "x.midi.json", SurfaceKind::Screen),
+            Some(tree.path("surfaces/x.midi.json"))
+        );
+        assert_eq!(
+            surface_source(&tree, "x.midi.json", SurfaceKind::Midi),
+            Some(tree.path("surfaces/x.midi.midi.json"))
+        );
+    }
+
+    #[test]
+    fn a_source_the_store_cannot_place_has_no_surface_doc() {
+        assert_eq!(
+            FsResolver::new("/").surface_source("/", SurfaceKind::Screen),
+            None
+        );
+    }
+
+    #[test]
+    fn wrappers_forward_surface_source() {
+        use crate::authoring::DocumentHistory;
+        use crate::staged::Staged;
+
+        let tree = Tree::new("surface_wrappers");
+        tree.touch("lib/surfaces/a.json");
+        let instrument = tree.path("lib/a.json");
+        let plain = FsResolver::for_instrument(Path::new(&instrument));
+        let wrapped = DocumentHistory::new(Staged::new(FsResolver::for_instrument(Path::new(
+            &instrument,
+        ))));
+        for kind in [SurfaceKind::Screen, SurfaceKind::Midi] {
+            let expected = plain.surface_source(&instrument, kind);
+            assert!(expected.is_some());
+            assert_eq!(wrapped.surface_source(&instrument, kind), expected);
+        }
     }
 }

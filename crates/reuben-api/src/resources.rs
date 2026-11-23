@@ -12,6 +12,8 @@
 use alloc::format;
 use alloc::string::{String, ToString};
 
+use crate::surface::SurfaceKind;
+
 // The engine seam the adapters below present a store through.
 use reuben_document::resources::ResourceResolver;
 
@@ -85,6 +87,16 @@ pub trait Resources {
         let _ = referrer;
         source.to_string()
     }
+
+    /// Where `instrument`'s surface doc of `surface` kind lives, or where the first write to it
+    /// creates it. `instrument` is a canonical source and so is the answer, so a
+    /// [`read_text`](Self::read_text) or [`write_text`](Self::write_text) on it names the same
+    /// document. `None` for a store that keeps no surface docs, and for an instrument it cannot
+    /// place.
+    fn surface_source(&self, instrument: &str, surface: SurfaceKind) -> Option<String> {
+        let _ = (instrument, surface);
+        None
+    }
 }
 
 /// Presents a window-owned [`Resources`] as the engine's own resolver seam.
@@ -125,6 +137,10 @@ impl Resources for Anchored<'_> {
     fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
         self.store
             .canonical(source, referrer.or(Some(&self.referrer)))
+    }
+
+    fn surface_source(&self, instrument: &str, surface: SurfaceKind) -> Option<String> {
+        self.store.surface_source(instrument, surface)
     }
 }
 
@@ -170,6 +186,10 @@ impl Resources for ScopedTo<'_> {
             None => self.store.canonical(source, Some(self.origin)),
         }
     }
+
+    fn surface_source(&self, instrument: &str, surface: SurfaceKind) -> Option<String> {
+        self.store.surface_source(instrument, surface)
+    }
 }
 
 /// `store` with every sample read only checked, never decoded: a present sample reads as an empty
@@ -201,6 +221,10 @@ impl Resources for Undecoded<'_> {
 
     fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
         self.0.canonical(source, referrer)
+    }
+
+    fn surface_source(&self, instrument: &str, surface: SurfaceKind) -> Option<String> {
+        self.0.surface_source(instrument, surface)
     }
 }
 
@@ -283,6 +307,10 @@ impl<R: Resources + ?Sized> Resources for alloc::sync::Arc<R> {
     fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
         (**self).canonical(source, referrer)
     }
+
+    fn surface_source(&self, instrument: &str, surface: SurfaceKind) -> Option<String> {
+        (**self).surface_source(instrument, surface)
+    }
 }
 
 impl<R: Resources + ?Sized> Resources for alloc::boxed::Box<R> {
@@ -308,5 +336,9 @@ impl<R: Resources + ?Sized> Resources for alloc::boxed::Box<R> {
 
     fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
         (**self).canonical(source, referrer)
+    }
+
+    fn surface_source(&self, instrument: &str, surface: SurfaceKind) -> Option<String> {
+        (**self).surface_source(instrument, surface)
     }
 }

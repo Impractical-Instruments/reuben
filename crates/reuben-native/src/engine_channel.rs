@@ -45,6 +45,7 @@ use reuben_api::engine::{
 };
 use reuben_api::probe::ProbeSlots;
 use reuben_api::render::Arg;
+use reuben_api::surface::SurfaceKind;
 
 use crate::control::ControlProducer;
 use crate::diagnostics::{Diagnostics, Snapshot};
@@ -297,9 +298,6 @@ pub struct NativeHost {
     midi: Option<SharedRouter>,
 }
 
-/// How many directories, starting at an instrument's own, are searched for its surface document.
-const SURFACE_SEARCH_DEPTH: usize = 3;
-
 /// What decides whether a client's open is held for the host's user rather than installed:
 /// [`EngineHost::hold_swap`], as a value an [`EngineConfig`](crate::engine::EngineConfig) can
 /// carry. Called with the name the client opened, made absolute against the working directory
@@ -502,23 +500,6 @@ fn collect_with_extension(
     }
 }
 
-/// The surface document of the instrument at `instrument`: `surfaces/<stem><suffix>.json` in the
-/// first of [`SURFACE_SEARCH_DEPTH`] directories, the instrument's own and then its ancestors, that
-/// has one. `suffix` is `""` for the on-screen doc and `".midi"` for the MIDI map.
-pub(crate) fn locate_surface(instrument: &Path, suffix: &str) -> Option<PathBuf> {
-    // Appended, not `with_extension`: a stem with a dot in it (`my.synth`) would lose its last
-    // segment and name another instrument's doc.
-    let name = format!("{}{suffix}.json", instrument.file_stem()?.to_str()?);
-    // Absolute so the ancestors are real directories, and `..` folded so each one is not counted
-    // as a directory searched.
-    lexical_absolute(instrument)?
-        .ancestors()
-        .skip(1)
-        .take(SURFACE_SEARCH_DEPTH)
-        .map(|dir| dir.join("surfaces").join(&name))
-        .find(|candidate| candidate.is_file())
-}
-
 impl EngineHost for NativeHost {
     /// Absolute, because the session's `FsResolver` joins a relative source onto the launch
     /// instrument's directory while a client means `path` from the working directory: only an
@@ -589,7 +570,7 @@ impl EngineHost for NativeHost {
     }
 
     fn surface(&self, open: &str) -> Result<Option<String>, String> {
-        let Some(path) = locate_surface(Path::new(open), "") else {
+        let Some(path) = reuben_api::find_surface(Path::new(open), SurfaceKind::Screen) else {
             return Ok(None);
         };
         std::fs::read_to_string(&path)
@@ -1137,6 +1118,7 @@ mod tests {
     use crate::control::{ring_pair, ControlRing};
     use crate::test_support::{no_store, served, FakeCallback};
     use reuben_api::engine::{ControlArg, ControlMessage, Request, Response, MAX_SEND_BATCH};
+    use reuben_api::find_surface;
     use reuben_api::render::{Arg, AudioConfig};
 
     fn cfg() -> AudioConfig {
@@ -1688,11 +1670,11 @@ mod tests {
         std::fs::write(abs("surfaces/a.midi.json"), "midi").unwrap();
         let instrument = abs("a.json");
         assert_eq!(
-            locate_surface(Path::new(&instrument), ".midi"),
+            find_surface(Path::new(&instrument), SurfaceKind::Midi),
             Some(PathBuf::from(abs("surfaces/a.midi.json")))
         );
         assert_eq!(
-            locate_surface(Path::new(&instrument), ""),
+            find_surface(Path::new(&instrument), SurfaceKind::Screen),
             Some(PathBuf::from(abs("surfaces/a.json")))
         );
         let _ = std::fs::remove_dir_all(&base);

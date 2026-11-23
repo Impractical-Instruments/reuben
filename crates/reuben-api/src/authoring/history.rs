@@ -19,6 +19,7 @@ use super::args::RestoreInstrument;
 use super::result::EditResult;
 use super::verbs::{edit_summary, expect_conflict, Answer, Refusal};
 use crate::resources::{Adapter, Created, ResolveError, Resources, SampleBuffer};
+use crate::surface::SurfaceKind;
 
 /// A [`Resources`] that remembers the documents written through it, so
 /// [`restore_instrument`] can put one back.
@@ -177,6 +178,10 @@ impl<R: Resources> Resources for DocumentHistory<R> {
 
     fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
         self.inner.canonical(source, referrer)
+    }
+
+    fn surface_source(&self, instrument: &str, surface: SurfaceKind) -> Option<String> {
+        self.inner.surface_source(instrument, surface)
     }
 }
 

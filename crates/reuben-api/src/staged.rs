@@ -16,6 +16,7 @@ use alloc::vec::Vec;
 use std::sync::{Mutex, MutexGuard};
 
 use crate::resources::{Created, ResolveError, Resources, SampleBuffer};
+use crate::surface::SurfaceKind;
 
 struct Shared<S> {
     inner: S,
@@ -212,6 +213,10 @@ impl<S: Resources> Resources for Staged<S> {
 
     fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
         self.shared.inner.canonical(source, referrer)
+    }
+
+    fn surface_source(&self, instrument: &str, surface: SurfaceKind) -> Option<String> {
+        self.shared.inner.surface_source(instrument, surface)
     }
 }
 
