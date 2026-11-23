@@ -1,0 +1,65 @@
+# Scale-degree patterns for the `pattern-melody` instrument.
+#
+# Play it, from the repo root:   reuben play instruments/pattern-melody.json
+# Then, in another terminal:     reuben live sets/pattern-melody.reuben
+# Or send one line: in VS Code put the cursor on it and press Ctrl+Enter (see
+# editors/vscode/README.md), or run `reuben send --file sets/pattern-melody.reuben --line <n>`.
+#
+# One live line below sends to /pattern/in. Every `# /pattern/in  ...` line under it is an
+# alternative: uncomment it (and comment the live line) and save. The new pattern takes over at
+# the next cycle of 4 beats. A number is a scale degree (0 is the key's tonic, set by `key`).
+
+/pattern/in  0 2 4 <7 5> [4 2] 0 ~ <2 [1 0]>
+
+# -- Steps and subdivision: steps share the cycle; [ ] fits several into one step
+# /pattern/in  0 2 4 2
+# /pattern/in  0 [2 4] 2 [4 7]
+# /pattern/in  0 [2 [4 7]] 2 [[4 7] 9]
+
+# -- Alternation: < > plays one choice per cycle, in turn
+# /pattern/in  0 2 4 <7 9>
+# /pattern/in  <0 2 4> <7 5 [9 7]>
+
+# -- Rests: ~ is silence
+# /pattern/in  0 ~ 4 ~ 7 ~ 4 ~
+# /pattern/in  0 [~ 2] ~ [4 ~]
+
+# -- Speed: * plays a step faster, / spreads it over several cycles
+# /pattern/in  0*2 2 4*3 2
+# /pattern/in  0 2 4 7/2
+# /pattern/in  [0 2 4 7]*2
+
+# -- Repeat: ! copies a step
+# /pattern/in  0!3 4
+# /pattern/in  0 2!2 4 7!2
+
+# -- Elongate: @ gives a step more of the cycle
+# /pattern/in  0@3 2
+# /pattern/in  0@2 2 4@3 7
+
+# -- Stack: a comma plays the layers together, so this is a chord
+# /pattern/in  0, 2, 4
+# /pattern/in  [0, 2, 4] [2, 4, 7] [4, 7, 9] [2, 4, 7]
+# /pattern/in  0 2 4 7, -7 ~ ~ ~
+
+# -- Degrade: ? drops each event at random, the same way every run
+# /pattern/in  0*8?
+# /pattern/in  [0 2 4 7]*2?0.3
+
+# -- Random choice: | picks one branch per cycle
+# /pattern/in  0 [2|4|7] 4 [7|9]
+# /pattern/in  0 2 4 7 | 7 4 2 0
+
+# -- Euclid: (k,n) spreads k pulses over n steps, (k,n,r) rotates them
+# /pattern/in  0(3,8)
+# /pattern/in  0(5,8) 4(3,8,2)
+# /pattern/in  0(3,8), 7(2,8,1)
+
+# -- Polymeter: { } steps every layer at the first layer's rate; %n sets steps per cycle
+# /pattern/in  {0 2 4, 7 9 11 12 14}
+# /pattern/in  {0 2 4 7}%6
+# /pattern/in  {0 2 4}%8, {7 9}%8
+
+# -- Range: .. counts by whole numbers, up or down
+# /pattern/in  0 .. 7
+# /pattern/in  [0 .. 4] [4 .. 0]

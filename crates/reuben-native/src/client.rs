@@ -165,6 +165,18 @@ pub(crate) fn reach_with(
     }
 }
 
+/// The running server at `addr`, opened with `token`, with `read_timeout` for each answer.
+/// Nothing answering there is [`ReachError::Unreachable`]: no temporary server stands in.
+pub fn reach_running(
+    addr: &str,
+    token: Option<Token>,
+    read_timeout: Duration,
+) -> Result<Reached, ReachError> {
+    running(addr, token, read_timeout, |_| ReachError::Unreachable {
+        addr: addr.to_string(),
+    })
+}
+
 /// Whether a failed connect to the loopback default address means nothing listens there. Windows
 /// retries a SYN the closed port resets and reports the refusal only after the connect budget, so a
 /// timeout counts too; a hung server still completes the handshake and is never mistaken for none.
@@ -447,6 +459,20 @@ mod tests {
         let shown = err.to_string();
         assert!(shown.contains(ENGINE_UNREACHABLE_GUIDANCE), "{shown}");
         assert!(shown.contains(&addr), "{shown}");
+    }
+
+    #[test]
+    fn reach_running_never_starts_a_temporary_server() {
+        let addr = dead_addr();
+        let err = reach_running(&addr, None, CLI_READ_TIMEOUT)
+            .err()
+            .expect("nothing answers");
+        assert!(matches!(err, ReachError::Unreachable { .. }), "{err:?}");
+        assert!(err.to_string().contains(&addr), "{err}");
+
+        let (_engine, addr) = running();
+        let reached = reach_running(&addr, None, CLI_READ_TIMEOUT).expect("the running server");
+        assert_eq!(reached.running_at(), Some(addr.as_str()));
     }
 
     #[test]

@@ -1,10 +1,11 @@
 //! `reuben` — the command-line entry point.
 //!
-//! Five subcommands — `play`, `describe`, `validate`, `scaffold-operator`, `new-instrument` —
-//! each documented on its own `--help`. `play` is the server. `describe`, `validate` and
-//! `new-instrument` are its clients: they ask the running `reuben play` when one answers, and
-//! otherwise a temporary headless server they start in this process. A playing instrument takes
-//! control at its interface inputs, `/<name>/in`; the default instrument plays notes at its
+//! Seven subcommands — `play`, `describe`, `validate`, `scaffold-operator`, `new-instrument`,
+//! `send`, `live` — each documented on its own `--help`. `play` is the server. `describe`,
+//! `validate` and `new-instrument` are its clients: they ask the running `reuben play` when one
+//! answers, and otherwise a temporary headless server they start in this process. `send` and
+//! `live` send text to the running `reuben play` and fail when none answers. A playing instrument
+//! takes control at its interface inputs, `/<name>/in`; the default instrument plays notes at its
 //! `notes` input:
 //!
 //! ```text
@@ -22,11 +23,12 @@ use reuben_api::authoring::{self, Diag, PortInfo, COMPACT_DESCRIBE_LEGEND, SCAFF
 use reuben_api::engine::call_tool;
 use reuben_api::tools::names;
 use reuben_native::cli::{
-    EngineFlags, InstrumentRoot, ServerFlags, INSTRUMENT_ROOT_ENV, LOG_OSC_ENV,
+    EngineFlags, InstrumentRoot, RunningServerFlags, ServerFlags, INSTRUMENT_ROOT_ENV, LOG_OSC_ENV,
 };
 use reuben_native::client::{self, Names, Reached, Temporary};
 use reuben_native::engine::{self, Instrument};
 use reuben_native::engine_channel::lexical_absolute;
+use reuben_native::live::{self, SEND_READ_TIMEOUT};
 use reuben_native::scaffold;
 use serde::de::DeserializeOwned;
 
@@ -120,6 +122,41 @@ enum Command {
         #[command(flatten)]
         server: ServerFlags,
     },
+    /// Send one string to an input of the running `reuben play` that compiles its text, such as a
+    /// pattern. A string that does not compile is printed as `<file>:<line>:<col>: error: …` with
+    /// its span marked, nothing is applied, and the exit code is non-zero. Never starts a
+    /// temporary server. With `--file` and `--line`, sends that one line of a set file instead.
+    Send {
+        /// The input's address, e.g. `/pattern/in`.
+        #[arg(required_unless_present = "file")]
+        address: Option<String>,
+        /// The text, as one argument: quote it, as a shell expands `~` and splits on spaces. Read
+        /// from stdin when left out, so an editor can pipe a selection in. Trailing whitespace is
+        /// dropped.
+        #[arg(conflicts_with = "file")]
+        pattern: Option<String>,
+        /// Send one line of this set file, read from disk, in place of `<ADDRESS> [PATTERN]`: the
+        /// line's address and text, parsed as `reuben live` parses them. Needs `--line`.
+        #[arg(long, requires = "line", conflicts_with = "address")]
+        file: Option<PathBuf>,
+        /// The 1-based line of `--file` to send. A blank or `#` comment line is an error.
+        #[arg(long, requires = "file", value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
+        line: Option<u64>,
+        #[command(flatten)]
+        server: RunningServerFlags,
+    },
+    /// Watch a set file and send its lines to the running `reuben play` on every save. Each line
+    /// is an address, whitespace, then the text to the end of the line; blank lines and `#`
+    /// comments are skipped. A line is sent when its text changed since it was last queued, or
+    /// when its last send was refused. A refused line is reported with file, line and column and
+    /// its address keeps playing what it played. Each save's reports sit between
+    /// `reuben live: sending <file>` and `reuben live: done`.
+    Live {
+        /// The set file.
+        file: PathBuf,
+        #[command(flatten)]
+        server: RunningServerFlags,
+    },
 }
 
 /// Which structural view of an instrument `describe <path>` cuts.
@@ -192,6 +229,18 @@ fn main() -> ExitCode {
             json,
             server,
         } => cmd_new_instrument(&path, name.as_deref(), json, &server, root.resolve()),
+        Command::Send {
+            address,
+            pattern,
+            file,
+            line,
+            server,
+        } => match (address, file, line) {
+            (_, Some(file), Some(line)) => cmd_send_line(&file, line as usize, &server),
+            (Some(address), ..) => cmd_send(&address, pattern, &server),
+            _ => unreachable!("clap requires an address or --file"),
+        },
+        Command::Live { file, server } => cmd_live(&file, &server),
     }
 }
 
@@ -257,6 +306,107 @@ fn ask<T: DeserializeOwned>(
         eprintln!("error: the server answered `{tool}` with something unexpected: {e}");
         ExitCode::FAILURE
     })
+}
+
+/// The running server `flags` name; on failure the reason is on stderr and the exit code returned.
+fn connect_running(flags: &RunningServerFlags) -> Result<Reached, ExitCode> {
+    let fail = |e: &dyn std::fmt::Display| {
+        eprintln!("error: {e}");
+        ExitCode::FAILURE
+    };
+    let (addr, token) = flags.server().map_err(|e| fail(&e))?;
+    client::reach_running(&addr, token, SEND_READ_TIMEOUT).map_err(|e| fail(&e))
+}
+
+/// `send`: one string to one address, from the argument or stdin.
+fn cmd_send(address: &str, pattern: Option<String>, server: &RunningServerFlags) -> ExitCode {
+    let (file, text) = match pattern {
+        Some(text) => ("<arg>", text),
+        None => {
+            let mut text = String::new();
+            if let Err(e) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut text) {
+                eprintln!("error: reading the pattern from stdin: {e}");
+                return ExitCode::FAILURE;
+            }
+            ("<stdin>", text)
+        }
+    };
+    let text = text.trim_end();
+    let reached = match connect_running(server) {
+        Ok(reached) => reached,
+        Err(code) => return code,
+    };
+    match live::send_text(reached.channel(), address, text) {
+        Ok(reuben_api::engine::SendOutcome::Queued) => ExitCode::SUCCESS,
+        Ok(reuben_api::engine::SendOutcome::Refused(refusal)) => {
+            eprintln!("{}", live::refusal_report(file, 1, 1, text, &refusal));
+            ExitCode::FAILURE
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `send --file --line`: one line of a set file, as `live` would send it. Every failure is a
+/// `<file>:<line>:1: error: …` report, so an editor's problem matcher finds it.
+fn cmd_send_line(file: &Path, line: usize, server: &RunningServerFlags) -> ExitCode {
+    let shown = file.display().to_string();
+    let located = |message: &dyn std::fmt::Display| {
+        eprintln!("{shown}:{line}:1: error: {message}");
+        ExitCode::FAILURE
+    };
+    let source = match std::fs::read_to_string(file) {
+        Ok(source) => source,
+        Err(e) => return located(&format!("reading the set file: {e}")),
+    };
+    let set_line = match live::set_line(&shown, &source, line) {
+        Ok(set_line) => set_line,
+        Err(report) => {
+            eprintln!("{report}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let reached = match server
+        .server()
+        .map_err(|e| e.to_string())
+        .and_then(|(addr, token)| {
+            client::reach_running(&addr, token, SEND_READ_TIMEOUT).map_err(|e| e.to_string())
+        }) {
+        Ok(reached) => reached,
+        Err(e) => return located(&e),
+    };
+    match live::send_text(reached.channel(), &set_line.address, &set_line.text) {
+        Ok(reuben_api::engine::SendOutcome::Queued) => {
+            println!("reuben send: queued {} (line {line})", set_line.address);
+            ExitCode::SUCCESS
+        }
+        Ok(reuben_api::engine::SendOutcome::Refused(refusal)) => {
+            eprintln!(
+                "{}",
+                live::refusal_report(&shown, line, set_line.column, &set_line.text, &refusal)
+            );
+            ExitCode::FAILURE
+        }
+        Err(e) => located(&e),
+    }
+}
+
+/// `live`: send a set file's lines on every save, until interrupted.
+fn cmd_live(file: &Path, server: &RunningServerFlags) -> ExitCode {
+    let reached = match connect_running(server) {
+        Ok(reached) => reached,
+        Err(code) => return code,
+    };
+    let shown = file.display().to_string();
+    match live::run(file, &shown, reached.channel(), &mut std::io::stdout()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// `new-instrument`: land a guaranteed-valid minimal instrument document **at a path** — the

@@ -1,0 +1,100 @@
+// Copy into a set folder's .vscode/tasks.json. README.md beside this file says how. Every task runs
+// the binary the `reuben.command` setting names; VS Code stops with that setting's name if it is unset.
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      // Sends the open set file on every save. Start it once with "Tasks: Run Task"; a line
+      // the engine refuses shows as an error at its span until a save fixes it.
+      "label": "reuben live",
+      "type": "process",
+      "command": "${config:reuben.command}",
+      "args": ["live", "${file}"],
+      "isBackground": true,
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": {
+        "owner": "reuben",
+        "source": "reuben",
+        "fileLocation": ["autoDetect", "${workspaceFolder}"],
+        "pattern": {
+          "regexp": "^(.+?):(\\d+):(\\d+): (error|warning): (.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "message": 5
+        },
+        "background": {
+          "activeBegins": true,
+          "beginsPattern": "^reuben live: sending ",
+          "endsPattern": "^reuben live: done"
+        }
+      }
+    },
+    {
+      // Sends the set-file line the cursor is on: its address and text, as `reuben live` reads
+      // them. Reads the file from disk, so the key binding saves first. Silent on success; a
+      // refused line is marked at its span and opens the Problems view, and any failure, a
+      // binary that will not start included, brings up the terminal.
+      "label": "reuben send line",
+      "type": "process",
+      "command": "${config:reuben.command}",
+      "args": ["send", "--file", "${file}", "--line", "${lineNumber}"],
+      "presentation": {
+        "reveal": "silent",
+        "revealProblems": "onProblem",
+        "clear": true,
+        "panel": "shared"
+      },
+      "problemMatcher": {
+        "owner": "reuben-send",
+        "source": "reuben",
+        "fileLocation": ["autoDetect", "${workspaceFolder}"],
+        "pattern": {
+          "regexp": "^(.+?):(\\d+):(\\d+): (error|warning): (.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "message": 5
+        }
+      }
+    },
+    {
+      // Sends the selection to one address, for a file that is not a set file. A process task, so
+      // the selection reaches `reuben send` as one argument, with no shell to expand or split it.
+      // A refusal is reported against `<arg>`, which is not a file, so it shows in the Problems
+      // view without an inline mark.
+      "label": "reuben send selection",
+      "type": "process",
+      "command": "${config:reuben.command}",
+      "args": ["send", "${input:reubenAddress}", "${selectedText}"],
+      "presentation": {
+        "reveal": "silent",
+        "revealProblems": "onProblem",
+        "clear": true,
+        "panel": "shared"
+      },
+      "problemMatcher": {
+        "owner": "reuben-send-selection",
+        "source": "reuben",
+        "fileLocation": ["relative", "${workspaceFolder}"],
+        "pattern": {
+          "regexp": "^(.+?):(\\d+):(\\d+): (error|warning): (.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "message": 5
+        }
+      }
+    }
+  ],
+  "inputs": [
+    {
+      "id": "reubenAddress",
+      "type": "promptString",
+      "description": "The address to send the selection to, e.g. /notes/in"
+    }
+  ]
+}

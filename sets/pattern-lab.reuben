@@ -1,0 +1,63 @@
+# One live line per kind of pattern, for the `pattern-lab` instrument.
+#
+# Play it, from the repo root:   reuben play instruments/pattern-lab.json
+# Then, in another terminal:     reuben live sets/pattern-lab.reuben
+# Or send one line: in VS Code put the cursor on it and press Ctrl+Enter (see
+# editors/vscode/README.md), or run `reuben send --file sets/pattern-lab.reuben --line <n>`.
+#
+# Each live line below has alternatives under it: uncomment one (and comment the live line) and
+# save. A new pattern takes over at the next cycle of 4 beats.
+#
+#   /notes/in   MIDI notes: note names (c3, eb3, f#3) and MIDI numbers (48)
+#   /drone/in   frequencies in Hz, for a quiet saw oscillator
+#   /cutoff/in  filter cutoff in Hz; a rest keeps the last value
+#
+# A note name only works on /notes/in. On /drone/in and /cutoff/in a number is the value.
+
+/notes/in  c3 eb3 g3 <bb3 c4>
+/drone/in  <65.4 98>
+/cutoff/in  <400 800 1600 3200>
+
+# -- /notes/in: note names with accidentals and octaves
+# /notes/in  c3 eb3 f#3 g3
+# /notes/in  c2 [c3 c3] eb2 [f2 g2]
+# /notes/in  a2 c3 e3 a3 <g3 e3>
+
+# -- /notes/in: MIDI numbers (48 is c3)
+# /notes/in  48 51 55 <58 60>
+# /notes/in  36 [48 48] 39 [41 43]
+
+# -- /notes/in: names and numbers mix
+# /notes/in  c3 51 g3 58
+
+# -- /notes/in: a chord with a comma
+# /notes/in  [c3, eb3, g3] [c3, eb3, bb3]
+# /notes/in  [c3, g3] ~ ~ [eb3, bb3]
+
+# -- /notes/in: a bass line with rests, repeats and euclid
+# /notes/in  c2*2 ~ eb2 ~ g2 ~
+# /notes/in  c2(3,8) eb2(2,8,1)
+
+# -- /drone/in: frequencies in Hz (65.4 is c2, 98 is g2)
+# /drone/in  65.4
+# /drone/in  65.4 98 130.8 98
+# /drone/in  <65.4 73.4 82.4 98>
+
+# -- /drone/in: a range counts up in whole Hz, so a short one is a slow climb that restarts each cycle
+# /drone/in  110 .. 117
+
+# -- /drone/in: a slow pattern over several cycles
+# /drone/in  [65.4 98]/2
+
+# -- /cutoff/in: stepped, one value per cycle
+# /cutoff/in  <300 600 1200 2400 4800>
+# /cutoff/in  <200 8000>
+
+# -- /cutoff/in: per step, several values within a cycle
+# /cutoff/in  400 800 1600 3200
+# /cutoff/in  [300 3000]*4
+# /cutoff/in  500 [800 4000] 600 [1200 6000]
+
+# -- /cutoff/in: a rest keeps the last value
+# /cutoff/in  400 ~ 3200 ~
+# /cutoff/in  200 ~ ~ ~ 4000 ~ ~ ~
