@@ -278,6 +278,19 @@ pub enum Request {
         /// The messages to apply, in order.
         messages: Vec<ControlMessage>,
     },
+    /// Inject one MIDI message, in the translated form a MIDI device's message takes
+    /// (`/midi/<ch>/note`, `/midi/<ch>/cc/<n>`, `/midi/<ch>/bend`, `/midi/<ch>/pressure`,
+    /// `/midi/<ch>/program`), into the engine's MIDI router: it is routed by the open
+    /// instrument's MIDI map exactly as the same message from a device would be. Its own verb
+    /// rather than a [`Send`](Self::Send), so `/midi/…` never needs to be a reserved node address.
+    /// Answers [`Response::Sent`], or [`Response::Error`] for an address and args no device could
+    /// send, or an engine that reads no MIDI.
+    SendMidi {
+        /// The translated address, e.g. `/midi/1/cc/74`.
+        address: String,
+        /// The translated args, e.g. `[0.5]` for a CC.
+        args: Vec<ControlArg>,
+    },
     /// Run one non-engine roster verb against the engine's store. A read answers directly. An edit
     /// is written only if the open instrument, with the edit, still loads and plans, and then the
     /// new Plan is swapped in; otherwise nothing is written and the answer says why.
@@ -715,6 +728,23 @@ pub struct DiagnosticsReport {
     /// (notes). Absent from a report by an engine that predates it, and then zero.
     #[serde(default)]
     pub pattern_notes_evicted: u64,
+    /// MIDI messages read from a device or injected with `send_midi`, realtime and system
+    /// messages excepted (messages). Absent from a report by an engine that predates it, and then
+    /// zero.
+    #[serde(default)]
+    pub midi_received: u64,
+    /// Received MIDI messages of a kind no MIDI map can bind (polyphonic aftertouch), or not
+    /// well-formed (messages). Absent from a report by an engine that predates it, and then zero.
+    #[serde(default)]
+    pub midi_unsupported: u64,
+    /// Received MIDI messages that matched a control of the open instrument's MIDI map
+    /// (messages). Absent from a report by an engine that predates it, and then zero.
+    #[serde(default)]
+    pub midi_routed: u64,
+    /// Received MIDI messages no control of the MIDI map matched, or with no MIDI map for the open
+    /// instrument (messages). Absent from a report by an engine that predates it, and then zero.
+    #[serde(default)]
+    pub midi_unmatched: u64,
 }
 
 /// The engine's levels at the device: what it sends out, after the output map, and what the input
@@ -977,6 +1007,10 @@ mod tests {
             pattern_queries_truncated: 5,
             pattern_atoms_skipped: 6,
             pattern_notes_evicted: 7,
+            midi_received: 8,
+            midi_unsupported: 1,
+            midi_routed: 6,
+            midi_unmatched: 1,
         }
     }
 
@@ -1122,6 +1156,10 @@ mod tests {
             Request::Send {
                 messages: control_messages(),
             },
+            Request::SendMidi {
+                address: "/midi/1/cc/74".to_string(),
+                args: vec![ControlArg::F32(0.5)],
+            },
             Request::Call {
                 tool: "describe_instrument".to_string(),
                 args: serde_json::json!({ "source": "a.json" }),
@@ -1131,6 +1169,39 @@ mod tests {
         for req in &requests {
             assert_one_line_round_trip(req);
         }
+    }
+
+    #[test]
+    fn send_midi_carries_one_translated_message() {
+        let v: serde_json::Value = serde_json::from_str(
+            &Request::SendMidi {
+                address: "/midi/1/note".to_string(),
+                args: vec![ControlArg::I32(60), ControlArg::F32(0.5)],
+            }
+            .to_ndjson(),
+        )
+        .expect("as value");
+        assert_eq!(
+            v,
+            serde_json::json!({ "verb": "send_midi", "address": "/midi/1/note", "args": [60, 0.5] })
+        );
+    }
+
+    #[test]
+    fn a_report_without_midi_counters_reads_them_as_zero() {
+        let report: DiagnosticsReport = serde_json::from_str(
+            r#"{"output_xruns":1,"input_ring_underruns":0,"input_ring_overruns":0,"input_ring_producer_drops":0}"#,
+        )
+        .expect("parses");
+        assert_eq!(
+            (
+                report.midi_received,
+                report.midi_unsupported,
+                report.midi_routed,
+                report.midi_unmatched
+            ),
+            (0, 0, 0, 0)
+        );
     }
 
     #[test]
@@ -1448,7 +1519,11 @@ mod tests {
                 "stale_sends_dropped": 4,
                 "pattern_queries_truncated": 5,
                 "pattern_atoms_skipped": 6,
-                "pattern_notes_evicted": 7
+                "pattern_notes_evicted": 7,
+                "midi_received": 8,
+                "midi_unsupported": 1,
+                "midi_routed": 6,
+                "midi_unmatched": 1
             })
         );
     }

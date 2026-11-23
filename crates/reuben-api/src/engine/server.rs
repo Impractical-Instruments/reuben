@@ -48,6 +48,7 @@ use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::Duration;
 
 use reuben_core::coordinator::RetireDrain;
+use reuben_core::message::Arg;
 use reuben_core::plan::PreparedRoutes;
 use reuben_core::probe::ProbeSlots;
 use reuben_document::coordinator::Coordinator;
@@ -149,6 +150,13 @@ pub trait EngineHost: Send + Sync {
     /// for a Plan since replaced, counting every message and handing every address back through
     /// [`take_dropped_sends`](Self::take_dropped_sends).
     fn deliver_control(&self, messages: Vec<PreparedMessage>) -> Result<(), IngressClosed>;
+
+    /// Route one translated MIDI message, as [`Request::SendMidi`] carries it, through the host's
+    /// MIDI router. `Err` says why it was refused. Defaults to a refusal: a host with no MIDI
+    /// router reads no MIDI.
+    fn deliver_midi(&self, _address: &str, _args: Vec<Arg>) -> Result<(), String> {
+        Err("this engine reads no MIDI".to_string())
+    }
 
     /// The addresses of the messages the render side dropped, in batches whose strings were
     /// compiled for a Plan a swap had since replaced, since the last call, each once and sorted. Called off
@@ -640,6 +648,15 @@ fn serve(state: &ChannelState, request: Request, caller: Caller) -> Response {
         Request::GetMeters => Response::Meters(state.host.meters()),
         Request::SetProbes { paths } => handle_set_probes(state, paths),
         Request::Send { messages } => handle_send(state, messages),
+        Request::SendMidi { address, args } => {
+            match state
+                .host
+                .deliver_midi(&address, args.into_iter().map(Arg::from).collect())
+            {
+                Ok(()) => Response::Sent,
+                Err(message) => Response::Error { message },
+            }
+        }
         Request::Call { tool, args } => handle_call(state, &tool, args),
         Request::Open { name, expect } => handle_open(state, name, expect, caller),
         Request::List { what } => handle_list(state, what),
@@ -1358,6 +1375,19 @@ mod tests {
             Response::Sent
         ));
         assert!(state.retired.is_empty(), "the send drained the queue");
+    }
+
+    #[test]
+    fn send_midi_to_a_host_without_midi_is_refused() {
+        let (state, _host) = state_with(plain_host());
+        let request = Request::SendMidi {
+            address: "/midi/1/cc/74".to_string(),
+            args: vec![crate::engine::ControlArg::F32(0.5)],
+        };
+        match dispatch(&state, &request.to_ndjson()) {
+            Response::Error { message } => assert!(message.contains("MIDI"), "{message}"),
+            other => panic!("expected an error, got {other:?}"),
+        }
     }
 
     fn plain_host() -> Host {

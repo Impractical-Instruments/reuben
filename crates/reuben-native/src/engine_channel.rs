@@ -44,10 +44,13 @@ use reuben_api::engine::{
     Subscription, Token, TOKEN_REQUIRED,
 };
 use reuben_api::probe::ProbeSlots;
+use reuben_api::render::Arg;
 
 use crate::control::ControlProducer;
 use crate::diagnostics::{Diagnostics, Snapshot};
 use crate::meters::Meters;
+use crate::midi::router::SharedRouter;
+use crate::midi::translate::parse_translated;
 use crate::osc::OscIn;
 use crate::probes::{spawn_lease_thread, Probes, LEASE, LEASE_CHECK};
 
@@ -290,6 +293,8 @@ pub struct NativeHost {
     library_root: Option<PathBuf>,
     /// The directories [`offer_dir`](Self::offer_dir) added, absolute and normalized, each once.
     extra_dirs: Mutex<Vec<PathBuf>>,
+    /// Where `send_midi` injects; `None` refuses it.
+    midi: Option<SharedRouter>,
 }
 
 /// How many directories, starting at an instrument's own, are searched for its surface document.
@@ -348,7 +353,14 @@ impl NativeHost {
             hold: None,
             library_root: None,
             extra_dirs: Mutex::new(Vec::new()),
+            midi: None,
         }
+    }
+
+    /// Route `send_midi` through `router`, the one `play`'s MIDI devices share.
+    pub fn with_midi_router(mut self, router: SharedRouter) -> Self {
+        self.midi = Some(router);
+        self
     }
 
     /// Answer `GetMeters` from the banks the audio callbacks meter. Without it the host has no
@@ -607,6 +619,26 @@ impl EngineHost for NativeHost {
         Ok(())
     }
 
+    /// Refuses an address and args no device could send, naming them, so a typo in an injected
+    /// message is an error rather than a silent `midi_unmatched`.
+    fn deliver_midi(&self, address: &str, args: Vec<Arg>) -> Result<(), String> {
+        let Some(router) = &self.midi else {
+            return Err("this engine reads no MIDI".to_string());
+        };
+        let translated = parse_translated(address, &args).ok_or_else(|| {
+            format!(
+                "{address} {args:?} is not a MIDI message as a device sends it: /midi/<1-16>/note \
+                 [pitch 0-127, velocity 0-1], /midi/<ch>/cc/<0-127> [0-1], /midi/<ch>/bend [-1-1], \
+                 /midi/<ch>/pressure [0-1] or /midi/<ch>/program [0-127]"
+            )
+        })?;
+        router
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .translated(&translated);
+        Ok(())
+    }
+
     fn take_dropped_sends(&self) -> Vec<String> {
         self.control
             .lock()
@@ -682,10 +714,10 @@ pub fn diagnostics_report(snapshot: &Snapshot) -> DiagnosticsReport {
         pattern_queries_truncated,
         pattern_atoms_skipped,
         pattern_notes_evicted,
-        midi_received: _,
-        midi_unsupported: _,
-        midi_routed: _,
-        midi_unmatched: _,
+        midi_received,
+        midi_unsupported,
+        midi_routed,
+        midi_unmatched,
     } = *snapshot;
     DiagnosticsReport {
         output_xruns,
@@ -700,6 +732,10 @@ pub fn diagnostics_report(snapshot: &Snapshot) -> DiagnosticsReport {
         pattern_queries_truncated,
         pattern_atoms_skipped,
         pattern_notes_evicted,
+        midi_received,
+        midi_unsupported,
+        midi_routed,
+        midi_unmatched,
     }
 }
 
@@ -1271,7 +1307,21 @@ mod tests {
             pattern_atoms_skipped: 9,
             pattern_notes_evicted: 10,
         });
+        for (counter, n) in [
+            (&d.midi_received, 12),
+            (&d.midi_unsupported, 13),
+            (&d.midi_routed, 14),
+            (&d.midi_unmatched, 15),
+        ] {
+            for _ in 0..n {
+                d.record_midi(counter);
+            }
+        }
         let report = diagnostics_report(&d.snapshot());
+        assert_eq!(report.midi_received, 12);
+        assert_eq!(report.midi_unsupported, 13);
+        assert_eq!(report.midi_routed, 14);
+        assert_eq!(report.midi_unmatched, 15);
         assert_eq!(report.output_xruns, 3);
         assert_eq!(report.input_ring_underruns, 11);
         assert_eq!(report.input_ring_overruns, 22);
@@ -1557,6 +1607,61 @@ mod tests {
         );
         assert_eq!(host.surface(&abs("a/other.json")), Ok(None));
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn deliver_midi_routes_through_the_router() {
+        use crate::control::ControlDrain;
+        use crate::midi::pattern::OscPattern;
+        use crate::midi::router::Router;
+        use crate::midi::routes::{Route, RouteTable, Scale};
+        use crate::midi::translate::MidiKind;
+
+        let diagnostics = Diagnostics::new();
+        let (tx, _rx) = ring_pair(Arc::clone(&diagnostics));
+        let (midi_tx, midi_rx) = ring_pair(Arc::clone(&diagnostics));
+        let mut router = Router::new(midi_tx, Arc::clone(&diagnostics), false);
+        router.install(RouteTable {
+            routes: vec![Route {
+                pattern: OscPattern::parse("/midi/1/cc/74").unwrap(),
+                kind: MidiKind::Cc,
+                target: "/cutoff/in".to_string(),
+                scale: Scale::Linear {
+                    min: 0.0,
+                    max: 100.0,
+                    int: false,
+                },
+            }],
+        });
+        let host = NativeHost::new(Arc::clone(&diagnostics), tx)
+            .with_midi_router(Arc::new(Mutex::new(router)));
+
+        assert_eq!(
+            host.deliver_midi("/midi/1/cc/74", vec![Arg::F32(0.5)]),
+            Ok(())
+        );
+        let mut sent = Vec::new();
+        ControlDrain::new(vec![midi_rx]).drain(|batch| {
+            sent.extend(batch.iter().map(|m| (m.address.clone(), m.args.clone())));
+            true
+        });
+        assert_eq!(sent, vec![("/cutoff/in".to_string(), vec![Arg::F32(50.0)])]);
+
+        let refused = host.deliver_midi("/midi/17/cc/1", vec![Arg::F32(0.5)]);
+        assert!(
+            refused.as_ref().is_err_and(|e| e.contains("/midi/17/cc/1")),
+            "{refused:?}"
+        );
+        assert_eq!(diagnostics.snapshot().midi_received, 1);
+    }
+
+    #[test]
+    fn a_host_without_a_router_refuses_midi() {
+        let (tx, _rx) = ring_pair(Diagnostics::new());
+        let host = NativeHost::new(Diagnostics::new(), tx);
+        assert!(host
+            .deliver_midi("/midi/1/cc/74", vec![Arg::F32(0.5)])
+            .is_err());
     }
 
     #[test]

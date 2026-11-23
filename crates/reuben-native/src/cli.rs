@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use reuben_api::engine::{
-    EmptyToken, Token, DEFAULT_ENGINE_ADDR, ENGINE_ADDR_ENV, ENGINE_TOKEN_ENV,
+    ControlArg, EmptyToken, Token, DEFAULT_ENGINE_ADDR, ENGINE_ADDR_ENV, ENGINE_TOKEN_ENV,
 };
 
 use crate::client::Target;
@@ -332,6 +332,18 @@ impl std::error::Error for IoMapError {
     }
 }
 
+/// One `send-midi` value: an integer when it is written as one (a pitch, a program), else a float.
+/// The engine takes an integer where a translated message has a float, so `60` and `60.0` are the
+/// same pitch.
+pub fn midi_value(text: &str) -> Result<ControlArg, String> {
+    if let Ok(v) = text.parse::<i32>() {
+        return Ok(ControlArg::I32(v));
+    }
+    text.parse::<f32>()
+        .map(ControlArg::F32)
+        .map_err(|_| format!("{text:?} is not a number"))
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser;
@@ -348,6 +360,15 @@ mod tests {
         Probe::try_parse_from(std::iter::once("probe").chain(args.iter().copied()))
             .expect("the flags parse")
             .flags
+    }
+
+    #[test]
+    fn midi_values_are_ints_when_whole_and_floats_otherwise() {
+        assert_eq!(midi_value("60"), Ok(ControlArg::I32(60)));
+        assert_eq!(midi_value("0.5"), Ok(ControlArg::F32(0.5)));
+        assert_eq!(midi_value("-1"), Ok(ControlArg::I32(-1)));
+        assert_eq!(midi_value("-0.25"), Ok(ControlArg::F32(-0.25)));
+        assert!(midi_value("loud").is_err());
     }
 
     #[test]

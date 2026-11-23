@@ -23,9 +23,9 @@ use std::time::Duration;
 
 use super::prose::ENGINE_UNREACHABLE_GUIDANCE;
 use super::wire::{
-    over_long_probe_set_refusal, Conflict, ControlMessage, DiagnosticsReport, DocumentSnapshot,
-    Event, HeldSwap, Library, ListWhat, MetersReport, Request, Response, SendRefusal, SwapReport,
-    MAX_PROBES,
+    over_long_probe_set_refusal, Conflict, ControlArg, ControlMessage, DiagnosticsReport,
+    DocumentSnapshot, Event, HeldSwap, Library, ListWhat, MetersReport, Request, Response,
+    SendRefusal, SwapReport, MAX_PROBES,
 };
 
 /// How long to wait for the one response line before giving up on a *wedged* server (connected but
@@ -343,6 +343,21 @@ impl Channel {
             Response::SendRefused(refusal) => Ok(SendOutcome::Refused(refusal)),
             Response::Error { message } => Err(ChannelError::Channel(message)),
             other => Err(unexpected("send", "sent/send_refused", &other)),
+        }
+    }
+
+    /// Inject one translated MIDI message into the engine's MIDI router; see
+    /// [`Request::SendMidi`]. [`SendOutcome::Queued`] means routed as the open instrument's MIDI map
+    /// says, which may be nowhere.
+    pub fn send_midi(
+        &self,
+        address: String,
+        args: Vec<ControlArg>,
+    ) -> Result<SendOutcome, ChannelError> {
+        match self.exchange(&Request::SendMidi { address, args })? {
+            Response::Sent => Ok(SendOutcome::Queued),
+            Response::Error { message } => Err(ChannelError::Channel(message)),
+            other => Err(unexpected("send_midi", "sent", &other)),
         }
     }
 
