@@ -74,40 +74,30 @@ pub enum Arg {
     /// given. A hand-built `Descriptor` handed to `Registry::register` is not validated; one that
     /// declares a `str` output takes on the same rule.
     ///
-    /// **Render-thread frees: an accepted class, not yet fenced.** A clone is RT-safe, but the
-    /// *last* `Arc` drop frees the backing allocation on whichever thread holds it, and a `str`
-    /// latch is often that holder. When a value overwrites a `str` latch and nothing else holds the
-    /// replaced string, the render thread frees it: at most one free per overwrite, fewer where
-    /// something else also holds the replaced value. A freshly built Plan — every Swap builds one —
-    /// starts each latch on its seed (`""`, from `plan.rs`) or its authored default or literal, so
-    /// the first overwrite after a Swap can free that whatever the sender keeps. The sites:
+    /// **Render-thread frees: retired, not dropped.** A clone is RT-safe, but the *last* `Arc`
+    /// drop frees the backing allocation on whichever thread holds it. Wherever the render thread
+    /// lets go of a string it may be the last holder of, it moves it into the Engine's
+    /// [`RetireQueue`](crate::coordinator::RetireQueue) instead, and the Coordinator drops it off
+    /// the render thread: a `str` latch overwritten by a send or by a kept pipe's forward
+    /// (`render.rs`), a seed or authored default overwritten in a Plan's (or a hosted voice's)
+    /// first block, the interface pipe's dedup baseline, the per-block routing and emit scratch,
+    /// and the Engine's pending-control queue (`engine.rs`). Which values qualify is
+    /// [`OwnsHeap`](crate::coordinator::OwnsHeap), not this variant by name.
     ///
-    /// - **A live send overwriting a `str` latch** (`render.rs`, and the interface pipe's own dedup
-    ///   baseline).
-    /// - **A rendered pipe's first block**, with nothing sent: a `str` pipe kept as a node (two or
-    ///   more consumers, an `osc_out`, a tap, or an interface output reading it) starts with no
-    ///   dedup baseline, so it forwards its default onto each wired consumer and overwrites that
-    ///   consumer's seed — up to one free per consumer, in a Plan's first rendered block. For a
-    ///   Voicer-hosted voice that is its first note, not the install: an idle voice is not
-    ///   rendered.
-    /// - **The next block's scratch clears** (`render.rs`): when several strings hit one port in
-    ///   a block, the ones overwritten within it are last held by `routes[i].held` (or, for a
-    ///   pipe's forward, `scratch.emitted`), cleared at the top of the next block.
-    /// - **The engine's pending-control hand-off** (`engine.rs`): a queued string drops when the
-    ///   queue clears after its block. Whether its port latched a clone, converted it (an
-    ///   `Engine::queue` Message carrying a symbol into an enum port) or refused it, the queue's
-    ///   copy can be the last.
-    /// - **The echo path** (`str` → `osc_out` → outbound): the sink's emit is *moved* into the
-    ///   outbound [`Message`], which native hands to the OSC-out sender thread before dropping.
-    ///   With no `--osc-out` target, native's drain-and-drop frees on the audio thread — a warned
+    /// What is left on the render thread:
+    ///
+    /// - **A full retire queue**: that one value is dropped where it was replaced, and counted in
+    ///   the engine diagnostics. An Engine built without a queue (no Coordinator) drops them all
+    ///   there, as before.
+    /// - **The echo path** (`str` → `osc_out` → outbound): the sink's emit is *moved* into an
+    ///   outbound [`Message`], not a held value. Native hands it to the OSC-out sender thread;
+    ///   with no `--osc-out` target it drains and drops it on the audio thread — a warned
     ///   misconfiguration, and the same path that frees each outbound Message's `address: String`.
+    ///   A hosted voice's `osc_out` sends never leave the Voicer: their args are retired, and only
+    ///   each Message's address is freed there.
     ///
-    /// Each is one bounded `free()` on sparse message traffic or a Plan's (or voice's) first
-    /// rendered block, never in the steady-state signal loop. No built-in Operator declares a
-    /// `str` input yet. `reuben-document`'s `tests/str_input.rs` pins the counts under the
+    /// `reuben-document`'s `tests/str_input.rs` and `tests/rt_safe.rs` pin the zero under the
     /// counting allocator.
-    /// Moving these frees off the render thread needs a queue that hands replaced owning values
-    /// back to the off-thread side; that is a separate change.
     Str(Arc<str>),
 
     // Shared vocab concrete types — each defined once with `#[derive(ArgValue)]`,
@@ -150,6 +140,13 @@ impl Arg {
             Arg::F32Buffer(b) => Some(b),
             _ => None,
         }
+    }
+}
+
+impl crate::coordinator::OwnsHeap for Arg {
+    /// The variants whose drop can free: everything else is plain data.
+    fn owns_heap(&self) -> bool {
+        matches!(self, Arg::Str(_) | Arg::F32Buffer(_))
     }
 }
 

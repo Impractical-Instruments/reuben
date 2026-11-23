@@ -47,6 +47,7 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::Duration;
 
+use reuben_core::coordinator::RetireDrain;
 use reuben_core::probe::ProbeSlots;
 use reuben_document::coordinator::Coordinator;
 
@@ -141,7 +142,9 @@ pub trait EngineHost: Send + Sync {
     /// ingress may drop it and count the drop instead.
     fn deliver_control(&self, messages: Vec<ControlMessage>) -> Result<(), IngressClosed>;
 
-    /// The running counters, as an owned copy taken off the audio thread.
+    /// The running counters, as an owned copy taken off the audio thread. The window fills
+    /// [`retire_queue_dropped_full`](DiagnosticsReport::retire_queue_dropped_full) itself, from
+    /// the Coordinator, over whatever the host reports there.
     fn diagnostics(&self) -> DiagnosticsReport;
 
     /// The levels at the device, read off the audio thread without making it wait. Defaults to
@@ -220,6 +223,8 @@ pub struct ChannelState {
     /// Set while the open instrument does not load and [`SILENCE`] plays in its place. Written only
     /// under the Coordinator lock.
     silent: Arc<AtomicBool>,
+    /// The Coordinator's retire queue, drained without its lock: `send` must not wait on a swap.
+    retired: RetireDrain,
 }
 
 /// What plays while the open instrument does not load, or while nothing is open: one output
@@ -253,6 +258,7 @@ impl ChannelState {
         store: Arc<ServerStore>,
     ) -> Self {
         host.install_probes(coordinator.installed_probes());
+        let retired = coordinator.retired();
         Self {
             coordinator: Arc::new(Mutex::new(coordinator)),
             host,
@@ -263,6 +269,7 @@ impl ChannelState {
             events: Arc::new(Bus::default()),
             reported_invalid: Arc::new(Mutex::new(None)),
             silent: Arc::new(AtomicBool::new(false)),
+            retired,
         }
     }
 
@@ -584,7 +591,11 @@ fn serve(state: &ChannelState, request: Request, caller: Caller) -> Response {
     match request {
         Request::Ping => Response::Pong,
         Request::GetDocument => get_document(state).unwrap_or_else(Response::from),
-        Request::GetDiagnostics => Response::Diagnostics(state.host.diagnostics()),
+        Request::GetDiagnostics => Response::Diagnostics(DiagnosticsReport {
+            // Counted in the engine, not the host.
+            retire_queue_dropped_full: state.retired.dropped_full(),
+            ..state.host.diagnostics()
+        }),
         Request::GetMeters => Response::Meters(state.host.meters()),
         Request::SetProbes { paths } => handle_set_probes(state, paths),
         Request::Send { messages } => handle_send(state, messages),
@@ -712,6 +723,10 @@ fn handle_send(state: &ChannelState, messages: Vec<ControlMessage>) -> Response 
             message: over_long_batch_refusal(messages.len()),
         };
     }
+
+    // Make room for what this batch displaces on the render thread: the queue is sized for one
+    // batch, and values it refuses are dropped there.
+    state.retired.drain();
 
     match state.host.deliver_control(messages) {
         // Nothing was queued — the batch was one delivery — so this is a clean all-or-nothing
@@ -1239,6 +1254,65 @@ mod tests {
         let state = ChannelState::new(coordinator, Arc::clone(&host) as Arc<dyn EngineHost>, store)
             .with_installed_source(Some("playing.json".to_string()));
         (state, host, side)
+    }
+
+    /// The retire overflow is counted in the engine, not the host, so the window reports it over
+    /// the host's zero; and a `send` drains the queue before it delivers.
+    #[test]
+    fn diagnostics_report_the_retire_overflow_and_a_send_drains_the_queue() {
+        use reuben_core::coordinator::RenderSlot;
+        use reuben_core::message::Arg;
+        use reuben_document::coordinator::RETIRE_QUEUE_CAPACITY;
+
+        const ECHO: &str = r#"{"format_version":3,"instrument":"echo",
+            "interface":{"inputs":{"pat":{"type":"str","default":"seed"}}},
+            "nodes":[{"type":"osc_out","address":"/o","inputs":{"in":{"from":"/pat"}}}]}"#;
+        let (coordinator, side, _) =
+            crate::engine::install_initial(ECHO, NoStore, reuben_core::AudioConfig::new(48e3, 128))
+                .expect("install");
+        let mut slot = RenderSlot::new(side);
+        let store = Arc::new(DocumentHistory::new(Staged::new(
+            Box::new(NoStore) as Box<dyn Resources + Send + Sync>
+        )));
+        let state = ChannelState::new(coordinator, Arc::new(plain_host()), store);
+
+        // Sends straight to the slot, with nothing draining: more than the queue holds.
+        let mut out = vec![0.0f32; 128 * slot.channels()];
+        for i in 0..RETIRE_QUEUE_CAPACITY {
+            slot.queue_osc("/pat/in", &[Arg::Str(format!("pattern {i}").into())]);
+            slot.fill(&mut out);
+            slot.drain_outbound().for_each(drop);
+        }
+        let report = match dispatch(&state, &Request::GetDiagnostics.to_ndjson()) {
+            Response::Diagnostics(report) => report,
+            other => panic!("expected diagnostics, got {other:?}"),
+        };
+        assert!(report.retire_queue_dropped_full > 0, "{report:?}");
+        assert_eq!(state.retired.len(), RETIRE_QUEUE_CAPACITY);
+
+        let send = Request::Send {
+            messages: vec![ControlMessage {
+                address: "/pat/in".to_string(),
+                args: vec![crate::engine::ControlArg::Str("next".to_string())],
+            }],
+        };
+        assert!(matches!(
+            dispatch(&state, &send.to_ndjson()),
+            Response::Sent
+        ));
+        assert!(state.retired.is_empty(), "the send drained the queue");
+    }
+
+    fn plain_host() -> Host {
+        Host {
+            panic_on_publish: false,
+            hold: false,
+            offered: Default::default(),
+            probed: Default::default(),
+            installed: Default::default(),
+            last_installed: Default::default(),
+            meters_nodes: false,
+        }
     }
 
     fn holding() -> (ChannelState, Arc<Host>) {

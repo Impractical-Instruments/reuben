@@ -666,6 +666,7 @@ pub fn diagnostics_report(snapshot: &Snapshot) -> DiagnosticsReport {
         input_ring_producer_drops,
         control_batches_dropped_full,
         wired_writes_dropped,
+        retire_queue_dropped_full,
     } = *snapshot;
     DiagnosticsReport {
         output_xruns,
@@ -674,6 +675,7 @@ pub fn diagnostics_report(snapshot: &Snapshot) -> DiagnosticsReport {
         input_ring_producer_drops,
         control_batches_dropped_full,
         wired_writes_dropped,
+        retire_queue_dropped_full,
     }
 }
 
@@ -1219,6 +1221,39 @@ mod tests {
         assert_eq!(report.input_ring_producer_drops, 33);
         assert_eq!(report.control_batches_dropped_full, 4);
         assert_eq!(report.wired_writes_dropped, 5);
+        assert_eq!(
+            report.retire_queue_dropped_full, 0,
+            "no retire queue watched yet"
+        );
+    }
+
+    /// The retire overflow is the Coordinator's count: once watched, a snapshot (and so the log
+    /// line and the report) carries it.
+    #[test]
+    fn a_watched_retire_queue_overflow_reaches_the_snapshot() {
+        use reuben_api::render::RenderSlot;
+        const ECHO: &str = r#"{"format_version":3,"instrument":"echo",
+            "interface":{"inputs":{"pat":{"type":"str","default":"seed"}}},
+            "nodes":[{"type":"osc_out","address":"/o","inputs":{"in":{"from":"/pat"}}}]}"#;
+        let (coordinator, side, _) =
+            reuben_api::engine::install_initial(ECHO, no_store(), cfg()).expect("install");
+        let d = Diagnostics::new();
+        d.watch_retire_queue(coordinator.retired());
+        let mut slot = RenderSlot::new(side);
+        let mut out = vec![0.0f32; 128 * slot.channels()];
+        // Nothing drains between these sends, as for OSC over UDP.
+        for i in 0..reuben_api::engine::RETIRE_QUEUE_CAPACITY {
+            slot.queue_osc("/pat/in", &[Arg::Str(format!("pattern {i}").into())]);
+            slot.fill(&mut out);
+            slot.drain_outbound().for_each(drop);
+        }
+        let counted = d.snapshot().retire_queue_dropped_full;
+        assert!(counted > 0);
+        assert_eq!(counted, coordinator.retired().dropped_full());
+        assert_eq!(
+            diagnostics_report(&d.snapshot()).retire_queue_dropped_full,
+            counted
+        );
     }
 
     #[test]

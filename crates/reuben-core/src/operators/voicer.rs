@@ -40,6 +40,7 @@ use alloc::vec::Vec;
 use crate::config::AudioConfig;
 use crate::descriptor::Descriptor;
 use crate::graph::Graph;
+use crate::coordinator::retire::retire_to;
 use crate::message::{Arg, Message};
 use crate::operator::{Io, Operator};
 use crate::plan::{Plan, PlanError};
@@ -386,6 +387,7 @@ impl Operator for Voicer {
         }
 
         // Render each voice into its own arena and sum its audio (fixed index order — determinism).
+        let retire = io.retire_queue();
         let out = io.write(OUT_AUDIO);
         out[..n].iter_mut().for_each(|s| *s = 0.0);
         let Voicer {
@@ -437,7 +439,11 @@ impl Operator for Voicer {
                     );
                 }
             }
-            outbound.clear();
+            // A voice's `osc_out` sends go nowhere past the boundary. Their args are retired; each
+            // Message's address `String` is freed here, as the echo path frees one.
+            for m in outbound.drain(..) {
+                retire_to(retire, m.arg);
+            }
             render_plan(
                 &mut slot.plan,
                 &mut slot.arena,
@@ -450,6 +456,7 @@ impl Operator for Voicer {
                 &[],
                 master,
                 outbound,
+                retire,
             );
             // Read this voice's audio from its `audio` interface output buffer,
             // falling back to the master tap for a patch without one (e.g. driven bare).

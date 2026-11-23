@@ -6,4 +6,4 @@ pub mod manifest;
 pub mod swap;
 
 pub use manifest::{build_manifest, Manifest, NodeIdentity};
-pub use swap::{Coordinator, PreparedSwap};
+pub use swap::{Coordinator, PreparedSwap, RETIRE_QUEUE_CAPACITY};

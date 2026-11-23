@@ -17,6 +17,7 @@ use alloc::sync::Arc;
 use smallvec::SmallVec;
 
 use crate::config::AudioConfig;
+use crate::coordinator::retire::{retire_to, RetireQueue};
 use crate::descriptor::Descriptor;
 use crate::graph::Graph;
 use crate::message::{Arg, Emit, Event, FromArg};
@@ -73,6 +74,9 @@ pub struct Io<'a> {
     /// input held its value unchanged this block, so a const-folding operator may reuse cached
     /// coefficients. Empty when unattached — `varying()` then conservatively reports `true`.
     varying: &'a [bool],
+    /// Where a value this call lets go of goes instead of being dropped on the render thread;
+    /// `None` when unattached, and the value is then dropped where it is let go of.
+    retire: Option<&'a RetireQueue>,
 }
 
 impl<'a> Io<'a> {
@@ -96,7 +100,26 @@ impl<'a> Io<'a> {
             emit: None,
             frame_offset: 0,
             varying: &[],
+            retire: None,
         }
+    }
+
+    /// Attach the render's retire queue, if it has one. Read by [`Io::retire`] and handed on by a
+    /// hosting operator through [`Io::retire_queue`].
+    pub(crate) fn with_retire(mut self, retire: Option<&'a RetireQueue>) -> Self {
+        self.retire = retire;
+        self
+    }
+
+    /// Let go of `value` without dropping it on the render thread, when it owns heap memory and a
+    /// retire queue is attached. For operator state that holds a copy of a latched value.
+    pub(crate) fn retire(&self, value: Arg) {
+        retire_to(self.retire, value);
+    }
+
+    /// The attached retire queue, for a hosting operator to pass to the sub-renders it runs.
+    pub(crate) fn retire_queue(&self) -> Option<&'a RetireQueue> {
+        self.retire
     }
 
     /// Attach the per-input held [`Arg`] latch for this segment. In input-port order;

@@ -153,12 +153,12 @@ impl Operator for Filter {
   reads `""`. **Input-only**: the validator refuses a `str` output, because building a string on
   the render thread allocates, and a `str` constant, because no operator reads a constant's
   value. Read it, don't keep it — a `&str` cannot outlive the `process` call,
-  and copying it into operator state would allocate. A value overwriting the latch may free the
-  replaced string on the render thread — at most one bounded `free()` per overwrite, fewer where
-  something else also holds it. That includes the first send after a Swap to an input still
-  holding its seed or authored value, and a rendered `str` pipe's first rendered block (for a
-  Voicer-hosted voice, its first note), which overwrites each wired consumer's seed with no send
-  at all (the class `Arg::Str` in `message.rs` documents).
+  and copying it into operator state would allocate. A value overwriting the latch does not free
+  the replaced string on the render thread: the engine moves it into the Engine's retire queue and
+  the Coordinator drops it off-thread — a live send, a seed or authored value overwritten after a
+  Swap, and a rendered `str` pipe's first block over each consumer's seed alike. Only a full queue
+  drops one there, counted in the engine diagnostics (`retire_queue_dropped_full`), or an Engine
+  built without a Coordinator (the class `Arg::Str` in `message.rs` documents).
 - **`name: arg`** — a **type-agnostic pass-through** (issue #141): carries *any* `Arg` as a raw
   Event stream (`Port::arg`), read via its `In<Raw>` handle (`io.read(IN)` yields undecoded
   `&Arg` payloads) and re-emitted through the sink's local `Out<Raw>` tap handle

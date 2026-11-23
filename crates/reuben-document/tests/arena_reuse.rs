@@ -263,6 +263,7 @@ fn an_interface_signal_output_is_pinned_for_the_host_that_reads_it() {
             &[],
             &mut master,
             &mut outbound,
+            None,
         );
     }
 
