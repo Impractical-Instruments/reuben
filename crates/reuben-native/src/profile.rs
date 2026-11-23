@@ -53,6 +53,19 @@ pub struct DeviceProfile {
     /// Preferred output buffer size in frames, clamped into the device's supported range.
     #[serde(default)]
     pub buffer_size: Option<u32>,
+    #[serde(default)]
+    pub midi: MidiProfile,
+}
+
+/// The MIDI side of a profile.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MidiProfile {
+    /// Input ports `play` opens at start, each selected by case-insensitive name: the port named
+    /// exactly this, else the first whose name contains it. One that matches no port is a startup
+    /// error.
+    #[serde(default)]
+    pub inputs: Vec<String>,
 }
 
 /// Something wrong with the profile document itself — structural, not a device/reality
@@ -241,6 +254,23 @@ mod tests {
         let err = DeviceProfile::load(&path).expect_err("sample_rate: 0 should be rejected");
         assert!(matches!(err, ProfileError::OutOfRange(_)));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parses_midi_inputs() {
+        let p: DeviceProfile =
+            serde_json::from_str(r#"{"midi":{"inputs":["Keystep"]}}"#).expect("parse midi");
+        assert_eq!(p.midi.inputs, vec!["Keystep".to_string()]);
+        assert!(DeviceProfile::default().midi.inputs.is_empty());
+    }
+
+    #[test]
+    fn unknown_midi_field_is_a_load_error() {
+        let err = serde_json::from_str::<DeviceProfile>(r#"{"midi":{"outputs":["MPC"]}}"#);
+        assert!(
+            err.is_err(),
+            "unknown field `outputs` under `midi` should be rejected"
+        );
     }
 
     #[test]

@@ -20,6 +20,17 @@
       "type": "integer",
       "minimum": 1,
       "description": "Preferred output buffer size in frames, clamped into the device's supported range and logged. This is the device callback's buffer size, independent of the core engine's fixed render block size."
+    },
+    "midi": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "inputs": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "MIDI input ports opened when play starts, each selected by case-insensitive name: the port named exactly this, else the first whose name contains it. A name matching no port is a startup error that lists the available ports. Omit for no MIDI input. What a port sends is routed by the played instrument's MIDI map, surfaces/<stem>.midi.json."
+        }
+      }
     }
   },
   "$defs": {
@@ -57,7 +68,8 @@
       "output": { "device": "Scarlett", "map": { "0": 0, "1": 1 } },
       "input": { "device": "Scarlett", "map": { "0": 0, "1": 1 } },
       "sample_rate": 48000,
-      "buffer_size": 256
+      "buffer_size": 256,
+      "midi": { "inputs": ["KeyStep"] }
     }
   ]
 }

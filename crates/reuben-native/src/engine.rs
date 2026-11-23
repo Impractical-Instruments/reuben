@@ -41,6 +41,7 @@ use crate::engine_channel::{
     ChannelServer, HeadlessRenderConfig, NativeHost, RenderConfigPublisher, SwapHold,
 };
 use crate::meters::Meters;
+use crate::midi::devices::MidiInputs;
 use crate::midi::router::{Router, SharedRouter};
 use crate::midi::watch::RouteWatch;
 use crate::osc::{self, ControlBatch, DEFAULT_OSC_PORT};
@@ -159,6 +160,8 @@ pub enum StartError {
     DroppedSendWatch(io::Error),
     /// The thread that keeps the MIDI routes in step with what plays would not start.
     RouteWatch(io::Error),
+    /// A `midi.inputs` entry of the profile matches no MIDI input port, or its port did not open.
+    MidiDevice(String),
 }
 
 impl fmt::Display for StartError {
@@ -180,6 +183,7 @@ impl fmt::Display for StartError {
                 write!(f, "start the dropped-sends watch thread: {e}")
             }
             StartError::RouteWatch(e) => write!(f, "start the MIDI routes thread: {e}"),
+            StartError::MidiDevice(e) => write!(f, "{e}"),
         }
     }
 }
@@ -195,7 +199,7 @@ impl std::error::Error for StartError {
             | StartError::RouteWatch(error) => Some(error),
             StartError::Instrument(e) => Some(e),
             StartError::Audio(e) => Some(e),
-            StartError::ChannelNeedsToken(_) => None,
+            StartError::ChannelNeedsToken(_) | StartError::MidiDevice(_) => None,
         }
     }
 }
@@ -206,7 +210,7 @@ impl std::error::Error for StartError {
 /// Dropping it — or [`shutdown`](Self::shutdown), which also returns the final counters — tears
 /// the session down in order and returns only once every thread it started has exited: the
 /// watcher following outside edits to the instrument's files, the dropped-sends watch, the thread
-/// keeping the MIDI routes in step with what plays, the engine-channel server (its
+/// keeping the MIDI routes in step with what plays, the MIDI input ports, the engine-channel server (its
 /// connections woken and joined), the OSC-in listener, the audio streams (paused, then dropped —
 /// see [`Streams::pause`](audio::Streams::pause) for why both), the OSC-out sender, then the
 /// diagnostics logger. Every port it bound is free again afterwards.
@@ -219,6 +223,7 @@ pub struct RunningEngine {
     tree_watch: Option<TreeWatch>,
     dropped_sends: Option<DroppedSendWatch>,
     route_watch: Option<RouteWatch>,
+    midi_inputs: Option<MidiInputs>,
     channel_server: Option<ChannelServer>,
     channel_error: Option<io::Error>,
     osc_in: Option<OscListener>,
@@ -333,6 +338,7 @@ impl RunningEngine {
         self.tree_watch = None;
         self.dropped_sends = None;
         self.route_watch = None;
+        self.midi_inputs = None;
         // Next, so a channel a caller still holds is unreachable from here on rather than
         // answering from a Coordinator whose render side is about to go.
         if let Some(state) = &self.state {
@@ -374,8 +380,9 @@ pub fn start(config: EngineConfig) -> Result<RunningEngine, StartError> {
 
 /// [`start`] with no audio device: a thread renders blocks at
 /// [`HEADLESS_SAMPLE_RATE`] and [`HEADLESS_BLOCK_SIZE`] and discards the output. Everything else —
-/// the instrument load, the OSC sockets, the engine-channel server, the teardown — is [`start`]'s. The
-/// profile and `block_size` are ignored, and no input device opens: bound input pipes read silence.
+/// the instrument load, the OSC sockets, the MIDI inputs, the engine-channel server, the teardown —
+/// is [`start`]'s. The profile's audio settings and `block_size` are ignored, and no audio input
+/// device opens: bound input pipes read silence.
 pub fn start_headless(config: EngineConfig) -> Result<RunningEngine, StartError> {
     start_with(
         config,
@@ -611,6 +618,9 @@ pub(crate) fn start_with(
         Arc::clone(&diagnostics),
         log_osc,
     )));
+    // Before any device or socket opens, so a profile naming a port that is not there fails fast.
+    let midi_inputs = MidiInputs::open(&profile.midi.inputs, Arc::clone(&midi_router))
+        .map_err(StartError::MidiDevice)?;
 
     let (osc_out_tx, osc_out) = match osc_out {
         Some(target) => {
@@ -752,6 +762,7 @@ pub(crate) fn start_with(
         tree_watch,
         dropped_sends: Some(dropped_sends),
         route_watch: Some(route_watch),
+        midi_inputs: Some(midi_inputs),
         channel_server,
         channel_error,
         osc_in,

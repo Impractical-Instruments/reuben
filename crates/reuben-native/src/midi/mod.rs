@@ -3,6 +3,7 @@
 //! routes to its interface inputs. Nothing here runs on the render thread; what reaches the engine
 //! is an ordinary `/<name>/in` send.
 
+pub mod devices;
 pub mod pattern;
 pub mod router;
 pub mod routes;

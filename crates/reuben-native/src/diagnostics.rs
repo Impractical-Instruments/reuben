@@ -97,6 +97,9 @@ pub struct Diagnostics {
     /// Received MIDI messages no control matched. Diagnosis: the played instrument has no MIDI
     /// map, or the map's patterns name other channels or controllers than the device sends.
     pub midi_unmatched: AtomicU64,
+    /// MIDI input ports that went away while `play` ran (unplugged). Each one's held notes were
+    /// released; restart `play` to read it again.
+    pub midi_devices_lost: AtomicU64,
     /// The Coordinator's retire queue, once [`watch_retire_queue`](Self::watch_retire_queue) is
     /// given it: its overflow count is the engine's, read here so the log line carries it too.
     retired: OnceLock<RetireDrain>,
@@ -185,7 +188,7 @@ impl Diagnostics {
         }
     }
 
-    /// Count one MIDI message under `counter`, one of the `midi_*` fields. Off the render thread.
+    /// Count one under `counter`, one of the `midi_*` fields. Off the render thread.
     pub fn record_midi(&self, counter: &AtomicU64) {
         counter.fetch_add(1, Ordering::Relaxed);
     }
@@ -221,6 +224,7 @@ impl Diagnostics {
             midi_unsupported: self.midi_unsupported.load(Ordering::Relaxed),
             midi_routed: self.midi_routed.load(Ordering::Relaxed),
             midi_unmatched: self.midi_unmatched.load(Ordering::Relaxed),
+            midi_devices_lost: self.midi_devices_lost.load(Ordering::Relaxed),
         }
     }
 }
@@ -248,6 +252,7 @@ pub struct Snapshot {
     pub midi_unsupported: u64,
     pub midi_routed: u64,
     pub midi_unmatched: u64,
+    pub midi_devices_lost: u64,
 }
 
 impl Snapshot {
@@ -266,7 +271,7 @@ pub fn log_snapshot(s: &Snapshot) {
          input_ring_producer_drops={} control_batches_dropped_full={} wired_writes_dropped={} \
          retire_queue_dropped_full={} unprepared_writes_dropped={} stale_sends_dropped={} \
          pattern_queries_truncated={} pattern_atoms_skipped={} pattern_notes_evicted={} \
-         midi_received={} midi_unsupported={} midi_routed={} midi_unmatched={}",
+         midi_received={} midi_unsupported={} midi_routed={} midi_unmatched={} midi_devices_lost={}",
         s.output_xruns,
         s.input_ring_underruns,
         s.input_ring_overruns,
@@ -282,7 +287,8 @@ pub fn log_snapshot(s: &Snapshot) {
         s.midi_received,
         s.midi_unsupported,
         s.midi_routed,
-        s.midi_unmatched
+        s.midi_unmatched,
+        s.midi_devices_lost
     );
 }
 
