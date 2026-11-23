@@ -1,9 +1,9 @@
 //! Checking a MIDI-map control against the instrument's interface inputs: the half of reading a
 //! MIDI map that does not depend on how a client routes messages.
 
-use std::format;
-use std::string::{String, ToString};
-use std::vec::Vec;
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 use reuben_contract::{NUMBER_MAX, NUMBER_MIN};
 
@@ -163,8 +163,8 @@ fn range(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
     use serde_json::json;
-    use std::vec;
 
     /// A boundary over every input kind the checks distinguish.
     fn boundary() -> Boundary {

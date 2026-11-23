@@ -1,9 +1,9 @@
 //! Checking a screen-surface control against the instrument's interface inputs: the half of
 //! reading a screen doc that does not depend on how a client draws.
 
-use std::format;
-use std::string::{String, ToString};
-use std::vec::Vec;
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 use crate::authoring::{Boundary, PortInfo};
 use crate::surface::SurfaceControl;
@@ -170,6 +170,13 @@ mod tests {
     use super::*;
     use crate::authoring::{Boundary, PortInfo};
     use crate::surface::SurfaceControl;
+
+    #[test]
+    fn default_labels_uppercase_each_word_and_nothing_else() {
+        assert_eq!(default_label("kick_step1"), "Kick Step1");
+        assert_eq!(default_label("mix2out"), "Mix2out");
+        assert_eq!(default_label("tempo"), "Tempo");
+    }
 
     fn value_port(name: &str) -> PortInfo {
         serde_json::from_value(serde_json::json!({

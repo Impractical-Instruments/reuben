@@ -103,7 +103,8 @@ impl<R: Resources> DocumentHistory<R> {
     /// again later can normalize to a different document than the one this hash names.
     ///
     /// A surface doc has no Instrument to normalize against, so text that is not an Instrument is
-    /// tried as one.
+    /// tried as a surface doc. The formats are disjoint: an Instrument denies unknown fields and a
+    /// surface doc carries `surface_version`.
     fn mint(&self, text: &str) -> Option<(String, String)> {
         if let Ok(doc) =
             NormalizedDoc::from_json(text, &Registry::builtin(), Some(&Adapter(&self.inner)))
@@ -202,6 +203,9 @@ impl<R: Resources> Resources for DocumentHistory<R> {
 /// the ordinary answer every guarded verb gives. The write is recorded like any other, so the state
 /// restored *from* can be restored to.
 ///
+/// A held surface doc is restored without Instrument validation — only the `expect` guard applies —
+/// because an undo must not be stranded by controls the Instrument lacks.
+///
 /// Refuses a `to` that `resources` does not hold for this source — never written through it there,
 /// or evicted — and a source whose current text is not a document, which has no hash for `expect`
 /// to match.
@@ -282,7 +286,7 @@ fn restore_surface(
         .and_then(|text| {
             SurfaceDoc::parse(&text).map_err(|e| {
                 Refusal::new(format!(
-                    "`{}` is not a surface doc, so there is no hash for `expect` to match: {e}",
+                    "`{}` {e}, so there is no hash for `expect` to match",
                     args.source
                 ))
             })

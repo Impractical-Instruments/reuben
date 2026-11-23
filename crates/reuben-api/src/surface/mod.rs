@@ -10,10 +10,10 @@ pub mod midi;
 pub mod pattern;
 pub mod screen;
 
-use std::fmt;
-use std::format;
-use std::string::{String, ToString};
-use std::vec::Vec;
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use core::fmt;
 
 use reuben_document::text_hash;
 use schemars::JsonSchema;
@@ -117,7 +117,8 @@ impl SurfaceDoc {
     }
 
     /// The canonical bytes a write puts on disk, less the trailing newline. `surface_version`
-    /// leads because a reader checks it before the shape.
+    /// leads because a reader checks it before the shape. A rewrite drops keys the parser ignores;
+    /// the schema forbids unknown keys, so nothing valid is lost.
     pub fn to_json_pretty(&self) -> String {
         #[derive(Serialize)]
         struct Wire<'a> {
@@ -173,7 +174,7 @@ pub fn render_surface(doc: &SurfaceDoc, surface: SurfaceKind) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::string::ToString;
+    use alloc::string::ToString;
     #[test]
     fn a_doc_parses_with_only_its_required_keys() {
         let doc = SurfaceDoc::parse(

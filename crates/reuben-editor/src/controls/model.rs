@@ -167,8 +167,9 @@ pub fn from_unit(unit: f64, min: f64, max: f64, exponential: bool) -> f64 {
     }
 }
 
+pub use reuben_api::surface::clamp;
+use reuben_api::surface::default_label;
 use reuben_api::surface::takes_a_value;
-pub use reuben_api::surface::{clamp, default_label};
 
 fn number(port: &PortInfo) -> Option<f64> {
     port.default.as_ref().and_then(serde_json::Value::as_f64)
@@ -546,13 +547,6 @@ mod tests {
                 panel.warnings
             );
         }
-    }
-
-    #[test]
-    fn default_labels_uppercase_each_word_and_nothing_else() {
-        assert_eq!(default_label("kick_step1"), "Kick Step1");
-        assert_eq!(default_label("mix2out"), "Mix2out");
-        assert_eq!(default_label("tempo"), "Tempo");
     }
 
     #[test]
