@@ -6,7 +6,9 @@
 //! copy so a logger never holds a reference into the live struct.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+
+use reuben_api::engine::RetireDrain;
 use std::time::{Duration, Instant};
 
 /// Atomic counters for the conditions reuben must "know and say": an output
@@ -58,6 +60,9 @@ pub struct Diagnostics {
     /// input a wire or an interface pipe feeds, whose value is its feeder's. Diagnosis: a
     /// controller writes a node input it should reach through the interface input feeding it.
     pub wired_writes_dropped: AtomicU64,
+    /// The Coordinator's retire queue, once [`watch_retire_queue`](Self::watch_retire_queue) is
+    /// given it: its overflow count is the engine's, read here so the log line carries it too.
+    retired: OnceLock<RetireDrain>,
 }
 
 impl Diagnostics {
@@ -108,6 +113,12 @@ impl Diagnostics {
         }
     }
 
+    /// Read the retire overflow from `drain` from now on. Only the first call takes effect: a
+    /// session has one Coordinator.
+    pub fn watch_retire_queue(&self, drain: RetireDrain) {
+        let _ = self.retired.set(drain);
+    }
+
     /// A point-in-time copy of every counter, cheap enough to take on every logging tick.
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
@@ -117,6 +128,7 @@ impl Diagnostics {
             input_ring_producer_drops: self.input_ring_producer_drops.load(Ordering::Relaxed),
             control_batches_dropped_full: self.control_batches_dropped_full.load(Ordering::Relaxed),
             wired_writes_dropped: self.wired_writes_dropped.load(Ordering::Relaxed),
+            retire_queue_dropped_full: self.retired.get().map_or(0, RetireDrain::dropped_full),
         }
     }
 }
@@ -131,6 +143,10 @@ pub struct Snapshot {
     pub input_ring_producer_drops: u64,
     pub control_batches_dropped_full: u64,
     pub wired_writes_dropped: u64,
+    /// Replaced heap-owning values the render thread dropped itself because the retire queue was
+    /// full (values). Diagnosis: control that bypasses the engine channel's `send` (OSC over UDP)
+    /// is not drained between batches.
+    pub retire_queue_dropped_full: u64,
 }
 
 impl Snapshot {
@@ -146,13 +162,15 @@ impl Snapshot {
 pub fn log_snapshot(s: &Snapshot) {
     eprintln!(
         "diagnostics: output_xruns={} input_ring_underruns={} input_ring_overruns={} \
-         input_ring_producer_drops={} control_batches_dropped_full={} wired_writes_dropped={}",
+         input_ring_producer_drops={} control_batches_dropped_full={} wired_writes_dropped={} \
+         retire_queue_dropped_full={}",
         s.output_xruns,
         s.input_ring_underruns,
         s.input_ring_overruns,
         s.input_ring_producer_drops,
         s.control_batches_dropped_full,
-        s.wired_writes_dropped
+        s.wired_writes_dropped,
+        s.retire_queue_dropped_full
     );
 }
 

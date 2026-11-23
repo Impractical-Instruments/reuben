@@ -7,6 +7,10 @@
 //! reaches the renderer through — touches the heap not at all. [`Engine::queue`] takes a Message
 //! its caller built, so it allocates nothing and frees only that Message's address `String`.
 //!
+//! Replacing a held `str` frees nothing on the render thread either: the replaced value goes to the
+//! retire queue, and the Coordinator frees it. The last three tests pin that, the full-queue
+//! fallback, and the drain.
+//!
 //! This file is its own test binary. Counting is armed per-thread by the shared [`rt_alloc`]
 //! harness — each measured window arms this thread only around the render loop under test —
 //! so an allocation on a libtest harness thread (or a sibling test) cannot interleave into a
@@ -682,4 +686,358 @@ fn engine_queue_osc_and_fill_is_heap_neutral_after_warmup() {
         (0, 0),
         "{BLOCKS} blocks of {PER_BLOCK} queue_osc + fill touched the heap"
     );
+}
+
+/// A `str` input for the retire tests below: no built-in Operator declares one. Reports its
+/// input's length on a held `f32` output, so reading the latch is real work.
+mod str_len {
+    use reuben_core::descriptor::Descriptor;
+    use reuben_core::operator::{Io, Operator};
+
+    pub struct StrLen(pub Option<f32>);
+    reuben_core::operator_contract!(StrLen {
+        type_name: "str_len",
+        inputs: { text: str },
+        outputs: { len: f32 { 0.0..=1_000_000.0, default 0.0 } },
+    });
+
+    impl Operator for StrLen {
+        fn descriptor() -> Descriptor {
+            Self::contract()
+        }
+        fn process(&mut self, io: &mut Io) {
+            let n = io.read(IN_TEXT).len() as f32;
+            if self.0 != Some(n) {
+                io.write(OUT_LEN).set(0, n);
+                self.0 = Some(n);
+            }
+        }
+        fn spawn(&self) -> Box<dyn Operator> {
+            Box::new(StrLen(None))
+        }
+    }
+}
+
+fn str_registry() -> Registry {
+    let mut r = Registry::builtin();
+    r.register(
+        || Box::new(str_len::StrLen(None)),
+        <str_len::StrLen as reuben_core::Operator>::descriptor(),
+    );
+    r
+}
+
+/// A kept `str` pipe (two consumers) with a default, and a node literal: every place a string is
+/// replaced on the render thread — a seed overwritten by the pipe's first forward, the pipe's latch
+/// and dedup baseline, its forwarded copy, each consumer's latch, the queued control copy.
+const STR_RIG: &str = r#"{
+  "format_version": 3, "instrument": "str_rig",
+  "interface": { "inputs": { "pat": { "type": "str", "default": "seed" } } },
+  "nodes": [
+    { "type": "str_len", "address": "/a", "inputs": { "text": { "from": "/pat" } } },
+    { "type": "str_len", "address": "/b", "inputs": { "text": { "from": "/pat" } } },
+    { "type": "str_len", "address": "/direct", "inputs": { "text": "literal" } } ] }"#;
+
+const STR_BLOCK: usize = 128;
+
+fn str_rig() -> (
+    reuben_document::coordinator::Coordinator,
+    reuben_core::coordinator::RenderSlot,
+) {
+    let (coord, side, _) = reuben_document::coordinator::Coordinator::install_initial(
+        STR_RIG,
+        str_registry(),
+        Box::new(reuben_document::MemoryResolver::new()),
+        AudioConfig::new(48_000.0, STR_BLOCK),
+    )
+    .expect("initial install");
+    (coord, reuben_core::coordinator::RenderSlot::new(side))
+}
+
+/// Replacing `str` values never frees on the render thread: not in a Plan's first block, where
+/// the kept pipe forwards its default over each consumer's seed, not in a Swap's install window,
+/// and not across repeated sends to one input whose sender lets go of each string at once. What
+/// the render thread lets go of reaches the Coordinator's retire queue, and the Coordinator frees
+/// it.
+#[test]
+fn replacing_str_values_frees_nothing_on_the_render_thread() {
+    let (mut coord, mut slot) = str_rig();
+    let retired = coord.retired();
+    let mut out = vec![0.0f32; STR_BLOCK * slot.channels()];
+    assert_counter_is_live();
+
+    // The first block of a fresh Plan: the pipe forwards "seed" over both consumers' `""` seeds.
+    let first = measure(|| slot.fill(&mut out));
+    assert_eq!(first.frees, 0, "first block freed {} time(s)", first.frees);
+    let freed_off = measure(|| {
+        retired.drain();
+    })
+    .frees;
+    assert_eq!(
+        freed_off, 2,
+        "both consumers' seeds, freed off the render thread"
+    );
+
+    // Grow each node's routed-held scratch to its steady-state size.
+    for i in 0..4 {
+        slot.queue_osc("/pat/in", &[Arg::Str(format!("warm {i}").into())]);
+        slot.queue_osc("/direct/text", &[Arg::Str(format!("warm {i}").into())]);
+        slot.fill(&mut out);
+    }
+    retired.drain();
+
+    // Repeated sends to the same inputs, each string built outside the window and held by nothing
+    // but the engine once queued.
+    const SENDS: usize = 64;
+    let mut strings: Vec<[Arc<str>; 2]> = (0..SENDS)
+        .map(|i| [format!("pipe {i}").into(), format!("direct {i}").into()])
+        .collect();
+    let mut freed_off = 0;
+    let mut render = rt_alloc::Counts {
+        allocs: 0,
+        frees: 0,
+    };
+    for [pipe, direct] in strings.drain(..) {
+        let args = [Arg::Str(pipe), Arg::Str(direct)];
+        let c = measure(|| {
+            slot.queue_osc("/pat/in", &args[..1]);
+            slot.queue_osc("/direct/text", &args[1..]);
+            slot.fill(&mut out);
+        });
+        render.allocs += c.allocs;
+        render.frees += c.frees;
+        drop(args);
+        freed_off += measure(|| {
+            retired.drain();
+        })
+        .frees;
+    }
+    assert_eq!(
+        (render.allocs, render.frees),
+        (0, 0),
+        "{SENDS} blocks of str sends touched the heap on the render thread"
+    );
+    assert_eq!(
+        freed_off,
+        2 * SENDS,
+        "each replaced string is freed exactly once, off the render thread"
+    );
+
+    // A Swap's install window: a fresh Plan's first block replaces the consumers' seeds again.
+    assert!(coord.swap_document(STR_RIG).report.ok);
+    let mut window = 0;
+    for _ in 0..16 {
+        window += measure(|| slot.fill(&mut out)).frees;
+    }
+    assert!(!slot.is_ramping(), "the swap installed inside the window");
+    assert_eq!(window, 0, "the install window freed {window} time(s)");
+    assert!(coord.try_reclaim().is_some(), "the retiree came home");
+    assert!(retired.is_empty(), "the reclaim drained the retire queue");
+    assert_eq!(retired.dropped_full(), 0);
+}
+
+/// A full retire queue drops the value it cannot take on the render thread, once per value, and
+/// counts each.
+#[test]
+fn a_full_retire_queue_drops_on_the_render_thread_and_counts_it() {
+    use reuben_core::coordinator::retire_queue;
+
+    let graph = load_instrument(
+        STR_RIG,
+        &str_registry(),
+        &reuben_document::MemoryResolver::new(),
+    )
+    .expect("loads")
+    .graph;
+    let mut e =
+        Engine::new(Plan::instantiate(graph, AudioConfig::new(48_000.0, STR_BLOCK)).unwrap());
+    const CAPACITY: usize = 4;
+    let (queue, retired) = retire_queue(CAPACITY);
+    e.set_retire_queue(queue);
+    let mut out = vec![0.0f32; STR_BLOCK * e.channels()];
+    for i in 0..4 {
+        e.queue_osc("/direct/text", &[Arg::Str(format!("warm {i}").into())]);
+        e.fill(&mut out);
+        retired.drain();
+    }
+    e.fill(&mut out);
+    retired.drain();
+    assert_eq!(
+        retired.dropped_full(),
+        0,
+        "drained every block, the ring never filled"
+    );
+
+    // Each send to `/direct` retires two values (its queued copy and the latch it replaces); with
+    // nothing draining, the ring fills after two sends and every value past that is dropped here.
+    const SENDS: usize = 10;
+    let strings: Vec<Arc<str>> = (0..SENDS).map(|i| format!("send {i}").into()).collect();
+    assert_counter_is_live();
+    let mut frees = 0;
+    for s in strings {
+        let args = [Arg::Str(s)];
+        frees += measure(|| {
+            e.queue_osc("/direct/text", &args);
+            e.fill(&mut out);
+        })
+        .frees;
+    }
+    let overflow = 2 * SENDS - CAPACITY;
+    assert_eq!(retired.len(), CAPACITY, "the ring is full");
+    assert_eq!(
+        retired.dropped_full(),
+        overflow as u64,
+        "every refused value is counted"
+    );
+    // The refused values are the queued copy (its latch still holds it, so dropping it frees
+    // nothing) and the replaced latch (held by nothing else, so dropping it frees).
+    assert!(
+        (1..=overflow).contains(&frees),
+        "the overflow is dropped on the render thread: {frees} free(s)"
+    );
+    assert_eq!(retired.drain(), CAPACITY);
+}
+
+/// The Coordinator's reclaim frees what the render thread retires, on the Coordinator's thread:
+/// over many sends and Swaps nothing leaks, the queue never grows past what one step retires, and
+/// nothing overflows.
+#[test]
+fn the_coordinator_frees_retired_values_off_the_render_thread_without_leak_or_growth() {
+    use std::sync::{mpsc, Weak};
+
+    enum Step {
+        Send(Arc<str>),
+        Fill(usize),
+    }
+
+    let (mut coord, mut slot) = str_rig();
+    let retired = coord.retired();
+    let (steps, inbox) = mpsc::channel::<Step>();
+    let (done, render_done) = mpsc::channel::<()>();
+    // The render thread: applies each step, measuring only the engine's own work.
+    let render = std::thread::spawn(move || {
+        let mut out = vec![0.0f32; STR_BLOCK * slot.channels()];
+        let mut frees = 0;
+        while let Ok(step) = inbox.recv() {
+            match step {
+                Step::Send(s) => {
+                    let args = [Arg::Str(s)];
+                    frees += measure(|| {
+                        slot.queue_osc("/pat/in", &args);
+                        slot.fill(&mut out);
+                    })
+                    .frees;
+                }
+                Step::Fill(blocks) => {
+                    for _ in 0..blocks {
+                        frees += measure(|| slot.fill(&mut out)).frees;
+                    }
+                }
+            }
+            done.send(()).expect("the test is waiting");
+        }
+        frees
+    });
+    let step = |s: Step| {
+        steps.send(s).expect("the render thread is running");
+        render_done.recv().expect("the render thread answers");
+    };
+
+    const SENDS: usize = 400;
+    let mut sent: Vec<Weak<str>> = Vec::with_capacity(SENDS);
+    let mut peak = 0;
+    for i in 0..SENDS {
+        let s: Arc<str> = format!("pattern {i}").into();
+        sent.push(Arc::downgrade(&s));
+        step(Step::Send(s));
+        if i % 40 == 20 {
+            assert!(coord.swap_document(STR_RIG).report.ok, "swap {i}");
+            step(Step::Fill(16));
+        }
+        peak = peak.max(retired.len());
+        coord.try_reclaim();
+        assert!(
+            retired.is_empty(),
+            "the reclaim drains everything retired so far"
+        );
+    }
+    // One more block retires the last block's forwarded copy; the live Plan still latches the last
+    // string sent, and every one before it is gone.
+    step(Step::Fill(2));
+    coord.try_reclaim();
+    let alive: Vec<usize> = sent
+        .iter()
+        .enumerate()
+        .filter(|(_, w)| w.strong_count() > 0)
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(alive, [SENDS - 1], "only the latched string survives");
+    assert!(
+        (1..=16).contains(&peak),
+        "the queue holds one step's retirees, not a backlog: peak {peak}"
+    );
+    assert_eq!(retired.dropped_full(), 0);
+
+    drop(steps);
+    let render_frees = render.join().expect("the render thread finished");
+    assert_eq!(render_frees, 0, "the render thread freed nothing");
+}
+
+/// A Plan's first block allocates and frees nothing on the render thread, in the initial install
+/// and in every Swap's install window, with kept pipes forwarding their defaults: a `str` pipe and
+/// an `f32` pipe, each into two consumers, so each consumer gets its first held change there.
+#[test]
+fn a_plans_first_block_touches_no_heap_with_kept_pipes_forwarding() {
+    const KEPT: &str = r#"{
+      "format_version": 3, "instrument": "kept_pipes",
+      "interface": { "inputs": {
+          "pat": { "type": "str", "default": "seed" },
+          "rate": { "type": "f32", "default": 2.0, "min": 0.01, "max": 20.0 } } },
+      "nodes": [
+        { "type": "str_len", "address": "/a", "inputs": { "text": { "from": "/pat" } } },
+        { "type": "str_len", "address": "/b", "inputs": { "text": { "from": "/pat" } } },
+        { "type": "lfo", "address": "/l1", "inputs": { "rate": { "from": "/rate" } } },
+        { "type": "lfo", "address": "/l2", "inputs": { "rate": { "from": "/rate" } } } ] }"#;
+    let (mut coord, side, _) = reuben_document::coordinator::Coordinator::install_initial(
+        KEPT,
+        str_registry(),
+        Box::new(reuben_document::MemoryResolver::new()),
+        AudioConfig::new(48_000.0, STR_BLOCK),
+    )
+    .expect("initial install");
+    let mut slot = reuben_core::coordinator::RenderSlot::new(side);
+    let mut out = vec![0.0f32; STR_BLOCK * slot.channels()];
+    assert_counter_is_live();
+
+    let first = measure(|| slot.fill(&mut out));
+    assert_eq!(
+        (first.allocs, first.frees),
+        (0, 0),
+        "the initial install's first block touched the heap"
+    );
+    for _ in 0..4 {
+        slot.fill(&mut out);
+    }
+
+    for edit in 0..3 {
+        assert!(coord.swap_document(KEPT).report.ok, "swap {edit}");
+        let window = measure(|| {
+            for _ in 0..16 {
+                slot.fill(&mut out);
+            }
+        });
+        assert!(
+            !slot.is_ramping(),
+            "swap {edit} installed inside the window"
+        );
+        assert_eq!(
+            (window.allocs, window.frees),
+            (0, 0),
+            "swap {edit}'s install window touched the heap"
+        );
+        assert!(
+            coord.try_reclaim().is_some(),
+            "swap {edit}'s retiree came home"
+        );
+    }
 }

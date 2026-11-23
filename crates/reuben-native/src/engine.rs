@@ -638,6 +638,7 @@ pub(crate) fn start_with(
             .with_swap_hold(swap_hold)
             .with_library_root(library_root),
     );
+    diagnostics.watch_retire_queue(coordinator.retired());
     let state =
         ChannelState::new(coordinator, host.clone(), store).with_installed_source(initial_source);
     let state = if nothing_open {

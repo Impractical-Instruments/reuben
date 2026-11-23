@@ -18,7 +18,9 @@
 //! holds each message's target index and payload, never its address. Queue + render of flat-arg
 //! control does no heap work: the queue is preallocated and cleared, never replaced (a burst past
 //! its high-water mark grows it once), and nothing in a queued entry owns an allocation unless its
-//! payload does. [`Engine::queue`] takes an already-built [`Message`] and drops its address there.
+//! payload does, and that payload goes to the retire queue ([`Engine::set_retire_queue`]) rather
+//! than being dropped here. [`Engine::queue`] takes an already-built [`Message`] and drops its
+//! address there.
 //!
 //! The queue belongs to this Engine and indexes this Engine's Plan. An install replaces the whole
 //! Engine, so control still pending at that moment leaves with the retiring Engine and is never
@@ -27,6 +29,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::coordinator::retire::{retire_to, RetireQueue};
 use crate::message::{Arg, Message};
 use crate::plan::Plan;
 use crate::render::{Renderer, Resolved};
@@ -88,6 +91,13 @@ impl Engine {
             in_dirty: false,
             pos: block_size, // exhausted -> first fill renders immediately
         }
+    }
+
+    /// Retire every heap-owning value this Engine's render thread lets go of into `queue`, for
+    /// the queue's drainer to drop. Call off the render thread, before the Engine is installed.
+    /// Without one, those values are dropped on the render thread where they are replaced.
+    pub fn set_retire_queue(&mut self, queue: RetireQueue) {
+        self.renderer.set_retire_queue(queue);
     }
 
     /// How many queued inbound messages are still waiting for the next block. A host draining
@@ -275,7 +285,11 @@ impl Engine {
             &mut self.scratch,
             &mut self.outbound,
         );
-        // `clear`, not `mem::take`: the queue keeps its capacity for the next block.
-        self.pending.clear();
+        // `drain`, not `mem::take`: the queue keeps its capacity for the next block. A queued
+        // string can be the last reference once its port has latched or refused it.
+        let retire = self.renderer.retire_queue();
+        for entry in self.pending.drain(..) {
+            retire_to(retire, entry.arg);
+        }
     }
 }

@@ -66,6 +66,10 @@ pub use server::{
     ServerStore, SwapInFlight, COORDINATOR_POISONED, IN_PROCESS_ENDPOINT, SILENCE,
 };
 
+/// The off-thread end of the retire queue a Coordinator's Engines retire into, as
+/// `Coordinator::retired` hands it out. Re-exported so a host can keep one to read its overflow
+/// count.
+pub use reuben_core::coordinator::RetireDrain;
 /// The single-writer graph owner an [`ChannelState`] serves. The engine's type, re-exported because
 /// a host has to name it to build one — and reaching past the window for the *one* type its own
 /// constructor demands would make "every consumer goes through the window" false for every host
@@ -75,6 +79,8 @@ pub use reuben_document::coordinator::Coordinator;
 /// render buffers are a fixed size reads the built Engine's geometry and either commits it or drops
 /// it. Re-exported because a host that holds one between the two calls has to name its type.
 pub use reuben_document::coordinator::PreparedSwap;
+/// How many replaced values the render thread can retire between two drains.
+pub use reuben_document::coordinator::RETIRE_QUEUE_CAPACITY;
 /// A non-fatal resource problem from a load — a missing sample degrades to silence and says so.
 pub use reuben_document::format::LoadWarning;
 /// Why an initial install failed: the document did not load, or it loaded and would not plan.
