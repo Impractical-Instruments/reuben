@@ -43,3 +43,9 @@ serde_json = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }
 # WAV decode for the reference filesystem resolver, and only for it.
 hound = { workspace = true, optional = true }
+
+# A live `send` to inputs that compile their text: the authoring half serves it and the render half
+# applies it, so a render-only build has nothing to run it against.
+[[test]]
+name = "prepared_send"
+required-features = ["authoring", "render"]

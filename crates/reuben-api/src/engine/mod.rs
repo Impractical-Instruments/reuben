@@ -40,6 +40,7 @@ mod channel;
 mod events;
 pub mod prose;
 mod result;
+mod send;
 pub mod server;
 #[cfg(feature = "tcp")]
 mod tcp;
@@ -53,13 +54,18 @@ pub use args::*;
 /// one. Unset, it dials [`DEFAULT_ENGINE_ADDR`].
 pub const ENGINE_ADDR_ENV: &str = "REUBEN_ENGINE_ADDR";
 pub use channel::{
-    unanswered, CallOutcome, Channel, ChannelError, Events, SwapOutcome, Transport, Unanswered,
+    unanswered, CallOutcome, Channel, ChannelError, Events, SendOutcome, SwapOutcome, Transport,
+    Unanswered,
 };
 pub use events::{Bus, Subscription};
 pub use prose::ENGINE_UNREACHABLE_GUIDANCE;
 pub use result::{
     CurrentInstrument, EngineStatus, InstrumentList, SendOutput, SidecarInfo, StatusEndpoints,
     SwapResult,
+};
+pub use send::{
+    control_fate, prepare_send, ControlFate, PreparedAgainst, PreparedMessage, NOT_ONE_STRING,
+    REFUSAL_TEXT_WINDOW,
 };
 pub use server::{
     dispatch, dispatch_request, ChannelState, EngineHost, InProcess, IngressClosed, Installed,
@@ -95,7 +101,7 @@ pub use verbs::*;
 pub use wire::{
     read_ndjson_line, ChangedBy, ChannelLevel, Conflict, ControlArg, ControlMessage,
     DiagnosticsReport, DiffSummary, DocumentSnapshot, Event, HeldSwap, Library, LibraryEntry,
-    ListWhat, MetersReport, PortLevel, ProbeLevels, Request, Response, SwapReport,
+    ListWhat, MetersReport, PortLevel, ProbeLevels, Request, Response, SendRefusal, SwapReport,
     DEFAULT_ENGINE_ADDR, MAX_LINE_BYTES, MAX_PROBES, MAX_SEND_BATCH, METER_CEILING_DBFS,
     METER_FLOOR_DBFS, PEAK_FALL_DB_PER_SEC, RMS_WINDOW_SECS,
 };

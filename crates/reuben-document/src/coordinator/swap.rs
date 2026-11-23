@@ -18,7 +18,7 @@ use crate::projection::Rebased;
 use crate::resources::ResourceResolver;
 use reuben_core::config::AudioConfig;
 use reuben_core::coordinator::{retire_queue, InstallBundle, RenderSide, RetireDrain, RetireQueue};
-use reuben_core::plan::Plan;
+use reuben_core::plan::{Plan, PreparedRoutes};
 use reuben_core::probe::ProbeSlots;
 use reuben_core::registry::Registry;
 use reuben_core::Engine;
@@ -147,6 +147,8 @@ pub struct Coordinator {
     installed_hash: String,
     /// The installed Plan's probe slots; a rejected swap leaves them alone.
     installed_probes: Arc<ProbeSlots>,
+    /// The installed Plan's prepared routes; a rejected swap leaves them alone.
+    installed_routes: Arc<PreparedRoutes>,
     /// The interface input addresses whose live value the last committed swap replaced with the
     /// document's.
     live_reset: Vec<String>,
@@ -174,6 +176,7 @@ impl Coordinator {
             build_engine(&doc, &registry, &*resolver, config)?;
         let (retire, retired) = retire_queue(RETIRE_QUEUE_CAPACITY);
         engine.set_retire_queue(retire.clone());
+        let installed_routes = Arc::clone(engine.prepared_routes());
         // Record the initial engine's logical geometry before it moves into the RenderSide:
         // the native shell reads it to build the first device output map.
         let installed_channels = engine.channels();
@@ -191,6 +194,7 @@ impl Coordinator {
             installed_channels,
             installed_input_channels,
             installed_probes,
+            installed_routes,
             live_reset: Vec::new(),
             retire,
             retired,
@@ -218,6 +222,13 @@ impl Coordinator {
     /// The installed Plan's probe slots, for the host to switch on and read.
     pub fn installed_probes(&self) -> Arc<ProbeSlots> {
         Arc::clone(&self.installed_probes)
+    }
+
+    /// The prepared routes of the Plan the last commit installed: the table a producer prepares a
+    /// live send against. The render side reaches that Plan at its next callback, so until it has
+    /// taken the swap home this names a Plan that is not live yet.
+    pub fn installed_prepared_routes(&self) -> Arc<PreparedRoutes> {
+        Arc::clone(&self.installed_routes)
     }
 
     /// The canonical installed document: a fresh conversation reads what is playing
@@ -445,6 +456,7 @@ impl Coordinator {
         // output map off-thread and to compute the input dark-degrade warning.
         let new_channels = engine.channels();
         let new_input_channels = engine.input_channels();
+        let new_routes = Arc::clone(engine.prepared_routes());
 
         // Precompute the migration table + diff (the edit always wins). This is the commit's work,
         // not the build's: the table pairs Plan indices against the Engine this swap displaces, so
@@ -478,6 +490,7 @@ impl Coordinator {
         self.installed_input_channels = new_input_channels;
         self.installed_hash = content_hash.clone();
         self.installed_probes = probes;
+        self.installed_routes = new_routes;
         self.live_reset = live_reset;
 
         SwapReport {

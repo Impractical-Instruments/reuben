@@ -154,8 +154,9 @@ impl Operator for Filter {
   `PrepareError` carrying the byte span at fault and a short message
   ([`prepare.rs`](../../crates/reuben-core/src/prepare.rs)). It runs off the render thread: at
   Plan build for a document default (an unset input compiles `""`), so a default it refuses fails
-  validation and the edit is refused. Nothing prepares a live send yet, so a live string sent to the
-  input is dropped like any raw text. The input then holds an
+  validation and the edit is refused; and on the engine channel's `send` thread for a live send,
+  against the Plan installed, so text it refuses refuses that whole send with the span. A string
+  that skipped that step (raw text over OSC/UDP) is dropped. The input then holds an
   `Arg::Prepared`, read through its `In<Held<Prepared>>` handle as `Option<&Prepared>` borrowed
   from the latch, the payload by `.payload::<T>()` — no copy, no allocation. Routing delivers only
   a value this preparer built (the kind tag the macro derives from the path: crate-rooted when

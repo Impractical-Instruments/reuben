@@ -39,8 +39,8 @@ use std::time::{Duration, Instant};
 
 use reuben_api::authoring::Diag;
 use reuben_api::engine::{
-    admit, dispatch, dispatch_request, read_ndjson_line, Admit, ChannelState, ControlMessage,
-    DiagnosticsReport, EngineHost, IngressClosed, ListWhat, MetersReport, Request, Response,
+    admit, dispatch, dispatch_request, read_ndjson_line, Admit, ChannelState, DiagnosticsReport,
+    EngineHost, IngressClosed, ListWhat, MetersReport, PreparedMessage, Request, Response,
     Subscription, Token, TOKEN_REQUIRED,
 };
 use reuben_api::probe::ProbeSlots;
@@ -590,7 +590,7 @@ impl EngineHost for NativeHost {
     /// a gesture to one block and half to the next.
     ///
     /// A batch the full ring refuses is dropped and counted, and the `send` still answers `Ok`.
-    fn deliver_control(&self, messages: Vec<ControlMessage>) -> Result<(), IngressClosed> {
+    fn deliver_control(&self, messages: Vec<PreparedMessage>) -> Result<(), IngressClosed> {
         let mut control = self.control.lock().unwrap_or_else(|e| e.into_inner());
         if control.is_closed() {
             return Err(IngressClosed);
@@ -598,10 +598,19 @@ impl EngineHost for NativeHost {
         let mut batch = control.batch();
         batch.extend(messages.into_iter().map(|message| OscIn {
             address: message.address,
-            args: message.args.into_iter().map(Into::into).collect(),
+            args: message.args,
+            against: message.against,
+            dropped: false,
         }));
         let _ = control.push(batch);
         Ok(())
+    }
+
+    fn take_dropped_sends(&self) -> Vec<String> {
+        self.control
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take_dropped()
     }
 
     /// **RT-safety:** [`Diagnostics::snapshot`] is `Relaxed` atomic loads into an owned copy, so
@@ -668,6 +677,7 @@ pub fn diagnostics_report(snapshot: &Snapshot) -> DiagnosticsReport {
         wired_writes_dropped,
         retire_queue_dropped_full,
         unprepared_writes_dropped,
+        stale_sends_dropped,
     } = *snapshot;
     DiagnosticsReport {
         output_xruns,
@@ -678,6 +688,7 @@ pub fn diagnostics_report(snapshot: &Snapshot) -> DiagnosticsReport {
         wired_writes_dropped,
         retire_queue_dropped_full,
         unprepared_writes_dropped,
+        stale_sends_dropped,
     }
 }
 
@@ -1066,7 +1077,7 @@ mod tests {
     use super::*;
     use crate::control::{ring_pair, ControlRing};
     use crate::test_support::{no_store, served, FakeCallback};
-    use reuben_api::engine::{ControlArg, Request, Response, MAX_SEND_BATCH};
+    use reuben_api::engine::{ControlArg, ControlMessage, Request, Response, MAX_SEND_BATCH};
     use reuben_api::render::{Arg, AudioConfig};
 
     fn cfg() -> AudioConfig {
@@ -1173,6 +1184,24 @@ mod tests {
         String,
         Library,
     ) {
+        let (state, side, control_rx, base_hash, library, _host) =
+            open_parts_counting(base, case, Diagnostics::new());
+        (state, side, control_rx, base_hash, library)
+    }
+
+    /// [`open_parts`], the host counting into `diagnostics` and handed back too.
+    fn open_parts_counting(
+        base: &str,
+        case: &str,
+        diagnostics: Arc<Diagnostics>,
+    ) -> (
+        ChannelState,
+        reuben_api::render::RenderSide,
+        ControlRing,
+        String,
+        Library,
+        Arc<NativeHost>,
+    ) {
         use reuben_api::resources::Resources;
         use reuben_api::staged::Staged;
         use reuben_api::FsResolver;
@@ -1189,15 +1218,21 @@ mod tests {
             reuben_api::engine::install_initial(base, staged.clone(), cfg())
                 .expect("initial install");
         let base_hash = coordinator.installed_hash();
-        let (control_tx, control_rx) = ring_pair(Diagnostics::new());
-        let host = NativeHost::new(Diagnostics::new(), control_tx)
-            .with_library_root(Some(library.0.clone()))
-            .with_render_config(Arc::new(HeadlessRenderConfig {
-                opened_input_channels: 0,
-            }));
-        let state = ChannelState::new(coordinator, Arc::new(host), served(staged))
-            .with_installed_source(Some(top.display().to_string()));
-        (state, side, control_rx, base_hash, library)
+        let (control_tx, control_rx) = ring_pair(Arc::clone(&diagnostics));
+        let host = Arc::new(
+            NativeHost::new(diagnostics, control_tx)
+                .with_library_root(Some(library.0.clone()))
+                .with_render_config(Arc::new(HeadlessRenderConfig {
+                    opened_input_channels: 0,
+                })),
+        );
+        let state = ChannelState::new(
+            coordinator,
+            Arc::clone(&host) as Arc<dyn EngineHost>,
+            served(staged),
+        )
+        .with_installed_source(Some(top.display().to_string()));
+        (state, side, control_rx, base_hash, library, host)
     }
 
     #[test]
@@ -1218,6 +1253,8 @@ mod tests {
         d.record_wired_writes_dropped(0);
         d.record_unprepared_writes_dropped(6);
         d.record_unprepared_writes_dropped(0);
+        d.record_stale_sends_dropped(7);
+        d.record_stale_sends_dropped(0);
         let report = diagnostics_report(&d.snapshot());
         assert_eq!(report.output_xruns, 3);
         assert_eq!(report.input_ring_underruns, 11);
@@ -1226,6 +1263,7 @@ mod tests {
         assert_eq!(report.control_batches_dropped_full, 4);
         assert_eq!(report.wired_writes_dropped, 5);
         assert_eq!(report.unprepared_writes_dropped, 6);
+        assert_eq!(report.stale_sends_dropped, 7);
         assert_eq!(
             report.retire_queue_dropped_full, 0,
             "no retire queue watched yet"
@@ -1999,10 +2037,68 @@ mod tests {
         cb.stop();
     }
 
-    fn one_send() -> Vec<ControlMessage> {
-        vec![ControlMessage {
+    /// A batch holding a message compiled for a Plan that a swap has since replaced reaches the
+    /// callback after the install: the whole batch is dropped rather than queued, every message
+    /// counted, and every address named to subscribers by the engine's watch thread, through the
+    /// real ring, drain and producer.
+    #[test]
+    fn a_send_compiled_for_a_replaced_plan_is_dropped_counted_and_named() {
+        use crate::engine::DroppedSendWatch;
+        use reuben_api::engine::{Event, PreparedAgainst};
+
+        let diagnostics = Diagnostics::new();
+        let (state, side, control_rx, _, library, host) =
+            open_parts_counting(BASE_DOC, "stale_send", Arc::clone(&diagnostics));
+        let replaced = PreparedAgainst::new(Arc::clone(side.engine.prepared_routes()));
+        let cb = FakeCallback::counting(side, control_rx, Arc::clone(&diagnostics));
+        let _watch = DroppedSendWatch::spawn(state.clone(), Arc::clone(&diagnostics))
+            .expect("spawn the watch thread");
+        let events = state.subscribe();
+
+        match dispatch(
+            &state,
+            &library.open("next.json", BASE_DOC, None).to_ndjson(),
+        ) {
+            Response::SwapReport(report) => assert!(report.report.ok, "{report:?}"),
+            other => panic!("expected SwapReport, got {other:?}"),
+        }
+        assert!(matches!(
+            events.recv_timeout(Duration::from_secs(2)),
+            Ok(Event::Opened { .. })
+        ));
+
+        // The host's own ingress, as `send` reaches it, carrying what a send compiled before the
+        // open would carry.
+        let stale = vec![
+            PreparedMessage {
+                address: "/osc/freq".to_string(),
+                args: vec![Arg::F32(220.0)],
+                against: Some(replaced),
+            },
+            PreparedMessage {
+                address: "/osc/amp".to_string(),
+                args: vec![Arg::F32(0.5)],
+                against: None,
+            },
+        ];
+        assert_eq!(host.deliver_control(stale), Ok(()));
+
+        assert_eq!(
+            events.recv_timeout(Duration::from_secs(2)),
+            Ok(Event::SendsDropped {
+                addresses: vec!["/osc/amp".to_string(), "/osc/freq".to_string()],
+            }),
+            "the whole batch is dropped and every address named"
+        );
+        assert_eq!(diagnostics.snapshot().stale_sends_dropped, 2);
+        cb.stop();
+    }
+
+    fn one_send() -> Vec<PreparedMessage> {
+        vec![PreparedMessage {
             address: "/osc/freq".to_string(),
-            args: vec![ControlArg::F32(440.0)],
+            args: vec![Arg::F32(440.0)],
+            against: None,
         }]
     }
 
@@ -2058,14 +2154,11 @@ mod tests {
         assert_eq!(
             queued,
             vec![
-                OscIn {
-                    address: "/osc/freq".to_string(),
-                    args: vec![Arg::F32(440.5)],
-                },
-                OscIn {
-                    address: "/osc/shape".to_string(),
-                    args: vec![Arg::Str("Up".into()), Arg::I32(3)],
-                },
+                OscIn::new("/osc/freq".to_string(), vec![Arg::F32(440.5)]),
+                OscIn::new(
+                    "/osc/shape".to_string(),
+                    vec![Arg::Str("Up".into()), Arg::I32(3)]
+                ),
             ],
             "both messages arrive in order, each atom as its primitive Arg"
         );

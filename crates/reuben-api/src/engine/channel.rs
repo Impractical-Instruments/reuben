@@ -24,7 +24,8 @@ use std::time::Duration;
 use super::prose::ENGINE_UNREACHABLE_GUIDANCE;
 use super::wire::{
     over_long_probe_set_refusal, Conflict, ControlMessage, DiagnosticsReport, DocumentSnapshot,
-    Event, HeldSwap, Library, ListWhat, MetersReport, Request, Response, SwapReport, MAX_PROBES,
+    Event, HeldSwap, Library, ListWhat, MetersReport, Request, Response, SendRefusal, SwapReport,
+    MAX_PROBES,
 };
 
 /// How long to wait for the one response line before giving up on a *wedged* server (connected but
@@ -110,6 +111,15 @@ pub enum SwapOutcome {
     /// The server would not install it (a name it does not offer, say): nothing installed. The
     /// message is the server's, verbatim.
     Refused(String),
+}
+
+/// The outcome of a `send` that reached the engine. Transport failures are [`ChannelError`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum SendOutcome {
+    /// The engine queued the whole batch for its next block.
+    Queued,
+    /// A string did not compile for the input it was sent to: nothing was queued.
+    Refused(SendRefusal),
 }
 
 /// The outcome of a `call` that reached the engine — a verb that ran, or one the server refused to
@@ -322,14 +332,17 @@ impl Channel {
 
     /// Audition a batch of control values on the running engine.
     ///
-    /// `Ok` means "received and queued", NOT "applied": a message whose address routes nowhere is
-    /// dropped at the engine's ingress. An empty or over-long batch is refused by the engine as a
-    /// [`Channel`](ChannelError::Channel) error rather than acked.
-    pub fn send(&self, messages: Vec<ControlMessage>) -> Result<(), ChannelError> {
+    /// [`SendOutcome::Queued`] means "received and queued", NOT "applied": a message whose address
+    /// routes nowhere is dropped at the engine's ingress. [`SendOutcome::Refused`] is text aimed at
+    /// an input that compiles it that did not compile, and nothing was queued. An empty or
+    /// over-long batch is refused by the engine as a [`Channel`](ChannelError::Channel) error
+    /// rather than acked.
+    pub fn send(&self, messages: Vec<ControlMessage>) -> Result<SendOutcome, ChannelError> {
         match self.exchange(&Request::Send { messages })? {
-            Response::Sent => Ok(()),
+            Response::Sent => Ok(SendOutcome::Queued),
+            Response::SendRefused(refusal) => Ok(SendOutcome::Refused(refusal)),
             Response::Error { message } => Err(ChannelError::Channel(message)),
-            other => Err(unexpected("send", "sent", &other)),
+            other => Err(unexpected("send", "sent/send_refused", &other)),
         }
     }
 

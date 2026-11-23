@@ -16,9 +16,10 @@ use std::time::{Duration, Instant};
 /// full-write events. Shared via `Arc` between whichever RT thread(s) bump a counter and
 /// whatever logs it.
 ///
-/// All counters use `Ordering::Relaxed`: each is an independent running total with no ordering
-/// relationship to any other memory a reader might inspect — a logger only ever wants "how many
-/// so far," never a happens-before guarantee against another field or another thread's writes.
+/// Every counter but `stale_sends_dropped` uses `Ordering::Relaxed`: each is an independent running
+/// total with no ordering relationship to any other memory a reader might inspect — a logger only
+/// ever wants "how many so far," never a happens-before guarantee against another field or another
+/// thread's writes.
 /// That is exactly what `Relaxed` guarantees and it is the cheapest ordering available, which
 /// matters because [`Diagnostics::record_output_xrun`] can be called from the render callback.
 #[derive(Debug, Default)]
@@ -61,10 +62,19 @@ pub struct Diagnostics {
     /// controller writes a node input it should reach through the interface input feeding it.
     pub wired_writes_dropped: AtomicU64,
     /// Strings the engine dropped at a `str` input that compiles its text, counted in
-    /// **messages**: raw text, or a value another preparer built. No path prepares a live send yet
-    /// (OSC over UDP and the engine channel's `send` both carry raw text), so every live string sent
-    /// to such an input counts here; set the text in the document instead.
+    /// **messages**: raw text, or a value another preparer built. The engine channel's `send`
+    /// compiles a string before it is queued; OSC over UDP carries raw text, so a string sent that
+    /// way counts here. Diagnosis: send it through the engine channel instead.
     pub unprepared_writes_dropped: AtomicU64,
+    /// Messages of `send` batches whose strings were compiled for one Plan, dropped whole by the
+    /// callback because a swap had installed another before it drained them, counted in
+    /// **messages**. Their addresses are named to the engine channel's subscribers, so a client
+    /// can resend. Diagnosis: a send raced an edit or an open; resend it.
+    ///
+    /// Written with `Release` once the callback has handed back every batch it drained, and read
+    /// with `Acquire` by whatever names the drops, so a reader that sees the count move finds
+    /// those batches back at their producer.
+    pub stale_sends_dropped: AtomicU64,
     /// The Coordinator's retire queue, once [`watch_retire_queue`](Self::watch_retire_queue) is
     /// given it: its overflow count is the engine's, read here so the log line carries it too.
     retired: OnceLock<RetireDrain>,
@@ -127,6 +137,20 @@ impl Diagnostics {
         }
     }
 
+    /// Count `n` messages the callback dropped in stale batches, after handing back every batch it
+    /// drained. A single atomic add, skipped for zero.
+    pub fn record_stale_sends_dropped(&self, n: u64) {
+        if n > 0 {
+            self.stale_sends_dropped.fetch_add(n, Ordering::Release);
+        }
+    }
+
+    /// The running count of stale sends dropped, read with `Acquire`; see
+    /// [`stale_sends_dropped`](Self::stale_sends_dropped).
+    pub fn load_stale_sends_dropped(&self) -> u64 {
+        self.stale_sends_dropped.load(Ordering::Acquire)
+    }
+
     /// Read the retire overflow from `drain` from now on. Only the first call takes effect: a
     /// session has one Coordinator.
     pub fn watch_retire_queue(&self, drain: RetireDrain) {
@@ -144,6 +168,7 @@ impl Diagnostics {
             wired_writes_dropped: self.wired_writes_dropped.load(Ordering::Relaxed),
             retire_queue_dropped_full: self.retired.get().map_or(0, RetireDrain::dropped_full),
             unprepared_writes_dropped: self.unprepared_writes_dropped.load(Ordering::Relaxed),
+            stale_sends_dropped: self.stale_sends_dropped.load(Ordering::Relaxed),
         }
     }
 }
@@ -163,6 +188,7 @@ pub struct Snapshot {
     /// is not drained between batches.
     pub retire_queue_dropped_full: u64,
     pub unprepared_writes_dropped: u64,
+    pub stale_sends_dropped: u64,
 }
 
 impl Snapshot {
@@ -179,7 +205,7 @@ pub fn log_snapshot(s: &Snapshot) {
     eprintln!(
         "diagnostics: output_xruns={} input_ring_underruns={} input_ring_overruns={} \
          input_ring_producer_drops={} control_batches_dropped_full={} wired_writes_dropped={} \
-         retire_queue_dropped_full={} unprepared_writes_dropped={}",
+         retire_queue_dropped_full={} unprepared_writes_dropped={} stale_sends_dropped={}",
         s.output_xruns,
         s.input_ring_underruns,
         s.input_ring_overruns,
@@ -187,7 +213,8 @@ pub fn log_snapshot(s: &Snapshot) {
         s.control_batches_dropped_full,
         s.wired_writes_dropped,
         s.retire_queue_dropped_full,
-        s.unprepared_writes_dropped
+        s.unprepared_writes_dropped,
+        s.stale_sends_dropped
     );
 }
 

@@ -19,7 +19,9 @@ pub const SEND_LIVE_CONTROLS: &str =
      to an input a wire or an interface input feeds is dropped and counted \
      (wired_writes_dropped); send to the interface input instead. Opening an instrument, even \
      the one playing, replaces them all. Fold any you want to keep into the instrument \
-     document with an edit. The ack means the engine received \
+     document with an edit. A message to a str input must be one string, compiled first: anything \
+     else, or text that does not compile, refuses the whole batch, naming the message and the \
+     bytes at fault, and nothing in it is applied. The ack means the engine received \
      the batch and queued it for the next rendered block — not that it took effect: an address \
      matching no node/port is dropped silently, exactly as it would be arriving from an external \
      controller. \

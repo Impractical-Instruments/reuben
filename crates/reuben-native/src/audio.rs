@@ -3,7 +3,7 @@
 //! Opens an output device (the host default, or the one a [`DeviceProfile`]'s `output.device`
 //! names), builds a [`Coordinator`] + its RT-side [`RenderSlot`] matched to the device sample
 //! rate, and renders inside the audio callback by driving the [`RenderSlot`] rather than an
-//! `Engine` directly. Incoming control ([`ControlBatch`](crate::osc::ControlBatch)) is drained at
+//! `Engine` directly. Incoming control ([`ControlBatch`]) is drained at
 //! the top of each callback from a [`ControlDrain`]: one bounded ring pair per producer thread (the
 //! OSC/UDP decode thread, and the engine channel's `send` connections sharing one), each batch
 //! applied whole and pushed back to its producer, so no batch is ever freed on the audio thread. A
@@ -45,7 +45,7 @@ use std::time::{Duration, Instant};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, SupportedBufferSize};
 use reuben_api::authoring::Diag;
-use reuben_api::engine::{Coordinator, FromDocumentError, LoadWarning};
+use reuben_api::engine::{control_fate, ControlFate, Coordinator, FromDocumentError, LoadWarning};
 use reuben_api::render::{
     swap_pair, AudioConfig, CoordinatorMailbox, Message, RenderMailbox, RenderSide, RenderSlot,
     SwapInFlight,
@@ -57,6 +57,7 @@ use crate::engine_channel::{
     dark_degrade_warning, input_stream_fits, RenderConfigPublisher, RenderLiveness, SwapPollGate,
 };
 use crate::meters::{Bank, Meters};
+use crate::osc::ControlBatch;
 use crate::profile::DeviceProfile;
 
 /// How long [`NativeRenderConfig::publish`] polls to install a swap's output map before giving up.
@@ -412,7 +413,7 @@ where
                 // paired `(freq, gate)` can never straddle two. Batches are bounded at their
                 // producers, and each ring is drained only as far as it was full on entry, which is
                 // what keeps this drain's cost bounded per callback.
-                drain_control(&mut control, &mut slot);
+                drain_control(&mut control, &mut slot, &diag_for_callback);
 
                 // The current engine's logical output width (a swap may have just changed it), read
                 // once so buffer sizing and the output map agree. `sync` installs the pending map
@@ -528,12 +529,49 @@ where
 /// Queue every control batch waiting on `control` at the slot's Engine, each batch whole, and hand
 /// each back to its producer. The render callback's control step, so RT-safe: see
 /// [`ControlDrain::drain`].
-pub fn drain_control(control: &mut ControlDrain, slot: &mut RenderSlot) {
+///
+/// Each batch's fate is [`control_fate`]'s. While a swap installs, batches wait on their rings for
+/// the Engine that installs, so none is queued on an Engine about to retire. Whether one installs
+/// is read once, by [`RenderSlot::latch_install`], and the callback's fill must follow the drain:
+/// a swap the drain did not see begins its ramp on the next callback. A batch whose strings
+/// a `send` compiled for a Plan no longer live is queued not at all: every message is marked
+/// [`dropped`](crate::osc::OscIn::dropped) for its producer to name, and counted into
+/// `diagnostics` once every batch is back, so whoever sees the count move finds them there.
+pub fn drain_control(control: &mut ControlDrain, slot: &mut RenderSlot, diagnostics: &Diagnostics) {
+    drain_control_each(control, slot, diagnostics, |_| {});
+}
+
+/// [`drain_control`], showing each batch to `each` once it is queued or dropped, before it goes
+/// back.
+pub(crate) fn drain_control_each(
+    control: &mut ControlDrain,
+    slot: &mut RenderSlot,
+    diagnostics: &Diagnostics,
+    mut each: impl FnMut(&ControlBatch),
+) {
+    // One look per callback, shared with this callback's fill: a swap committed after it waits
+    // for the next callback to begin its ramp, so what this queues renders on the live Engine.
+    slot.latch_install();
+    let mut stale = 0;
     control.drain(|batch| {
-        for m in batch {
-            slot.queue_osc(&m.address, &m.args);
+        match control_fate(slot, batch.iter().map(|m| m.against.as_ref())) {
+            ControlFate::Wait => return false,
+            ControlFate::Drop => {
+                for m in batch.iter_mut() {
+                    m.dropped = true;
+                }
+                stale += batch.len() as u64;
+            }
+            ControlFate::Queue => {
+                for m in batch.iter() {
+                    slot.queue_osc(&m.address, &m.args);
+                }
+            }
         }
+        each(batch);
+        true
     });
+    diagnostics.record_stale_sends_dropped(stale);
 }
 
 /// What crosses the parallel render mailbox: the freshly-validated device output map

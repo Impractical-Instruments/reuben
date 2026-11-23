@@ -126,6 +126,101 @@ pub struct ControlMessage {
     pub args: Vec<ControlArg>,
 }
 
+/// Why a `send` was refused: the first message in the batch, aimed at an input that compiles its
+/// text, that was not one string or whose string its compiler refused. Nothing in the batch was
+/// applied.
+///
+/// It carries the text itself, so a client can print the span under it without having kept what
+/// it sent: the whole text, or a window of at most a kilobyte around the span when the text is
+/// longer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendRefusal {
+    /// The refused message's position in the batch, from 0.
+    pub message: usize,
+    /// The refused message's address.
+    pub address: String,
+    /// The text that did not compile, or the window of it around the fault; empty when the
+    /// message was not one string.
+    pub text: String,
+    /// Byte offset of `text` in the string sent: 0 unless it was trimmed to a window.
+    #[serde(default)]
+    pub offset: usize,
+    /// Byte offset into `text` where the fault starts.
+    pub start: usize,
+    /// Byte offset into `text` where the fault ends; equal to `start` where something is missing,
+    /// and past the end of `text` when the window cut the fault short.
+    pub end: usize,
+    /// What is wrong there.
+    pub error: String,
+}
+
+impl SendRefusal {
+    /// `text` with a line of `^` inserted directly beneath the line the span starts on, the rest
+    /// of `text` after it.
+    ///
+    /// The marks run to the span's end or that line's end (a `\r` ending it is not a column), at
+    /// least one wide, so an empty span or one at the very end still shows. A span that runs on
+    /// past that line, or past the window `text` was trimmed to, ends its marks with `…`. The
+    /// padding copies each tab before the span and puts a space for every other `char`, so the
+    /// marks line up under monospace text with no wide characters. A start past the text or off a
+    /// `char` boundary is moved back onto one.
+    pub fn marked(&self) -> String {
+        let text = self.text.as_str();
+        let floor = |mut at: usize| {
+            at = at.min(text.len());
+            while !text.is_char_boundary(at) {
+                at -= 1;
+            }
+            at
+        };
+        let start = floor(self.start);
+        let line_start = text[..start].rfind('\n').map_or(0, |i| i + 1);
+        let line_end = text[start..].find('\n').map_or(text.len(), |i| start + i);
+        let content_end = if text[..line_end].ends_with('\r') && line_end > start {
+            line_end - 1
+        } else {
+            line_end
+        };
+        let end = floor(self.end).clamp(start, content_end);
+        let pad: String = text[line_start..start]
+            .chars()
+            .map(|c| if c == '\t' { '\t' } else { ' ' })
+            .collect();
+        let width = text[start..end].chars().count().max(1);
+        let cut = if self.end > self.start.max(content_end) {
+            "…"
+        } else {
+            ""
+        };
+        format!(
+            "{}\n{pad}{}{cut}{}",
+            &text[..line_end],
+            "^".repeat(width),
+            &text[line_end..]
+        )
+    }
+}
+
+impl core::fmt::Display for SendRefusal {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "message {} (`{}`) was refused, so nothing in the batch was applied: ",
+            self.message, self.address
+        )?;
+        if self.text.is_empty() && self.start == self.end {
+            return f.write_str(&self.error);
+        }
+        write!(
+            f,
+            "bytes {}..{}: {}",
+            self.offset + self.start,
+            self.offset + self.end,
+            self.error
+        )
+    }
+}
+
 /// One engine-channel request (its twelve verbs), serialized as a single JSON
 /// object tagged by `verb`: `{"verb": "ping"}`, `{"verb": "open", "name": …}`, ….
 ///
@@ -174,6 +269,11 @@ pub enum Request {
     ///
     /// Between 1 and [`MAX_SEND_BATCH`] messages; the engine rejects anything outside that with
     /// [`Response::Error`], so an empty batch is a client bug reported rather than a no-op acked.
+    ///
+    /// One step comes before the ingress: a message aimed at an input that compiles its text must
+    /// be one string, which is compiled here, against the Plan installed, and travels compiled.
+    /// Anything else there, or text that does not compile, refuses the whole batch with
+    /// [`Response::SendRefused`].
     Send {
         /// The messages to apply, in order.
         messages: Vec<ControlMessage>,
@@ -452,6 +552,10 @@ pub enum Response {
     /// read `count < len` as "some were rejected", a signal that can never arrive. (Contrast
     /// [`Conflict`], whose two hashes earn their place precisely because they can disagree.)
     Sent,
+    /// `Send`'s answer when a message aimed at an input that compiles its text was not one string,
+    /// or its string did not compile: nothing in the batch was queued. Flat next to the `reply`
+    /// tag.
+    SendRefused(SendRefusal),
     /// A channel-level failure: an unreadable request, or an engine-side fault that
     /// produced no domain-shaped answer. Distinct from a `SwapReport` with `ok: false`,
     /// which is the channel *working*.
@@ -522,6 +626,11 @@ pub enum Event {
     Opened { name: String, hash: String },
     /// The open instrument's documents no longer load; what played before keeps playing.
     Invalid { errors: Vec<Diag> },
+    /// A live send's strings were compiled for the instrument that played before a swap, and the
+    /// swap installed before the send was applied, so the whole send was dropped rather than
+    /// applied in part to what plays now. `addresses` lists, sorted and once each, every address
+    /// it carried; send it again.
+    SendsDropped { addresses: Vec<String> },
 }
 
 /// Who made a [`Event::Changed`] change.
@@ -581,11 +690,17 @@ pub struct DiagnosticsReport {
     #[serde(default)]
     pub retire_queue_dropped_full: u64,
     /// Strings dropped at a `str` input that compiles its text, for not being a value its
-    /// preparer built: raw text, or a value another preparer built (messages). No path prepares a
-    /// live send yet, so every live string sent to such an input is counted here. Absent from a
-    /// report by an engine that predates it, and then zero.
+    /// preparer built: raw text, or a value another preparer built (messages). A `send` compiles
+    /// its strings before they are queued, so these arrived some other way: over OSC/UDP, which
+    /// sends raw text. Absent from a report by an engine that predates it, and then zero.
     #[serde(default)]
     pub unprepared_writes_dropped: u64,
+    /// Messages of `send` batches whose strings were compiled for one Plan and that reached the
+    /// render thread after a swap had installed another, so the whole batch was dropped rather
+    /// than applied (messages). Each drop is also announced to subscribers, naming the addresses.
+    /// Absent from a report by an engine that predates it, and then zero.
+    #[serde(default)]
+    pub stale_sends_dropped: u64,
 }
 
 /// The engine's levels at the device: what it sends out, after the output map, and what the input
@@ -750,6 +865,90 @@ mod tests {
         }
     }
 
+    fn send_refusal() -> SendRefusal {
+        SendRefusal {
+            message: 1,
+            address: "/seq/steps".to_string(),
+            text: "1 x2 3".to_string(),
+            offset: 0,
+            start: 2,
+            end: 4,
+            error: "expected a whole number".to_string(),
+        }
+    }
+
+    /// The refusal is flat beside its tag, and carries the text so a client prints the span under
+    /// it without having kept what it sent.
+    #[test]
+    fn a_send_refusal_carries_the_text_and_its_span_flat_beside_the_tag() {
+        let v: serde_json::Value =
+            serde_json::from_str(&Response::SendRefused(send_refusal()).to_ndjson())
+                .expect("as value");
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "reply": "send_refused",
+                "message": 1,
+                "address": "/seq/steps",
+                "text": "1 x2 3",
+                "offset": 0,
+                "start": 2,
+                "end": 4,
+                "error": "expected a whole number"
+            })
+        );
+        assert_eq!(send_refusal().marked(), "1 x2 3\n  ^^");
+    }
+
+    /// The marks go under the line the span starts on, padded with the tabs before it, and a span
+    /// at the very end of the text or past it still shows one mark.
+    #[test]
+    fn marks_sit_under_the_spans_line_after_its_tabs() {
+        let at = |text: &str, start, end| {
+            SendRefusal {
+                text: text.to_string(),
+                start,
+                end,
+                ..send_refusal()
+            }
+            .marked()
+        };
+        assert_eq!(at("1 2\n3 x", 6, 7), "1 2\n3 x\n  ^");
+        assert_eq!(
+            at("1 2\n3 x\n4", 6, 7),
+            "1 2\n3 x\n  ^\n4",
+            "under its own line"
+        );
+        assert_eq!(at("1 2\n3 xyz\n4", 6, 9), "1 2\n3 xyz\n  ^^^\n4");
+        assert_eq!(
+            at("1 2\n3 xyz\n4", 6, 11),
+            "1 2\n3 xyz\n  ^^^…\n4",
+            "a span running onto the next line says so"
+        );
+        assert_eq!(at("ab", 1, 9), "ab\n ^…", "a span the window cut says so");
+        assert_eq!(
+            at("1 x\r\n2", 2, 4),
+            "1 x\r\n  ^…\n2",
+            "a CR is not a column"
+        );
+        assert_eq!(at("\tx", 1, 2), "\tx\n\t^");
+        assert_eq!(at("ab", 2, 2), "ab\n  ^");
+        assert_eq!(at("ab", 9, 9), "ab\n  ^");
+        assert_eq!(at("a\n", 2, 2), "a\n\n^");
+        assert_eq!(at("", 0, 0), "\n^");
+    }
+
+    #[test]
+    fn an_empty_span_marks_one_column_and_columns_count_chars() {
+        let refusal = SendRefusal {
+            text: "é ab".to_string(),
+            start: 3,
+            end: 3,
+            ..send_refusal()
+        };
+        assert_eq!(refusal.marked(), "é ab\n  ^");
+    }
+
     fn diagnostics_report() -> DiagnosticsReport {
         DiagnosticsReport {
             output_xruns: 2,
@@ -760,6 +959,7 @@ mod tests {
             wired_writes_dropped: 3,
             retire_queue_dropped_full: 3,
             unprepared_writes_dropped: 2,
+            stale_sends_dropped: 4,
         }
     }
 
@@ -1092,6 +1292,7 @@ mod tests {
             Response::Meters(meters_report()),
             Response::Meters(MetersReport::default()),
             Response::Sent,
+            Response::SendRefused(send_refusal()),
             Response::Conflict(Conflict {
                 expected: "0badc0de0badc0de".to_string(),
                 actual: "00c0ffee00c0ffee".to_string(),
@@ -1173,6 +1374,12 @@ mod tests {
                 },
                 serde_json::json!({"event": "invalid", "errors": [{"message": "unknown operator"}]}),
             ),
+            (
+                Event::SendsDropped {
+                    addresses: vec!["/seq/steps".to_string()],
+                },
+                serde_json::json!({"event": "sends_dropped", "addresses": ["/seq/steps"]}),
+            ),
         ];
         for (event, wire) in &events {
             let line = event.to_ndjson();
@@ -1220,7 +1427,8 @@ mod tests {
                 "control_batches_dropped_full": 7,
                 "wired_writes_dropped": 3,
                 "retire_queue_dropped_full": 3,
-                "unprepared_writes_dropped": 2
+                "unprepared_writes_dropped": 2,
+                "stale_sends_dropped": 4
             })
         );
     }
@@ -1238,6 +1446,7 @@ mod tests {
         assert_eq!(report.wired_writes_dropped, 0);
         assert_eq!(report.retire_queue_dropped_full, 0);
         assert_eq!(report.unprepared_writes_dropped, 0);
+        assert_eq!(report.stale_sends_dropped, 0);
     }
 
     #[test]

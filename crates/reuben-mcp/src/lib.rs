@@ -1986,6 +1986,7 @@ mod tests {
             wired_writes_dropped: 3,
             retire_queue_dropped_full: 1,
             unprepared_writes_dropped: 4,
+            stale_sends_dropped: 6,
         };
         let result = block_on(
             server_with(FakeTransport::reachable().with_diagnostics(report))
@@ -2004,6 +2005,7 @@ mod tests {
         assert_eq!(s["wired_writes_dropped"], serde_json::json!(3));
         assert_eq!(s["retire_queue_dropped_full"], serde_json::json!(1));
         assert_eq!(s["unprepared_writes_dropped"], serde_json::json!(4));
+        assert_eq!(s["stale_sends_dropped"], serde_json::json!(6));
     }
 
     #[test]

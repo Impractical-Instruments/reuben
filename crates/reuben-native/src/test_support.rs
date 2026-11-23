@@ -16,6 +16,7 @@ use reuben_api::resources::{ResolveError, Resources, SampleBuffer};
 use reuben_api::staged::Staged;
 
 use crate::control::{ControlDrain, ControlRing};
+use crate::diagnostics::Diagnostics;
 use crate::engine::{
     headless_config, start_with, EngineConfig, HeadlessDriver, Pace, Render, RunningEngine,
     StartError,
@@ -71,6 +72,11 @@ impl FakeCallback {
     /// Start driving `side`, draining `control` into the slot's `queue_osc`. The log keeps a copy
     /// of each batch; the batch itself goes back to its producer as on the real callback.
     pub fn spawn(side: RenderSide, control: ControlRing) -> Self {
+        Self::counting(side, control, Diagnostics::new())
+    }
+
+    /// [`spawn`](Self::spawn), counting into `diagnostics` what the device callback counts.
+    pub fn counting(side: RenderSide, control: ControlRing, diagnostics: Arc<Diagnostics>) -> Self {
         let queued = Arc::new(Mutex::new(Vec::new()));
         let batches = Arc::new(Mutex::new(Vec::new()));
         let (queued_log, batch_log) = (Arc::clone(&queued), Arc::clone(&batches));
@@ -87,6 +93,7 @@ impl FakeCallback {
             FAKE_PACE,
             ControlDrain::new(vec![control]),
             None,
+            diagnostics,
             record,
         )
         .expect("spawn the fake render callback");
