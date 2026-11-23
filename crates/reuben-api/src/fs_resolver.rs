@@ -767,12 +767,20 @@ mod tests {
             Self(dir)
         }
 
+        /// Joins a `/`-separated relative path one component at a time, so the result uses the
+        /// platform separator.
+        fn resolve(&self, relative: &str) -> PathBuf {
+            relative
+                .split('/')
+                .fold(self.0.clone(), |path, part| path.join(part))
+        }
+
         fn path(&self, relative: &str) -> String {
-            self.0.join(relative).display().to_string()
+            self.resolve(relative).display().to_string()
         }
 
         fn touch(&self, relative: &str) {
-            let path = self.0.join(relative);
+            let path = self.resolve(relative);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, "{}").unwrap();
         }
