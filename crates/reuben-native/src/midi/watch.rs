@@ -14,12 +14,12 @@ use reuben_api::tools::names;
 
 use super::router::SharedRouter;
 use super::routes::{build_routes, RouteTable};
-use crate::engine_channel::locate_surface;
-use crate::surface::SurfaceDoc;
+use reuben_api::find_surface;
+use reuben_api::surface::{SurfaceDoc, SurfaceKind};
 
 /// How often the watch asks what plays and looks for the map file: the most a swap or a map edit
 /// waits to reach the router. Each tick is one in-process `get_document` and a few `stat`s, one
-/// per directory [`locate_surface`] searches.
+/// per directory [`find_surface`] searches.
 const POLL: Duration = Duration::from_millis(250);
 
 /// What a rebuild is a function of: the instrument that plays, by source and content hash, and
@@ -84,7 +84,7 @@ fn inputs(channel: &Channel, follow_files: bool) -> Option<Inputs> {
     let map = document
         .source
         .as_deref()
-        .and_then(|source| locate_surface(Path::new(source), ".midi"))
+        .and_then(|source| find_surface(Path::new(source), SurfaceKind::Midi))
         .map(|path| {
             // Without file following, an edit to a map is read when the instrument changes; a map
             // appearing or disappearing is still seen at the next tick.

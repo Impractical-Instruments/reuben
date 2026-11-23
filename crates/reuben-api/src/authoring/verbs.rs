@@ -937,7 +937,14 @@ pub(super) fn expect_conflict(
         Ok(p) => p.index().render(),
         Err(e) => format!("(projection unavailable: {e})"),
     };
-    Some(Answer {
+    Some(expect_miss(actual, expected, zoom))
+}
+
+/// The answer to a guarded write whose `expect` is not the source's current hash `actual`:
+/// nothing written, the real hash handed back. Shared by instrument and surface-doc guards so the
+/// wording cannot drift between them.
+pub(super) fn expect_miss(actual: String, expected: &str, zoom: String) -> Answer<EditResult> {
+    Answer {
         output: EditResult {
             report: Report {
                 ok: false,
@@ -958,7 +965,7 @@ pub(super) fn expect_conflict(
             zoom,
         },
         summary: "write rejected by the expect guard — nothing changed".to_string(),
-    })
+    }
 }
 
 /// Normalize a document and hash its canonical bytes — the one path both the standing

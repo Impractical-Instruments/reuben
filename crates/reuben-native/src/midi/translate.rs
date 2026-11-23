@@ -12,37 +12,7 @@
 //! Channels are 1–16, as printed on hardware.
 
 use reuben_api::render::Arg;
-
-/// The message kinds a MIDI map can bind; the third address segment names one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MidiKind {
-    Note,
-    Cc,
-    Bend,
-    Pressure,
-    Program,
-}
-
-impl MidiKind {
-    pub const ALL: [MidiKind; 5] = [
-        Self::Note,
-        Self::Cc,
-        Self::Bend,
-        Self::Pressure,
-        Self::Program,
-    ];
-
-    /// The kind's address segment.
-    pub fn segment(self) -> &'static str {
-        match self {
-            Self::Note => "note",
-            Self::Cc => "cc",
-            Self::Bend => "bend",
-            Self::Pressure => "pressure",
-            Self::Program => "program",
-        }
-    }
-}
+use reuben_api::surface::MidiKind;
 
 /// One MIDI message in translated form.
 #[derive(Debug, Clone, PartialEq)]

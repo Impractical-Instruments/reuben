@@ -16,6 +16,7 @@ use crate::authoring::{
     self, edit_summary, hash_instrument, CallKind, Called, Diag, EditResult, Named, Report, Scope,
 };
 use crate::resources::{Adapter, Anchored, ResolveError, Resources, SampleBuffer};
+use crate::surface::SurfaceKind;
 
 use super::super::wire::{ChangedBy, Event, Library, LibraryEntry, Response, SwapReport};
 use super::{prepare_recording, went_live, ChannelState, Poisoned, ServerStore, Tree, Went};
@@ -113,6 +114,10 @@ impl Resources for NoSamples<'_> {
 
     fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
         self.0.canonical(source, referrer)
+    }
+
+    fn surface_source(&self, instrument: &str, surface: SurfaceKind) -> Option<String> {
+        self.0.surface_source(instrument, surface)
     }
 }
 

@@ -2,7 +2,11 @@
 //! `*` any run of characters, `[a-z]` / `[!a-z]` one character in (or not in) a set, and `{a,b}`
 //! one of several literal strings. No token matches a `/`.
 
-use super::translate::MidiKind;
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+
+use super::midi::MidiKind;
 
 /// A compiled address pattern.
 #[derive(Debug, Clone, PartialEq)]
@@ -33,8 +37,8 @@ pub enum PatternError {
     NoKind,
 }
 
-impl std::fmt::Display for PatternError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for PatternError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Malformed(why) => write!(f, "is not an OSC address pattern: {why}"),
             Self::NotMidi => f.write_str("does not start with /midi/"),

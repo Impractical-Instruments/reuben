@@ -16,7 +16,7 @@ default = ["authoring", "render"]
 # `reuben-document` is an authoring dependency and only an authoring one: the render half must
 # stay buildable for a target that has no serde, no filesystem and no `std`, which is the whole
 # point of the crate split below it.
-authoring = ["dep:reuben-document", "dep:serde", "dep:serde_json", "dep:schemars"]
+authoring = ["dep:reuben-contract", "dep:reuben-document", "dep:serde", "dep:serde_json", "dep:schemars"]
 # The render half: what a host drives per block, plus `install_graph` for a host that builds its
 # graph in Rust. Carries no serialization — a conversion here would be paid once per block, which
 # is the whole cost. CI cross-builds exactly this feature set, which is what keeps it free of `std`.
@@ -36,6 +36,7 @@ reuben-core = { path = "../reuben-core" }
 # The authoring half. Optional and gated by the `authoring` feature — never reachable from a
 # render-only build.
 reuben-document = { path = "../reuben-document", optional = true }
+reuben-contract = { path = "../reuben-contract", optional = true }
 serde = { workspace = true, optional = true, features = ["std"] }
 # The free-form leaves of the authoring surface — a node input's literal, a constant's value —
 # where the document format's own union is what the model sends and the engine type-checks.

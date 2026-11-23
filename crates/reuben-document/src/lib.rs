@@ -25,7 +25,7 @@ pub mod resources;
 pub mod structure;
 pub mod vocabulary;
 
-pub use contract::{content_hash, Diag, DiffSummary, Report, SwapReport};
+pub use contract::{content_hash, text_hash, Diag, DiffSummary, Report, SwapReport};
 pub use coordinator::{Coordinator, PreparedSwap};
 pub use describe::{describe_boundary, BoundaryDesc, BoundaryPortDesc};
 pub use engine::{from_document, FromDocumentError};

@@ -8,7 +8,7 @@ use reuben_api::authoring::{Boundary, PortInfo};
 use reuben_api::engine::ControlSendMessage;
 use serde_json::json;
 
-use reuben_native::surface::{SurfaceControl, SurfaceDoc};
+use reuben_api::surface::{check_screen_control, SurfaceControl, SurfaceDoc};
 
 /// Widgets per row for controls with no `group`, when the surface doc gives no `cols`.
 pub const DEFAULT_COLS: usize = 4;
@@ -144,11 +144,6 @@ fn gate(on: bool) -> f64 {
     }
 }
 
-pub fn clamp(value: f64, min: Option<f64>, max: Option<f64>) -> f64 {
-    let value = min.map_or(value, |min| value.max(min));
-    max.map_or(value, |max| value.min(max))
-}
-
 /// Where `value` sits in `min..=max` as a fraction, along the input's curve.
 pub fn to_unit(value: f64, min: f64, max: f64, exponential: bool) -> f64 {
     if max <= min {
@@ -172,35 +167,12 @@ pub fn from_unit(unit: f64, min: f64, max: f64, exponential: bool) -> f64 {
     }
 }
 
-/// The default label for an input: underscores become spaces and each word's first letter is
-/// uppercased (`kick_step1` → `Kick Step1`). Every surface-doc reader derives it the same way, so
-/// the editor's labels match the other surfaces'.
-pub fn default_label(name: &str) -> String {
-    name.replace('_', " ")
-        .split(' ')
-        .map(|word| {
-            let mut chars = word.chars();
-            match chars.next() {
-                Some(first) => first.to_uppercase().chain(chars).collect(),
-                None => String::new(),
-            }
-        })
-        .collect::<Vec<String>>()
-        .join(" ")
-}
+pub use reuben_api::surface::clamp;
+use reuben_api::surface::default_label;
+use reuben_api::surface::takes_a_value;
 
 fn number(port: &PortInfo) -> Option<f64> {
     port.default.as_ref().and_then(serde_json::Value::as_f64)
-}
-
-/// Whether a value control can drive this input: a held scalar, an integer, or a signal with a
-/// declared range. A signal with none is audio.
-fn takes_a_value(port: &PortInfo) -> bool {
-    match port.kind.as_str() {
-        "value" | "int" => true,
-        "signal" => port.min.is_some() && port.max.is_some(),
-        _ => false,
-    }
 }
 
 fn value_kind(port: &PortInfo, shape: Shape, min: Option<f64>, max: Option<f64>) -> Kind {
@@ -329,75 +301,31 @@ fn resolve(
     control: &SurfaceControl,
     boundary: &Boundary,
 ) -> Result<(Control, Vec<String>), String> {
-    let bind = &control.bind;
-    let Some(port) = boundary.inputs.iter().find(|p| &p.name == bind) else {
-        return Err(format!(
-            "surface control binds `{bind}`, which is not an interface input — skipped"
-        ));
-    };
-    let label = control.label.clone().unwrap_or_else(|| default_label(bind));
-    let widget = match control.widget.as_deref() {
-        Some(widget) => widget,
-        None if port.channel.is_none() && takes_a_value(port) => FADER,
-        None => {
-            return Err(format!(
-                "surface control `{label}` binds `{bind}` ({}) with no `widget`, and that input \
-                 has no default widget — skipped",
-                port.kind
-            ))
-        }
-    };
-    let mut adjusted = Vec::new();
-    let kind = match widget {
-        FADER | RADIAL => {
-            let mut narrow = |name: &str, given: Option<f64>, declared: Option<f64>| {
-                let Some(given) = given else { return declared };
-                let inside = clamp(given, port.min, port.max);
-                if inside != given {
-                    adjusted.push(format!(
-                        "surface control `{label}`: {name} {given} is outside the input's range \
-                         — using {inside}"
-                    ));
-                }
-                Some(inside)
-            };
-            let min = narrow("min", control.min, port.min);
-            let max = narrow("max", control.max, port.max);
-            // A range with nothing in it clamps every send to one value while the widget still
-            // shows travel; the input's own range is the honest fallback.
-            let (min, max) = match (min, max) {
-                (Some(low), Some(high)) if low > high => {
-                    adjusted.push(format!(
-                        "surface control `{label}`: min {low} is above max {high} — using the \
-                         input's own range"
-                    ));
-                    (port.min, port.max)
-                }
-                range => range,
-            };
+    let (checked, adjusted) = check_screen_control(control, boundary)?;
+    let port = boundary
+        .inputs
+        .iter()
+        .find(|p| p.name == checked.bind)
+        .expect("the check found the input");
+    let (bind, label) = (checked.bind, checked.label);
+    let kind = match checked.widget.as_str() {
+        widget @ (FADER | RADIAL) => {
             let shape = if widget == RADIAL {
                 Shape::Radial
             } else {
                 Shape::Fader
             };
-            value_kind(port, shape, min, max)
+            value_kind(port, shape, checked.min, checked.max)
         }
         PARAM_TOGGLE => Kind::Toggle {
             rest: number(port).is_some_and(|v| v >= 0.5),
         },
         NOTE_TOGGLE => Kind::NoteToggle {
-            note: control.note.ok_or_else(|| {
-                format!("note-toggle `{label}` (input `{bind}`) has no `note` — skipped")
-            })? as f64,
-            velocity: control.velocity.unwrap_or(1.0),
+            note: checked.note.expect("the check requires a note") as f64,
+            velocity: checked.velocity,
         },
         CHORD_BUTTON => Kind::ChordButton {
-            degree: control
-                .degree
-                .and_then(|degree| i32::try_from(degree).ok())
-                .ok_or_else(|| {
-                    format!("chord-button `{label}` (input `{bind}`) has no `degree` — skipped")
-                })?,
+            degree: checked.degree.expect("the check requires a degree"),
         },
         KEYBOARD => Kind::Keyboard,
         other => {
@@ -409,9 +337,9 @@ fn resolve(
     };
     Ok((
         Control {
-            bind: bind.clone(),
+            bind,
             label,
-            group: control.group.clone(),
+            group: checked.group,
             kind,
         },
         adjusted,
@@ -619,13 +547,6 @@ mod tests {
                 panel.warnings
             );
         }
-    }
-
-    #[test]
-    fn default_labels_uppercase_each_word_and_nothing_else() {
-        assert_eq!(default_label("kick_step1"), "Kick Step1");
-        assert_eq!(default_label("mix2out"), "Mix2out");
-        assert_eq!(default_label("tempo"), "Tempo");
     }
 
     #[test]
