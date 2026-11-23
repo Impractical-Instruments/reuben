@@ -1,9 +1,9 @@
 # Scale-degree patterns for the `pattern-melody` instrument.
 #
 # Play it, from the repo root:   reuben play instruments/pattern-melody.json
-# Then, in another terminal:     reuben live sets/pattern-melody.reuben
+# Then, in another terminal:     reuben live patterns/pattern-melody.rpat
 # Or send one line: in VS Code put the cursor on it and press Ctrl+Enter (see
-# editors/vscode/README.md), or run `reuben send --file sets/pattern-melody.reuben --line <n>`.
+# editors/vscode/README.md), or run `reuben send --file patterns/pattern-melody.rpat --line <n>`.
 #
 # One live line below sends to /pattern/in. Every `# /pattern/in  ...` line under it is an
 # alternative: uncomment it (and comment the live line) and save. The new pattern takes over at

@@ -1,5 +1,5 @@
 //! The text-editor clients: `reuben send` sends one string to an input that compiles its text, and
-//! `reuben live` sends a set file's lines each time it is saved. Both reach the running
+//! `reuben live` sends a pattern file's lines each time it is saved. Both reach the running
 //! `reuben play` through the engine channel's `send` verb and nothing else.
 //!
 //! Every problem prints as `<file>:<line>:<col>: error: <message>`, 1-based, the column counted in
@@ -20,7 +20,7 @@ use reuben_api::engine::{
 /// The read budget for a `send`: it queues and compiles one line of text, and answers at once.
 pub const SEND_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// How long the set file must go untouched before it is read. One save is several events — a
+/// How long the pattern file must go untouched before it is read. One save is several events — a
 /// temporary file, a rename, sometimes a truncate before the bytes.
 const QUIET: Duration = Duration::from_millis(50);
 
@@ -77,9 +77,9 @@ pub fn refusal_report(
     report
 }
 
-/// One line of a set file to send.
+/// One line of a pattern file to send.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SetLine {
+pub struct PatternLine {
     /// 1-based.
     pub line: usize,
     /// 1-based, in characters: where the text starts.
@@ -88,10 +88,10 @@ pub struct SetLine {
     pub text: String,
 }
 
-/// What one non-blank, non-comment line of a set file says.
+/// What one non-blank, non-comment line of a pattern file says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entry {
-    Send(SetLine),
+    Send(PatternLine),
     /// A line that is not an address, whitespace, then text; or one naming an address an earlier
     /// line already sets, which would make "changed since its last send" mean two things.
     Malformed {
@@ -101,7 +101,7 @@ pub enum Entry {
     },
 }
 
-/// Why a raw line of a set file is not a send, if it is not: the one rule for what is skipped.
+/// Why a raw line of a pattern file is not a send, if it is not: the one rule for what is skipped.
 fn skipped(raw: &str) -> Option<&'static str> {
     let body = raw.trim();
     if body.is_empty() {
@@ -114,7 +114,7 @@ fn skipped(raw: &str) -> Option<&'static str> {
 }
 
 /// What the line at 1-based `line` says on its own, or `None` if it is skipped. Whether an earlier
-/// line already set its address is [`parse_set`]'s to say.
+/// line already set its address is [`parse_pattern_file`]'s to say.
 fn parse_line(line: usize, raw: &str) -> Option<Entry> {
     if skipped(raw).is_some() {
         return None;
@@ -142,7 +142,7 @@ fn parse_line(line: usize, raw: &str) -> Option<Entry> {
             message: format!("expected a pattern after `{address}`"),
         });
     }
-    Some(Entry::Send(SetLine {
+    Some(Entry::Send(PatternLine {
         line,
         column: column_at(text_start),
         address: address.to_string(),
@@ -150,9 +150,9 @@ fn parse_line(line: usize, raw: &str) -> Option<Entry> {
     }))
 }
 
-/// The entries of a set file: one per line that is neither blank nor a `#` comment, in order.
+/// The entries of a pattern file: one per line that is neither blank nor a `#` comment, in order.
 /// Trailing whitespace is not part of a line's text.
-pub fn parse_set(source: &str) -> Vec<Entry> {
+pub fn parse_pattern_file(source: &str) -> Vec<Entry> {
     let mut seen: BTreeMap<String, usize> = BTreeMap::new();
     let mut entries = Vec::new();
     for (i, raw) in source.lines().enumerate() {
@@ -178,10 +178,10 @@ pub fn parse_set(source: &str) -> Vec<Entry> {
     entries
 }
 
-/// The send on 1-based `line` of a set file, parsed as `reuben live` parses it, or the
+/// The send on 1-based `line` of a pattern file, parsed as `reuben live` parses it, or the
 /// `<file>:<line>:<col>: error: …` report of why that line is not one. An address another line also
 /// sets is no concern of this line's.
-pub fn set_line(file: &str, source: &str, line: usize) -> Result<SetLine, String> {
+pub fn pattern_line(file: &str, source: &str, line: usize) -> Result<PatternLine, String> {
     let Some(raw) = source.lines().nth(line.wrapping_sub(1)) else {
         return Err(format!(
             "{file}:{line}:1: error: the file has {} lines",
@@ -202,7 +202,7 @@ pub fn set_line(file: &str, source: &str, line: usize) -> Result<SetLine, String
     }
 }
 
-/// What `reuben live` remembers between saves of one set file.
+/// What `reuben live` remembers between saves of one pattern file.
 #[derive(Debug)]
 pub struct Live {
     /// The file as the user named it, the spelling every report uses.
@@ -238,7 +238,7 @@ impl Live {
     ) -> io::Result<()> {
         let file = &self.file;
         writeln!(out, "reuben live: sending {file}")?;
-        let entries = parse_set(source);
+        let entries = parse_pattern_file(source);
         self.at = entries
             .iter()
             .filter_map(|entry| match entry {
@@ -365,7 +365,7 @@ impl Live {
 pub enum LiveError {
     /// The engine's event stream could not be opened.
     Subscribe(ChannelError),
-    /// The set file's directory could not be watched.
+    /// The pattern file's directory could not be watched.
     Watch(notify::Error),
     Io(io::Error),
 }
@@ -374,7 +374,7 @@ impl std::fmt::Display for LiveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LiveError::Subscribe(e) => write!(f, "could not follow the engine's events: {e}"),
-            LiveError::Watch(e) => write!(f, "could not watch the set file: {e}"),
+            LiveError::Watch(e) => write!(f, "could not watch the pattern file: {e}"),
             LiveError::Io(e) => write!(f, "{e}"),
         }
     }
@@ -521,15 +521,15 @@ mod tests {
     fn a_set_file_is_an_address_whitespace_then_text_per_line() {
         let source = "# comment\n\n  # indented comment\n/a  bd ~ [sd sd] ~  \r\n\t/b\tx\n";
         assert_eq!(
-            parse_set(source),
+            parse_pattern_file(source),
             vec![
-                Entry::Send(SetLine {
+                Entry::Send(PatternLine {
                     line: 4,
                     column: 5,
                     address: "/a".to_string(),
                     text: "bd ~ [sd sd] ~".to_string(),
                 }),
-                Entry::Send(SetLine {
+                Entry::Send(PatternLine {
                     line: 5,
                     column: 5,
                     address: "/b".to_string(),
@@ -542,7 +542,7 @@ mod tests {
     #[test]
     fn a_malformed_line_is_an_error_at_its_place() {
         assert_eq!(
-            parse_set("drums bd\n/a   \n/b x\n /b y\n"),
+            parse_pattern_file("drums bd\n/a   \n/b x\n /b y\n"),
             vec![
                 Entry::Malformed {
                     line: 1,
@@ -554,7 +554,7 @@ mod tests {
                     column: 3,
                     message: "expected a pattern after `/a`".to_string(),
                 },
-                Entry::Send(SetLine {
+                Entry::Send(PatternLine {
                     line: 3,
                     column: 4,
                     address: "/b".to_string(),
@@ -572,8 +572,8 @@ mod tests {
     #[test]
     fn a_report_locates_the_span_in_characters_from_where_the_text_starts() {
         assert_eq!(
-            refusal_report("f.set", 7, 10, "é x", &refusal("é x", 3, 4)),
-            "f.set:7:12: error: bad\né x\n  ^"
+            refusal_report("f.rpat", 7, 10, "é x", &refusal("é x", 3, 4)),
+            "f.rpat:7:12: error: bad\né x\n  ^"
         );
         assert_eq!(
             refusal_report("<stdin>", 1, 1, "a\nbc d", &refusal("a\nbc d", 5, 6)),
@@ -602,7 +602,7 @@ mod tests {
 
     #[test]
     fn a_dropped_send_is_named_at_its_line_and_sent_again_on_the_next_save() {
-        let mut live = Live::new("s.set");
+        let mut live = Live::new("s.rpat");
         live.at.insert("/a".to_string(), (3, 4));
         live.sent.insert("/a".to_string(), "1".to_string());
         live.sent.insert("/b".to_string(), "2".to_string());
@@ -614,7 +614,7 @@ mod tests {
                     addresses: vec!["/a".to_string(), "/gone".to_string()],
                 }
             ),
-            "s.set:3:4: warning: dropped: instrument changed, resend /a\n",
+            "s.rpat:3:4: warning: dropped: instrument changed, resend /a\n",
             "only an address with a line is named"
         );
         assert!(!live.sent.contains_key("/a"), "the next save resends it");
@@ -627,7 +627,7 @@ mod tests {
 
     #[test]
     fn a_value_the_engine_let_go_is_sent_again_on_the_next_save() {
-        let mut live = Live::new("s.set");
+        let mut live = Live::new("s.rpat");
         live.sent.insert("/a/in".to_string(), "1".to_string());
         live.sent.insert("/b/in".to_string(), "2".to_string());
         let changed = |reset| Event::Changed {

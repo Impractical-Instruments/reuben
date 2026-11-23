@@ -155,11 +155,16 @@ fn send_reads_the_pattern_from_stdin_when_it_is_left_out() {
 fn both_fail_fast_with_a_clear_message_when_no_reuben_play_is_reachable() {
     let dead = dead_addr();
     let dir = Dir::new("unreachable");
-    let set = dir.0.join("a.set");
-    std::fs::write(&set, "/a/pat 1\n").expect("write the set");
+    let file = dir.0.join("a.rpat");
+    std::fs::write(&file, "/a/pat 1\n").expect("write the pattern file");
     for args in [
         vec!["send", "--engine-addr", &dead, "/a/pat", "1"],
-        vec!["live", "--engine-addr", &dead, set.to_str().expect("utf-8")],
+        vec![
+            "live",
+            "--engine-addr",
+            &dead,
+            file.to_str().expect("utf-8"),
+        ],
     ] {
         let started = Instant::now();
         let output = reuben()
@@ -210,7 +215,7 @@ impl Drop for Dir {
 fn save(path: &Path, text: &str) {
     let temp = path.with_extension("swp");
     std::fs::write(&temp, text).expect("write the temporary file");
-    std::fs::rename(&temp, path).expect("rename it over the set");
+    std::fs::rename(&temp, path).expect("rename it over the pattern file");
 }
 
 /// A running `reuben live`, killed on drop.
@@ -220,10 +225,10 @@ struct Live {
 }
 
 impl Live {
-    fn start(addr: &str, set: &Path) -> Self {
+    fn start(addr: &str, file: &Path) -> Self {
         let mut child = reuben()
             .args(["live", "--engine-addr", addr])
-            .arg(set)
+            .arg(file)
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
@@ -270,10 +275,11 @@ impl Drop for Live {
 fn live_sends_only_changed_lines_skips_comments_and_keeps_the_old_pattern_when_a_line_fails() {
     let server = serve();
     let dir = Dir::new("changed");
-    let set = dir.0.join("drums.set");
-    std::fs::write(&set, "# two patterns\n/a/pat  1 2\n\n/b/pat 3\n").expect("write the set");
-    let shown = set.display().to_string();
-    let live = Live::start(&server.addr, &set);
+    let file = dir.0.join("drums.rpat");
+    std::fs::write(&file, "# two patterns\n/a/pat  1 2\n\n/b/pat 3\n")
+        .expect("write the pattern file");
+    let shown = file.display().to_string();
+    let live = Live::start(&server.addr, &file);
 
     assert_eq!(
         live.batch(),
@@ -292,7 +298,7 @@ fn live_sends_only_changed_lines_skips_comments_and_keeps_the_old_pattern_when_a
         ]
     );
 
-    save(&set, "# two patterns\n/a/pat  1 2 3\n\n/b/pat 3 x\n");
+    save(&file, "# two patterns\n/a/pat  1 2 3\n\n/b/pat 3 x\n");
     assert_eq!(
         live.batch(),
         vec![
@@ -314,7 +320,7 @@ fn live_sends_only_changed_lines_skips_comments_and_keeps_the_old_pattern_when_a
         ]
     );
 
-    save(&set, "# two patterns\n/a/pat  1 2 3\n\n/b/pat 3 4\n");
+    save(&file, "# two patterns\n/a/pat  1 2 3\n\n/b/pat 3 4\n");
     assert_eq!(
         live.batch(),
         vec![
@@ -331,11 +337,11 @@ fn live_sends_only_changed_lines_skips_comments_and_keeps_the_old_pattern_when_a
     assert_eq!(server.queued(5).len(), 4, "the unchanged `/a` line was not");
 }
 
-/// `reuben send --engine-addr <addr> --file <set> --line <n>`.
-fn send_line(addr: &str, set: &Path, line: usize) -> Output {
+/// `reuben send --engine-addr <addr> --file <file> --line <n>`.
+fn send_line(addr: &str, file: &Path, line: usize) -> Output {
     reuben()
         .args(["send", "--engine-addr", addr, "--file"])
-        .arg(set)
+        .arg(file)
         .args(["--line", &line.to_string()])
         .stdin(Stdio::null())
         .output()
@@ -346,9 +352,10 @@ fn send_line(addr: &str, set: &Path, line: usize) -> Output {
 fn send_line_sends_the_one_line_it_names_and_it_is_applied() {
     let server = serve();
     let dir = Dir::new("line");
-    let set = dir.0.join("a.set");
-    std::fs::write(&set, "# set\n/a/pat  1 2\n/b/pat  3 4\n").expect("write the set");
-    let output = send_line(&server.addr, &set, 3);
+    let file = dir.0.join("a.rpat");
+    std::fs::write(&file, "# patterns\n/a/pat  1 2\n/b/pat  3 4\n")
+        .expect("write the pattern file");
+    let output = send_line(&server.addr, &file, 3);
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
@@ -365,10 +372,10 @@ fn send_line_sends_the_one_line_it_names_and_it_is_applied() {
 fn send_line_reports_a_bad_line_at_its_file_line_and_column() {
     let server = serve();
     let dir = Dir::new("badline");
-    let set = dir.0.join("a.set");
-    std::fs::write(&set, "/a/pat  1 2\n/b/pat  3 x\n").expect("write the set");
-    let shown = set.display().to_string();
-    let output = send_line(&server.addr, &set, 2);
+    let file = dir.0.join("a.rpat");
+    std::fs::write(&file, "/a/pat  1 2\n/b/pat  3 x\n").expect("write the pattern file");
+    let shown = file.display().to_string();
+    let output = send_line(&server.addr, &file, 2);
     assert!(!output.status.success());
     assert_eq!(
         stderr(&output),
@@ -382,15 +389,15 @@ fn send_line_reports_a_bad_line_at_its_file_line_and_column() {
 fn send_line_refuses_a_comment_blank_or_missing_line() {
     let server = serve();
     let dir = Dir::new("commentline");
-    let set = dir.0.join("a.set");
-    std::fs::write(&set, "# comment\n\n/a/pat 1\n").expect("write the set");
-    let shown = set.display().to_string();
+    let file = dir.0.join("a.rpat");
+    std::fs::write(&file, "# comment\n\n/a/pat 1\n").expect("write the pattern file");
+    let shown = file.display().to_string();
     for (line, message) in [
         (1, "line 1 is a comment, not a send"),
         (2, "line 2 is blank, not a send"),
         (9, "the file has 3 lines"),
     ] {
-        let output = send_line(&server.addr, &set, line);
+        let output = send_line(&server.addr, &file, line);
         assert!(!output.status.success());
         assert_eq!(
             stderr(&output),
@@ -402,13 +409,13 @@ fn send_line_refuses_a_comment_blank_or_missing_line() {
 #[test]
 fn send_line_fails_fast_when_no_reuben_play_is_reachable() {
     let dir = Dir::new("deadline");
-    let set = dir.0.join("a.set");
-    std::fs::write(&set, "/a/pat 1\n").expect("write the set");
+    let file = dir.0.join("a.rpat");
+    std::fs::write(&file, "/a/pat 1\n").expect("write the pattern file");
     let dead = dead_addr();
     let started = Instant::now();
-    let output = send_line(&dead, &set, 1);
+    let output = send_line(&dead, &file, 1);
     assert!(!output.status.success());
-    let shown = set.display().to_string();
+    let shown = file.display().to_string();
     assert!(
         stderr(&output).starts_with(&format!("{shown}:1:1: error: ")),
         "{}",
@@ -425,9 +432,9 @@ fn send_line_fails_fast_when_no_reuben_play_is_reachable() {
 #[test]
 fn send_takes_an_address_or_a_file_and_line_never_both() {
     for args in [
-        vec!["send", "--file", "x.reuben"],
+        vec!["send", "--file", "x.rpat"],
         vec!["send", "--line", "2"],
-        vec!["send", "/a/pat", "1", "--file", "x.reuben", "--line", "1"],
+        vec!["send", "/a/pat", "1", "--file", "x.rpat", "--line", "1"],
         vec!["send"],
     ] {
         let output = reuben().args(&args).output().expect("run reuben");
@@ -444,9 +451,9 @@ fn send_takes_an_address_or_a_file_and_line_never_both() {
 fn send_line_ignores_an_address_another_line_also_sets() {
     let server = serve();
     let dir = Dir::new("duplicate");
-    let set = dir.0.join("a.set");
-    std::fs::write(&set, "/a/pat  1 2\n/a/pat  3 4\n").expect("write the set");
-    let output = send_line(&server.addr, &set, 2);
+    let file = dir.0.join("a.rpat");
+    std::fs::write(&file, "/a/pat  1 2\n/a/pat  3 4\n").expect("write the pattern file");
+    let output = send_line(&server.addr, &file, 2);
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(
         server.queued(1),
@@ -457,9 +464,9 @@ fn send_line_ignores_an_address_another_line_also_sets() {
 #[test]
 fn send_line_zero_and_an_unreadable_file_are_refused_in_located_form() {
     let dir = Dir::new("zero");
-    let set = dir.0.join("a.set");
-    std::fs::write(&set, "/a/pat 1\n").expect("write the set");
-    let zero = send_line("127.0.0.1:1", &set, 0);
+    let file = dir.0.join("a.rpat");
+    std::fs::write(&file, "/a/pat 1\n").expect("write the pattern file");
+    let zero = send_line("127.0.0.1:1", &file, 0);
     assert!(!zero.status.success());
     assert!(
         stderr(&zero).contains("invalid value '0'"),
@@ -467,7 +474,7 @@ fn send_line_zero_and_an_unreadable_file_are_refused_in_located_form() {
         stderr(&zero)
     );
 
-    let missing = dir.0.join("missing.set");
+    let missing = dir.0.join("missing.rpat");
     let output = send_line("127.0.0.1:1", &missing, 1);
     assert!(!output.status.success());
     assert!(

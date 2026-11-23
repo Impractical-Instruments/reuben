@@ -1,4 +1,4 @@
-//! Every line of the example set files under `sets/` compiles, live line and commented-out
+//! Every line of the example pattern files under `patterns/` compiles, live line and commented-out
 //! alternative alike, and reads in the mode of the input it targets.
 
 use std::path::Path;
@@ -49,13 +49,13 @@ fn sends(source: &str) -> Vec<(usize, String, String)> {
 }
 
 #[test]
-fn every_example_set_line_compiles_for_its_input() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sets");
+fn every_example_pattern_line_compiles_for_its_input() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../patterns");
     let mut files = 0;
     let mut checked = 0;
-    for entry in std::fs::read_dir(&dir).expect("the sets directory") {
+    for entry in std::fs::read_dir(&dir).expect("the patterns directory") {
         let path = entry.expect("entry").path();
-        if path.extension().and_then(|e| e.to_str()) != Some("reuben") {
+        if path.extension().and_then(|e| e.to_str()) != Some("rpat") {
             continue;
         }
         files += 1;
@@ -64,7 +64,7 @@ fn every_example_set_line_compiles_for_its_input() {
             .expect("name")
             .to_string_lossy()
             .into_owned();
-        let source = std::fs::read_to_string(&path).expect("read the set");
+        let source = std::fs::read_to_string(&path).expect("read the pattern file");
         let found = sends(&source);
         for (line, address, text) in found {
             let pattern = Pattern::new(&text)
@@ -73,7 +73,7 @@ fn every_example_set_line_compiles_for_its_input() {
             checked += 1;
         }
     }
-    assert!(files >= 2, "both sets are there");
+    assert!(files >= 2, "both pattern files are there");
     assert!(checked > 40, "the alternatives are checked too: {checked}");
 }
 

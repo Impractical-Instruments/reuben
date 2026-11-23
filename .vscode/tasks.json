@@ -5,7 +5,7 @@
   "version": "2.0.0",
   "tasks": [
     {
-      // Sends the open set file on every save. Start it once with "Tasks: Run Task"; a line
+      // Sends the open pattern file on every save. Start it once with "Tasks: Run Task"; a line
       // the engine refuses shows as an error at its span until a save fixes it.
       "label": "reuben live",
       "type": "process",
@@ -33,7 +33,7 @@
       }
     },
     {
-      // Sends the set-file line the cursor is on: its address and text, as `reuben live` reads
+      // Sends the pattern-file line the cursor is on: its address and text, as `reuben live` reads
       // them. Reads the file from disk, so the key binding saves first. Silent on success; a
       // refused line is marked at its span and opens the Problems view, and any failure, a
       // binary that will not start included, brings up the terminal.
@@ -62,7 +62,7 @@
       }
     },
     {
-      // Sends the selection to one address, for a file that is not a set file. A process task, so
+      // Sends the selection to one address, for a file that is not a pattern file. A process task, so
       // the selection reaches `reuben send` as one argument, with no shell to expand or split it.
       // A refusal is reported against `<arg>`, which is not a file, so it shows in the Problems
       // view without an inline mark.
