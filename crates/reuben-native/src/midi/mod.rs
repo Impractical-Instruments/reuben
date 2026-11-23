@@ -4,4 +4,5 @@
 //! is an ordinary `/<name>/in` send.
 
 pub mod pattern;
+pub mod routes;
 pub mod translate;
