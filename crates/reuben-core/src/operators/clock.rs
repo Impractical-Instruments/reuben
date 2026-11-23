@@ -97,7 +97,15 @@ pub struct Clock {
     /// Whether `beat` has been announced since construction or the last `on_transplant`. False in
     /// a fresh Clock, so the first call announces.
     announced: bool,
+    /// Forces [`Clock::replay_beat`], so tests can hold the fast path against it.
+    #[cfg(test)]
+    replay: bool,
 }
+
+/// How many wraps one call records for `beat`. A call of `n` frames wraps at most `1 + n·dt`
+/// times, and `dt` is at most 999/60/sample_rate: 16 covers a 43000-frame block at 48 kHz. A call
+/// that wraps more falls back to [`Clock::replay_beat`], so the cap bounds only the fast path.
+const WRAP_CAP: usize = 16;
 
 /// The largest f32 below `1.0`: the ceiling on the emitted `phase`.
 const PHASE_CEIL: f32 = 1.0 - f32::EPSILON / 2.0;
@@ -114,6 +122,83 @@ fn next_beat(beat: i32) -> i32 {
 impl Clock {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Emit `beat` for one call from the sorted `resets` and the `phase` pass's `wraps` (each the
+    /// frame after which the phase wrapped, so the beat changes at the next frame). At a frame with
+    /// both, the wrap applies before the reset, as in the accumulator.
+    fn emit_beat(&mut self, io: &mut Io, n: usize, resets: &[usize], wraps: &[usize]) {
+        let mut out = io.write(OUT_BEAT);
+        let mut beat = self.beat;
+        // A reset at frame 0 emits there anyway; otherwise frame 0 carries the announcement or a
+        // wrap that fell after the previous call's last frame.
+        if n > 0 && (self.beat_pending || !self.announced) && resets.first() != Some(&0) {
+            out.set(0, beat);
+        }
+        let (mut ri, mut wi) = (0, 0);
+        let mut pending = false;
+        loop {
+            let f = match (resets.get(ri), wraps.get(wi)) {
+                (None, None) => break,
+                (Some(&r), None) => r,
+                (None, Some(&w)) => w + 1,
+                (Some(&r), Some(&w)) => r.min(w + 1),
+            };
+            while wi < wraps.len() && wraps[wi] + 1 == f {
+                beat = next_beat(beat);
+                wi += 1;
+            }
+            while ri < resets.len() && resets[ri] == f {
+                beat = 0;
+                ri += 1;
+            }
+            if f < n {
+                out.set(f, beat);
+            } else {
+                // Only a wrap after the last frame lands here.
+                pending = true;
+            }
+        }
+        self.beat = beat;
+        // The renderer never calls with zero frames; if one did, nothing was emitted, so the
+        // pending wrap and the announcement must carry to the next call.
+        if n > 0 {
+            self.beat_pending = pending;
+            self.announced = true;
+        }
+    }
+
+    /// `beat` by a per-frame replay of the accumulator: the fallback when one call wraps more
+    /// than [`WRAP_CAP`] times, and the reference [`Clock::emit_beat`] is tested against.
+    fn replay_beat(&mut self, io: &mut Io, n: usize, start: f64, dt: f64, resets: &[usize]) {
+        let mut out = io.write(OUT_BEAT);
+        let mut phase = start;
+        let mut ri = 0;
+        let mut beat = self.beat;
+        let mut changed = self.beat_pending || !self.announced;
+        for i in 0..n {
+            while ri < resets.len() && resets[ri] == i {
+                phase = 0.0;
+                beat = 0;
+                changed = true;
+                ri += 1;
+            }
+            if changed {
+                out.set(i, beat);
+                changed = false;
+            }
+            phase += dt;
+            if phase >= 1.0 {
+                phase -= 1.0;
+                beat = next_beat(beat);
+                changed = true;
+            }
+        }
+        self.beat = beat;
+        if n > 0 {
+            self.beat_pending = changed;
+            self.announced = true;
+        }
     }
 }
 
@@ -150,12 +235,14 @@ impl Operator for Clock {
         }
         resets.sort_unstable();
 
-        // Three passes over the block, one per output port (only one output borrow at a time).
-        // Each replays the identical accumulator from `start` — applying resets — so they
-        // stay in lock-step; a reset re-zeroes the phase before that sample is emitted.
+        // `phase` and `gate` each replay the identical accumulator from `start` — applying resets —
+        // so they stay in lock-step; a reset re-zeroes the phase before that sample is emitted.
+        // `beat` is built from the wrap frames the `phase` pass records, not a third replay.
         let start = self.phase;
 
         let end;
+        let mut wraps = [0usize; WRAP_CAP];
+        let mut n_wraps = 0usize;
         {
             let out = io.write(OUT_PHASE);
             let mut phase = start;
@@ -172,6 +259,10 @@ impl Operator for Clock {
                 // — without the per-sample out-of-line libm `floor` call (hot path).
                 if phase >= 1.0 {
                     phase -= 1.0;
+                    if n_wraps < WRAP_CAP {
+                        wraps[n_wraps] = i;
+                    }
+                    n_wraps += 1;
                 }
             }
             end = phase;
@@ -207,40 +298,12 @@ impl Operator for Clock {
             }
             self.gate_high = high;
         }
-        {
-            // `beat`: the same replay once more. A wrap after frame `i` is the beat change at `i + 1`
-            // (the frame whose `phase` is the wrapped value); one after the last frame is left
-            // pending for the next call's frame 0.
-            let mut out = io.write(OUT_BEAT);
-            let mut phase = start;
-            let mut ri = 0;
-            let mut beat = self.beat;
-            let mut changed = self.beat_pending || !self.announced;
-            for i in 0..n {
-                while ri < resets.len() && resets[ri] == i {
-                    phase = 0.0;
-                    beat = 0;
-                    changed = true;
-                    ri += 1;
-                }
-                if changed {
-                    out.set(i, beat);
-                    changed = false;
-                }
-                phase += dt;
-                if phase >= 1.0 {
-                    phase -= 1.0;
-                    beat = next_beat(beat);
-                    changed = true;
-                }
-            }
-            self.beat = beat;
-            // The renderer never calls with zero frames; if one did, nothing was emitted, so the
-            // pending wrap and the announcement must carry to the next call.
-            if n > 0 {
-                self.beat_pending = changed;
-                self.announced = true;
-            }
+        #[cfg(test)]
+        let n_wraps = if self.replay { usize::MAX } else { n_wraps };
+        if n_wraps <= WRAP_CAP {
+            self.emit_beat(io, n, &resets, &wraps[..n_wraps]);
+        } else {
+            self.replay_beat(io, n, start, dt, &resets);
         }
         self.phase = end;
         self.resets = resets;
@@ -742,5 +805,102 @@ mod tests {
             "the first call after a transplant announces beat once, and not the unchanged gate"
         );
         assert!(d.render(1024).emits().is_empty(), "then nothing repeats");
+    }
+
+    /// Every emit (frame, port, value) and the dense `phase` of one Clock over `total` frames in
+    /// `chunk`-frame renders, at `sr`.
+    fn run_all(
+        op: Clock,
+        sr: f32,
+        total: usize,
+        chunk: usize,
+        tempo: f32,
+        resets: &[usize],
+    ) -> (Vec<u32>, Vec<(usize, usize, crate::message::Arg)>) {
+        let mut d = OpDriver::for_type(op, sr);
+        d.set(IN_TEMPO, tempo).set(IN_DIVISION, 1.0);
+        assert!(resets.is_empty() || chunk >= total, "resets need a single render call");
+        for &r in resets {
+            d.push(IN_SYNC, r, Note::new(Pitch::Degree(0), 1.0));
+        }
+        let (mut phase, mut emits) = (vec![], vec![]);
+        let mut at = 0;
+        while at < total {
+            let n = chunk.min(total - at);
+            d.render(n);
+            phase.extend(d.output(OUT_PHASE).iter().map(|v| v.to_bits()));
+            emits.extend(d.emits().iter().map(|e| (at + e.frame, e.port, e.arg.clone())));
+            at += n;
+        }
+        (phase, emits)
+    }
+
+    fn replaying() -> Clock {
+        Clock {
+            replay: true,
+            ..Clock::new()
+        }
+    }
+
+    #[test]
+    fn beat_from_recorded_wraps_matches_the_per_frame_replay() {
+        // Chunked runs: tempo extremes, block sizes that split wraps across calls.
+        for &tempo in &[1.0, 60.0, 173.3, 999.0] {
+            for &chunk in &[1usize, 7, 64, 128, 1000] {
+                let fast = run_all(Clock::new(), SR, 100_000, chunk, tempo, &[]);
+                let slow = run_all(replaying(), SR, 100_000, chunk, tempo, &[]);
+                assert_eq!(fast, slow, "{tempo} BPM, chunk {chunk}");
+            }
+        }
+        // Resets: at frame 0, on block starts, mid-block, doubled, on consecutive frames, and next
+        // to a wrap (999 BPM wraps about every 2883 frames).
+        let resets = [
+            0, 1, 128, 2_882, 2_883, 2_884, 5_000, 5_000, 6_400, 6_401, 9_999, 12_800,
+        ];
+        for &tempo in &[1.0, 120.0, 999.0] {
+            let fast = run_all(Clock::new(), SR, 40_000, 40_000, tempo, &resets);
+            let slow = run_all(replaying(), SR, 40_000, 40_000, tempo, &resets);
+            assert_eq!(fast, slow, "{tempo} BPM with resets");
+        }
+        // A reset on the very frame a wrap lands: the wrap applies first, then the reset wins.
+        let (_, plain) = run_all(Clock::new(), SR, 10_000, 10_000, 999.0, &[]);
+        let wrap = plain
+            .iter()
+            .find_map(|(f, _, a)| matches!(a, crate::message::Arg::I32(1)).then_some(*f))
+            .expect("a wrap within the run");
+        let on_wrap = [wrap];
+        let fast = run_all(Clock::new(), SR, 10_000, 10_000, 999.0, &on_wrap);
+        let slow = run_all(replaying(), SR, 10_000, 10_000, 999.0, &on_wrap);
+        assert_eq!(fast, slow, "a reset on the wrap frame {wrap}");
+    }
+
+    #[test]
+    fn a_call_with_more_wraps_than_the_cap_falls_back_and_stays_exact() {
+        // 999 BPM at 100 Hz wraps every ~6 frames: ~21 wraps a 128-frame block, past `WRAP_CAP`.
+        let sr = 100.0;
+        let (phase, emits) = run_all(Clock::new(), sr, 1_280, 128, 999.0, &[]);
+        let (want_phase, want_emits) = run_all(replaying(), sr, 1_280, 128, 999.0, &[]);
+        assert_eq!(phase, want_phase);
+        assert_eq!(emits, want_emits);
+        let dt = (999.0f64 / 60.0) / f64::from(sr);
+        let (mut p, mut beat) = (0.0f64, 0i32);
+        for _ in 0..1_280 {
+            p += dt;
+            if p >= 1.0 {
+                p -= 1.0;
+                beat += 1;
+            }
+        }
+        let last = emits
+            .iter()
+            .rev()
+            .find_map(|(_, _, a)| match a {
+                crate::message::Arg::I32(v) => Some(*v),
+                _ => None,
+            })
+            .unwrap();
+        assert!(beat > 200, "the run wraps far past the cap");
+        // A wrap after the last frame is still pending, not yet emitted.
+        assert!(last == beat || last == beat - 1, "last beat {last}, want ~{beat}");
     }
 }
