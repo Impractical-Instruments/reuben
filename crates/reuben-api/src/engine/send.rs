@@ -75,8 +75,8 @@ pub enum ControlFate {
 /// answer is then the one the fill acts on, so a batch this queues renders on the Engine it was
 /// queued on.
 ///
-/// A batch compiled for a Plan that is not live while a swap has been committed since the latch
-/// was compiled for the Plan that swap installs: it waits for it rather than being dropped.
+/// A stamp naming a Plan that is not live normally drops the batch. But if a swap was committed
+/// after the latch, the batch was compiled for the Plan that swap installs, so it waits for it.
 /// RT-safe: at most two `Acquire` loads and one pointer compare.
 pub fn control_fate<'a>(
     slot: &RenderSlot,
