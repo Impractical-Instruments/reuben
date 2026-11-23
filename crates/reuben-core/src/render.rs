@@ -392,6 +392,9 @@ fn render_inbound<E: Executor>(
     let sample_rate = plan.config.sample_rate;
     let block_size = frames;
     let probing = plan.probes.any_on();
+    // Strings an upstream forward carried that a `str` input refused, added to the Plan's count
+    // once the node loop's borrows end.
+    let mut unprepared = 0u64;
 
     // Disjoint field borrows so `process_node` can hold `arena` (inputs) and
     // `out_scratch` (outputs) at once while reading `routes`/`order`.
@@ -476,8 +479,9 @@ fn render_inbound<E: Executor>(
                     }
                     PortKind::Value => {
                         let p = &plan.nodes[dst].descriptor.inputs[dst_port];
-                        if let Some(a) = held_arg(p, &e.arg) {
-                            routes[dst].held.push((e.frame, dst_port, a));
+                        match held_arg(p, &e.arg) {
+                            Some(a) => routes[dst].held.push((e.frame, dst_port, a)),
+                            None => unprepared += u64::from(is_unprepared(p, &e.arg)),
                         }
                     }
                     PortKind::Event => {
@@ -491,6 +495,7 @@ fn render_inbound<E: Executor>(
             emitted.push(e);
         }
     }
+    plan.dropped_unprepared += unprepared;
 
     // Sum master taps into the per-channel master: every tapped port's buffer,
     // in fixed order, so output stays deterministic. A broadcast tap
@@ -607,8 +612,8 @@ impl<E: Executor> Renderer<E> {
 
 /// Normalize a routed [`Arg`] for a **Held** input port: clamp an `F32` to the port's
 /// range, resolve an enum control message (symbol / index / variant) to the enum's concrete `Arg`,
-/// take a string only on a `str` port, or take any other vocab value (`Harmony`) as-is. `None` if
-/// it cannot be a value of this port.
+/// take on a `str` port only a value its preparer built, or take any other vocab value
+/// (`Harmony`) as-is. `None` if it cannot be a value of this port.
 pub(crate) fn held_arg(p: &Port, arg: &Arg) -> Option<Arg> {
     match &p.ty {
         PortType::F32 => arg
@@ -631,14 +636,20 @@ pub(crate) fn held_arg(p: &Port, arg: &Arg) -> Option<Arg> {
         PortType::Vocab {
             enum_meta: Some(e), ..
         } => e.resolve_arg(arg),
-        // A refcount bump, never a copy of the text. Anything but a string is refused: the load
-        // check keeps wires honest, but a live control message names its port by address alone.
-        PortType::Str => match arg {
-            Arg::Str(_) => Some(arg.clone()),
+        // A refcount bump. Raw text and another preparer's value are refused alike: the input
+        // reads its own preparer's payload, and a live message names its port by address alone.
+        PortType::Str { preparer } => match arg {
+            Arg::Prepared(v) if preparer.is_some_and(|q| q.kind == v.kind()) => Some(arg.clone()),
             _ => None,
         },
         _ => Some(arg.clone()),
     }
+}
+
+/// Whether `held_arg` refusing `arg` at `p` is a string the input could not take: raw text, or a
+/// value another preparer built. Counted, unlike a number sent to a `str` input.
+fn is_unprepared(p: &Port, arg: &Arg) -> bool {
+    matches!(p.ty, PortType::Str { .. }) && matches!(arg, Arg::Str(_) | Arg::Prepared(_))
 }
 
 /// Where a routed event's payload lives: an external block-input Message, or a Message an
@@ -827,6 +838,9 @@ fn route_messages(
                     // by the consumer port's kind — Value re-`held_arg`s, Signal materializes.
                     PortKind::Value => {
                         let Some(a) = held_arg(&alias.port, arg) else {
+                            if is_unprepared(&alias.port, arg) {
+                                plan.dropped_unprepared += 1;
+                            }
                             continue;
                         };
                         match plan.nodes[n].input_kinds[port] {
@@ -837,8 +851,10 @@ fn route_messages(
                             }
                             PortKind::Value => {
                                 let p = &plan.nodes[n].descriptor.inputs[port];
-                                if let Some(a2) = held_arg(p, &a) {
-                                    routes[n].held.push((frame, port, a2));
+                                match held_arg(p, &a) {
+                                    Some(a2) => routes[n].held.push((frame, port, a2)),
+                                    None if is_unprepared(p, &a) => plan.dropped_unprepared += 1,
+                                    None => {}
                                 }
                             }
                             // Never aliased: dissolve keeps a Value pipe feeding an Event input.
@@ -881,8 +897,10 @@ fn route_messages(
                     }
                     PortKind::Value => {
                         let p = &plan.nodes[i].descriptor.inputs[port];
-                        if let Some(a) = held_arg(p, arg) {
-                            routes[i].held.push((frame, port, a));
+                        match held_arg(p, arg) {
+                            Some(a) => routes[i].held.push((frame, port, a)),
+                            None if is_unprepared(p, arg) => plan.dropped_unprepared += 1,
+                            None => {}
                         }
                     }
                     PortKind::Event => {
@@ -1265,23 +1283,34 @@ mod tests {
         );
     }
 
-    /// A `str` port latches only a string, and takes it by refcount: the latched `Arc` is the
-    /// routed one. A number on it is refused, so a mis-addressed control cannot replace the text.
+    /// A `str` port latches only a value its own preparer built, by refcount: the latched value
+    /// is the routed allocation. Raw text, another preparer's value and a number are refused, and
+    /// a port with no preparer takes nothing.
     #[test]
-    fn held_arg_takes_only_a_string_on_a_str_port() {
+    fn held_arg_takes_only_its_own_prepared_value_on_a_str_port() {
         use crate::descriptor::Port;
-        let port = Port::str("pat");
-        let routed = Arg::Str("bd sn".into());
-        let Some(Arg::Str(latched)) = held_arg(&port, &routed) else {
-            panic!("a string latches on a str port");
+        use crate::prepare::testing::{STEPS, WORDS};
+        let port = Port::str_prepared("pat", STEPS);
+        let prepared = STEPS.prepare(&"1 2".into()).unwrap();
+        let routed = Arg::Prepared(prepared.clone());
+        let Some(Arg::Prepared(latched)) = held_arg(&port, &routed) else {
+            panic!("its own prepared value latches");
         };
-        let Arg::Str(src) = &routed else {
-            unreachable!()
-        };
-        assert!(alloc::sync::Arc::ptr_eq(&latched, src));
-        assert_eq!(held_arg(&port, &Arg::F32(1.0)), None);
-        assert_eq!(held_arg(&port, &Arg::I32(1)), None);
-        assert_eq!(held_arg(&port, &Arg::Enum(0)), None);
+        assert!(latched.ptr_eq(&prepared));
+
+        let other = Arg::Prepared(WORDS.prepare(&"ab".into()).unwrap());
+        for refused in [Arg::Str("1 2".into()), other.clone()] {
+            assert_eq!(held_arg(&port, &refused), None, "{refused:?}");
+            assert!(is_unprepared(&port, &refused), "{refused:?} is counted");
+        }
+        for refused in [Arg::F32(1.0), Arg::I32(1), Arg::Enum(0)] {
+            assert_eq!(held_arg(&port, &refused), None);
+            assert!(
+                !is_unprepared(&port, &refused),
+                "{refused:?} is not a string"
+            );
+        }
+        assert_eq!(held_arg(&Port::str("pat"), &routed), None);
     }
 
     /// Two leaf nodes in an ancestor-prefix relationship — the shape inlining
@@ -1472,6 +1501,133 @@ mod tests {
                 (40, 102.0)
             ]
         );
+    }
+
+    /// Hand-built nodes for the prepared-value guards: an Operator emitting one prepared value
+    /// on a `str` output (no contract-built Operator can declare one), and one reading a `str`
+    /// input. Neither does anything else.
+    mod prepared_nodes {
+        use alloc::boxed::Box;
+        use alloc::sync::Arc;
+        use alloc::vec;
+
+        use crate::descriptor::{Descriptor, Port};
+        use crate::message::Arg;
+        use crate::operator::{Io, MsgWriter, Operator};
+        use crate::prepare::{Prepared, Preparer};
+
+        pub(super) fn desc(inputs: vec::Vec<Port>, outputs: vec::Vec<Port>) -> Arc<Descriptor> {
+            Arc::new(Descriptor {
+                type_name: "hand_built",
+                inputs,
+                outputs,
+                constants: vec![],
+                resources: vec![],
+            })
+        }
+
+        /// Emits `value` once, at frame 0 of its first block.
+        pub(super) struct Emitter(pub Option<Prepared>);
+        impl Operator for Emitter {
+            fn descriptor() -> Descriptor {
+                Descriptor {
+                    type_name: "hand_built",
+                    inputs: vec![],
+                    outputs: vec![],
+                    constants: vec![],
+                    resources: vec![],
+                }
+            }
+            fn process(&mut self, io: &mut Io) {
+                if let Some(p) = self.0.take() {
+                    MsgWriter::on(io, 0).set(0, Arg::Prepared(p));
+                }
+            }
+            fn spawn(&self) -> Box<dyn Operator> {
+                Box::new(Emitter(None))
+            }
+        }
+
+        pub(super) struct Sink;
+        impl Operator for Sink {
+            fn descriptor() -> Descriptor {
+                Emitter::descriptor()
+            }
+            fn process(&mut self, _io: &mut Io) {}
+            fn spawn(&self) -> Box<dyn Operator> {
+                Box::new(Sink)
+            }
+        }
+
+        pub(super) fn sink(preparer: Preparer) -> Arc<Descriptor> {
+            desc(vec![Port::str_prepared("in", preparer)], vec![])
+        }
+    }
+
+    /// An upstream node's forward of another preparer's value is dropped at the `str` input and
+    /// counted, like a send.
+    #[test]
+    fn a_refused_forward_is_counted() {
+        use crate::graph::Graph;
+        use crate::prepare::testing::{STEPS, WORDS};
+        use prepared_nodes::*;
+
+        let mut g = Graph::new();
+        let value = STEPS.prepare(&"1".into()).unwrap();
+        let src = g.add_boxed(
+            "/src",
+            Box::new(Emitter(Some(value))),
+            desc(vec![], vec![Port::str_prepared("out", STEPS)]),
+        );
+        let dst = g.add_boxed("/dst", Box::new(Sink), sink(WORDS));
+        g.connect(src, 0usize, dst, 0usize);
+        let cfg = AudioConfig::new(48_000.0, 64);
+        let mut plan = Plan::instantiate(g, cfg).expect("instantiate");
+        let mut r = Renderer::new(&plan);
+        let mut master = vec![vec![0.0; cfg.block_size]; plan.config.channels];
+        let mut outbound = Vec::new();
+        r.render_block_multi(&mut plan, &[], &[], &mut master, &mut outbound);
+        assert_eq!(plan.take_dropped_unprepared(), 1);
+        assert!(!matches!(plan.nodes[1].latch[0], Arg::Prepared(_)));
+    }
+
+    /// A dissolved pipe's two hops each check the kind. No document can give the pipe's port and
+    /// its consumer different preparers (Instantiate gives the pipe its consumer's), so the alias
+    /// is edited after Instantiate to reach the consumer's own check.
+    #[test]
+    fn the_consumer_hop_of_a_dissolved_pipe_counts_a_refusal() {
+        use crate::descriptor::Descriptor;
+        use crate::graph::Graph;
+        use crate::operators::pipe::Pipe;
+        use crate::prepare::testing::{STEPS, WORDS};
+        use alloc::sync::Arc;
+        use prepared_nodes::*;
+
+        let mut g = Graph::new();
+        let pipe = g.add_boxed(
+            "/pat",
+            Box::new(Pipe::text()),
+            Arc::new(Descriptor {
+                type_name: "pipe",
+                inputs: vec![Port::str("in")],
+                outputs: vec![Port::str("out")],
+                constants: vec![],
+                resources: vec![],
+            }),
+        );
+        let dst = g.add_boxed("/dst", Box::new(Sink), sink(STEPS));
+        g.connect(pipe, 0usize, dst, 0usize);
+        let cfg = AudioConfig::new(48_000.0, 64);
+        let mut plan = Plan::instantiate(g, cfg).expect("instantiate");
+        assert_eq!(plan.input_aliases.len(), 1, "the pipe dissolved");
+        plan.input_aliases[0].port = Port::str_prepared("in", WORDS);
+        let mut r = Renderer::new(&plan);
+        let mut master = vec![vec![0.0; cfg.block_size]; plan.config.channels];
+        let mut outbound = Vec::new();
+        let words = Arg::Prepared(WORDS.prepare(&"ab".into()).unwrap());
+        let messages = [Message::new("/pat/in", words, 0)];
+        r.render_block_multi(&mut plan, &messages, &[], &mut master, &mut outbound);
+        assert_eq!(plan.take_dropped_unprepared(), 1);
     }
 
     /// A wired port takes only its upstream node's emissions, in emission order: an external

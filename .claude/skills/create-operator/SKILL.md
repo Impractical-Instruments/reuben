@@ -117,9 +117,11 @@ Run all `reuben`/`cargo` commands from the repo root.
   `arg` — the port's `Arg` type. A `f32_buffer` port is a dense audio/CV Signal (no settable
   default *in the spec* — see the Signal-with-default bullet below). A `f32` port is a held Value and
   adds `"f32": { min, max, default, unit, curve }` for its materialized default; `curve` ∈ `linear` |
-  `exponential` (default linear), `unit` defaults `""`. A `str` port is a held string **input**
-  (never an output or constant), read in `process` as `io.read(IN_X)` → `&str` borrowed from the
-  latch: read it, never copy it into operator state (that allocates).
+  `exponential` (default linear), `unit` defaults `""`. A `str` port is text compiled off the render
+  thread: an **input** only (never an output or constant) that names its preparer with
+  `"prepare": "compile"`, a `fn(&str) -> Result<Prepared, PrepareError>` (the scaffold stubs a bare
+  name). `process` reads `io.read(IN_X)` → `Option<&Prepared>` and the payload with
+  `.payload::<T>()`; the render thread never sees the text.
 - A **Signal input with a scalar default** (knob-set it materializes as a held buffer,
   an LFO/envelope wires straight in; `filter.cutoff`, `saturator.drive`) can't carry its `{ .. }`
   meta in the spec JSON: declare it as a bare `f32_buffer`, scaffold, then hand-add the meta to the

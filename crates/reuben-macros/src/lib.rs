@@ -163,7 +163,7 @@ fn port_form(p: &model::PortModel) -> TokenStream {
         PortTy::Note => quote! { Event<::reuben_core::vocab::pitch::Note> },
         PortTy::Harmony => quote! { Held<::reuben_core::vocab::Harmony> },
         PortTy::Pitch => quote! { Held<::reuben_core::vocab::pitch::Pitch> },
-        PortTy::Str => quote! { Held<str> },
+        PortTy::Str(_) => quote! { Held<::reuben_core::prepare::Prepared> },
         PortTy::Arg => quote! { Raw },
     }
 }
@@ -199,10 +199,9 @@ fn input_handle(p: &model::PortModel) -> TokenStream {
         // A held `Pitch` leaf carries its declared default (tonic, `Degree(0)`) as data, exactly
         // like `Harmony` above — the read fallback for a `pitch` input (`resolve`).
         PortTy::Pitch => quote! { ::reuben_core::vocab::pitch::Pitch::DEFAULT },
-        // The engine seeds an unset `str` latch with `""`, so the read fallback says the same.
-        PortTy::Str => quote! { "" },
-        // Defaultless forms (events, the raw pass-through) store `()`.
-        PortTy::Note | PortTy::Arg => quote! { () },
+        // Defaultless forms (events, the raw pass-through, a prepared `str`, whose read is
+        // `None` rather than a fallback payload) store `()`.
+        PortTy::Note | PortTy::Arg | PortTy::Str(_) => quote! { () },
     };
     quote! {
         pub const #ident: ::reuben_core::operator::In<::reuben_core::operator::form::#form> =
@@ -219,6 +218,22 @@ fn output_handle(p: &model::PortModel) -> TokenStream {
     quote! {
         pub const #ident: ::reuben_core::operator::Out<::reuben_core::operator::form::#form> =
             ::reuben_core::operator::Out::new(#idx);
+    }
+}
+
+/// The kind tag expression for a preparer named by `path`: the function's crate-rooted path where
+/// the spelling gives it (`crate::a::f` in this crate, `::k::f` in crate `k`), else the declaring
+/// module's path plus the path as written. So one function named from crate root by every Operator
+/// that uses it, or by its bare name in its own module, has one kind; one reached through `super::`
+/// or a `use` alias has another.
+fn preparer_kind(path: &str) -> TokenStream {
+    if let Some(rest) = path.strip_prefix("crate::") {
+        quote! { ::core::concat!(::core::env!("CARGO_CRATE_NAME"), "::", #rest) }
+    } else if let Some(rest) = path.strip_prefix("::") {
+        quote! { #rest }
+    } else {
+        let rest = path.strip_prefix("self::").unwrap_or(path);
+        quote! { ::core::concat!(::core::module_path!(), "::", #rest) }
     }
 }
 
@@ -278,7 +293,21 @@ pub(crate) fn render_contract(struct_ident: &Ident, model: &ContractModel) -> To
                             quote! { ::reuben_core::descriptor::Port::pitch(#name) }
                         }
                         PortTy::Arg => quote! { ::reuben_core::descriptor::Port::arg(#name) },
-                        PortTy::Str => quote! { ::reuben_core::descriptor::Port::str(#name) },
+                        PortTy::Str(Some(path)) => {
+                            let f: syn::Path =
+                                syn::parse_str(path).expect("the validator admitted only a path");
+                            let kind = preparer_kind(path);
+                            quote! {
+                                ::reuben_core::descriptor::Port::str_prepared(
+                                    #name,
+                                    ::reuben_core::prepare::Preparer::new(#kind, #f),
+                                )
+                            }
+                        }
+                        // Refused by the validator before rendering.
+                        PortTy::Str(None) => {
+                            quote! { ::reuben_core::descriptor::Port::str(#name) }
+                        }
                         PortTy::F32(m) => {
                             let meta = f32_meta_toks(m);
                             quote! { ::reuben_core::descriptor::Port::f32(#name, #meta) }
@@ -406,7 +435,31 @@ fn parse_ports(input: ParseStream) -> syn::Result<Vec<PortAst>> {
             "note" => PortTy::Note,
             "harmony" => PortTy::Harmony,
             "pitch" => PortTy::Pitch,
-            "str" => PortTy::Str,
+            // `str(prepare_fn)`; a bare `str` parses so the validator can say what it lacks.
+            "str" => {
+                let prepare = if body.peek(syn::token::Paren) {
+                    let inner;
+                    parenthesized!(inner in body);
+                    let path: syn::Path = inner.parse()?;
+                    if let Some(s) = path.segments.iter().find(|s| !s.arguments.is_none()) {
+                        return Err(Error::new_spanned(
+                            &s.arguments,
+                            "a preparer is named by a plain function path, without generic \
+                             arguments: wrap a generic function in a non-generic one",
+                        ));
+                    }
+                    if !inner.is_empty() {
+                        return Err(inner.error("expected one function path, e.g. `str(compile)`"));
+                    }
+                    let segments: Vec<String> =
+                        path.segments.iter().map(|s| s.ident.to_string()).collect();
+                    let leading = if path.leading_colon.is_some() { "::" } else { "" };
+                    Some(format!("{leading}{}", segments.join("::")))
+                } else {
+                    None
+                };
+                PortTy::Str(prepare)
+            }
             "arg" => PortTy::Arg,
             "f32" => PortTy::F32(parse_f32_meta(&body)?),
             "i32" => PortTy::I32(parse_i32_meta(&body)?),
@@ -420,7 +473,7 @@ fn parse_ports(input: ParseStream) -> syn::Result<Vec<PortAst>> {
             other => {
                 return Err(Error::new(
                     kw.span(),
-                    format!("port type must be `f32_buffer`, `f32`, `i32`, `enum(..)`, `note`, `harmony`, `pitch`, `str`, or `arg`, got `{other}`"),
+                    format!("port type must be `f32_buffer`, `f32`, `i32`, `enum(..)`, `note`, `harmony`, `pitch`, `str(..)`, or `arg`, got `{other}`"),
                 ))
             }
         };
@@ -591,6 +644,56 @@ mod tests {
         assert!(out.contains("fn contract"), "{out}");
         assert!(out.contains("type_name : \"oscillator\""), "{out}");
         assert!(out.contains("Curve :: Exponential"), "{out}");
+    }
+
+    /// A `str` input with no preparer does not build: the render thread would have nothing to read.
+    #[test]
+    fn a_str_input_without_a_preparer_is_a_compile_error() {
+        let out = render("Pat { inputs: { pat: str }, outputs: { } }");
+        assert!(out.contains("compile_error !"), "{out}");
+        assert!(out.contains("str(prepare_fn)"), "{out}");
+    }
+
+    /// `str(path)` declares the preparer, tagged with the declaring module and the path as written,
+    /// and the handle reads the prepared value.
+    #[test]
+    fn a_str_input_names_its_preparer() {
+        let out = render("Pat { inputs: { pat: str(compile::pattern) }, outputs: { } }");
+        assert!(!out.contains("compile_error"), "{out}");
+        assert!(out.contains("Port :: str_prepared (\"pat\""), "{out}");
+        assert!(
+            out.contains("concat ! (:: core :: module_path ! () , \"::\" , \"compile::pattern\")"),
+            "{out}"
+        );
+        let rooted = render("Pat { inputs: { pat: str(crate::p::compile) }, outputs: { } }");
+        assert!(
+            rooted.contains(
+                "concat ! (:: core :: env ! (\"CARGO_CRATE_NAME\") , \"::\" , \"p::compile\")"
+            ),
+            "{rooted}"
+        );
+        assert!(out.contains("compile :: pattern"), "{out}");
+        assert!(
+            out.contains("form :: Held < :: reuben_core :: prepare :: Prepared >"),
+            "{out}"
+        );
+    }
+
+    /// A generic preparer path is refused rather than losing its arguments, and a path from the
+    /// crate root (`::a::b`) is kept whole.
+    #[test]
+    fn a_preparer_path_is_plain_and_may_start_at_the_root() {
+        let out = render("Pat { inputs: { pat: str(compile::<u8>) }, outputs: { } }");
+        assert!(out.contains("compile_error !"), "{out}");
+        assert!(out.contains("without generic"), "{out}");
+        let out = render("Pat { inputs: { pat: str(::crate_x::compile) }, outputs: { } }");
+        assert!(!out.contains("compile_error"), "{out}");
+        assert!(
+            out.contains("Preparer :: new (\"crate_x::compile\""),
+            "{out}"
+        );
+        let out = render("Pat { inputs: { pat: str(_compile) }, outputs: { } }");
+        assert!(!out.contains("compile_error"), "{out}");
     }
 
     #[test]

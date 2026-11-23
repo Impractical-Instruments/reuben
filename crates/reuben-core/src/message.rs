@@ -5,6 +5,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use num_traits::Float;
 
+use crate::prepare::Prepared;
 use crate::signal::BlockView;
 use crate::vocab::harmony::Harmony;
 use crate::vocab::pitch::{Note, Pitch};
@@ -67,37 +68,17 @@ pub enum Arg {
     I32(i32),
     /// A string / symbol atom, backed by `Arc<str>` so cloning on the render thread is a
     /// refcount bump, never a heap allocation. Construction (`Arc::from`) allocates, and happens
-    /// only on cold paths: the OSC decode thread, the engine channel, document load. Nothing on the
-    /// render thread builds one: an Operator declared through `operator_contract!` or the scaffold
-    /// cannot have a `str` output (the contract validator refuses it), and the interface pipe —
-    /// whose synthesized descriptor does declare a `str` output — forwards the latched `Arc` it was
-    /// given. A hand-built `Descriptor` handed to `Registry::register` is not validated; one that
-    /// declares a `str` output takes on the same rule.
+    /// only on cold paths: the OSC decode thread, the engine channel, document load.
     ///
-    /// **Render-thread frees: retired, not dropped.** A clone is RT-safe, but the *last* `Arc`
-    /// drop frees the backing allocation on whichever thread holds it. Wherever the render thread
-    /// lets go of a string it may be the last holder of, it moves it into the Engine's
-    /// [`RetireQueue`](crate::coordinator::RetireQueue) instead, and the Coordinator drops it off
-    /// the render thread: a `str` latch overwritten by a send or by a kept pipe's forward
-    /// (`render.rs`), a seed or authored default overwritten in a Plan's (or a hosted voice's)
-    /// first block, the interface pipe's dedup baseline, the per-block routing and emit scratch,
-    /// and the Engine's pending-control queue (`engine.rs`). Which values qualify is
-    /// [`OwnsHeap`](crate::coordinator::OwnsHeap), not this variant by name.
-    ///
-    /// What is left on the render thread:
-    ///
-    /// - **A full retire queue**: that one value is dropped where it was replaced, and counted in
-    ///   the engine diagnostics. An Engine built without a queue (no Coordinator) drops them all
-    ///   there, as before.
-    /// - **The echo path** (`str` → `osc_out` → outbound): the sink's emit is *moved* into an
-    ///   outbound [`Message`], not a held value. Native hands it to the OSC-out sender thread;
-    ///   with no `--osc-out` target it drains and drops it on the audio thread — a warned
-    ///   misconfiguration, and the same path that frees each outbound Message's `address: String`.
-    ///   A hosted voice's `osc_out` sends never leave the Voicer: their args are retired, and only
-    ///   each Message's address is freed there.
-    ///
-    /// `reuben-document`'s `tests/str_input.rs` and `tests/rt_safe.rs` pin the zero under the
-    /// counting allocator.
+    /// No `str` input holds one on the render thread: a `str` input holds a
+    /// [`Prepared`](Arg::Prepared) value, and routing drops a raw string sent to it, counted in the
+    /// engine diagnostics. A raw string still crosses the render thread in two places, as a
+    /// symbol for an enum input and as an atom for the `osc_out` pass-through, and either may be
+    /// its last holder there: the Engine's pending-control queue moves each into the
+    /// [`RetireQueue`](crate::coordinator::RetireQueue) rather than dropping it
+    /// ([`OwnsHeap`](crate::coordinator::OwnsHeap)). An atom `osc_out` forwards is moved into an
+    /// outbound [`Message`] instead, which native's OSC-out sender thread drops, or the audio
+    /// thread when no `--osc-out` target is set (a warned misconfiguration).
     Str(Arc<str>),
 
     // Shared vocab concrete types — each defined once with `#[derive(ArgValue)]`,
@@ -110,6 +91,10 @@ pub enum Arg {
     /// Wire-internal only (no external OSC form, like [`Harmony`](Arg::Harmony)); the field
     /// `unpack_note` emits on its `pitch` output, consumed by `pitch2freq`.
     Pitch(Pitch),
+    /// A `str` input's text compiled by the input's preparer, with no external OSC form of its own:
+    /// it leaves the engine as the [`Str`](Arg::Str) it was prepared from. The only value a `str`
+    /// input holds on the render thread; see [`crate::prepare`].
+    Prepared(Prepared),
 
     /// Any **vocab enum** value, type-erased to its bare variant **index**; type identity lives
     /// in the port descriptor's [`EnumMeta`](crate::descriptor::EnumMeta).
@@ -146,7 +131,7 @@ impl Arg {
 impl crate::coordinator::OwnsHeap for Arg {
     /// The variants whose drop can free: everything else is plain data.
     fn owns_heap(&self) -> bool {
-        matches!(self, Arg::Str(_) | Arg::F32Buffer(_))
+        matches!(self, Arg::Str(_) | Arg::Prepared(_) | Arg::F32Buffer(_))
     }
 }
 
@@ -167,7 +152,7 @@ impl From<i32> for Arg {
 
 /// Decode a borrowed [`Arg`] into an operator's requested payload type — the read side of the typed
 /// handle read (`io.read`). One trait spans every payload an operator reads: the OSC primitives
-/// (`f32`/`i32`/`&str`), the dense [`Buffer`](Arg::F32Buffer) as a borrowed [`BlockView`], and the
+/// (`f32`/`i32`), the dense [`Buffer`](Arg::F32Buffer) as a borrowed [`BlockView`], and the
 /// shared *vocab* concrete types (whose impl `#[derive(ArgValue)]` generates, delegating to their
 /// `TryFrom<&Arg>`).
 ///
@@ -190,15 +175,6 @@ impl<'a> FromArg<'a> for i32 {
         match arg {
             Arg::I32(v) => Some(*v),
             Arg::F32(v) => Some(Float::round(*v) as i32),
-            _ => None,
-        }
-    }
-}
-
-impl<'a> FromArg<'a> for &'a str {
-    fn from_arg(arg: &'a Arg) -> Option<Self> {
-        match arg {
-            Arg::Str(s) => Some(&**s),
             _ => None,
         }
     }
@@ -284,7 +260,8 @@ impl Message {
 /// A Message an operator emits during `process` onto a Message output port,
 /// before the engine stamps it block-absolute and routes it to downstream nodes. Distinct
 /// from the boundary [`Message`]: its payload is the one inline [`Arg`], so emitting on the wired
-/// hot path touches no allocator (a sparse [`Arg::Str`] included — its clone is an `Arc` bump).
+/// hot path touches no allocator (a [`Prepared`](Arg::Prepared) included — its clone is an `Arc`
+/// bump).
 /// Carries **no address**: internal wires route by connection, and the OSC
 /// boundary stamps the node address from [`Plan::outbound_taps`](crate::plan::Plan), not from here.
 #[derive(Debug, Clone)]

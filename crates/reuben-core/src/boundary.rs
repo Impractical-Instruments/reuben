@@ -82,7 +82,8 @@ pub(crate) fn has_form(name: &str) -> bool {
 /// **destination port**. `None` when the args don't fit the port (a wrong-typed wire —
 /// dropped) or the port has no OSC form (a *bare* [`Buffer`](Arg::F32Buffer): audio never crosses).
 ///
-/// - **F32 / I32 / Str** — wrap the first arg (numeric coercion as for any `Arg`).
+/// - **F32 / I32** — wrap the first arg (numeric coercion as for any `Arg`).
+/// - **Str** — one string, raw or already [`Prepared`](Arg::Prepared).
 /// - **F32Buffer with meta** — a signal control carrying a scalar default (`f32_buffer` + meta,
 ///   e.g. `djfilter.position`): crosses as a clamped `F32`, materialized ZOH downstream — a control
 ///   surface can sweep it. The port's `meta` is what distinguishes it from audio.
@@ -100,10 +101,12 @@ pub fn osc_in_arg(p: &Port, args: &[Arg]) -> Option<Arg> {
                 _ => None,
             })
             .map(Arg::I32),
-        PortType::Str => args.first().and_then(|a| match a {
-            Arg::Str(s) => Some(Arg::Str(s.clone())),
+        // One string: raw text, or text a producer already prepared. Which of the two the input
+        // keeps is routing's call, where a raw string at a preparing input is dropped and counted.
+        PortType::Str { .. } => match args {
+            [a @ (Arg::Str(_) | Arg::Prepared(_))] => Some(a.clone()),
             _ => None,
-        }),
+        },
         // A signal control with a scalar default (`f32_buffer` + meta, e.g. `djfilter.position`):
         // accept a numeric arg like an `F32` control and cross as `F32` — the ZOH bridge
         // materializes it downstream. Clamp to the port's range here, since the Signal materialize
@@ -148,7 +151,7 @@ pub fn osc_in_arg(p: &Port, args: &[Arg]) -> Option<Arg> {
 pub fn has_osc_form(ty: &PortType) -> bool {
     match ty {
         // The OSC atoms cross verbatim.
-        PortType::F32 | PortType::I32 { .. } | PortType::Str => true,
+        PortType::F32 | PortType::I32 { .. } | PortType::Str { .. } => true,
         // A type-erased vocab enum leaves as its bare index today; symbol-on-the-wire needs
         // drain-side source-port resolution and is not built.
         PortType::Vocab {
@@ -184,6 +187,10 @@ pub fn osc_out_args(arg: &Arg, out: &mut Vec<Arg>) -> bool {
     let before = out.len();
     match arg {
         Arg::F32(_) | Arg::I32(_) | Arg::Str(_) => out.push(arg.clone()),
+        // Prepared text leaves as the text it was prepared from.
+        Arg::Prepared(p) => out.push(Arg::Str(
+            p.source_arc().cloned().unwrap_or_else(|| p.source().into()),
+        )),
         Arg::Note(n) => n.to_osc(out),
         // A type-erased vocab enum (`Arg::Enum`) goes out as its bare **index**: at the boundary
         // there is no port context to recover the symbol from (type identity lives in the port, not
@@ -298,9 +305,20 @@ mod tests {
         // F32 port: a string atom has no numeric coercion.
         let f32p = port(PortType::F32);
         assert_eq!(osc_in_arg(&f32p, &[Arg::Str("loud".into())]), None);
-        // Str port: a numeric atom is not a string.
-        let strp = port(PortType::Str);
+        // Str port: a numeric atom is not a string, and two strings are not one.
+        let strp = port(PortType::Str { preparer: None });
         assert_eq!(osc_in_arg(&strp, &[Arg::F32(1.0)]), None);
+        assert_eq!(
+            osc_in_arg(&strp, &[Arg::Str("a".into()), Arg::Str("b".into())]),
+            None
+        );
+        // A prepared value crosses as itself, the same allocation.
+        let prepared = crate::prepare::testing::STEPS.prepare(&"1".into()).unwrap();
+        let Some(Arg::Prepared(crossed)) = osc_in_arg(&strp, &[Arg::Prepared(prepared.clone())])
+        else {
+            panic!("a prepared value crosses a str port");
+        };
+        assert!(crossed.ptr_eq(&prepared));
         // Note port: an empty list and a non-numeric pitch atom are malformed flat forms —
         // neither default-fills into a note-on.
         let note = port(PortType::Vocab {
@@ -387,7 +405,7 @@ mod tests {
         use crate::vocab::FilterMode;
         assert!(has_osc_form(&PortType::F32));
         assert!(has_osc_form(&PortType::I32 { meta: None }));
-        assert!(has_osc_form(&PortType::Str));
+        assert!(has_osc_form(&PortType::Str { preparer: None }));
         // A vocab enum leaves as its index (symbol-on-the-wire is not built).
         assert!(has_osc_form(
             &Port::enumerated(FilterMode::enum_meta("mode")).ty
@@ -413,6 +431,16 @@ mod tests {
         assert!(osc_out_args(&Arg::F32(1.0), &mut flat));
         assert!(osc_out_args(&Arg::I32(3), &mut flat));
         assert!(osc_out_args(&Arg::Str("s".into()), &mut flat));
+        let prepared = crate::prepare::testing::STEPS
+            .prepare(&"1 2".into())
+            .unwrap();
+        let mut sent = Vec::new();
+        assert!(osc_out_args(&Arg::Prepared(prepared), &mut sent));
+        assert_eq!(
+            sent,
+            [Arg::Str("1 2".into())],
+            "prepared text leaves as its text"
+        );
         assert!(osc_out_args(
             &Arg::from(FilterMode::from_symbol("Lp").unwrap()),
             &mut flat,

@@ -225,6 +225,7 @@ fn get_diagnostics_round_trips_every_counter() {
         control_batches_dropped_full: 5,
         wired_writes_dropped: 3,
         retire_queue_dropped_full: 1,
+        unprepared_writes_dropped: 4,
     };
     let stub = spawn_stub(move |_req| Response::Diagnostics(report));
     let client = channel(stub.addr.to_string());

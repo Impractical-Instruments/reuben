@@ -160,6 +160,12 @@ impl RenderSlot {
         self.engine.take_dropped_wired_writes()
     }
 
+    /// Take the count of strings dropped at a `str` input for not being a value its preparer
+    /// built, since the last take, leaving zero. RT-safe: a field read and write.
+    pub fn take_dropped_unprepared(&mut self) -> u64 {
+        self.engine.take_dropped_unprepared()
+    }
+
     /// Drain the outbound Messages the most recent fill produced, in emission order.
     pub fn drain_outbound(&mut self) -> alloc::vec::Drain<'_, Message> {
         self.engine.drain_outbound()
@@ -322,6 +328,8 @@ impl RenderSlot {
         // The retiring Engine's uncollected drop count goes on under the fresh one.
         let dropped = self.engine.take_dropped_wired_writes();
         bundle.engine.credit_dropped_wired_writes(dropped);
+        let dropped = self.engine.take_dropped_unprepared();
+        bundle.engine.credit_dropped_unprepared(dropped);
         // Swap the fresh Engine live; `bundle.engine` now holds the retiring one. Reusing the box's
         // storage (rather than `Box::new`) is what keeps the post allocation-free.
         core::mem::swap(&mut self.engine, &mut bundle.engine);

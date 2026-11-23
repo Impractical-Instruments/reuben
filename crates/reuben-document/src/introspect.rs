@@ -86,7 +86,7 @@ fn port_kind(ty: &PortType) -> &'static str {
         } => "enum",
         PortType::Vocab { .. } => "vocab",
         PortType::I32 { .. } => "int",
-        PortType::Str => "string",
+        PortType::Str { .. } => "string",
         // The type-agnostic pass-through — any Arg, the `osc_out` sink's input.
         PortType::Arg => "arg",
     }
@@ -716,76 +716,89 @@ fn faulted(
             },
             Vec::new(),
         ),
-        Err(PlanError::Cycle) => {
-            let diag = Diag {
-                node: None,
-                port: None,
-                message: "graph has a cycle (no valid execution order)".to_string(),
-            };
-            // A cycle names no node, so a new one cannot be told from one already there.
-            let fault = None;
+        // The planner names no fault apart from the message, so no refusal of its is attributed
+        // to an edit.
+        Err(e) => {
+            let errors = plan_error_diags(e);
+            let faults = vec![None; errors.len()];
             (
                 Report {
                     ok: false,
-                    errors: vec![diag],
+                    errors,
                     warnings,
                 },
-                vec![fault],
+                faults,
             )
         }
-        Err(PlanError::FormMismatch { src, dst, reason }) => {
-            // Localize to the destination endpoint: a form mismatch is rejected at
-            // the *input* port that can't accept the source's form (Signal→Value, Event→Signal,
-            // …), so `dst` is the node an agent must go fix — exactly as every `LoadError` with a
-            // known input localizes to its node.
-            //
-            // This arm is a **defensive backstop**: the load-time wiring check (`format`'s
-            // `compatible` gate) rejects every *reachable* form/type mismatch first,
-            // in boundary terms, before `Plan::instantiate` ever runs its form check — see
-            // `mistyped_boundary_wire_fails_at_load_not_at_instantiate`. So `validate` only reaches
-            // here if some future path hands `instantiate` a form-mismatched graph that skipped
-            // load. It still localizes like every other Diag if it ever does.
+    }
+}
+
+/// The Diags a [`PlanError`] reports, localized where the error names a node: one per failing
+/// value for [`PlanError::Prepare`], one otherwise. Shared by validation and the Coordinator's
+/// swap, so a document refused either way reads the same.
+pub fn plan_error_diags(e: PlanError) -> Vec<Diag> {
+    match e {
+        // A cycle names no node.
+        PlanError::Cycle => vec![Diag {
+            node: None,
+            port: None,
+            message: "graph has a cycle (no valid execution order)".to_string(),
+        }],
+        // Localize to the destination endpoint: a form mismatch is rejected at the *input* port
+        // that can't accept the source's form (Signal→Value, Event→Signal, …), so `dst` is the
+        // node an agent must go fix.
+        //
+        // A **defensive backstop**: the load-time wiring check (`format`'s `compatible` gate)
+        // rejects every *reachable* form/type mismatch first, in boundary terms, before
+        // `Plan::instantiate` ever runs its form check — see
+        // `mistyped_boundary_wire_fails_at_load_not_at_instantiate`.
+        PlanError::FormMismatch { src, dst, reason } => {
             let (node, port) = localize_wire_ref(&dst);
-            let diag = Diag {
+            vec![Diag {
                 node,
                 port,
                 message: format!("wire {src} → {dst}: {reason}"),
-            };
-            // The planner does not name its own failure apart from the message, so it is never
-            // attributed; the load rejects every reachable mismatch first anyway.
-            let fault = None;
-            (
-                Report {
-                    ok: false,
-                    errors: vec![diag],
-                    warnings,
-                },
-                vec![fault],
-            )
+            }]
         }
-        // Unreachable from a document: the loader hands Instantiate only keys it minted. A backstop
-        // like the arms above, never attributed. No `node`: a missing node has no address.
-        Err(PlanError::UnknownNode { position }) => (
-            Report {
-                ok: false,
-                errors: vec![Diag {
-                    message: format!("{} names a node the graph does not hold", role(&position)),
-                    node: None,
-                    port: None,
-                }],
-                warnings,
-            },
-            vec![None],
-        ),
+        // The document holds text its preparer refuses: node literals, interface inputs'
+        // defaults, or an unset input's `""`. Every refusal is reported.
+        PlanError::Prepare { failures } => failures
+            .into_iter()
+            .map(|f| Diag {
+                message: format!(
+                    "{}.{}: the text does not compile at bytes {}..{}: {}",
+                    f.node, f.port, f.error.span.start, f.error.span.end, f.error.message
+                ),
+                node: Some(f.node),
+                port: Some(f.port),
+            })
+            .collect(),
+        PlanError::PreparerConflict { pipe, kinds } => vec![Diag {
+            message: format!(
+                "interface input {pipe} feeds `str` inputs that compile their text differently \
+                 ({} and {}), so no one compiled value suits them all; give each kind of input \
+                 its own interface input",
+                kinds.0, kinds.1
+            ),
+            node: Some(pipe),
+            port: None,
+        }],
+        // Unreachable from a document: the loader hands Instantiate only keys it minted. A
+        // backstop like the arms above. No `node`: a missing node has no address.
+        PlanError::UnknownNode { position } => vec![Diag {
+            message: format!("{} names a node the graph does not hold", role(&position)),
+            node: None,
+            port: None,
+        }],
         // Unreachable from a document: the loader resolves port *names*, so every index it hands
-        // Instantiate is a declared one. Kept as a backstop like the arm above. `port` stays
-        // `None` because the refusal carries an index the descriptor has no name for.
-        Err(PlanError::PortOutOfRange {
+        // Instantiate is a declared one. `port` stays `None` because the refusal carries an index
+        // the descriptor has no name for.
+        PlanError::PortOutOfRange {
             node,
             position,
             port,
             declared,
-        }) => {
+        } => {
             let side = match &position {
                 PortPosition::Destination | PortPosition::InterfaceInput(_) => "inputs",
                 PortPosition::Source | PortPosition::Tap | PortPosition::InterfaceOutput(_) => {
@@ -793,21 +806,13 @@ fn faulted(
                 }
             };
             let role = role(&position);
-            // A backstop no document reaches, so it is never attributed.
-            (
-                Report {
-                    ok: false,
-                    errors: vec![Diag {
-                        message: format!(
-                            "{role} names port {port} on {node}, which declares {declared} {side}"
-                        ),
-                        node: Some(node),
-                        port: None,
-                    }],
-                    warnings,
-                },
-                vec![None],
-            )
+            vec![Diag {
+                message: format!(
+                    "{role} names port {port} on {node}, which declares {declared} {side}"
+                ),
+                node: Some(node),
+                port: None,
+            }]
         }
     }
 }

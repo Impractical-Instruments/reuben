@@ -179,6 +179,17 @@ fn render_operator(spec: &OperatorSpec) -> String {
     let name = &spec.type_name;
     let st = struct_name(name);
     let has_resources = !spec.resources.is_empty();
+    // The preparers a `str` input names by a bare function name, which this file then defines.
+    let mut preparers: Vec<&str> = spec
+        .inputs
+        .iter()
+        .filter_map(|p| match &p.ty {
+            PortTy::Str(Some(f)) if !f.contains("::") => Some(f.as_str()),
+            _ => None,
+        })
+        .collect();
+    preparers.sort_unstable();
+    preparers.dedup();
 
     let mut out = String::new();
     out.push_str(&format!(
@@ -197,6 +208,9 @@ fn render_operator(spec: &OperatorSpec) -> String {
     out.push('\n');
     out.push_str("use crate::descriptor::Descriptor;\n");
     out.push_str("use crate::operator::{Io, Operator};\n");
+    if !preparers.is_empty() {
+        out.push_str("use crate::prepare::{PrepareError, Prepared};\n");
+    }
     if has_resources {
         out.push_str("use crate::resources::{ResolvedRefs, ResourceStore};\n");
     }
@@ -209,6 +223,16 @@ fn render_operator(spec: &OperatorSpec) -> String {
     );
     out.push_str(&render_contract_call(spec));
     out.push('\n');
+
+    for f in &preparers {
+        out.push_str(&format!(
+            "/// Compile a `str` input's text into the payload `process` reads, off the render \
+             thread.\n\
+             fn {f}(source: &str) -> Result<Prepared, PrepareError> {{\n    \
+             // TODO Stage B: parse `source`; refuse it with the byte span at fault.\n    \
+             let _ = source;\n    Ok(Prepared::new(()))\n}}\n\n"
+        ));
+    }
 
     // State struct — empty by default; Stage B adds per-voice state fields (reset in `spawn`).
     out.push_str("#[derive(Default)]\n");
@@ -312,11 +336,12 @@ fn render_macro_port(p: &PortSpec) -> String {
         ),
         // A held vocab enum names its shared vocab type.
         PortTy::Enum(vocab) => format!("{}: enum({})", p.name, vocab),
-        // `note` / `harmony` / `pitch` / `str` / `arg` need no extra syntax.
+        // `note` / `harmony` / `pitch` / `arg` need no extra syntax; `str` names its preparer.
         PortTy::Note => format!("{}: note", p.name),
         PortTy::Harmony => format!("{}: harmony", p.name),
         PortTy::Pitch => format!("{}: pitch", p.name),
-        PortTy::Str => format!("{}: str", p.name),
+        PortTy::Str(Some(prepare)) => format!("{}: str({prepare})", p.name),
+        PortTy::Str(None) => format!("{}: str", p.name),
         PortTy::Arg => format!("{}: arg", p.name),
     }
 }
@@ -454,13 +479,22 @@ mod tests {
                              {"name":"cutoff","ty":"f32",
                               "f32":{"min":20.0,"max":20000.0,"default":1000.0,"unit":"Hz","curve":"exponential"}},
                              {"name":"mode","ty":"enum","vocab":"FilterMode"},
-                             {"name":"pat","ty":"str"} ],
+                             {"name":"pat","ty":"str","prepare":"compile"} ],
                  "outputs": [ {"name":"audio","ty":"f32_buffer"} ] }"#,
         );
         assert!(
             src.contains(
-                r#"inputs: { audio: f32_buffer, cutoff: f32 { 20.0..=20000.0, default 1000.0, "Hz", exp }, mode: enum(FilterMode), pat: str }"#
+                r#"inputs: { audio: f32_buffer, cutoff: f32 { 20.0..=20000.0, default 1000.0, "Hz", exp }, mode: enum(FilterMode), pat: str(compile) }"#
             ),
+            "{src}"
+        );
+        // A preparer named by a bare function gets a stub the file defines and imports for.
+        assert!(
+            src.contains("fn compile(source: &str) -> Result<Prepared, PrepareError> {"),
+            "{src}"
+        );
+        assert!(
+            src.contains("use crate::prepare::{PrepareError, Prepared};"),
             "{src}"
         );
         assert!(src.contains("outputs: { audio: f32_buffer }"), "{src}");

@@ -1133,6 +1133,10 @@ pub enum LoadWarning {
     /// it through a `subpatch` node, so this is a warning, not an error. Named `active`, it says
     /// that a Voicer refuses it.
     InertStrOutput { name: String },
+    /// A top-level `str` interface input feeds no input that compiles its text (only `osc_out`, an
+    /// output, or nothing). Its value is never compiled, so it holds nothing a send can set: a
+    /// send to it is dropped and counted, and it forwards nothing. Warned, never fatal.
+    UnreadStrInput { name: String },
     /// A pre-v4 node address broke the node address rule and was renamed at parse, every
     /// reference to it rewritten. Its OSC control address moved with it.
     RenamedAddress { from: String, to: String },
@@ -1202,6 +1206,12 @@ impl fmt::Display for LoadWarning {
                 f,
                 "interface output {name:?} carries a `str`, which nothing reads at the top level; \
                  it only works when a parent wires it through a `subpatch` node"
+            ),
+            LoadWarning::UnreadStrInput { name } => write!(
+                f,
+                "interface input {name:?} is a `str` that feeds no input which compiles its text, \
+                 so it holds nothing: a send to \"/{name}/in\" is dropped, and it forwards \
+                 nothing (to `osc_out` included)"
             ),
             LoadWarning::InertChannelBinding { name } => write!(
                 f,
@@ -1388,6 +1398,62 @@ pub fn load_instrument(
     load_instrument_guarded(json, registry, resolver, &mut LoadCtx::default(), None)
 }
 
+/// Warn [`LoadWarning::UnreadStrInput`] for each of `graph`'s own `str` interface inputs whose
+/// value reaches no preparing input, through any pipes after it. An input `doc` wires into a node
+/// that built nothing (a subpatch whose child did not load, already warned for) is skipped: the
+/// missing child is the cause, not the input.
+fn warn_unread_str_inputs(doc: &NormalizedDoc, graph: &Graph, warnings: &mut Vec<LoadWarning>) {
+    let built = |address: &str| {
+        let nested = format!("{address}/");
+        (graph.nodes.values()).any(|n| &*n.address == address || n.address.starts_with(&nested))
+    };
+    let feeds_unbuilt = |name: &str| {
+        let pipe = format!("/{name}");
+        let out = format!("/{name}.");
+        doc.nodes.iter().any(|n| {
+            !built(&n.address)
+                && n.inputs.values().any(|v| {
+                    matches!(v, InputValue::Wire { from } if *from == pipe || from.starts_with(&out))
+                })
+        })
+    };
+    let is_str = |k: reuben_core::NodeKey| {
+        graph.nodes.get(k).is_some_and(|n| {
+            n.descriptor.type_name == "pipe"
+                && matches!(
+                    n.descriptor.inputs.first().map(|p| &p.ty),
+                    Some(PortType::Str { .. })
+                )
+        })
+    };
+    for (name, &(key, _)) in &graph.interface.inputs {
+        if !is_str(key) {
+            continue;
+        }
+        let mut stack = vec![key];
+        let mut seen = BTreeSet::new();
+        let mut read = false;
+        while let Some(at) = stack.pop() {
+            if !seen.insert(at) {
+                continue;
+            }
+            for c in graph.connections.iter().filter(|c| c.src == at) {
+                if is_str(c.dst) {
+                    stack.push(c.dst);
+                } else if (graph.nodes.get(c.dst))
+                    .and_then(|n| n.descriptor.inputs.get(c.dst_port))
+                    .is_some_and(|p| p.preparer().is_some())
+                {
+                    read = true;
+                }
+            }
+        }
+        if !read && !feeds_unbuilt(name) {
+            warnings.push(LoadWarning::UnreadStrInput { name: name.clone() });
+        }
+    }
+}
+
 /// [`load_instrument`] from an already-minted document — the parse-once entry point for a
 /// caller that needs both the document (e.g. for its `interface` overrides,
 /// [`crate::describe::describe_boundary`]) and the built graph, without re-parsing the JSON.
@@ -1443,6 +1509,9 @@ fn load_doc_guarded(
         mut graph,
         mut warnings,
     } = doc.build_found(registry, Some(resolver), ctx, referrer, &mut found);
+    if referrer.is_none() {
+        warn_unread_str_inputs(doc, &graph, &mut warnings);
+    }
 
     // Resolve every referenced id once into the store; record id -> handle for binding. The
     // fetch + decode goes through the load-wide source cache (`LoadCtx::samples`), so N
@@ -2098,11 +2167,12 @@ impl InstrumentDoc {
                 // so unlike an operator type there is nothing registry-wide to share.
                 let descriptor = Arc::new(descriptor);
                 let bare_signal = kind == PortKind::Signal && descriptor.inputs[0].meta.is_none();
-                let key = graph.add_boxed(
-                    Arc::clone(&address),
-                    Box::new(Pipe::new(kind)),
-                    Arc::clone(&descriptor),
-                );
+                let op = match descriptor.inputs[0].ty {
+                    PortType::Str { .. } => Pipe::text(),
+                    _ => Pipe::new(kind),
+                };
+                let key =
+                    graph.add_boxed(Arc::clone(&address), Box::new(op), Arc::clone(&descriptor));
                 // An enum or `str` pipe's declared default seeds the pipe's latch as a
                 // value-override; numeric pipes carry theirs inside the port's own meta. Seeded with what
                 // `pipe_descriptor` resolved, not with the symbol as written: `set_value` drops a
@@ -2663,7 +2733,7 @@ impl InstrumentDoc {
                 // instrument's message-domain outputs, and a `str` one gets no captured slot
                 // besides (`Plan::instantiate`). It works when a parent wires it through a
                 // `subpatch` node, which is what this document is for.
-                if top_level && matches!(ty, PortType::Str) {
+                if top_level && matches!(ty, PortType::Str { .. }) {
                     warnings.push(LoadWarning::InertStrOutput { name: name.clone() });
                 }
                 match feed.channel {
@@ -2906,7 +2976,7 @@ fn pipe_doc_from_descriptor(
     if pipe.ty == "note" || pipe.ty == "harmony" || pipe.ty == "pitch" {
         return pipe;
     }
-    if let PortType::Str = &p.ty {
+    if let PortType::Str { .. } = &p.ty {
         if let Some((_, Arg::Str(s))) = node.value_overrides.first() {
             pipe.default = Some(PipeDefault::Symbol(s.to_string()));
         }
@@ -2992,7 +3062,7 @@ fn pipe_type_name(ty: &PortType) -> Option<String> {
         PortType::F32Buffer => Some("f32_buffer".to_string()),
         PortType::F32 => Some("f32".to_string()),
         PortType::I32 { .. } => Some("i32".to_string()),
-        PortType::Str => Some("str".to_string()),
+        PortType::Str { .. } => Some("str".to_string()),
         PortType::Vocab {
             name: "Note",
             is_event: true,
@@ -3148,7 +3218,7 @@ fn expected_literal(port: &Port, nothing: &str) -> String {
     if port.accepts_number_literal() {
         return "a number".to_string();
     }
-    if matches!(port.ty, PortType::Str) {
+    if matches!(port.ty, PortType::Str { .. }) {
         return "a string".to_string();
     }
     nothing.to_string()
@@ -3271,7 +3341,7 @@ fn coerce_literal(
         }
         // Through `coerce` like every other literal, so a `str` port stores exactly the
         // `Arg::Str` it validated. No length cap: the text is the value.
-        InputValue::Symbol(s) if matches!(port.ty, PortType::Str) => port
+        InputValue::Symbol(s) if matches!(port.ty, PortType::Str { .. }) => port
             .coerce(&Arg::Str(s.as_str().into()))
             .ok_or_else(|| bad_value(got_symbol(s))),
         InputValue::Symbol(s) => {
@@ -3564,6 +3634,7 @@ pub fn doc_value(port: &reuben_core::descriptor::Port, arg: &Arg) -> DocValue {
         Arg::F32(v) => DocValue::Number(widen_f32(*v)),
         Arg::I32(v) => DocValue::Number(*v as f64),
         Arg::Str(s) => DocValue::Symbol(s.to_string()),
+        Arg::Prepared(p) => DocValue::Symbol(p.source().to_string()),
         other => DocValue::Symbol(
             port.enum_meta()
                 .and_then(|e| e.symbol_of(other))
@@ -6901,11 +6972,16 @@ mod tests {
         mod str_witness {
             use reuben_core::descriptor::Descriptor;
             use reuben_core::operator::{Io, Operator};
+            use reuben_core::prepare::{PrepareError, Prepared};
+
+            fn any_text(_: &str) -> Result<Prepared, PrepareError> {
+                Ok(Prepared::new(()))
+            }
 
             pub struct StrWitness;
             reuben_core::operator_contract!(StrWitness {
                 type_name: "str_witness",
-                inputs: { text: str },
+                inputs: { text: str(any_text) },
                 outputs: { },
             });
             impl Operator for StrWitness {
@@ -6977,7 +7053,7 @@ mod tests {
                 (PortType::Arg, _) => LiteralPort::PassThrough,
                 (PortType::F32, false) => return Err("an F32 port carrying no F32Meta"),
                 (PortType::I32 { meta: None }, _) => return Err("an I32 port carrying no I32Meta"),
-                (PortType::Str, _) => LiteralPort::Str,
+                (PortType::Str { .. }, _) => LiteralPort::Str,
             })
         }
 

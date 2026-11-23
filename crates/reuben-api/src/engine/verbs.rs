@@ -258,14 +258,15 @@ pub fn get_engine_diagnostics(channel: &Channel) -> Result<Answer<DiagnosticsRep
     let summary = format!(
         "output_xruns={} input_ring_underruns={} input_ring_overruns={} \
          input_ring_producer_drops={} control_batches_dropped_full={} wired_writes_dropped={} \
-         retire_queue_dropped_full={}",
+         retire_queue_dropped_full={} unprepared_writes_dropped={}",
         report.output_xruns,
         report.input_ring_underruns,
         report.input_ring_overruns,
         report.input_ring_producer_drops,
         report.control_batches_dropped_full,
         report.wired_writes_dropped,
-        report.retire_queue_dropped_full
+        report.retire_queue_dropped_full,
+        report.unprepared_writes_dropped
     );
     Ok(Answer {
         output: report,

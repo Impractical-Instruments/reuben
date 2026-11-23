@@ -1278,7 +1278,8 @@ mod tests {
 
         // Sends straight to the slot, with nothing draining: more than the queue holds.
         let mut out = vec![0.0f32; 128 * slot.channels()];
-        for i in 0..RETIRE_QUEUE_CAPACITY {
+        // Each raw string is retired once, from the pending-control queue.
+        for i in 0..2 * RETIRE_QUEUE_CAPACITY {
             slot.queue_osc("/pat/in", &[Arg::Str(format!("pattern {i}").into())]);
             slot.fill(&mut out);
             slot.drain_outbound().for_each(drop);
