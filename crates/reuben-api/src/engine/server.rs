@@ -11,8 +11,10 @@
 //! - [`Request::GetDiagnostics`] → the host's counters, snapshotted off-thread.
 //! - [`Request::GetMeters`] → the host's levels at the device, read the same way.
 //! - [`Request::SetProbes`] → which nodes `GetMeters` also reports, chosen through the host.
-//! - [`Request::Send`] → control traffic, handed to the host's ingress as **one** batch. The one
-//!   verb that does not touch the Coordinator: control is not structure.
+//! - [`Request::Send`] → control traffic, handed to the host's ingress as **one** batch. It does
+//!   not touch the Coordinator: control is not structure.
+//! - [`Request::SendMidi`] → one translated MIDI message, through the host's MIDI router, which
+//!   sends what the open instrument's MIDI map makes of it as control traffic. Nor does it.
 //! - [`Request::Call`] → one non-engine roster verb against the engine's store. A read answers
 //!   directly. An edit waits in memory while the whole open instrument loads and plans with it;
 //!   only then is it written and the new Plan swapped in, and otherwise nothing is written and the

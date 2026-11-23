@@ -626,10 +626,20 @@ impl EngineHost for NativeHost {
             return Err("this engine reads no MIDI".to_string());
         };
         let translated = parse_translated(address, &args).ok_or_else(|| {
+            let shown: Vec<String> = args
+                .iter()
+                .map(|arg| match arg {
+                    Arg::F32(v) => v.to_string(),
+                    Arg::I32(v) => v.to_string(),
+                    other => format!("{other:?}"),
+                })
+                .collect();
             format!(
-                "{address} {args:?} is not a MIDI message as a device sends it: /midi/<1-16>/note \
-                 [pitch 0-127, velocity 0-1], /midi/<ch>/cc/<0-127> [0-1], /midi/<ch>/bend [-1-1], \
-                 /midi/<ch>/pressure [0-1] or /midi/<ch>/program [0-127]"
+                "`{address} {}` is not a MIDI message as a device sends it. Channels are 1 to 16; \
+                 send /midi/<ch>/note <pitch 0 to 127> <velocity 0 to 1>, \
+                 /midi/<ch>/cc/<0 to 127> <0 to 1>, /midi/<ch>/bend <-1 to 1>, \
+                 /midi/<ch>/pressure <0 to 1> or /midi/<ch>/program <0 to 127>",
+                shown.join(" ")
             )
         })?;
         router
@@ -1649,7 +1659,9 @@ mod tests {
 
         let refused = host.deliver_midi("/midi/17/cc/1", vec![Arg::F32(0.5)]);
         assert!(
-            refused.as_ref().is_err_and(|e| e.contains("/midi/17/cc/1")),
+            refused
+                .as_ref()
+                .is_err_and(|e| e.contains("`/midi/17/cc/1 0.5`")),
             "{refused:?}"
         );
         assert_eq!(diagnostics.snapshot().midi_received, 1);
