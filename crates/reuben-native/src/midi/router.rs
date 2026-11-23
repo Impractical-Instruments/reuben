@@ -68,6 +68,11 @@ impl Router {
             }
             matched = true;
             if t.kind == MidiKind::Note {
+                // Two routes to one target would send it the note twice, and the one held entry
+                // could release only one of them.
+                if sends.iter().any(|m: &OscIn| m.address == route.target) {
+                    continue;
+                }
                 let Some((pitch, on)) = note(&t.args) else {
                     continue;
                 };
@@ -99,18 +104,21 @@ impl Router {
         self.push(sends);
     }
 
-    /// Replaces the route table, first releasing each held note whose target no note route of
-    /// `table` sends to: the note-off that would have stopped it can no longer reach it.
+    /// Replaces the route table, first releasing each held note `table` could no longer stop: one
+    /// no note route of `table` both sends to its target and matches its channel. Its note-off
+    /// would otherwise go nowhere, or go unmatched, and the note would sound until `play` stops.
     pub fn install(&mut self, table: RouteTable) {
-        let kept: BTreeSet<&str> = table
-            .routes
-            .iter()
-            .filter(|route| route.kind == MidiKind::Note)
-            .map(|route| route.target.as_str())
-            .collect();
+        let reachable = |(target, channel, _): &(String, u8, u8)| {
+            let address = format!("/midi/{channel}/note");
+            table.routes.iter().any(|route| {
+                route.kind == MidiKind::Note
+                    && route.target == *target
+                    && route.pattern.matches(&address)
+            })
+        };
         let (keep, release): (BTreeSet<_>, BTreeSet<_>) = std::mem::take(&mut self.held)
             .into_iter()
-            .partition(|(target, ..)| kept.contains(target.as_str()));
+            .partition(reachable);
         self.held = keep;
         self.push(release.into_iter().map(note_off).collect());
         self.table = table;
@@ -315,6 +323,36 @@ mod tests {
         assert!(rig.batches().is_empty());
         rig.router.bytes(&[0x80, 60, 0]);
         assert_eq!(rig.batches(), vec![vec![off("/keys/in", 60.0)]]);
+    }
+
+    #[test]
+    fn install_releases_notes_whose_channel_no_longer_reaches_their_target() {
+        let mut rig = Rig::new(vec![note_route("/midi/1/note", "keys")]);
+        rig.router.bytes(&[0x90, 60, 100]);
+        rig.batches();
+        rig.router
+            .install(table(vec![note_route("/midi/2/note", "keys")]));
+        assert_eq!(rig.batches(), vec![vec![off("/keys/in", 60.0)]]);
+    }
+
+    #[test]
+    fn two_routes_to_one_target_send_a_note_once() {
+        let mut rig = Rig::new(vec![
+            note_route("/midi/1/note", "keys"),
+            note_route("/midi/[1-2]/note", "keys"),
+        ]);
+        rig.router.bytes(&[0x90, 60, 100]);
+        rig.router.bytes(&[0x80, 60, 0]);
+        assert_eq!(
+            rig.batches(),
+            vec![
+                vec![(
+                    "/keys/in".to_string(),
+                    vec![Arg::F32(60.0), Arg::F32(100.0 / 127.0)]
+                )],
+                vec![off("/keys/in", 60.0)],
+            ]
+        );
     }
 
     #[test]

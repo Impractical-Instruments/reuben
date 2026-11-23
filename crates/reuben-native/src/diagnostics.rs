@@ -91,7 +91,8 @@ pub struct Diagnostics {
     /// Received MIDI messages of a kind no MIDI map can bind (polyphonic aftertouch) or not
     /// well-formed.
     pub midi_unsupported: AtomicU64,
-    /// Received MIDI messages that matched at least one control of the MIDI map.
+    /// Received MIDI messages that matched at least one control of the MIDI map, including a
+    /// note-off sent nowhere because the note it would stop was already released.
     pub midi_routed: AtomicU64,
     /// Received MIDI messages no control matched. Diagnosis: the played instrument has no MIDI
     /// map, or the map's patterns name other channels or controllers than the device sends.
