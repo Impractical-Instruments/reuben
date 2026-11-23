@@ -38,6 +38,8 @@ Instrument with no MIDI map plays exactly as it does today, and no Instrument re
 - SysEx, NRPN/RPN, 14-bit CC (MSB/LSB pairs), MIDI output.
 - Numeric ranges in patterns beyond one digit (CC 30–70, channels 10–16). OSC 1.0 spells them
   awkwardly (`{3[0-9],4[0-9],5[0-9],6[0-9],70}`); a range extension waits for real need.
+- A virtual `reuben` MIDI input port (which `midir` supports on Linux and macOS) so a DAW can
+  send to `play` directly; hot-plug (polling the port list).
 - Choosing among several MIDI maps per Instrument (`--midi-map <name>`); per-device address
   prefixes. All devices share one `/midi/...` space and the one map.
 - Pattern matching for UDP OSC. Plain OSC keeps sending to `/<name>/in`, unchanged.
@@ -107,7 +109,16 @@ shape the destination input decodes (`[60, 0.8]` *is* a `note`).
 
 ### 1. MIDI → OSC translation (`reuben-native`)
 
-A MIDI thread per opened device decodes each message to one translated message. Channels are 1–16,
+**Library: `midir`, default features** — ALSA sequencer on Linux, CoreMIDI on macOS, WinMM on
+Windows; no JACK feature (`cpal` already uses ALSA, and PipeWire exposes the ALSA sequencer). It
+adds no system dependency CI lacks (`libasound2-dev` is already installed for `cpal`). `midir`
+delivers each message on its own callback thread, with running status expanded and a microsecond
+timestamp; the router runs on that thread, and the MVP ignores the timestamp (it is what the
+sample-accurate follow-up would use). Messages are **decoded by hand** — five kinds, no parser
+crate. On Windows, WinMM opens a port exclusively: if another program holds the controller, opening
+it fails, and the startup error says so.
+
+Each opened port's callback decodes each message to one translated message. Channels are 1–16,
 as printed on hardware. Other MIDI messages are dropped (and counted).
 
 | MIDI message | Address | Translated args |
@@ -252,10 +263,11 @@ it going?" has an answer.
 2. Identity in the address, value in the payload.
 3. The mapping lives in the surface layer, in a separate `surfaces/<stem>.midi.json`; the Instrument
    document is unchanged and protocol-agnostic.
-4. One pattern per control; patterns are OSC 1.0 address patterns over the `/midi/...` space.
-5. Merging several channels or CC numbers into one input is intended.
-6. Channels 1–16 in addresses.
-7. Per-note expression, clock sync, and editor/MCP editing of surfaces are out of the MVP; editor
+4. MIDI comes in through `midir` (default features), decoded by hand.
+5. One pattern per control; patterns are OSC 1.0 address patterns over the `/midi/...` space.
+6. Merging several channels or CC numbers into one input is intended.
+7. Channels 1–16 in addresses.
+8. Per-note expression, clock sync, and editor/MCP editing of surfaces are out of the MVP; editor
    and MCP editing of surfaces and MIDI maps is the planned follow-up.
 
 ## Calls made while writing this (check these)
@@ -276,7 +288,6 @@ it going?" has an answer.
 ## Left to the builder
 
 - Pattern matcher: borrow one with OSC 1.0 semantics or write one; test against the spec's rules.
-- MIDI library (`midir` expected); confirm Linux/macOS/Windows coverage.
 - How the route table is shared with the MIDI threads; producer ownership per device.
 - How the "one message kind" check is computed (e.g. match the pattern's third segment against the
   five kind names).
