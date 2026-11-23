@@ -30,7 +30,7 @@
 
 # -- /notes/in: a chord with a comma
 # /notes/in  [c3, eb3, g3] [c3, eb3, bb3]
-# /notes/in  c3, g3 ~ ~ eb3, bb3 ~ ~
+# /notes/in  [c3, g3] ~ ~ [eb3, bb3]
 
 # -- /notes/in: a bass line with rests, repeats and euclid
 # /notes/in  c2*2 ~ eb2 ~ g2 ~
@@ -41,7 +41,7 @@
 # /drone/in  65.4 98 130.8 98
 # /drone/in  <65.4 73.4 82.4 98>
 
-# -- /drone/in: a range counts up in whole Hz, so a short one is a slow wobble
+# -- /drone/in: a range counts up in whole Hz, so a short one is a slow climb that restarts each cycle
 # /drone/in  110 .. 117
 
 # -- /drone/in: a slow pattern over several cycles

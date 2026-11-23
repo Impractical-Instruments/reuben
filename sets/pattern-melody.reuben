@@ -58,6 +58,6 @@
 # /pattern/in  {0 2 4 7}%6
 # /pattern/in  {0 2 4}%8, {7 9}%8
 
-# -- Range: .. counts up by whole numbers
+# -- Range: .. counts by whole numbers, up or down
 # /pattern/in  0 .. 7
 # /pattern/in  [0 .. 4] [4 .. 0]
