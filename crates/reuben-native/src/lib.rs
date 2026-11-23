@@ -30,6 +30,7 @@ pub mod input;
 pub mod library;
 pub mod live;
 pub mod meters;
+pub mod midi;
 pub mod osc;
 mod probes;
 pub mod profile;
