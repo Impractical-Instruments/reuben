@@ -4,8 +4,8 @@
 //! `send`, `live` — each documented on its own `--help`. `play` is the server. `describe`,
 //! `validate` and `new-instrument` are its clients: they ask the running `reuben play` when one
 //! answers, and otherwise a temporary headless server they start in this process. `send` and
-//! `live` send text to the running `reuben play` and fail when none answers. A playing instrument takes
-//! control at its interface inputs, `/<name>/in`; the default instrument plays notes at its
+//! `live` send text to the running `reuben play` and fail when none answers. A playing instrument
+//! takes control at its interface inputs, `/<name>/in`; the default instrument plays notes at its
 //! `notes` input:
 //!
 //! ```text
@@ -127,7 +127,7 @@ enum Command {
     /// its span marked, nothing is applied, and the exit code is non-zero. Never starts a
     /// temporary server.
     Send {
-        /// The input's address, e.g. `/drums/pat`.
+        /// The input's address, e.g. `/pattern/in`.
         address: String,
         /// The text, as one argument: quote it, as a shell expands `~` and splits on spaces. Read
         /// from stdin when left out, so an editor can pipe a selection in. Trailing whitespace is

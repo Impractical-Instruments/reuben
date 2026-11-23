@@ -6,7 +6,7 @@ Two tasks and two key bindings that drive a running `reuben play` from VS Code w
   changed lines, and a line the engine refuses shows as an error at its span in the editor. The
   error clears on the next save that fixes it.
 - **reuben send selection** sends the selected text to one address. VS Code asks for the address
-  and pre-fills the one you last entered in this window.
+  and offers `/pattern/in`, the pattern input of `pattern-melody`, by default.
 
 ## Set files
 
@@ -15,9 +15,9 @@ line. Blank lines and lines starting with `#` are skipped. These recipes use the
 extension, and the key bindings only fire in files that have it. [`example.reuben`](example.reuben)
 is a starting point.
 
-`/pat/in` in `example.reuben` (and the address prompt's default) is a placeholder. The library
-instrument that plays a `pattern` Operator is not merged yet. Once it is, point the line at that
-instrument's pattern input. `reuben describe <instrument> --view pipes` lists its inputs.
+`example.reuben` and the address prompt's default target `/pattern/in`, the pattern input of the
+`pattern-melody` library instrument. For another instrument, `reuben describe <instrument> --view
+pipes` lists its inputs.
 
 ## Setup
 
@@ -27,7 +27,9 @@ instrument's pattern input. `reuben describe <instrument> --view pipes` lists it
    have one, merge its `tasks` and `inputs` entries into yours.
 3. Add the entries in [`keybindings.json`](keybindings.json) to your own key bindings
    (**Preferences: Open Keyboard Shortcuts (JSON)**).
-4. Start `reuben play` with the instrument you want to play, in a terminal.
+4. Start `pattern-melody` in a terminal: `reuben play instruments/pattern-melody.json` from the
+   repo root, or `reuben play --instrument-root <repo>/instruments <repo>/instruments/pattern-melody.json`
+   from anywhere.
 5. Open a `.reuben` file and press `ctrl+shift+enter` (or run **Tasks: Run Task → reuben live**).
    Select some text and press `ctrl+enter` to send just that.
 

@@ -196,7 +196,7 @@ reachable they exit at once and say so. `--engine-addr` and `--token` (or `REUBE
   applied. A send that compiles is only *queued*: an address that routes nowhere is dropped
   silently, as any `send` is.
 - **`reuben live <file>`** sends a set file now and on every save. Each line is an address,
-  whitespace, then the text to the end of the line (`/drums/pat  bd ~ [sd sd] ~`). Blank lines and
+  whitespace, then the text to the end of the line (`/pattern/in  0 2 4 <7 5> [4 2] 0 ~`). Blank lines and
   `#` comment lines are skipped, and an address may appear once. A line is sent when its text
   changed since it was last queued, or when its last send was refused. A refused line prints with
   its file, line and column, and its address keeps playing what it last played. A queued line
@@ -209,9 +209,9 @@ Because `send` reads stdin, "evaluate the selection" needs no plugin:
 
 | Editor | Recipe |
 |---|---|
-| Vim / Neovim | select lines, then `:'<,'>w !reuben send /drums/pat` |
-| Helix | select, then `:pipe-to reuben send /drums/pat` |
-| Emacs | select, then `M-\|` (`shell-command-on-region`) with `reuben send /drums/pat` |
+| Vim / Neovim | select lines, then `:'<,'>w !reuben send /pattern/in` |
+| Helix | select, then `:pipe-to reuben send /pattern/in` |
+| Emacs | select, then `M-\|` (`shell-command-on-region`) with `reuben send /pattern/in` |
 | VS Code | the tasks and key bindings in [`editors/vscode/`](../../editors/vscode/README.md) |
 
 `reuben live` runs until interrupted, and its location lines are what compilers print, so an

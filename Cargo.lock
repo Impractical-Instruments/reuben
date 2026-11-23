@@ -3430,8 +3430,6 @@ dependencies = [
  "notify",
  "reuben-api",
  "reuben-contract",
- "reuben-core",
- "reuben-document",
  "rosc",
  "rtrb",
  "serde",

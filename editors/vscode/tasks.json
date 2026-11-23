@@ -43,11 +43,10 @@
   ],
   "inputs": [
     {
-      // VS Code offers the value last entered in this window the next time it asks.
       "id": "reubenAddress",
       "type": "promptString",
       "description": "The address to send the selection to",
-      "default": "/pat/in"
+      "default": "/pattern/in"
     }
   ]
 }

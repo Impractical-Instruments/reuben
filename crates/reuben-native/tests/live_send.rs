@@ -3,12 +3,8 @@
 //!
 //! The server is everything `reuben play` wires up but the audio device: a Coordinator, the native
 //! host, the control ring, and [`FakeCallback`] draining that ring as the render callback does.
-//! No built-in Operator compiles its text yet, so the installed Plan's registry adds the test-only
-//! `steps` Operator, which compiles whitespace-separated whole numbers and refuses anything else
-//! with the byte span at fault.
-
-#[path = "../../reuben-document/tests/prepared/mod.rs"]
-mod prepared;
+//! The rig is two unfed `pattern` Operators, whose `pat` input compiles mini-notation text and
+//! refuses what does not parse with the byte span at fault.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
@@ -18,18 +14,18 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use reuben_api::engine::{ChannelState, Coordinator, ENGINE_ADDR_ENV, ENGINE_TOKEN_ENV};
+use reuben_api::engine::{install_initial, ChannelState, ENGINE_ADDR_ENV, ENGINE_TOKEN_ENV};
 use reuben_api::render::{Arg, AudioConfig};
 use reuben_native::control::ring_pair;
 use reuben_native::diagnostics::Diagnostics;
 use reuben_native::engine_channel::{ChannelServer, HeadlessRenderConfig, NativeHost};
-use reuben_native::test_support::{no_store, served, FakeCallback};
+use reuben_native::test_support::{no_store, served, FakeCallback, NoResources};
 
-/// Two `steps` nodes, each input unfed, so a `send` to `/a/steps` or `/b/steps` is what it plays.
+/// Two `pattern` nodes, each `pat` unfed, so a `send` to `/a/pat` or `/b/pat` is what it plays.
 const RIG: &str = r#"{ "format_version": 3, "instrument": "live",
   "nodes": [
-    { "type": "steps", "address": "/a", "inputs": { "steps": "1" } },
-    { "type": "steps", "address": "/b", "inputs": { "steps": "2" } } ] }"#;
+    { "type": "pattern", "address": "/a" },
+    { "type": "pattern", "address": "/b" } ] }"#;
 
 /// How long a test waits for something that should happen at once.
 const PATIENCE: Duration = Duration::from_secs(10);
@@ -42,13 +38,8 @@ struct Server {
 }
 
 fn serve() -> Server {
-    let (coordinator, side, _) = Coordinator::install_initial(
-        RIG,
-        prepared::registry(),
-        Box::new(reuben_document::MemoryResolver::new()),
-        AudioConfig::new(48_000.0, 128),
-    )
-    .expect("the rig installs");
+    let (coordinator, side, _) = install_initial(RIG, NoResources, AudioConfig::new(48_000.0, 128))
+        .expect("the rig installs");
     let (control_tx, control_rx) = ring_pair(Diagnostics::new());
     let host = NativeHost::new(Diagnostics::new(), control_tx).with_render_config(Arc::new(
         HeadlessRenderConfig {
@@ -65,8 +56,9 @@ fn serve() -> Server {
 }
 
 impl Server {
-    /// Every message the render thread was handed so far, as `(address, sum)`, waiting for `n`.
-    fn queued(&self, n: usize) -> Vec<(String, u32)> {
+    /// Every message the render thread was handed so far, as `(address, source text)`, waiting
+    /// for `n`.
+    fn queued(&self, n: usize) -> Vec<(String, String)> {
         self.callback
             .await_queued(n)
             .into_iter()
@@ -77,10 +69,7 @@ impl Server {
                         m.address, m.args
                     );
                 };
-                let steps = p
-                    .payload::<prepared::Compiled>()
-                    .expect("steps compiled it");
-                (m.address, steps.0.iter().sum())
+                (m.address, p.source().to_string())
             })
             .collect()
     }
@@ -125,26 +114,28 @@ fn stderr(output: &Output) -> String {
 #[test]
 fn a_bad_pattern_through_send_exits_non_zero_with_the_span_and_nothing_changes() {
     let server = serve();
-    let refused = send(&server.addr, &["/a/steps", "1 x 3"], "");
+    let refused = send(&server.addr, &["/a/pat", "0 x 3"], "");
     assert!(!refused.status.success(), "a refusal exits non-zero");
     assert_eq!(
         stderr(&refused),
-        "<arg>:1:3: error: expected a whole number\n1 x 3\n  ^\n"
+        "<arg>:1:3: error: unknown word 'x'; atoms are numbers and note names\n0 x 3\n  ^\n"
     );
 
-    let piped = send(&server.addr, &["/a/steps"], "4 5\n6 z\n");
+    let piped = send(&server.addr, &["/a/pat"], "4 5\n6 z\n");
     assert!(!piped.status.success());
     assert!(
-        stderr(&piped).starts_with("<stdin>:1:3: error: expected a whole number\n"),
+        stderr(&piped).starts_with(
+            "<stdin>:2:3: error: unknown word 'z'; atoms are numbers and note names\n"
+        ),
         "{}",
         stderr(&piped)
     );
 
-    let queued = send(&server.addr, &["/a/steps", "4 5"], "");
+    let queued = send(&server.addr, &["/a/pat", "4 5"], "");
     assert!(queued.status.success(), "{}", stderr(&queued));
     assert_eq!(
         server.queued(1),
-        vec![("/a/steps".to_string(), 9)],
+        vec![("/a/pat".to_string(), "4 5".to_string())],
         "only the send that compiled reached the render thread"
     );
 }
@@ -152,9 +143,12 @@ fn a_bad_pattern_through_send_exits_non_zero_with_the_span_and_nothing_changes()
 #[test]
 fn send_reads_the_pattern_from_stdin_when_it_is_left_out() {
     let server = serve();
-    let output = send(&server.addr, &["/b/steps"], "7 8\n");
+    let output = send(&server.addr, &["/b/pat"], "7 8\n");
     assert!(output.status.success(), "{}", stderr(&output));
-    assert_eq!(server.queued(1), vec![("/b/steps".to_string(), 15)]);
+    assert_eq!(
+        server.queued(1),
+        vec![("/b/pat".to_string(), "7 8".to_string())]
+    );
 }
 
 #[test]
@@ -162,9 +156,9 @@ fn both_fail_fast_with_a_clear_message_when_no_reuben_play_is_reachable() {
     let dead = dead_addr();
     let dir = Dir::new("unreachable");
     let set = dir.0.join("a.set");
-    std::fs::write(&set, "/a/steps 1\n").expect("write the set");
+    std::fs::write(&set, "/a/pat 1\n").expect("write the set");
     for args in [
-        vec!["send", "--engine-addr", &dead, "/a/steps", "1"],
+        vec!["send", "--engine-addr", &dead, "/a/pat", "1"],
         vec!["live", "--engine-addr", &dead, set.to_str().expect("utf-8")],
     ] {
         let started = Instant::now();
@@ -186,7 +180,7 @@ fn both_fail_fast_with_a_clear_message_when_no_reuben_play_is_reachable() {
 
     let from_env = reuben()
         .env(ENGINE_ADDR_ENV, &dead)
-        .args(["send", "/a/steps", "1"])
+        .args(["send", "/a/pat", "1"])
         .stdin(Stdio::null())
         .output()
         .expect("run reuben send");
@@ -277,7 +271,7 @@ fn live_sends_only_changed_lines_skips_comments_and_keeps_the_old_pattern_when_a
     let server = serve();
     let dir = Dir::new("changed");
     let set = dir.0.join("drums.set");
-    std::fs::write(&set, "# two patterns\n/a/steps  1 2\n\n/b/steps 3\n").expect("write the set");
+    std::fs::write(&set, "# two patterns\n/a/pat  1 2\n\n/b/pat 3\n").expect("write the set");
     let shown = set.display().to_string();
     let live = Live::start(&server.addr, &set);
 
@@ -285,50 +279,53 @@ fn live_sends_only_changed_lines_skips_comments_and_keeps_the_old_pattern_when_a
         live.batch(),
         vec![
             format!("reuben live: sending {shown}"),
-            "reuben live: queued /a/steps (line 2)".to_string(),
-            "reuben live: queued /b/steps (line 4)".to_string(),
+            "reuben live: queued /a/pat (line 2)".to_string(),
+            "reuben live: queued /b/pat (line 4)".to_string(),
             "reuben live: done (2 queued, 0 errors)".to_string(),
         ]
     );
     assert_eq!(
         server.queued(2),
-        vec![("/a/steps".to_string(), 3), ("/b/steps".to_string(), 3)]
+        vec![
+            ("/a/pat".to_string(), "1 2".to_string()),
+            ("/b/pat".to_string(), "3".to_string())
+        ]
     );
 
-    save(&set, "# two patterns\n/a/steps  1 2 3\n\n/b/steps 3 x\n");
+    save(&set, "# two patterns\n/a/pat  1 2 3\n\n/b/pat 3 x\n");
     assert_eq!(
         live.batch(),
         vec![
             format!("reuben live: sending {shown}"),
-            "reuben live: queued /a/steps (line 2)".to_string(),
-            format!("{shown}:4:12: error: expected a whole number"),
+            "reuben live: queued /a/pat (line 2)".to_string(),
+            format!("{shown}:4:10: error: unknown word 'x'; atoms are numbers and note names"),
             "3 x".to_string(),
             "  ^".to_string(),
             "reuben live: done (1 queued, 1 error)".to_string(),
         ]
     );
-    // The failed line reached nothing, so `/b` still plays the 3 it was last sent.
+    // The failed line reached nothing, so `/b` still plays the `3` it was last sent.
     assert_eq!(
         server.queued(4),
         vec![
-            ("/a/steps".to_string(), 3),
-            ("/b/steps".to_string(), 3),
-            ("/a/steps".to_string(), 6),
+            ("/a/pat".to_string(), "1 2".to_string()),
+            ("/b/pat".to_string(), "3".to_string()),
+            ("/a/pat".to_string(), "1 2 3".to_string()),
         ]
     );
 
-    save(&set, "# two patterns\n/a/steps  1 2 3\n\n/b/steps 3 4\n");
+    save(&set, "# two patterns\n/a/pat  1 2 3\n\n/b/pat 3 4\n");
     assert_eq!(
         live.batch(),
         vec![
             format!("reuben live: sending {shown}"),
-            "reuben live: fixed, queued /b/steps (line 4)".to_string(),
+            "reuben live: fixed, queued /b/pat (line 4)".to_string(),
             "reuben live: done (1 queued, 0 errors)".to_string(),
         ]
     );
     assert_eq!(
         server.queued(4).last(),
-        Some(&("/b/steps".to_string(), 7)),
+        Some(&("/b/pat".to_string(), "3 4".to_string())),
         "only the fixed line was sent"
     );
     assert_eq!(server.queued(5).len(), 4, "the unchanged `/a` line was not");
