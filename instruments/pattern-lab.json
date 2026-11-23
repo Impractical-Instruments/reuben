@@ -1,0 +1,177 @@
+{
+  "format_version": 3,
+  "instrument": "pattern-lab",
+  "doc": "Three `pattern` Operators on one Clock, one per kind of pattern: `notes` plays MIDI note names and numbers through an 8-voice Voicer, `cutoff` steps the filter after it in Hz, and `drone` steps a quiet saw oscillator's frequency in Hz. Send new text to /notes/in, /cutoff/in or /drone/in with `reuben send` or `reuben live`; each takes over at its next cycle of 4 beats.",
+  "resources": {
+    "acid-bass-voice": "voices/acid-bass-voice.json"
+  },
+  "interface": {
+    "inputs": {
+      "tempo": {
+        "type": "f32",
+        "default": 110.0,
+        "min": 40.0,
+        "max": 240.0,
+        "unit": "BPM"
+      },
+      "notes": {
+        "type": "str",
+        "default": "c3 eb3 g3 <bb3 c4>"
+      },
+      "cutoff": {
+        "type": "str",
+        "default": "<400 800 1600 3200>"
+      },
+      "drone": {
+        "type": "str",
+        "default": "<65.4 98>"
+      }
+    },
+    "outputs": {
+      "out": {
+        "from": "/out.audio"
+      }
+    }
+  },
+  "nodes": [
+    {
+      "type": "clock",
+      "address": "/clock",
+      "inputs": {
+        "tempo": {
+          "from": "/tempo"
+        }
+      },
+      "doc": "The shared transport: its `beat` and `phase` drive all three `pattern` Operators, so they cycle together."
+    },
+    {
+      "type": "pattern",
+      "address": "/melody",
+      "doc": "MIDI notes: numbers and note names.",
+      "inputs": {
+        "pat": {
+          "from": "/notes"
+        },
+        "phase": {
+          "from": "/clock.phase"
+        },
+        "beat": {
+          "from": "/clock.beat"
+        },
+        "mode": "Midi"
+      }
+    },
+    {
+      "type": "pattern",
+      "address": "/sweep",
+      "doc": "A parameter pattern: each event sets the filter cutoff in Hz; a rest holds the last value.",
+      "inputs": {
+        "pat": {
+          "from": "/cutoff"
+        },
+        "phase": {
+          "from": "/clock.phase"
+        },
+        "beat": {
+          "from": "/clock.beat"
+        },
+        "mode": "Value"
+      }
+    },
+    {
+      "type": "pattern",
+      "address": "/pitch",
+      "doc": "A frequency pattern: each event sets the drone oscillator's frequency in Hz.",
+      "inputs": {
+        "pat": {
+          "from": "/drone"
+        },
+        "phase": {
+          "from": "/clock.phase"
+        },
+        "beat": {
+          "from": "/clock.beat"
+        },
+        "mode": "Value"
+      }
+    },
+    {
+      "type": "harmony",
+      "address": "/harmony",
+      "doc": "The harmony context the Voicer reads. `/melody` plays MIDI notes, so it stays at its default."
+    },
+    {
+      "type": "voicer",
+      "address": "/voicer",
+      "voice": "acid-bass-voice",
+      "inputs": {
+        "harmony": {
+          "from": "/harmony"
+        },
+        "notes": {
+          "from": "/melody.notes"
+        }
+      },
+      "doc": "Plays `/melody`'s notes through eight acid-bass voices."
+    },
+    {
+      "type": "filter",
+      "address": "/filter",
+      "inputs": {
+        "audio": {
+          "from": "/voicer.audio"
+        },
+        "cutoff": {
+          "from": "/sweep.value"
+        },
+        "resonance": 0.5
+      },
+      "doc": "Low-pass on the voices; `/sweep` steps its cutoff."
+    },
+    {
+      "type": "oscillator",
+      "address": "/osc",
+      "inputs": {
+        "freq": {
+          "from": "/pitch.value"
+        },
+        "waveform": "Saw"
+      },
+      "doc": "The drone: a saw whose frequency `/pitch` steps."
+    },
+    {
+      "type": "mul_f32_signal",
+      "address": "/drone_level",
+      "inputs": {
+        "a": {
+          "from": "/osc.audio"
+        },
+        "b": 0.08
+      },
+      "doc": "Keeps the drone quiet under the melody."
+    },
+    {
+      "type": "mix",
+      "address": "/mix",
+      "inputs": {
+        "in1": {
+          "from": "/filter.audio"
+        },
+        "in2": {
+          "from": "/drone_level.out"
+        }
+      },
+      "doc": "Melody and drone."
+    },
+    {
+      "type": "output",
+      "address": "/out",
+      "inputs": {
+        "audio": {
+          "from": "/mix.out"
+        }
+      },
+      "doc": "The instrument's audio output."
+    }
+  ]
+}
