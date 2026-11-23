@@ -95,8 +95,11 @@ writes nothing. Without `expect`, the last write wins. Indexes are positions in 
 | `move_instrument_surface_control` | `from`, `to` | Moves one control. Order is render order for the screen doc and has no effect on MIDI routing. |
 
 `control` is the typed `SurfaceControl` (`bind`, `label`, `widget`, `group`, `min`, `max`,
-`note`, `velocity`, `degree`, `midi`). It is never text. An edit answers the same shape as the
-read, after the edit, so a client never needs to re-read.
+`note`, `velocity`, `degree`, `midi`). It is never text. An edit answers the same `EditResult`
+the instrument verbs answer: `written`, the doc's new `hash`, every control's warnings, and a
+`zoom` listing the controls. The engine's edit path, the editor's write path and the editor's undo
+then carry surface edits unchanged. A client that wants per-control status re-reads with
+`describe_instrument_surface`.
 
 A `midi` field on a screen-doc control, or `label`/`widget`/`group` on a MIDI-map control, is
 accepted and kept as the schema already allows. The docs say which keys each doc reads.
