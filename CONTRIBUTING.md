@@ -98,8 +98,9 @@ run them locally before you push.
 [`rust-toolchain.toml`](./rust-toolchain.toml) also pins **`thumbv7em-none-eabihf`** — bare-metal
 Cortex-M7, no OS and therefore no `std` at all, because rustup ships none for any `*-none-*` triple.
 rustup installs it alongside the channel, so there is no `rustup target add` to remember.
-The packages that have to keep building for it are `reuben-core`, and `reuben-api` with
-`--no-default-features --features render` — the render half of the window. Nothing above it does.
+The packages that have to keep building for it are `reuben-core`, `reuben-api` with
+`--no-default-features --features render` — the render half of the window — and `reuben-pattern`,
+whose compiled tree the `pattern` Operator walks on the Render thread. Nothing above them does.
 
 **The gate passes.** The port is finished: `reuben-core`, `reuben-contract` and `reuben-api` all
 carry the `no_std` attribute, every dependency reaching **this target** arrives with its default
@@ -114,6 +115,8 @@ cargo build  -p reuben-core --target thumbv7em-none-eabihf --release
 cargo clippy -p reuben-core --target thumbv7em-none-eabihf --release -- -D warnings
 cargo build  -p reuben-api --no-default-features --features render --target thumbv7em-none-eabihf --release
 cargo clippy -p reuben-api --no-default-features --features render --target thumbv7em-none-eabihf --release -- -D warnings
+cargo build  -p reuben-pattern --target thumbv7em-none-eabihf --release
+cargo clippy -p reuben-pattern --target thumbv7em-none-eabihf --release -- -D warnings
 ```
 
 A `use std::…` in `reuben-core`'s lib fails all of them; the `reuben-api` pair compiles
