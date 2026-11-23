@@ -7,3 +7,4 @@ pub mod pattern;
 pub mod router;
 pub mod routes;
 pub mod translate;
+pub mod watch;
