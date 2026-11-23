@@ -593,11 +593,27 @@ mod tests {
         });
     }
 
+    /// Whether the installed instrument fits the input stream, once nothing holds the Coordinator.
+    /// The engine's own threads (the MIDI route watch reads what plays after every Swap) hold it
+    /// briefly, and what is installed reads as busy meanwhile; the editor looks again on its next
+    /// frame. Waiting here also lets a `follow` that comes next find the Coordinator free.
+    fn fits(engine: &Engine) -> Option<bool> {
+        let deadline = Instant::now() + Duration::from_secs(HANG_SECS);
+        loop {
+            let fits = engine.input_fits();
+            if fits.is_some() || engine.running().is_none() {
+                return fits;
+            }
+            assert!(Instant::now() < deadline, "the Coordinator stays busy");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     /// Assert `engine` was restarted onto `path` with an input stream wide enough for it.
     fn restarted_with_input(engine: &Engine, path: &Path) {
         let running = engine.running().expect("the restarted engine runs");
         assert_eq!(running.opened_input_channels(), 1);
-        assert_eq!(engine.input_fits(), Some(true));
+        assert_eq!(fits(engine), Some(true));
         assert_eq!(
             engine.instrument(),
             Some(&Instrument::Path(path.to_path_buf()))
@@ -626,11 +642,7 @@ mod tests {
             let mic = lib.join("mic-space.json");
             let mut session = opened(&mic, &engine);
             swapped_in(&mut session, &engine);
-            assert_eq!(
-                engine.input_fits(),
-                Some(false),
-                "mic-space would read silence"
-            );
+            assert_eq!(fits(&engine), Some(false), "mic-space would read silence");
 
             follow(&mut session, &mut engine, false, headless);
             restarted_with_input(&engine, &mic);
@@ -710,7 +722,7 @@ mod tests {
         let mic = lib.join("mic-space.json");
         let mut session = opened(&mic, &engine);
         swapped_in(&mut session, &engine);
-        assert_eq!(engine.input_fits(), Some(false));
+        assert_eq!(fits(&engine), Some(false));
         (scratch, mic, session, engine)
     }
 
@@ -947,7 +959,7 @@ mod tests {
             let mic = lib.join("mic-space.json");
             let mut session = opened(&mic, &engine);
             swapped_in(&mut session, &engine);
-            assert_eq!(engine.input_fits(), Some(false));
+            assert_eq!(fits(&engine), Some(false));
 
             follow(&mut session, &mut engine, false, no_device);
             assert!(engine.channel().is_some(), "{:?}", engine.report());
