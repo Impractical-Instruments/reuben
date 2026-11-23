@@ -502,7 +502,20 @@ pub enum Event {
     /// document's content hash, whichever of its files changed: after an edit to a nested
     /// document it is not the hash that edit's own result carries. An empty `hash` is a write
     /// while nothing plays: the file changed and no Plan was installed.
-    Changed { hash: String, by: ChangedBy },
+    ///
+    /// `reset` lists, sorted, the address of each interface input the installed Plan offers for
+    /// live values — `/<name>/in`, and a subpatch's unfed boundary inputs as `/<sub>/<name>/in` —
+    /// that did not keep its live value: one new to this Plan, one that was fed before this change
+    /// and is unfed now, or one whose type or default changed.
+    /// Every other one kept its value, clamped into its range. An input a wire or another
+    /// interface input feeds offers none and is never listed. `None` when this is not known, which
+    /// a client reads as every one.
+    Changed {
+        hash: String,
+        by: ChangedBy,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reset: Option<Vec<String>>,
+    },
     /// Another instrument was opened and is playing. `name` is the host's
     /// [origin](crate::engine::EngineHost::document_origin) of the name it was opened by, the one
     /// spelling every client hears.
@@ -558,6 +571,10 @@ pub struct DiagnosticsReport {
     /// predates it, and then zero.
     #[serde(default)]
     pub control_batches_dropped_full: u64,
+    /// Control messages dropped for addressing an input a wire or an interface pipe feeds
+    /// (messages). Absent from a report by an engine that predates it, and then zero.
+    #[serde(default)]
+    pub wired_writes_dropped: u64,
 }
 
 /// The engine's levels at the device: what it sends out, after the output map, and what the input
@@ -729,6 +746,7 @@ mod tests {
             input_ring_overruns: 0,
             input_ring_producer_drops: 96,
             control_batches_dropped_full: 7,
+            wired_writes_dropped: 3,
         }
     }
 
@@ -1104,13 +1122,24 @@ mod tests {
                 Event::Changed {
                     hash: "00c0ffee00c0ffee".to_string(),
                     by: ChangedBy::Client,
+                    reset: None,
                 },
                 serde_json::json!({"event": "changed", "hash": "00c0ffee00c0ffee", "by": "client"}),
             ),
             (
                 Event::Changed {
                     hash: "00c0ffee00c0ffee".to_string(),
+                    by: ChangedBy::Client,
+                    reset: Some(vec!["/cutoff/in".to_string()]),
+                },
+                serde_json::json!({"event": "changed", "hash": "00c0ffee00c0ffee", "by": "client",
+                                   "reset": ["/cutoff/in"]}),
+            ),
+            (
+                Event::Changed {
+                    hash: "00c0ffee00c0ffee".to_string(),
                     by: ChangedBy::Outside,
+                    reset: None,
                 },
                 serde_json::json!({"event": "changed", "hash": "00c0ffee00c0ffee", "by": "outside"}),
             ),
@@ -1161,7 +1190,8 @@ mod tests {
     #[test]
     fn diagnostics_response_carries_every_counter_flat_beside_the_tag() {
         // The diagnostics endpoint is this channel verb, and its payload is the running totals
-        // (xruns count events, input ring counters count frames, control drops count batches),
+        // (xruns count events, input ring counters count frames, control drops count batches,
+        // dropped wired writes count messages),
         // flat next to the tag so new counters land as new fields.
         let v: serde_json::Value =
             serde_json::from_str(&Response::Diagnostics(diagnostics_report()).to_ndjson())
@@ -1174,7 +1204,8 @@ mod tests {
                 "input_ring_underruns": 480,
                 "input_ring_overruns": 0,
                 "input_ring_producer_drops": 96,
-                "control_batches_dropped_full": 7
+                "control_batches_dropped_full": 7,
+                "wired_writes_dropped": 3
             })
         );
     }
@@ -1189,6 +1220,7 @@ mod tests {
         }))
         .expect("an older engine's report still reads");
         assert_eq!(report.control_batches_dropped_full, 0);
+        assert_eq!(report.wired_writes_dropped, 0);
     }
 
     #[test]

@@ -214,7 +214,7 @@ impl EnumMeta {
 /// from a latched scalar. A [`Buffer`](PortType::F32Buffer) audio input and vocab ports
 /// leave `meta` `None`. A vocab **enum** carries its [`EnumMeta`] inside its
 /// [`PortType::Vocab`] (reach it via [`enum_meta`](Self::enum_meta)).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Port {
     pub name: &'static str,
     pub ty: PortType,

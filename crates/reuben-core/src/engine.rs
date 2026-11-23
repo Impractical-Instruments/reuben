@@ -170,6 +170,24 @@ impl Engine {
         self.plan.transplant_survivors(&mut retiring.plan, pairs);
     }
 
+    /// Carry live input values from a `retiring` Engine into this (freshly built) one. Each place
+    /// may appear at most once per side; see `Plan::carry_live_values`.
+    pub fn carry_live_values(&mut self, retiring: &mut Engine, carries: &[crate::plan::LiveCarry]) {
+        self.plan.carry_live_values(&mut retiring.plan, carries);
+    }
+
+    /// Take the count of inbound messages dropped for addressing an input a wire or an interface
+    /// pipe feeds, leaving zero. RT-safe: a field read and write.
+    pub fn take_dropped_wired_writes(&mut self) -> u64 {
+        self.plan.take_dropped_wired_writes()
+    }
+
+    /// Add `n` to the count [`take_dropped_wired_writes`](Self::take_dropped_wired_writes)
+    /// returns: an install credits the fresh Engine with what the retiring one had not handed on.
+    pub fn credit_dropped_wired_writes(&mut self, n: u64) {
+        self.plan.dropped_wired_writes += n;
+    }
+
     /// Fill `out` with **interleaved logical** samples, rendering core blocks as needed.
     /// `out.len()` must be a multiple of [`Engine::channels`]; frame `f`, channel `c` lands at
     /// `out[f * channels + c]`. The no-input convenience: an instrument's bound input pipes

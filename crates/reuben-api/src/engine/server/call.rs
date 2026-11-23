@@ -444,6 +444,7 @@ fn written_while_silent(
     state.events.publish(Event::Changed {
         hash: String::new(),
         by: ChangedBy::Client,
+        reset: None,
     });
     state.publish_invalid(errors);
     Response::Called {
@@ -1479,6 +1480,7 @@ mod tests {
             Ok(Event::Changed {
                 hash: output["hash"].as_str().expect("hash").to_string(),
                 by: ChangedBy::Client,
+                reset: Some(Vec::new()),
             })
         );
         assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
@@ -1536,7 +1538,8 @@ mod tests {
             events.try_recv(),
             Ok(Event::Changed {
                 hash: String::new(),
-                by: ChangedBy::Client
+                by: ChangedBy::Client,
+                reset: None,
             })
         );
         assert!(matches!(events.try_recv(), Ok(Event::Invalid { .. })));
@@ -1738,6 +1741,7 @@ mod tests {
             Event::Changed {
                 hash: output["hash"].as_str().expect("hash").to_string(),
                 by: ChangedBy::Client,
+                reset: Some(Vec::new()),
             }
         );
         assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
@@ -1811,7 +1815,7 @@ mod tests {
             .unwrap();
         let reloaded = s.state.reload();
         s.render();
-        let Some(Event::Changed { hash, by }) = reloaded.clone() else {
+        let Some(Event::Changed { hash, by, .. }) = reloaded.clone() else {
             panic!("expected a change, got {reloaded:?}");
         };
         assert_eq!(by, ChangedBy::Outside);
@@ -1946,6 +1950,7 @@ mod tests {
             Some(Event::Changed {
                 hash: before,
                 by: ChangedBy::Outside,
+                reset: Some(Vec::new()),
             }),
             "the top document is unchanged, so its hash is too"
         );
@@ -1965,6 +1970,7 @@ mod tests {
         let recovered = Event::Changed {
             hash: playing.clone(),
             by: ChangedBy::Outside,
+            reset: Some(Vec::new()),
         };
         assert_eq!(s.state.reload(), Some(recovered.clone()));
         assert_eq!(installed_hash(&s.state), playing);

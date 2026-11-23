@@ -663,7 +663,7 @@ pub trait Operator: Send {
     fn swap_hosted_probes(&mut self, _slots: &mut Option<Arc<ProbeSlots>>) {}
 
     /// Called on a **surviving** operator box just after it is transplanted into a freshly built
-    /// Plan across a Swap. A Swap resets every consumer's
+    /// Plan across a Swap. A Swap resets every wired consumer's
     /// held-input latch to its declared default, so an operator that publishes a held output only
     /// **on change** (comparing against a dedup baseline it keeps in its box) must clear that
     /// baseline here, or the first post-swap block stays silent and strands the consumer on the

@@ -223,6 +223,7 @@ fn get_diagnostics_round_trips_every_counter() {
         input_ring_overruns: 0,
         input_ring_producer_drops: 96,
         control_batches_dropped_full: 5,
+        wired_writes_dropped: 3,
     };
     let stub = spawn_stub(move |_req| Response::Diagnostics(report));
     let client = channel(stub.addr.to_string());

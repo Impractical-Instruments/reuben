@@ -360,9 +360,11 @@ impl ChannelState {
             if reported.take().is_none() {
                 return Ok(None);
             }
+            // Nothing swapped, so every live value is where it was.
             let event = Event::Changed {
                 hash: coordinator.installed_hash(),
                 by: ChangedBy::Outside,
+                reset: Some(Vec::new()),
             };
             self.events.publish(event.clone());
             return Ok(Some(event));
@@ -377,6 +379,7 @@ impl ChannelState {
         Ok(Some(Event::Changed {
             hash: coordinator.installed_hash(),
             by: ChangedBy::Outside,
+            reset: Some(coordinator.live_reset().to_vec()),
         }))
     }
 
@@ -781,7 +784,7 @@ fn install_opened(
 
     // Unguarded by construction: arbitration was settled above.
     let core_report = match prepared {
-        Ok(prepared) => coordinator.commit_swap(prepared),
+        Ok(prepared) => coordinator.commit_open(prepared),
         Err(rejected) => return open_silent(state, coordinator, origin, tree, rejected),
     };
     let mut report = SwapReport::from_core(core_report);
@@ -823,7 +826,12 @@ fn open_silent(
     rejected: reuben_document::SwapReport,
 ) -> Response {
     let errors = SwapReport::from_core(rejected).report.errors;
-    let silenced = coordinator.swap_document(SILENCE);
+    // An open, so nothing live carries into the silence.
+    drop(coordinator.try_reclaim());
+    let silenced = match coordinator.prepare_document(SILENCE) {
+        Ok(prepared) => coordinator.commit_open(prepared),
+        Err(rejected) => rejected,
+    };
     if !silenced.report.ok {
         // Only a swap still in flight refuses a document this fixed.
         let mut report = SwapReport::from_core(silenced);
@@ -1041,7 +1049,11 @@ fn went_live(
             hash,
         }
     } else {
-        Event::Changed { hash, by }
+        Event::Changed {
+            hash,
+            by,
+            reset: Some(coordinator.live_reset().to_vec()),
+        }
     });
     Ok(warnings)
 }
@@ -1137,6 +1149,9 @@ mod tests {
             if source == PATH {
                 return Ok(DOC.to_string());
             }
+            if source == OTHER {
+                return Ok(DOC.replace(r#""instrument":"t""#, r#""instrument":"other""#));
+            }
             Err(ResolveError::NotFound(source.to_string()))
         }
     }
@@ -1160,6 +1175,8 @@ mod tests {
 
     /// The one name [`NoStore`] reads [`DOC`] at.
     const PATH: &str = "t.json";
+    /// Where [`NoStore`] reads another instrument with [`DOC`]'s nodes and values.
+    const OTHER: &str = "other.json";
 
     impl EngineHost for Host {
         fn hold_swap(&self, _path: &str) -> bool {
@@ -1207,7 +1224,12 @@ mod tests {
     }
 
     fn state_with(host: Host) -> (ChannelState, Arc<Host>) {
-        let (coordinator, _side, _) =
+        let (state, host, _side) = state_and_side(host);
+        (state, host)
+    }
+
+    fn state_and_side(host: Host) -> (ChannelState, Arc<Host>, crate::render::RenderSide) {
+        let (coordinator, side, _) =
             crate::engine::install_initial(DOC, NoStore, reuben_core::AudioConfig::new(48e3, 128))
                 .expect("install");
         let host = Arc::new(host);
@@ -1216,7 +1238,7 @@ mod tests {
         )));
         let state = ChannelState::new(coordinator, Arc::clone(&host) as Arc<dyn EngineHost>, store)
             .with_installed_source(Some("playing.json".to_string()));
-        (state, host)
+        (state, host, side)
     }
 
     fn holding() -> (ChannelState, Arc<Host>) {
@@ -1345,6 +1367,53 @@ mod tests {
             other => panic!("expected a rejected report, got {other:?}"),
         }
         assert_eq!(host.offered.load(Ordering::SeqCst), 0);
+    }
+
+    /// Open `name` over a fresh state playing [`DOC`] and return the migration table the open
+    /// handed the render side.
+    fn migration_of_open(name: &str) -> reuben_core::coordinator::MigrationTable {
+        let (state, _host, mut side) = state_and_side(Host {
+            panic_on_publish: false,
+            hold: false,
+            offered: Default::default(),
+            probed: Default::default(),
+            installed: Default::default(),
+            last_installed: Default::default(),
+            meters_nodes: false,
+        });
+        let channel = Channel::new(InProcess::new(state));
+        match channel.open(name.to_string(), None) {
+            Ok(super::super::SwapOutcome::Installed(report)) => {
+                assert!(report.report.ok, "{:?}", report.report.errors)
+            }
+            other => panic!("expected an install, got {other:?}"),
+        }
+        side.mailbox
+            .take_install()
+            .expect("the open filled the install slot")
+            .migration
+    }
+
+    #[test]
+    fn reopening_the_playing_instrument_carries_no_live_value() {
+        let migration = migration_of_open(PATH);
+        assert!(!migration.is_empty(), "the survivor keeps its state");
+        assert!(
+            migration.live_values().is_empty(),
+            "{:?}",
+            migration.live_values()
+        );
+    }
+
+    #[test]
+    fn opening_another_instrument_with_the_same_nodes_carries_no_live_value() {
+        let migration = migration_of_open(OTHER);
+        assert!(!migration.is_empty(), "the survivor keeps its state");
+        assert!(
+            migration.live_values().is_empty(),
+            "{:?}",
+            migration.live_values()
+        );
     }
 
     fn open_doc(channel: &Channel) -> Result<super::super::SwapOutcome, ChannelError> {

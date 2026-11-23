@@ -5,21 +5,37 @@
 //! generated from the interface inputs otherwise. A surface doc that cannot be used falls back to
 //! the generated panel and says why.
 //!
-//! Controls send live values to the running engine. They never write the instrument document, so
-//! what a control is set to lasts until the next Swap.
+//! Controls send live values to the running engine. They never write the instrument document. What
+//! a control is set to follows what the engine did with that live value: after an edit, a control
+//! keeps its setting where the engine's event says the value carried, clamped into the control's
+//! range as the engine clamps it, and starts from its default where the engine replaced it with the
+//! document's; opening the instrument, again or afresh, starts every control from its default. A
+//! kept setting the new control cannot show as it is — its widget changed kind, or the value lies
+//! outside the widget's range — is set to what the control can show and sent again, so the engine
+//! plays what the panel shows.
+//!
+//! Two races remain, both bounded by one Swap:
+//!
+//! - A control moved after the engine installs a Swap but before the panel takes in that Swap's
+//!   `Changed` event is reset if the event lists its input: the panel cannot tell a send made after
+//!   the install from one made before it. The engine kept what was sent; the panel shows the
+//!   default until the control is moved again.
+//! - A send queued on the engine just before an install, and not yet rendered when the install
+//!   lands, is dropped with the retiring Engine, while the panel shows what was sent.
 
 mod model;
 mod surface;
 mod view;
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use eframe::egui;
 use reuben_api::authoring::{Boundary, DescribeBoundary};
-use reuben_api::engine::{call_tool, Channel};
+use reuben_api::engine::{call_tool, Channel, Event};
 use reuben_api::tools::names;
 
-use self::model::{Control, Kind, Panel};
+use self::model::{Control, Gesture, Kind, Panel};
 use crate::engine::Engine;
 use crate::sends::Replies;
 
@@ -107,6 +123,49 @@ impl Setting {
     }
 }
 
+/// `setting` as `control` shows it, and whether that is the setting unchanged; `None` when the
+/// control has no way to show it.
+fn fit(setting: Setting, control: &Control) -> Option<(Setting, bool)> {
+    match (setting, &control.kind) {
+        (
+            Setting::Value(v),
+            Kind::Value {
+                min, max, integer, ..
+            },
+        ) => {
+            let shown = model::clamp(v, *min, *max);
+            let shown = if *integer { shown.round() } else { shown };
+            Some((Setting::Value(shown), shown == v))
+        }
+        (Setting::On(on), Kind::Toggle { .. })
+        | (Setting::On(on), Kind::NoteToggle { .. })
+        | (Setting::On(on), Kind::ChordButton { .. }) => Some((Setting::On(on), true)),
+        (Setting::Choice(i), Kind::Choice { variants, .. }) if i < variants.len() => {
+            Some((Setting::Choice(i), true))
+        }
+        (Setting::Key(key), Kind::Keyboard) => Some((Setting::Key(key), true)),
+        _ => None,
+    }
+}
+
+/// Owe control `at` a re-send, once.
+fn owe(resend: &mut Vec<usize>, at: usize) {
+    if !resend.contains(&at) {
+        resend.push(at);
+    }
+}
+
+/// The gesture that sets a control to `setting`, for one a reload sends again; `None` for a
+/// setting no single gesture restores.
+fn gesture(setting: Setting) -> Option<Gesture> {
+    match setting {
+        Setting::Value(v) => Some(Gesture::Set(v)),
+        Setting::On(on) => Some(Gesture::Switch(on)),
+        Setting::Choice(i) => Some(Gesture::Pick(i)),
+        Setting::Key(_) => None,
+    }
+}
+
 /// The controls panel of the open instrument, with what each control is set to.
 pub struct Controls {
     loaded: Option<Result<Loaded, String>>,
@@ -115,6 +174,45 @@ pub struct Controls {
     /// Why the last send failed, until one succeeds.
     send_error: Option<String>,
     replies: Replies,
+    /// Which settings the engine has replaced since the panel was built.
+    replaced: Replaced,
+    /// Controls whose setting a reload changed while the engine kept its own value: sent at the
+    /// next draw with an engine to send to.
+    resend: Vec<usize>,
+}
+
+/// The live values the engine replaced with the document's since the panel was built, as its
+/// events said, less those a control has sent again since.
+#[derive(Debug, Default)]
+struct Replaced {
+    /// An event replaced every live value, or could not say which it replaced.
+    all: bool,
+    /// Interface input addresses an event replaced.
+    some: BTreeSet<String>,
+    /// Addresses a control sent to after the latest event that replaced them.
+    sent_since: BTreeSet<String>,
+}
+
+impl Replaced {
+    fn every(&mut self) {
+        self.all = true;
+        self.sent_since.clear();
+    }
+
+    fn these(&mut self, addresses: &[String]) {
+        for address in addresses {
+            self.sent_since.remove(address);
+            self.some.insert(address.clone());
+        }
+    }
+
+    fn sent(&mut self, address: &str) {
+        self.sent_since.insert(address.to_string());
+    }
+
+    fn covers(&self, address: &str) -> bool {
+        (self.all || self.some.contains(address)) && !self.sent_since.contains(address)
+    }
 }
 
 impl Controls {
@@ -132,7 +230,68 @@ impl Controls {
             low_key: DEFAULT_LOW_KEY,
             send_error: None,
             replies: Replies::default(),
+            replaced: Replaced::default(),
+            resend: Vec::new(),
         }
+    }
+
+    /// Take in one of the engine's events about `top`, the open instrument: which live values a
+    /// change replaced, or that opening it again replaced them all.
+    pub fn hear(&mut self, event: &Event, top: &str) {
+        match event {
+            Event::Changed {
+                reset: Some(reset), ..
+            } => self.replaced.these(reset),
+            Event::Changed { reset: None, .. } => self.replaced.every(),
+            Event::Opened { name, .. } if name == top => self.replaced.every(),
+            _ => {}
+        }
+    }
+
+    /// [`open`](Self::open) again after the engine swapped: each control keeps what it was set to
+    /// where the engine kept the live value of the interface input it drives, as [`hear`]d, and a
+    /// control of the old panel drove that input with the same kind of widget.
+    ///
+    /// [`hear`]: Self::hear
+    pub fn reload(&mut self, top: Option<&str>, channel: &dyn Fn() -> Option<Channel>) {
+        self.replace_keeping_settings(Self::open(top, channel));
+    }
+
+    /// Become `fresh`, carrying over each setting [`reload`](Self::reload) keeps.
+    fn replace_keeping_settings(&mut self, mut fresh: Self) {
+        let replaced = std::mem::take(&mut self.replaced);
+        if let (Some(Ok(old)), Some(Ok(new))) = (&self.loaded, &fresh.loaded) {
+            let mut taken = vec![false; old.panel.controls.len()];
+            for (at, control) in new.panel.controls.iter().enumerate() {
+                if replaced.covers(&control.address()) {
+                    continue;
+                }
+                let kept = (old.panel.controls.iter().enumerate())
+                    .find(|(was_at, was)| !taken[*was_at] && was.bind == control.bind);
+                let Some((was_at, _)) = kept else {
+                    continue;
+                };
+                taken[was_at] = true;
+                // A re-send an earlier reload owed and no draw has made yet is still owed.
+                if self.resend.contains(&was_at) {
+                    fresh.resend.push(at);
+                }
+                match fit(self.settings[was_at], control) {
+                    Some((setting, true)) => fresh.settings[at] = setting,
+                    Some((setting, false)) => {
+                        fresh.settings[at] = setting;
+                        owe(&mut fresh.resend, at);
+                    }
+                    // The engine kept a value the new widget cannot show: send it the default
+                    // the control now shows.
+                    None => owe(&mut fresh.resend, at),
+                }
+            }
+        }
+        fresh.low_key = self.low_key;
+        fresh.send_error = self.send_error.take();
+        fresh.replies = std::mem::take(&mut self.replies);
+        *self = fresh;
     }
 
     /// The interface input each control of the panel drives, in the panel's order.
@@ -206,6 +365,16 @@ impl Controls {
                     })
                     .inner;
                 if let Some(live) = &live {
+                    let mut messages = messages;
+                    for at in std::mem::take(&mut self.resend) {
+                        let resent = (loaded.panel.controls.get(at))
+                            .zip(self.settings.get(at))
+                            .and_then(|(control, setting)| control.message(gesture(*setting)?));
+                        messages.extend(resent);
+                    }
+                    for message in &messages {
+                        self.replaced.sent(&message.address);
+                    }
                     live.send(messages, &self.replies);
                 }
             });
@@ -642,5 +811,181 @@ mod tests {
             engine.shutdown();
         });
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod reload_tests {
+    use super::model::{Control, Kind, Panel, Shape};
+    use super::*;
+
+    fn value(bind: &str, rest: f64, max: f64) -> Control {
+        Control {
+            bind: bind.to_string(),
+            label: bind.to_string(),
+            group: None,
+            kind: Kind::Value {
+                shape: Shape::Fader,
+                min: Some(0.0),
+                max: Some(max),
+                rest,
+                integer: false,
+                exponential: false,
+                unit: String::new(),
+            },
+        }
+    }
+
+    fn panel(controls: Vec<Control>) -> Controls {
+        let settings = controls.iter().map(Setting::at_rest).collect();
+        Controls {
+            loaded: Some(Ok(Loaded {
+                panel: Panel {
+                    controls,
+                    cols: 1,
+                    warnings: Vec::new(),
+                },
+                from_surface: false,
+            })),
+            settings,
+            low_key: DEFAULT_LOW_KEY,
+            send_error: None,
+            replies: Replies::default(),
+            replaced: Replaced::default(),
+            resend: Vec::new(),
+        }
+    }
+
+    fn changed(reset: Option<&[&str]>) -> Event {
+        Event::Changed {
+            hash: "h".to_string(),
+            by: reuben_api::engine::ChangedBy::Client,
+            reset: reset.map(|r| r.iter().map(|a| a.to_string()).collect()),
+        }
+    }
+
+    fn moved(binds: &[&str]) -> Controls {
+        let mut controls = panel(binds.iter().map(|b| value(b, 0.3, 1.0)).collect());
+        controls.settings = vec![Setting::Value(0.7); binds.len()];
+        controls
+    }
+
+    #[test]
+    fn a_reload_keeps_each_setting_the_engine_kept() {
+        let mut controls = moved(&["cutoff", "res", "gone"]);
+        controls.hear(&changed(Some(&["/res/in"])), "t.json");
+        controls.hear(&changed(Some(&[])), "t.json");
+        controls.replace_keeping_settings(panel(vec![
+            value("res", 0.3, 1.0),
+            value("new", 0.4, 1.0),
+            value("cutoff", 0.3, 1.0),
+        ]));
+        assert_eq!(controls.value("cutoff"), Some(0.7), "the engine kept it");
+        assert_eq!(controls.value("res"), Some(0.3), "the engine replaced it");
+        assert_eq!(
+            controls.value("new"),
+            Some(0.4),
+            "a new input starts at rest"
+        );
+
+        // Heard replacements are spent by the reload they applied to.
+        controls.replace_keeping_settings(panel(vec![value("cutoff", 0.3, 1.0)]));
+        assert_eq!(controls.value("cutoff"), Some(0.7));
+    }
+
+    #[test]
+    fn a_control_sent_again_after_its_value_was_replaced_keeps_what_it_sent() {
+        let mut controls = moved(&["cutoff", "res"]);
+        controls.hear(&changed(None), "t.json");
+        controls.replaced.sent("/cutoff/in");
+        controls.replace_keeping_settings(panel(vec![
+            value("cutoff", 0.3, 1.0),
+            value("res", 0.3, 1.0),
+        ]));
+        assert_eq!(controls.value("cutoff"), Some(0.7), "sent after the event");
+        assert_eq!(controls.value("res"), Some(0.3), "replaced by the event");
+    }
+
+    #[test]
+    fn an_event_replacing_every_value_overrides_a_send_made_before_it() {
+        let mut controls = moved(&["cutoff"]);
+        controls.replaced.sent("/cutoff/in");
+        controls.hear(&changed(None), "t.json");
+        controls.replace_keeping_settings(panel(vec![value("cutoff", 0.3, 1.0)]));
+        assert_eq!(controls.value("cutoff"), Some(0.3), "sent before the event");
+    }
+
+    #[test]
+    fn a_kept_setting_is_clamped_into_the_new_range_and_sent_again_when_that_moved_it() {
+        let mut controls = moved(&["cutoff", "res"]);
+        controls.settings[0] = Setting::Value(1.8);
+        controls.replace_keeping_settings(panel(vec![
+            value("cutoff", 0.3, 1.0),
+            value("res", 0.3, 1.0),
+        ]));
+        assert_eq!(
+            controls.value("cutoff"),
+            Some(1.0),
+            "clamped, as the engine clamps it"
+        );
+        assert_eq!(
+            controls.value("res"),
+            Some(0.7),
+            "inside the range, unchanged"
+        );
+        assert_eq!(
+            controls.resend,
+            vec![0],
+            "only the clamped one is sent again"
+        );
+    }
+
+    #[test]
+    fn a_kept_setting_the_new_widget_cannot_show_is_reset_and_sent_again() {
+        let mut controls = moved(&["mode"]);
+        let toggle = Control {
+            bind: "mode".to_string(),
+            label: "Mode".to_string(),
+            group: None,
+            kind: Kind::Toggle { rest: false },
+        };
+        controls.replace_keeping_settings(panel(vec![toggle.clone()]));
+        assert_eq!(controls.settings, vec![Setting::On(false)]);
+        assert_eq!(controls.resend, vec![0]);
+
+        // A second reload before any draw still owes the send, at the control's new place.
+        let other = value("other", 0.3, 1.0);
+        controls.replace_keeping_settings(panel(vec![other, toggle]));
+        assert_eq!(controls.settings[1], Setting::On(false));
+        assert_eq!(controls.resend, vec![1]);
+    }
+
+    #[test]
+    fn a_reload_starts_over_when_the_engine_could_not_say_or_opened_the_instrument() {
+        for event in [
+            changed(None),
+            Event::Opened {
+                name: "t.json".to_string(),
+                hash: "h".to_string(),
+            },
+        ] {
+            let mut controls = moved(&["cutoff"]);
+            controls.hear(&event, "t.json");
+            controls.hear(&changed(Some(&[])), "t.json");
+            controls.replace_keeping_settings(panel(vec![value("cutoff", 0.3, 1.0)]));
+            assert_eq!(controls.value("cutoff"), Some(0.3), "{event:?}");
+        }
+        let mut controls = moved(&["cutoff"]);
+        let other = Event::Opened {
+            name: "other.json".to_string(),
+            hash: "h".to_string(),
+        };
+        controls.hear(&other, "t.json");
+        controls.replace_keeping_settings(panel(vec![value("cutoff", 0.3, 1.0)]));
+        assert_eq!(
+            controls.value("cutoff"),
+            Some(0.7),
+            "another instrument's open"
+        );
     }
 }

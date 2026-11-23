@@ -83,10 +83,22 @@ Why the steps are what they are:
   an edit changes: the edit is refused if that document keeps its own errors. Any other edit is
   written even though the whole instrument does not plan yet, and nothing plays until the edit
   that makes it load and plan — that edit starts it playing.
-- **Sending is ephemeral audition.** A live control message (`/filt/cutoff 1500`) changes
-  render state only — sweep a cutoff, try a tempo. The next edit re-reads inputs from the
-  document, so an un-folded tweak is **reset by design**. (The MCP tool is
-  `send_live_controls`; the name says which half of the loop it is on.)
+- **Sending is audition, not authoring.** A live control message changes render state only —
+  sweep a cutoff, try a tempo; the document never sees it. A live value enters two ways, and
+  each lasts through an edit (any edit verb, undo or redo, or a change to the file on disk):
+  - **An interface input** (`/cutoff/in`, or a subpatch's boundary input such as
+    `/a/level/in`) keeps its value however many nodes it feeds, and through a range edit, which
+    clamps it into the new range (1.8 with `max` lowered to 1.0 plays 1.0). It starts over from
+    the document when the edit changes its type, edits its default, or renames or removes it.
+  - **A node input nothing feeds** (`/filt/cutoff` while nothing is wired into `/filt.cutoff`)
+    keeps its value while the node survives (same address and type, see below) and its value in
+    the document is unchanged.
+
+  Writing an input a wire or an interface input feeds is unsupported: the message is dropped and
+  counted in `get_engine_diagnostics` as `wired_writes_dropped`. Send to the interface input
+  instead. `open_instrument`, of another instrument or again of the one playing, starts every
+  input from the document. Nothing live is saved. (The MCP tool is `send_live_controls`; the name
+  says which half of the loop it is on.)
 - **Try, then commit.** Send to explore; when a value is a keeper, fold it into the document with
   `set_instrument_input`. Never let the sound and the document drift apart — the document is the
   save source of truth.
@@ -614,7 +626,10 @@ input takes a scalar (`/filt/cutoff 1500`). An enum input takes a **symbol** —
 index accepted as a fallback, quoted (`"1"`) or bare (`1`); an unknown symbol or out-of-range
 index is an **error**, never a silent snap to the default. A `str` input takes one string
 (`/seq/pat "0 3 ~"`); anything else sent to it is dropped. A `Note` input takes its args
-(`/voicer/notes [69.0, 1.0]`).
+(`/notes/in [69.0, 1.0]` on a `notes` interface input, or `/voicer/notes [69.0, 1.0]` on a voicer
+nothing feeds). An input a wire or an interface input feeds takes no message: one sent to it is
+dropped and counted (`wired_writes_dropped`), so a `notes` interface input feeding
+`/voicer.notes` is played at `/notes/in`, not `/voicer/notes`.
 Full wildcard dispatch (`/drums/*/decay`) is designed but not built — today a Message targets at
 most one node.
 

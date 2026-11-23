@@ -454,6 +454,7 @@ where
                     _ => &[],
                 };
                 slot.fill_duplex(input, &mut buf[..frames * logical]);
+                diag_for_callback.record_wired_writes_dropped(slot.take_dropped_wired_writes());
 
                 // Forward this callback's outbound Messages. The sender thread does the
                 // UDP I/O; the audio thread only hands off. No target -> drain and drop, warning

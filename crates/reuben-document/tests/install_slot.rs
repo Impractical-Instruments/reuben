@@ -441,3 +441,32 @@ fn control_queued_after_an_install_reaches_the_installed_engine() {
     let tail = frame_mag(&after, ch, after.len() / ch - 1);
     assert_eq!(tail, 0.9, "control queued after the install applies");
 }
+
+#[test]
+fn control_addressed_to_a_fed_input_is_dropped_and_counted_across_an_install() {
+    // `/m.a` is fed by `lvl`: a message to it is dropped, counted on the live Engine, and a count
+    // still uncollected at an install is carried onto the installed one.
+    let doc = r#"{ "format_version": 3, "instrument": "lvl",
+         "interface": {
+           "inputs":  { "lvl": { "type": "f32_buffer", "default": 0.25, "min": 0, "max": 1 } },
+           "outputs": { "main": { "from": "/out.audio" } } },
+         "nodes": [
+           { "type": "mul_f32_signal", "address": "/m", "inputs": { "a": { "from": "/lvl" } } },
+           { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/m.out" } } } ] }"#;
+    let (mut coord, mut slot) = setup(doc);
+    let (ch, block, edge) = (slot.channels(), slot.block_size(), slot.ramp_edge_frames());
+    slot.queue_osc("/m/a", &[reuben_core::Arg::F32(0.9)]);
+    let heard = render(&mut slot, 4 * block);
+    assert_eq!(
+        frame_mag(&heard, ch, 4 * block - 1),
+        0.25,
+        "the write is dropped"
+    );
+    slot.queue_osc("/m/a", &[reuben_core::Arg::F32(0.9)]);
+    render(&mut slot, block);
+    assert!(coord.swap_document(doc).report.ok);
+    render(&mut slot, 2 * edge + 4 * block);
+    assert!(!slot.is_ramping(), "the swap completed");
+    assert_eq!(slot.take_dropped_wired_writes(), 2);
+    assert_eq!(slot.take_dropped_wired_writes(), 0);
+}
