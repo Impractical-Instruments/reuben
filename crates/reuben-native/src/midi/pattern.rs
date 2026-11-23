@@ -140,6 +140,9 @@ fn parse_segment(segment: &str) -> Result<Vec<Token>, &'static str> {
                 let mut i = 0;
                 while i < members.len() {
                     if i + 2 < members.len() && members[i + 1] == '-' {
+                        if members[i] > members[i + 2] {
+                            return Err("has a reversed range, which matches nothing");
+                        }
                         ranges.push((members[i], members[i + 2]));
                         i += 3;
                     } else {
@@ -158,6 +161,9 @@ fn parse_segment(segment: &str) -> Result<Vec<Token>, &'static str> {
                         Some('{') => return Err("nests '{'"),
                         Some(c) => body.push(c),
                     }
+                }
+                if body.is_empty() {
+                    return Err("has an empty '{}', which matches nothing");
                 }
                 Token::Choice(body.split(',').map(str::to_string).collect())
             }
@@ -263,6 +269,18 @@ mod tests {
         ] {
             assert_eq!(pattern(text).midi_kind(), kind, "{text}");
         }
+    }
+
+    #[test]
+    fn a_pattern_that_can_match_nothing_is_malformed() {
+        for text in ["/midi/[8-4]/note", "/midi/1/{}", "/midi/[]/note"] {
+            assert!(
+                matches!(OscPattern::parse(text), Err(PatternError::Malformed(_))),
+                "{text}"
+            );
+        }
+        // An empty alternative beside others matches the empty string, and is kept.
+        assert!(pattern("/midi/1/cc/7{4,}").matches("/midi/1/cc/7"));
     }
 
     #[test]
