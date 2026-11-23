@@ -663,6 +663,30 @@ mod tests {
     }
 
     #[test]
+    fn a_widget_that_does_not_fit_its_inputs_kind_is_skipped_with_the_checks_reason() {
+        let panel = Panel::from_surface(
+            &doc(r#"[{"bind":"notes","widget":"fader"},
+                    {"bind":"level","widget":"keyboard"},
+                    {"bind":"level"}]"#),
+            &boundary(vec![
+                ranged("level", "value", 0.5, 0.0, 1.0),
+                port("notes", "message"),
+            ]),
+        );
+        assert_eq!(panel.controls.len(), 1);
+        assert_eq!(panel.controls[0].bind, "level");
+        assert_eq!(
+            panel.warnings,
+            vec![
+                "surface control `Notes` (input `notes`) is a `fader`, which cannot drive a \
+                 message input — skipped",
+                "surface control `Level` (input `level`) is a `keyboard`, which cannot drive a \
+                 value input — skipped",
+            ]
+        );
+    }
+
+    #[test]
     fn the_button_widgets_resolve_with_their_payloads() {
         let panel = Panel::from_surface(
             &doc(r#"[{"bind":"step","widget":"param-toggle"},

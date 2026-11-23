@@ -71,6 +71,18 @@ pub fn takes_a_value(port: &PortInfo) -> bool {
     }
 }
 
+/// Whether a `widget` from [`WIDGETS`] can drive `port`. A value widget sends a number and a note
+/// widget sends a note, so each needs the input kind that takes one. A `grid` is a field of cells
+/// that are steps or pads, so it takes either; a `visualizer` shows its input and sends nothing.
+fn fits(widget: &str, port: &PortInfo) -> bool {
+    match widget {
+        "fader" | "radial" | "param-toggle" | "xy-pad" => takes_a_value(port),
+        "note-toggle" | "chord-button" | "keyboard" => port.kind == "message",
+        "grid" => takes_a_value(port) || port.kind == "message",
+        _ => true,
+    }
+}
+
 /// Checks one control of a screen doc against `boundary`. `Err` is why the control cannot be used;
 /// `Ok` carries the resolved control and a warning for each adjustment made to it.
 pub fn check_screen_control(
@@ -98,6 +110,13 @@ pub fn check_screen_control(
     if !WIDGETS.contains(&widget) {
         return Err(format!(
             "surface control `{label}` (input `{bind}`) names an unknown `{widget}` widget — skipped"
+        ));
+    }
+    if !fits(widget, port) {
+        return Err(format!(
+            "surface control `{label}` (input `{bind}`) is a `{widget}`, which cannot drive a {} \
+             input — skipped",
+            port.kind
         ));
     }
     let mut adjusted = Vec::new();
@@ -188,7 +207,12 @@ mod tests {
     fn boundary() -> Boundary {
         serde_json::from_value(serde_json::json!({
             "instrument": "toy",
-            "inputs": [value_port("level")],
+            "inputs": [
+                value_port("level"),
+                {"name": "notes", "kind": "message"},
+                {"name": "mode", "kind": "enum", "variants": ["a", "b"]},
+                {"name": "audio", "kind": "signal"},
+            ],
             "outputs": [],
         }))
         .expect("a boundary")
@@ -200,10 +224,54 @@ mod tests {
 
     #[test]
     fn screen_accepts_reserved_widgets() {
-        for widget in ["xy-pad", "grid", "visualizer", "keyboard"] {
-            let c = control(&format!(r#"{{"bind":"level","widget":"{widget}"}}"#));
+        for (bind, widget) in [
+            ("level", "xy-pad"),
+            ("level", "grid"),
+            ("notes", "grid"),
+            ("level", "visualizer"),
+            ("notes", "keyboard"),
+        ] {
+            let c = control(&format!(r#"{{"bind":"{bind}","widget":"{widget}"}}"#));
             let (screen, _) = check_screen_control(&c, &boundary()).expect(widget);
             assert_eq!(screen.widget, widget);
+        }
+    }
+
+    #[test]
+    fn screen_refuses_a_widget_that_does_not_fit_its_inputs_kind() {
+        for (bind, widget, kind) in [
+            ("notes", "fader", "message"),
+            ("notes", "radial", "message"),
+            ("notes", "param-toggle", "message"),
+            ("notes", "xy-pad", "message"),
+            ("mode", "fader", "enum"),
+            ("audio", "fader", "signal"),
+            ("level", "keyboard", "value"),
+            ("level", "note-toggle", "value"),
+            ("level", "chord-button", "value"),
+            ("mode", "grid", "enum"),
+        ] {
+            let c = control(&format!(
+                r#"{{"bind":"{bind}","widget":"{widget}","note":60,"degree":1}}"#
+            ));
+            let error = check_screen_control(&c, &boundary()).expect_err(widget);
+            assert!(
+                error.contains(&format!("`{widget}`, which cannot drive a {kind} input")),
+                "{bind} {widget}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn screen_accepts_each_shipped_widget_on_the_kind_it_fits() {
+        for json in [
+            r#"{"bind":"level","widget":"fader"}"#,
+            r#"{"bind":"level","widget":"radial"}"#,
+            r#"{"bind":"level","widget":"param-toggle"}"#,
+            r#"{"bind":"notes","widget":"note-toggle","note":60}"#,
+            r#"{"bind":"notes","widget":"chord-button","degree":2}"#,
+        ] {
+            check_screen_control(&control(json), &boundary()).expect(json);
         }
     }
 
@@ -211,13 +279,13 @@ mod tests {
     fn screen_refuses_unknown_bind_and_missing_payloads() {
         for json in [
             r#"{"bind":"nope"}"#,
-            r#"{"bind":"level","widget":"note-toggle"}"#,
-            r#"{"bind":"level","widget":"chord-button"}"#,
+            r#"{"bind":"notes","widget":"note-toggle"}"#,
+            r#"{"bind":"notes","widget":"chord-button"}"#,
             r#"{"bind":"level","widget":"sparkle"}"#,
         ] {
             let error = check_screen_control(&control(json), &boundary()).expect_err(json);
             assert!(
-                error.contains("nope") || error.contains("level"),
+                error.contains("nope") || error.contains("level") || error.contains("notes"),
                 "{json}: {error}"
             );
         }
