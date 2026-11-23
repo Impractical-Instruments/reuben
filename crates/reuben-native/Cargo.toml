@@ -35,6 +35,11 @@ libc.workspace = true
 approx.workspace = true
 # The client transport, to dial the engine-channel server the tests bind.
 reuben-api = { path = "../reuben-api", features = ["fs-resolver", "tcp"] }
+# No built-in Operator compiles its text yet, so the `send`/`live` tests install a Plan whose
+# registry adds the test-only ones (`reuben-document/tests/prepared`), and only the engine crates
+# can build that registry.
+reuben-core = { path = "../reuben-core" }
+reuben-document = { path = "../reuben-document" }
 
 [[bin]]
 name = "reuben"

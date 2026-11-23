@@ -1,0 +1,15 @@
+// Add these to your keybindings.json ("Preferences: Open Keyboard Shortcuts (JSON)").
+[
+  {
+    "key": "ctrl+enter",
+    "command": "workbench.action.tasks.runTask",
+    "args": "reuben send selection",
+    "when": "editorTextFocus && editorHasSelection && resourceExtname == .reuben"
+  },
+  {
+    "key": "ctrl+shift+enter",
+    "command": "workbench.action.tasks.runTask",
+    "args": "reuben live",
+    "when": "editorTextFocus && resourceExtname == .reuben"
+  }
+]

@@ -7,7 +7,8 @@
 //! cpal input ring feeding it, [`devices`] lists the output devices a profile can name,
 //! [`diagnostics`] is the shared xrun/ring counter surface, [`meters`] the levels at the device,
 //! [`engine_channel`] is the loopback engine channel the MCP sidecar talks to, [`rigs`] holds the
-//! default playable rig, and [`profile`] is the device profile (`--io-map`). Sample data resolves
+//! default playable rig, [`live`] is the text-editor client (`reuben send`, `reuben live`), and
+//! [`profile`] is the device profile (`--io-map`). Sample data resolves
 //! through [`reuben_api::FsResolver`].
 //!
 //! [`engine::start`] composes all of them into a running engine with one call — `reuben play` is a
@@ -27,6 +28,7 @@ pub mod engine;
 pub mod engine_channel;
 pub mod input;
 pub mod library;
+pub mod live;
 pub mod meters;
 pub mod osc;
 mod probes;

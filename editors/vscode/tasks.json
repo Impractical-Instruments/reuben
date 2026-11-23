@@ -1,0 +1,53 @@
+// Copy into a set folder's .vscode/tasks.json. README.md beside this file says how.
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      // Sends the open set file on every save. Start it once with "Tasks: Run Task"; a line
+      // the engine refuses shows as an error at its span until a save fixes it.
+      "label": "reuben live",
+      "type": "process",
+      "command": "reuben",
+      "args": ["live", "${file}"],
+      "isBackground": true,
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": {
+        "owner": "reuben",
+        "source": "reuben",
+        "fileLocation": ["autoDetect", "${workspaceFolder}"],
+        "pattern": {
+          "regexp": "^(.+?):(\\d+):(\\d+): (error|warning): (.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "message": 5
+        },
+        "background": {
+          "activeBegins": true,
+          "beginsPattern": "^reuben live: sending ",
+          "endsPattern": "^reuben live: done"
+        }
+      }
+    },
+    {
+      // Sends the selection to one address. A process task, so the selection reaches
+      // `reuben send` as one argument, with no shell to expand or split it.
+      "label": "reuben send selection",
+      "type": "process",
+      "command": "reuben",
+      "args": ["send", "${input:reubenAddress}", "${selectedText}"],
+      "presentation": { "reveal": "silent", "panel": "shared" },
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      // VS Code offers the value last entered in this window the next time it asks.
+      "id": "reubenAddress",
+      "type": "promptString",
+      "description": "The address to send the selection to",
+      "default": "/pat/in"
+    }
+  ]
+}

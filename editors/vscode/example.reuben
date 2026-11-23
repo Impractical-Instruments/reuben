@@ -1,0 +1,6 @@
+# A reuben set file: one send per line, an address, whitespace, then the pattern to the end of
+# the line. `reuben live example.reuben` sends every line, then each line you change on save.
+#
+# `/pat/in` is a placeholder: point it at the pattern input of the library instrument that plays
+# a `pattern` Operator (`reuben describe <instrument> --view pipes` lists its inputs).
+/pat/in  bd ~ [sd sd] ~

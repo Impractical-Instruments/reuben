@@ -7,7 +7,9 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use reuben_api::engine::{EmptyToken, Token, ENGINE_ADDR_ENV, ENGINE_TOKEN_ENV};
+use reuben_api::engine::{
+    EmptyToken, Token, DEFAULT_ENGINE_ADDR, ENGINE_ADDR_ENV, ENGINE_TOKEN_ENV,
+};
 
 use crate::client::Target;
 use crate::engine::{EngineConfig, Instrument};
@@ -224,6 +226,43 @@ impl ServerFlags {
             None => Target::Default,
             Some(addr) => Target::Named { addr, token },
         })
+    }
+}
+
+/// Which running server a live-coding client sends to. Unlike [`ServerFlags`] it never starts a
+/// temporary one: a send to a server nobody hears is a mistake to report, not a fallback.
+#[derive(clap::Args, Debug, Clone, Default)]
+pub struct RunningServerFlags {
+    /// Send to the server at this `host:port` (else `REUBEN_ENGINE_ADDR`, else the running
+    /// `reuben play` at the default address). A server on another machine takes a token.
+    #[arg(long, value_name = "HOST:PORT")]
+    pub engine_addr: Option<String>,
+    /// The token a server on another machine asks for. Else `REUBEN_ENGINE_TOKEN`, which keeps
+    /// it out of the process list.
+    #[arg(long, value_name = "TOKEN", value_parser = parse_token)]
+    pub token: Option<Token>,
+}
+
+impl RunningServerFlags {
+    /// The address to dial and the token to open with: the flag, then [`ENGINE_ADDR_ENV`], then
+    /// [`DEFAULT_ENGINE_ADDR`]; the token from `--token`, then [`ENGINE_TOKEN_ENV`].
+    pub fn server(&self) -> Result<(String, Option<Token>), FlagsError> {
+        self.server_with_env(
+            std::env::var(ENGINE_ADDR_ENV).ok(),
+            std::env::var(ENGINE_TOKEN_ENV).ok(),
+        )
+    }
+
+    /// [`server`](Self::server) with the environment variables' values passed in.
+    pub fn server_with_env(
+        &self,
+        addr_env: Option<String>,
+        token_env: Option<String>,
+    ) -> Result<(String, Option<Token>), FlagsError> {
+        let token = token(self.token.clone(), token_env)?;
+        let addr = (self.engine_addr.clone().or(addr_env))
+            .unwrap_or_else(|| DEFAULT_ENGINE_ADDR.to_string());
+        Ok((addr, token))
     }
 }
 
@@ -468,6 +507,37 @@ mod tests {
             flags.target_with_env(None, Some(String::new())),
             Err(FlagsError::EmptyToken)
         ));
+    }
+
+    #[test]
+    fn running_server_flags_pick_the_flag_then_the_env_then_the_default() {
+        #[derive(Parser)]
+        struct RunningProbe {
+            #[command(flatten)]
+            server: RunningServerFlags,
+        }
+        let parse = |args: &[&str]| {
+            RunningProbe::try_parse_from(std::iter::once("probe").chain(args.iter().copied()))
+                .expect("parse")
+                .server
+        };
+        let env = Some("127.0.0.1:8000".to_string());
+        assert_eq!(
+            parse(&["--engine-addr", "127.0.0.1:7000", "--token", "t"])
+                .server_with_env(env.clone(), None)
+                .expect("a server"),
+            ("127.0.0.1:7000".to_string(), Some(token("t")))
+        );
+        assert_eq!(
+            parse(&[])
+                .server_with_env(env, Some("e".to_string()))
+                .expect("a server"),
+            ("127.0.0.1:8000".to_string(), Some(token("e")))
+        );
+        assert_eq!(
+            parse(&[]).server_with_env(None, None).expect("a server"),
+            (DEFAULT_ENGINE_ADDR.to_string(), None)
+        );
     }
 
     #[test]

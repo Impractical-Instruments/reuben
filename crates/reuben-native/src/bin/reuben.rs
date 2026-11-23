@@ -1,9 +1,10 @@
 //! `reuben` — the command-line entry point.
 //!
-//! Five subcommands — `play`, `describe`, `validate`, `scaffold-operator`, `new-instrument` —
-//! each documented on its own `--help`. `play` is the server. `describe`, `validate` and
-//! `new-instrument` are its clients: they ask the running `reuben play` when one answers, and
-//! otherwise a temporary headless server they start in this process. A playing instrument takes
+//! Seven subcommands — `play`, `describe`, `validate`, `scaffold-operator`, `new-instrument`,
+//! `send`, `live` — each documented on its own `--help`. `play` is the server. `describe`,
+//! `validate` and `new-instrument` are its clients: they ask the running `reuben play` when one
+//! answers, and otherwise a temporary headless server they start in this process. `send` and
+//! `live` send text to the running `reuben play` and fail when none answers. A playing instrument takes
 //! control at its interface inputs, `/<name>/in`; the default instrument plays notes at its
 //! `notes` input:
 //!
@@ -22,11 +23,12 @@ use reuben_api::authoring::{self, Diag, PortInfo, COMPACT_DESCRIBE_LEGEND, SCAFF
 use reuben_api::engine::call_tool;
 use reuben_api::tools::names;
 use reuben_native::cli::{
-    EngineFlags, InstrumentRoot, ServerFlags, INSTRUMENT_ROOT_ENV, LOG_OSC_ENV,
+    EngineFlags, InstrumentRoot, RunningServerFlags, ServerFlags, INSTRUMENT_ROOT_ENV, LOG_OSC_ENV,
 };
 use reuben_native::client::{self, Names, Reached, Temporary};
 use reuben_native::engine::{self, Instrument};
 use reuben_native::engine_channel::lexical_absolute;
+use reuben_native::live::{self, SEND_READ_TIMEOUT};
 use reuben_native::scaffold;
 use serde::de::DeserializeOwned;
 
@@ -120,6 +122,32 @@ enum Command {
         #[command(flatten)]
         server: ServerFlags,
     },
+    /// Send one string to an input of the running `reuben play` that compiles its text, such as a
+    /// pattern. A string that does not compile is printed as `<file>:<line>:<col>: error: …` with
+    /// its span marked, nothing is applied, and the exit code is non-zero. Never starts a
+    /// temporary server.
+    Send {
+        /// The input's address, e.g. `/drums/pat`.
+        address: String,
+        /// The text, as one argument: quote it, as a shell expands `~` and splits on spaces. Read
+        /// from stdin when left out, so an editor can pipe a selection in. Trailing whitespace is
+        /// dropped.
+        pattern: Option<String>,
+        #[command(flatten)]
+        server: RunningServerFlags,
+    },
+    /// Watch a set file and send its lines to the running `reuben play` on every save. Each line
+    /// is an address, whitespace, then the text to the end of the line; blank lines and `#`
+    /// comments are skipped. A line is sent when its text changed since it was last queued, or
+    /// when its last send was refused. A refused line is reported with file, line and column and
+    /// its address keeps playing what it played. Each save's reports sit between
+    /// `reuben live: sending <file>` and `reuben live: done`.
+    Live {
+        /// The set file.
+        file: PathBuf,
+        #[command(flatten)]
+        server: RunningServerFlags,
+    },
 }
 
 /// Which structural view of an instrument `describe <path>` cuts.
@@ -192,6 +220,12 @@ fn main() -> ExitCode {
             json,
             server,
         } => cmd_new_instrument(&path, name.as_deref(), json, &server, root.resolve()),
+        Command::Send {
+            address,
+            pattern,
+            server,
+        } => cmd_send(&address, pattern, &server),
+        Command::Live { file, server } => cmd_live(&file, &server),
     }
 }
 
@@ -257,6 +291,63 @@ fn ask<T: DeserializeOwned>(
         eprintln!("error: the server answered `{tool}` with something unexpected: {e}");
         ExitCode::FAILURE
     })
+}
+
+/// The running server `flags` name; on failure the reason is on stderr and the exit code returned.
+fn connect_running(flags: &RunningServerFlags) -> Result<Reached, ExitCode> {
+    let fail = |e: &dyn std::fmt::Display| {
+        eprintln!("error: {e}");
+        ExitCode::FAILURE
+    };
+    let (addr, token) = flags.server().map_err(|e| fail(&e))?;
+    client::reach_running(&addr, token, SEND_READ_TIMEOUT).map_err(|e| fail(&e))
+}
+
+/// `send`: one string to one address, from the argument or stdin.
+fn cmd_send(address: &str, pattern: Option<String>, server: &RunningServerFlags) -> ExitCode {
+    let (file, text) = match pattern {
+        Some(text) => ("<arg>", text),
+        None => {
+            let mut text = String::new();
+            if let Err(e) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut text) {
+                eprintln!("error: reading the pattern from stdin: {e}");
+                return ExitCode::FAILURE;
+            }
+            ("<stdin>", text)
+        }
+    };
+    let text = text.trim_end();
+    let reached = match connect_running(server) {
+        Ok(reached) => reached,
+        Err(code) => return code,
+    };
+    match live::send_text(reached.channel(), address, text) {
+        Ok(reuben_api::engine::SendOutcome::Queued) => ExitCode::SUCCESS,
+        Ok(reuben_api::engine::SendOutcome::Refused(refusal)) => {
+            eprintln!("{}", live::refusal_report(file, 1, 1, text, &refusal));
+            ExitCode::FAILURE
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `live`: send a set file's lines on every save, until interrupted.
+fn cmd_live(file: &Path, server: &RunningServerFlags) -> ExitCode {
+    let reached = match connect_running(server) {
+        Ok(reached) => reached,
+        Err(code) => return code,
+    };
+    let shown = file.display().to_string();
+    match live::run(file, &shown, reached.channel(), &mut std::io::stdout()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// `new-instrument`: land a guaranteed-valid minimal instrument document **at a path** — the

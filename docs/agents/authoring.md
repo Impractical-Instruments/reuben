@@ -181,6 +181,44 @@ Two steps have no verb at all, and are checkout-only for that reason:
 - **Hear it**: `reuben play` — the engine every instrument tool asks, and the one
   `open_instrument` opens an instrument on.
 
+## Live coding from a text editor <!-- lanes: skills -->
+
+Two `reuben` subcommands send text from an editor to an input that compiles it, such as a
+`pattern` Operator's. Both send to the running `reuben play` through the engine channel's `send`
+verb. Neither touches a document, and neither starts a temporary server: with no `reuben play`
+reachable they exit at once and say so. `--engine-addr` and `--token` (or `REUBEN_ENGINE_ADDR` and
+`REUBEN_ENGINE_TOKEN`) pick another server.
+
+- **`reuben send <address> [pattern]`** sends one string. With no `pattern` it reads stdin, minus
+  trailing whitespace. Quote a `pattern` argument: a shell expands `~` and splits on spaces. Text
+  that does not compile prints as `<file>:<line>:<col>: error: <message>` (`<file>` is `<arg>` or
+  `<stdin>`), followed by the text with the span marked. The command exits non-zero and nothing is
+  applied. A send that compiles is only *queued*: an address that routes nowhere is dropped
+  silently, as any `send` is.
+- **`reuben live <file>`** sends a set file now and on every save. Each line is an address,
+  whitespace, then the text to the end of the line (`/drums/pat  bd ~ [sd sd] ~`). Blank lines and
+  `#` comment lines are skipped, and an address may appear once. A line is sent when its text
+  changed since it was last queued, or when its last send was refused. A refused line prints with
+  its file, line and column, and its address keeps playing what it last played. Each save's report
+  sits between `reuben live: sending <file>` and `reuben live: done (…)`. A send that a Swap made
+  stale prints `<file>:<line>:<col>: warning: dropped: instrument changed, resend <address>`. The
+  next save sends it again, as it does any value an edit reset or an `open` replaced.
+
+Because `send` reads stdin, "evaluate the selection" needs no plugin:
+
+| Editor | Recipe |
+|---|---|
+| Vim / Neovim | select lines, then `:'<,'>w !reuben send /drums/pat` |
+| Helix | select, then `:pipe-to reuben send /drums/pat` |
+| Emacs | select, then `M-\|` (`shell-command-on-region`) with `reuben send /drums/pat` |
+| VS Code | the tasks and key bindings in [`editors/vscode/`](../../editors/vscode/README.md) |
+
+`reuben live` runs until interrupted, and its location lines are what compilers print, so an
+editor's error list reads them. In Emacs, `M-x compile` with `reuben live <file>` streams them into
+a compilation buffer whose errors jump to their span. In Vim, run `reuben live set.reuben | tee
+live.log` in a terminal and load what it has reported with `:cfile live.log`; the default
+`errorformat` reads `%f:%l:%c: %m`. The VS Code recipe's background task marks each error inline.
+
 <a id="type-system"></a>
 ## One `Input`, one `Arg` type <!-- lanes: skills,mcp,web -->
 
