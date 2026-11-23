@@ -145,6 +145,22 @@ enum Command {
         #[command(flatten)]
         server: RunningServerFlags,
     },
+    /// Inject one MIDI message into the running `reuben play`, as a device would send it, to test
+    /// the open instrument's MIDI map (`surfaces/<stem>.midi.json`) without hardware:
+    /// `send-midi /midi/1/cc/74 0.5`, `send-midi /midi/1/note 60 1` (velocity 0 is note-off),
+    /// `send-midi /midi/1/bend -0.5`, `send-midi /midi/1/pressure 0.3`,
+    /// `send-midi /midi/16/program 5`. Values are as translated: CC, velocity and pressure 0–1,
+    /// bend −1–1. The message is routed exactly as one from a device; `get_engine_diagnostics`
+    /// counts it as routed or unmatched.
+    SendMidi {
+        /// The translated address, e.g. `/midi/1/cc/74`.
+        address: String,
+        /// The translated values, e.g. `0.5`, or `60 1` for a note.
+        #[arg(required = true, allow_negative_numbers = true, value_parser = reuben_native::cli::midi_value)]
+        values: Vec<reuben_api::engine::ControlArg>,
+        #[command(flatten)]
+        server: RunningServerFlags,
+    },
     /// Watch a pattern file and send its lines to the running `reuben play` on every save. Each line
     /// is an address, whitespace, then the text to the end of the line; blank lines and `#`
     /// comments are skipped. A line is sent when its text changed since it was last queued, or
@@ -241,6 +257,11 @@ fn main() -> ExitCode {
             _ => unreachable!("clap requires an address or --file"),
         },
         Command::Live { file, server } => cmd_live(&file, &server),
+        Command::SendMidi {
+            address,
+            values,
+            server,
+        } => cmd_send_midi(address, values, &server),
     }
 }
 
@@ -342,6 +363,24 @@ fn cmd_send(address: &str, pattern: Option<String>, server: &RunningServerFlags)
             eprintln!("{}", live::refusal_report(file, 1, 1, text, &refusal));
             ExitCode::FAILURE
         }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_send_midi(
+    address: String,
+    values: Vec<reuben_api::engine::ControlArg>,
+    server: &RunningServerFlags,
+) -> ExitCode {
+    let reached = match connect_running(server) {
+        Ok(reached) => reached,
+        Err(code) => return code,
+    };
+    match reached.channel().send_midi(address, values) {
+        Ok(_) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");
             ExitCode::FAILURE

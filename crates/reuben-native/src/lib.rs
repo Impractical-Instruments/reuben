@@ -30,11 +30,13 @@ pub mod input;
 pub mod library;
 pub mod live;
 pub mod meters;
+pub mod midi;
 pub mod osc;
 mod probes;
 pub mod profile;
 pub mod rigs;
 pub mod scaffold;
+pub mod surface;
 #[doc(hidden)]
 pub mod test_support;
 pub mod tree_watch;

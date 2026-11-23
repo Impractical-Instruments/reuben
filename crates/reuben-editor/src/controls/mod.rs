@@ -24,7 +24,7 @@
 //!   lands, is dropped with the retiring Engine, while the panel shows what was sent.
 
 mod model;
-mod surface;
+use reuben_native::surface;
 mod view;
 
 use std::collections::BTreeSet;

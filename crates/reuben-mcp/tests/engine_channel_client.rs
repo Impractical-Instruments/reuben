@@ -230,6 +230,10 @@ fn get_diagnostics_round_trips_every_counter() {
         pattern_queries_truncated: 7,
         pattern_atoms_skipped: 8,
         pattern_notes_evicted: 9,
+        midi_received: 10,
+        midi_unsupported: 11,
+        midi_routed: 12,
+        midi_unmatched: 13,
     };
     let stub = spawn_stub(move |_req| Response::Diagnostics(report));
     let client = channel(stub.addr.to_string());

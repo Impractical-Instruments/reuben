@@ -3,7 +3,7 @@
 //!
 //! A surface doc names inputs and says how to present them; it carries no ranges or defaults of
 //! its own beyond an optional narrowing. Resolving it against the instrument is
-//! [`Panel::from_surface`](super::model::Panel::from_surface).
+//! the editor's `Panel::from_surface`.
 
 use std::fmt;
 
@@ -46,6 +46,10 @@ pub struct SurfaceControl {
     pub velocity: Option<f64>,
     #[serde(default)]
     pub degree: Option<i64>,
+    /// The OSC address pattern over translated MIDI addresses that drives this input; read only
+    /// from a MIDI map (`<stem>.midi.json`).
+    #[serde(default)]
+    pub midi: Option<String>,
 }
 
 /// Why a surface doc could not be used.
@@ -62,7 +66,7 @@ impl fmt::Display for SurfaceError {
             Self::Parse(e) => write!(f, "is not a surface doc: {e}"),
             Self::Version(found) => write!(
                 f,
-                "declares surface_version {found}; this editor reads version {SURFACE_VERSION}"
+                "declares surface_version {found}; only version {SURFACE_VERSION} is read"
             ),
         }
     }
@@ -119,8 +123,20 @@ mod tests {
                 note: Some(60),
                 velocity: Some(0.5),
                 degree: Some(2),
+                midi: None,
             }
         );
+    }
+
+    #[test]
+    fn parses_a_midi_control() {
+        let doc = SurfaceDoc::parse(
+            r#"{"surface_version":1,"instrument":"x","controls":[
+                {"bind":"cutoff","midi":"/midi/1/cc/74","min":200,"max":8000}]}"#,
+        )
+        .expect("parses");
+        assert_eq!(doc.controls[0].midi.as_deref(), Some("/midi/1/cc/74"));
+        assert_eq!(doc.controls[0].min, Some(200.0));
     }
 
     #[test]

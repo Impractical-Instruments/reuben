@@ -21,7 +21,7 @@ use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -41,6 +41,8 @@ use crate::engine_channel::{
     ChannelServer, HeadlessRenderConfig, NativeHost, RenderConfigPublisher, SwapHold,
 };
 use crate::meters::Meters;
+use crate::midi::router::{Router, SharedRouter};
+use crate::midi::watch::RouteWatch;
 use crate::osc::{self, ControlBatch, DEFAULT_OSC_PORT};
 use crate::profile::DeviceProfile;
 use crate::rigs::DEFAULT_JSON;
@@ -155,6 +157,8 @@ pub enum StartError {
     RenderThread(io::Error),
     /// The thread that names dropped sends to subscribers would not start.
     DroppedSendWatch(io::Error),
+    /// The thread that keeps the MIDI routes in step with what plays would not start.
+    RouteWatch(io::Error),
 }
 
 impl fmt::Display for StartError {
@@ -175,6 +179,7 @@ impl fmt::Display for StartError {
             StartError::DroppedSendWatch(e) => {
                 write!(f, "start the dropped-sends watch thread: {e}")
             }
+            StartError::RouteWatch(e) => write!(f, "start the MIDI routes thread: {e}"),
         }
     }
 }
@@ -186,7 +191,8 @@ impl std::error::Error for StartError {
             | StartError::OscIn { error, .. }
             | StartError::OscOut { error, .. }
             | StartError::RenderThread(error)
-            | StartError::DroppedSendWatch(error) => Some(error),
+            | StartError::DroppedSendWatch(error)
+            | StartError::RouteWatch(error) => Some(error),
             StartError::Instrument(e) => Some(e),
             StartError::Audio(e) => Some(e),
             StartError::ChannelNeedsToken(_) => None,
@@ -199,7 +205,8 @@ impl std::error::Error for StartError {
 ///
 /// Dropping it — or [`shutdown`](Self::shutdown), which also returns the final counters — tears
 /// the session down in order and returns only once every thread it started has exited: the
-/// watcher following outside edits to the instrument's files, the engine-channel server (its
+/// watcher following outside edits to the instrument's files, the dropped-sends watch, the thread
+/// keeping the MIDI routes in step with what plays, the engine-channel server (its
 /// connections woken and joined), the OSC-in listener, the audio streams (paused, then dropped —
 /// see [`Streams::pause`](audio::Streams::pause) for why both), the OSC-out sender, then the
 /// diagnostics logger. Every port it bound is free again afterwards.
@@ -211,6 +218,7 @@ pub struct RunningEngine {
     host: Arc<NativeHost>,
     tree_watch: Option<TreeWatch>,
     dropped_sends: Option<DroppedSendWatch>,
+    route_watch: Option<RouteWatch>,
     channel_server: Option<ChannelServer>,
     channel_error: Option<io::Error>,
     osc_in: Option<OscListener>,
@@ -324,6 +332,7 @@ impl RunningEngine {
         // Before the state closes, so no reload is mid-swap into a Coordinator being torn down.
         self.tree_watch = None;
         self.dropped_sends = None;
+        self.route_watch = None;
         // Next, so a channel a caller still holds is unreachable from here on rather than
         // answering from a Coordinator whose render side is about to go.
         if let Some(state) = &self.state {
@@ -594,7 +603,14 @@ pub(crate) fn start_with(
     // datagram are indistinguishable downstream.
     let (udp_control, udp_ring) = control::ring_pair(Arc::clone(&diagnostics));
     let (send_control, send_ring) = control::ring_pair(Arc::clone(&diagnostics));
-    let control = ControlDrain::new(vec![udp_ring, send_ring]);
+    // And one for the MIDI router, which the MIDI devices and `send_midi` share behind its lock.
+    let (midi_control, midi_ring) = control::ring_pair(Arc::clone(&diagnostics));
+    let control = ControlDrain::new(vec![udp_ring, send_ring, midi_ring]);
+    let midi_router: SharedRouter = Arc::new(Mutex::new(Router::new(
+        midi_control,
+        Arc::clone(&diagnostics),
+        log_osc,
+    )));
 
     let (osc_out_tx, osc_out) = match osc_out {
         Some(target) => {
@@ -701,7 +717,8 @@ pub(crate) fn start_with(
             .with_meters(meters)
             .with_render_config(render_config)
             .with_swap_hold(swap_hold)
-            .with_library_root(library_root),
+            .with_library_root(library_root)
+            .with_midi_router(Arc::clone(&midi_router)),
     );
     diagnostics.watch_retire_queue(coordinator.retired());
     let state =
@@ -722,12 +739,19 @@ pub(crate) fn start_with(
     let tree_watch = follow_files.then(|| tree_watch::spawn(state.clone()));
     let dropped_sends = DroppedSendWatch::spawn(state.clone(), Arc::clone(&diagnostics))
         .map_err(StartError::DroppedSendWatch)?;
+    let route_watch = RouteWatch::spawn(
+        Channel::new(InProcess::new(state.clone())),
+        midi_router,
+        follow_files,
+    )
+    .map_err(StartError::RouteWatch)?;
 
     Ok(RunningEngine {
         state: Some(state),
         host,
         tree_watch,
         dropped_sends: Some(dropped_sends),
+        route_watch: Some(route_watch),
         channel_server,
         channel_error,
         osc_in,

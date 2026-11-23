@@ -86,6 +86,17 @@ pub struct Diagnostics {
     /// Sounding pattern notes released early to make room for a new one, counted in **notes**.
     /// Diagnosis: a pattern holds more overlapping notes than the Operator tracks.
     pub pattern_notes_evicted: AtomicU64,
+    /// MIDI messages read from a device or injected, realtime and system messages excepted.
+    pub midi_received: AtomicU64,
+    /// Received MIDI messages of a kind no MIDI map can bind (polyphonic aftertouch) or not
+    /// well-formed.
+    pub midi_unsupported: AtomicU64,
+    /// Received MIDI messages that matched at least one control of the MIDI map, including a
+    /// note-off sent nowhere because the note it would stop was already released.
+    pub midi_routed: AtomicU64,
+    /// Received MIDI messages no control matched. Diagnosis: the played instrument has no MIDI
+    /// map, or the map's patterns name other channels or controllers than the device sends.
+    pub midi_unmatched: AtomicU64,
     /// The Coordinator's retire queue, once [`watch_retire_queue`](Self::watch_retire_queue) is
     /// given it: its overflow count is the engine's, read here so the log line carries it too.
     retired: OnceLock<RetireDrain>,
@@ -174,6 +185,11 @@ impl Diagnostics {
         }
     }
 
+    /// Count one MIDI message under `counter`, one of the `midi_*` fields. Off the render thread.
+    pub fn record_midi(&self, counter: &AtomicU64) {
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// The running count of stale sends dropped, read with `Acquire`; see
     /// [`stale_sends_dropped`](Self::stale_sends_dropped).
     pub fn load_stale_sends_dropped(&self) -> u64 {
@@ -201,6 +217,10 @@ impl Diagnostics {
             pattern_queries_truncated: self.pattern_queries_truncated.load(Ordering::Relaxed),
             pattern_atoms_skipped: self.pattern_atoms_skipped.load(Ordering::Relaxed),
             pattern_notes_evicted: self.pattern_notes_evicted.load(Ordering::Relaxed),
+            midi_received: self.midi_received.load(Ordering::Relaxed),
+            midi_unsupported: self.midi_unsupported.load(Ordering::Relaxed),
+            midi_routed: self.midi_routed.load(Ordering::Relaxed),
+            midi_unmatched: self.midi_unmatched.load(Ordering::Relaxed),
         }
     }
 }
@@ -224,6 +244,10 @@ pub struct Snapshot {
     pub pattern_queries_truncated: u64,
     pub pattern_atoms_skipped: u64,
     pub pattern_notes_evicted: u64,
+    pub midi_received: u64,
+    pub midi_unsupported: u64,
+    pub midi_routed: u64,
+    pub midi_unmatched: u64,
 }
 
 impl Snapshot {
@@ -241,7 +265,8 @@ pub fn log_snapshot(s: &Snapshot) {
         "diagnostics: output_xruns={} input_ring_underruns={} input_ring_overruns={} \
          input_ring_producer_drops={} control_batches_dropped_full={} wired_writes_dropped={} \
          retire_queue_dropped_full={} unprepared_writes_dropped={} stale_sends_dropped={} \
-         pattern_queries_truncated={} pattern_atoms_skipped={} pattern_notes_evicted={}",
+         pattern_queries_truncated={} pattern_atoms_skipped={} pattern_notes_evicted={} \
+         midi_received={} midi_unsupported={} midi_routed={} midi_unmatched={}",
         s.output_xruns,
         s.input_ring_underruns,
         s.input_ring_overruns,
@@ -253,7 +278,11 @@ pub fn log_snapshot(s: &Snapshot) {
         s.stale_sends_dropped,
         s.pattern_queries_truncated,
         s.pattern_atoms_skipped,
-        s.pattern_notes_evicted
+        s.pattern_notes_evicted,
+        s.midi_received,
+        s.midi_unsupported,
+        s.midi_routed,
+        s.midi_unmatched
     );
 }
 

@@ -83,6 +83,10 @@
         "degree": {
           "description": "chord-button payload: scale degree the button plays (required for chord-button).",
           "type": "integer"
+        },
+        "midi": {
+          "description": "MIDI map (<stem>.midi.json) only: an OSC 1.0 address pattern over translated MIDI addresses (/midi/<ch>/note, /midi/<ch>/cc/<n>, /midi/<ch>/bend, /midi/<ch>/pressure, /midi/<ch>/program) whose messages drive this input.",
+          "type": "string"
         }
       },
       "allOf": [

@@ -1100,6 +1100,7 @@ mod tests {
                 | Request::List { .. }
                 | Request::Library
                 | Request::Surface
+                | Request::SendMidi { .. }
                 | Request::Subscribe => {
                     unreachable!("no tool sends it")
                 }
@@ -1990,6 +1991,10 @@ mod tests {
             pattern_queries_truncated: 7,
             pattern_atoms_skipped: 8,
             pattern_notes_evicted: 9,
+            midi_received: 10,
+            midi_unsupported: 11,
+            midi_routed: 12,
+            midi_unmatched: 13,
         };
         let result = block_on(
             server_with(FakeTransport::reachable().with_diagnostics(report))
@@ -2012,6 +2017,10 @@ mod tests {
         assert_eq!(s["pattern_queries_truncated"], serde_json::json!(7));
         assert_eq!(s["pattern_atoms_skipped"], serde_json::json!(8));
         assert_eq!(s["pattern_notes_evicted"], serde_json::json!(9));
+        assert_eq!(s["midi_received"], serde_json::json!(10));
+        assert_eq!(s["midi_unsupported"], serde_json::json!(11));
+        assert_eq!(s["midi_routed"], serde_json::json!(12));
+        assert_eq!(s["midi_unmatched"], serde_json::json!(13));
     }
 
     #[test]

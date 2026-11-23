@@ -265,7 +265,8 @@ pub fn get_engine_diagnostics(channel: &Channel) -> Result<Answer<DiagnosticsRep
         "output_xruns={} input_ring_underruns={} input_ring_overruns={} \
          input_ring_producer_drops={} control_batches_dropped_full={} wired_writes_dropped={} \
          retire_queue_dropped_full={} unprepared_writes_dropped={} \
-         pattern_queries_truncated={} pattern_atoms_skipped={} pattern_notes_evicted={}",
+         pattern_queries_truncated={} pattern_atoms_skipped={} pattern_notes_evicted={} \
+         midi_received={} midi_unsupported={} midi_routed={} midi_unmatched={}",
         report.output_xruns,
         report.input_ring_underruns,
         report.input_ring_overruns,
@@ -276,7 +277,11 @@ pub fn get_engine_diagnostics(channel: &Channel) -> Result<Answer<DiagnosticsRep
         report.unprepared_writes_dropped,
         report.pattern_queries_truncated,
         report.pattern_atoms_skipped,
-        report.pattern_notes_evicted
+        report.pattern_notes_evicted,
+        report.midi_received,
+        report.midi_unsupported,
+        report.midi_routed,
+        report.midi_unmatched
     );
     Ok(Answer {
         output: report,
