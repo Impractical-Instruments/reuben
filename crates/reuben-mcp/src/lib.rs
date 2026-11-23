@@ -1995,6 +1995,7 @@ mod tests {
             midi_unsupported: 11,
             midi_routed: 12,
             midi_unmatched: 13,
+            midi_devices_lost: 14,
         };
         let result = block_on(
             server_with(FakeTransport::reachable().with_diagnostics(report))
@@ -2021,6 +2022,7 @@ mod tests {
         assert_eq!(s["midi_unsupported"], serde_json::json!(11));
         assert_eq!(s["midi_routed"], serde_json::json!(12));
         assert_eq!(s["midi_unmatched"], serde_json::json!(13));
+        assert_eq!(s["midi_devices_lost"], serde_json::json!(14));
     }
 
     #[test]

@@ -40,11 +40,14 @@ before. The profile only changes behavior where you say so.
   // engine adopts whatever is granted (never fights the device). Omit either for the device's
   // own default.
   "sample_rate": 48000,
-  "buffer_size": 256
+  "buffer_size": 256,
+
+  // MIDI input ports opened when `play` starts. See "MIDI inputs" below.
+  "midi": { "inputs": ["KeyStep", "MPC"] }
 }
 ```
 
-Every field, and both top-level blocks, are optional. `output.map`/`input.map` keys are JSON
+Every field, and every top-level block, is optional. `output.map`/`input.map` keys are JSON
 object keys, so they're spelled as integer strings — `{"0": 2}`, not `{0: 2}`.
 
 ## Mismatch policy: warn + degrade, never fatal
@@ -97,3 +100,24 @@ a missing output device.
   with a warning when clamping actually changed the value.
 - Either preference the device **can** grant is logged as granted, so `play`'s startup output
   always states what rate/buffer size is actually in effect.
+
+## MIDI inputs
+
+`midi.inputs` names the MIDI input ports `play` reads, each selected like an audio device:
+case-insensitively, the port named exactly that string, else the first whose name contains it.
+Two entries that select the same port open it once. No `midi` block opens nothing.
+
+This is the other exception to "never fatal": an entry that matches no port stops `play` at
+start, and the error lists every MIDI input port there is (`no MIDI input port name contains
+"nano"; the MIDI input ports are "Arturia KeyStep 32", "MPC"`). On Windows a port opens in one
+program at a time, so a port another program holds fails to open, and the error says so.
+
+What a port sends is routed by the played instrument's **MIDI map**,
+`surfaces/<stem>.midi.json` (the `control-surface` skill documents it). With no map, messages
+are read and counted as unmatched and go nowhere. `play` prints `midi: reading <port>` for each
+port it opens and, when it stops, `midi: <port> read <n> messages`; run with `REUBEN_LOG_OSC=1`
+set, it also prints each message and the inputs it reached.
+
+A port that goes away while `play` runs (unplugged) is a warning, not an error: `play` releases
+every note the router holds, so nothing hangs, and counts it under `midi_devices_lost` in
+`get_engine_diagnostics`. Plugging it back in is not followed: restart `play` to read it again.

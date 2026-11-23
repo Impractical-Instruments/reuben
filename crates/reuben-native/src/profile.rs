@@ -53,6 +53,19 @@ pub struct DeviceProfile {
     /// Preferred output buffer size in frames, clamped into the device's supported range.
     #[serde(default)]
     pub buffer_size: Option<u32>,
+    #[serde(default)]
+    pub midi: MidiProfile,
+}
+
+/// The MIDI side of a profile.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MidiProfile {
+    /// Input ports `play` opens at start, each selected by case-insensitive name: the port named
+    /// exactly this, else the first whose name contains it. One that matches no port is a startup
+    /// error.
+    #[serde(default)]
+    pub inputs: Vec<String>,
 }
 
 /// Something wrong with the profile document itself — structural, not a device/reality
@@ -103,6 +116,11 @@ impl DeviceProfile {
         if self.sample_rate == Some(0) {
             return Err(ProfileError::OutOfRange(
                 "sample_rate must be at least 1 (0 is not a valid rate)",
+            ));
+        }
+        if self.midi.inputs.iter().any(String::is_empty) {
+            return Err(ProfileError::OutOfRange(
+                "midi.inputs entries must not be empty (an empty name would select the first port)",
             ));
         }
         if self.buffer_size == Some(0) {
@@ -241,6 +259,32 @@ mod tests {
         let err = DeviceProfile::load(&path).expect_err("sample_rate: 0 should be rejected");
         assert!(matches!(err, ProfileError::OutOfRange(_)));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parses_midi_inputs() {
+        let p: DeviceProfile =
+            serde_json::from_str(r#"{"midi":{"inputs":["Keystep"]}}"#).expect("parse midi");
+        assert_eq!(p.midi.inputs, vec!["Keystep".to_string()]);
+        assert!(DeviceProfile::default().midi.inputs.is_empty());
+    }
+
+    #[test]
+    fn an_empty_midi_input_name_is_a_load_error() {
+        let err = serde_json::from_str::<DeviceProfile>(r#"{"midi":{"inputs":["KeyStep",""]}}"#)
+            .map(|p| p.validate())
+            .expect("valid JSON shape")
+            .expect_err("an empty name would select the first port");
+        assert!(matches!(err, ProfileError::OutOfRange(_)));
+    }
+
+    #[test]
+    fn unknown_midi_field_is_a_load_error() {
+        let err = serde_json::from_str::<DeviceProfile>(r#"{"midi":{"outputs":["MPC"]}}"#);
+        assert!(
+            err.is_err(),
+            "unknown field `outputs` under `midi` should be rejected"
+        );
     }
 
     #[test]

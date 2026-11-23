@@ -124,8 +124,10 @@ impl Router {
         self.table = table;
     }
 
-    /// Releases every held note: a device went away, and its note-offs with it.
-    pub fn release_all(&mut self) {
+    /// A device went away, and its note-offs with it: counts the loss and releases every held
+    /// note. Held notes are not kept per device, so a note held on another device is released too.
+    pub fn device_lost(&mut self) {
+        self.count(|d| &d.midi_devices_lost);
         let release = std::mem::take(&mut self.held);
         self.push(release.into_iter().map(note_off).collect());
     }
@@ -372,12 +374,12 @@ mod tests {
         rig.router.bytes(&[0x90, 60, 100]);
         rig.router.bytes(&[0x81, 60, 0]);
         assert_eq!(rig.batches().len(), 1);
-        rig.router.release_all();
+        rig.router.device_lost();
         assert_eq!(rig.batches(), vec![vec![off("/keys/in", 60.0)]]);
     }
 
     #[test]
-    fn release_all_sends_note_off_for_each_held_note() {
+    fn a_lost_device_releases_each_held_note() {
         let mut rig = Rig::new(vec![
             note_route("/midi/1/note", "keys"),
             note_route("/midi/2/note", "bass"),
@@ -385,13 +387,21 @@ mod tests {
         rig.router.bytes(&[0x90, 60, 100]);
         rig.router.bytes(&[0x91, 40, 100]);
         rig.batches();
-        rig.router.release_all();
+        rig.router.device_lost();
         assert_eq!(
             rig.batches(),
             vec![vec![off("/bass/in", 40.0), off("/keys/in", 60.0)]]
         );
-        rig.router.release_all();
+        rig.router.device_lost();
         assert!(rig.batches().is_empty());
+    }
+
+    #[test]
+    fn a_lost_device_is_counted() {
+        let mut rig = Rig::new(vec![]);
+        rig.router.device_lost();
+        rig.router.device_lost();
+        assert_eq!(rig.diagnostics.snapshot().midi_devices_lost, 2);
     }
 
     #[test]

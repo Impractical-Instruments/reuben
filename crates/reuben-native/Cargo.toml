@@ -17,6 +17,7 @@ reuben-api = { path = "../reuben-api", features = ["fs-resolver", "tcp"] }
 # Shared operator-contract spec types + validation, single-sourced with the macro.
 reuben-contract = { path = "../reuben-contract" }
 cpal.workspace = true
+midir.workspace = true
 rosc.workspace = true
 # Input-callback -> render-thread SPSC ring.
 rtrb.workspace = true

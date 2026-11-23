@@ -1,6 +1,6 @@
 ---
 name: control-surface
-description: Author and edit a reuben surface doc (`surfaces/<name>.json`) — the durable presentation layer binding an instrument's interface pipes to widgets — and project it to a Hexler TouchOSC layout (.tosc) played over OSC. Use when the user says "make a control surface", "generate a TouchOSC layout", "make a UI for this instrument", "relabel/reorder/regroup the controls", "edit the surface", or wants to play an instrument from a phone or tablet.
+description: Author and edit a reuben surface doc (`surfaces/<name>.json`) — the durable presentation layer binding an instrument's interface pipes to widgets — and project it to a Hexler TouchOSC layout (.tosc) played over OSC. Use when the user says "make a control surface", "generate a TouchOSC layout", "make a UI for this instrument", "relabel/reorder/regroup the controls", "edit the surface", wants to play an instrument from a phone or tablet, or wants to "map a MIDI controller/keyboard" to an instrument (its MIDI map, `surfaces/<stem>.midi.json`).
 ---
 
 # control-surface
@@ -75,6 +75,76 @@ Semantics (full schema in `surfaces/surface.schema.json`):
 - `unit`/`curve` come from the **pipe only** — they describe the quantity, not one rendering.
 - `group` packs adjacent same-group controls into one row; `cols` (default 4) is widgets per row
   for ungrouped controls.
+
+## The MIDI map
+
+`surfaces/<stem>.midi.json` is the instrument's **MIDI map**: the same surface-doc format and
+`surface_version: 1`, found where `<stem>.json` would be, read by `reuben play` (not by
+`gen_surface.py`) to route a MIDI controller to interface inputs. Each control carries `bind` and
+`midi`, and optionally a narrower `min`/`max`; `label`, `widget`, `group` and `cols` are allowed
+and ignored. The ports `play` reads are named in the device profile's `midi.inputs`
+(`docs/device-profile.md`). An instrument whose own stem is `foo.midi` would collide with
+`foo`'s MIDI map; `play` always reads `surfaces/<stem>.midi.json` as the MIDI map of `<stem>`.
+
+```json
+{
+  "surface_version": 1,
+  "instrument": "acid-techno",
+  "controls": [
+    { "bind": "notes",  "midi": "/midi/1/note" },
+    { "bind": "bass",   "midi": "/midi/[4-8]/note" },
+    { "bind": "cutoff", "midi": "/midi/{1,2,5,9}/cc/74", "min": 200, "max": 8000 },
+    { "bind": "drive",  "midi": "/midi/1/cc/1" },
+    { "bind": "bend",   "midi": "/midi/1/bend" },
+    { "bind": "patch",  "midi": "/midi/16/program" }
+  ]
+}
+```
+
+Each MIDI message becomes one address, channels 1–16 as printed on hardware:
+
+| MIDI message | Address | Value |
+| --- | --- | --- |
+| Note on, vel > 0 | `/midi/<ch>/note` | `[pitch, velocity]`, velocity = v/127 |
+| Note off, or note on vel 0 | `/midi/<ch>/note` | `[pitch, 0]` |
+| Control change | `/midi/<ch>/cc/<n>` | v/127 |
+| Pitch bend | `/midi/<ch>/bend` | −1..1 (14-bit: 8192 → 0, 0 → −1, 16383 → +1) |
+| Channel pressure | `/midi/<ch>/pressure` | v/127 |
+| Program change | `/midi/<ch>/program` | program number 0..127 |
+
+Clock, active sensing, SysEx and other system messages are ignored; polyphonic aftertouch is
+counted as unsupported.
+
+`midi` is one OSC 1.0 address pattern (`*`, `?`, `[1-4]`, `[!5]`, `{1,2,5}`). A message goes to
+**every** control whose pattern matches it (a note reaches each note input once, however many of
+its controls match), and several controls may bind one input, so CCs from
+several channels or numbers can move one input. **Checks, per control** — a failing control is
+skipped with a `midi map:` warning on `play`'s stderr naming it and why; the rest still route:
+
+- the pattern is well-formed and starts with `/midi/`;
+- it matches only **one message kind** — `/midi/1/*` and `/midi/1/{note,cc}` are refused;
+- `bind` names an interface input of the played instrument;
+- the kind fits the input: `note` → `note`; `cc`, `bend`, `pressure` → `f32`, `i32`, or an
+  `f32_buffer` with a range; `program` → `i32`. Anything else is refused;
+- `cc`, `bend` and `pressure` need a finite range: the input's `min`/`max`, or the control's;
+- a narrowing `min`/`max` outside the input's range is clamped into it, with a warning.
+
+A map that does not parse, or has another `surface_version`, is not used, with a warning; if it
+breaks while `play` runs, the routes it had keep working until it is fixed, as long as the same
+Instrument stays open. `play` rebuilds the
+routes on every Swap and every save of the map.
+
+**Scaling.** CC and pressure become `u = v/127` (CC 64 is 0.504; there is no split at the middle),
+bend `u = (b+1)/2`. `u` is mapped across the effective range (the control's `min`/`max`, else the
+input's) along the input's `curve`: exponential when the curve is exponential and both bounds are
+above 0, else linear. An `i32` input rounds to the nearest integer. `program` is sent unscaled and
+clamps into the input's range; `note` is sent as translated. CC 74 = 64 into `cutoff` (20–20000,
+`exp`) narrowed to 200–8000 is 200 · 40^0.504 ≈ 1283 Hz.
+
+**Testing without a keyboard.** `reuben send-midi /midi/1/cc/74 0.5` (or `/midi/1/note 60 1`;
+velocity 0 is note-off) routes a translated message exactly as one from a device;
+`get_engine_diagnostics` then counts it under `midi_routed` or `midi_unmatched`. `play` run with
+`REUBEN_LOG_OSC=1` set prints each MIDI message and the inputs it reached.
 
 ## Workflows
 
@@ -230,6 +300,7 @@ letting the boundary path rot silently. It skips (loudly) if `cargo` isn't on `P
 | Thing | Action |
 |---|---|
 | `surfaces/*.json` surface docs (+ per-target variants) | **author / edit** — the durable presentation source |
+| `surfaces/<stem>.midi.json` MIDI maps | **author / edit** — read by `reuben play`, not emitted |
 | `control-surfaces/*.tosc` | **emit** via `gen_surface.py` — disposable projection; regenerate, never hand-edit |
 | instrument `interface` input pipes | **read** only — the contract this skill binds to |
 | instrument graph — promote a control to a pipe, rename, rewire, change a pipe's contract | **never** — delegate to the `patcher` skill |

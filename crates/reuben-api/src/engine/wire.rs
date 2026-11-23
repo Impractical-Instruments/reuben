@@ -745,6 +745,10 @@ pub struct DiagnosticsReport {
     /// instrument (messages). Absent from a report by an engine that predates it, and then zero.
     #[serde(default)]
     pub midi_unmatched: u64,
+    /// MIDI input ports that went away while the engine ran; each one's held notes were released
+    /// (ports). Absent from a report by an engine that predates it, and then zero.
+    #[serde(default)]
+    pub midi_devices_lost: u64,
 }
 
 /// The engine's levels at the device: what it sends out, after the output map, and what the input
@@ -1011,6 +1015,7 @@ mod tests {
             midi_unsupported: 1,
             midi_routed: 6,
             midi_unmatched: 1,
+            midi_devices_lost: 1,
         }
     }
 
@@ -1198,9 +1203,10 @@ mod tests {
                 report.midi_received,
                 report.midi_unsupported,
                 report.midi_routed,
-                report.midi_unmatched
+                report.midi_unmatched,
+                report.midi_devices_lost
             ),
-            (0, 0, 0, 0)
+            (0, 0, 0, 0, 0)
         );
     }
 
@@ -1523,7 +1529,8 @@ mod tests {
                 "midi_received": 8,
                 "midi_unsupported": 1,
                 "midi_routed": 6,
-                "midi_unmatched": 1
+                "midi_unmatched": 1,
+                "midi_devices_lost": 1
             })
         );
     }

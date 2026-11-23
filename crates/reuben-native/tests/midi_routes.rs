@@ -12,7 +12,7 @@ use common::{reuben, spawn_play, TempDir};
 use reuben_api::engine::{
     Channel, ControlArg, DiagnosticsReport, SwapOutcome, TcpTransport, DEFAULT_CONNECT_TIMEOUT,
 };
-use reuben_native::engine::{start_headless, EngineConfig, Instrument, RunningEngine};
+use reuben_native::engine::{start_headless, EngineConfig, Instrument, RunningEngine, StartError};
 
 /// One exponential `f32` input and one `note` input, both feeding a node.
 fn instrument(name: &str) -> String {
@@ -264,4 +264,67 @@ fn send_midi_from_the_cli_reaches_the_map() {
     assert!(!refused.status.success());
     let stderr = String::from_utf8_lossy(&refused.stderr);
     assert!(stderr.contains("/midi/17/cc/74"), "{stderr}");
+}
+
+#[test]
+fn a_midi_input_matching_no_port_stops_the_start() {
+    let dir = TempDir::new("midi_no_port");
+    seed(&dir.0, "inst", Some(2));
+    let mut config = EngineConfig {
+        osc_in: None,
+        engine_addr: None,
+        ..EngineConfig::new(Instrument::Path(dir.0.join("inst.json")))
+    };
+    config.profile.midi.inputs = vec!["no-such-midi-port-xyz".to_string()];
+    let Err(error) = start_headless(config) else {
+        panic!("started with a MIDI input that matches no port");
+    };
+    assert!(matches!(error, StartError::MidiDevice(_)), "{error:?}");
+    assert!(
+        error.to_string().contains("no-such-midi-port-xyz"),
+        "{error}"
+    );
+}
+
+/// A virtual port stands in for a keyboard: `play` opens it by name, its notes route through the
+/// map, and closing it is counted as a lost device. Needs an ALSA sequencer.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_device_port_routes_and_its_loss_is_counted() {
+    use midir::os::unix::VirtualOutput;
+    let Ok(output) = midir::MidiOutput::new("reuben test keyboard") else {
+        eprintln!("skipped: no ALSA sequencer to make a virtual MIDI port on");
+        return;
+    };
+    let name = format!("reuben-test-kbd-{}", std::process::id());
+    let mut keyboard = output.create_virtual(&name).expect("virtual port");
+    let dir = TempDir::new("midi_device_port");
+    seed(&dir.0, "inst", Some(2));
+    let mut config = EngineConfig {
+        osc_in: None,
+        engine_addr: None,
+        ..EngineConfig::new(Instrument::Path(dir.0.join("inst.json")))
+    };
+    config.profile.midi.inputs = vec![name.to_uppercase()];
+    let engine = start_headless(config).expect("start with the virtual port");
+    let channel = engine.channel();
+    // The map's routes install off the start thread: CC 74 routing means the note route has too.
+    assert!(routes(&channel, 2, SETTLE));
+    let before = diagnostics(&channel);
+    keyboard.send(&[0x90, 60, 100]).expect("note on");
+    let deadline = Instant::now() + SETTLE;
+    while diagnostics(&channel).midi_routed == before.midi_routed {
+        assert!(Instant::now() < deadline, "{:?}", diagnostics(&channel));
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert_eq!(
+        diagnostics(&channel).midi_received,
+        before.midi_received + 1
+    );
+    drop(keyboard);
+    let deadline = Instant::now() + SETTLE;
+    while diagnostics(&channel).midi_devices_lost == 0 {
+        assert!(Instant::now() < deadline, "{:?}", diagnostics(&channel));
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }

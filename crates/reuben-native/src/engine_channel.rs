@@ -728,6 +728,7 @@ pub fn diagnostics_report(snapshot: &Snapshot) -> DiagnosticsReport {
         midi_unsupported,
         midi_routed,
         midi_unmatched,
+        midi_devices_lost,
     } = *snapshot;
     DiagnosticsReport {
         output_xruns,
@@ -746,6 +747,7 @@ pub fn diagnostics_report(snapshot: &Snapshot) -> DiagnosticsReport {
         midi_unsupported,
         midi_routed,
         midi_unmatched,
+        midi_devices_lost,
     }
 }
 
@@ -1322,6 +1324,7 @@ mod tests {
             (&d.midi_unsupported, 13),
             (&d.midi_routed, 14),
             (&d.midi_unmatched, 15),
+            (&d.midi_devices_lost, 16),
         ] {
             for _ in 0..n {
                 d.record_midi(counter);
@@ -1332,6 +1335,7 @@ mod tests {
         assert_eq!(report.midi_unsupported, 13);
         assert_eq!(report.midi_routed, 14);
         assert_eq!(report.midi_unmatched, 15);
+        assert_eq!(report.midi_devices_lost, 16);
         assert_eq!(report.output_xruns, 3);
         assert_eq!(report.input_ring_underruns, 11);
         assert_eq!(report.input_ring_overruns, 22);
