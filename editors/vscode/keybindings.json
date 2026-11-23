@@ -1,10 +1,24 @@
 // Add these to your keybindings.json ("Preferences: Open Keyboard Shortcuts (JSON)").
 [
   {
+    // In a set file, send the line the cursor is on. The task reads the file from disk, so save
+    // first (`runCommands` runs the two in order).
+    "key": "ctrl+enter",
+    "command": "runCommands",
+    "args": {
+      "commands": [
+        "workbench.action.files.save",
+        { "command": "workbench.action.tasks.runTask", "args": "reuben send line" }
+      ]
+    },
+    "when": "editorTextFocus && resourceExtname == .reuben"
+  },
+  {
+    // Elsewhere, send the selection to an address you type.
     "key": "ctrl+enter",
     "command": "workbench.action.tasks.runTask",
     "args": "reuben send selection",
-    "when": "editorTextFocus && editorHasSelection && resourceExtname == .reuben"
+    "when": "editorTextFocus && editorHasSelection && resourceExtname != .reuben"
   },
   {
     "key": "ctrl+shift+enter",

@@ -31,22 +31,68 @@
       }
     },
     {
-      // Sends the selection to one address. A process task, so the selection reaches
-      // `reuben send` as one argument, with no shell to expand or split it.
+      // Sends the set-file line the cursor is on: its address and text, as `reuben live` reads
+      // them. Reads the file from disk, so the key binding saves first. Silent on success; a
+      // refused line is marked at its span and opens the Problems view.
+      "label": "reuben send line",
+      "type": "process",
+      "command": "reuben",
+      "args": ["send", "--file", "${file}", "--line", "${lineNumber}"],
+      "presentation": {
+        "reveal": "never",
+        "revealProblems": "onProblem",
+        "clear": true,
+        "panel": "shared"
+      },
+      "problemMatcher": {
+        "owner": "reuben-send",
+        "source": "reuben",
+        "fileLocation": ["autoDetect", "${workspaceFolder}"],
+        "pattern": {
+          "regexp": "^(.+?):(\\d+):(\\d+): (error|warning): (.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "message": 5
+        }
+      }
+    },
+    {
+      // Sends the selection to one address, for a file that is not a set file. A process task, so
+      // the selection reaches `reuben send` as one argument, with no shell to expand or split it.
+      // A refusal is reported against `<arg>`, which is not a file, so it shows in the Problems
+      // view without an inline mark.
       "label": "reuben send selection",
       "type": "process",
       "command": "reuben",
       "args": ["send", "${input:reubenAddress}", "${selectedText}"],
-      "presentation": { "reveal": "silent", "panel": "shared" },
-      "problemMatcher": []
+      "presentation": {
+        "reveal": "never",
+        "revealProblems": "onProblem",
+        "clear": true,
+        "panel": "shared"
+      },
+      "problemMatcher": {
+        "owner": "reuben-send-selection",
+        "source": "reuben",
+        "fileLocation": ["relative", "${workspaceFolder}"],
+        "pattern": {
+          "regexp": "^(.+?):(\\d+):(\\d+): (error|warning): (.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "message": 5
+        }
+      }
     }
   ],
   "inputs": [
     {
       "id": "reubenAddress",
       "type": "promptString",
-      "description": "The address to send the selection to",
-      "default": "/pattern/in"
+      "description": "The address to send the selection to, e.g. /notes/in"
     }
   ]
 }

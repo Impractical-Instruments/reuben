@@ -1,12 +1,24 @@
 # Live coding from VS Code
 
-Two tasks and two key bindings that drive a running `reuben play` from VS Code with no extension:
+Three tasks and three key bindings that drive a running `reuben play` from VS Code with no extension:
 
-- **reuben live** runs `reuben live ${file}` in the background. Each save sends the set file's
-  changed lines, and a line the engine refuses shows as an error at its span in the editor. The
-  error clears on the next save that fixes it.
-- **reuben send selection** sends the selected text to one address. VS Code asks for the address
-  and offers `/pattern/in`, the pattern input of `pattern-melody`, by default.
+- **reuben send line** (`ctrl+enter` in a `.reuben` file) sends the set-file line the cursor is on:
+  the line's address and text, with no prompt. It saves the file first, because `reuben send
+  --file ${file} --line ${lineNumber}` reads the line from disk. That save also triggers `reuben
+  live` if it is running, which sends any other changed lines too; the cursor's line then goes out
+  once more, harmlessly. Success is silent. A line the engine refuses is marked at its span and
+  opens the Problems view; so does a comment or blank line, which is not a send.
+- **reuben live** (`ctrl+shift+enter`) runs `reuben live ${file}` in the background. Each save sends
+  the set file's changed lines, and a line the engine refuses shows as an error at its span in the
+  editor. The error clears on the next save that fixes it.
+- **reuben send selection** (`ctrl+enter` with a selection, in files that are not `.reuben`) sends
+  the selected text to an address VS Code asks for, such as `/notes/in`. A refusal opens the
+  Problems view.
+
+`ctrl+enter` is bound through the `runCommands` command, which runs the save and the task in order
+([VS Code keybindings: Running multiple commands](https://code.visualstudio.com/docs/configure/keybindings)).
+The tasks' `revealProblems` presentation option is in VS Code's `tasks.json` schema (its source,
+`jsonSchema_v2.ts`, lists `always`, `onProblem` and `never`); the tasks appendix page does not list it.
 
 ## Set files
 
@@ -17,9 +29,7 @@ extension, and the key bindings only fire in files that have it.
 The repo's [`sets/`](../../sets) directory holds two starting points, each naming the instrument to
 play and listing alternatives to swap in: [`pattern-melody.reuben`](../../sets/pattern-melody.reuben)
 (scale degrees, `/pattern/in`) and [`pattern-lab.reuben`](../../sets/pattern-lab.reuben) (note
-names, Hz and cutoff patterns). The address prompt's default is `/pattern/in`, the pattern input of
-`pattern-melody`. For another instrument, `reuben describe <instrument> --view pipes` lists its
-inputs.
+names, Hz and cutoff patterns). For another instrument, `reuben describe <instrument> --view pipes` lists its inputs.
 
 ## Setup
 
@@ -32,11 +42,12 @@ inputs.
 4. Start `pattern-melody` in a terminal: `reuben play instruments/pattern-melody.json` from the
    repo root, or `reuben play --instrument-root <repo>/instruments <repo>/instruments/pattern-melody.json`
    from anywhere.
-5. Open a `.reuben` file and press `ctrl+shift+enter` (or run **Tasks: Run Task → reuben live**).
-   Select some text and press `ctrl+enter` to send just that.
+5. Open a `.reuben` file and put the cursor on a line: `ctrl+enter` sends it. Press
+   `ctrl+shift+enter` (or run **Tasks: Run Task → reuben live**) to send the whole file now and on
+   every save. Select text in another kind of file and press `ctrl+enter` to send that to an address.
 
-Both tasks reach the engine at its default address. To reach another one, add
-`"--engine-addr", "<host:port>"` after `"live"` or `"send"` in `args`, or set `REUBEN_ENGINE_ADDR`.
+The tasks reach the engine at its default address. To reach another one, add
+`"--engine-addr", "<host:port>"` after `"live"` or `"send"` in the `args` of each task, or set `REUBEN_ENGINE_ADDR`.
 
 ## How the error marks work
 

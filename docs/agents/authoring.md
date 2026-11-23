@@ -195,6 +195,12 @@ reachable they exit at once and say so. `--engine-addr` and `--token` (or `REUBE
   `<stdin>`), followed by the text with the span marked. The command exits non-zero and nothing is
   applied. A send that compiles is only *queued*: an address that routes nowhere is dropped
   silently, as any `send` is.
+- **`reuben send --file <set> --line <n>`** sends one line of a set file (1-based), read from disk
+  and parsed as `reuben live` parses it: the line's own address and text, so there is no address
+  argument. Errors use the same `<file>:<line>:<col>: error:` report, with the column found by the
+  same code. A blank or `#` comment line is an error at `<set>:<n>:1`. It prints
+  `reuben send: queued <address> (line <n>)` on success. `--file` and `--line` go together and
+  replace the positional arguments.
 - **`reuben live <file>`** sends a set file now and on every save. Each line is an address,
   whitespace, then the text to the end of the line (`/pattern/in  0 2 4 <7 5> [4 2] 0 ~`). Blank lines and
   `#` comment lines are skipped, and an address may appear once. A line is sent when its text
@@ -208,14 +214,15 @@ reachable they exit at once and say so. `--engine-addr` and `--token` (or `REUBE
 The repo's [`sets/`](../../sets) directory holds example set files for `pattern-melody` and
 `pattern-lab`: each names the instrument to play and lists alternative patterns to swap in.
 
-Because `send` reads stdin, "evaluate the selection" needs no plugin:
+Because `send` reads stdin, "evaluate the selection" needs no plugin, and `send --file --line`
+evaluates the line under the cursor in a set file once the buffer is saved:
 
-| Editor | Recipe |
-|---|---|
-| Vim / Neovim | select lines, then `:'<,'>w !reuben send /pattern/in` |
-| Helix | select, then `:pipe-to reuben send /pattern/in` |
-| Emacs | select, then `M-\|` (`shell-command-on-region`) with `reuben send /pattern/in` |
-| VS Code | the tasks and key bindings in [`editors/vscode/`](../../editors/vscode/README.md) |
+| Editor | Selection | Cursor line |
+|---|---|---|
+| Vim / Neovim | select lines, then `:'<,'>w !reuben send /pattern/in` | `:w`, then `:execute '!reuben send --file % --line ' . line('.')` |
+| Helix | select, then `:pipe-to reuben send /pattern/in` | `:w`, then `:sh reuben send --file %{buffer_name} --line %{cursor_line}` |
+| Emacs | select, then `M-\|` (`shell-command-on-region`) with `reuben send /pattern/in` | save, then `M-!` with `reuben send --file <file> --line <n>` |
+| VS Code | the tasks and key bindings in [`editors/vscode/`](../../editors/vscode/README.md): `ctrl+enter` sends the cursor line | |
 
 `reuben live` runs until interrupted, and its location lines are what compilers print, so an
 editor's error list reads them. In Emacs, `M-x compile` with `reuben live <file>` streams them into

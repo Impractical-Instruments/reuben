@@ -330,3 +330,106 @@ fn live_sends_only_changed_lines_skips_comments_and_keeps_the_old_pattern_when_a
     );
     assert_eq!(server.queued(5).len(), 4, "the unchanged `/a` line was not");
 }
+
+/// `reuben send --engine-addr <addr> --file <set> --line <n>`.
+fn send_line(addr: &str, set: &Path, line: usize) -> Output {
+    reuben()
+        .args(["send", "--engine-addr", addr, "--file"])
+        .arg(set)
+        .args(["--line", &line.to_string()])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run reuben send --file")
+}
+
+#[test]
+fn send_line_sends_the_one_line_it_names_and_it_is_applied() {
+    let server = serve();
+    let dir = Dir::new("line");
+    let set = dir.0.join("a.set");
+    std::fs::write(&set, "# set\n/a/pat  1 2\n/b/pat  3 4\n").expect("write the set");
+    let output = send_line(&server.addr, &set, 3);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "reuben send: queued /b/pat (line 3)\n"
+    );
+    assert_eq!(
+        server.queued(1),
+        vec![("/b/pat".to_string(), "3 4".to_string())]
+    );
+    assert_eq!(server.queued(2).len(), 1, "only that line was sent");
+}
+
+#[test]
+fn send_line_reports_a_bad_line_at_its_file_line_and_column() {
+    let server = serve();
+    let dir = Dir::new("badline");
+    let set = dir.0.join("a.set");
+    std::fs::write(&set, "/a/pat  1 2\n/b/pat  3 x\n").expect("write the set");
+    let shown = set.display().to_string();
+    let output = send_line(&server.addr, &set, 2);
+    assert!(!output.status.success());
+    assert_eq!(
+        stderr(&output),
+        format!(
+            "{shown}:2:11: error: unknown word 'x'; atoms are numbers and note names\n3 x\n  ^\n"
+        )
+    );
+}
+
+#[test]
+fn send_line_refuses_a_comment_blank_or_missing_line() {
+    let server = serve();
+    let dir = Dir::new("commentline");
+    let set = dir.0.join("a.set");
+    std::fs::write(&set, "# comment\n\n/a/pat 1\n").expect("write the set");
+    let shown = set.display().to_string();
+    for (line, message) in [
+        (1, "line 1 is a comment, not a send"),
+        (2, "line 2 is blank, not a send"),
+        (9, "the file has 3 lines"),
+    ] {
+        let output = send_line(&server.addr, &set, line);
+        assert!(!output.status.success());
+        assert_eq!(
+            stderr(&output),
+            format!("{shown}:{line}:1: error: {message}\n")
+        );
+    }
+}
+
+#[test]
+fn send_line_fails_fast_when_no_reuben_play_is_reachable() {
+    let dir = Dir::new("deadline");
+    let set = dir.0.join("a.set");
+    std::fs::write(&set, "/a/pat 1\n").expect("write the set");
+    let dead = dead_addr();
+    let started = Instant::now();
+    let output = send_line(&dead, &set, 1);
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("reuben play"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
+fn send_takes_an_address_or_a_file_and_line_never_both() {
+    for args in [
+        vec!["send", "--file", "x.reuben"],
+        vec!["send", "--line", "2"],
+        vec!["send", "/a/pat", "1", "--file", "x.reuben", "--line", "1"],
+        vec!["send"],
+    ] {
+        let output = reuben().args(&args).output().expect("run reuben");
+        assert!(!output.status.success(), "{args:?}");
+        assert!(
+            stderr(&output).contains("Usage"),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+    }
+}

@@ -155,6 +155,40 @@ pub fn parse_set(source: &str) -> Vec<Entry> {
     entries
 }
 
+/// The send on 1-based `line` of a set file, parsed as `reuben live` parses it, or the
+/// `<file>:<line>:<col>: error: …` report of why that line is not one.
+pub fn set_line(file: &str, source: &str, line: usize) -> Result<SetLine, String> {
+    let Some(raw) = source.lines().nth(line.wrapping_sub(1)) else {
+        return Err(format!(
+            "{file}:{line}:1: error: the file has {} lines",
+            source.lines().count()
+        ));
+    };
+    let body = raw.trim();
+    if body.is_empty() {
+        return Err(format!(
+            "{file}:{line}:1: error: line {line} is blank, not a send"
+        ));
+    }
+    if body.starts_with('#') {
+        return Err(format!(
+            "{file}:{line}:1: error: line {line} is a comment, not a send"
+        ));
+    }
+    parse_set(source)
+        .into_iter()
+        .find_map(|entry| match entry {
+            Entry::Send(l) if l.line == line => Some(Ok(l)),
+            Entry::Malformed {
+                line: at,
+                column,
+                message,
+            } if at == line => Some(Err(format!("{file}:{line}:{column}: error: {message}"))),
+            _ => None,
+        })
+        .unwrap_or_else(|| Err(format!("{file}:{line}:1: error: line {line} is not a send")))
+}
+
 /// What `reuben live` remembers between saves of one set file.
 #[derive(Debug)]
 pub struct Live {

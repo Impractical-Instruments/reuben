@@ -125,14 +125,23 @@ enum Command {
     /// Send one string to an input of the running `reuben play` that compiles its text, such as a
     /// pattern. A string that does not compile is printed as `<file>:<line>:<col>: error: …` with
     /// its span marked, nothing is applied, and the exit code is non-zero. Never starts a
-    /// temporary server.
+    /// temporary server. With `--file` and `--line`, sends that one line of a set file instead.
     Send {
         /// The input's address, e.g. `/pattern/in`.
-        address: String,
+        #[arg(required_unless_present = "file")]
+        address: Option<String>,
         /// The text, as one argument: quote it, as a shell expands `~` and splits on spaces. Read
         /// from stdin when left out, so an editor can pipe a selection in. Trailing whitespace is
         /// dropped.
+        #[arg(conflicts_with = "file")]
         pattern: Option<String>,
+        /// Send one line of this set file, read from disk, in place of `<ADDRESS> [PATTERN]`: the
+        /// line's address and text, parsed as `reuben live` parses them. Needs `--line`.
+        #[arg(long, requires = "line", conflicts_with = "address")]
+        file: Option<PathBuf>,
+        /// The 1-based line of `--file` to send. A blank or `#` comment line is an error.
+        #[arg(long, requires = "file", value_name = "N")]
+        line: Option<usize>,
         #[command(flatten)]
         server: RunningServerFlags,
     },
@@ -223,8 +232,14 @@ fn main() -> ExitCode {
         Command::Send {
             address,
             pattern,
+            file,
+            line,
             server,
-        } => cmd_send(&address, pattern, &server),
+        } => match (address, file, line) {
+            (_, Some(file), Some(line)) => cmd_send_line(&file, line, &server),
+            (Some(address), ..) => cmd_send(&address, pattern, &server),
+            _ => unreachable!("clap requires an address or --file"),
+        },
         Command::Live { file, server } => cmd_live(&file, &server),
     }
 }
@@ -325,6 +340,46 @@ fn cmd_send(address: &str, pattern: Option<String>, server: &RunningServerFlags)
         Ok(reuben_api::engine::SendOutcome::Queued) => ExitCode::SUCCESS,
         Ok(reuben_api::engine::SendOutcome::Refused(refusal)) => {
             eprintln!("{}", live::refusal_report(file, 1, 1, text, &refusal));
+            ExitCode::FAILURE
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `send --file --line`: one line of a set file, as `live` would send it.
+fn cmd_send_line(file: &Path, line: usize, server: &RunningServerFlags) -> ExitCode {
+    let shown = file.display().to_string();
+    let source = match std::fs::read_to_string(file) {
+        Ok(source) => source,
+        Err(e) => {
+            eprintln!("error: reading {shown}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let set_line = match live::set_line(&shown, &source, line) {
+        Ok(set_line) => set_line,
+        Err(report) => {
+            eprintln!("{report}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let reached = match connect_running(server) {
+        Ok(reached) => reached,
+        Err(code) => return code,
+    };
+    match live::send_text(reached.channel(), &set_line.address, &set_line.text) {
+        Ok(reuben_api::engine::SendOutcome::Queued) => {
+            println!("reuben send: queued {} (line {line})", set_line.address);
+            ExitCode::SUCCESS
+        }
+        Ok(reuben_api::engine::SendOutcome::Refused(refusal)) => {
+            eprintln!(
+                "{}",
+                live::refusal_report(&shown, line, set_line.column, &set_line.text, &refusal)
+            );
             ExitCode::FAILURE
         }
         Err(e) => {

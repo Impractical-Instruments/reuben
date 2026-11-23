@@ -2,6 +2,8 @@
 #
 # Play it, from the repo root:   reuben play instruments/pattern-lab.json
 # Then, in another terminal:     reuben live sets/pattern-lab.reuben
+# Or send one line: in VS Code put the cursor on it and press Ctrl+Enter (see
+# editors/vscode/README.md), or run `reuben send --file sets/pattern-lab.reuben --line <n>`.
 #
 # Each live line below has alternatives under it: uncomment one (and comment the live line) and
 # save. A new pattern takes over at the next cycle of 4 beats.
