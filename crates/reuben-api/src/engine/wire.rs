@@ -126,6 +126,50 @@ pub struct ControlMessage {
     pub args: Vec<ControlArg>,
 }
 
+/// Why a `send` was refused for text that did not compile: the first string in the batch, aimed
+/// at an input that compiles its text, that its compiler refused. Nothing in the batch was applied.
+///
+/// It carries the text itself, so a client can print the span under it without having kept what
+/// it sent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendRefusal {
+    /// The refused message's position in the batch, from 0.
+    pub message: usize,
+    /// The refused message's address.
+    pub address: String,
+    /// The text that did not compile.
+    pub text: String,
+    /// Byte offset into `text` where the fault starts.
+    pub start: usize,
+    /// Byte offset into `text` where the fault ends; equal to `start` where something is missing.
+    pub end: usize,
+    /// What is wrong there.
+    pub error: String,
+}
+
+impl SendRefusal {
+    /// `text` on one line and a run of `^` under the span on the next, the span widened to one
+    /// mark where it is empty. Columns count `char`s, so the marks line up under monospace text
+    /// with no wide characters; a span off a `char` boundary marks from the start.
+    pub fn marked(&self) -> String {
+        let column = |at: usize| self.text.get(..at).map_or(0, |s| s.chars().count());
+        let start = column(self.start);
+        let width = column(self.end).saturating_sub(start).max(1);
+        format!("{}\n{}{}", self.text, " ".repeat(start), "^".repeat(width))
+    }
+}
+
+impl core::fmt::Display for SendRefusal {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "message {} (`{}`) does not compile, so nothing in the batch was applied: bytes \
+             {}..{}: {}",
+            self.message, self.address, self.start, self.end, self.error
+        )
+    }
+}
+
 /// One engine-channel request (its twelve verbs), serialized as a single JSON
 /// object tagged by `verb`: `{"verb": "ping"}`, `{"verb": "open", "name": …}`, ….
 ///
@@ -174,6 +218,10 @@ pub enum Request {
     ///
     /// Between 1 and [`MAX_SEND_BATCH`] messages; the engine rejects anything outside that with
     /// [`Response::Error`], so an empty batch is a client bug reported rather than a no-op acked.
+    ///
+    /// One step comes before the ingress: a lone string aimed at an input that compiles its text
+    /// is compiled here, against the Plan installed, and travels compiled. Text that does not
+    /// compile refuses the whole batch with [`Response::SendRefused`].
     Send {
         /// The messages to apply, in order.
         messages: Vec<ControlMessage>,
@@ -452,6 +500,9 @@ pub enum Response {
     /// read `count < len` as "some were rejected", a signal that can never arrive. (Contrast
     /// [`Conflict`], whose two hashes earn their place precisely because they can disagree.)
     Sent,
+    /// `Send`'s answer when a string aimed at an input that compiles its text did not compile:
+    /// nothing in the batch was queued. Flat next to the `reply` tag.
+    SendRefused(SendRefusal),
     /// A channel-level failure: an unreadable request, or an engine-side fault that
     /// produced no domain-shaped answer. Distinct from a `SwapReport` with `ok: false`,
     /// which is the channel *working*.
@@ -522,6 +573,11 @@ pub enum Event {
     Opened { name: String, hash: String },
     /// The open instrument's documents no longer load; what played before keeps playing.
     Invalid { errors: Vec<Diag> },
+    /// A live send's strings were compiled for the instrument that played before a swap, and the
+    /// swap installed before they were applied, so they were dropped rather than applied to what
+    /// plays now. `addresses` lists, sorted and once each, the addresses they were sent to; send
+    /// them again.
+    SendsDropped { addresses: Vec<String> },
 }
 
 /// Who made a [`Event::Changed`] change.
@@ -581,11 +637,17 @@ pub struct DiagnosticsReport {
     #[serde(default)]
     pub retire_queue_dropped_full: u64,
     /// Strings dropped at a `str` input that compiles its text, for not being a value its
-    /// preparer built: raw text, or a value another preparer built (messages). No path prepares a
-    /// live send yet, so every live string sent to such an input is counted here. Absent from a
-    /// report by an engine that predates it, and then zero.
+    /// preparer built: raw text, or a value another preparer built (messages). A `send` compiles
+    /// its strings before they are queued, so these arrived some other way: over OSC/UDP, which
+    /// sends raw text. Absent from a report by an engine that predates it, and then zero.
     #[serde(default)]
     pub unprepared_writes_dropped: u64,
+    /// Strings a `send` compiled for one Plan that reached the render thread after a swap had
+    /// installed another, so they were dropped rather than applied (messages). Each drop is also
+    /// announced to subscribers, naming its address. Absent from a report by an engine that
+    /// predates it, and then zero.
+    #[serde(default)]
+    pub stale_sends_dropped: u64,
 }
 
 /// The engine's levels at the device: what it sends out, after the output map, and what the input
@@ -750,6 +812,50 @@ mod tests {
         }
     }
 
+    fn send_refusal() -> SendRefusal {
+        SendRefusal {
+            message: 1,
+            address: "/seq/steps".to_string(),
+            text: "1 x2 3".to_string(),
+            start: 2,
+            end: 4,
+            error: "expected a whole number".to_string(),
+        }
+    }
+
+    /// The refusal is flat beside its tag, and carries the text so a client prints the span under
+    /// it without having kept what it sent.
+    #[test]
+    fn a_send_refusal_carries_the_text_and_its_span_flat_beside_the_tag() {
+        let v: serde_json::Value =
+            serde_json::from_str(&Response::SendRefused(send_refusal()).to_ndjson())
+                .expect("as value");
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "reply": "send_refused",
+                "message": 1,
+                "address": "/seq/steps",
+                "text": "1 x2 3",
+                "start": 2,
+                "end": 4,
+                "error": "expected a whole number"
+            })
+        );
+        assert_eq!(send_refusal().marked(), "1 x2 3\n  ^^");
+    }
+
+    #[test]
+    fn an_empty_span_marks_one_column_and_columns_count_chars() {
+        let refusal = SendRefusal {
+            text: "é ab".to_string(),
+            start: 3,
+            end: 3,
+            ..send_refusal()
+        };
+        assert_eq!(refusal.marked(), "é ab\n  ^");
+    }
+
     fn diagnostics_report() -> DiagnosticsReport {
         DiagnosticsReport {
             output_xruns: 2,
@@ -760,6 +866,7 @@ mod tests {
             wired_writes_dropped: 3,
             retire_queue_dropped_full: 3,
             unprepared_writes_dropped: 2,
+            stale_sends_dropped: 4,
         }
     }
 
@@ -1092,6 +1199,7 @@ mod tests {
             Response::Meters(meters_report()),
             Response::Meters(MetersReport::default()),
             Response::Sent,
+            Response::SendRefused(send_refusal()),
             Response::Conflict(Conflict {
                 expected: "0badc0de0badc0de".to_string(),
                 actual: "00c0ffee00c0ffee".to_string(),
@@ -1173,6 +1281,12 @@ mod tests {
                 },
                 serde_json::json!({"event": "invalid", "errors": [{"message": "unknown operator"}]}),
             ),
+            (
+                Event::SendsDropped {
+                    addresses: vec!["/seq/steps".to_string()],
+                },
+                serde_json::json!({"event": "sends_dropped", "addresses": ["/seq/steps"]}),
+            ),
         ];
         for (event, wire) in &events {
             let line = event.to_ndjson();
@@ -1220,7 +1334,8 @@ mod tests {
                 "control_batches_dropped_full": 7,
                 "wired_writes_dropped": 3,
                 "retire_queue_dropped_full": 3,
-                "unprepared_writes_dropped": 2
+                "unprepared_writes_dropped": 2,
+                "stale_sends_dropped": 4
             })
         );
     }
@@ -1238,6 +1353,7 @@ mod tests {
         assert_eq!(report.wired_writes_dropped, 0);
         assert_eq!(report.retire_queue_dropped_full, 0);
         assert_eq!(report.unprepared_writes_dropped, 0);
+        assert_eq!(report.stale_sends_dropped, 0);
     }
 
     #[test]

@@ -48,6 +48,7 @@ use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::Duration;
 
 use reuben_core::coordinator::RetireDrain;
+use reuben_core::plan::PreparedRoutes;
 use reuben_core::probe::ProbeSlots;
 use reuben_document::coordinator::Coordinator;
 
@@ -61,6 +62,7 @@ use super::events::{Bus, Subscription};
 mod call;
 use call::{diag, handle_call, handle_library, read_tree};
 
+use super::send::{prepare_send, PreparedMessage};
 use super::wire::{
     over_long_batch_refusal, over_long_probe_set_refusal, ChangedBy, Conflict, ControlMessage,
     DiagnosticsReport, DocumentSnapshot, Event, HeldSwap, ListWhat, MetersReport, Request,
@@ -140,7 +142,21 @@ pub trait EngineHost: Send + Sync {
     /// a rendered block. `Err` means the ingress is gone (audio torn down) and nothing was queued.
     /// `Ok` means the host took the batch, not that it will be applied: a host with a bounded
     /// ingress may drop it and count the drop instead.
-    fn deliver_control(&self, messages: Vec<ControlMessage>) -> Result<(), IngressClosed>;
+    ///
+    /// Its strings bound for inputs that compile their text arrive compiled. The render side
+    /// queues such a message only while
+    /// [`PreparedAgainst::is_live`](super::PreparedAgainst::is_live) holds for its `against`, and
+    /// otherwise drops it, counts it, and hands its address back through
+    /// [`take_dropped_sends`](Self::take_dropped_sends).
+    fn deliver_control(&self, messages: Vec<PreparedMessage>) -> Result<(), IngressClosed>;
+
+    /// The addresses of the compiled messages the render side dropped because a swap installed
+    /// between their compile and their apply, since the last call, each once and sorted. Called off
+    /// the render thread, by [`ChannelState::publish_dropped_sends`]. Defaults to none, which is
+    /// right for a host whose drain never drops one.
+    fn take_dropped_sends(&self) -> Vec<String> {
+        Vec::new()
+    }
 
     /// The running counters, as an owned copy taken off the audio thread. The window fills
     /// [`retire_queue_dropped_full`](DiagnosticsReport::retire_queue_dropped_full) itself, from
@@ -225,6 +241,10 @@ pub struct ChannelState {
     silent: Arc<AtomicBool>,
     /// The Coordinator's retire queue, drained without its lock: `send` must not wait on a swap.
     retired: RetireDrain,
+    /// The routing table `send` compiles strings against: the Plan the render side runs, as far
+    /// as this side knows. Its own lock, so `send` does not wait on a swap; written only under the
+    /// Coordinator lock, once the render side has taken the swap home.
+    routes: Arc<Mutex<Arc<PreparedRoutes>>>,
 }
 
 /// What plays while the open instrument does not load, or while nothing is open: one output
@@ -259,6 +279,7 @@ impl ChannelState {
     ) -> Self {
         host.install_probes(coordinator.installed_probes());
         let retired = coordinator.retired();
+        let routes = Arc::new(Mutex::new(coordinator.installed_prepared_routes()));
         Self {
             coordinator: Arc::new(Mutex::new(coordinator)),
             host,
@@ -270,7 +291,27 @@ impl ChannelState {
             reported_invalid: Arc::new(Mutex::new(None)),
             silent: Arc::new(AtomicBool::new(false)),
             retired,
+            routes,
         }
+    }
+
+    /// Ask the host which compiled sends its render side dropped for a swap that installed between
+    /// their compile and their apply, and when there are any, publish [`Event::SendsDropped`]
+    /// naming their addresses and return it. A host calls it from a thread of its own whenever its
+    /// count of those drops moves; it never takes the Coordinator lock.
+    pub fn publish_dropped_sends(&self) -> Option<Event> {
+        let addresses = self.host.take_dropped_sends();
+        if addresses.is_empty() {
+            return None;
+        }
+        let event = Event::SendsDropped { addresses };
+        self.events.publish(event.clone());
+        Some(event)
+    }
+
+    /// The routing table a `send` compiles against now.
+    fn prepared_routes(&self) -> Arc<PreparedRoutes> {
+        Arc::clone(&self.routes.lock().unwrap_or_else(|p| p.into_inner()))
     }
 
     /// The hash a client is told plays, and the one an `expect` is compared against: the installed
@@ -700,11 +741,14 @@ impl Transport for InProcess {
 /// What [`InProcess::endpoint`] reports: not an address, since nothing is dialed.
 pub const IN_PROCESS_ENDPOINT: &str = "in-process";
 
-/// Control traffic: hand the batch to the host's ingress **as one unit** and ack it.
+/// Control traffic: compile its strings, then hand the batch to the host's ingress **as one
+/// unit** and ack it.
 ///
-/// Deliberately thin — there is **no routing logic here**. The engine types and routes each message
-/// against its destination port exactly as it would an external datagram, and an address matching
-/// no node/port is dropped there, silently, which is why the ack is "queued", never "applied".
+/// The one routing step here is [`prepare_send`]'s: a lone string at an address the installed
+/// Plan compiles is compiled now, and text that does not compile refuses the whole batch. The
+/// engine types and routes each message against its destination port exactly as it would an
+/// external datagram, and an address matching no node/port is dropped there, silently, which is
+/// why the ack is "queued", never "applied".
 ///
 /// The Coordinator is untouched: control is not structure, so a `send` never contends for the
 /// single-writer lock and cannot be starved by an in-flight swap's bounded reclaim poll.
@@ -723,6 +767,11 @@ fn handle_send(state: &ChannelState, messages: Vec<ControlMessage>) -> Response 
             message: over_long_batch_refusal(messages.len()),
         };
     }
+
+    let messages = match prepare_send(&state.prepared_routes(), messages) {
+        Ok(messages) => messages,
+        Err(refusal) => return Response::SendRefused(refusal),
+    };
 
     // Make room for what this batch displaces on the render thread: the queue is sized for one
     // batch, and values it refuses are dropped there.
@@ -1045,6 +1094,12 @@ fn went_live(
     state.host.install_probes(coordinator.installed_probes());
 
     reclaim_retired(coordinator, state.host.as_ref());
+    // After the reclaim, which returns once the render side runs the new Plan, so a send compiled
+    // from here on is compiled for what it will meet. A send compiled before this against the old
+    // Plan and drained after the install is dropped there and announced. A reclaim that gave up
+    // leaves the install to the render side's next callback, and a send it drains first meets the
+    // old Plan: dropped and announced the same way, never applied to the wrong input.
+    *state.routes.lock().map_err(|_| Poisoned)? = coordinator.installed_prepared_routes();
 
     // What plays changed, so a failure reported against what played before is news again.
     *state.reported_invalid.lock().map_err(|_| Poisoned)? = None;
@@ -1198,7 +1253,7 @@ mod tests {
             self.offered.fetch_add(1, Ordering::SeqCst);
             self.hold
         }
-        fn deliver_control(&self, _: Vec<ControlMessage>) -> Result<(), IngressClosed> {
+        fn deliver_control(&self, _: Vec<PreparedMessage>) -> Result<(), IngressClosed> {
             Ok(())
         }
         fn set_probes(&self, paths: Vec<Vec<String>>) -> Result<Vec<Vec<String>>, String> {

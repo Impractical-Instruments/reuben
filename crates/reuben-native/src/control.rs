@@ -46,6 +46,9 @@ pub struct ControlProducer {
     outstanding: usize,
     /// One spent batch kept for [`batch`](Self::batch) to hand out again.
     spare: Option<ControlBatch>,
+    /// The addresses of messages the callback marked [`dropped`](crate::osc::OscIn::dropped), from
+    /// batches reclaimed and not yet taken by [`take_dropped`](Self::take_dropped).
+    dropped: Vec<String>,
     diagnostics: Arc<Diagnostics>,
 }
 
@@ -65,6 +68,7 @@ pub fn ring_pair(diagnostics: Arc<Diagnostics>) -> (ControlProducer, ControlRing
             back: back_rx,
             outstanding: 0,
             spare: None,
+            dropped: Vec::new(),
             diagnostics,
         },
         ControlRing {
@@ -108,10 +112,24 @@ impl ControlProducer {
         self.outstanding
     }
 
+    /// The addresses of the messages the callback dropped as compiled for a Plan no longer live,
+    /// since the last take, sorted and each once. Reclaims first, so a batch the callback has
+    /// returned is counted.
+    pub fn take_dropped(&mut self) -> Vec<String> {
+        self.reclaim();
+        let mut dropped = std::mem::take(&mut self.dropped);
+        dropped.sort_unstable();
+        dropped.dedup();
+        dropped
+    }
+
     /// Pop every returned batch, keeping one cleared for reuse and dropping the rest here.
     fn reclaim(&mut self) {
         while let Ok(mut spent) = self.back.pop() {
             self.outstanding -= 1;
+            for m in spent.iter_mut().filter(|m| m.dropped) {
+                self.dropped.push(std::mem::take(&mut m.address));
+            }
             if self.spare.is_none() {
                 spent.clear();
                 self.spare = Some(spent);
@@ -124,12 +142,12 @@ impl ControlRing {
     /// Apply each batch waiting on the forward ring and hand it back. Takes only what was waiting
     /// when it started, so a producer pushing as fast as it is drained cannot hold the callback
     /// here.
-    fn drain(&mut self, apply: &mut impl FnMut(&ControlBatch)) {
+    fn drain(&mut self, apply: &mut impl FnMut(&mut ControlBatch)) {
         for _ in 0..self.forward.slots() {
-            let Ok(batch) = self.forward.pop() else {
+            let Ok(mut batch) = self.forward.pop() else {
                 break;
             };
-            apply(&batch);
+            apply(&mut batch);
             let returned = self.back.push(batch);
             // Fatal in a debug build and in this crate's unit tests at any opt level; release binaries skip it.
             if cfg!(any(test, debug_assertions)) {
@@ -156,7 +174,7 @@ impl ControlDrain {
     /// producer. Rings are drained in the order they were given, so between two producers the
     /// first's batches of a block come first. RT-safe: atomic loads and stores and moves of the
     /// batches, nothing else.
-    pub fn drain(&mut self, mut apply: impl FnMut(&ControlBatch)) {
+    pub fn drain(&mut self, mut apply: impl FnMut(&mut ControlBatch)) {
         for ring in &mut self.rings {
             ring.drain(&mut apply);
         }
@@ -170,10 +188,7 @@ mod tests {
     use reuben_api::render::Arg;
 
     fn one(i: i32) -> ControlBatch {
-        vec![OscIn {
-            address: "/a/b".to_string(),
-            args: vec![Arg::I32(i)],
-        }]
+        vec![OscIn::new("/a/b".to_string(), vec![Arg::I32(i)])]
     }
 
     /// The batch the callback holds between its pop and its return push is still charged to the
@@ -263,6 +278,34 @@ mod tests {
         assert!(
             diagnostics.snapshot().control_batches_dropped_full > 0,
             "the producer outran the drain, so the bound was reached"
+        );
+    }
+
+    /// What the callback marked dropped comes back with its batch, and the producer names each
+    /// address once, sorted, and only once the batch is back.
+    #[test]
+    fn the_producer_names_the_messages_the_callback_marked_dropped() {
+        let (mut producer, ring) = ring_pair(Diagnostics::new());
+        let mut drain = ControlDrain::new(vec![ring]);
+        let mut batch = producer.batch();
+        batch.extend([
+            OscIn::new("/z/in".to_string(), vec![Arg::I32(1)]),
+            OscIn::new("/kept/in".to_string(), vec![Arg::I32(2)]),
+            OscIn::new("/a/in".to_string(), vec![Arg::I32(3)]),
+            OscIn::new("/z/in".to_string(), vec![Arg::I32(4)]),
+        ]);
+        producer.push(batch).unwrap();
+        assert!(producer.take_dropped().is_empty(), "nothing is back yet");
+        drain.drain(|batch| {
+            for m in batch.iter_mut().filter(|m| m.address != "/kept/in") {
+                m.dropped = true;
+            }
+        });
+        assert_eq!(producer.take_dropped(), vec!["/a/in", "/z/in"]);
+        assert!(producer.take_dropped().is_empty(), "named once");
+        assert!(
+            producer.batch().iter().all(|m| !m.dropped),
+            "the reused batch comes back cleared"
         );
     }
 

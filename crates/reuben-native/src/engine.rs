@@ -34,7 +34,7 @@ use reuben_api::render::{self, AudioConfig, Message, RenderSide, RenderSlot};
 use reuben_api::staged::Staged;
 use reuben_api::FsResolver;
 
-use crate::audio::{self, AudioError};
+use crate::audio::{self, drain_control_each, AudioError};
 use crate::control::{self, ControlDrain, ControlProducer};
 use crate::diagnostics::{self, Diagnostics, PeriodicLogger, Snapshot};
 use crate::engine_channel::{
@@ -204,6 +204,7 @@ pub struct RunningEngine {
     state: Option<ChannelState>,
     host: Arc<NativeHost>,
     tree_watch: Option<TreeWatch>,
+    dropped_sends: Option<DroppedSendWatch>,
     channel_server: Option<ChannelServer>,
     channel_error: Option<io::Error>,
     osc_in: Option<OscListener>,
@@ -316,6 +317,7 @@ impl RunningEngine {
     fn teardown(&mut self) {
         // Before the state closes, so no reload is mid-swap into a Coordinator being torn down.
         self.tree_watch = None;
+        self.dropped_sends = None;
         // Next, so a channel a caller still holds is unreachable from here on rather than
         // answering from a Coordinator whose render side is about to go.
         if let Some(state) = &self.state {
@@ -375,6 +377,55 @@ pub(crate) fn headless_config() -> AudioConfig {
     AudioConfig::new(HEADLESS_SAMPLE_RATE, HEADLESS_BLOCK_SIZE)
 }
 
+/// How often a [`DroppedSendWatch`] reads the stale-send count: the most a subscriber waits to
+/// hear of a drop. Between drops a tick is one atomic load.
+const DROPPED_SEND_POLL: Duration = Duration::from_millis(20);
+
+/// A thread that names, to the engine channel's subscribers, every compiled send the render side
+/// dropped because a swap installed between its compile and its apply. It reads the count the
+/// render side keeps, and when it moves asks the state to publish
+/// ([`ChannelState::publish_dropped_sends`]), which reads the addresses back off the returned
+/// batches. Dropping it stops and joins the thread.
+pub(crate) struct DroppedSendWatch {
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl DroppedSendWatch {
+    pub(crate) fn spawn(state: ChannelState, diagnostics: Arc<Diagnostics>) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = Arc::clone(&stop);
+        let handle = std::thread::Builder::new()
+            .name("dropped-sends".to_string())
+            .spawn(move || {
+                let mut seen = diagnostics.load_stale_sends_dropped();
+                while !thread_stop.load(Ordering::SeqCst) {
+                    std::thread::park_timeout(DROPPED_SEND_POLL);
+                    let now = diagnostics.load_stale_sends_dropped();
+                    if now != seen {
+                        seen = now;
+                        state.publish_dropped_sends();
+                    }
+                }
+            })
+            .expect("spawn dropped-sends thread");
+        Self {
+            stop,
+            handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for DroppedSendWatch {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.handle.take() {
+            handle.thread().unpark();
+            let _ = handle.join();
+        }
+    }
+}
+
 /// How often the [`HeadlessDriver`] renders a block.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Pace {
@@ -402,16 +453,18 @@ pub(crate) struct HeadlessDriver {
 }
 
 impl HeadlessDriver {
-    /// Start driving `side` in blocks of `config.block_size`, paced by `pace`. Each control batch is
-    /// shown to `drained` once it has been queued, on the render thread, before it goes back to its
-    /// producer; the engine's own driver passes one that does nothing.
+    /// Start driving `side` in blocks of `config.block_size`, paced by `pace`, counting into
+    /// `diagnostics` what the device callback counts. Each control batch is shown to `drained` once
+    /// it has been queued, on the render thread, before it goes back to its producer; the engine's
+    /// own driver passes one that does nothing.
     pub(crate) fn spawn(
         side: RenderSide,
         config: AudioConfig,
         pace: Pace,
         mut control: ControlDrain,
         outbound: Option<Sender<Message>>,
-        mut drained: impl FnMut(&ControlBatch) + Send + 'static,
+        diagnostics: Arc<Diagnostics>,
+        drained: impl FnMut(&ControlBatch) + Send + 'static,
     ) -> io::Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = Arc::clone(&stop);
@@ -426,16 +479,12 @@ impl HeadlessDriver {
                 let mut slot = RenderSlot::new(side);
                 let mut buf = vec![0.0f32; block_size * slot.channels().max(1)];
                 let mut deadline = Instant::now();
+                let mut drained = drained;
                 while !stop_thread.load(Ordering::SeqCst) {
                     // Each item is a whole batch, applied without splitting, so a gesture reaches
                     // one block. Flat args in, typed at the slot's Engine where the destination
                     // port's type is known.
-                    control.drain(|batch| {
-                        for m in batch {
-                            slot.queue_osc(&m.address, &m.args);
-                        }
-                        drained(batch);
-                    });
+                    drain_control_each(&mut control, &mut slot, &diagnostics, &mut drained);
                     let ch = slot.channels().max(1);
                     // A swap can change the channel count; the device callback is handed a buffer
                     // of the right size instead.
@@ -443,6 +492,8 @@ impl HeadlessDriver {
                         buf.resize(block_size * ch, 0.0);
                     }
                     slot.fill(&mut buf);
+                    diagnostics.record_wired_writes_dropped(slot.take_dropped_wired_writes());
+                    diagnostics.record_unprepared_writes_dropped(slot.take_dropped_unprepared());
                     for m in slot.drain_outbound() {
                         if let Some(tx) = &outbound {
                             let _ = tx.send(m);
@@ -610,8 +661,16 @@ pub(crate) fn start_with(
             // Sized as a device start sizes its input stream, so a swap is judged against the
             // same geometry. No input is fed: the bound pipes read silence.
             let opened_input = coordinator.installed_input_channels();
-            let driver = HeadlessDriver::spawn(side, cfg, pace, control, osc_out_tx, |_| {})
-                .map_err(StartError::RenderThread)?;
+            let driver = HeadlessDriver::spawn(
+                side,
+                cfg,
+                pace,
+                control,
+                osc_out_tx,
+                Arc::clone(&diagnostics),
+                |_| {},
+            )
+            .map_err(StartError::RenderThread)?;
             (
                 Output::Headless(driver),
                 Arc::clone(&diagnostics),
@@ -655,11 +714,13 @@ pub(crate) fn start_with(
         None => (None, None),
     };
     let tree_watch = follow_files.then(|| tree_watch::spawn(state.clone()));
+    let dropped_sends = DroppedSendWatch::spawn(state.clone(), Arc::clone(&diagnostics));
 
     Ok(RunningEngine {
         state: Some(state),
         host,
         tree_watch,
+        dropped_sends: Some(dropped_sends),
         channel_server,
         channel_error,
         osc_in,

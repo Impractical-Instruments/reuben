@@ -4,10 +4,11 @@
 //! A `str` input is the boundary type: what a document default spells, what a live send carries,
 //! and what an interface pipe declares. Inside the render thread the input holds a [`Prepared`]
 //! instead, built by the [`Preparer`] its Operator declares (`pat: str(compile)` in
-//! `operator_contract!`). The Plan prepares document defaults when it is built. Render delivers a
-//! prepared value only to an input whose preparer made it ([`Prepared::kind`]), and drops anything
-//! else — raw text included, so a live string reaches an input only once something off the render
-//! thread has prepared it.
+//! `operator_contract!`). The Plan prepares document defaults when it is built. A live send is
+//! prepared on the thread that sends it, against the installed Plan's
+//! [`PreparedRoutes`](crate::plan::PreparedRoutes), before it is queued. Render delivers a prepared
+//! value only to an input whose preparer made it ([`Prepared::kind`]), and drops anything else —
+//! raw text included, so a string that skipped that step never reaches an input.
 
 use alloc::borrow::Cow;
 use alloc::sync::Arc;

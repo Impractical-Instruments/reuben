@@ -11,6 +11,7 @@
 //! Incoming OSC is stamped `frame = 0` ("now") and bundle timetags are ignored — block-quantized
 //! by design.
 
+use reuben_api::engine::PreparedAgainst;
 use reuben_api::render::Arg;
 use rosc::{OscMessage, OscPacket, OscType};
 
@@ -41,8 +42,27 @@ pub const DEFAULT_OSC_PORT: u16 = 9000;
 pub struct OscIn {
     /// OSC address path, e.g. `/notes/in`.
     pub address: String,
-    /// The OSC args as primitive `Arg`s (`F32`/`I32`/`Str`), in order.
+    /// The OSC args as primitive `Arg`s (`F32`/`I32`/`Str`), in order; from a `send`, a string
+    /// bound for an input that compiles its text arrives as the `Arg::Prepared` it compiled to.
     pub args: Vec<Arg>,
+    /// The Plan a `send` compiled this message's string against; `None` for everything else, UDP
+    /// included. The callback queues the message only while that Plan is live.
+    pub against: Option<PreparedAgainst>,
+    /// Set by the callback when it dropped this message because `against` was no longer live, so
+    /// its producer can name the address once the batch is back.
+    pub dropped: bool,
+}
+
+impl OscIn {
+    /// A message with no compiled string, as a UDP datagram decodes to.
+    pub fn new(address: String, args: Vec<Arg>) -> Self {
+        Self {
+            address,
+            args,
+            against: None,
+            dropped: false,
+        }
+    }
 }
 
 /// One unit of control traffic on the way to the render callback: the messages of a single gesture,
@@ -88,10 +108,7 @@ fn flatten(packet: OscPacket, out: &mut Vec<OscIn>) {
     match packet {
         OscPacket::Message(m) => {
             let args = m.args.iter().filter_map(arg_from_osc).collect::<Vec<_>>();
-            out.push(OscIn {
-                address: m.addr,
-                args,
-            });
+            out.push(OscIn::new(m.addr, args));
         }
         OscPacket::Bundle(b) => {
             for content in b.content {

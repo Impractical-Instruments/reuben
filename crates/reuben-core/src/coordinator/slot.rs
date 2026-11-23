@@ -166,6 +166,13 @@ impl RenderSlot {
         self.engine.take_dropped_unprepared()
     }
 
+    /// The live Engine's prepared routes; see [`Engine::prepared_routes`]. Each Plan builds its
+    /// own, so a pointer compare against an `Arc` a producer holds tells whether the Plan it
+    /// prepared against is still the live one. RT-safe: a field read.
+    pub fn prepared_routes(&self) -> &alloc::sync::Arc<crate::plan::PreparedRoutes> {
+        self.engine.prepared_routes()
+    }
+
     /// Drain the outbound Messages the most recent fill produced, in emission order.
     pub fn drain_outbound(&mut self) -> alloc::vec::Drain<'_, Message> {
         self.engine.drain_outbound()

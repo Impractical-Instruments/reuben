@@ -516,7 +516,7 @@ mod tests {
     use crate::engine::server::{
         dispatch, EngineHost, InProcess, IngressClosed, Installed, SwapInFlight,
     };
-    use crate::engine::wire::{ChangedBy, ControlMessage, DiagnosticsReport, Event, Request};
+    use crate::engine::wire::{ChangedBy, DiagnosticsReport, Event, Request};
     use crate::render::RenderSlot;
     use crate::staged::Staged;
 
@@ -548,7 +548,10 @@ mod tests {
         fn surface(&self, open: &str) -> Result<Option<String>, String> {
             Ok(Some(format!("surface of {open}")))
         }
-        fn deliver_control(&self, _: Vec<ControlMessage>) -> Result<(), IngressClosed> {
+        fn deliver_control(
+            &self,
+            _: Vec<crate::engine::PreparedMessage>,
+        ) -> Result<(), IngressClosed> {
             Ok(())
         }
         fn diagnostics(&self) -> DiagnosticsReport {

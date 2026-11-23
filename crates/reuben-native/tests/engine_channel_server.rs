@@ -538,14 +538,11 @@ fn send_over_the_wire_reaches_the_engines_queue_osc() {
     assert_eq!(
         cb.await_queued(2),
         vec![
-            OscIn {
-                address: "/osc/freq".to_string(),
-                args: vec![Arg::F32(440.5)],
-            },
-            OscIn {
-                address: "/osc/shape".to_string(),
-                args: vec![Arg::Str("Up".into()), Arg::I32(3)],
-            },
+            OscIn::new("/osc/freq".to_string(), vec![Arg::F32(440.5)]),
+            OscIn::new(
+                "/osc/shape".to_string(),
+                vec![Arg::Str("Up".into()), Arg::I32(3)]
+            ),
         ],
         "both messages crossed the wire in order, each atom as its primitive Arg"
     );

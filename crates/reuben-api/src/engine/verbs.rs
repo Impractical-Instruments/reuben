@@ -17,7 +17,7 @@ use alloc::vec::Vec;
 use crate::authoring::{Answer, DocumentView, Refusal};
 
 use super::args::{ListInstruments, OpenInstrument, SendLiveControls};
-use super::channel::{CallOutcome, Channel, ChannelError, SwapOutcome};
+use super::channel::{CallOutcome, Channel, ChannelError, SendOutcome, SwapOutcome};
 use super::prose::ENGINE_UNREACHABLE_GUIDANCE;
 use super::result::{
     CurrentInstrument, EngineStatus, InstrumentList, SendOutput, SidecarInfo, StatusEndpoints,
@@ -61,10 +61,13 @@ pub fn send_live_controls(
 
     let sent = messages.len();
     match channel.send(messages) {
-        Ok(()) => Ok(Answer {
+        Ok(SendOutcome::Queued) => Ok(Answer {
             output: SendOutput { sent },
             summary: format!("the engine queued {sent} control message(s)"),
         }),
+        Ok(SendOutcome::Refused(refusal)) => {
+            Err(Refusal::new(format!("{refusal}\n{}", refusal.marked())))
+        }
         Err(why) => Err(refuse(
             "the engine is reachable but the control messages were not accepted",
             why,

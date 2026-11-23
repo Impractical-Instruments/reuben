@@ -630,9 +630,15 @@ input takes a scalar (`/filt/cutoff 1500`). An enum input takes a **symbol** —
 (`/filt/mode "Hp"`; the JSON literal `"mode": "Hp"` is the same form) — with an in-range integer
 index accepted as a fallback, quoted (`"1"`) or bare (`1`); an unknown symbol or out-of-range
 index is an **error**, never a silent snap to the default. A `str` input takes one string
-(`/seq/pat "0 3 ~"`), but the render thread holds only text its preparer has compiled, and nothing
-compiles a live send yet: a string sent to one is dropped and counted
-(`unprepared_writes_dropped`), as is anything else sent to it. Set its text in the document. A `Note` input takes its args
+(`/seq/pat "0 3 ~"`). The render thread holds only text its preparer has compiled, so a send
+compiles the string first, against the instrument playing, before anything is queued: text that
+does not compile refuses the whole send with the message, the byte span at fault and why, and
+nothing in it is applied. A send through `send_live_controls` (the engine channel's `send`) is the
+only path that compiles: a string arriving any other way, raw over OSC/UDP included, is dropped
+and counted (`unprepared_writes_dropped`), as is anything but one string. If an edit or open swaps
+the instrument between the compile and the next block, the compiled string is dropped rather than
+applied to what plays now, counted (`stale_sends_dropped`), and subscribers hear a
+`sends_dropped` event naming its address: send it again. A `Note` input takes its args
 (`/notes/in [69.0, 1.0]` on a `notes` interface input, or `/voicer/notes [69.0, 1.0]` on a voicer
 nothing feeds). An input a wire or an interface input feeds takes no message: one sent to it is
 dropped and counted (`wired_writes_dropped`), so a `notes` interface input feeding

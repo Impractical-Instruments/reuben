@@ -27,20 +27,14 @@ const DOC: &str = r#"{ "format_version": 3, "instrument": "drain",
 /// not keep.
 fn gesture(mut batch: ControlBatch, i: usize) -> ControlBatch {
     batch.extend([
-        OscIn {
-            address: "/filt/cutoff".to_string(),
-            args: vec![Arg::F32(200.0 + i as f32)],
-        },
-        OscIn {
-            address: "/abs/x".to_string(),
-            args: vec![Arg::I32(i as i32)],
-        },
-        OscIn {
-            address: "/filt/mode".to_string(),
-            args: vec![Arg::Str(
+        OscIn::new("/filt/cutoff".to_string(), vec![Arg::F32(200.0 + i as f32)]),
+        OscIn::new("/abs/x".to_string(), vec![Arg::I32(i as i32)]),
+        OscIn::new(
+            "/filt/mode".to_string(),
+            vec![Arg::Str(
                 if i.is_multiple_of(2) { "Hp" } else { "Bp" }.into(),
             )],
-        },
+        ),
     ]);
     batch
 }
@@ -54,13 +48,14 @@ fn draining_control_neither_allocates_nor_frees_on_the_render_thread() {
         reuben_api::engine::install_initial(DOC, no_store(), cfg).expect("install");
     let mut slot = RenderSlot::new(side);
     let mut out = vec![0.0f32; cfg.block_size * slot.channels()];
+    let diagnostics = Diagnostics::new();
     let (mut producer, ring) = ring_pair(Diagnostics::new());
     let mut control = ControlDrain::new(vec![ring]);
 
     for i in 0..8 {
         let batch = gesture(producer.batch(), i);
         producer.push(batch).unwrap();
-        drain_control(&mut control, &mut slot);
+        drain_control(&mut control, &mut slot, &diagnostics);
         slot.fill(&mut out);
     }
 
@@ -78,7 +73,7 @@ fn draining_control_neither_allocates_nor_frees_on_the_render_thread() {
             producer.push(batch).unwrap();
         }
         let c = measure(|| {
-            drain_control(&mut control, &mut slot);
+            drain_control(&mut control, &mut slot, &diagnostics);
             slot.fill(&mut out);
         });
         total.allocs += c.allocs;
