@@ -38,9 +38,11 @@ pub const MAX_GRID: i64 = 1 << 30;
 
 /// Most units of work (see [`QUERY_BUDGET`](crate::QUERY_BUDGET)) one cycle query may need.
 /// Compilation computes a worst-case bound for every pattern (see [`Pattern::max_cycle_work`]) and
-/// refuses one above this. Set so four cycle queries, the most one block can need, stay well under
-/// 10% of a 64-frame block at 48 kHz (see the crate docs' Cost section). In practice it admits
-/// about 40 sequence notes per cycle, e.g. `0*128` or `[0 1 2 3 4 5 6 7]*4`, or deep nesting.
+/// refuses one above this. Set so one cycle query stays a small share of a 64-frame block at
+/// 48 kHz (see the crate docs' Cost section). Cost depends on structure, not only note count:
+/// `0*128` costs 130 for 128 notes; `[0,4,7,11]*16` costs 70 for 64; `[0 1 2 3 4 5 6 7]*4` costs
+/// 106 for 32; and `[[0 1 2 3]*4]?0.3, [4 5]*8` costs 142 for at most 32, because every `?` test
+/// is charged.
 pub const MAX_WORK: u32 = 160;
 
 /// Most entries (nodes, sequence steps, and stack children) a compiled pattern may hold: about
@@ -100,6 +102,7 @@ pub fn compile(ast: &Ast) -> Result<Pattern, Error> {
         scale: Rational::ONE,
         growth: 1,
         grid: 1,
+        blame: None,
     };
     let root = c.expr(&ast.root, root_ctx, 1)?;
     let mut pattern = Pattern {
@@ -139,6 +142,9 @@ struct Ctx {
     scale: Rational,
     growth: i64,
     grid: i64,
+    /// The source span of the innermost speed modifier above, if any: the place to point when a
+    /// slot is only too fine because of the speed it inherits.
+    blame: Option<(usize, usize)>,
 }
 
 fn gcd(mut a: i128, mut b: i128) -> i128 {
@@ -164,6 +170,7 @@ impl Ctx {
             scale,
             growth: growth as i64,
             grid: grid as i64,
+            blame: None,
         })
     }
 
@@ -171,29 +178,51 @@ impl Ctx {
     fn fast(self, f: Rational, span: &Range<usize>) -> Result<Ctx, Error> {
         let g = i128::from(self.growth);
         let growth = g / gcd(g, i128::from(f.numer())) * i128::from(f.denom());
-        Ctx::checked(
+        let ctx = Ctx::checked(
             self.scale.checked_div(f),
             Some(growth),
             Some(i128::from(self.grid)),
         )
-        .ok_or_else(|| too_fine(span))
+        .ok_or_else(|| too_fine(span))?;
+        Ok(Ctx {
+            blame: Some((span.start, span.end)),
+            ..ctx
+        })
     }
 
     /// The context of a child filling slots `[b, b + len)` for each `b` in `begins`: local `t`
     /// becomes `(t - b) / len`, and the slot edges `a * b` and `a * (b + len)` join the grid.
     fn slot(self, begins: &[Rational], len: Rational, span: &Range<usize>) -> Result<Ctx, Error> {
-        let fine = || too_fine(span);
+        self.slot_inner(begins, len).ok_or_else(|| {
+            // A slot that is fine on its own is only too fine because of the speed above it.
+            let root = Ctx {
+                scale: Rational::ONE,
+                growth: 1,
+                grid: 1,
+                blame: None,
+            };
+            match self.blame {
+                Some((a, b)) if root.slot_inner(begins, len).is_some() => too_fine(&(a..b)),
+                _ => too_fine(span),
+            }
+        })
+    }
+
+    fn slot_inner(self, begins: &[Rational], len: Rational) -> Option<Ctx> {
         let mut offsets = i128::from(self.growth);
         let mut grid = i128::from(self.grid);
         for b in begins {
-            offsets = lcm(offsets, i128::from(b.denom())).ok_or_else(fine)?;
-            for edge in [*b, b.checked_add(len).ok_or_else(fine)?] {
-                let at = self.scale.checked_mul(edge).ok_or_else(fine)?;
-                grid = lcm(grid, i128::from(at.denom())).ok_or_else(fine)?;
+            offsets = lcm(offsets, i128::from(b.denom()))?;
+            for edge in [*b, b.checked_add(len)?] {
+                let at = self.scale.checked_mul(edge)?;
+                grid = lcm(grid, i128::from(at.denom()))?;
             }
         }
         let growth = offsets / gcd(offsets, i128::from(len.denom())) * i128::from(len.numer());
-        Ctx::checked(self.scale.checked_mul(len), Some(growth), Some(grid)).ok_or_else(fine)
+        Some(Ctx {
+            blame: self.blame,
+            ..Ctx::checked(self.scale.checked_mul(len), Some(growth), Some(grid))?
+        })
     }
 }
 
@@ -347,7 +376,13 @@ impl Compiler {
                         .checked_div(*f)
                         .ok_or_else(|| too_fine(span))?
                 };
-                let child = self.expr(inner, ctx.fast(factor, span)?, d)?;
+                // The modifier's own text, `*f` or `/f`, after the term it applies to.
+                let modifier = if inner.span.end < span.end {
+                    inner.span.end..span.end
+                } else {
+                    span.clone()
+                };
+                let child = self.expr(inner, ctx.fast(factor, &modifier)?, d)?;
                 self.push(Node::Fast { child, factor }, span)
             }
             ExprKind::Degrade(inner, p) => {
@@ -510,12 +545,28 @@ fn total_weight(steps: &[Step], span: &Range<usize>) -> Result<Rational, Error> 
                 "repeat count must be between 1 and 1024",
             ));
         }
-        total = s
+        if s.weight.denom() > MAX_SCALE {
+            return Err(Error::new(
+                s.expr.span.clone(),
+                "weight too finely divided for exact time",
+            ));
+        }
+        let sum = s
             .weight
             .checked_mul(Rational::int(i64::from(s.copies)))
-            .and_then(|w| total.checked_add(w))
-            .filter(|t| t.numer() <= MAX_SCALE && t.denom() <= MAX_SCALE)
-            .ok_or_else(|| Error::new(span.clone(), "step weights too large"))?;
+            .and_then(|w| total.checked_add(w));
+        total = match sum {
+            Some(t) if t.numer() <= MAX_SCALE && t.denom() <= MAX_SCALE => t,
+            // A total that is not itself large has outgrown the bound through its denominator.
+            Some(t) if t.floor() < MAX_SCALE => {
+                let finest = steps.iter().max_by_key(|s| s.weight.denom()).unwrap_or(s);
+                return Err(Error::new(
+                    finest.expr.span.clone(),
+                    "step weights too finely divided for exact time",
+                ));
+            }
+            _ => return Err(Error::new(span.clone(), "step weights too large")),
+        };
     }
     Ok(total)
 }

@@ -423,7 +423,10 @@ impl<'a> Parser<'a> {
             return Err(Error::new(span, "empty brackets"));
         }
         if open != b'{' {
-            return Ok(combine(body, span, open == b'<').expect("non-empty body"));
+            // The brackets belong to the expression, so a modifier after them starts after `]`.
+            let mut expr = combine(body, span.clone(), open == b'<').expect("non-empty body");
+            expr.span = span;
+            return Ok(expr);
         }
         if body.sep == Some(b'|') {
             return Err(Error::new(span, "'|' is not allowed inside { }"));

@@ -21,20 +21,29 @@
 //!
 //! # Playing a pattern from a clock
 //!
-//! The Clock gives an integer beat and a phase that only rises between syncs. A consumer (the
-//! `pattern` Operator) turns that into a cycle position, `(beat + phase) / beats_per_cycle`, and:
+//! The Clock gives a `phase` that wraps every beat and an integer `beat` count. `beat` is the
+//! Clock's `i32` output added by the companion change for cycle position; it is not on `dev`
+//! until that lands. The quantity that only rises between syncs is `beat + phase`, and a consumer
+//! (the `pattern` Operator) turns it into a cycle position, `(beat + phase) / beats_per_cycle`.
+//! Then:
 //!
-//! 1. When the position enters a new cycle `n`, calls [`Pattern::cycle`] for `n` once and caches
-//!    the notes it returns.
-//! 2. Converts each cached note's [`onset`](Note::onset) and [`release`](Note::release) (exact
-//!    fractions of the cycle) to the clock's units once, e.g. to a phase threshold per note.
-//! 3. Fires a note on the first frame whose position is at or past its onset, and releases it
-//!    when the position passes its release. It keeps the previous frame's position across
-//!    blocks, so each note fires exactly once however blocks fall. A backward jump (`sync`) is a
-//!    locate: release held notes and re-arm from the new position.
-//!
-//! A block of 4096 frames at 22.05 kHz, 999 BPM and one beat per cycle spans about 3.1 cycles, so
-//! a consumer may make up to four cycle queries in one block; see Cost.
+//! 1. When the position enters a new cycle `n`, it calls [`Pattern::cycle`] for `n` once and
+//!    caches the notes it returns.
+//! 2. It converts each cached note's [`onset`](Note::onset) and [`release`](Note::release) to
+//!    absolute positions once: `n + onset` and `n + release`, in the clock's units.
+//! 3. Each frame, it first releases every held note whose release position the clock is at or
+//!    past, then fires every cached note whose onset it is at or past. Both use the same "at or
+//!    past" test, and releases go first because a release can equal the next onset: in `0 0` or
+//!    `0*4`, each note releases exactly where the next starts.
+//! 4. A fired note moves from the cache to a held-notes list with its absolute release
+//!    position, because a release can lie beyond the cycle and outlive the cache: in `0/1.5`, the
+//!    note starting half way through cycle 1 releases two cycles later, at `1 + 2`. The held list
+//!    has a fixed capacity; when it is full, firing a note first releases the oldest held note.
+//!    Replacing the cache for the next cycle leaves the held list alone.
+//! 5. It keeps the previous frame's position across blocks, so each note fires exactly once
+//!    however blocks fall. A backward jump (`sync`) is a locate: release every held note, then
+//!    re-query from the new position, where a note whose onset lies exactly at the new position
+//!    fires.
 //!
 //! # Time
 //!
@@ -161,12 +170,17 @@
 //! pattern whose bound exceeds [`MAX_WORK`] does not compile, so a compiled pattern's cycle query
 //! never sets [`CycleResult::exhausted`]; [`QUERY_BUDGET`] is only a backstop.
 //!
-//! In time: `examples/query_cost.rs`, pinned to one core of an i7-13620H in release, measured
-//! the worst unit at about 115 ns (145 ns in the noisiest run), over patterns near the cap that
-//! include deep `?` chains and fractional speeds, at cycles across the guaranteed range. A cycle
-//! query is then at most about 19 us (23 us), and four of them, the most one block can need, about
-//! 74 us (93 us): 5.6% (7%) of a 64-frame block at 48 kHz. A 64-frame block itself spans far less
-//! than a cycle, so it needs at most one. 128-bit division on a Cortex-M is not measured.
+//! The cost to plan for is one cycle query each time the clock enters a new cycle. Block size is
+//! not bounded, but under the Clock's cycle-position design `beat` is a held input that slices a
+//! block at each beat change, and with an integer `beats_per_cycle` of at least 1 each slice enters
+//! at most one new cycle. So a slice makes at most one cycle query.
+//!
+//! In time: `examples/query_cost.rs`, pinned to one core of an i7-13620H in release, measured the
+//! worst unit at about 115 ns (145 ns in the noisiest run), over patterns near the cap that include
+//! deep `?` chains and fractional speeds, at cycles across the guaranteed range. One cycle query is
+//! then at most about 19 us (23 us): 1.4% (1.7%) of a 64-frame block at 48 kHz. As an
+//! illustration, four queries in one block would be about 74 us (93 us), 5.6% (7%) of it. 128-bit
+//! division on a Cortex-M is not measured.
 
 #![cfg_attr(not(test), no_std)]
 

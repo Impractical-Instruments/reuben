@@ -316,7 +316,8 @@ fn choice_is_per_cycle_and_seeded() {
 fn compile_limits_are_errors_with_spans() {
     let e = Pattern::new("0 [1*1048576]*2").unwrap_err();
     assert!(e.message.contains("too far"), "{e}");
-    assert_eq!(e.span, 3..12);
+    // The span of the `*1048576` that made the slot too fine.
+    assert_eq!(e.span, 4..12);
     let deep = "0".to_string() + &"*1".repeat(9);
     assert!(Pattern::new(&deep)
         .unwrap_err()
@@ -336,12 +337,28 @@ fn seed_high_bits_matter() {
 }
 
 #[test]
+fn too_fine_errors_point_at_their_cause() {
+    // A slot that is only too fine because of the speed above it: the error is the `/factor`.
+    for (src, at) in [("[0 1]/1.000003", 5..14), ("[0 [1 2]]/1.000001", 9..18)] {
+        let e = Pattern::new(src).unwrap_err();
+        assert!(e.message.contains("too far for exact time"), "{src}: {e}");
+        assert_eq!(e.span, at, "{src}");
+    }
+    // A weight whose denominator is too fine is not "too large", and the error is that step.
+    let e = Pattern::new("[0@1.000001 1]").unwrap_err();
+    assert_eq!(e.message, "step weights too finely divided for exact time");
+    assert_eq!(e.span, 1..2);
+    let e = Pattern::new("0@1048577").unwrap_err();
+    assert!(e.message.contains("too large"), "{e}");
+}
+
+#[test]
 fn compiled_size_cap() {
     // 448 bytes of text asking for 65,536 steps, inside every time and density limit.
     let src = format!("[{}]/64", "0!1024 ".repeat(64));
     let e = Pattern::new(&src).unwrap_err();
     assert_eq!(e.message, "pattern too large to compile");
-    assert_eq!(e.span.start, 1);
+    assert_eq!(e.span.start, 0);
     assert!(e.span.end < src.len());
     // The reviewer's 7 KB, 2^20-step text is refused before it allocates the steps.
     let layer = format!("[{}]", "0!1024 ".repeat(1024));
@@ -411,4 +428,29 @@ fn filter_chains_are_charged() {
         res.work <= p.max_cycle_work() && res.work > 16 * 7,
         "{res:?}"
     );
+}
+
+#[test]
+fn clock_protocol_facts() {
+    // A release can lie two cycles past its cycle's start: `0/1.5` in cycle 1 starts at 1/2 and
+    // releases at 2.
+    let p = Pattern::new("0/1.5").unwrap();
+    let n = query(&p, 1, 0);
+    assert_eq!((n[0].onset, n[0].release), (r(1, 2), Rational::int(2)));
+    // Adjacent steps: each release equals the next onset, so a consumer releases before firing.
+    for src in ["0 0", "0*4"] {
+        let n = query(&Pattern::new(src).unwrap(), 0, 0);
+        for w in n.windows(2) {
+            assert_eq!(w[0].release, w[1].onset, "{src}");
+        }
+    }
+    // The `MAX_WORK` examples, as documented.
+    for (src, work) in [
+        ("0*128", 130),
+        ("[0,4,7,11]*16", 70),
+        ("[0 1 2 3 4 5 6 7]*4", 106),
+        ("[[0 1 2 3]*4]?0.3, [4 5]*8", 142),
+    ] {
+        assert_eq!(Pattern::new(src).unwrap().max_cycle_work(), work, "{src}");
+    }
 }

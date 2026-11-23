@@ -76,7 +76,7 @@ fn main() {
     println!("worst cost per unit: {worst_ns:.0} ns; slowest query measured: {worst_us:.0} us");
     println!("  one cycle query at the cap ({MAX_WORK} units): <= {cap:.0} us");
     println!(
-        "  four queries (one 4096-frame block at 22.05 kHz, 999 BPM, 1 beat/cycle): <= {:.0} us",
+        "  illustration, four queries in one block: <= {:.0} us",
         4.0 * cap
     );
     println!(
