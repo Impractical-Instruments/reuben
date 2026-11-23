@@ -101,62 +101,86 @@ pub enum Entry {
     },
 }
 
+/// Why a raw line of a set file is not a send, if it is not: the one rule for what is skipped.
+fn skipped(raw: &str) -> Option<&'static str> {
+    let body = raw.trim();
+    if body.is_empty() {
+        Some("blank")
+    } else if body.starts_with('#') {
+        Some("a comment")
+    } else {
+        None
+    }
+}
+
+/// What the line at 1-based `line` says on its own, or `None` if it is skipped. Whether an earlier
+/// line already set its address is [`parse_set`]'s to say.
+fn parse_line(line: usize, raw: &str) -> Option<Entry> {
+    if skipped(raw).is_some() {
+        return None;
+    }
+    let content = raw.trim_end();
+    let body = content.trim_start();
+    let lead = content.len() - body.len();
+    let column_at = |byte: usize| content[..byte].chars().count() + 1;
+    let address_end = body.find(char::is_whitespace).unwrap_or(body.len());
+    let address = &body[..address_end];
+    if !address.starts_with('/') {
+        return Some(Entry::Malformed {
+            line,
+            column: column_at(lead),
+            message: format!("expected an address starting with `/`, found `{address}`"),
+        });
+    }
+    let rest = &body[address_end..];
+    let text = rest.trim_start();
+    let text_start = lead + address_end + (rest.len() - text.len());
+    if text.is_empty() {
+        return Some(Entry::Malformed {
+            line,
+            column: column_at(text_start),
+            message: format!("expected a pattern after `{address}`"),
+        });
+    }
+    Some(Entry::Send(SetLine {
+        line,
+        column: column_at(text_start),
+        address: address.to_string(),
+        text: text.to_string(),
+    }))
+}
+
 /// The entries of a set file: one per line that is neither blank nor a `#` comment, in order.
 /// Trailing whitespace is not part of a line's text.
 pub fn parse_set(source: &str) -> Vec<Entry> {
-    let mut seen: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut seen: BTreeMap<String, usize> = BTreeMap::new();
     let mut entries = Vec::new();
     for (i, raw) in source.lines().enumerate() {
         let line = i + 1;
-        let content = raw.trim_end();
-        let body = content.trim_start();
-        if body.is_empty() || body.starts_with('#') {
+        let Some(entry) = parse_line(line, raw) else {
             continue;
-        }
-        let lead = content.len() - body.len();
-        let column_at = |byte: usize| content[..byte].chars().count() + 1;
-        let address_end = body.find(char::is_whitespace).unwrap_or(body.len());
-        let address = &body[..address_end];
-        if !address.starts_with('/') {
+        };
+        let Entry::Send(l) = entry else {
+            entries.push(entry);
+            continue;
+        };
+        if let Some(first) = seen.get(&l.address) {
             entries.push(Entry::Malformed {
                 line,
-                column: column_at(lead),
-                message: format!("expected an address starting with `/`, found `{address}`"),
+                column: raw.chars().count() - raw.trim_start().chars().count() + 1,
+                message: format!("`{}` is already set on line {first}", l.address),
             });
             continue;
         }
-        let rest = &body[address_end..];
-        let text = rest.trim_start();
-        let text_start = lead + address_end + (rest.len() - text.len());
-        if text.is_empty() {
-            entries.push(Entry::Malformed {
-                line,
-                column: column_at(text_start),
-                message: format!("expected a pattern after `{address}`"),
-            });
-            continue;
-        }
-        if let Some(first) = seen.get(address) {
-            entries.push(Entry::Malformed {
-                line,
-                column: column_at(lead),
-                message: format!("`{address}` is already set on line {first}"),
-            });
-            continue;
-        }
-        seen.insert(address, line);
-        entries.push(Entry::Send(SetLine {
-            line,
-            column: column_at(text_start),
-            address: address.to_string(),
-            text: text.to_string(),
-        }));
+        seen.insert(l.address.clone(), line);
+        entries.push(Entry::Send(l));
     }
     entries
 }
 
 /// The send on 1-based `line` of a set file, parsed as `reuben live` parses it, or the
-/// `<file>:<line>:<col>: error: …` report of why that line is not one.
+/// `<file>:<line>:<col>: error: …` report of why that line is not one. An address another line also
+/// sets is no concern of this line's.
 pub fn set_line(file: &str, source: &str, line: usize) -> Result<SetLine, String> {
     let Some(raw) = source.lines().nth(line.wrapping_sub(1)) else {
         return Err(format!(
@@ -164,29 +188,18 @@ pub fn set_line(file: &str, source: &str, line: usize) -> Result<SetLine, String
             source.lines().count()
         ));
     };
-    let body = raw.trim();
-    if body.is_empty() {
-        return Err(format!(
-            "{file}:{line}:1: error: line {line} is blank, not a send"
-        ));
+    match parse_line(line, raw) {
+        Some(Entry::Send(l)) => Ok(l),
+        Some(Entry::Malformed {
+            column, message, ..
+        }) => Err(format!("{file}:{line}:{column}: error: {message}")),
+        None => {
+            let what = skipped(raw).unwrap_or("not a send");
+            Err(format!(
+                "{file}:{line}:1: error: line {line} is {what}, not a send"
+            ))
+        }
     }
-    if body.starts_with('#') {
-        return Err(format!(
-            "{file}:{line}:1: error: line {line} is a comment, not a send"
-        ));
-    }
-    parse_set(source)
-        .into_iter()
-        .find_map(|entry| match entry {
-            Entry::Send(l) if l.line == line => Some(Ok(l)),
-            Entry::Malformed {
-                line: at,
-                column,
-                message,
-            } if at == line => Some(Err(format!("{file}:{line}:{column}: error: {message}"))),
-            _ => None,
-        })
-        .unwrap_or_else(|| Err(format!("{file}:{line}:1: error: line {line} is not a send")))
 }
 
 /// What `reuben live` remembers between saves of one set file.

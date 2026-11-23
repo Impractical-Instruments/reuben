@@ -408,6 +408,12 @@ fn send_line_fails_fast_when_no_reuben_play_is_reachable() {
     let started = Instant::now();
     let output = send_line(&dead, &set, 1);
     assert!(!output.status.success());
+    let shown = set.display().to_string();
+    assert!(
+        stderr(&output).starts_with(&format!("{shown}:1:1: error: ")),
+        "{}",
+        stderr(&output)
+    );
     assert!(
         stderr(&output).contains("reuben play"),
         "{}",
@@ -432,4 +438,41 @@ fn send_takes_an_address_or_a_file_and_line_never_both() {
             stderr(&output)
         );
     }
+}
+
+#[test]
+fn send_line_ignores_an_address_another_line_also_sets() {
+    let server = serve();
+    let dir = Dir::new("duplicate");
+    let set = dir.0.join("a.set");
+    std::fs::write(&set, "/a/pat  1 2\n/a/pat  3 4\n").expect("write the set");
+    let output = send_line(&server.addr, &set, 2);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        server.queued(1),
+        vec![("/a/pat".to_string(), "3 4".to_string())]
+    );
+}
+
+#[test]
+fn send_line_zero_and_an_unreadable_file_are_refused_in_located_form() {
+    let dir = Dir::new("zero");
+    let set = dir.0.join("a.set");
+    std::fs::write(&set, "/a/pat 1\n").expect("write the set");
+    let zero = send_line("127.0.0.1:1", &set, 0);
+    assert!(!zero.status.success());
+    assert!(
+        stderr(&zero).contains("invalid value '0'"),
+        "{}",
+        stderr(&zero)
+    );
+
+    let missing = dir.0.join("missing.set");
+    let output = send_line("127.0.0.1:1", &missing, 1);
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).starts_with(&format!("{}:1:1: error: ", missing.display())),
+        "{}",
+        stderr(&output)
+    );
 }

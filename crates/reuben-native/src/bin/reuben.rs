@@ -140,8 +140,8 @@ enum Command {
         #[arg(long, requires = "line", conflicts_with = "address")]
         file: Option<PathBuf>,
         /// The 1-based line of `--file` to send. A blank or `#` comment line is an error.
-        #[arg(long, requires = "file", value_name = "N")]
-        line: Option<usize>,
+        #[arg(long, requires = "file", value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
+        line: Option<u64>,
         #[command(flatten)]
         server: RunningServerFlags,
     },
@@ -236,7 +236,7 @@ fn main() -> ExitCode {
             line,
             server,
         } => match (address, file, line) {
-            (_, Some(file), Some(line)) => cmd_send_line(&file, line, &server),
+            (_, Some(file), Some(line)) => cmd_send_line(&file, line as usize, &server),
             (Some(address), ..) => cmd_send(&address, pattern, &server),
             _ => unreachable!("clap requires an address or --file"),
         },
@@ -349,15 +349,17 @@ fn cmd_send(address: &str, pattern: Option<String>, server: &RunningServerFlags)
     }
 }
 
-/// `send --file --line`: one line of a set file, as `live` would send it.
+/// `send --file --line`: one line of a set file, as `live` would send it. Every failure is a
+/// `<file>:<line>:1: error: …` report, so an editor's problem matcher finds it.
 fn cmd_send_line(file: &Path, line: usize, server: &RunningServerFlags) -> ExitCode {
     let shown = file.display().to_string();
+    let located = |message: &dyn std::fmt::Display| {
+        eprintln!("{shown}:{line}:1: error: {message}");
+        ExitCode::FAILURE
+    };
     let source = match std::fs::read_to_string(file) {
         Ok(source) => source,
-        Err(e) => {
-            eprintln!("error: reading {shown}: {e}");
-            return ExitCode::FAILURE;
-        }
+        Err(e) => return located(&format!("reading the set file: {e}")),
     };
     let set_line = match live::set_line(&shown, &source, line) {
         Ok(set_line) => set_line,
@@ -366,9 +368,14 @@ fn cmd_send_line(file: &Path, line: usize, server: &RunningServerFlags) -> ExitC
             return ExitCode::FAILURE;
         }
     };
-    let reached = match connect_running(server) {
+    let reached = match server
+        .server()
+        .map_err(|e| e.to_string())
+        .and_then(|(addr, token)| {
+            client::reach_running(&addr, token, SEND_READ_TIMEOUT).map_err(|e| e.to_string())
+        }) {
         Ok(reached) => reached,
-        Err(code) => return code,
+        Err(e) => return located(&e),
     };
     match live::send_text(reached.channel(), &set_line.address, &set_line.text) {
         Ok(reuben_api::engine::SendOutcome::Queued) => {
@@ -382,10 +389,7 @@ fn cmd_send_line(file: &Path, line: usize, server: &RunningServerFlags) -> ExitC
             );
             ExitCode::FAILURE
         }
-        Err(e) => {
-            eprintln!("error: {e}");
-            ExitCode::FAILURE
-        }
+        Err(e) => located(&e),
     }
 }
 
