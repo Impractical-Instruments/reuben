@@ -520,6 +520,250 @@ fn a_layout_only_edit_in_a_subpatch_inside_a_voice_keeps_the_voicer() {
     );
 }
 
+/// A running `/clk` with an audio path for the master tap. With `consumer`, it adds a held `i32`
+/// consumer of `/clk.beat` (`/plus`, `beat + 0`) and an `osc_out` sink `/fb` that reports what
+/// `/plus` read.
+fn clock_doc(consumer: bool) -> String {
+    let extra = if consumer {
+        r#",
+           { "type": "add_i32_value", "address": "/plus",
+             "inputs": { "a": { "from": "/clk.beat" } } },
+           { "type": "osc_out", "address": "/fb",
+             "inputs": { "in": { "from": "/plus.out" } } }"#
+    } else {
+        ""
+    };
+    format!(
+        r#"{{ "format_version": 3, "instrument": "clk",
+             "interface": {{ "outputs": {{ "out": {{ "from": "/out.audio" }} }} }},
+             "nodes": [
+               {{ "type": "clock", "address": "/clk", "inputs": {{ "tempo": 120.0 }} }},
+               {{ "type": "oscillator", "address": "/osc" }},
+               {{ "type": "output", "address": "/out",
+                  "inputs": {{ "audio": {{ "from": "/osc.audio" }} }} }}{extra} ] }}"#
+    )
+}
+
+#[test]
+fn a_beat_consumer_added_mid_set_reads_the_running_beat_in_its_first_block() {
+    // A Swap seeds a new node's held latch from its own default, not from upstream's last output.
+    // The surviving Clock announces `beat` after its transplant, so the consumer still reads the running
+    // beat from its first block rather than its default 0.
+    let (mut coord, mut slot) = setup(&clock_doc(false));
+
+    // 120 BPM at 48 kHz: 24000 frames a beat. Warm 984 blocks (125952 frames, ~5.25 beats) so the
+    // install, a ramp's worth of blocks later, lands mid-beat 5.
+    let warm_blocks = 984;
+    for _ in 0..warm_blocks {
+        render(&mut slot, BLOCK);
+    }
+    assert_eq!(slot.drain_outbound().count(), 0, "no sink before the swap");
+
+    let report = coord.swap_document(&clock_doc(true));
+    assert!(report.report.ok, "swap should install: {:?}", report.report);
+    let diff = report.diff.as_ref().unwrap();
+    assert!(
+        diff.state_reset.is_empty(),
+        "/clk survives with its running beat: {:?}",
+        diff.state_reset
+    );
+
+    // The first block that reports anything is the consumer's first block: before the install
+    // there is no `/fb`; after it, `/plus` emits on its first block (a fresh dedup baseline).
+    let mut first = None;
+    for block in 0..32 {
+        render(&mut slot, BLOCK);
+        let fb: Vec<_> = slot
+            .drain_outbound()
+            .filter(|m| m.address == "/fb")
+            .collect();
+        if let Some(m) = fb.first() {
+            first = Some((block, m.frame, m.arg.clone()));
+            break;
+        }
+    }
+    let (block, frame, arg) = first.expect("the consumer reported within 32 blocks");
+    let elapsed = (warm_blocks + block) * BLOCK;
+    assert!(
+        (5 * 24_000..6 * 24_000).contains(&elapsed),
+        "the install landed mid-beat 5 (frame {elapsed})"
+    );
+    assert_eq!(frame, 0, "read at the consumer's first frame");
+    assert_eq!(
+        arg,
+        Arg::I32(5),
+        "the new consumer reads the running beat, not its default"
+    );
+}
+
+/// 120 BPM at 48 kHz: 24000 frames a beat, `gate` high for the first 12000. 956 blocks (122368
+/// frames) is 2368 frames into beat 5, so an install a ramp's worth of blocks later is still in the
+/// high half.
+const GATE_WARM_BLOCKS: usize = 956;
+
+/// A running `/clk` with an audio path for the master tap. With `consumers`, it adds two edge
+/// consumers of `/clk.gate`: a one-step, one-pulse `euclid` `/eu` whose gate-ons `/efb` reports,
+/// and an `envelope` `/env` whose `active` `/afb` reports. `/gfb` and `/bfb` report `/clk.gate` and
+/// `/clk.beat` themselves.
+fn gate_edge_doc(consumers: bool) -> String {
+    let nodes = if consumers {
+        r#",
+           { "type": "euclid", "address": "/eu",
+             "inputs": { "clock": { "from": "/clk.gate" }, "steps": 1, "pulses": 1 } },
+           { "type": "osc_out", "address": "/efb", "inputs": { "in": { "from": "/eu.gate" } } },
+           { "type": "envelope", "address": "/env",
+             "inputs": { "gate": { "from": "/clk.gate" } } },
+           { "type": "osc_out", "address": "/afb", "inputs": { "in": { "from": "/env.active" } } },
+           { "type": "osc_out", "address": "/gfb", "inputs": { "in": { "from": "/clk.gate" } } },
+           { "type": "osc_out", "address": "/bfb", "inputs": { "in": { "from": "/clk.beat" } } }"#
+    } else {
+        ""
+    };
+    format!(
+        r#"{{ "format_version": 3, "instrument": "clk",
+             "interface": {{ "outputs": {{ "out": {{ "from": "/out.audio" }} }} }},
+             "nodes": [
+               {{ "type": "clock", "address": "/clk", "inputs": {{ "tempo": 120.0 }} }},
+               {{ "type": "oscillator", "address": "/osc" }},
+               {{ "type": "output", "address": "/out",
+                  "inputs": {{ "audio": {{ "from": "/osc.audio" }} }} }}{nodes} ] }}"#
+    )
+}
+
+#[test]
+fn edge_consumers_added_mid_beat_wait_for_the_next_beat() {
+    // A new `euclid` or `envelope` starts with its edge flag low. If the surviving Clock announced
+    // `gate` after its transplant, a Swap in the high half would hand them a rising edge at the
+    // install frame, off the beat grid. `gate` is emitted only on change, so they first trigger on
+    // the Clock's next rising edge, a beat later.
+    let (mut coord, mut slot) = setup(&gate_edge_doc(false));
+    for _ in 0..GATE_WARM_BLOCKS {
+        render(&mut slot, BLOCK);
+    }
+    let report = coord.swap_document(&gate_edge_doc(true));
+    assert!(report.report.ok, "swap should install: {:?}", report.report);
+
+    // Rendered frames, from the first block after the Swap request. The window covers the install
+    // and the next beat (a beat is 24000 frames).
+    let (mut install, mut rising, mut ons) = (None, None, Vec::new());
+    let mut gate_low = false;
+    for b in 0..(30_000 / BLOCK) {
+        render(&mut slot, BLOCK);
+        let at = b * BLOCK;
+        for m in slot.drain_outbound() {
+            match (m.address.as_str(), &m.arg) {
+                // The surviving Clock announces `beat` in the install block.
+                ("/bfb", _) => install = install.or(Some(at + m.frame)),
+                // A rising edge is a 1.0 after a 0.0, not whatever level arrives first.
+                ("/gfb", Arg::F32(v)) if *v == 0.0 => gate_low = true,
+                ("/gfb", Arg::F32(v)) if *v == 1.0 && gate_low => {
+                    rising = rising.or(Some(at + m.frame))
+                }
+                ("/efb" | "/afb", Arg::F32(v)) if *v == 1.0 => ons.push((at + m.frame, m.address)),
+                _ => {}
+            }
+        }
+    }
+    let install = install.expect("the swap installed");
+    let rising = rising.expect("the Clock's next rising edge fell in the window");
+    assert!(
+        rising > install + 10_000,
+        "the next rising edge is well after the install: install {install}, edge {rising}"
+    );
+    ons.sort();
+    assert_eq!(
+        ons,
+        vec![(rising, "/afb".to_string()), (rising, "/efb".to_string())],
+        "each consumer triggers once, on the Clock's next rising edge"
+    );
+}
+
+/// `/clk.gate` and `/clk.beat` wired straight to `osc_out` sinks `/gfb` and `/bfb`. With `extra`,
+/// an unwired `/osc2` too.
+fn clock_sinks_doc(extra: bool) -> String {
+    let osc2 = if extra {
+        r#", { "type": "oscillator", "address": "/osc2" }"#
+    } else {
+        ""
+    };
+    format!(
+        r#"{{ "format_version": 3, "instrument": "clk",
+             "interface": {{ "outputs": {{ "out": {{ "from": "/out.audio" }} }} }},
+             "nodes": [
+               {{ "type": "clock", "address": "/clk", "inputs": {{ "tempo": 120.0 }} }},
+               {{ "type": "osc_out", "address": "/gfb", "inputs": {{ "in": {{ "from": "/clk.gate" }} }} }},
+               {{ "type": "osc_out", "address": "/bfb", "inputs": {{ "in": {{ "from": "/clk.beat" }} }} }},
+               {{ "type": "oscillator", "address": "/osc" }},
+               {{ "type": "output", "address": "/out",
+                  "inputs": {{ "audio": {{ "from": "/osc.audio" }} }} }}{osc2} ] }}"#
+    )
+}
+
+#[test]
+fn clock_sinks_send_only_changes_in_steady_state_and_one_beat_announcement_after_a_swap() {
+    let (mut coord, mut slot) = setup(&clock_sinks_doc(false));
+    let (mut gate, mut beat) = (Vec::new(), Vec::new());
+    for b in 0..GATE_WARM_BLOCKS {
+        render(&mut slot, BLOCK);
+        for m in slot.drain_outbound() {
+            let at = b * BLOCK + m.frame;
+            match m.address.as_str() {
+                "/gfb" => gate.push((at, m.arg)),
+                "/bfb" => beat.push((at, m.arg)),
+                other => panic!("unexpected outbound {other}"),
+            }
+        }
+    }
+    // 122368 frames at 120 BPM: the announcement at 0, then an edge every 12000 frames and a wrap
+    // every 24000. Nothing repeats at a block start.
+    let want_gate: Vec<(usize, Arg)> = (0..=10)
+        .map(|k| (k * 12_000, Arg::F32(if k % 2 == 0 { 1.0 } else { 0.0 })))
+        .collect();
+    let want_beat: Vec<(usize, Arg)> = (0..=5).map(|k| (k * 24_000, Arg::I32(k as i32))).collect();
+    let near = |got: &[(usize, Arg)], want: &[(usize, Arg)]| {
+        got.len() == want.len()
+            && got
+                .iter()
+                .zip(want)
+                .all(|((gf, ga), (wf, wa))| gf.abs_diff(*wf) <= 1 && ga == wa)
+    };
+    assert!(near(&gate, &want_gate), "gate sends: {gate:?}");
+    assert!(near(&beat, &want_beat), "beat sends: {beat:?}");
+
+    let report = coord.swap_document(&clock_sinks_doc(true));
+    assert!(report.report.ok, "swap should install: {:?}", report.report);
+    assert!(report.diff.as_ref().unwrap().state_reset.is_empty());
+
+    // 64 blocks after the Swap request ends over a thousand frames before the next edge. Outbound
+    // frames are relative to the emitting Engine's blocks, which a Swap offsets from the fill grid,
+    // so this margin is approximate. The surviving Clock announces `beat` once; `gate` has not
+    // changed, so it sends nothing. A one-block fill never runs the installing callback past the
+    // end of the ramp, where `RenderSlot` would drop the announcement's outbound.
+    let mut after = Vec::new();
+    let mut ramped = false;
+    for b in 0..64 {
+        render(&mut slot, BLOCK);
+        ramped |= slot.is_ramping();
+        after.extend(
+            slot.drain_outbound()
+                .map(|m| (b, m.frame, m.address, m.arg)),
+        );
+    }
+    assert!(
+        ramped && !slot.is_ramping(),
+        "the swap installed within the window"
+    );
+    let block = after
+        .first()
+        .map(|a| a.0)
+        .expect("the announcement was sent");
+    assert_eq!(
+        after,
+        vec![(block, 0, "/bfb".to_string(), Arg::I32(5))],
+        "one `beat` announcement, no `gate` send"
+    );
+}
+
 // ---------------------------------------------------------------------------------------------
 // (b) The callback-side install step allocates and frees nothing (RT-safety).
 // ---------------------------------------------------------------------------------------------

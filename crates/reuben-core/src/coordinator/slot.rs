@@ -238,7 +238,8 @@ impl RenderSlot {
         // When one callback runs two segments on the *same* (post-install) Engine — an up→steady
         // transition — the steady segment's fill clears the up segment's outbound OSC, dropping
         // it. This is a segmentation artifact, distinct from the deliberate install-time discard
-        // of the retiring Engine's outbound.
+        // of the retiring Engine's outbound, which loses whatever that Engine rendered in the
+        // installing callback's down segment.
         let mut f = 0;
         while f < frames {
             match self.ramp.phase {

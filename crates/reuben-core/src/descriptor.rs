@@ -388,8 +388,12 @@ impl Port {
                 let v = raw.as_f32()?;
                 Some(Arg::F32(self.meta.as_ref()?.clamp(v)))
             }
+            // An `Arg::I32` clamps directly: through f32 it would lose every integer past 2^24.
             PortType::I32 { meta: Some(m) } => {
-                let v = Float::round(raw.as_f32()?) as i32;
+                let v = match raw {
+                    Arg::I32(i) => *i,
+                    _ => Float::round(raw.as_f32()?) as i32,
+                };
                 Some(Arg::I32(m.clamp(v)))
             }
             PortType::Vocab {
