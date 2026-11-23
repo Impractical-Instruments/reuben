@@ -296,7 +296,7 @@ Behaviour every edit shares:
 
 **Files:**
 - Modify: `crates/reuben-api/src/engine/server/call.rs` (`handle_call`, `unoffered_name`),
-  `crates/reuben-api/src/engine/server.rs` (`EngineHost`, remove `handle_surface`),
+  `crates/reuben-api/src/engine/server.rs` (`EngineHost`),
   `crates/reuben-api/src/engine/wire.rs`, `crates/reuben-api/src/engine/channel.rs`
 - Modify: `crates/reuben-native/src/engine_channel.rs`, `crates/reuben-native/src/midi/watch.rs`,
   `crates/reuben-native/src/engine.rs` (wire the watch's trigger into `NativeHost`)
@@ -305,9 +305,6 @@ Behaviour every edit shares:
 - Produces:
   - `Event::SurfaceChanged { surface: SurfaceKind, hash: String }`.
   - `EngineHost::surface_written(&self, surface: SurfaceKind) {}`, which is a default no-op.
-- Removes: `Request::Surface`, `Response::Surface`, `EngineHost::surface`, `Channel::surface`,
-  `handle_surface`, and their tests. Run findReferences on each first. `reuben-web` is no
-  constraint.
 - `handle_call`:
   - Before `call_scoped`, for the four surface verbs: if `canonical(args.source)` ≠ the installed
     top's canonical source, answer `Refused` "only the open instrument's surface docs can be read
@@ -369,7 +366,9 @@ Behaviour every edit shares:
 ### Task 8: The editor's controls panel reads through the verb
 
 **Files:**
-- Modify: `crates/reuben-editor/src/controls/mod.rs`
+- Modify: `crates/reuben-editor/src/controls/mod.rs`, and for the removal:
+  `crates/reuben-api/src/engine/{wire.rs,server.rs,channel.rs}`,
+  `crates/reuben-native/src/engine_channel.rs`
 
 **Interfaces:**
 - Consumes: `names::DESCRIBE_INSTRUMENT_SURFACE`, `SurfaceView`, and `Event::SurfaceChanged`.
@@ -379,6 +378,9 @@ Behaviour every edit shares:
   - Otherwise it rebuilds the `SurfaceDoc` from the view (`instrument`, `cols`, the controls) and
     calls `Panel::from_surface` as today.
 - `Controls::hear` reloads on `SurfaceChanged { surface: Screen, .. }`.
+- Removes, now that nothing reads them: `Request::Surface`, `Response::Surface`,
+  `EngineHost::surface` (and `NativeHost`'s), `Channel::surface`, `handle_surface`, and their
+  tests. Run findReferences on each first. `reuben-web` is no constraint.
 
 - [ ] **Step 1: Write the failing test.**
   `a_screen_surface_change_reloads_the_panel`: an event to `hear` marks the panel for reload, as
@@ -386,7 +388,7 @@ Behaviour every edit shares:
 - [ ] **Step 2: Run `cargo test -p reuben-editor controls`.** Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run `cargo test -p reuben-editor`.** Expected: PASS.
-- [ ] **Step 5: Run the editor gates, then commit:** `feat(editor): controls panel reads the surface through describe_instrument_surface`.
+- [ ] **Step 5: Run all gates (the removal touches `reuben-api` and `reuben-native`), then commit:** `feat(editor): controls panel reads the surface through describe_instrument_surface; drop the raw Surface request`.
 
 ### Task 9: The editor's MIDI map table
 
