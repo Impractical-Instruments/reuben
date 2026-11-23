@@ -1626,10 +1626,10 @@ mod tests {
     #[test]
     fn deliver_midi_routes_through_the_router() {
         use crate::control::ControlDrain;
-        use crate::midi::pattern::OscPattern;
         use crate::midi::router::Router;
         use crate::midi::routes::{Route, RouteTable, Scale};
-        use crate::midi::translate::MidiKind;
+        use reuben_api::surface::MidiKind;
+        use reuben_api::surface::OscPattern;
 
         let diagnostics = Diagnostics::new();
         let (tx, _rx) = ring_pair(Arc::clone(&diagnostics));

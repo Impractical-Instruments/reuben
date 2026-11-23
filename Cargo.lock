@@ -3446,6 +3446,7 @@ name = "reuben-api"
 version = "0.0.0"
 dependencies = [
  "hound",
+ "reuben-contract",
  "reuben-core",
  "reuben-document",
  "schemars",

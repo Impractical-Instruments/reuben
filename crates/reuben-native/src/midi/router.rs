@@ -11,10 +11,11 @@ use reuben_api::engine::MAX_SEND_BATCH;
 use reuben_api::render::Arg;
 
 use super::routes::{scale_value, RouteTable};
-use super::translate::{translate, Decoded, MidiKind, Translated};
+use super::translate::{translate, Decoded, Translated};
 use crate::control::ControlProducer;
 use crate::diagnostics::Diagnostics;
 use crate::osc::OscIn;
+use reuben_api::surface::MidiKind;
 
 /// The router every MIDI source shares: the devices' callbacks, the `send_midi` verb, and the
 /// thread that installs rebuilt tables. A `ControlProducer` has one owner, so they take turns.
@@ -164,8 +165,8 @@ mod tests {
     use super::*;
     use crate::control::{ring_pair, ControlDrain};
     use crate::diagnostics::Snapshot;
-    use crate::midi::pattern::OscPattern;
     use crate::midi::routes::{Route, RouteTable, Scale};
+    use reuben_api::surface::OscPattern;
 
     fn route(pattern: &str, kind: MidiKind, bind: &str, scale: Scale) -> Route {
         Route {

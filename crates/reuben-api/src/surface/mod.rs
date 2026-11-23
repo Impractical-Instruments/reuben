@@ -6,6 +6,8 @@
 //! defaults of its own beyond an optional narrowing. Checking a screen control against the
 //! instrument is [`screen::check_screen_control`].
 
+pub mod midi;
+pub mod pattern;
 pub mod screen;
 
 use std::fmt;
@@ -17,6 +19,8 @@ use reuben_document::text_hash;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+pub use midi::{check_midi_control, MidiKind, MidiRoute, Scale};
+pub use pattern::{OscPattern, PatternError};
 pub use screen::{check_screen_control, clamp, default_label, takes_a_value, ScreenControl};
 
 /// The one `surface_version` this reader knows.

@@ -2,7 +2,11 @@
 //! `*` any run of characters, `[a-z]` / `[!a-z]` one character in (or not in) a set, and `{a,b}`
 //! one of several literal strings. No token matches a `/`.
 
-use super::translate::MidiKind;
+use std::format;
+use std::string::{String, ToString};
+use std::vec::Vec;
+
+use super::midi::MidiKind;
 
 /// A compiled address pattern.
 #[derive(Debug, Clone, PartialEq)]
