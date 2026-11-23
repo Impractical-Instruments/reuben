@@ -116,7 +116,8 @@ Clock, active sensing, SysEx and other system messages are ignored; polyphonic a
 counted as unsupported.
 
 `midi` is one OSC 1.0 address pattern (`*`, `?`, `[1-4]`, `[!5]`, `{1,2,5}`). A message goes to
-**every** control whose pattern matches it, and several controls may bind one input, so CCs from
+**every** control whose pattern matches it (a note reaches each note input once, however many of
+its controls match), and several controls may bind one input, so CCs from
 several channels or numbers can move one input. **Checks, per control** — a failing control is
 skipped with a `midi map:` warning on `play`'s stderr naming it and why; the rest still route:
 
@@ -129,8 +130,9 @@ skipped with a `midi map:` warning on `play`'s stderr naming it and why; the res
 - a narrowing `min`/`max` outside the input's range is clamped into it, with a warning.
 
 A map that does not parse, or has another `surface_version`, is not used, with a warning; if it
-breaks while `play` runs, the routes it had keep working until it is fixed. `play` rebuilds the
-routes on every swap and every save of the map.
+breaks while `play` runs, the routes it had keep working until it is fixed, as long as the same
+Instrument stays open. `play` rebuilds the
+routes on every Swap and every save of the map.
 
 **Scaling.** CC and pressure become `u = v/127` (CC 64 is 0.504; there is no split at the middle),
 bend `u = (b+1)/2`. `u` is mapped across the effective range (the control's `min`/`max`, else the

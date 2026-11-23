@@ -115,7 +115,8 @@ program at a time, so a port another program holds fails to open, and the error 
 What a port sends is routed by the played instrument's **MIDI map**,
 `surfaces/<stem>.midi.json` (the `control-surface` skill documents it). With no map, messages
 are read and counted as unmatched and go nowhere. `play` prints `midi: reading <port>` for each
-port it opens; with `--log-osc` it also prints each message and the inputs it reached.
+port it opens and, when it stops, `midi: <port> read <n> messages`; with `--log-osc` it also
+prints each message and the inputs it reached.
 
 A port that goes away while `play` runs (unplugged) is a warning, not an error: `play` releases
 every note the router holds, so nothing hangs, and counts it under `midi_devices_lost` in

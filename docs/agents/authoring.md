@@ -559,8 +559,8 @@ lives apart in a **surface doc** (`surfaces/<name>.json`, schema
 it, and the TouchOSC emitter and any host-side renderer read from it.
 
 A **MIDI map**, `surfaces/<stem>.midi.json`, is a surface doc of the same format whose controls
-carry a `midi` address pattern (`/midi/1/cc/74`) instead of a widget: `reuben play` routes a MIDI
-controller to the interface inputs through it. Like every surface doc it binds inputs by name and
+carry a `midi` address pattern (`/midi/1/cc/74`), and their widget fields are ignored: `reuben play`
+routes a MIDI controller to the interface inputs through it. Like every surface doc it binds inputs by name and
 never changes the instrument, so the same instrument plays from a screen, a phone, or a keyboard.
 
 The declared `type` is what flows (see `instruments/patches/space.json`):
