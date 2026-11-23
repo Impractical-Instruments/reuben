@@ -199,8 +199,9 @@ reachable they exit at once and say so. `--engine-addr` and `--token` (or `REUBE
   whitespace, then the text to the end of the line (`/drums/pat  bd ~ [sd sd] ~`). Blank lines and
   `#` comment lines are skipped, and an address may appear once. A line is sent when its text
   changed since it was last queued, or when its last send was refused. A refused line prints with
-  its file, line and column, and its address keeps playing what it last played. Each save's report
-  sits between `reuben live: sending <file>` and `reuben live: done (…)`. A send that a Swap made
+  its file, line and column, and its address keeps playing what it last played. A queued line
+  prints `reuben live: queued <address> (line <n>)`, with no location prefix, so an error list
+  holds only errors and warnings. Each save's report sits between `reuben live: sending <file>` and `reuben live: done (…)`. A send that a Swap made
   stale prints `<file>:<line>:<col>: warning: dropped: instrument changed, resend <address>`. The
   next save sends it again, as it does any value an edit reset or an `open` replaced.
 

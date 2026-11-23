@@ -37,7 +37,8 @@ Both tasks reach the engine at its default address. To reach another one, add
 ## How the error marks work
 
 `reuben live` prints each problem as `<file>:<line>:<col>: error: <message>`, followed by the
-refused text with its span marked. It wraps each save's sends in a `reuben live: sending <file>`
+refused text with its span marked. Only errors and warnings carry a location; a queued line prints
+`reuben live: queued <address> (line <n>)`. It wraps each save's sends in a `reuben live: sending <file>`
 line and a `reuben live: done` line. The task's problem matcher reads the location lines. It treats
 the sending/done pair as the begin and end of one round, so problems a later round no longer reports
 are cleared. A refused line is sent again on every save until it is fixed, so it stays marked until

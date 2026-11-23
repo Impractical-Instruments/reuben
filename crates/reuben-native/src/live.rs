@@ -225,10 +225,12 @@ impl Live {
                     } else {
                         ""
                     };
+                    // No location prefix: an error list reads every `file:line:col:` line as a
+                    // problem, so only errors and warnings carry one.
                     writeln!(
                         out,
-                        "{file}:{}:{}: {fixed}queued {}",
-                        l.line, l.column, l.address
+                        "reuben live: {fixed}queued {} (line {})",
+                        l.address, l.line
                     )?;
                     self.sent.insert(l.address, l.text);
                 }
@@ -247,7 +249,11 @@ impl Live {
                 }
             }
         }
-        writeln!(out, "reuben live: done ({queued} queued, {errors} errors)")?;
+        let s = if errors == 1 { "" } else { "s" };
+        writeln!(
+            out,
+            "reuben live: done ({queued} queued, {errors} error{s})"
+        )?;
         out.flush()
     }
 
@@ -259,10 +265,10 @@ impl Live {
         match event {
             Event::SendsDropped { addresses } => {
                 for address in addresses {
+                    self.sent.remove(address);
                     let Some((line, column)) = self.at.get(address) else {
                         continue;
                     };
-                    self.sent.remove(address);
                     writeln!(
                         out,
                         "{file}:{line}:{column}: warning: dropped: instrument changed, resend \
@@ -553,16 +559,22 @@ mod tests {
         live.at.insert("/a".to_string(), (3, 4));
         live.sent.insert("/a".to_string(), "1".to_string());
         live.sent.insert("/b".to_string(), "2".to_string());
+        live.sent.insert("/gone".to_string(), "3".to_string());
         assert_eq!(
             shown(
                 &mut live,
                 Event::SendsDropped {
-                    addresses: vec!["/a".to_string(), "/elsewhere".to_string()],
+                    addresses: vec!["/a".to_string(), "/gone".to_string()],
                 }
             ),
-            "s.set:3:4: warning: dropped: instrument changed, resend /a\n"
+            "s.set:3:4: warning: dropped: instrument changed, resend /a\n",
+            "only an address with a line is named"
         );
         assert!(!live.sent.contains_key("/a"), "the next save resends it");
+        assert!(
+            !live.sent.contains_key("/gone"),
+            "a line that comes back is resent too"
+        );
         assert!(live.sent.contains_key("/b"));
     }
 

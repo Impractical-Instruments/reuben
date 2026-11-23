@@ -285,8 +285,8 @@ fn live_sends_only_changed_lines_skips_comments_and_keeps_the_old_pattern_when_a
         live.batch(),
         vec![
             format!("reuben live: sending {shown}"),
-            format!("{shown}:2:11: queued /a/steps"),
-            format!("{shown}:4:10: queued /b/steps"),
+            "reuben live: queued /a/steps (line 2)".to_string(),
+            "reuben live: queued /b/steps (line 4)".to_string(),
             "reuben live: done (2 queued, 0 errors)".to_string(),
         ]
     );
@@ -300,11 +300,11 @@ fn live_sends_only_changed_lines_skips_comments_and_keeps_the_old_pattern_when_a
         live.batch(),
         vec![
             format!("reuben live: sending {shown}"),
-            format!("{shown}:2:11: queued /a/steps"),
+            "reuben live: queued /a/steps (line 2)".to_string(),
             format!("{shown}:4:12: error: expected a whole number"),
             "3 x".to_string(),
             "  ^".to_string(),
-            "reuben live: done (1 queued, 1 errors)".to_string(),
+            "reuben live: done (1 queued, 1 error)".to_string(),
         ]
     );
     // The failed line reached nothing, so `/b` still plays the 3 it was last sent.
@@ -322,7 +322,7 @@ fn live_sends_only_changed_lines_skips_comments_and_keeps_the_old_pattern_when_a
         live.batch(),
         vec![
             format!("reuben live: sending {shown}"),
-            format!("{shown}:4:10: fixed, queued /b/steps"),
+            "reuben live: fixed, queued /b/steps (line 4)".to_string(),
             "reuben live: done (1 queued, 0 errors)".to_string(),
         ]
     );
