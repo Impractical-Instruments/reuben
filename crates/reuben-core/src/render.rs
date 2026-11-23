@@ -740,9 +740,11 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &mut Plan, messages: Inboun
                 // What the rendered pipe would now hold, for a numeric pipe.
                 let mut held = None;
                 match alias.kind {
-                    // A signal pipe's message feed was a raw ZOH materialize write (unclamped).
+                    // A signal pipe's message feed is a ZOH materialize write, clamped to the
+                    // pipe's range as the OSC boundary clamps it, so a typed Message lands the
+                    // same.
                     PortKind::Signal => {
-                        if let Some(v) = arg.as_f32() {
+                        if let Some(v) = arg.as_f32().map(|v| clamp_to(&alias.port, v)) {
                             routes[n].push_materialize(frame, port, v);
                             held = Some(Arg::F32(v));
                         }
@@ -796,8 +798,10 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &mut Plan, messages: Inboun
                     continue;
                 }
                 match plan.nodes[i].input_kinds[port] {
+                    // Clamped as the OSC boundary clamps it, so a typed Message lands the same.
                     PortKind::Signal => {
-                        if let Some(v) = arg.as_f32() {
+                        let p = &plan.nodes[i].descriptor.inputs[port];
+                        if let Some(v) = arg.as_f32().map(|v| clamp_to(p, v)) {
                             routes[i].push_materialize(frame, port, v);
                         }
                     }
@@ -817,6 +821,11 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &mut Plan, messages: Inboun
             }
         }
     }
+}
+
+/// `v` clamped to `p`'s declared range, if it declares one.
+fn clamp_to(p: &Port, v: f32) -> f32 {
+    p.meta.as_ref().map(|m| m.clamp(v)).unwrap_or(v)
 }
 
 /// Resolve an inbound address to its destination — `(node index, input port index, port)` —

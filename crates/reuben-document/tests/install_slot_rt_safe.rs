@@ -1,10 +1,11 @@
 //! RT-safety invariant for the install slot: a render callback driven through [`RenderSlot`]
 //! performs **zero** heap allocation and **zero** frees — at steady state and across a full
 //! swap (drain the install bundle, run the master-gain ramp, box-transplant the survivors, carry
-//! their live input values, post the retiree). Every one of those is a pointer swap: the transplant is `mem::swap` over the
-//! operator boxes, and the retiree is posted **in the same box** it arrived in, so its
-//! allocation is reused, never freed on the render thread — the only free is the Coordinator's
-//! off-thread reclaim, outside every measured window here.
+//! their live input values, post the retiree). Every one of those is a pointer swap or a write
+//! into a latch that owns nothing: the transplant is `mem::swap` over the operator boxes, and the
+//! retiree is posted **in the same box** it arrived in, so its allocation is reused, never freed
+//! on the render thread — the only free is the Coordinator's off-thread reclaim, outside every
+//! measured window here.
 //!
 //! Counted by the shared [`rt_alloc`] harness; window sizing and live-probe/reclaim checks live
 //! in the shared [`swap_rt_safe`] helper.

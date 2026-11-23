@@ -7,8 +7,9 @@ use alloc::vec::Vec;
 use crate::plan::LiveCarry;
 
 /// The precomputed **migration table**: the `(old index, new index)` survivor pairs the render
-/// side transplants by box swap, and the live input values it carries across. The survivor semantics — which nodes survive, which live values they keep, how
-/// indices map — stay off-thread with the Coordinator that built it.
+/// side transplants by box swap, and the live input values it carries across. The survivor
+/// semantics — which nodes survive, which live values they keep, how indices map — stay off-thread
+/// with the Coordinator that built it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MigrationTable {
     survivors: Vec<(usize, usize)>,

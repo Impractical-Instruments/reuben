@@ -578,6 +578,8 @@ mod tests {
                 bundle
                     .engine
                     .carry_live_values(&mut self.engine, bundle.migration.live_values());
+                let dropped = self.engine.take_dropped_wired_writes();
+                bundle.engine.credit_dropped_wired_writes(dropped);
                 let retiring = std::mem::replace(&mut self.engine, bundle.engine);
                 let _ = self.mailbox.post_retiree(Box::new(InstallBundle {
                     engine: retiring,
@@ -735,8 +737,8 @@ mod tests {
         )
     }
 
-    /// Install `initial`, send `live` (an address and a value), render it in, swap to `edited`, and return the
-    /// steady peak after the install.
+    /// Install `initial`, send `live` (an address and a value), render it in, swap to `edited`,
+    /// and return the steady peak after the install.
     fn peak_after_live_send_then_swap(initial: &str, live: (&str, f32), edited: &str) -> f32 {
         peak_after_live_send_then_swap_in(MemoryResolver::new(), initial, live, edited)
     }
@@ -1476,6 +1478,43 @@ mod tests {
         assert!(
             close(run(&[(0.2, 0), (0.7, 0)]), 1.4),
             "on one frame, the later message"
+        );
+    }
+
+    #[test]
+    fn a_typed_message_to_a_signal_pipe_is_clamped_as_osc_is() {
+        let doc = |b: f32| {
+            piped_doc(0.3, b).replace(
+                r#""type": "f32_buffer", "default": 0.3"#,
+                r#""type": "f32_buffer", "default": 0.3, "min": 0.0, "max": 1.0"#,
+            )
+        };
+        assert_ne!(doc(0.1), piped_doc(0.3, 0.1));
+        let (mut coord, side, _w) = Coordinator::install_initial(
+            &doc(0.1),
+            Registry::builtin(),
+            Box::new(MemoryResolver::new()),
+            cfg(),
+        )
+        .expect("initial install");
+        let mut rig = RenderRig::new(side);
+        rig.engine.queue(reuben_core::message::Message::new(
+            "/level/in",
+            Arg::F32(5.0),
+            0,
+        ));
+        rig.render_peak(256);
+        let heard = rig.render_peak(256);
+        assert!(close(heard, 0.1), "clamped to the max of 1: peak {heard}");
+        let report = coord.swap_document(&doc(0.2));
+        assert!(report.report.ok, "{:?}", report.report);
+        rig.poll_install();
+        coord.try_reclaim();
+        rig.render_peak(256);
+        let carried = rig.render_peak(256);
+        assert!(
+            close(carried, 0.2),
+            "the same value after an edit: peak {carried}"
         );
     }
 

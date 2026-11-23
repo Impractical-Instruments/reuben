@@ -505,7 +505,8 @@ pub enum Event {
     ///
     /// `reset` lists, sorted, the address of each interface input the installed Plan offers for
     /// live values — `/<name>/in`, and a subpatch's unfed boundary inputs as `/<sub>/<name>/in` —
-    /// that did not keep its live value: one new to this Plan, or whose type or default changed.
+    /// that did not keep its live value: one new to this Plan, one that was fed before this change
+    /// and is unfed now, or one whose type or default changed.
     /// Every other one kept its value, clamped into its range. An input a wire or another
     /// interface input feeds offers none and is never listed. `None` when this is not known, which
     /// a client reads as every one.

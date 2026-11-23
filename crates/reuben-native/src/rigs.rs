@@ -1,7 +1,8 @@
 //! Ready-made instrument graphs.
 //!
 //! The default rig is `instruments/default.json`, embedded so the binary is self-contained. Notes
-//! arrive as OSC at `/voicer/notes [midi, gate]`. Its `voicer` hosts a voice sub-patch
+//! arrive as OSC at its `notes` interface input, `/notes/in [midi, gate]`. Its `voicer` hosts a
+//! voice sub-patch
 //! (`voices/default-voice.json`), which resolves through the session's own store like any other
 //! nested reference — the rig is embedded, its children are not.
 

@@ -148,6 +148,13 @@ fn fit(setting: Setting, control: &Control) -> Option<(Setting, bool)> {
     }
 }
 
+/// Owe control `at` a re-send, once.
+fn owe(resend: &mut Vec<usize>, at: usize) {
+    if !resend.contains(&at) {
+        resend.push(at);
+    }
+}
+
 /// The gesture that sets a control to `setting`, for one a reload sends again; `None` for a
 /// setting no single gesture restores.
 fn gesture(setting: Setting) -> Option<Gesture> {
@@ -265,15 +272,19 @@ impl Controls {
                     continue;
                 };
                 taken[was_at] = true;
+                // A re-send an earlier reload owed and no draw has made yet is still owed.
+                if self.resend.contains(&was_at) {
+                    fresh.resend.push(at);
+                }
                 match fit(self.settings[was_at], control) {
                     Some((setting, true)) => fresh.settings[at] = setting,
                     Some((setting, false)) => {
                         fresh.settings[at] = setting;
-                        fresh.resend.push(at);
+                        owe(&mut fresh.resend, at);
                     }
                     // The engine kept a value the new widget cannot show: send it the default
                     // the control now shows.
-                    None => fresh.resend.push(at),
+                    None => owe(&mut fresh.resend, at),
                 }
             }
         }
@@ -938,9 +949,15 @@ mod reload_tests {
             group: None,
             kind: Kind::Toggle { rest: false },
         };
-        controls.replace_keeping_settings(panel(vec![toggle]));
+        controls.replace_keeping_settings(panel(vec![toggle.clone()]));
         assert_eq!(controls.settings, vec![Setting::On(false)]);
         assert_eq!(controls.resend, vec![0]);
+
+        // A second reload before any draw still owes the send, at the control's new place.
+        let other = value("other", 0.3, 1.0);
+        controls.replace_keeping_settings(panel(vec![other, toggle]));
+        assert_eq!(controls.settings[1], Setting::On(false));
+        assert_eq!(controls.resend, vec![1]);
     }
 
     #[test]

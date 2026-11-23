@@ -38,11 +38,12 @@ const NOTE_OFF_SAMPLE: usize = SAMPLE_RATE as usize / 2;
 /// `benches/fixtures/`, not a library instrument), and the OSC address external note-on/off
 /// Messages enter on. The address differs per graph — most take notes straight at the Voicer
 /// (`/voicer/notes`), but the tonal `autotune` graph feeds its quantizer first (`/snap/notes`),
-/// which resolves and forwards degrees to the Voicer.
+/// which resolves and forwards degrees to the Voicer. `None` for `sampler-arp`, whose sequencer
+/// feeds the Voicer's notes: a message there would be dropped, so its sequencer alone plays it.
 struct Fixture {
     name: &'static str,
     json: &'static str,
-    note_addr: &'static str,
+    note_addr: Option<&'static str>,
 }
 
 /// The benched instruments, frozen under `benches/fixtures/`. Curated to span the heavy operator
@@ -55,27 +56,27 @@ const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "reverb",
         json: include_str!("../fixtures/reverb.json"),
-        note_addr: "/voicer/notes",
+        note_addr: Some("/voicer/notes"),
     },
     Fixture {
         name: "echo",
         json: include_str!("../fixtures/echo.json"),
-        note_addr: "/voicer/notes",
+        note_addr: Some("/voicer/notes"),
     },
     Fixture {
         name: "auto-filter",
         json: include_str!("../fixtures/auto-filter.json"),
-        note_addr: "/voicer/notes",
+        note_addr: Some("/voicer/notes"),
     },
     Fixture {
         name: "sampler-arp",
         json: include_str!("../fixtures/sampler-arp.json"),
-        note_addr: "/voicer/notes",
+        note_addr: None,
     },
     Fixture {
         name: "autotune",
         json: include_str!("../fixtures/autotune.json"),
-        note_addr: "/snap/notes",
+        note_addr: Some("/snap/notes"),
     },
 ];
 
@@ -92,9 +93,13 @@ fn fixture(name: &str) -> &'static Fixture {
 /// The fixed messages for block `b`, with frames *relative to the block start*
 /// (the contract `render_block` expects). Note-on at frame 0; note-off at 0.5 s.
 /// `note_addr` is the fixture's note entry point (e.g. `/voicer/notes`, or `/snap/notes` for the
-/// tonal graph), so the same chord schedule drives every graph at its own front door.
-fn block_messages(b: usize, note_addr: &str) -> Vec<Message> {
+/// tonal graph), so the same chord schedule drives every graph at its own front door; `None`
+/// sends nothing.
+fn block_messages(b: usize, note_addr: Option<&str>) -> Vec<Message> {
     let mut msgs = Vec::new();
+    let Some(note_addr) = note_addr else {
+        return msgs;
+    };
     if b == 0 {
         for &m in &CHORD {
             msgs.push(Message::new(

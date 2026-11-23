@@ -39,8 +39,9 @@ pub const GET_CURRENT_INSTRUMENT: &str =
 pub const GET_ENGINE_DIAGNOSTICS: &str =
     "Return the engine's running diagnostics counters since start: output_xruns (events), \
      input_ring underruns/overruns/producer_drops (frames), control_batches_dropped_full \
-     (batches), and wired_writes_dropped (control messages dropped for addressing a node input \
-     a wire or an interface input feeds). Fails fast if no engine is reachable.";
+     (batches), and wired_writes_dropped (control messages dropped for addressing an input a \
+     wire or an interface input feeds: a node input, or a subpatch boundary input such as \
+     /a/level/in that the host feeds). Fails fast if no engine is reachable.";
 
 pub const GET_ENGINE_METERS: &str =
     "Return the engine's levels at the audio device, one entry per output and input channel, as \

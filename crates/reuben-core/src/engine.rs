@@ -182,7 +182,9 @@ impl Engine {
         self.plan.take_dropped_wired_writes()
     }
 
-    pub(crate) fn credit_dropped_wired_writes(&mut self, n: u64) {
+    /// Add `n` to the count [`take_dropped_wired_writes`](Self::take_dropped_wired_writes)
+    /// returns: an install credits the fresh Engine with what the retiring one had not handed on.
+    pub fn credit_dropped_wired_writes(&mut self, n: u64) {
         self.plan.dropped_wired_writes += n;
     }
 

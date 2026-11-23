@@ -608,10 +608,11 @@ node by address prefix and an **input port by name** — always addressed explic
 input takes a scalar (`/filt/cutoff 1500`). An enum input takes a **symbol** — its variant name
 (`/filt/mode "Hp"`; the JSON literal `"mode": "Hp"` is the same form) — with an in-range integer
 index accepted as a fallback, quoted (`"1"`) or bare (`1`); an unknown symbol or out-of-range
-index is an **error**, never a silent snap to the default. A `Note` input takes its args (`/voicer/notes [69.0, 1.0]`).
-An input a wire or an interface input feeds takes no message: one sent to it is dropped and
-counted (`wired_writes_dropped`), so a `notes` interface input feeding `/voicer.notes` is played
-at `/notes/in`, not `/voicer/notes`.
+index is an **error**, never a silent snap to the default. A `Note` input takes its args
+(`/notes/in [69.0, 1.0]` on a `notes` interface input, or `/voicer/notes [69.0, 1.0]` on a voicer
+nothing feeds). An input a wire or an interface input feeds takes no message: one sent to it is
+dropped and counted (`wired_writes_dropped`), so a `notes` interface input feeding
+`/voicer.notes` is played at `/notes/in`, not `/voicer/notes`.
 Full wildcard dispatch (`/drums/*/decay`) is designed but not built — today a Message targets at
 most one node.
 

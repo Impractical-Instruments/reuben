@@ -826,7 +826,12 @@ fn open_silent(
     rejected: reuben_document::SwapReport,
 ) -> Response {
     let errors = SwapReport::from_core(rejected).report.errors;
-    let silenced = coordinator.swap_document(SILENCE);
+    // An open, so nothing live carries into the silence.
+    drop(coordinator.try_reclaim());
+    let silenced = match coordinator.prepare_document(SILENCE) {
+        Ok(prepared) => coordinator.commit_open(prepared),
+        Err(rejected) => rejected,
+    };
     if !silenced.report.ok {
         // Only a swap still in flight refuses a document this fixed.
         let mut report = SwapReport::from_core(silenced);
