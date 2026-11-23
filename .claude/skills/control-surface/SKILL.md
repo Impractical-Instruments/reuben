@@ -143,8 +143,8 @@ clamps into the input's range; `note` is sent as translated. CC 74 = 64 into `cu
 
 **Testing without a keyboard.** `reuben send-midi /midi/1/cc/74 0.5` (or `/midi/1/note 60 1`;
 velocity 0 is note-off) routes a translated message exactly as one from a device;
-`get_engine_diagnostics` then counts it under `midi_routed` or `midi_unmatched`. `play --log-osc`
-prints each MIDI message and the inputs it reached.
+`get_engine_diagnostics` then counts it under `midi_routed` or `midi_unmatched`. `play` run with
+`REUBEN_LOG_OSC=1` set prints each MIDI message and the inputs it reached.
 
 ## Workflows
 
