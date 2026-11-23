@@ -312,10 +312,11 @@ fn render_macro_port(p: &PortSpec) -> String {
         ),
         // A held vocab enum names its shared vocab type.
         PortTy::Enum(vocab) => format!("{}: enum({})", p.name, vocab),
-        // `note` / `harmony` / `pitch` / `arg` need no extra syntax.
+        // `note` / `harmony` / `pitch` / `str` / `arg` need no extra syntax.
         PortTy::Note => format!("{}: note", p.name),
         PortTy::Harmony => format!("{}: harmony", p.name),
         PortTy::Pitch => format!("{}: pitch", p.name),
+        PortTy::Str => format!("{}: str", p.name),
         PortTy::Arg => format!("{}: arg", p.name),
     }
 }
@@ -452,12 +453,13 @@ mod tests {
                  "inputs": [ {"name":"audio","ty":"f32_buffer"},
                              {"name":"cutoff","ty":"f32",
                               "f32":{"min":20.0,"max":20000.0,"default":1000.0,"unit":"Hz","curve":"exponential"}},
-                             {"name":"mode","ty":"enum","vocab":"FilterMode"} ],
+                             {"name":"mode","ty":"enum","vocab":"FilterMode"},
+                             {"name":"pat","ty":"str"} ],
                  "outputs": [ {"name":"audio","ty":"f32_buffer"} ] }"#,
         );
         assert!(
             src.contains(
-                r#"inputs: { audio: f32_buffer, cutoff: f32 { 20.0..=20000.0, default 1000.0, "Hz", exp }, mode: enum(FilterMode) }"#
+                r#"inputs: { audio: f32_buffer, cutoff: f32 { 20.0..=20000.0, default 1000.0, "Hz", exp }, mode: enum(FilterMode), pat: str }"#
             ),
             "{src}"
         );

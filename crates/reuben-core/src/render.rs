@@ -580,7 +580,8 @@ impl<E: Executor> Renderer<E> {
 
 /// Normalize a routed [`Arg`] for a **Held** input port: clamp an `F32` to the port's
 /// range, resolve an enum control message (symbol / index / variant) to the enum's concrete `Arg`,
-/// or take any other vocab value (`Harmony`) as-is. `None` if it cannot be a value of this port.
+/// take a string only on a `str` port, or take any other vocab value (`Harmony`) as-is. `None` if
+/// it cannot be a value of this port.
 pub(crate) fn held_arg(p: &Port, arg: &Arg) -> Option<Arg> {
     match &p.ty {
         PortType::F32 => arg
@@ -597,6 +598,12 @@ pub(crate) fn held_arg(p: &Port, arg: &Arg) -> Option<Arg> {
         PortType::Vocab {
             enum_meta: Some(e), ..
         } => e.resolve_arg(arg),
+        // A refcount bump, never a copy of the text. Anything but a string is refused: the load
+        // check keeps wires honest, but a live control message names its port by address alone.
+        PortType::Str => match arg {
+            Arg::Str(_) => Some(arg.clone()),
+            _ => None,
+        },
         _ => Some(arg.clone()),
     }
 }
@@ -1085,6 +1092,25 @@ mod tests {
         assert_eq!(held_arg(&port, &Arg::F32(12.7)), Some(Arg::I32(13)));
         assert_eq!(held_arg(&port, &Arg::F32(99.0)), Some(Arg::I32(16))); // clamps to the ceiling
         assert_eq!(held_arg(&port, &Arg::I32(5)), Some(Arg::I32(5))); // integer passes through
+    }
+
+    /// A `str` port latches only a string, and takes it by refcount: the latched `Arc` is the
+    /// routed one. A number on it is refused, so a mis-addressed control cannot replace the text.
+    #[test]
+    fn held_arg_takes_only_a_string_on_a_str_port() {
+        use crate::descriptor::Port;
+        let port = Port::str("pat");
+        let routed = Arg::Str("bd sn".into());
+        let Some(Arg::Str(latched)) = held_arg(&port, &routed) else {
+            panic!("a string latches on a str port");
+        };
+        let Arg::Str(src) = &routed else {
+            unreachable!()
+        };
+        assert!(alloc::sync::Arc::ptr_eq(&latched, src));
+        assert_eq!(held_arg(&port, &Arg::F32(1.0)), None);
+        assert_eq!(held_arg(&port, &Arg::I32(1)), None);
+        assert_eq!(held_arg(&port, &Arg::Enum(0)), None);
     }
 
     /// Two leaf nodes in an ancestor-prefix relationship — the shape inlining

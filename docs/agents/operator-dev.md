@@ -148,6 +148,17 @@ impl Operator for Filter {
 - **`name: note`** / **`name: harmony`** / **`name: pitch`** — `Note` (Event) / `Harmony` (Value) /
   `Pitch` (Value) ports (`Port::note` / `Port::harmony` / `Port::pitch`). `pitch` is a held `Pitch`
   leaf — the wire-internal output an `unpack_<type>` op emits, consumed by `pitch2freq`.
+- **`name: str`** — a held string (Value) input (`Port::str`), read through its
+  `In<Held<str>>` handle as a `&str` borrowed from the latch (no copy, no allocation); unset, it
+  reads `""`. **Input-only**: the validator refuses a `str` output, because building a string on
+  the render thread allocates, and a `str` constant, because no operator reads a constant's
+  value. Read it, don't keep it — a `&str` cannot outlive the `process` call,
+  and copying it into operator state would allocate. A value overwriting the latch may free the
+  replaced string on the render thread — at most one bounded `free()` per overwrite, fewer where
+  something else also holds it. That includes the first send after a Swap to an input still
+  holding its seed or authored value, and a rendered `str` pipe's first rendered block (for a
+  Voicer-hosted voice, its first note), which overwrites each wired consumer's seed with no send
+  at all (the class `Arg::Str` in `message.rs` documents).
 - **`name: arg`** — a **type-agnostic pass-through** (issue #141): carries *any* `Arg` as a raw
   Event stream (`Port::arg`), read via its `In<Raw>` handle (`io.read(IN)` yields undecoded
   `&Arg` payloads) and re-emitted through the sink's local `Out<Raw>` tap handle

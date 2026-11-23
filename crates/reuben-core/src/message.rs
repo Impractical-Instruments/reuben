@@ -66,48 +66,48 @@ pub enum Arg {
     F32(f32),
     I32(i32),
     /// A string / symbol atom, backed by `Arc<str>` so cloning on the render thread is a
-    /// refcount bump, never a heap allocation. Construction (`Arc::from`) still
-    /// allocates — it happens only on cold paths (the OSC decode thread, instrument load).
+    /// refcount bump, never a heap allocation. Construction (`Arc::from`) allocates, and happens
+    /// only on cold paths: the OSC decode thread, the engine channel, document load. Nothing on the
+    /// render thread builds one: an Operator declared through `operator_contract!` or the scaffold
+    /// cannot have a `str` output (the contract validator refuses it), and the interface pipe —
+    /// whose synthesized descriptor does declare a `str` output — forwards the latched `Arc` it was
+    /// given. A hand-built `Descriptor` handed to `Registry::register` is not validated; one that
+    /// declares a `str` output takes on the same rule.
     ///
-    /// **Render-thread dealloc analysis.** A clone is RT-safe, but the *last*
-    /// `Arc` drop frees the backing allocation on whichever thread holds it. Where each
-    /// reachable last drop lands:
+    /// **Render-thread frees: an accepted class, not yet fenced.** A clone is RT-safe, but the
+    /// *last* `Arc` drop frees the backing allocation on whichever thread holds it, and a `str`
+    /// latch is often that holder. When a value overwrites a `str` latch and nothing else holds the
+    /// replaced string, the render thread frees it: at most one free per overwrite, fewer where
+    /// something else also holds the replaced value. A freshly built Plan — every Swap builds one —
+    /// starts each latch on its seed (`""`, from `plan.rs`) or its authored default or literal, so
+    /// the first overwrite after a Swap can free that whatever the sender keeps. The sites:
     ///
-    /// - **The echo path** (external `Str` → `arg` pass-through → `osc_out` → outbound): the
-    ///   sink's emit is *moved* into the outbound [`Message`], which native hands to the
-    ///   OSC-out sender thread before dropping — in the configured case the last drop lands
-    ///   off the render thread by design. (With no `--osc-out` target, native's drain-and-drop
-    ///   frees on the audio thread — a warned misconfiguration, and the same path that already
-    ///   frees each outbound Message's `address: String` there.)
-    /// - **A `Str` Value-port latch overwrite** (`render.rs`): the previous latched payload
-    ///   drops on the render thread, and by then its source Message is usually gone, so the
-    ///   latch is the last owner. For every *replaced* string this is a bounded `free()` at
-    ///   the same site where the old `String` backing freed (and the incoming clone
-    ///   heap-allocated, which the `Arc` bump does not) — an improvement, with one seed
-    ///   exception: the latch seeds `Arg::Str("".into())` (`plan.rs`), which heap-allocates an
-    ///   `ArcInner` even for `""`, where the old `String::new()` seed was allocation-free, so
-    ///   the *first* overwrite of a `Str` latch performs one render-thread free that
-    ///   previously didn't exist (one per `Str` port per plan lifetime; same accepted class).
-    ///   This site is currently **unreachable in live code** — no builtin operator declares a
-    ///   [`PortType::Str`](crate::descriptor::PortType::Str) input, `format.rs` defines no str
-    ///   pipe type, and enum symbol traffic resolves to [`Enum`](Arg::Enum) in `held_arg`
-    ///   (via `EnumMeta::resolve_arg`) before latching — so this bullet is anticipatory, for
-    ///   future `Str`-input operators.
-    /// - **The next block's scratch clears** (`render.rs`): the latch assignment *clones* out
-    ///   of the routed scratch, so when several `Str` messages hit one Value port in a block,
-    ///   the last-owner drop of a replaced string lands not at the latch overwrite but at the
-    ///   next block's `routes[i].held.clear()` (`route_messages`) — or, for an
-    ///   operator-emitted string, `scratch.emitted.clear()`. Same thread, same
-    ///   one-free-per-replaced-string class as the latch site.
-    /// - **The engine's pending-control hand-off** (`engine.rs`): a queued inbound payload
-    ///   that latched (or was rejected by its port) drops on the audio thread when the queue
-    ///   clears after its block.
+    /// - **A live send overwriting a `str` latch** (`render.rs`, and the interface pipe's own dedup
+    ///   baseline).
+    /// - **A rendered pipe's first block**, with nothing sent: a `str` pipe kept as a node (two or
+    ///   more consumers, an `osc_out`, a tap, or an interface output reading it) starts with no
+    ///   dedup baseline, so it forwards its default onto each wired consumer and overwrites that
+    ///   consumer's seed — up to one free per consumer, in a Plan's first rendered block. For a
+    ///   Voicer-hosted voice that is its first note, not the install: an idle voice is not
+    ///   rendered.
+    /// - **The next block's scratch clears** (`render.rs`): when several strings hit one port in
+    ///   a block, the ones overwritten within it are last held by `routes[i].held` (or, for a
+    ///   pipe's forward, `scratch.emitted`), cleared at the top of the next block.
+    /// - **The engine's pending-control hand-off** (`engine.rs`): a queued string drops when the
+    ///   queue clears after its block. Whether its port latched a clone, converted it (an
+    ///   `Engine::queue` Message carrying a symbol into an enum port) or refused it, the queue's
+    ///   copy can be the last.
+    /// - **The echo path** (`str` → `osc_out` → outbound): the sink's emit is *moved* into the
+    ///   outbound [`Message`], which native hands to the OSC-out sender thread before dropping.
+    ///   With no `--osc-out` target, native's drain-and-drop frees on the audio thread — a warned
+    ///   misconfiguration, and the same path that frees each outbound Message's `address: String`.
     ///
-    /// The residual — one `free()` per *replaced or unconsumed* string, only ever on sparse
-    /// boundary-driven message traffic, never in the steady-state signal loop — is accepted
-    /// rather than fenced with a retain/reclaim buffer: no live operator declares a `Str` input
-    /// (see the latch bullet; `registry.rs`'s `no_builtin_declares_a_str_input` pins it), so the only string control that reaches the render thread today
-    /// is the `osc_out` echo, whose last drop is designed to land off it.
+    /// Each is one bounded `free()` on sparse message traffic or a Plan's (or voice's) first
+    /// rendered block, never in the steady-state signal loop. No built-in Operator declares a
+    /// `str` input yet. `reuben-document`'s `tests/str_input.rs` pins the counts under the
+    /// counting allocator.
+    /// Moving these frees off the render thread needs a queue that hands replaced owning values
+    /// back to the off-thread side; that is a separate change.
     Str(Arc<str>),
 
     // Shared vocab concrete types — each defined once with `#[derive(ArgValue)]`,

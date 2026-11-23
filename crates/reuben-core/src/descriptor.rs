@@ -32,9 +32,11 @@ pub enum PortType {
     /// integer (a count like the voicer's `voices` pool size), carrying its range + default in
     /// [`I32Meta`]; `None` for a bare integer atom with no declared range.
     I32 { meta: Option<I32Meta> },
-    /// A string / symbol atom — cold / boundary paths only. Its `Arg` is `Arc<str>`-backed,
-    /// so forwarding one across the render thread is a refcount bump; construction still
-    /// allocates and stays on the cold paths.
+    /// A held string — a latched [`Value`](crate::plan::PortKind::Value) whose `Arg` is
+    /// `Arc<str>`-backed, so forwarding one across the render thread is a refcount bump.
+    /// Construction allocates and stays on the cold paths (the OSC decode thread, document load);
+    /// where the render thread may *free* one is [`Arg::Str`](crate::message::Arg::Str)'s to say.
+    /// Unwired and unset, it reads as `""`.
     Str,
     /// A dense per-sample signal (audio): the **only** Arg with a buffer form. A `Buffer`-source
     /// wired into a scalar port is illegal — it needs an explicit sampler op. Not
@@ -286,6 +288,15 @@ impl Port {
         Self::vocab(name, "Pitch", false)
     }
 
+    /// A held string port — [`PortType::Str`]. Reads as `&str` through an `In<Held<str>>` handle.
+    pub const fn str(name: &'static str) -> Self {
+        Self {
+            name,
+            ty: PortType::Str,
+            meta: None,
+        }
+    }
+
     /// A scalar [`F32`](PortType::F32) control input: one input declared once, carrying
     /// its own unwired default in `meta`. When unwired the engine ZOH-materializes a per-sample
     /// buffer from the latched default (writing mid-block changes at their frame); when wired into
@@ -367,8 +378,9 @@ impl Port {
     /// Coerce an author literal [`Arg`](crate::message::Arg) to this port's normalized latch value
     /// — the single type-aware seam every authoring path funnels through. A scalar
     /// [`F32`](PortType::F32) control clamps to its [`F32Meta`] range; a vocab **enum** resolves a
-    /// symbol / index / concrete variant to its `Copy`-normalized `Arg`. `None` when this port takes
-    /// no settable literal (a bare audio buffer, a `Note` stream) or the literal does not resolve.
+    /// symbol / index / concrete variant to its `Copy`-normalized `Arg`; a `str` port takes a
+    /// string as-is. `None` when this port takes no settable literal (a bare audio buffer, a `Note`
+    /// stream) or the literal does not resolve.
     pub fn coerce(&self, raw: &crate::message::Arg) -> Option<crate::message::Arg> {
         use crate::message::Arg;
         match &self.ty {
@@ -383,6 +395,12 @@ impl Port {
             PortType::Vocab {
                 enum_meta: Some(e), ..
             } => e.resolve_arg(raw),
+            // Only a string sets a string port: no number spells one, so a numeric literal on a
+            // `str` port is refused rather than formatted.
+            PortType::Str => match raw {
+                Arg::Str(s) => Some(Arg::Str(s.clone())),
+                _ => None,
+            },
             _ => None,
         }
     }

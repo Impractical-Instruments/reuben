@@ -217,7 +217,8 @@ pub struct InterfaceOutput {
     /// `Some(arena buffer index)` for a Signal output — the host reads the rendered buffer there.
     pub signal_buf: Option<usize>,
     /// `Some(index into [`Plan::captured`])` for a Value output — `render_plan` writes the port's
-    /// last-emitted scalar there each block (held ZOH across blocks).
+    /// last-emitted scalar there each block (held ZOH across blocks). `None` for a `str` output,
+    /// which has no scalar to capture.
     pub captured_slot: Option<usize>,
 }
 
@@ -810,9 +811,13 @@ impl Plan {
             .iter()
             .map(|(name, &(key, port))| {
                 let node = index_of[key];
-                let is_signal = nodes[node].descriptor.outputs[port].ty.is_buffer();
-                let (kind, signal_buf, captured_slot) = if is_signal {
+                let ty = &nodes[node].descriptor.outputs[port].ty;
+                let (kind, signal_buf, captured_slot) = if ty.is_buffer() {
                     (PortKind::Signal, out_buffers[key][port], None)
+                } else if matches!(ty, PortType::Str) {
+                    // A captured slot holds a number; a string has none to give, so the output
+                    // gets no slot rather than one that always reads 0.0.
+                    (PortKind::Value, None, None)
                 } else {
                     let slot = captured_len;
                     captured_len += 1;

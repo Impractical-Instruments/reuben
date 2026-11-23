@@ -163,6 +163,7 @@ fn port_form(p: &model::PortModel) -> TokenStream {
         PortTy::Note => quote! { Event<::reuben_core::vocab::pitch::Note> },
         PortTy::Harmony => quote! { Held<::reuben_core::vocab::Harmony> },
         PortTy::Pitch => quote! { Held<::reuben_core::vocab::pitch::Pitch> },
+        PortTy::Str => quote! { Held<str> },
         PortTy::Arg => quote! { Raw },
     }
 }
@@ -198,6 +199,8 @@ fn input_handle(p: &model::PortModel) -> TokenStream {
         // A held `Pitch` leaf carries its declared default (tonic, `Degree(0)`) as data, exactly
         // like `Harmony` above — the read fallback for a `pitch` input (`resolve`).
         PortTy::Pitch => quote! { ::reuben_core::vocab::pitch::Pitch::DEFAULT },
+        // The engine seeds an unset `str` latch with `""`, so the read fallback says the same.
+        PortTy::Str => quote! { "" },
         // Defaultless forms (events, the raw pass-through) store `()`.
         PortTy::Note | PortTy::Arg => quote! { () },
     };
@@ -275,6 +278,7 @@ pub(crate) fn render_contract(struct_ident: &Ident, model: &ContractModel) -> To
                             quote! { ::reuben_core::descriptor::Port::pitch(#name) }
                         }
                         PortTy::Arg => quote! { ::reuben_core::descriptor::Port::arg(#name) },
+                        PortTy::Str => quote! { ::reuben_core::descriptor::Port::str(#name) },
                         PortTy::F32(m) => {
                             let meta = f32_meta_toks(m);
                             quote! { ::reuben_core::descriptor::Port::f32(#name, #meta) }
@@ -402,6 +406,7 @@ fn parse_ports(input: ParseStream) -> syn::Result<Vec<PortAst>> {
             "note" => PortTy::Note,
             "harmony" => PortTy::Harmony,
             "pitch" => PortTy::Pitch,
+            "str" => PortTy::Str,
             "arg" => PortTy::Arg,
             "f32" => PortTy::F32(parse_f32_meta(&body)?),
             "i32" => PortTy::I32(parse_i32_meta(&body)?),
@@ -415,7 +420,7 @@ fn parse_ports(input: ParseStream) -> syn::Result<Vec<PortAst>> {
             other => {
                 return Err(Error::new(
                     kw.span(),
-                    format!("port type must be `f32_buffer`, `f32`, `i32`, `enum(..)`, `note`, `harmony`, `pitch`, or `arg`, got `{other}`"),
+                    format!("port type must be `f32_buffer`, `f32`, `i32`, `enum(..)`, `note`, `harmony`, `pitch`, `str`, or `arg`, got `{other}`"),
                 ))
             }
         };
