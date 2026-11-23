@@ -195,14 +195,14 @@ reachable they exit at once and say so. `--engine-addr` and `--token` (or `REUBE
   `<stdin>`), followed by the text with the span marked. The command exits non-zero and nothing is
   applied. A send that compiles is only *queued*: an address that routes nowhere is dropped
   silently, as any `send` is.
-- **`reuben send --file <set> --line <n>`** sends one line of a set file (1-based), read from disk
+- **`reuben send --file <file> --line <n>`** sends one line of a pattern file (1-based), read from disk
   and parsed as `reuben live` parses it: the line's own address and text, so there is no address
   argument. Errors use the same `<file>:<line>:<col>: error:` report, with the column found by the
   same code. A blank or `#` comment line, an unreadable file, and an engine that is not running are
-  each an error at `<set>:<n>:1`; an address another line also sets is no concern of this line's. It prints
+  each an error at `<file>:<n>:1`; an address another line also sets is no concern of this line's. It prints
   `reuben send: queued <address> (line <n>)` on success. `--file` and `--line` go together and
   replace the positional arguments.
-- **`reuben live <file>`** sends a set file now and on every save. Each line is an address,
+- **`reuben live <file>`** sends a pattern file now and on every save. Each line is an address,
   whitespace, then the text to the end of the line (`/pattern/in  0 2 4 <7 5> [4 2] 0 ~`). Blank lines and
   `#` comment lines are skipped, and an address may appear once. A line is sent when its text
   changed since it was last queued, or when its last send was refused. A refused line prints with
@@ -212,22 +212,22 @@ reachable they exit at once and say so. `--engine-addr` and `--token` (or `REUBE
   stale prints `<file>:<line>:<col>: warning: dropped: instrument changed, resend <address>`. The
   next save sends it again, as it does any value an edit reset or an `open` replaced.
 
-The repo's [`sets/`](../../sets) directory holds example set files for `pattern-melody` and
+The repo's [`patterns/`](../../patterns) directory holds example pattern files for `pattern-melody` and
 `pattern-lab`: each names the instrument to play and lists alternative patterns to swap in.
 
 Because `send` reads stdin, "evaluate the selection" needs no plugin, and `send --file --line`
-evaluates the line under the cursor in a set file once the buffer is saved:
+evaluates the line under the cursor in a pattern file once the buffer is saved:
 
 | Editor | Selection | Cursor line (after saving) |
 |---|---|---|
 | Vim / Neovim | select lines, then `:'<,'>w !reuben send /pattern/in` | `:w \| execute '!reuben send --file ' . shellescape(expand('%')) . ' --line ' . line('.')` |
 | Helix | select, then `:pipe-to reuben send /pattern/in` | save, then type `:sh reuben send --file <file> --line <n>` |
 | Emacs | select, then `M-\|` (`shell-command-on-region`) with `reuben send /pattern/in` | save, then `M-:` `(shell-command (format "reuben send --file %s --line %d" (shell-quote-argument buffer-file-name) (line-number-at-pos)))` |
-| VS Code | the tasks and key bindings in [`editors/vscode/`](../../editors/vscode/README.md) | `ctrl+enter` in a `.reuben` file |
+| VS Code | the tasks and key bindings in [`editors/vscode/`](../../editors/vscode/README.md) | `ctrl+enter` in a `.rpat` file |
 
 `reuben live` runs until interrupted, and its location lines are what compilers print, so an
 editor's error list reads them. In Emacs, `M-x compile` with `reuben live <file>` streams them into
-a compilation buffer whose errors jump to their span. In Vim, run `reuben live set.reuben | tee
+a compilation buffer whose errors jump to their span. In Vim, run `reuben live my.rpat | tee
 live.log` in a terminal and load what it has reported with `:cfile live.log`; the default
 `errorformat` reads `%f:%l:%c: %m`. The VS Code recipe's background task marks each error inline.
 

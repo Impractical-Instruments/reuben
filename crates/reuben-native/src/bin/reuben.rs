@@ -125,7 +125,7 @@ enum Command {
     /// Send one string to an input of the running `reuben play` that compiles its text, such as a
     /// pattern. A string that does not compile is printed as `<file>:<line>:<col>: error: …` with
     /// its span marked, nothing is applied, and the exit code is non-zero. Never starts a
-    /// temporary server. With `--file` and `--line`, sends that one line of a set file instead.
+    /// temporary server. With `--file` and `--line`, sends that one line of a pattern file instead.
     Send {
         /// The input's address, e.g. `/pattern/in`.
         #[arg(required_unless_present = "file")]
@@ -135,7 +135,7 @@ enum Command {
         /// dropped.
         #[arg(conflicts_with = "file")]
         pattern: Option<String>,
-        /// Send one line of this set file, read from disk, in place of `<ADDRESS> [PATTERN]`: the
+        /// Send one line of this pattern file, read from disk, in place of `<ADDRESS> [PATTERN]`: the
         /// line's address and text, parsed as `reuben live` parses them. Needs `--line`.
         #[arg(long, requires = "line", conflicts_with = "address")]
         file: Option<PathBuf>,
@@ -145,14 +145,14 @@ enum Command {
         #[command(flatten)]
         server: RunningServerFlags,
     },
-    /// Watch a set file and send its lines to the running `reuben play` on every save. Each line
+    /// Watch a pattern file and send its lines to the running `reuben play` on every save. Each line
     /// is an address, whitespace, then the text to the end of the line; blank lines and `#`
     /// comments are skipped. A line is sent when its text changed since it was last queued, or
     /// when its last send was refused. A refused line is reported with file, line and column and
     /// its address keeps playing what it played. Each save's reports sit between
     /// `reuben live: sending <file>` and `reuben live: done`.
     Live {
-        /// The set file.
+        /// The pattern file.
         file: PathBuf,
         #[command(flatten)]
         server: RunningServerFlags,
@@ -349,7 +349,7 @@ fn cmd_send(address: &str, pattern: Option<String>, server: &RunningServerFlags)
     }
 }
 
-/// `send --file --line`: one line of a set file, as `live` would send it. Every failure is a
+/// `send --file --line`: one line of a pattern file, as `live` would send it. Every failure is a
 /// `<file>:<line>:1: error: …` report, so an editor's problem matcher finds it.
 fn cmd_send_line(file: &Path, line: usize, server: &RunningServerFlags) -> ExitCode {
     let shown = file.display().to_string();
@@ -359,10 +359,10 @@ fn cmd_send_line(file: &Path, line: usize, server: &RunningServerFlags) -> ExitC
     };
     let source = match std::fs::read_to_string(file) {
         Ok(source) => source,
-        Err(e) => return located(&format!("reading the set file: {e}")),
+        Err(e) => return located(&format!("reading the pattern file: {e}")),
     };
-    let set_line = match live::set_line(&shown, &source, line) {
-        Ok(set_line) => set_line,
+    let pattern_line = match live::pattern_line(&shown, &source, line) {
+        Ok(pattern_line) => pattern_line,
         Err(report) => {
             eprintln!("{report}");
             return ExitCode::FAILURE;
@@ -377,15 +377,21 @@ fn cmd_send_line(file: &Path, line: usize, server: &RunningServerFlags) -> ExitC
         Ok(reached) => reached,
         Err(e) => return located(&e),
     };
-    match live::send_text(reached.channel(), &set_line.address, &set_line.text) {
+    match live::send_text(reached.channel(), &pattern_line.address, &pattern_line.text) {
         Ok(reuben_api::engine::SendOutcome::Queued) => {
-            println!("reuben send: queued {} (line {line})", set_line.address);
+            println!("reuben send: queued {} (line {line})", pattern_line.address);
             ExitCode::SUCCESS
         }
         Ok(reuben_api::engine::SendOutcome::Refused(refusal)) => {
             eprintln!(
                 "{}",
-                live::refusal_report(&shown, line, set_line.column, &set_line.text, &refusal)
+                live::refusal_report(
+                    &shown,
+                    line,
+                    pattern_line.column,
+                    &pattern_line.text,
+                    &refusal
+                )
             );
             ExitCode::FAILURE
         }
@@ -393,7 +399,7 @@ fn cmd_send_line(file: &Path, line: usize, server: &RunningServerFlags) -> ExitC
     }
 }
 
-/// `live`: send a set file's lines on every save, until interrupted.
+/// `live`: send a pattern file's lines on every save, until interrupted.
 fn cmd_live(file: &Path, server: &RunningServerFlags) -> ExitCode {
     let reached = match connect_running(server) {
         Ok(reached) => reached,
