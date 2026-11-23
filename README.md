@@ -2,7 +2,7 @@
 
 Deterministic CI performance trend: callgrind **instruction counts (Ir)** for rendering **1 s of audio** (375 × 128-frame blocks @ 48 kHz), recorded on every direct push to `dev`. Instruction counts don't jitter — every visible move is a real code change (or a toolchain bump).
 
-**229 commits** · 2026-07-12 → 2026-11-23 · 19260 data points · last: `c9749cd` (2026-11-23T12:29:11-05:00)
+**230 commits** · 2026-07-12 → 2026-11-23 · 19358 data points · last: `4a6ed63` (2026-11-23T12:49:25-05:00)
 
 *Companion trend: the **main** series lives on the [`bench-history`](https://github.com/Impractical-Instruments/reuben/tree/bench-history) branch.*
 
@@ -60,7 +60,7 @@ Cost paid **once per Swap**, on the caller's thread — which in the browser is 
 | nest | 2,048 → 4,096 | 2.05x |
 | nest | 4,096 → 8,192 | 2.02x |
 | wide | 2,048 → 4,096 | 2.03x |
-| wide | 4,096 → 8,192 | 2.02x |
+| wide | 4,096 → 8,192 | 2.01x |
 
 ## Heaviest operators (micro)
 
@@ -94,6 +94,7 @@ Cost paid **once per Swap**, on the caller's thread — which in the browser is 
 | `reverb` | 10.9M | ±0.0% | -1.0% | 2026-07-12 |
 | `mix` | 8.68M | ±0.0% | -0.1% | 2026-11-19 |
 | `compressor` | 8.19M | ±0.0% | **-15.5%** | 2026-07-20 |
+| `pattern` | 7.69M | **+69867900.0%** | ±0.0% | 2026-11-23 |
 | `sample_loop` | 6.69M | ±0.0% | -1.2% | 2026-11-13 |
 | `pan` | 6.02M | ±0.0% | -1.2% | 2026-07-12 |
 | `saturator` | 4.57M | ±0.0% | **-47.2%** | 2026-07-12 |
@@ -172,7 +173,6 @@ Cost paid **once per Swap**, on the caller's thread — which in the browser is 
 | `transpose` | 393k | ±0.0% | **-22.6%** | 2026-07-12 |
 | `osc_out` | 375k | ±0.0% | **-16.4%** | 2026-07-12 |
 | `subpatch` | 341k | ±0.0% | **-18.3%** | 2026-07-12 |
-| `pattern` | 11 | **-100.0%** | **-100.0%** | 2026-11-23 |
 
 </details>
 
