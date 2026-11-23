@@ -57,18 +57,22 @@
 //! a reference: the old pattern plays out its cycle, and its held notes release on schedule. A
 //! pattern arriving while the current one is empty text, or before any has played, takes effect at
 //! once from the current position. Every re-seek (a locate, a `mode` or `beats_per_cycle` change)
-//! also applies a waiting pattern, since it starts the cycle afresh. The value the Operator lets go of goes to the retire queue ([`Io::retire`]), so the
-//! render thread frees nothing.
+//! also applies a waiting pattern, since it starts the cycle afresh. The value the Operator lets go
+//! of goes to the retire queue ([`Io::retire`]), so the render thread frees nothing.
 //!
-//! **Swap.** The cached cycle, the current and waiting patterns, the held notes and the previous
-//! position all live in the box, so a surviving node carries them across a Swap. `value` is a held
+//! **Swap.** The seed, the cached cycle, the current and waiting patterns, the held notes and the
+//! previous position all live in the box, so a surviving node carries them across a Swap. `value` is a held
 //! output published on change, so [`on_transplant`](Operator::on_transplant) re-announces it.
 //!
 //! # Randomness
 //!
-//! `?` and `|` draw from a hash of the cycle, the structure, and a seed. The seed is the same fixed
-//! value for every node, so the same pattern text plays the same notes every run: a performance
-//! replays identically, and two nodes playing the same text agree.
+//! `?` and `|` draw from a hash of the cycle, the structure, and a seed fixed per node: the FNV-1a
+//! hash of the node's address within the Instrument (`/hats`, or `/a/hats` inside a subpatch),
+//! taken when the Plan is built ([`Operator::bind_address`]). So a node makes the same choices on
+//! every run and every reload, and a performance replays identically; two nodes with the same
+//! pattern shape (`"0*16?"` on one, `"2*16?"` on another) choose independently. Renaming a node
+//! changes its choices. The voices a Voicer hosts share their voice patch's addresses, and so
+//! their seeds.
 //!
 //! # Stack
 //!
@@ -121,8 +125,14 @@ const CYCLE_CAP: usize = 64;
 /// Notes sounding at once. Firing one more first releases the oldest.
 const HELD_CAP: usize = 32;
 
-/// The seed for `?` and `|`: fixed, so a performance replays identically.
-const SEED: u64 = 0;
+/// The FNV-1a hash of `address`: fixed across runs, platforms and builds, unlike a std hasher.
+fn address_seed(address: &str) -> u64 {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    address
+        .bytes()
+        .fold(OFFSET, |h, b| (h ^ u64::from(b)).wrapping_mul(PRIME))
+}
 
 /// The largest f32 below `1.0`, the ceiling on a `phase` read: a Clock never emits more, and a
 /// phase of `1.0` from another source would otherwise equal the next beat's start.
@@ -180,6 +190,8 @@ struct Held {
 }
 
 pub struct Pattern {
+    /// The seed for `?` and `|`, from the node's address; see the module docs.
+    seed: u64,
     /// The pattern playing. `None` until the first call adopts the input's value.
     current: Option<Prepared>,
     /// A pattern waiting for the next cycle start.
@@ -215,6 +227,7 @@ impl Default for Pattern {
 impl Pattern {
     pub fn new() -> Self {
         Self {
+            seed: address_seed(""),
             current: None,
             next: None,
             query: vec![reuben_pattern::Note::EMPTY; CYCLE_CAP].into_boxed_slice(),
@@ -282,7 +295,7 @@ impl Pattern {
         let Some(pattern) = self.current.as_ref().and_then(|p| p.payload::<Compiled>()) else {
             return;
         };
-        let res = pattern.cycle(cycle, SEED, &mut self.query);
+        let res = pattern.cycle(cycle, self.seed, &mut self.query);
         if res.dropped > 0 || res.overflowed > 0 || res.exhausted {
             counts.pattern_queries_truncated += 1;
         }
@@ -459,7 +472,14 @@ impl Operator for Pattern {
     }
 
     fn spawn(&self) -> Box<dyn Operator> {
-        Box::new(Self::new())
+        Box::new(Self {
+            seed: self.seed,
+            ..Self::new()
+        })
+    }
+
+    fn bind_address(&mut self, address: &str) {
+        self.seed = address_seed(address);
     }
 
     fn on_transplant(&mut self) {
@@ -915,6 +935,52 @@ mod tests {
         assert_eq!(values_before(&evs, usize::MAX), vec![(start, 300.0)]);
         let evs = r.run_to(start + 256, &[]);
         assert!(values_before(&evs, usize::MAX).is_empty(), "then nothing repeats");
+    }
+
+    /// The onset frames of `text` played by a pattern node at `address`, over four cycles.
+    fn onsets_at(address: &str, text: &str) -> Vec<usize> {
+        let mut g = Graph::new();
+        let clk = g.add("/clk", Clock::new());
+        g.set_value(clk, "tempo", &Arg::F32(TEMPO));
+        let pat = g.add(address, Pattern::new());
+        g.set_value(pat, "pat", &Arg::Str(text.into()));
+        g.connect(clk, OUT_PHASE, pat, IN_PHASE);
+        g.connect(clk, OUT_BEAT, pat, IN_BEAT);
+        let notes = g.add("/notes", OscOut::new());
+        g.connect(pat, OUT_NOTES, notes, 0usize);
+        let plan = Plan::instantiate(g, AudioConfig::new(SR, 128)).expect("instantiates");
+        let renderer = Renderer::new(&plan);
+        let mut r = Rig {
+            plan,
+            renderer,
+            block: 128,
+            pattern: 0,
+            at: 0,
+        };
+        let end = b(16);
+        (notes_before(&r.run_to(end, &[]), end).into_iter())
+            .filter(|e| e.2)
+            .map(|e| e.0)
+            .collect()
+    }
+
+    #[test]
+    fn each_node_draws_its_own_randomness_and_replays_it() {
+        let hats = onsets_at("/hats", "0*16?");
+        let snare = onsets_at("/snare", "2*16?");
+        assert!(
+            hats.len() > 8 && snare.len() > 8 && hats.len() < 64,
+            "`?` keeps about half: {} and {}",
+            hats.len(),
+            snare.len()
+        );
+        assert_ne!(hats, snare, "two nodes with one shape choose independently");
+        assert_eq!(hats, onsets_at("/hats", "0*16?"), "a node replays its choices");
+        assert_eq!(
+            hats,
+            onsets_at("/hats", "2*16?"),
+            "the choices follow the node and the shape, not the values"
+        );
     }
 
     #[test]

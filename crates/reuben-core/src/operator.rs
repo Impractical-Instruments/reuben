@@ -702,6 +702,13 @@ pub trait Operator: Send {
     /// has the [`AudioConfig`]). Default no-op — only the Voicer hosts sub-patches.
     fn bind_voices(&mut self, _voices: Vec<Graph>) {}
 
+    /// Receive this node's address within the Instrument (`/melody`, or `/a/melody` inside a
+    /// subpatch), once per Plan build, just before [`Operator::on_instantiate`] and off the hot
+    /// path. For state an operator derives deterministically from which node it is, so it is the
+    /// same on every load and only a rename changes it; the `pattern` Operator's random seed is the
+    /// one user. Default no-op.
+    fn bind_address(&mut self, _address: &str) {}
+
     /// Construct any config-dependent runtime state, after the engine fixes the [`AudioConfig`].
     /// Called once per node from [`Plan::instantiate`](crate::plan::Plan::instantiate)
     /// — the one place with the resolved config — **before** the node enters the execution image, so

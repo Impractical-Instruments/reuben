@@ -1000,6 +1000,7 @@ impl Plan {
             // graphs into per-voice sub-plans here, where `config` is fixed and we are off the hot
             // path.
             let mut op = node.op;
+            op.bind_address(&node.address);
             op.on_instantiate(&config)?;
             debug_assert!(
                 probe.is_some() || !node.descriptor.outputs.iter().any(|p| p.ty.is_buffer()),
