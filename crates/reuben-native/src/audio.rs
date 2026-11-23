@@ -531,7 +531,9 @@ where
 /// [`ControlDrain::drain`].
 ///
 /// Each batch's fate is [`control_fate`]'s. While a swap installs, batches wait on their rings for
-/// the Engine that installs, so none is queued on an Engine about to retire. A batch whose strings
+/// the Engine that installs, so none is queued on an Engine about to retire. Whether one installs
+/// is read once, by [`RenderSlot::latch_install`], and the callback's fill must follow the drain:
+/// a swap the drain did not see begins its ramp on the next callback. A batch whose strings
 /// a `send` compiled for a Plan no longer live is queued not at all: every message is marked
 /// [`dropped`](crate::osc::OscIn::dropped) for its producer to name, and counted into
 /// `diagnostics` once every batch is back, so whoever sees the count move finds them there.
@@ -547,6 +549,9 @@ pub(crate) fn drain_control_each(
     diagnostics: &Diagnostics,
     mut each: impl FnMut(&ControlBatch),
 ) {
+    // One look per callback, shared with this callback's fill: a swap committed after it waits
+    // for the next callback to begin its ramp, so what this queues renders on the live Engine.
+    slot.latch_install();
     let mut stale = 0;
     control.drain(|batch| {
         match control_fate(slot, batch.iter().map(|m| m.against.as_ref())) {

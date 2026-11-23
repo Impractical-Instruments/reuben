@@ -101,7 +101,7 @@ fn stamped_and_stale_batches_neither_allocate_nor_free_on_the_render_thread() {
     use std::sync::Arc;
 
     let cfg = AudioConfig::new(48_000.0, 64);
-    let (_coordinator, side, _) =
+    let (mut coordinator, side, _) =
         reuben_api::engine::install_initial(DOC, no_store(), cfg).expect("install");
     let live = PreparedAgainst::new(Arc::clone(side.engine.prepared_routes()));
     let (_other, other_side, _) =
@@ -152,4 +152,63 @@ fn stamped_and_stale_batches_neither_allocate_nor_free_on_the_render_thread() {
         producer.take_dropped(),
         vec!["/abs/x", "/filt/cutoff", "/filt/mode"]
     );
+
+    // A swap committed: the drain holds what it pops, on the render thread, without the heap.
+    assert!(coordinator.swap_document(DOC).report.ok);
+    let batch = stamped(producer.batch(), 0, &live);
+    producer.push(batch).unwrap();
+    let c = measure(|| drain_control(&mut control, &mut slot, &diagnostics));
+    assert_eq!((c.allocs, c.frees), (0, 0), "holding a batch");
+    assert!(producer.take_dropped().is_empty());
+    assert_eq!(producer.outstanding(), 1, "held, not handed back");
+}
+
+/// Two `abs` nodes, the second's input fed by the first, so a message to it is counted as a
+/// wired write once it is queued and routed: the proof a batch reached the Engine.
+const WIRED: &str = r#"{ "format_version": 3, "instrument": "wired",
+    "interface": { "outputs": { "out": { "from": "/osc.audio" } } },
+    "nodes": [
+      { "type": "oscillator", "address": "/osc" },
+      { "type": "abs_i32_value", "address": "/abs" },
+      { "type": "abs_i32_value", "address": "/fed", "inputs": { "x": { "from": "/abs.out" } } } ] }"#;
+
+/// While a swap is committed and not yet installed, the real drain leaves each batch on its ring,
+/// queued nowhere; once the swap installs, the next drain queues it on the installed Engine.
+#[test]
+fn a_batch_drained_while_a_swap_installs_waits_then_lands_on_the_installed_engine() {
+    let cfg = AudioConfig::new(48_000.0, 64);
+    let (mut coordinator, side, _) =
+        reuben_api::engine::install_initial(WIRED, no_store(), cfg).expect("install");
+    let mut slot = RenderSlot::new(side);
+    let mut out = vec![0.0f32; cfg.block_size * slot.channels()];
+    let diagnostics = Diagnostics::new();
+    let (mut producer, ring) = ring_pair(Diagnostics::new());
+    let mut control = ControlDrain::new(vec![ring]);
+    slot.fill(&mut out);
+
+    assert!(coordinator.swap_document(WIRED).report.ok);
+    let mut batch = producer.batch();
+    batch.push(OscIn::new("/fed/x".to_string(), vec![Arg::I32(3)]));
+    producer.push(batch).unwrap();
+
+    let mut held_until = None;
+    for block in 0..64 {
+        let waiting = slot.install_pending();
+        drain_control(&mut control, &mut slot, &diagnostics);
+        slot.fill(&mut out);
+        let routed = slot.take_dropped_wired_writes();
+        if waiting {
+            assert_eq!(routed, 0, "block {block}: queued while the swap installed");
+            let _ = producer.batch();
+            assert_eq!(producer.outstanding(), 1, "block {block}: held on its ring");
+        } else if routed == 1 {
+            held_until = Some(block);
+            break;
+        }
+    }
+    let block = held_until.expect("the held batch reached the installed Engine");
+    assert!(block > 0, "it waited for the install");
+    let _ = producer.batch();
+    assert_eq!(producer.outstanding(), 0, "handed back once queued");
+    assert_eq!(diagnostics.snapshot().stale_sends_dropped, 0);
 }

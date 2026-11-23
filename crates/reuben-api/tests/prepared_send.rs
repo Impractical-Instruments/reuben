@@ -101,6 +101,7 @@ impl Host {
     /// wait, and record the addresses of one dropped. Returns the batches taken, so the caller
     /// frees them where it chooses.
     fn drain(&self, slot: &mut RenderSlot) -> Vec<Vec<PreparedMessage>> {
+        slot.latch_install();
         let mut delivered = self.delivered.lock().unwrap();
         let mut taken = Vec::new();
         while let Some(batch) = delivered.first() {
@@ -480,6 +481,7 @@ fn prepared_sends_through_the_send_path_touch_no_heap_on_the_render_thread() {
         let host = Arc::clone(&r.host);
         let (slot, out) = (&mut r.slot, &mut r.out);
         let c = measure(|| {
+            slot.latch_install();
             for batch in &batches {
                 take(slot, batch, &host.stale);
             }
@@ -585,7 +587,7 @@ fn a_refusal_of_a_near_cap_request_fits_under_the_line_cap() {
 /// leave unrendered with nothing said: once the swap installs it meets the new Plan, and is
 /// dropped, counted and named.
 #[test]
-fn a_send_drained_during_the_install_ramp_is_never_lost_silently() {
+fn a_send_drained_during_the_install_ramp_waits_then_is_dropped_and_named() {
     let mut r = rig(RIG);
     r.block();
     let events = r.state.subscribe();
@@ -703,4 +705,97 @@ fn a_send_during_a_reclaim_that_succeeds_lands_on_the_new_plan() {
         "applied to the new Plan"
     );
     host.on_poll.lock().unwrap().take();
+}
+
+/// A swap committed after the drain looked and before the same callback's fill does not begin its
+/// ramp in that fill, even when the block is longer than a ramp edge and could ramp, install and
+/// retire the Engine in one go: the batch the drain queued renders on the Engine it was queued on.
+/// Whatever the timing, a send is applied audibly or dropped, counted and named, never lost.
+#[test]
+fn a_swap_committed_between_drain_and_fill_waits_for_the_next_callback() {
+    let mut r = rig(RIG);
+    r.block();
+    let events = r.state.subscribe();
+    let channels = r.slot.channels();
+    let edge = r.slot.ramp_edge_frames();
+    assert_eq!(
+        r.send(vec![str_message("/direct/steps", "50")]),
+        Response::Sent
+    );
+    // The render thread drains first, as the device callback does.
+    assert_eq!(
+        r.host.drain(&mut r.slot).len(),
+        1,
+        "queued on the live Engine"
+    );
+    // The open commits on the Coordinator's thread before the same callback's fill.
+    let open = Request::Open {
+        name: "other".to_string(),
+        expect: None,
+    };
+    assert!(matches!(
+        dispatch(&r.state, &open.to_ndjson()),
+        Response::SwapReport(ref report) if report.report.ok
+    ));
+    let mut long = vec![0.0; (edge + 32) * channels];
+    r.slot.fill(&mut long);
+    assert!(
+        r.slot.install_pending(),
+        "the fill did not begin a ramp the drain did not see"
+    );
+    let first: Vec<_> = r
+        .slot
+        .drain_outbound()
+        .map(|m| (m.address, m.arg.as_f32().expect("a number")))
+        .collect();
+    let mut seen = sent(&first, "/d_sum");
+    for _ in 0..8 {
+        seen.extend(sent(&r.block(), "/d_sum"));
+    }
+    assert!(!r.slot.install_pending(), "the next callbacks install it");
+    assert!(matches!(
+        events.recv_timeout(Duration::from_secs(1)),
+        Ok(Event::Opened { .. })
+    ));
+    let named = r.state.publish_dropped_sends();
+    let dropped = r.host.diagnostics().stale_sends_dropped;
+    assert!(
+        seen.contains(&50.0)
+            || (dropped == 1
+                && named
+                    == Some(Event::SendsDropped {
+                        addresses: vec!["/direct/steps".to_string()],
+                    })),
+        "lost: rendered {seen:?}, dropped {dropped}, named {named:?}"
+    );
+}
+
+/// A send compiled after a commit, for the Plan it installs, and drained in a callback whose latch
+/// saw no swap waits for that Plan instead of being dropped as stale, then lands on it.
+#[test]
+fn a_send_for_a_plan_committed_after_the_latch_waits_for_it() {
+    let mut r = rig(RIG);
+    r.block();
+    assert!(!r.slot.latch_install());
+    let open = Request::Open {
+        name: "other".to_string(),
+        expect: None,
+    };
+    assert!(matches!(
+        dispatch(&r.state, &open.to_ndjson()),
+        Response::SwapReport(ref report) if report.report.ok
+    ));
+    assert_eq!(
+        r.send(vec![str_message("/direct/steps", "77")]),
+        Response::Sent
+    );
+    let batch = r.host.delivered.lock().unwrap()[0].clone();
+    assert_eq!(take(&mut r.slot, &batch, &r.host.stale), ControlFate::Wait);
+    let mut seen = Vec::new();
+    for _ in 0..16 {
+        seen.extend(sent(&r.block(), "/d_sum"));
+    }
+    assert!(!r.slot.install_pending());
+    assert_eq!(r.host.stale.load(Ordering::SeqCst), 0, "not dropped");
+    assert!(seen.contains(&77.0), "landed on the new Plan: {seen:?}");
 }

@@ -147,19 +147,23 @@ pub struct SendRefusal {
     pub offset: usize,
     /// Byte offset into `text` where the fault starts.
     pub start: usize,
-    /// Byte offset into `text` where the fault ends; equal to `start` where something is missing.
+    /// Byte offset into `text` where the fault ends; equal to `start` where something is missing,
+    /// and past the end of `text` when the window cut the fault short.
     pub end: usize,
     /// What is wrong there.
     pub error: String,
 }
 
 impl SendRefusal {
-    /// `text`, then a line of `^` under the span, beneath the line of `text` the span starts on.
+    /// `text` with a line of `^` inserted directly beneath the line the span starts on, the rest
+    /// of `text` after it.
     ///
-    /// The marks run to the span's end or that line's end, at least one wide, so an empty span or
-    /// one at the very end still shows. The padding copies each tab before the span and puts a
-    /// space for every other `char`, so the marks line up under monospace text with no wide
-    /// characters. A span past the text or off a `char` boundary is moved back onto one.
+    /// The marks run to the span's end or that line's end (a `\r` ending it is not a column), at
+    /// least one wide, so an empty span or one at the very end still shows. A span that runs on
+    /// past that line, or past the window `text` was trimmed to, ends its marks with `…`. The
+    /// padding copies each tab before the span and puts a space for every other `char`, so the
+    /// marks line up under monospace text with no wide characters. A start past the text or off a
+    /// `char` boundary is moved back onto one.
     pub fn marked(&self) -> String {
         let text = self.text.as_str();
         let floor = |mut at: usize| {
@@ -172,13 +176,28 @@ impl SendRefusal {
         let start = floor(self.start);
         let line_start = text[..start].rfind('\n').map_or(0, |i| i + 1);
         let line_end = text[start..].find('\n').map_or(text.len(), |i| start + i);
-        let end = floor(self.end).clamp(start, line_end);
+        let content_end = if text[..line_end].ends_with('\r') && line_end > start {
+            line_end - 1
+        } else {
+            line_end
+        };
+        let end = floor(self.end).clamp(start, content_end);
         let pad: String = text[line_start..start]
             .chars()
             .map(|c| if c == '\t' { '\t' } else { ' ' })
             .collect();
         let width = text[start..end].chars().count().max(1);
-        format!("{text}\n{pad}{}", "^".repeat(width))
+        let cut = if self.end > self.start.max(content_end) {
+            "…"
+        } else {
+            ""
+        };
+        format!(
+            "{}\n{pad}{}{cut}{}",
+            &text[..line_end],
+            "^".repeat(width),
+            &text[line_end..]
+        )
     }
 }
 
@@ -895,7 +914,23 @@ mod tests {
             .marked()
         };
         assert_eq!(at("1 2\n3 x", 6, 7), "1 2\n3 x\n  ^");
-        assert_eq!(at("1 2\n3 xyz\n4", 6, 20), "1 2\n3 xyz\n4\n  ^^^");
+        assert_eq!(
+            at("1 2\n3 x\n4", 6, 7),
+            "1 2\n3 x\n  ^\n4",
+            "under its own line"
+        );
+        assert_eq!(at("1 2\n3 xyz\n4", 6, 9), "1 2\n3 xyz\n  ^^^\n4");
+        assert_eq!(
+            at("1 2\n3 xyz\n4", 6, 11),
+            "1 2\n3 xyz\n  ^^^…\n4",
+            "a span running onto the next line says so"
+        );
+        assert_eq!(at("ab", 1, 9), "ab\n ^…", "a span the window cut says so");
+        assert_eq!(
+            at("1 x\r\n2", 2, 4),
+            "1 x\r\n  ^…\n2",
+            "a CR is not a column"
+        );
         assert_eq!(at("\tx", 1, 2), "\tx\n\t^");
         assert_eq!(at("ab", 2, 2), "ab\n  ^");
         assert_eq!(at("ab", 9, 9), "ab\n  ^");

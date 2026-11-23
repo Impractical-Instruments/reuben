@@ -69,8 +69,15 @@ pub enum ControlFate {
 }
 
 /// Decide [`ControlFate`] for a batch whose messages carry `stamps` (their `against`), at `slot`.
-/// Every compiled message of one `send` names the same Plan, so the first stamp decides. RT-safe:
-/// one `Acquire` load and at most one pointer compare.
+/// Every compiled message of one `send` names the same Plan, so the first stamp decides.
+///
+/// Call [`RenderSlot::latch_install`] once before the drain, and fill after it: the waiting
+/// answer is then the one the fill acts on, so a batch this queues renders on the Engine it was
+/// queued on.
+///
+/// A batch compiled for a Plan that is not live while a swap has been committed since the latch
+/// was compiled for the Plan that swap installs: it waits for it rather than being dropped.
+/// RT-safe: at most two `Acquire` loads and one pointer compare.
 pub fn control_fate<'a>(
     slot: &RenderSlot,
     stamps: impl IntoIterator<Item = Option<&'a PreparedAgainst>>,
@@ -79,7 +86,13 @@ pub fn control_fate<'a>(
         return ControlFate::Wait;
     }
     match stamps.into_iter().flatten().next() {
-        Some(against) if !against.is_live(slot) => ControlFate::Drop,
+        Some(against) if !against.is_live(slot) => {
+            if slot.install_committed() {
+                ControlFate::Wait
+            } else {
+                ControlFate::Drop
+            }
+        }
         _ => ControlFate::Queue,
     }
 }
@@ -154,7 +167,8 @@ pub fn prepare_send(
 }
 
 /// A refusal of `text` at `span`, the text trimmed to at most [`REFUSAL_TEXT_WINDOW`] bytes around
-/// the span's start, on `char` boundaries, and the span made relative to what is kept.
+/// the span's start, on `char` boundaries, and the span made relative to what is kept; its end
+/// stays where it was, past the window when the window cut it.
 fn refusal(
     message: usize,
     address: String,
@@ -186,7 +200,7 @@ fn refusal(
         text: text[from..to].to_string(),
         offset: from,
         start: start - from,
-        end: end.min(to) - from,
+        end: end - from,
         error: error.to_string(),
     }
 }

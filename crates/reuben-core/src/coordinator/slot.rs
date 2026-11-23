@@ -104,6 +104,11 @@ pub struct RenderSlot {
     /// the next callback; if the slot never re-opens it rides here until the slot is dropped
     /// off-thread. This is the only reason the render thread never frees an [`InstallBundle`].
     stranded_retiree: Option<Box<InstallBundle>>,
+    /// Whether a swap was waiting when [`latch_install`](Self::latch_install) last looked, until
+    /// the next fill consumes it. The control drain and the fill's ramp decision then read one
+    /// value per callback: a swap committed between them waits for the next callback, so control
+    /// the drain queued on the live Engine renders on it before that Engine can retire.
+    latched: Option<bool>,
 }
 
 impl RenderSlot {
@@ -117,6 +122,7 @@ impl RenderSlot {
             mailbox: side.mailbox,
             ramp,
             stranded_retiree: None,
+            latched: None,
         }
     }
 
@@ -169,9 +175,32 @@ impl RenderSlot {
     /// Whether a swap is waiting to install or ramping down toward its install: the live Engine
     /// is about to retire, and control queued on it now leaves with it unrendered if it renders no
     /// further block first. A host's control drain holds its batches while this is true, for the
-    /// Engine that installs. RT-safe: one `Acquire` load.
+    /// Engine that installs.
+    ///
+    /// The value [`latch_install`](Self::latch_install) took this callback, when it has run;
+    /// otherwise a fresh look. RT-safe: at most one `Acquire` load.
     pub fn install_pending(&self) -> bool {
+        self.latched.unwrap_or_else(|| self.mailbox.has_install())
+    }
+
+    /// Whether a swap is waiting now, whatever [`latch_install`](Self::latch_install) saw: one
+    /// committed since the latch reads `true` here and `false` from
+    /// [`install_pending`](Self::install_pending) until the next callback. RT-safe: one `Acquire`
+    /// load.
+    pub fn install_committed(&self) -> bool {
         self.mailbox.has_install()
+    }
+
+    /// Look once at whether a swap is waiting, and hold that answer until the next fill: both
+    /// [`install_pending`](Self::install_pending) and the fill's decision to begin a ramp read it.
+    /// A host that drains control calls this before the drain, so a swap committed after it
+    /// begins its ramp on the next callback, never under control the drain just queued on the
+    /// Engine it retires. A host that calls only the fills loses nothing: an unlatched fill looks
+    /// for itself. RT-safe: one `Acquire` load.
+    pub fn latch_install(&mut self) -> bool {
+        let pending = self.mailbox.has_install();
+        self.latched = Some(pending);
+        pending
     }
 
     /// The live Engine's prepared routes; see [`Engine::prepared_routes`]. Each Plan builds its
@@ -226,7 +255,11 @@ impl RenderSlot {
         // stays in the slot until the ramp reaches zero. Only the render side drains
         // the install slot and one-swap-in-flight keeps the Coordinator from replacing
         // it mid-ramp, so what we peek here is exactly what we drain at zero.
-        if !self.ramp.is_active() && self.mailbox.has_install() {
+        let waiting = self
+            .latched
+            .take()
+            .unwrap_or_else(|| self.mailbox.has_install());
+        if !self.ramp.is_active() && waiting {
             self.ramp.begin_down();
         }
 
