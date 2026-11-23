@@ -1,4 +1,5 @@
-// Copy into a set folder's .vscode/tasks.json. README.md beside this file says how.
+// Copy into a set folder's .vscode/tasks.json. README.md beside this file says how. Every task runs
+// the binary the `reuben.command` setting names; VS Code stops with that setting's name if it is unset.
 {
   "version": "2.0.0",
   "tasks": [
@@ -7,7 +8,7 @@
       // the engine refuses shows as an error at its span until a save fixes it.
       "label": "reuben live",
       "type": "process",
-      "command": "reuben",
+      "command": "${config:reuben.command}",
       "args": ["live", "${file}"],
       "isBackground": true,
       "presentation": { "reveal": "always", "panel": "dedicated" },
@@ -33,13 +34,14 @@
     {
       // Sends the set-file line the cursor is on: its address and text, as `reuben live` reads
       // them. Reads the file from disk, so the key binding saves first. Silent on success; a
-      // refused line is marked at its span and opens the Problems view.
+      // refused line is marked at its span and opens the Problems view, and any failure, a
+      // binary that will not start included, brings up the terminal.
       "label": "reuben send line",
       "type": "process",
-      "command": "reuben",
+      "command": "${config:reuben.command}",
       "args": ["send", "--file", "${file}", "--line", "${lineNumber}"],
       "presentation": {
-        "reveal": "never",
+        "reveal": "silent",
         "revealProblems": "onProblem",
         "clear": true,
         "panel": "shared"
@@ -65,10 +67,10 @@
       // view without an inline mark.
       "label": "reuben send selection",
       "type": "process",
-      "command": "reuben",
+      "command": "${config:reuben.command}",
       "args": ["send", "${input:reubenAddress}", "${selectedText}"],
       "presentation": {
-        "reveal": "never",
+        "reveal": "silent",
         "revealProblems": "onProblem",
         "clear": true,
         "panel": "shared"
