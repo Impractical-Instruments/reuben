@@ -15,7 +15,7 @@ use reuben_api::tools::names;
 use super::router::SharedRouter;
 use super::routes::{build_routes, RouteTable};
 use crate::engine_channel::locate_surface;
-use crate::surface::SurfaceDoc;
+use reuben_api::surface::SurfaceDoc;
 
 /// How often the watch asks what plays and looks for the map file: the most a swap or a map edit
 /// waits to reach the router. Each tick is one in-process `get_document` and a few `stat`s, one

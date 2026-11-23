@@ -7,7 +7,7 @@ use reuben_contract::{NUMBER_MAX, NUMBER_MIN};
 
 use super::pattern::OscPattern;
 use super::translate::MidiKind;
-use crate::surface::{SurfaceControl, SurfaceDoc};
+use reuben_api::surface::{SurfaceControl, SurfaceDoc};
 
 /// How a translated value becomes the target's value.
 #[derive(Debug, Clone, PartialEq)]

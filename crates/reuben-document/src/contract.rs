@@ -16,7 +16,13 @@ use crate::format::{LoadError, LoadWarning, NormalizedDoc, WireEnd};
 /// cryptographic claim, so a future dedup-by-hash consumer must byte-verify a match rather than
 /// trust it.
 pub fn content_hash(doc: &NormalizedDoc) -> String {
-    format!("{:016x}", fnv1a_64(doc.to_json_pretty().as_bytes()))
+    text_hash(doc.to_json_pretty().as_bytes())
+}
+
+/// The same token over arbitrary bytes, for a document that is not an instrument (a surface doc).
+/// Equal to [`content_hash`] for the same bytes.
+pub fn text_hash(bytes: &[u8]) -> String {
+    format!("{:016x}", fnv1a_64(bytes))
 }
 
 /// FNV-1a, 64-bit: a tiny, well-known, platform-stable content fingerprint. Chosen over a

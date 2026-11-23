@@ -36,7 +36,6 @@ mod probes;
 pub mod profile;
 pub mod rigs;
 pub mod scaffold;
-pub mod surface;
 #[doc(hidden)]
 pub mod test_support;
 pub mod tree_watch;

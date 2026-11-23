@@ -56,6 +56,9 @@ pub mod schema;
 pub mod staged;
 
 #[cfg(feature = "authoring")]
+pub mod surface;
+
+#[cfg(feature = "authoring")]
 pub mod tools;
 
 #[cfg(feature = "fs-resolver")]
