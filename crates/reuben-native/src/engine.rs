@@ -205,7 +205,8 @@ impl std::error::Error for StartError {
 ///
 /// Dropping it — or [`shutdown`](Self::shutdown), which also returns the final counters — tears
 /// the session down in order and returns only once every thread it started has exited: the
-/// watcher following outside edits to the instrument's files, the engine-channel server (its
+/// watcher following outside edits to the instrument's files, the dropped-sends watch, the thread
+/// keeping the MIDI routes in step with what plays, the engine-channel server (its
 /// connections woken and joined), the OSC-in listener, the audio streams (paused, then dropped —
 /// see [`Streams::pause`](audio::Streams::pause) for why both), the OSC-out sender, then the
 /// diagnostics logger. Every port it bound is free again afterwards.

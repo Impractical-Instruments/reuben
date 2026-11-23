@@ -17,8 +17,9 @@ use super::routes::{build_routes, RouteTable};
 use crate::engine_channel::locate_surface;
 use crate::surface::SurfaceDoc;
 
-/// How often the watch asks what plays and looks at the map file: the most a swap or a map edit
-/// waits to reach the router. Each tick is one in-process `get_document` and one `stat`.
+/// How often the watch asks what plays and looks for the map file: the most a swap or a map edit
+/// waits to reach the router. Each tick is one in-process `get_document` and a few `stat`s, one
+/// per directory [`locate_surface`] searches.
 const POLL: Duration = Duration::from_millis(250);
 
 /// What a rebuild is a function of: the instrument that plays, by source and content hash, and
@@ -53,7 +54,7 @@ impl RouteWatch {
                 while !thread_stop.load(Ordering::SeqCst) {
                     if let Some(now) = inputs(&channel, follow_files) {
                         if last.as_ref() != Some(&now) {
-                            rebuild(&channel, &router, &now);
+                            rebuild(&channel, &router, &now, last.as_ref());
                             last = Some(now);
                         }
                     }
@@ -85,7 +86,8 @@ fn inputs(channel: &Channel, follow_files: bool) -> Option<Inputs> {
         .as_deref()
         .and_then(|source| locate_surface(Path::new(source), ".midi"))
         .map(|path| {
-            // Without file following, a map is read when the instrument changes, not when it does.
+            // Without file following, an edit to a map is read when the instrument changes; a map
+            // appearing or disappearing is still seen at the next tick.
             let stamp = follow_files.then(|| stamp(&path)).flatten();
             (path, stamp)
         });
@@ -101,11 +103,13 @@ fn stamp(path: &Path) -> Option<(SystemTime, u64)> {
     Some((meta.modified().ok()?, meta.len()))
 }
 
-/// Installs the table `now` describes. A map that exists and cannot be used keeps the table that
-/// was working, as an instrument that stops loading keeps playing; anything else that leaves no
-/// map (none beside the instrument, nothing open, an instrument that does not load) installs an
-/// empty one, releasing every held note.
-fn rebuild(channel: &Channel, router: &SharedRouter, now: &Inputs) {
+/// Installs the table `now` describes. While the same instrument stays open, a map that cannot be
+/// used, or a file that no longer loads while its previous version plays, keeps the table that was
+/// working, as an instrument that stops loading keeps playing. Otherwise anything that leaves no
+/// usable map (none beside the instrument, nothing open, nothing playing, another instrument's
+/// map that cannot be used) installs an empty one, releasing every held note.
+fn rebuild(channel: &Channel, router: &SharedRouter, now: &Inputs, last: Option<&Inputs>) {
+    let same_instrument = last.is_some_and(|last| last.source == now.source);
     let install = |table: RouteTable| {
         router
             .lock()
@@ -122,13 +126,24 @@ fn rebuild(channel: &Channel, router: &SharedRouter, now: &Inputs) {
         .and_then(|text| SurfaceDoc::parse(&text).map_err(|e| e.to_string()))
     {
         Ok(doc) => doc,
-        Err(why) => {
+        Err(why) if same_instrument => {
             eprintln!("midi map: {shown} {why}; keeping the routes it had");
+            return;
+        }
+        Err(why) => {
+            eprintln!("midi map: {shown} {why}; MIDI routes nowhere until it is fixed");
+            install(RouteTable::default());
             return;
         }
     };
     let boundary = match boundary(channel, source) {
         Ok(boundary) => boundary,
+        // An empty hash is nothing playing; otherwise the file on disk stopped loading while the
+        // version before it plays on, and so do its routes.
+        Err(why) if same_instrument && !now.content_hash.is_empty() => {
+            eprintln!("midi map: {shown} not rebuilt: {why}; keeping the routes it had");
+            return;
+        }
         Err(why) => {
             eprintln!("midi map: {shown} not used: {why}");
             install(RouteTable::default());

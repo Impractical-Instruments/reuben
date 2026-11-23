@@ -145,6 +145,25 @@ fn invalid_map_keeps_previous_routes() {
 }
 
 #[test]
+fn a_map_edit_while_the_file_does_not_load_keeps_the_routes_playing() {
+    let dir = TempDir::new("midi_unloadable_file");
+    seed(&dir.0, "inst", Some(2));
+    let engine = start(&dir.0, "inst");
+    let channel = engine.channel();
+    assert!(routes(&channel, 2, SETTLE));
+    // The previous instrument keeps playing; the file no longer loads.
+    std::fs::write(dir.0.join("inst.json"), "{ not an instrument").expect("break it");
+    std::thread::sleep(QUIET);
+    write_map(&dir.0, "inst", &map("inst", 3));
+    std::thread::sleep(QUIET);
+    assert!(
+        routes(&channel, 2, Duration::ZERO),
+        "{:?}",
+        diagnostics(&channel)
+    );
+}
+
+#[test]
 fn a_deleted_map_routes_nothing() {
     let dir = TempDir::new("midi_deleted_map");
     seed(&dir.0, "inst", Some(2));
@@ -191,6 +210,28 @@ fn opening_another_instrument_follows_its_map() {
     assert!(matches!(opened, SwapOutcome::Installed(_)), "{opened:?}");
     assert!(routes(&channel, 5, SETTLE), "{:?}", diagnostics(&channel));
     assert!(!routes(&channel, 2, Duration::ZERO));
+}
+
+#[test]
+fn opening_an_instrument_whose_map_is_broken_drops_the_old_routes() {
+    let dir = TempDir::new("midi_open_broken_map");
+    seed(&dir.0, "first", Some(2));
+    seed(&dir.0, "second", None);
+    write_map(&dir.0, "second", "{ not json");
+    let engine = start(&dir.0, "first");
+    let channel = engine.channel();
+    assert!(routes(&channel, 2, SETTLE));
+    channel
+        .open(dir.0.join("second.json").display().to_string(), None)
+        .expect("open");
+    let deadline = Instant::now() + SETTLE;
+    while routes(&channel, 2, Duration::ZERO) {
+        assert!(
+            Instant::now() < deadline,
+            "the first instrument's map still routes"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
 
 #[test]
