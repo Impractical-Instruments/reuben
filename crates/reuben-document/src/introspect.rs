@@ -358,7 +358,7 @@ impl PortInfo {
             Ok(minted) => {
                 let port = &minted.descriptor.inputs[0];
                 let mut info = PortInfo::from_port(port, false);
-                if let Some(arg) = &minted.enum_default {
+                if let Some(arg) = &minted.seed {
                     info.default = Some(doc_value_json(doc_value(port, arg)));
                 }
                 info

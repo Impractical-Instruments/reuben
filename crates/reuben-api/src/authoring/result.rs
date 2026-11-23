@@ -91,7 +91,8 @@ pub struct PortInfo {
     /// Omitted (false) for an ordinary runtime input or any output.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub constant: bool,
-    /// Unwired default: a number for a scalar/integer control, the variant symbol for an enum.
+    /// Unwired default: a number for a scalar/integer control, the variant symbol for an enum, the
+    /// text for a `str` pipe.
     /// Omitted for a port with no settable default (audio buffers, `Note`/`Harmony`, outputs).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<crate::schema::Literal>")]

@@ -2,7 +2,16 @@
 
 No inference, no network, no model — so it runs in CI on every PR in seconds and its numbers are
 byte-reproducible. What it measures is what the *surface* costs a perfect caller: grounding tokens
-handed back by the sidecar, failed-validate rounds, and freehand-JSON characters.
+handed back by the sidecar and failed-validate rounds.
+
+Document characters (metric (c)) are not on the trend here. A reference solution's arguments are
+written in `tasks.py`, and which roster arguments count as a document is `DOCUMENT_ARGUMENTS` in
+`workspace.py` — both harness, which this gate never swaps. The surface enters in one way only:
+whether each verb a reference calls is on the roster, since an off-roster call is charged by value.
+So the number moves with the surface only when a reference calls a verb one side lacks, which says
+whether a verb exists, not what the surface costs. Today it is zero on every task. It is a
+live-tier metric; here it survives as a warning whenever a reference emits a document, since a
+reference is meant to model a conforming client.
 
 That floor is exactly what a new verb moves, which is why this tier gates and the live tier does
 not.
@@ -40,7 +49,6 @@ METRICS = (
     ("tokens_total", "grounding tokens", lambda r: r["tokens"]["total"]),
     ("tokens_fixed", "fixed grounding", lambda r: r["tokens"]["fixed"]),
     ("repair_rounds", "repair rounds", lambda r: r["repair_rounds"]),
-    ("payload_characters", "document chars", lambda r: r["payload_characters"]),
 )
 
 
@@ -210,6 +218,23 @@ def render(report: dict[str, Any], baseline: dict[str, Any] | None) -> tuple[str
             shown = "—" if delta is None else f"{delta:+.1f}"
             lines.append(f"| `{key}` | {label} | {value} | {base_value} | {shown} | {icon} |")
 
+    emitters = {
+        key: result.get("payload_characters", 0)
+        for key, result in report["tasks"].items()
+        if result.get("payload_characters", 0) > 0
+    }
+    for key, chars in emitters.items():
+        print(
+            f"::warning title=Reference emits a document::{key} emits {chars} document characters — "
+            "a reference solution should edit through the verbs"
+        )
+    if emitters:
+        lines += [
+            "",
+            "⚠️ Reference solutions emitting document characters: "
+            + ", ".join(f"`{key}` ({chars:,})" for key, chars in emitters.items()),
+        ]
+
     lines += _density_lines(report, baseline)
 
     lines.append("")
@@ -222,6 +247,10 @@ def render(report: dict[str, Any], baseline: dict[str, Any] | None) -> tuple[str
         lines.append(f"**Result: ❌ {verdict}.**")
     elif warned:
         lines.append("**Result: ⚠️ the agent surface grew — recorded on the trend, not blocked. See annotations.**")
+    elif emitters:
+        lines.append(
+            "**Result: ⚠️ a reference solution emits a document — not blocked. See annotations.**"
+        )
     else:
         lines.append("**Result: ✅ the agent surface held.**")
     lines.append("")
@@ -247,7 +276,6 @@ def history_records(report: dict[str, Any], identity: dict[str, str]) -> list[di
             "schemas_bytes": result["tokens"]["schemas_bytes"],
             "schema_density": result["tokens"]["schema_density"],
             "repair_rounds": result["repair_rounds"],
-            "payload_characters": result["payload_characters"],
         }
         for key, result in report["tasks"].items()
     ]

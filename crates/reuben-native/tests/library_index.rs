@@ -69,3 +69,24 @@ fn every_available_instrument_has_a_line() {
         );
     }
 }
+
+/// A reusable child that passes a `str` through its boundary indexes like any other: its `str`
+/// output is inert at the root (a warning), not an error that would fail the whole generation.
+#[test]
+fn a_child_with_a_str_output_indexes() {
+    let dir = std::env::temp_dir().join(format!("reuben_index_str_child_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    std::fs::write(
+        dir.join("str_child.json"),
+        r#"{ "format_version": 3, "instrument": "str_child",
+             "doc": "A reusable child that passes a pattern string through.",
+             "interface": { "inputs": { "pat": { "type": "str", "default": "inner" } },
+                            "outputs": { "o": { "from": "/pat.out" } } },
+             "nodes": [] }"#,
+    )
+    .expect("write fixture");
+    let index = generate_library_index(&dir);
+    std::fs::remove_dir_all(&dir).ok();
+    let index = index.expect("generates");
+    assert!(index.contains("str_child"), "{index}");
+}

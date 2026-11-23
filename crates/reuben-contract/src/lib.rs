@@ -7,9 +7,9 @@
 //!
 //! A port carries an **`Arg` type**, named by [`PortSpec::ty`]: `f32_buffer` (a dense per-sample
 //! signal), `f32` (a materialized scalar control with a `{ .. }` meta block), `i32` (a bounded
-//! integer control / constant), `enum` (a held vocab enum, naming its shared `vocab` type), `note`,
-//! `harmony`, or `arg` (the type-agnostic pass-through). The retired `Shape`/legacy-`kind`
-//! two-surface world is gone.
+//! integer control / constant), `enum` (a held vocab enum, naming its shared `vocab` type), `str`
+//! (a held string input), `note`, `harmony`, `pitch`, or `arg` (the type-agnostic pass-through).
+//! The retired `Shape`/legacy-`kind` two-surface world is gone.
 //!
 //! reuben-core re-exports this crate's meta types, so it is reached from the bare-metal target the
 //! render half builds for, where no `std` exists to link. It is therefore `no_std` + `alloc`, with
@@ -133,6 +133,9 @@ pub enum PortTy {
     /// `arg` — a type-agnostic pass-through carrying any `Arg`. Input-only
     /// ([`validate`] enforces it — legality needs list context).
     Arg,
+    /// `str` — a held string (`Arg::Str`), read as `&str`; unset, it reads `""`. Input-only
+    /// ([`validate`] enforces it).
+    Str,
 }
 
 impl PortTy {
@@ -148,7 +151,7 @@ impl PortTy {
 
 /// The legal `ty` words of the flat wire shape, for the deserialize error message — the same
 /// set the old stringly `PORT_TYPES` const enumerated, now owned by [`PortTy`].
-const PORT_TY_WORDS: [&str; 8] = [
+const PORT_TY_WORDS: [&str; 9] = [
     "f32_buffer",
     "f32",
     "i32",
@@ -156,6 +159,7 @@ const PORT_TY_WORDS: [&str; 8] = [
     "note",
     "harmony",
     "pitch",
+    "str",
     "arg",
 ];
 
@@ -219,6 +223,7 @@ impl TryFrom<PortSpecFlat> for PortSpec {
             "note" => PortTy::Note,
             "harmony" => PortTy::Harmony,
             "pitch" => PortTy::Pitch,
+            "str" => PortTy::Str,
             "arg" => PortTy::Arg,
             other => {
                 return Err(format!(
@@ -379,6 +384,23 @@ fn validate_port(at: Locus, label: &str, p: &PortSpec) -> Result<(), ContractErr
                 ));
             }
         }
+        // An output would have the render thread mint the string it emits, and minting one
+        // allocates. A string enters only from outside the graph: a document value or a live
+        // control message. Not a constant either: no Operator reads a constant's value, so a
+        // `str` one would validate, save and do nothing.
+        PortTy::Str => {
+            if label != "input" {
+                let why = if label == "output" {
+                    "an operator cannot build a string on the render thread without allocating"
+                } else {
+                    "no operator reads a constant's value; declare a `str` input"
+                };
+                return Err(ContractError::new(
+                    at,
+                    format!("{label} {:?}: `str` is an input type only ({why})", p.name),
+                ));
+            }
+        }
         PortTy::F32Buffer(None) | PortTy::Note | PortTy::Harmony | PortTy::Pitch => {}
     }
     Ok(())
@@ -488,6 +510,19 @@ mod tests {
             assert!(e.message.contains("snake_case"), "{}", e.message);
         }
         assert_eq!(err(r#"{ "type_name": "" }"#).locus, Locus::TypeName);
+    }
+
+    #[test]
+    fn str_is_an_input_type_only() {
+        let ok = spec(r#"{ "type_name": "x", "inputs": [ {"name":"pat","ty":"str"} ] }"#);
+        assert!(validate(&ok).is_ok());
+        assert_eq!(ok.inputs[0].ty, PortTy::Str);
+        let e = err(r#"{ "type_name": "x", "outputs": [ {"name":"pat","ty":"str"} ] }"#);
+        assert_eq!(e.locus, Locus::Output(0));
+        assert!(e.message.contains("input type only"), "{}", e.message);
+        let e = err(r#"{ "type_name": "x", "constants": [ {"name":"label","ty":"str"} ] }"#);
+        assert_eq!(e.locus, Locus::Constant(0));
+        assert!(e.message.contains("declare a `str` input"), "{}", e.message);
     }
 
     #[test]

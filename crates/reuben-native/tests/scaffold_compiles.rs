@@ -47,6 +47,7 @@ const SPECS: [(&str, &str); 3] = [
                { "name": "mode", "ty": "enum", "vocab": "FilterMode" },
                { "name": "any", "ty": "arg" },
                { "name": "root", "ty": "pitch" },
+               { "name": "pat", "ty": "str" },
                { "name": "offset", "ty": "i32",
                  "i32": { "min": -2147483648, "max": 2147483647, "default": 0 } },
                { "name": "level", "ty": "f32_buffer",

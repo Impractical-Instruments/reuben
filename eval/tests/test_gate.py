@@ -79,6 +79,29 @@ class TestVisibilityNotVerdict(unittest.TestCase):
         self.assertNotIn(gate._classify(999.0), {"FAIL", "fail"})
 
 
+class TestDocumentCharactersOnlyWarn(unittest.TestCase):
+    """Metric (c) is off the gate tier's table and trend, but a reference that emits a document is
+    still named — as a warning, never a verdict."""
+
+    def test_a_reference_that_emits_nothing_is_not_mentioned(self) -> None:
+        result = _result(total=5000, fixed=4767, tools=8, schema_bytes=8000)
+        result["payload_characters"] = 0
+        summary, failed = gate.render(_report(result), None)
+        self.assertFalse(failed)
+        self.assertNotIn("document characters", summary)
+        self.assertNotIn("document chars", summary)
+
+    def test_a_reference_that_emits_a_document_warns_without_failing(self) -> None:
+        result = _result(total=5000, fixed=4767, tools=8, schema_bytes=8000)
+        result["payload_characters"] = 2097
+        summary, failed = gate.render(_report(result), None)
+        self.assertFalse(failed)
+        self.assertIn("`tweak` (2,097)", summary)
+        self.assertIn("**Result: ⚠️ a reference solution emits a document", summary)
+        self.assertNotIn("the agent surface held", summary)
+        self.assertNotIn("the agent surface grew", summary)
+
+
 class TestSchemaDensity(unittest.TestCase):
     def test_growth_by_capability_reads_as_more_tools_flat_density(self) -> None:
         """8 tools @ 1000 B/tool -> 27 tools @ 1000 B/tool: capability growth, density held."""

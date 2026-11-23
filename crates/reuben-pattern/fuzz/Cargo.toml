@@ -1,0 +1,24 @@
+[package]
+name = "reuben-pattern-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "BSD-3-Clause"
+
+# Its own workspace: `cargo fuzz` needs nightly and libFuzzer, so this crate stays out of the main
+# workspace's gates. `tests/props.rs` runs the same body under proptest in CI.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+reuben-pattern = { path = ".." }
+
+[[bin]]
+name = "parse_query"
+path = "fuzz_targets/parse_query.rs"
+test = false
+doc = false
+bench = false

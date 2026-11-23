@@ -1,0 +1,15 @@
+[package]
+name = "reuben-pattern"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Mini-notation pattern language: parser, compiler, and an allocation-free query over exact rational time."
+
+# Depends on nothing in the workspace and nothing outside `core` + `alloc`: the `pattern` Operator's
+# Render side walks the compiled tree, so this crate has to build wherever `reuben-core` does.
+[dependencies]
+
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }
