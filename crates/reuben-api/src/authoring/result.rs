@@ -22,6 +22,8 @@ use reuben_document::format::{DocValue, Layout};
 use reuben_document::introspect as core_introspect;
 use reuben_document::{contract as core_contract, edit as core_edit, structure as core_structure};
 
+use crate::surface::SurfaceControl;
+
 /// One diagnostic — an error or a warning — with the offending node/port when the loader localized
 /// it, so an agent can jump straight to the offending node.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -402,6 +404,48 @@ pub struct ResourceEntry {
     pub source: String,
     /// The source the document's reference resolves to: what a load of this document reads.
     pub canonical: String,
+}
+
+/// What `describe_instrument_surface` answers: an instrument's MIDI map or on-screen surface doc,
+/// each control checked against the instrument's interface inputs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SurfaceView {
+    /// Where the doc is, or where the first edit creates it.
+    pub source: String,
+    /// Whether the doc exists. A missing doc has no hash and no controls.
+    pub exists: bool,
+    /// The doc's content hash, to pass as `expect` on the next edit. Absent when the doc is
+    /// missing or does not parse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash: Option<String>,
+    /// The instrument the doc was written for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instrument: Option<String>,
+    /// Controls per row, when the doc sets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cols: Option<usize>,
+    /// Every control, in order: an edit's `index` is a position here.
+    pub controls: Vec<ControlView>,
+    /// Findings about the doc as a whole: written for another instrument, or an instrument that
+    /// does not load, so no control could be checked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    /// Why the doc does not parse. It is left as it is: no edit replaces it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// One control of a surface doc and what checking it against the instrument found.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ControlView {
+    /// The control as the doc holds it.
+    pub control: SurfaceControl,
+    /// Why the control cannot be used. A skipped control is ignored when the doc is played.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped: Option<String>,
+    /// What was adjusted to use it, such as a range clamped into the input's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 // --- filling the window's shapes from the engine's ------------------------------------------------

@@ -15,6 +15,7 @@ mod call;
 mod history;
 pub mod prose;
 mod result;
+mod surface_verbs;
 mod verbs;
 
 /// The resource seam, which is neither half's: a door that only drives this one still names it
@@ -24,11 +25,12 @@ pub use args::*;
 pub use call::{call, call_scoped, named_sources, CallKind, Called, Named, Scope};
 pub use history::{restore_instrument, DocumentHistory};
 pub use result::{
-    Boundary, DeclaredMeta, Diag, DocumentView, EditResult, InputValue, InstrumentStructure,
-    InstrumentTree, InterfaceInput, InterfaceOutput, NodeBinding, NodeConstant, NodeInput,
-    NodePorts, NodeResource, OperatorInfo, Operators, PortInfo, Position, Report, ResourceEntry,
-    StructureNode, TreeDocument, WireVerdict, WireVerdicts,
+    Boundary, ControlView, DeclaredMeta, Diag, DocumentView, EditResult, InputValue,
+    InstrumentStructure, InstrumentTree, InterfaceInput, InterfaceOutput, NodeBinding,
+    NodeConstant, NodeInput, NodePorts, NodeResource, OperatorInfo, Operators, PortInfo, Position,
+    Report, ResourceEntry, StructureNode, SurfaceView, TreeDocument, WireVerdict, WireVerdicts,
 };
+pub use surface_verbs::*;
 pub use verbs::*;
 
 /// The notation key for the compact operator listing, so a door shipping that listing as

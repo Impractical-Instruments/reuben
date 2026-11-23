@@ -904,6 +904,24 @@ mod tests {
     }
 
     #[test]
+    fn a_document_scoped_surface_source_round_trips_through_read_and_write() {
+        let tree = Tree::new("surface_for_document");
+        tree.touch("lib/a.json");
+        let instrument = tree.path("lib/a.json");
+        let resolver = FsResolver::for_document(&instrument);
+        let at = resolver
+            .surface_source(&resolver.canonical(&instrument, None), SurfaceKind::Midi)
+            .expect("placed");
+        assert_eq!(at, tree.path("lib/surfaces/a.midi.json"));
+        resolver.write_text(&at, "{\"v\":1}").expect("write");
+        assert_eq!(resolver.read_text(&at).expect("read"), "{\"v\":1}");
+        assert_eq!(
+            std::fs::read_to_string(tree.resolve("lib/surfaces/a.midi.json")).unwrap(),
+            "{\"v\":1}"
+        );
+    }
+
+    #[test]
     fn wrappers_forward_surface_source() {
         use crate::authoring::DocumentHistory;
         use crate::staged::Staged;

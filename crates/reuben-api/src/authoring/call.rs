@@ -124,7 +124,11 @@ pub fn named_sources(tool: &str, args: &Value) -> Option<Vec<Named>> {
         | names::WIRE_INSTRUMENT_INTERFACE_OUTPUT
         | names::REMOVE_INSTRUMENT_RESOURCE
         | names::SET_INSTRUMENT_NODE_RESOURCE
-        | names::SET_INSTRUMENT_LAYOUT => document(),
+        | names::SET_INSTRUMENT_LAYOUT
+        | names::DESCRIBE_INSTRUMENT_SURFACE
+        | names::SET_INSTRUMENT_SURFACE_CONTROL
+        | names::REMOVE_INSTRUMENT_SURFACE_CONTROL
+        | names::MOVE_INSTRUMENT_SURFACE_CONTROL => document(),
         _ => return None,
     })
 }
@@ -173,6 +177,20 @@ pub fn call_scoped<R: Resources>(
                 $args,
                 |a| CallKind::Edit {
                     source: a.source.clone(),
+                },
+                |a| $verb(a, res),
+            )
+        };
+    }
+    // A surface edit writes the surface doc, not `source`: that doc is what the caller stages.
+    macro_rules! surface_edit {
+        ($args:ident, $ty:ty, $verb:ident) => {
+            run::<$ty, _>(
+                $args,
+                |a| CallKind::Edit {
+                    source: res
+                        .surface_source(&res.canonical(&a.source, None), a.surface)
+                        .unwrap_or_default(),
                 },
                 |a| $verb(a, res),
             )
@@ -302,6 +320,25 @@ pub fn call_scoped<R: Resources>(
             set_instrument_node_resource
         ),
         names::SET_INSTRUMENT_LAYOUT => edit!(args, SetInstrumentLayout, set_instrument_layout),
+
+        names::DESCRIBE_INSTRUMENT_SURFACE => {
+            run::<DescribeInstrumentSurface, _>(args, read, |a| describe_instrument_surface(a, res))
+        }
+        names::SET_INSTRUMENT_SURFACE_CONTROL => surface_edit!(
+            args,
+            SetInstrumentSurfaceControl,
+            set_instrument_surface_control
+        ),
+        names::REMOVE_INSTRUMENT_SURFACE_CONTROL => surface_edit!(
+            args,
+            RemoveInstrumentSurfaceControl,
+            remove_instrument_surface_control
+        ),
+        names::MOVE_INSTRUMENT_SURFACE_CONTROL => surface_edit!(
+            args,
+            MoveInstrumentSurfaceControl,
+            move_instrument_surface_control
+        ),
 
         names::SEND_LIVE_CONTROLS
         | names::GET_ENGINE_STATUS

@@ -19,6 +19,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::surface::{SurfaceControl, SurfaceKind};
+
 /// Arguments for `describe_operators`: an optional `name` filter plus the `compact` mode switch.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -711,6 +713,72 @@ pub struct ReadInstrument {
 pub struct ReadInstrumentTree {
     /// The top instrument document of the tree.
     pub source: String,
+}
+
+// --- surface docs ---------------------------------------------------------------------------------
+
+/// Arguments for `describe_instrument_surface`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DescribeInstrumentSurface {
+    /// The instrument whose surface doc to read (a path for this door).
+    pub source: String,
+    /// `midi` for the instrument's MIDI map, `screen` for its on-screen surface doc.
+    pub surface: SurfaceKind,
+}
+
+/// Arguments for `set_instrument_surface_control`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetInstrumentSurfaceControl {
+    /// The instrument whose surface doc to edit (a path for this door).
+    pub source: String,
+    /// `midi` for the instrument's MIDI map, `screen` for its on-screen surface doc.
+    pub surface: SurfaceKind,
+    /// The position in `controls` to replace; omit to append.
+    #[serde(default)]
+    pub index: Option<usize>,
+    /// The control to write. A MIDI map reads `bind`, `midi`, `min` and `max`; a screen doc reads
+    /// `bind`, `label`, `widget`, `group`, `min`, `max`, `note`, `velocity` and `degree`.
+    pub control: SurfaceControl,
+    /// Optional content-hash write guard: the doc's `hash` as last read. A mismatch rejects the
+    /// write.
+    #[serde(default)]
+    pub expect: Option<String>,
+}
+
+/// Arguments for `remove_instrument_surface_control`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveInstrumentSurfaceControl {
+    /// The instrument whose surface doc to edit (a path for this door).
+    pub source: String,
+    /// `midi` for the instrument's MIDI map, `screen` for its on-screen surface doc.
+    pub surface: SurfaceKind,
+    /// The position in `controls` to remove.
+    pub index: usize,
+    /// Optional content-hash write guard: the doc's `hash` as last read. A mismatch rejects the
+    /// write.
+    #[serde(default)]
+    pub expect: Option<String>,
+}
+
+/// Arguments for `move_instrument_surface_control`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MoveInstrumentSurfaceControl {
+    /// The instrument whose surface doc to edit (a path for this door).
+    pub source: String,
+    /// `midi` for the instrument's MIDI map, `screen` for its on-screen surface doc.
+    pub surface: SurfaceKind,
+    /// The position in `controls` of the control to move.
+    pub from: usize,
+    /// The position in `controls` it ends up at.
+    pub to: usize,
+    /// Optional content-hash write guard: the doc's `hash` as last read. A mismatch rejects the
+    /// write.
+    #[serde(default)]
+    pub expect: Option<String>,
 }
 
 #[cfg(test)]

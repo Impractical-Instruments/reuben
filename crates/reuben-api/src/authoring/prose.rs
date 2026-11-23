@@ -126,6 +126,33 @@ pub const ADD_INSTRUMENT_RESOURCE: &str =
 
 pub const REMOVE_INSTRUMENT_RESOURCE: &str = "Remove a resource entry by id.";
 
+// --- surface docs ---------------------------------------------------------------------------------
+
+pub const DESCRIBE_INSTRUMENT_SURFACE: &str =
+    "Read an instrument's MIDI map (`surface: \"midi\"`) or on-screen surface doc \
+     (`surface: \"screen\"`): its controls in order, each with why it would be skipped and what \
+     was adjusted to use it, warnings about the doc as a whole, and the `hash` to pass as \
+     `expect`. `exists` is false when the instrument has none yet. A MIDI map control reads \
+     `bind` (an interface input), `midi` (an address pattern over translated MIDI, such as \
+     `/midi/1/cc/74` or `/midi/{1,2}/note`), and an optional `min`/`max` narrowing; a screen \
+     control reads `bind`, `label`, `widget`, `group`, `min`, `max`, `note`, `velocity` and \
+     `degree`.";
+
+pub const SET_INSTRUMENT_SURFACE_CONTROL: &str =
+    "Replace the control at `index` in an instrument's MIDI map or on-screen surface doc, or \
+     append it when `index` is omitted; the first set creates the doc. A MIDI map reads \
+     `bind`, `midi`, `min` and `max`. Refused, with nothing written, when the control could not \
+     be used: its `bind` names no interface input, or its pattern or widget cannot drive that \
+     input. Echoes every control, one per line, by index.";
+
+pub const REMOVE_INSTRUMENT_SURFACE_CONTROL: &str =
+    "Remove the control at `index` from an instrument's MIDI map or on-screen surface doc. \
+     Removing the last control leaves an empty doc.";
+
+pub const MOVE_INSTRUMENT_SURFACE_CONTROL: &str =
+    "Move one control of an instrument's MIDI map or on-screen surface doc from index `from` to \
+     index `to`. Order is draw order on screen and does not change MIDI routing.";
+
 pub const READ_INSTRUMENT: &str = "Read an instrument document back as a projection.";
 
 pub const READ_INSTRUMENT_TREE: &str =
