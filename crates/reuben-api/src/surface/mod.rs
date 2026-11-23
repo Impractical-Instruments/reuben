@@ -17,7 +17,7 @@ use reuben_document::text_hash;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-pub use screen::{check_screen_control, default_label, ScreenControl};
+pub use screen::{check_screen_control, clamp, default_label, takes_a_value, ScreenControl};
 
 /// The one `surface_version` this reader knows.
 const SURFACE_VERSION: i64 = 1;

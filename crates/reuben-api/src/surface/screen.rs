@@ -55,14 +55,15 @@ pub fn default_label(name: &str) -> String {
         .join(" ")
 }
 
-fn clamp(value: f64, min: Option<f64>, max: Option<f64>) -> f64 {
+/// `value` held inside whichever of `min`/`max` are set.
+pub fn clamp(value: f64, min: Option<f64>, max: Option<f64>) -> f64 {
     let value = min.map_or(value, |min| value.max(min));
     max.map_or(value, |max| value.min(max))
 }
 
 /// Whether a value control can drive this input: a held scalar, an integer, or a signal with a
 /// declared range. A signal with none is audio.
-fn takes_a_value(port: &PortInfo) -> bool {
+pub fn takes_a_value(port: &PortInfo) -> bool {
     match port.kind.as_str() {
         "value" | "int" => true,
         "signal" => port.min.is_some() && port.max.is_some(),

@@ -144,11 +144,6 @@ fn gate(on: bool) -> f64 {
     }
 }
 
-pub fn clamp(value: f64, min: Option<f64>, max: Option<f64>) -> f64 {
-    let value = min.map_or(value, |min| value.max(min));
-    max.map_or(value, |max| value.min(max))
-}
-
 /// Where `value` sits in `min..=max` as a fraction, along the input's curve.
 pub fn to_unit(value: f64, min: f64, max: f64, exponential: bool) -> f64 {
     if max <= min {
@@ -172,20 +167,11 @@ pub fn from_unit(unit: f64, min: f64, max: f64, exponential: bool) -> f64 {
     }
 }
 
-pub use reuben_api::surface::default_label;
+use reuben_api::surface::takes_a_value;
+pub use reuben_api::surface::{clamp, default_label};
 
 fn number(port: &PortInfo) -> Option<f64> {
     port.default.as_ref().and_then(serde_json::Value::as_f64)
-}
-
-/// Whether a value control can drive this input: a held scalar, an integer, or a signal with a
-/// declared range. A signal with none is audio.
-fn takes_a_value(port: &PortInfo) -> bool {
-    match port.kind.as_str() {
-        "value" | "int" => true,
-        "signal" => port.min.is_some() && port.max.is_some(),
-        _ => false,
-    }
 }
 
 fn value_kind(port: &PortInfo, shape: Shape, min: Option<f64>, max: Option<f64>) -> Kind {
