@@ -143,15 +143,15 @@ pub trait EngineHost: Send + Sync {
     /// `Ok` means the host took the batch, not that it will be applied: a host with a bounded
     /// ingress may drop it and count the drop instead.
     ///
-    /// Its strings bound for inputs that compile their text arrive compiled. The render side
-    /// queues such a message only while
-    /// [`PreparedAgainst::is_live`](super::PreparedAgainst::is_live) holds for its `against`, and
-    /// otherwise drops it, counts it, and hands its address back through
+    /// Its strings bound for inputs that compile their text arrive compiled. The render side asks
+    /// [`control_fate`](super::control_fate) of each batch before queueing any of it: it holds
+    /// the batch while a swap installs, and drops the whole batch when its strings were compiled
+    /// for a Plan since replaced, counting every message and handing every address back through
     /// [`take_dropped_sends`](Self::take_dropped_sends).
     fn deliver_control(&self, messages: Vec<PreparedMessage>) -> Result<(), IngressClosed>;
 
-    /// The addresses of the compiled messages the render side dropped because a swap installed
-    /// between their compile and their apply, since the last call, each once and sorted. Called off
+    /// The addresses of the messages the render side dropped, in batches whose strings were
+    /// compiled for a Plan a swap had since replaced, since the last call, each once and sorted. Called off
     /// the render thread, by [`ChannelState::publish_dropped_sends`]. Defaults to none, which is
     /// right for a host whose drain never drops one.
     fn take_dropped_sends(&self) -> Vec<String> {
@@ -241,9 +241,9 @@ pub struct ChannelState {
     silent: Arc<AtomicBool>,
     /// The Coordinator's retire queue, drained without its lock: `send` must not wait on a swap.
     retired: RetireDrain,
-    /// The routing table `send` compiles strings against: the Plan the render side runs, as far
-    /// as this side knows. Its own lock, so `send` does not wait on a swap; written only under the
-    /// Coordinator lock, once the render side has taken the swap home.
+    /// The routing table `send` compiles strings against: the last committed Plan's. Its own
+    /// lock, so `send` does not wait on a swap; written only under the Coordinator lock, right
+    /// after each commit.
     routes: Arc<Mutex<Arc<PreparedRoutes>>>,
 }
 
@@ -1084,6 +1084,13 @@ fn went_live(
     state
         .silent
         .store(went == Went::OpenedSilent, Ordering::SeqCst);
+    // From the commit on, a send compiles for the new Plan. A host's drain holds every batch from
+    // the commit until the render side has installed it, so what this compiles meets the Plan it
+    // was compiled for; a batch compiled before this, against the old Plan, meets the new one and
+    // is dropped whole and announced. Written through a poisoned lock too: the assignment cannot
+    // be left half done, and a stale table would refuse or drop every later send.
+    *state.routes.lock().unwrap_or_else(|p| p.into_inner()) =
+        coordinator.installed_prepared_routes();
     *state.installed_source()? = source.clone();
     *state.tree_cell()? = tree;
 
@@ -1094,12 +1101,6 @@ fn went_live(
     state.host.install_probes(coordinator.installed_probes());
 
     reclaim_retired(coordinator, state.host.as_ref());
-    // After the reclaim, which returns once the render side runs the new Plan, so a send compiled
-    // from here on is compiled for what it will meet. A send compiled before this against the old
-    // Plan and drained after the install is dropped there and announced. A reclaim that gave up
-    // leaves the install to the render side's next callback, and a send it drains first meets the
-    // old Plan: dropped and announced the same way, never applied to the wrong input.
-    *state.routes.lock().map_err(|_| Poisoned)? = coordinator.installed_prepared_routes();
 
     // What plays changed, so a failure reported against what played before is news again.
     *state.reported_invalid.lock().map_err(|_| Poisoned)? = None;

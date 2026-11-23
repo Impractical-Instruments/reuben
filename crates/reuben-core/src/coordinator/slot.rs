@@ -166,6 +166,14 @@ impl RenderSlot {
         self.engine.take_dropped_unprepared()
     }
 
+    /// Whether a swap is waiting to install or ramping down toward its install: the live Engine
+    /// is about to retire, and control queued on it now leaves with it unrendered if it renders no
+    /// further block first. A host's control drain holds its batches while this is true, for the
+    /// Engine that installs. RT-safe: one `Acquire` load.
+    pub fn install_pending(&self) -> bool {
+        self.mailbox.has_install()
+    }
+
     /// The live Engine's prepared routes; see [`Engine::prepared_routes`]. Each Plan builds its
     /// own, so a pointer compare against an `Arc` a producer holds tells whether the Plan it
     /// prepared against is still the live one. RT-safe: a field read.

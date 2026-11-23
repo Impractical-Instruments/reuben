@@ -92,3 +92,64 @@ fn draining_control_neither_allocates_nor_frees_on_the_render_thread() {
         "every batch went back to its producer"
     );
 }
+
+/// Batches a `send` stamped with the Plan it compiled for: one naming the live Plan is queued, one
+/// naming another is dropped whole and marked, and neither touches the heap on the render thread.
+#[test]
+fn stamped_and_stale_batches_neither_allocate_nor_free_on_the_render_thread() {
+    use reuben_api::engine::PreparedAgainst;
+    use std::sync::Arc;
+
+    let cfg = AudioConfig::new(48_000.0, 64);
+    let (_coordinator, side, _) =
+        reuben_api::engine::install_initial(DOC, no_store(), cfg).expect("install");
+    let live = PreparedAgainst::new(Arc::clone(side.engine.prepared_routes()));
+    let (_other, other_side, _) =
+        reuben_api::engine::install_initial(DOC, no_store(), cfg).expect("install");
+    let stale = PreparedAgainst::new(Arc::clone(other_side.engine.prepared_routes()));
+    let mut slot = RenderSlot::new(side);
+    let mut out = vec![0.0f32; cfg.block_size * slot.channels()];
+    let diagnostics = Diagnostics::new();
+    let (mut producer, ring) = ring_pair(Diagnostics::new());
+    let mut control = ControlDrain::new(vec![ring]);
+    let stamped = |batch: ControlBatch, i: usize, against: &PreparedAgainst| {
+        let mut batch = gesture(batch, i);
+        batch[0].against = Some(against.clone());
+        batch
+    };
+
+    for i in 0..4 {
+        let batch = stamped(producer.batch(), i, &live);
+        producer.push(batch).unwrap();
+        drain_control(&mut control, &mut slot, &diagnostics);
+        slot.fill(&mut out);
+    }
+    assert_counter_is_live();
+    let mut total = rt_alloc::Counts {
+        allocs: 0,
+        frees: 0,
+    };
+    const BLOCKS: usize = 20;
+    for b in 0..BLOCKS {
+        let batch = stamped(producer.batch(), 2 * b, &live);
+        producer.push(batch).unwrap();
+        let batch = stamped(producer.batch(), 2 * b + 1, &stale);
+        producer.push(batch).unwrap();
+        let c = measure(|| {
+            drain_control(&mut control, &mut slot, &diagnostics);
+            slot.fill(&mut out);
+        });
+        total.allocs += c.allocs;
+        total.frees += c.frees;
+    }
+    assert_eq!((total.allocs, total.frees), (0, 0));
+    assert_eq!(
+        diagnostics.snapshot().stale_sends_dropped,
+        (3 * BLOCKS) as u64,
+        "every message of every stale batch"
+    );
+    assert_eq!(
+        producer.take_dropped(),
+        vec!["/abs/x", "/filt/cutoff", "/filt/mode"]
+    );
+}

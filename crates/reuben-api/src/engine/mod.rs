@@ -63,7 +63,10 @@ pub use result::{
     CurrentInstrument, EngineStatus, InstrumentList, SendOutput, SidecarInfo, StatusEndpoints,
     SwapResult,
 };
-pub use send::{prepare_send, queue_control, PreparedAgainst, PreparedMessage};
+pub use send::{
+    control_fate, prepare_send, ControlFate, PreparedAgainst, PreparedMessage, NOT_ONE_STRING,
+    REFUSAL_TEXT_WINDOW,
+};
 pub use server::{
     dispatch, dispatch_request, ChannelState, EngineHost, InProcess, IngressClosed, Installed,
     ServerStore, SwapInFlight, COORDINATOR_POISONED, IN_PROCESS_ENDPOINT, SILENCE,

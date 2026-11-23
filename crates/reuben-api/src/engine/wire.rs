@@ -126,19 +126,25 @@ pub struct ControlMessage {
     pub args: Vec<ControlArg>,
 }
 
-/// Why a `send` was refused for text that did not compile: the first string in the batch, aimed
-/// at an input that compiles its text, that its compiler refused. Nothing in the batch was applied.
+/// Why a `send` was refused: the first message in the batch, aimed at an input that compiles its
+/// text, that was not one string or whose string its compiler refused. Nothing in the batch was
+/// applied.
 ///
 /// It carries the text itself, so a client can print the span under it without having kept what
-/// it sent.
+/// it sent: the whole text, or a window of at most a kilobyte around the span when the text is
+/// longer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SendRefusal {
     /// The refused message's position in the batch, from 0.
     pub message: usize,
     /// The refused message's address.
     pub address: String,
-    /// The text that did not compile.
+    /// The text that did not compile, or the window of it around the fault; empty when the
+    /// message was not one string.
     pub text: String,
+    /// Byte offset of `text` in the string sent: 0 unless it was trimmed to a window.
+    #[serde(default)]
+    pub offset: usize,
     /// Byte offset into `text` where the fault starts.
     pub start: usize,
     /// Byte offset into `text` where the fault ends; equal to `start` where something is missing.
@@ -148,14 +154,31 @@ pub struct SendRefusal {
 }
 
 impl SendRefusal {
-    /// `text` on one line and a run of `^` under the span on the next, the span widened to one
-    /// mark where it is empty. Columns count `char`s, so the marks line up under monospace text
-    /// with no wide characters; a span off a `char` boundary marks from the start.
+    /// `text`, then a line of `^` under the span, beneath the line of `text` the span starts on.
+    ///
+    /// The marks run to the span's end or that line's end, at least one wide, so an empty span or
+    /// one at the very end still shows. The padding copies each tab before the span and puts a
+    /// space for every other `char`, so the marks line up under monospace text with no wide
+    /// characters. A span past the text or off a `char` boundary is moved back onto one.
     pub fn marked(&self) -> String {
-        let column = |at: usize| self.text.get(..at).map_or(0, |s| s.chars().count());
-        let start = column(self.start);
-        let width = column(self.end).saturating_sub(start).max(1);
-        format!("{}\n{}{}", self.text, " ".repeat(start), "^".repeat(width))
+        let text = self.text.as_str();
+        let floor = |mut at: usize| {
+            at = at.min(text.len());
+            while !text.is_char_boundary(at) {
+                at -= 1;
+            }
+            at
+        };
+        let start = floor(self.start);
+        let line_start = text[..start].rfind('\n').map_or(0, |i| i + 1);
+        let line_end = text[start..].find('\n').map_or(text.len(), |i| start + i);
+        let end = floor(self.end).clamp(start, line_end);
+        let pad: String = text[line_start..start]
+            .chars()
+            .map(|c| if c == '\t' { '\t' } else { ' ' })
+            .collect();
+        let width = text[start..end].chars().count().max(1);
+        format!("{text}\n{pad}{}", "^".repeat(width))
     }
 }
 
@@ -163,9 +186,18 @@ impl core::fmt::Display for SendRefusal {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
-            "message {} (`{}`) does not compile, so nothing in the batch was applied: bytes \
-             {}..{}: {}",
-            self.message, self.address, self.start, self.end, self.error
+            "message {} (`{}`) was refused, so nothing in the batch was applied: ",
+            self.message, self.address
+        )?;
+        if self.text.is_empty() && self.start == self.end {
+            return f.write_str(&self.error);
+        }
+        write!(
+            f,
+            "bytes {}..{}: {}",
+            self.offset + self.start,
+            self.offset + self.end,
+            self.error
         )
     }
 }
@@ -219,9 +251,10 @@ pub enum Request {
     /// Between 1 and [`MAX_SEND_BATCH`] messages; the engine rejects anything outside that with
     /// [`Response::Error`], so an empty batch is a client bug reported rather than a no-op acked.
     ///
-    /// One step comes before the ingress: a lone string aimed at an input that compiles its text
-    /// is compiled here, against the Plan installed, and travels compiled. Text that does not
-    /// compile refuses the whole batch with [`Response::SendRefused`].
+    /// One step comes before the ingress: a message aimed at an input that compiles its text must
+    /// be one string, which is compiled here, against the Plan installed, and travels compiled.
+    /// Anything else there, or text that does not compile, refuses the whole batch with
+    /// [`Response::SendRefused`].
     Send {
         /// The messages to apply, in order.
         messages: Vec<ControlMessage>,
@@ -500,8 +533,9 @@ pub enum Response {
     /// read `count < len` as "some were rejected", a signal that can never arrive. (Contrast
     /// [`Conflict`], whose two hashes earn their place precisely because they can disagree.)
     Sent,
-    /// `Send`'s answer when a string aimed at an input that compiles its text did not compile:
-    /// nothing in the batch was queued. Flat next to the `reply` tag.
+    /// `Send`'s answer when a message aimed at an input that compiles its text was not one string,
+    /// or its string did not compile: nothing in the batch was queued. Flat next to the `reply`
+    /// tag.
     SendRefused(SendRefusal),
     /// A channel-level failure: an unreadable request, or an engine-side fault that
     /// produced no domain-shaped answer. Distinct from a `SwapReport` with `ok: false`,
@@ -574,9 +608,9 @@ pub enum Event {
     /// The open instrument's documents no longer load; what played before keeps playing.
     Invalid { errors: Vec<Diag> },
     /// A live send's strings were compiled for the instrument that played before a swap, and the
-    /// swap installed before they were applied, so they were dropped rather than applied to what
-    /// plays now. `addresses` lists, sorted and once each, the addresses they were sent to; send
-    /// them again.
+    /// swap installed before the send was applied, so the whole send was dropped rather than
+    /// applied in part to what plays now. `addresses` lists, sorted and once each, every address
+    /// it carried; send it again.
     SendsDropped { addresses: Vec<String> },
 }
 
@@ -642,10 +676,10 @@ pub struct DiagnosticsReport {
     /// sends raw text. Absent from a report by an engine that predates it, and then zero.
     #[serde(default)]
     pub unprepared_writes_dropped: u64,
-    /// Strings a `send` compiled for one Plan that reached the render thread after a swap had
-    /// installed another, so they were dropped rather than applied (messages). Each drop is also
-    /// announced to subscribers, naming its address. Absent from a report by an engine that
-    /// predates it, and then zero.
+    /// Messages of `send` batches whose strings were compiled for one Plan and that reached the
+    /// render thread after a swap had installed another, so the whole batch was dropped rather
+    /// than applied (messages). Each drop is also announced to subscribers, naming the addresses.
+    /// Absent from a report by an engine that predates it, and then zero.
     #[serde(default)]
     pub stale_sends_dropped: u64,
 }
@@ -817,6 +851,7 @@ mod tests {
             message: 1,
             address: "/seq/steps".to_string(),
             text: "1 x2 3".to_string(),
+            offset: 0,
             start: 2,
             end: 4,
             error: "expected a whole number".to_string(),
@@ -837,12 +872,35 @@ mod tests {
                 "message": 1,
                 "address": "/seq/steps",
                 "text": "1 x2 3",
+                "offset": 0,
                 "start": 2,
                 "end": 4,
                 "error": "expected a whole number"
             })
         );
         assert_eq!(send_refusal().marked(), "1 x2 3\n  ^^");
+    }
+
+    /// The marks go under the line the span starts on, padded with the tabs before it, and a span
+    /// at the very end of the text or past it still shows one mark.
+    #[test]
+    fn marks_sit_under_the_spans_line_after_its_tabs() {
+        let at = |text: &str, start, end| {
+            SendRefusal {
+                text: text.to_string(),
+                start,
+                end,
+                ..send_refusal()
+            }
+            .marked()
+        };
+        assert_eq!(at("1 2\n3 x", 6, 7), "1 2\n3 x\n  ^");
+        assert_eq!(at("1 2\n3 xyz\n4", 6, 20), "1 2\n3 xyz\n4\n  ^^^");
+        assert_eq!(at("\tx", 1, 2), "\tx\n\t^");
+        assert_eq!(at("ab", 2, 2), "ab\n  ^");
+        assert_eq!(at("ab", 9, 9), "ab\n  ^");
+        assert_eq!(at("a\n", 2, 2), "a\n\n^");
+        assert_eq!(at("", 0, 0), "\n^");
     }
 
     #[test]

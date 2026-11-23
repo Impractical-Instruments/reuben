@@ -66,10 +66,10 @@ pub struct Diagnostics {
     /// compiles a string before it is queued; OSC over UDP carries raw text, so a string sent that
     /// way counts here. Diagnosis: send it through the engine channel instead.
     pub unprepared_writes_dropped: AtomicU64,
-    /// Strings a `send` compiled for one Plan that the callback dropped because a swap had
-    /// installed another before it drained them, counted in **messages**. Each is named to the
-    /// engine channel's subscribers, so a client can resend. Diagnosis: a send raced an edit or
-    /// an open; resend it.
+    /// Messages of `send` batches whose strings were compiled for one Plan, dropped whole by the
+    /// callback because a swap had installed another before it drained them, counted in
+    /// **messages**. Their addresses are named to the engine channel's subscribers, so a client
+    /// can resend. Diagnosis: a send raced an edit or an open; resend it.
     ///
     /// Written with `Release` once the callback has handed back every batch it drained, and read
     /// with `Acquire` by whatever names the drops, so a reader that sees the count move finds
@@ -137,7 +137,7 @@ impl Diagnostics {
         }
     }
 
-    /// Count `n` compiled sends the callback dropped as stale, after handing back every batch it
+    /// Count `n` messages the callback dropped in stale batches, after handing back every batch it
     /// drained. A single atomic add, skipped for zero.
     pub fn record_stale_sends_dropped(&self, n: u64) {
         if n > 0 {

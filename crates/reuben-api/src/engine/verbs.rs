@@ -65,6 +65,9 @@ pub fn send_live_controls(
             output: SendOutput { sent },
             summary: format!("the engine queued {sent} control message(s)"),
         }),
+        Ok(SendOutcome::Refused(refusal)) if refusal.text.is_empty() => {
+            Err(Refusal::new(refusal.to_string()))
+        }
         Ok(SendOutcome::Refused(refusal)) => {
             Err(Refusal::new(format!("{refusal}\n{}", refusal.marked())))
         }

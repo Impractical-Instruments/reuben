@@ -4,7 +4,8 @@
 //! counted and named to subscribers rather than applied.
 //!
 //! The host here stands in for `reuben play`'s: it keeps each delivered batch until the test drains
-//! it into a [`RenderSlot`] through [`queue_control`], the call native's render callback makes.
+//! it into a [`RenderSlot`], deciding each batch with [`control_fate`] as native's render callback
+//! does.
 //! No built-in Operator compiles its text, so `steps` and `words` (`prepared/mod.rs`) are
 //! registered here.
 
@@ -20,8 +21,9 @@ use std::time::Duration;
 
 use reuben_api::authoring::{DocumentHistory, ResolveError, Resources, SampleBuffer};
 use reuben_api::engine::{
-    dispatch, queue_control, ChannelState, ControlArg, ControlMessage, DiagnosticsReport,
-    EngineHost, Event, IngressClosed, PreparedMessage, Request, Response, SendRefusal,
+    control_fate, dispatch, ChannelState, ControlArg, ControlFate, ControlMessage,
+    DiagnosticsReport, EngineHost, Event, IngressClosed, PreparedMessage, Request, Response,
+    SendRefusal, NOT_ONE_STRING, REFUSAL_TEXT_WINDOW,
 };
 use reuben_api::render::{Arg, AudioConfig, RenderSlot};
 use reuben_api::staged::Staged;
@@ -64,28 +66,56 @@ impl Resources for Texts {
     }
 }
 
-/// A host whose ingress holds each delivered batch until [`Host::drain`] queues it, as a render
-/// callback would, and whose reclaim gives up at once: the test drives the render side itself.
+/// A host whose ingress holds each delivered batch until [`Host::drain`] takes it, as a render
+/// callback would. Its reclaim gives up at once unless a test installs `on_poll`, which then
+/// answers each poll.
 #[derive(Default)]
 struct Host {
     delivered: Mutex<Vec<Vec<PreparedMessage>>>,
     dropped: Mutex<Vec<String>>,
     stale: AtomicU64,
+    #[allow(clippy::type_complexity)]
+    on_poll: Mutex<Option<Box<dyn FnMut() -> bool + Send>>>,
+}
+
+/// What native's drain does with one batch, without recording addresses: queue it, or count it
+/// dropped, or leave it. Allocation-free.
+fn take(slot: &mut RenderSlot, batch: &[PreparedMessage], stale: &AtomicU64) -> ControlFate {
+    let fate = control_fate(slot, batch.iter().map(|m| m.against.as_ref()));
+    match fate {
+        ControlFate::Queue => {
+            for m in batch {
+                slot.queue_osc(&m.address, &m.args);
+            }
+        }
+        ControlFate::Drop => {
+            stale.fetch_add(batch.len() as u64, Ordering::SeqCst);
+        }
+        ControlFate::Wait => {}
+    }
+    fate
 }
 
 impl Host {
-    /// Queue every delivered batch at `slot` through [`queue_control`], recording what it drops.
-    /// Returns the batches, so the caller frees them where it chooses.
+    /// Take each delivered batch in order at `slot`, as native's drain does: stop at one that must
+    /// wait, and record the addresses of one dropped. Returns the batches taken, so the caller
+    /// frees them where it chooses.
     fn drain(&self, slot: &mut RenderSlot) -> Vec<Vec<PreparedMessage>> {
-        let batches = std::mem::take(&mut *self.delivered.lock().unwrap());
-        let mut dropped = self.dropped.lock().unwrap();
-        for m in batches.iter().flatten() {
-            if !queue_control(slot, &m.address, &m.args, m.against.as_ref()) {
-                dropped.push(m.address.clone());
-                self.stale.fetch_add(1, Ordering::SeqCst);
+        let mut delivered = self.delivered.lock().unwrap();
+        let mut taken = Vec::new();
+        while let Some(batch) = delivered.first() {
+            match take(slot, batch, &self.stale) {
+                ControlFate::Wait => break,
+                ControlFate::Drop => self
+                    .dropped
+                    .lock()
+                    .unwrap()
+                    .extend(batch.iter().map(|m| m.address.clone())),
+                ControlFate::Queue => {}
             }
+            taken.push(delivered.remove(0));
         }
-        batches
+        taken
     }
 
     fn delivered(&self) -> usize {
@@ -118,7 +148,10 @@ impl EngineHost for Host {
     }
 
     fn retire_poll(&self) -> Box<dyn FnMut() -> bool + Send + '_> {
-        Box::new(|| true)
+        Box::new(|| match self.on_poll.lock().unwrap().as_mut() {
+            Some(poll) => poll(),
+            None => true,
+        })
     }
 }
 
@@ -293,6 +326,7 @@ fn a_bad_value_refuses_the_whole_batch_with_its_span() {
             message: 2,
             address: "/w/text".to_string(),
             text: "ab c3d".to_string(),
+            offset: 0,
             start: 4,
             end: 5,
             error: "a word has no digits".to_string(),
@@ -307,8 +341,8 @@ fn a_bad_value_refuses_the_whole_batch_with_its_span() {
 }
 
 /// What prepare leaves alone reaches the host exactly as it did before: a number at a number
-/// input, a string at an address with no route (an enum symbol), several atoms, an address that
-/// names nothing.
+/// input, a string at an address with no route (an enum symbol), several atoms at one, an address
+/// that names nothing.
 #[test]
 fn sends_that_compile_nothing_pass_through_unchanged() {
     let r = rig(RIG);
@@ -319,12 +353,8 @@ fn sends_that_compile_nothing_pass_through_unchanged() {
         },
         str_message("/nowhere/at", "1 x"),
         ControlMessage {
-            address: "/direct/steps".to_string(),
+            address: "/abs/x".to_string(),
             args: vec![ControlArg::Str("1".into()), ControlArg::I32(2)],
-        },
-        ControlMessage {
-            address: "/direct/steps".to_string(),
-            args: vec![ControlArg::F32(2.5)],
         },
     ];
     let expected: Vec<Vec<Arg>> = messages
@@ -346,12 +376,12 @@ fn sends_that_compile_nothing_pass_through_unchanged() {
 fn raw_text_from_udp_is_still_dropped_and_counted() {
     let mut r = rig(RIG);
     r.block();
-    assert!(queue_control(
-        &mut r.slot,
-        "/direct/steps",
-        &[Arg::Str("5".into())],
-        None
-    ));
+    let udp = [PreparedMessage {
+        address: "/direct/steps".to_string(),
+        args: vec![Arg::Str("5".into())],
+        against: None,
+    }];
+    assert_eq!(take(&mut r.slot, &udp, &r.host.stale), ControlFate::Queue);
     r.slot.fill(&mut r.out);
     let pairs: Vec<_> = r
         .slot
@@ -362,9 +392,9 @@ fn raw_text_from_udp_is_still_dropped_and_counted() {
     assert_eq!(r.slot.take_dropped_unprepared(), 1);
 }
 
-/// A send compiled before a swap and drained after it is dropped, not applied to the new Plan;
-/// it is counted in the diagnostics, and a subscriber hears its address. A send after the swap
-/// compiles against the new Plan and lands.
+/// A send compiled before a swap and drained after it is dropped whole, not applied in part to the
+/// new Plan; every message is counted in the diagnostics, and a subscriber hears every address. A
+/// send after the swap compiles against the new Plan and lands.
 #[test]
 fn a_swap_between_prepare_and_apply_drops_counts_and_names_the_send() {
     // The same document again: the address still reaches a `steps` input of the same kind, the
@@ -395,10 +425,9 @@ fn a_swap_between_prepare_and_apply_drops_counts_and_names_the_send() {
         Vec::<f64>::new(),
         "the stale value was not applied"
     );
-    assert_eq!(
-        sent(&after, "/abs_out"),
-        vec![6.0],
-        "a message with nothing compiled in the same batch is applied as before"
+    assert!(
+        !sent(&after, "/abs_out").contains(&6.0),
+        "a message with nothing compiled in the same batch is dropped with it"
     );
     assert_eq!(
         r.slot.take_dropped_unprepared(),
@@ -407,21 +436,14 @@ fn a_swap_between_prepare_and_apply_drops_counts_and_names_the_send() {
     );
 
     match dispatch(&r.state, &Request::GetDiagnostics.to_ndjson()) {
-        Response::Diagnostics(d) => assert_eq!(d.stale_sends_dropped, 1),
+        Response::Diagnostics(d) => assert_eq!(d.stale_sends_dropped, 2),
         other => panic!("expected diagnostics, got {other:?}"),
     }
-    assert_eq!(
-        r.state.publish_dropped_sends(),
-        Some(Event::SendsDropped {
-            addresses: vec!["/direct/steps".to_string()],
-        })
-    );
-    assert_eq!(
-        events.recv_timeout(Duration::from_secs(1)),
-        Ok(Event::SendsDropped {
-            addresses: vec!["/direct/steps".to_string()],
-        })
-    );
+    let named = Event::SendsDropped {
+        addresses: vec!["/abs/x".to_string(), "/direct/steps".to_string()],
+    };
+    assert_eq!(r.state.publish_dropped_sends(), Some(named.clone()));
+    assert_eq!(events.recv_timeout(Duration::from_secs(1)), Ok(named));
     assert_eq!(r.state.publish_dropped_sends(), None, "named once");
 
     assert_eq!(
@@ -458,10 +480,8 @@ fn prepared_sends_through_the_send_path_touch_no_heap_on_the_render_thread() {
         let host = Arc::clone(&r.host);
         let (slot, out) = (&mut r.slot, &mut r.out);
         let c = measure(|| {
-            for m in batches.iter().flatten() {
-                if !queue_control(slot, &m.address, &m.args, m.against.as_ref()) {
-                    host.stale.fetch_add(1, Ordering::SeqCst);
-                }
+            for batch in &batches {
+                take(slot, batch, &host.stale);
             }
             slot.fill(out);
         });
@@ -499,4 +519,188 @@ fn prepared_sends_through_the_send_path_touch_no_heap_on_the_render_thread() {
         ]);
         measured(&mut r, &format!("send {i} after the swap"));
     }
+}
+
+/// Anything but one string at an address whose input compiles its text refuses the batch, naming
+/// the message, where it would otherwise be acked and then dropped unapplied at the input.
+#[test]
+fn anything_but_one_string_at_a_compiling_input_refuses_the_batch() {
+    let r = rig(RIG);
+    for args in [
+        vec![ControlArg::Str("4".into()), ControlArg::I32(2)],
+        vec![ControlArg::F32(2.5)],
+        vec![],
+    ] {
+        let answer = r.send(vec![
+            str_message("/direct/steps", "1"),
+            ControlMessage {
+                address: "/pat/in".to_string(),
+                args: args.clone(),
+            },
+        ]);
+        assert_eq!(
+            answer,
+            Response::SendRefused(SendRefusal {
+                message: 1,
+                address: "/pat/in".to_string(),
+                text: String::new(),
+                offset: 0,
+                start: 0,
+                end: 0,
+                error: NOT_ONE_STRING.to_string(),
+            }),
+            "{args:?}"
+        );
+    }
+    assert_eq!(r.host.delivered(), 0);
+}
+
+/// A refusal echoes at most a window of the text around the fault, so a request that fits the
+/// channel's line cap never draws an answer that does not.
+#[test]
+fn a_refusal_of_a_near_cap_request_fits_under_the_line_cap() {
+    use reuben_api::engine::MAX_LINE_BYTES;
+    let r = rig(RIG);
+    let request = |n: usize| Request::Send {
+        messages: vec![str_message("/w/text", &format!("{}1", "a".repeat(n)))],
+    };
+    let base = request(0).to_ndjson().len();
+    let line = request(MAX_LINE_BYTES - base - 1).to_ndjson();
+    assert!(line.len() <= MAX_LINE_BYTES);
+    let Response::SendRefused(refusal) = dispatch(&r.state, &line) else {
+        panic!("refused");
+    };
+    assert!(refusal.text.len() <= REFUSAL_TEXT_WINDOW);
+    assert_eq!(&refusal.text[refusal.start..refusal.end], "1");
+    assert_eq!(
+        refusal.offset + refusal.start,
+        MAX_LINE_BYTES - base - 1,
+        "offset and start locate the fault in the text sent"
+    );
+    assert!(Response::SendRefused(refusal).to_ndjson().len() < 2 * REFUSAL_TEXT_WINDOW);
+}
+
+/// A send compiled for the playing Plan and drained while a swap ramps down toward its install
+/// waits for the installed Engine rather than being queued on the retiring one, where it would
+/// leave unrendered with nothing said: once the swap installs it meets the new Plan, and is
+/// dropped, counted and named.
+#[test]
+fn a_send_drained_during_the_install_ramp_is_never_lost_silently() {
+    let mut r = rig(RIG);
+    r.block();
+    let events = r.state.subscribe();
+    let channels = r.slot.channels();
+    let edge = r.slot.ramp_edge_frames();
+    assert_ne!(
+        (edge - 1) % BLOCK,
+        0,
+        "the old Engine has unread frames at the install"
+    );
+
+    assert_eq!(
+        r.send(vec![str_message("/direct/steps", "50")]),
+        Response::Sent
+    );
+    let open = Request::Open {
+        name: "other".to_string(),
+        expect: None,
+    };
+    assert!(matches!(
+        dispatch(&r.state, &open.to_ndjson()),
+        Response::SwapReport(ref report) if report.report.ok
+    ));
+    // All but one frame of the down-ramp: the old Engine renders its last block.
+    let mut ramp = vec![0.0; (edge - 1) * channels];
+    r.slot.fill(&mut ramp);
+    assert!(r.slot.install_pending());
+    assert!(r.host.drain(&mut r.slot).is_empty(), "the batch waits");
+    let mut one = vec![0.0; channels];
+    r.slot.fill(&mut one);
+    assert!(!r.slot.install_pending(), "installed");
+    drop(r.slot.drain_outbound());
+
+    let after = r.block();
+    assert_eq!(sent(&after, "/d_sum"), Vec::<f64>::new());
+    assert_eq!(r.host.diagnostics().stale_sends_dropped, 1);
+    assert!(matches!(
+        events.recv_timeout(Duration::from_secs(1)),
+        Ok(Event::Opened { .. })
+    ));
+    r.state.publish_dropped_sends();
+    assert_eq!(
+        events.recv_timeout(Duration::from_secs(1)),
+        Ok(Event::SendsDropped {
+            addresses: vec!["/direct/steps".to_string()],
+        })
+    );
+}
+
+/// A send made while a swap's reclaim is still waiting for the render side compiles for the Plan
+/// being installed, waits out the ramp, and lands on it: the routes a send reads advance at the
+/// commit, not after the reclaim.
+#[test]
+fn a_send_during_a_reclaim_that_succeeds_lands_on_the_new_plan() {
+    let Rig {
+        state,
+        host,
+        slot,
+        mut out,
+    } = rig(RIG);
+    let slot = Arc::new(Mutex::new(slot));
+    let outputs = Arc::new(Mutex::new(Vec::new()));
+    let render = {
+        let (host, slot, outputs) = (Arc::clone(&host), Arc::clone(&slot), Arc::clone(&outputs));
+        let mut buf = out.clone();
+        move || {
+            let mut slot = slot.lock().unwrap();
+            drop(host.drain(&mut slot));
+            slot.fill(&mut buf);
+            let pairs: Vec<_> = slot
+                .drain_outbound()
+                .map(|m| (m.address, m.arg.as_f32().expect("a number")))
+                .collect();
+            outputs.lock().unwrap().extend(pairs);
+        }
+    };
+    let mut render_in_poll = render.clone();
+    let sender = state.clone();
+    let mut polls = 0;
+    *host.on_poll.lock().unwrap() = Some(Box::new(move || {
+        polls += 1;
+        if polls == 1 {
+            let send = Request::Send {
+                messages: vec![str_message("/direct/steps", "33")],
+            };
+            assert_eq!(dispatch(&sender, &send.to_ndjson()), Response::Sent);
+        }
+        render_in_poll();
+        polls > 200
+    }));
+    {
+        let mut slot = slot.lock().unwrap();
+        slot.fill(&mut out);
+        drop(slot.drain_outbound());
+    }
+    let open = Request::Open {
+        name: "other".to_string(),
+        expect: None,
+    };
+    assert!(matches!(
+        dispatch(&state, &open.to_ndjson()),
+        Response::SwapReport(ref report) if report.report.ok
+    ));
+    assert!(
+        !slot.lock().unwrap().install_pending(),
+        "the reclaim succeeded"
+    );
+    let mut render = render;
+    for _ in 0..4 {
+        render();
+    }
+    assert_eq!(host.stale.load(Ordering::SeqCst), 0, "not dropped");
+    assert!(
+        sent(&outputs.lock().unwrap(), "/d_sum").contains(&33.0),
+        "applied to the new Plan"
+    );
+    host.on_poll.lock().unwrap().take();
 }

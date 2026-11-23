@@ -45,7 +45,7 @@ use std::time::{Duration, Instant};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, SupportedBufferSize};
 use reuben_api::authoring::Diag;
-use reuben_api::engine::{queue_control, Coordinator, FromDocumentError, LoadWarning};
+use reuben_api::engine::{control_fate, ControlFate, Coordinator, FromDocumentError, LoadWarning};
 use reuben_api::render::{
     swap_pair, AudioConfig, CoordinatorMailbox, Message, RenderMailbox, RenderSide, RenderSlot,
     SwapInFlight,
@@ -530,14 +530,17 @@ where
 /// each back to its producer. The render callback's control step, so RT-safe: see
 /// [`ControlDrain::drain`].
 ///
-/// A message a `send` compiled for a Plan that is no longer live is not queued: it is marked
+/// Each batch's fate is [`control_fate`]'s. While a swap installs, batches wait on their rings for
+/// the Engine that installs, so none is queued on an Engine about to retire. A batch whose strings
+/// a `send` compiled for a Plan no longer live is queued not at all: every message is marked
 /// [`dropped`](crate::osc::OscIn::dropped) for its producer to name, and counted into
 /// `diagnostics` once every batch is back, so whoever sees the count move finds them there.
 pub fn drain_control(control: &mut ControlDrain, slot: &mut RenderSlot, diagnostics: &Diagnostics) {
     drain_control_each(control, slot, diagnostics, |_| {});
 }
 
-/// [`drain_control`], showing each batch to `each` once it is queued, before it goes back.
+/// [`drain_control`], showing each batch to `each` once it is queued or dropped, before it goes
+/// back.
 pub(crate) fn drain_control_each(
     control: &mut ControlDrain,
     slot: &mut RenderSlot,
@@ -546,13 +549,22 @@ pub(crate) fn drain_control_each(
 ) {
     let mut stale = 0;
     control.drain(|batch| {
-        for m in batch.iter_mut() {
-            if !queue_control(slot, &m.address, &m.args, m.against.as_ref()) {
-                m.dropped = true;
-                stale += 1;
+        match control_fate(slot, batch.iter().map(|m| m.against.as_ref())) {
+            ControlFate::Wait => return false,
+            ControlFate::Drop => {
+                for m in batch.iter_mut() {
+                    m.dropped = true;
+                }
+                stale += batch.len() as u64;
+            }
+            ControlFate::Queue => {
+                for m in batch.iter() {
+                    slot.queue_osc(&m.address, &m.args);
+                }
             }
         }
         each(batch);
+        true
     });
     diagnostics.record_stale_sends_dropped(stale);
 }

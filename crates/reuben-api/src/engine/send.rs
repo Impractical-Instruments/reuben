@@ -3,7 +3,8 @@
 //!
 //! The render thread never compiles. It takes a compiled value only at an input whose compiler
 //! built it, and only while the Plan the value was compiled against is still the live one: a
-//! [`PreparedAgainst`] names that Plan, and a host's control drain asks it before queueing.
+//! [`PreparedAgainst`] names that Plan, and a host's control drain asks [`control_fate`] before
+//! queueing a batch.
 
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
@@ -52,21 +53,35 @@ impl core::fmt::Debug for PreparedAgainst {
     }
 }
 
-/// Queue one inbound message at `slot`'s live Engine, as [`RenderSlot::queue_osc`] does, unless
-/// `against` names a Plan that is no longer live; `false` when it was dropped for that. A host's
-/// control drain calls it for every message, a UDP one with `against` `None`, and counts and
-/// reports the drops. RT-safe: a pointer compare, then `queue_osc`.
-pub fn queue_control(
-    slot: &mut RenderSlot,
-    address: &str,
-    args: &[Arg],
-    against: Option<&PreparedAgainst>,
-) -> bool {
-    if against.is_some_and(|against| !against.is_live(slot)) {
-        return false;
+/// What a host's control drain does with one batch, decided before any of it is queued.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlFate {
+    /// Queue every message at the live Engine.
+    Queue,
+    /// Leave the batch where it is and come back to it: a swap is installing, so the live Engine
+    /// is about to retire and anything queued on it may never render. The Engine that installs
+    /// takes it.
+    Wait,
+    /// Queue none of it: its strings were compiled for a Plan a swap has since replaced. The
+    /// drain counts every message and hands every address back off the render thread, so the
+    /// gesture is reported whole rather than split across the swap.
+    Drop,
+}
+
+/// Decide [`ControlFate`] for a batch whose messages carry `stamps` (their `against`), at `slot`.
+/// Every compiled message of one `send` names the same Plan, so the first stamp decides. RT-safe:
+/// one `Acquire` load and at most one pointer compare.
+pub fn control_fate<'a>(
+    slot: &RenderSlot,
+    stamps: impl IntoIterator<Item = Option<&'a PreparedAgainst>>,
+) -> ControlFate {
+    if slot.install_pending() {
+        return ControlFate::Wait;
     }
-    slot.queue_osc(address, args);
-    true
+    match stamps.into_iter().flatten().next() {
+        Some(against) if !against.is_live(slot) => ControlFate::Drop,
+        _ => ControlFate::Queue,
+    }
 }
 
 /// One message of a compiled `send` batch, as [`EngineHost::deliver_control`] receives it.
@@ -78,17 +93,27 @@ pub struct PreparedMessage {
     /// The flat atoms, a compiled string as an [`Arg::Prepared`].
     pub args: Vec<Arg>,
     /// `Some` exactly when `args` holds a compiled value: the Plan it was compiled against. A
-    /// host's drain queues the message only while [`PreparedAgainst::is_live`] holds, and
-    /// otherwise drops it, counts it, and names its address back off the render thread.
+    /// host's drain asks [`control_fate`] with these before queueing the batch.
     pub against: Option<PreparedAgainst>,
 }
 
-/// Compile every lone string in `messages` aimed at an address in `routes`, the installed Plan's
+/// The most bytes of the sent text a [`SendRefusal`] echoes: a window around the span, so the
+/// refusal stays far under the channel's line cap whatever the request carried.
+pub const REFUSAL_TEXT_WINDOW: usize = 1024;
+
+/// The most bytes of a preparer's message a [`SendRefusal`] carries.
+const REFUSAL_ERROR_BYTES: usize = 512;
+
+/// What a refusal says of a message at a `str` input that is not one string.
+pub const NOT_ONE_STRING: &str = "a str input takes one string";
+
+/// Compile the string of every message aimed at an address in `routes`, the installed Plan's
 /// table, with that address's preparer.
 ///
-/// Every other message passes through as its flat atoms: a number, several atoms, an address with
-/// no route. The first string that does not compile refuses the batch, so no part of it is
-/// applied. Cold: a preparer may allocate.
+/// A message at such an address must be exactly one string: anything else would be dropped
+/// unapplied at the input, so it refuses the batch instead. Every other message passes through as
+/// its flat atoms. The first message refused refuses the batch, so no part of it is applied. Cold:
+/// a preparer may allocate.
 pub fn prepare_send(
     routes: &Arc<PreparedRoutes>,
     messages: Vec<ControlMessage>,
@@ -96,38 +121,72 @@ pub fn prepare_send(
     let mut out = Vec::with_capacity(messages.len());
     for (i, message) in messages.into_iter().enumerate() {
         let ControlMessage { address, args } = message;
-        let route = routes.get(&address);
-        let prepared = match (route, args.as_slice()) {
-            (Some(route), [ControlArg::Str(text)]) => {
-                let source: Arc<str> = text.as_str().into();
-                match route.preparer.prepare(&source) {
-                    Ok(value) => Some(value),
-                    Err(e) => {
-                        return Err(SendRefusal {
-                            message: i,
-                            address,
-                            text: text.clone(),
-                            start: e.span.start,
-                            end: e.span.end,
-                            error: e.message.to_string(),
-                        })
-                    }
-                }
-            }
-            _ => None,
-        };
-        out.push(match prepared {
-            Some(value) => PreparedMessage {
-                address,
-                args: alloc::vec![Arg::Prepared(value)],
-                against: Some(PreparedAgainst(Arc::clone(routes))),
-            },
-            None => PreparedMessage {
+        let Some(route) = routes.get(&address) else {
+            out.push(PreparedMessage {
                 address,
                 args: args.into_iter().map(Into::into).collect(),
                 against: None,
-            },
-        });
+            });
+            continue;
+        };
+        let [ControlArg::Str(text)] = args.as_slice() else {
+            return Err(SendRefusal {
+                message: i,
+                address,
+                text: String::new(),
+                offset: 0,
+                start: 0,
+                end: 0,
+                error: NOT_ONE_STRING.to_string(),
+            });
+        };
+        let source: Arc<str> = text.as_str().into();
+        match route.preparer.prepare(&source) {
+            Ok(value) => out.push(PreparedMessage {
+                address,
+                args: alloc::vec![Arg::Prepared(value)],
+                against: Some(PreparedAgainst(Arc::clone(routes))),
+            }),
+            Err(e) => return Err(refusal(i, address, text, e.span, &e.message)),
+        }
     }
     Ok(out)
+}
+
+/// A refusal of `text` at `span`, the text trimmed to at most [`REFUSAL_TEXT_WINDOW`] bytes around
+/// the span's start, on `char` boundaries, and the span made relative to what is kept.
+fn refusal(
+    message: usize,
+    address: String,
+    text: &str,
+    span: core::ops::Range<usize>,
+    error: &str,
+) -> SendRefusal {
+    let floor = |mut at: usize| {
+        at = at.min(text.len());
+        while !text.is_char_boundary(at) {
+            at -= 1;
+        }
+        at
+    };
+    let start = floor(span.start);
+    let end = floor(span.end.max(span.start));
+    let from = floor(start.saturating_sub(REFUSAL_TEXT_WINDOW / 2));
+    let to = floor(from.saturating_add(REFUSAL_TEXT_WINDOW));
+    let error = &error[..{
+        let mut at = error.len().min(REFUSAL_ERROR_BYTES);
+        while !error.is_char_boundary(at) {
+            at -= 1;
+        }
+        at
+    }];
+    SendRefusal {
+        message,
+        address,
+        text: text[from..to].to_string(),
+        offset: from,
+        start: start - from,
+        end: end.min(to) - from,
+        error: error.to_string(),
+    }
 }

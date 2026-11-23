@@ -153,6 +153,8 @@ pub enum StartError {
     ChannelNeedsToken(String),
     /// The headless render thread would not start.
     RenderThread(io::Error),
+    /// The thread that names dropped sends to subscribers would not start.
+    DroppedSendWatch(io::Error),
 }
 
 impl fmt::Display for StartError {
@@ -170,6 +172,9 @@ impl fmt::Display for StartError {
                 "engine channel {addr} is not a loopback address, so it needs a token"
             ),
             StartError::RenderThread(e) => write!(f, "start the headless render thread: {e}"),
+            StartError::DroppedSendWatch(e) => {
+                write!(f, "start the dropped-sends watch thread: {e}")
+            }
         }
     }
 }
@@ -180,7 +185,8 @@ impl std::error::Error for StartError {
             StartError::ReadInstrument { error, .. }
             | StartError::OscIn { error, .. }
             | StartError::OscOut { error, .. }
-            | StartError::RenderThread(error) => Some(error),
+            | StartError::RenderThread(error)
+            | StartError::DroppedSendWatch(error) => Some(error),
             StartError::Instrument(e) => Some(e),
             StartError::Audio(e) => Some(e),
             StartError::ChannelNeedsToken(_) => None,
@@ -392,7 +398,7 @@ pub(crate) struct DroppedSendWatch {
 }
 
 impl DroppedSendWatch {
-    pub(crate) fn spawn(state: ChannelState, diagnostics: Arc<Diagnostics>) -> Self {
+    pub(crate) fn spawn(state: ChannelState, diagnostics: Arc<Diagnostics>) -> io::Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
         let handle = std::thread::Builder::new()
@@ -407,12 +413,11 @@ impl DroppedSendWatch {
                         state.publish_dropped_sends();
                     }
                 }
-            })
-            .expect("spawn dropped-sends thread");
-        Self {
+            })?;
+        Ok(Self {
             stop,
             handle: Some(handle),
-        }
+        })
     }
 }
 
@@ -714,7 +719,8 @@ pub(crate) fn start_with(
         None => (None, None),
     };
     let tree_watch = follow_files.then(|| tree_watch::spawn(state.clone()));
-    let dropped_sends = DroppedSendWatch::spawn(state.clone(), Arc::clone(&diagnostics));
+    let dropped_sends = DroppedSendWatch::spawn(state.clone(), Arc::clone(&diagnostics))
+        .map_err(StartError::DroppedSendWatch)?;
 
     Ok(RunningEngine {
         state: Some(state),

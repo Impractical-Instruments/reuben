@@ -2037,9 +2037,10 @@ mod tests {
         cb.stop();
     }
 
-    /// A message compiled for a Plan that a swap has since replaced reaches the callback after the
-    /// install: it is dropped rather than queued, counted, and named to subscribers by the
-    /// engine's watch thread, through the real ring, drain and producer.
+    /// A batch holding a message compiled for a Plan that a swap has since replaced reaches the
+    /// callback after the install: the whole batch is dropped rather than queued, every message
+    /// counted, and every address named to subscribers by the engine's watch thread, through the
+    /// real ring, drain and producer.
     #[test]
     fn a_send_compiled_for_a_replaced_plan_is_dropped_counted_and_named() {
         use crate::engine::DroppedSendWatch;
@@ -2050,7 +2051,8 @@ mod tests {
             open_parts_counting(BASE_DOC, "stale_send", Arc::clone(&diagnostics));
         let replaced = PreparedAgainst::new(Arc::clone(side.engine.prepared_routes()));
         let cb = FakeCallback::counting(side, control_rx, Arc::clone(&diagnostics));
-        let _watch = DroppedSendWatch::spawn(state.clone(), Arc::clone(&diagnostics));
+        let _watch = DroppedSendWatch::spawn(state.clone(), Arc::clone(&diagnostics))
+            .expect("spawn the watch thread");
         let events = state.subscribe();
 
         match dispatch(
@@ -2084,10 +2086,11 @@ mod tests {
         assert_eq!(
             events.recv_timeout(Duration::from_secs(2)),
             Ok(Event::SendsDropped {
-                addresses: vec!["/osc/freq".to_string()],
-            })
+                addresses: vec!["/osc/amp".to_string(), "/osc/freq".to_string()],
+            }),
+            "the whole batch is dropped and every address named"
         );
-        assert_eq!(diagnostics.snapshot().stale_sends_dropped, 1);
+        assert_eq!(diagnostics.snapshot().stale_sends_dropped, 2);
         cb.stop();
     }
 
