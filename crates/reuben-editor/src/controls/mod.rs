@@ -607,11 +607,14 @@ mod tests {
             .expect("the boundary")
             .output;
             // A surface doc curates, so nothing in it may go unresolved; a generated panel says
-            // which inputs it left out, and in the library those are the audio inputs.
+            // which inputs it left out, and in the library those are the audio inputs and the
+            // `str` inputs (pattern text), which have no control.
             let left_out = described
                 .inputs
                 .iter()
-                .filter(|port| port.channel.is_some() && !loaded.from_surface)
+                .filter(|port| {
+                    (port.channel.is_some() || port.kind == "string") && !loaded.from_surface
+                })
                 .count();
             assert_eq!(
                 loaded.panel.warnings.len(),
@@ -622,7 +625,7 @@ mod tests {
             let playable = described
                 .inputs
                 .iter()
-                .filter(|port| port.channel.is_none())
+                .filter(|port| port.channel.is_none() && port.kind != "string")
                 .count();
             assert_eq!(
                 loaded.panel.controls.is_empty(),

@@ -1081,6 +1081,19 @@ fn a_plans_first_block_touches_no_heap_with_kept_pipes_forwarding() {
     }
 }
 
+/// A resolver rooted at the repo's `instruments/`, for the library instrument the pattern run plays.
+struct LibraryDir;
+
+impl ResourceResolver for LibraryDir {
+    fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+        Err(ResolveError::NotFound(source.to_string()))
+    }
+    fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
+        let path = format!("{}/../../instruments/{source}", env!("CARGO_MANIFEST_DIR"));
+        std::fs::read_to_string(&path).map_err(|e| ResolveError::NotFound(format!("{path}: {e}")))
+    }
+}
+
 /// `text` compiled by the built-in `pattern` Operator's own preparer, as a live `send` prepares it.
 fn pattern_arg(text: &str) -> Arg {
     let registry = Registry::builtin();
@@ -1102,7 +1115,7 @@ fn a_long_pattern_run_with_replacements_touches_no_heap_on_the_render_thread() {
     let (coord, side, _) = reuben_document::coordinator::Coordinator::install_initial(
         doc,
         Registry::builtin(),
-        Box::new(InstrumentsDir),
+        Box::new(LibraryDir),
         AudioConfig::new(48_000.0, BLOCK),
     )
     .expect("the library instrument installs");

@@ -34,6 +34,7 @@ _BASE_TREE = {
     "crates/reuben-core/src/retired.rs": "// only the baseline has this\n",
     "crates/reuben-macros/src/lib.rs": "// macros base\n",
     "crates/reuben-contract/src/lib.rs": "// contract base\n",
+    "crates/reuben-pattern/src/lib.rs": "// pattern base\n",
     "crates/reuben-document/benches/fixtures/pad.json": "{}\n",
     "instruments/pad.json": '{"v": 1}\n',
     ".cargo/config.toml": "# base\n",
@@ -394,6 +395,7 @@ class PerfGateWorkingTree(unittest.TestCase):
             "crates/reuben-core/src/lib.rs",
             "crates/reuben-macros/src/lib.rs",
             "crates/reuben-contract/src/lib.rs",
+            "crates/reuben-pattern/src/lib.rs",
             "crates/reuben-document/benches/fixtures/pad.json",
             "instruments/pad.json",
             ".cargo/config.toml",
@@ -670,7 +672,7 @@ class BenchClosureIsCovered(unittest.TestCase):
     def test_the_closure_reaches_the_engine(self) -> None:
         self.assertLessEqual(
             {"crates/reuben-document", "crates/reuben-core", "crates/reuben-macros",
-             "crates/reuben-contract"},
+             "crates/reuben-contract", "crates/reuben-pattern"},
             _bench_closure(),
         )
 

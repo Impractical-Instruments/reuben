@@ -3,7 +3,7 @@
   "instrument": "pattern-melody",
   "doc": "Live-coded melody: a Clock drives a `pattern` Operator that plays the `pattern` pipe's mini-notation text as scale degrees through an 8-voice Voicer, so it opens playing a default tune. Send new text to /pattern/in through the engine channel's `send` (the one path that compiles it; a compile error comes back in the reply) and it takes over at the next cycle of 4 beats. `tempo` sets the Clock; `key` (MIDI tonic) the scale the degrees resolve against.",
   "resources": {
-    "default-voice": "voices/default-voice.json"
+    "acid-bass-voice": "voices/acid-bass-voice.json"
   },
   "interface": {
     "inputs": {
@@ -72,7 +72,7 @@
     {
       "type": "voicer",
       "address": "/voicer",
-      "doc": "Hosts 8 default-voice sub-patches; resolves the pattern's degrees through /harmony, allocates them across the voices and sums their audio.",
+      "doc": "Hosts 8 acid-bass-voice sub-patches; resolves the pattern's degrees through /harmony, allocates them across the voices and sums their audio.",
       "inputs": {
         "harmony": {
           "from": "/harmony"
@@ -81,7 +81,7 @@
           "from": "/melody.notes"
         }
       },
-      "voice": "default-voice"
+      "voice": "acid-bass-voice"
     },
     {
       "type": "output",
