@@ -150,7 +150,25 @@ impl MidiMap {
 
     /// Take in what the server answered `action`.
     pub fn answered(&mut self, action: &Action, result: &Result<EditResult, Refusal>) {
-        self.refused = not_written(result).map(|why| (action.row(), why));
+        self.refuse(not_written(result).map(|why| (action.row(), why)));
+    }
+
+    /// Hold `refused` in place of the last refusal. A row whose refusal goes shows the map again:
+    /// what was typed into it was never written, and [`reload`](Self::reload) would otherwise keep
+    /// it, the row being unchanged.
+    fn refuse(&mut self, refused: Option<(Option<usize>, String)>) {
+        let cleared = match (&self.refused, &refused) {
+            (Some((Some(was), _)), Some((now, _))) if *now == Some(*was) => None,
+            (Some((Some(was), _)), _) => Some(*was),
+            _ => None,
+        };
+        if let Some((draft, row)) = cleared.and_then(|at| {
+            let row = self.model.rows.get(at)?;
+            Some((self.drafts.get_mut(at)?, row))
+        }) {
+            *draft = Draft::of(row);
+        }
+        self.refused = refused;
     }
 
     /// Draw the table, and return the edit asked of it this frame.
@@ -164,7 +182,7 @@ impl MidiMap {
         match asked? {
             Asked::Edit(action) => Some(action),
             Asked::Refuse(at, why) => {
-                self.refused = Some((Some(at), why));
+                self.refuse(Some((Some(at), why)));
                 None
             }
         }
@@ -189,5 +207,65 @@ mod tests {
         });
         assert!(map.take_stale());
         assert!(!map.take_stale(), "taken once");
+    }
+
+    fn written(written: bool) -> EditResult {
+        EditResult {
+            report: reuben_api::authoring::Report {
+                ok: written,
+                errors: Vec::new(),
+                warnings: Vec::new(),
+            },
+            pre_existing: Vec::new(),
+            written,
+            hash: "h".to_string(),
+            notes: Vec::new(),
+            zoom: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_refused_rows_typing_is_dropped_once_its_refusal_is() {
+        let view: SurfaceView = serde_json::from_value(serde_json::json!({
+            "source": "/lib/surfaces/synth.midi.json",
+            "exists": true,
+            "hash": "h",
+            "instrument": "synth",
+            "controls": [
+                {"control": {"bind": "cutoff", "midi": "/midi/1/cc/1"}},
+                {"control": {"bind": "cutoff", "midi": "/midi/1/cc/2"}}
+            ]
+        }))
+        .expect("a surface view");
+        let boundary: Boundary = serde_json::from_value(serde_json::json!({
+            "instrument": "synth",
+            "inputs": [{"name": "cutoff", "kind": "value"}],
+            "outputs": []
+        }))
+        .expect("a boundary");
+        let model = MidiMapModel::from_view(view, &boundary);
+        let mut map = MidiMap {
+            drafts: model.rows.iter().map(Draft::of).collect(),
+            model,
+            ..MidiMap::default()
+        };
+        let typed = |map: &MidiMap| map.drafts[0].pattern.clone();
+        let edit = |index| Action::Set {
+            index: Some(index),
+            control: Default::default(),
+        };
+
+        map.drafts[0].pattern = "/midi/1/cc/bogus".to_string();
+        let refusal = Err(Refusal {
+            message: "a bad pattern".to_string(),
+        });
+        map.answered(&edit(0), &refusal);
+        assert_eq!(typed(&map), "/midi/1/cc/bogus", "kept while it is refused");
+        map.answered(&edit(0), &refusal);
+        assert_eq!(typed(&map), "/midi/1/cc/bogus", "refused again, still kept");
+
+        map.answered(&edit(1), &Ok(written(true)));
+        assert_eq!(map.refused, None);
+        assert_eq!(typed(&map), "/midi/1/cc/1", "the row shows the map again");
     }
 }
