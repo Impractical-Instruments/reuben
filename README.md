@@ -2,7 +2,7 @@
 
 Deterministic CI performance trend: callgrind **instruction counts (Ir)** for rendering **1 s of audio** (375 × 128-frame blocks @ 48 kHz), recorded on every direct push to `dev`. Instruction counts don't jitter — every visible move is a real code change (or a toolchain bump).
 
-**235 commits** · 2026-07-12 → 2026-11-23 · 19848 data points · last: `7bd6ed5` (2026-11-23T19:19:13-05:00)
+**236 commits** · 2026-07-12 → 2026-11-23 · 19946 data points · last: `ccc4127` (2026-11-23T20:00:54-05:00)
 
 *Companion trend: the **main** series lives on the [`bench-history`](https://github.com/Impractical-Instruments/reuben/tree/bench-history) branch.*
 
@@ -60,7 +60,7 @@ Cost paid **once per Swap**, on the caller's thread — which in the browser is 
 | nest | 2,048 → 4,096 | 2.04x |
 | nest | 4,096 → 8,192 | 2.02x |
 | wide | 2,048 → 4,096 | 2.03x |
-| wide | 4,096 → 8,192 | 2.02x |
+| wide | 4,096 → 8,192 | 2.01x |
 
 ## Heaviest operators (micro)
 
@@ -192,20 +192,20 @@ The deterministic tier of the eval harness: each task's **reference solution** (
 
 | Task | Metric | Latest | vs prev | vs first | since |
 |---|---|---:|---:|---:|---|
-| `from_scratch` | grounding tokens | 28,230 | **+17.2%** | **+485.9%** | 2026-07-22 |
-| `from_scratch` | fixed grounding | 27,857 | **+17.4%** | **+484.4%** | 2026-07-22 |
-| `intent_fan_out` | grounding tokens | 28,448 | **+17.0%** | **+49.5%** | 2026-07-28 |
-| `intent_fan_out` | fixed grounding | 27,857 | **+17.4%** | **+48.4%** | 2026-07-28 |
-| `intent_word` | grounding tokens | 28,065 | **+17.3%** | **+48.6%** | 2026-07-28 |
-| `intent_word` | fixed grounding | 27,857 | **+17.4%** | **+48.4%** | 2026-07-28 |
+| `from_scratch` | grounding tokens | 28,230 | ±0.0% | **+485.9%** | 2026-07-22 |
+| `from_scratch` | fixed grounding | 27,857 | ±0.0% | **+484.4%** | 2026-07-22 |
+| `intent_fan_out` | grounding tokens | 28,448 | ±0.0% | **+49.5%** | 2026-07-28 |
+| `intent_fan_out` | fixed grounding | 27,857 | ±0.0% | **+48.4%** | 2026-07-28 |
+| `intent_word` | grounding tokens | 28,065 | ±0.0% | **+48.6%** | 2026-07-28 |
+| `intent_word` | fixed grounding | 27,857 | ±0.0% | **+48.4%** | 2026-07-28 |
 | `nudge` | grounding tokens | 19,324 | ±0.0% | **+207.6%** | 2026-07-22 |
 | `nudge` | fixed grounding | 17,808 | ±0.0% | **+273.6%** | 2026-07-22 |
-| `repair` | grounding tokens | 28,206 | **+17.2%** | **+484.9%** | 2026-07-22 |
-| `repair` | fixed grounding | 27,857 | **+17.4%** | **+484.4%** | 2026-07-22 |
-| `repair_and_note` | grounding tokens | 28,283 | **+17.1%** | **+32.0%** | 2026-11-19 |
-| `repair_and_note` | fixed grounding | 27,857 | **+17.4%** | **+31.8%** | 2026-11-19 |
-| `tweak` | grounding tokens | 28,014 | **+17.3%** | **+486.1%** | 2026-07-22 |
-| `tweak` | fixed grounding | 27,857 | **+17.4%** | **+484.4%** | 2026-07-22 |
+| `repair` | grounding tokens | 28,208 | ±0.0% | **+485.0%** | 2026-07-22 |
+| `repair` | fixed grounding | 27,857 | ±0.0% | **+484.4%** | 2026-07-22 |
+| `repair_and_note` | grounding tokens | 28,281 | ±0.0% | **+32.0%** | 2026-11-19 |
+| `repair_and_note` | fixed grounding | 27,857 | ±0.0% | **+31.8%** | 2026-11-19 |
+| `tweak` | grounding tokens | 28,014 | ±0.0% | **+486.1%** | 2026-07-22 |
+| `tweak` | fixed grounding | 27,857 | ±0.0% | **+484.4%** | 2026-07-22 |
 
 - **Fixed grounding** is what every turn of every task pays before the model does anything: the server `instructions` plus every tool schema. It creeps when a tool description or the authoring guide grows, and nothing else watches it.
 - A **reference-solution rewrite** landed at `4032dfd`, `8f63a21`. Every series steps there at once because the ideal call sequence itself changed; read that discontinuity as a re-baseline, not as the surface moving.
