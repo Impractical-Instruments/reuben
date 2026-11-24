@@ -141,6 +141,14 @@ impl SurfaceDoc {
         })
         .expect("a surface doc is plain data")
     }
+
+    /// The whole text a write puts on disk: [`to_json_pretty`](Self::to_json_pretty) and its
+    /// trailing newline.
+    pub fn to_file_text(&self) -> String {
+        let mut text = self.to_json_pretty();
+        text.push('\n');
+        text
+    }
 }
 
 /// The identity of a surface doc: a hash over its [`SurfaceDoc::to_json_pretty`] bytes, so two

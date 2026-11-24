@@ -729,7 +729,7 @@ fn surface_text(bind: &str) -> String {
         }],
         ..SurfaceDoc::default()
     };
-    format!("{}\n", doc.to_json_pretty())
+    doc.to_file_text()
 }
 
 fn surface_hash_of(text: &str) -> String {

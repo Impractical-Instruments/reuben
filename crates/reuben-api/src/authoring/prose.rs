@@ -140,10 +140,11 @@ pub const DESCRIBE_INSTRUMENT_SURFACE: &str =
 
 pub const SET_INSTRUMENT_SURFACE_CONTROL: &str =
     "Replace the control at `index` in an instrument's MIDI map or on-screen surface doc, or \
-     append it when `index` is omitted; the first set creates the doc. A MIDI map reads \
-     `bind`, `midi`, `min` and `max`. Refused, with nothing written, when the control could not \
-     be used: its `bind` names no interface input, or its pattern or widget cannot drive that \
-     input. Echoes every control, one per line, by index.";
+     append it when `index` is omitted; the first set creates the doc. `control` takes the keys \
+     `describe_instrument_surface` lists for that doc. Refused, with nothing written, when the \
+     control could not be used: its `bind` names no interface input, or its pattern or widget \
+     cannot drive that input; and while the instrument does not load, since there is nothing to \
+     check it against. Echoes every control, one per line, by index.";
 
 pub const REMOVE_INSTRUMENT_SURFACE_CONTROL: &str =
     "Remove the control at `index` from an instrument's MIDI map or on-screen surface doc. \

@@ -944,6 +944,17 @@ pub(super) fn expect_conflict(
 /// nothing written, the real hash handed back. Shared by instrument and surface-doc guards so the
 /// wording cannot drift between them.
 pub(super) fn expect_miss(actual: String, expected: &str, zoom: String) -> Answer<EditResult> {
+    let now = format!("the document is now {actual}");
+    expect_miss_because(&now, actual, expected, zoom)
+}
+
+/// [`expect_miss`], saying what the source is now as `now`.
+pub(super) fn expect_miss_because(
+    now: &str,
+    actual: String,
+    expected: &str,
+    zoom: String,
+) -> Answer<EditResult> {
     Answer {
         output: EditResult {
             report: Report {
@@ -952,8 +963,8 @@ pub(super) fn expect_miss(actual: String, expected: &str, zoom: String) -> Answe
                     node: None,
                     port: None,
                     message: format!(
-                        "expect guard: the document is now {actual}, not the expected {expected} \
-                         — re-read it and reconcile before writing"
+                        "expect guard: {now}, not the expected {expected} — re-read it and \
+                         reconcile before writing"
                     ),
                 }],
                 warnings: Vec::new(),

@@ -723,7 +723,8 @@ pub struct ReadInstrumentTree {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DescribeInstrumentSurface {
-    /// The instrument whose surface doc to read (a path for this door).
+    /// The instrument whose surface doc to read: the open instrument, named as `open_instrument`
+    /// named it (a path for this door).
     pub source: String,
     /// `midi` for the instrument's MIDI map, `screen` for its on-screen surface doc.
     pub surface: SurfaceKind,
@@ -733,7 +734,8 @@ pub struct DescribeInstrumentSurface {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SetInstrumentSurfaceControl {
-    /// The instrument whose surface doc to edit (a path for this door).
+    /// The instrument whose surface doc to edit: the open instrument, named as `open_instrument`
+    /// named it (a path for this door).
     pub source: String,
     /// `midi` for the instrument's MIDI map, `screen` for its on-screen surface doc.
     pub surface: SurfaceKind,
@@ -746,7 +748,7 @@ pub struct SetInstrumentSurfaceControl {
     #[schemars(with = "ClosedControl")]
     pub control: SurfaceControl,
     /// Optional content-hash write guard: the doc's `hash` as last read. A mismatch rejects the
-    /// write.
+    /// write. A doc that does not exist yet has the empty hash `""`.
     #[serde(default)]
     pub expect: Option<String>,
 }
@@ -800,14 +802,15 @@ fn closed_control<'de, D: serde::Deserializer<'de>>(
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RemoveInstrumentSurfaceControl {
-    /// The instrument whose surface doc to edit (a path for this door).
+    /// The instrument whose surface doc to edit: the open instrument, named as `open_instrument`
+    /// named it (a path for this door).
     pub source: String,
     /// `midi` for the instrument's MIDI map, `screen` for its on-screen surface doc.
     pub surface: SurfaceKind,
     /// The position in `controls` to remove.
     pub index: usize,
     /// Optional content-hash write guard: the doc's `hash` as last read. A mismatch rejects the
-    /// write.
+    /// write. A doc that does not exist yet has the empty hash `""`.
     #[serde(default)]
     pub expect: Option<String>,
 }
@@ -816,7 +819,8 @@ pub struct RemoveInstrumentSurfaceControl {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MoveInstrumentSurfaceControl {
-    /// The instrument whose surface doc to edit (a path for this door).
+    /// The instrument whose surface doc to edit: the open instrument, named as `open_instrument`
+    /// named it (a path for this door).
     pub source: String,
     /// `midi` for the instrument's MIDI map, `screen` for its on-screen surface doc.
     pub surface: SurfaceKind,
@@ -825,7 +829,7 @@ pub struct MoveInstrumentSurfaceControl {
     /// The position in `controls` it ends up at.
     pub to: usize,
     /// Optional content-hash write guard: the doc's `hash` as last read. A mismatch rejects the
-    /// write.
+    /// write. A doc that does not exist yet has the empty hash `""`.
     #[serde(default)]
     pub expect: Option<String>,
 }

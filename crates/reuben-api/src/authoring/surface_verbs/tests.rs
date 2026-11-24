@@ -141,10 +141,7 @@ fn set_appends_a_midi_control_and_creates_the_map() {
     assert_eq!(written.instrument, "synth");
     assert_eq!(binds(&written), ["cutoff"]);
     assert_eq!(result.hash, surface_hash(&written));
-    assert_eq!(
-        text(&store, MAP).unwrap(),
-        format!("{}\n", written.to_json_pretty())
-    );
+    assert_eq!(text(&store, MAP).unwrap(), written.to_file_text());
     assert_eq!(result.zoom, "0 cutoff \u{2190} /midi/1/cc/74");
 }
 
@@ -220,6 +217,27 @@ fn a_stale_expect_writes_nothing() {
     }
     let mut args = set(json!({"bind": "cutoff", "midi": "/midi/2/cc/74"}), None);
     args["expect"] = json!(current);
+    assert!(edit(&store, names::SET_INSTRUMENT_SURFACE_CONTROL, args).written);
+}
+
+#[test]
+fn an_expect_on_a_missing_doc_says_it_does_not_exist() {
+    let store = store();
+    let mut args = set(json!({"bind": "cutoff", "midi": "/midi/1/cc/74"}), None);
+    args["expect"] = json!("0000000000000000");
+    let result = edit(&store, names::SET_INSTRUMENT_SURFACE_CONTROL, args);
+    assert!(!result.written);
+    assert_eq!(result.hash, "");
+    let message = &result.report.errors[0].message;
+    assert!(
+        message.contains("the MIDI map does not exist")
+            && message.contains("not the expected 0000000000000000"),
+        "{message}"
+    );
+    assert_eq!(text(&store, MAP), None);
+    // An absent doc's hash is empty, so `""` expects the doc to be absent.
+    let mut args = set(json!({"bind": "cutoff", "midi": "/midi/1/cc/74"}), None);
+    args["expect"] = json!("");
     assert!(edit(&store, names::SET_INSTRUMENT_SURFACE_CONTROL, args).written);
 }
 

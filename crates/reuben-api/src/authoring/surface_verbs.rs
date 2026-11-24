@@ -18,7 +18,9 @@ use super::args::{
     RemoveInstrumentSurfaceControl, SetInstrumentSurfaceControl,
 };
 use super::result::{Boundary, ControlView, Diag, EditResult, Report, SurfaceView};
-use super::verbs::{describe_boundary, edit_summary, expect_miss, Answer, Refusal};
+use super::verbs::{
+    describe_boundary, edit_summary, expect_miss, expect_miss_because, Answer, Refusal,
+};
 use crate::resources::{ResolveError, Resources, Undecoded};
 use crate::surface::{
     check_midi_control, check_screen_control, render_surface, surface_hash, SurfaceControl,
@@ -214,7 +216,13 @@ fn edit_surface(
         (surface_hash(doc), render_surface(doc, surface))
     });
     if let Some(expected) = expect.as_ref().filter(|expected| **expected != hash) {
-        return Ok(expect_miss(hash, expected, zoom));
+        return Ok(match current {
+            Some(_) => expect_miss(hash, expected, zoom),
+            None => {
+                let now = format!("the {} does not exist", doc_name(surface));
+                expect_miss_because(&now, hash, expected, zoom)
+            }
+        });
     }
     let boundary = match boundary(source, resources) {
         Ok(boundary) => boundary,
@@ -228,7 +236,7 @@ fn edit_surface(
         Err(error) => return Ok(not_written(hash, error, zoom)),
     };
     resources
-        .write_text(&at, &format!("{}\n", doc.to_json_pretty()))
+        .write_text(&at, &doc.to_file_text())
         .map_err(|e| Refusal::new(format!("could not write `{at}`: {e}")))?;
     let mut warnings: Vec<Diag> = doc_warning(&doc, &boundary, surface)
         .map(|message| diag(None, message))

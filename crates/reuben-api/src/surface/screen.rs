@@ -79,7 +79,10 @@ fn fits(widget: &str, port: &PortInfo) -> bool {
         "fader" | "radial" | "param-toggle" | "xy-pad" => takes_a_value(port),
         "note-toggle" | "chord-button" | "keyboard" => port.kind == "message",
         "grid" => takes_a_value(port) || port.kind == "message",
-        _ => true,
+        "visualizer" => true,
+        // Unreachable while every widget in `WIDGETS` has an arm above: an unknown widget is
+        // refused before this. A widget added there without one fits nothing until it gets one.
+        _ => false,
     }
 }
 
@@ -220,6 +223,14 @@ mod tests {
 
     fn control(json: &str) -> SurfaceControl {
         serde_json::from_str(json).expect("a control")
+    }
+
+    #[test]
+    fn every_widget_fits_some_input() {
+        let inputs = boundary().inputs;
+        for widget in WIDGETS {
+            assert!(inputs.iter().any(|port| fits(widget, port)), "{widget}");
+        }
     }
 
     #[test]
