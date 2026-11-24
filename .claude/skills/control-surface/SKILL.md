@@ -143,9 +143,23 @@ skipped with a `midi map:` warning on `play`'s stderr naming it and why; the res
 - `cc`, `bend` and `pressure` need a finite range: the input's `min`/`max`, or the control's;
 - a narrowing `min`/`max` outside the input's range is clamped into it, with a warning.
 
+**What fails the whole map, not one control.** A mistake in the *shape* of a `midi` is a map
+that does not parse, so every control stops routing, not only the broken one:
+
+- `midi` written as a string (the old address form);
+- a `kind` other than the five above;
+- a key other than `kind`, `channel` and `cc` (a typo such as `"controller"` is not ignored);
+- a missing `channel` or `kind`;
+- a `channel` or `cc` that is neither an integer nor a string (`1.5`, `true`).
+
+The error names the line and column. Numbers out of bounds, malformed or reversed patterns, and a
+missing or misplaced `cc` are per-control checks instead (above).
+
 A map that does not parse, or has another `surface_version`, is not used, with a warning; if it
 breaks while `play` runs, the routes it had keep working until it is fixed, as long as the same
-Instrument stays open. `play` rebuilds the
+Instrument stays open. The surface verbs, and so the editor's MIDI map table, refuse to edit such a
+map and leave the file as it is. This is the one case the verbs cannot repair: correct the file's
+text, or remove the file and build the map again through the verbs. `play` rebuilds the
 routes on every Swap and every save of the map.
 
 **Scaling.** CC and pressure become `u = v/127` (CC 64 is 0.504; there is no split at the middle),

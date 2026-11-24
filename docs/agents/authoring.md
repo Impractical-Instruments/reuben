@@ -564,7 +564,8 @@ any host-side renderer read the file.
 
 A **MIDI map**, `surfaces/<stem>.midi.json`, is a surface doc of the same format whose controls
 carry a `midi` route (`{"kind": "cc", "channel": 1, "cc": 74}`; `channel` and `cc` also take a
-pattern string such as `"1-4"` or `"*"`), and their widget fields are ignored: `reuben play`
+pattern string such as `"1-4"` or `"*"`; a wrong shape inside `midi`, such as an unknown key or
+a string `midi`, fails the whole map), and their widget fields are ignored: `reuben play`
 routes a MIDI controller to the interface inputs through it. Like every surface doc it binds inputs by name and
 never changes the instrument, so the same instrument plays from a screen, a phone, or a keyboard.
 Read and edit it with the same verbs, passing `surface: "midi"`; a screen surface doc is

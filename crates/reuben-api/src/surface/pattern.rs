@@ -3,7 +3,6 @@
 //! pattern grammar, whose `[1-16]` is a class of the characters `1` and `6`.
 
 use alloc::borrow::Cow;
-use alloc::format;
 use alloc::string::{String, ToString};
 use core::fmt;
 use core::ops::RangeInclusive;
@@ -64,10 +63,13 @@ impl<'de> Deserialize<'de> for NumberPattern {
                 Ok(NumberPattern::Number(n))
             }
 
+            // An integer past `i64` is kept as its digits, so the check skips the one control
+            // as out of bounds rather than the whole map failing to parse.
             fn visit_u64<E: serde::de::Error>(self, n: u64) -> Result<Self::Value, E> {
-                i64::try_from(n)
-                    .map(NumberPattern::Number)
-                    .map_err(|_| E::custom(format!("{n} is too large")))
+                Ok(i64::try_from(n).map_or_else(
+                    |_| NumberPattern::Pattern(n.to_string()),
+                    NumberPattern::Number,
+                ))
             }
 
             fn visit_str<E: serde::de::Error>(self, text: &str) -> Result<Self::Value, E> {
@@ -104,8 +106,9 @@ pub struct NumberSet(u128);
 pub enum PatternError {
     /// The pattern string, and what is wrong with it.
     Malformed(String, &'static str),
+    /// A number outside `bounds`, as it was written.
     OutOfBounds {
-        number: i64,
+        number: String,
         bounds: RangeInclusive<u8>,
     },
     /// A range whose low end is above its high end, which matches nothing.
@@ -141,18 +144,20 @@ impl NumberSet {
         bounds: RangeInclusive<u8>,
     ) -> Result<Self, PatternError> {
         debug_assert!(*bounds.end() <= 127);
-        let within = |number: i64| {
-            u8::try_from(number)
-                .ok()
+        // `written` is the number as the author spelled it, so an error quotes it even where it
+        // does not fit an `i64`.
+        let within = |number: Option<i64>, written: &dyn Fn() -> String| {
+            number
+                .and_then(|n| u8::try_from(n).ok())
                 .filter(|n| bounds.contains(n))
-                .ok_or(PatternError::OutOfBounds {
-                    number,
+                .ok_or_else(|| PatternError::OutOfBounds {
+                    number: written(),
                     bounds: bounds.clone(),
                 })
         };
         let text = match pattern {
             NumberPattern::Number(number) => {
-                let n = within(*number)?;
+                let n = within(Some(*number), &|| number.to_string())?;
                 return Ok(Self::span(n, n));
             }
             NumberPattern::Pattern(text) => text,
@@ -163,12 +168,20 @@ impl NumberSet {
             if part.is_empty() {
                 return Err(malformed("a range needs a number at each end"));
             }
+            if part.contains('*') {
+                return Err(malformed(
+                    "`*` stands alone, never as part of a number or a range",
+                ));
+            }
+            if part.contains('-') {
+                return Err(malformed("a range has one `-`, between two numbers"));
+            }
             if !part.bytes().all(|b| b.is_ascii_digit()) {
                 return Err(malformed(
                     "it holds something other than digits, `*`, `-` and `,`",
                 ));
             }
-            within(part.parse().unwrap_or(i64::MAX))
+            within(part.parse().ok(), &|| part.to_string())
         };
         let mut set = Self::default();
         for item in text.split(',') {
@@ -203,6 +216,7 @@ impl NumberSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::format;
     use alloc::vec::Vec;
 
     const CHANNEL: RangeInclusive<u8> = 1..=16;
@@ -264,7 +278,7 @@ mod tests {
             assert_eq!(
                 error,
                 PatternError::OutOfBounds {
-                    number,
+                    number: number.to_string(),
                     bounds: bounds.clone()
                 },
                 "{field}"
@@ -273,6 +287,37 @@ mod tests {
                 error.to_string(),
                 format!("{number} is outside {}-{}", bounds.start(), bounds.end())
             );
+        }
+    }
+
+    #[test]
+    fn a_number_too_large_for_any_integer_is_quoted_as_written() {
+        let digits = "99999999999999999999999";
+        for text in [digits.to_string(), format!("1-{digits}")] {
+            let error = NumberSet::parse(&pattern(&text), CHANNEL).expect_err(&text);
+            assert_eq!(error.to_string(), format!("{digits} is outside 1-16"));
+        }
+        let json: NumberPattern = serde_json::from_str("18446744073709551615").unwrap();
+        let error = NumberSet::parse(&json, CC).expect_err("past i64");
+        assert_eq!(error.to_string(), "18446744073709551615 is outside 0-127");
+    }
+
+    #[test]
+    fn a_malformed_pattern_says_what_is_wrong_with_it() {
+        for (text, why) in [
+            ("*-4", "`*` stands alone"),
+            ("1-*", "`*` stands alone"),
+            ("*1", "`*` stands alone"),
+            ("1--2", "a range has one `-`"),
+            ("1-2-3", "a range has one `-`"),
+            ("1-", "a range needs a number at each end"),
+            ("-4", "a range needs a number at each end"),
+            ("1,,2", "an empty list item"),
+            ("x", "something other than digits"),
+            ("1.5", "something other than digits"),
+        ] {
+            let error = NumberSet::parse(&pattern(text), CHANNEL).expect_err(text);
+            assert!(error.to_string().contains(why), "{text}: {error}");
         }
     }
 

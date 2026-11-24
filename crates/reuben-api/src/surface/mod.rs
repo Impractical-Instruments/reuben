@@ -106,15 +106,31 @@ pub const MIDI_IS_AN_OBJECT: &str = "`midi` is now an object: `{kind, channel, c
 fn midi_source<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<MidiSource>, D::Error> {
-    use serde::de::Error;
+    // A visitor rather than a detour through `serde_json::Value`, so an error inside the object
+    // keeps the line and column the parser puts on it.
+    struct Visitor;
 
-    match serde_json::Value::deserialize(deserializer)? {
-        serde_json::Value::Null => Ok(None),
-        serde_json::Value::String(_) => Err(D::Error::custom(MIDI_IS_AN_OBJECT)),
-        value => serde_json::from_value(value)
-            .map(Some)
-            .map_err(D::Error::custom),
+    impl<'de> serde::de::Visitor<'de> for Visitor {
+        type Value = Option<MidiSource>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("an object `{kind, channel, cc}`")
+        }
+
+        fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<Self::Value, E> {
+            Err(E::custom(MIDI_IS_AN_OBJECT))
+        }
+
+        fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+            MidiSource::deserialize(serde::de::value::MapAccessDeserializer::new(map)).map(Some)
+        }
     }
+
+    deserializer.deserialize_any(Visitor)
 }
 
 /// Why a surface doc could not be used.
@@ -146,7 +162,9 @@ impl SurfaceDoc {
         if version.as_i64() != Some(SURFACE_VERSION) {
             return Err(SurfaceError::Version(version));
         }
-        serde_json::from_value(value).map_err(SurfaceError::Parse)
+        // Read again from the text, not from `value`, so a shape error carries its line and
+        // column.
+        serde_json::from_str(text).map_err(SurfaceError::Parse)
     }
 
     /// The canonical bytes a write puts on disk, less the trailing newline. `surface_version`
@@ -283,6 +301,7 @@ mod tests {
         .expect_err("a string `midi`");
         assert!(matches!(error, SurfaceError::Parse(_)), "{error}");
         assert!(error.to_string().contains(MIDI_IS_AN_OBJECT), "{error}");
+        assert!(error.to_string().contains("line 2 column"), "{error}");
         assert_eq!(
             MIDI_IS_AN_OBJECT,
             "`midi` is now an object: `{kind, channel, cc}`"
@@ -294,6 +313,7 @@ mod tests {
         )
         .expect_err("no channel");
         assert!(error.to_string().contains("`channel`"), "{error}");
+        assert!(error.to_string().contains("line 2 column"), "{error}");
     }
 
     #[test]
