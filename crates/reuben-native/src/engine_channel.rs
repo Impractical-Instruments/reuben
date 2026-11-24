@@ -586,15 +586,6 @@ impl EngineHost for NativeHost {
             .collect()
     }
 
-    fn surface(&self, open: &str) -> Result<Option<String>, String> {
-        let Some(path) = reuben_api::find_surface(Path::new(open), SurfaceKind::Screen) else {
-            return Ok(None);
-        };
-        std::fs::read_to_string(&path)
-            .map(Some)
-            .map_err(|e| format!("read {}: {e}", path.display()))
-    }
-
     /// **One push onto the ring, not one per message.** That single push is what makes the
     /// documented atomicity true rather than aspirational: concurrent handler threads cannot
     /// interleave message-by-message into each other's gestures, and the callback cannot apply half
@@ -1606,33 +1597,6 @@ mod tests {
             host.offered(ListWhat::Instruments, Some(&elsewhere)),
             [abs("mine/top.json"), abs("other/x.json")]
         );
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn surface_is_found_in_the_own_dir_or_two_ancestors_up() {
-        let (base, abs) = scratch_dir("surface-test");
-        std::fs::create_dir_all(base.join("a/b/c/d")).unwrap();
-        std::fs::create_dir_all(base.join("a/surfaces")).unwrap();
-        std::fs::write(abs("a/surfaces/pad.json"), "the pad surface").unwrap();
-        let (tx, _rx) = ring_pair(Diagnostics::new());
-        let host = NativeHost::new(Diagnostics::new(), tx);
-
-        // The instrument's own directory is the first of the three searched.
-        assert_eq!(
-            host.surface(&abs("a/pad.json")),
-            Ok(Some("the pad surface".to_string()))
-        );
-        assert_eq!(
-            host.surface(&abs("a/b/c/pad.json")),
-            Ok(Some("the pad surface".to_string()))
-        );
-        assert_eq!(host.surface(&abs("a/b/c/d/pad.json")), Ok(None));
-        assert_eq!(
-            host.surface(&abs("a/b/c/d/../pad.json")),
-            Ok(Some("the pad surface".to_string()))
-        );
-        assert_eq!(host.surface(&abs("a/other.json")), Ok(None));
         let _ = std::fs::remove_dir_all(&base);
     }
 

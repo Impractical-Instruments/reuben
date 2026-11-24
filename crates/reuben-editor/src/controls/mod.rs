@@ -24,15 +24,15 @@
 //!   lands, is dropped with the retiring Engine, while the panel shows what was sent.
 
 mod model;
-use reuben_api::surface;
 mod view;
 
 use std::collections::BTreeSet;
 use std::path::Path;
 
 use eframe::egui;
-use reuben_api::authoring::{Boundary, DescribeBoundary};
+use reuben_api::authoring::{Boundary, DescribeBoundary, DescribeInstrumentSurface, SurfaceView};
 use reuben_api::engine::{call_tool, Channel, Event};
+use reuben_api::surface::{SurfaceDoc, SurfaceKind};
 use reuben_api::tools::names;
 
 use self::model::{Control, Gesture, Kind, Panel};
@@ -51,7 +51,7 @@ struct Loaded {
 }
 
 /// Build the panel for the instrument the server names `top`, which it has open, asking the server
-/// through `channel` for its boundary and its surface doc.
+/// through `channel` for its boundary and, through `describe_instrument_surface`, its surface doc.
 ///
 /// `Err` is the instrument itself failing to load: it has no interface to build a panel from.
 fn load(channel: &Channel, top: &str) -> Result<Loaded, String> {
@@ -78,25 +78,41 @@ fn load(channel: &Channel, top: &str) -> Result<Loaded, String> {
             from_surface: false,
         })
     };
-    match channel.surface() {
-        Ok(None) => Ok(Loaded {
+    let args = DescribeInstrumentSurface {
+        source: top.to_string(),
+        surface: SurfaceKind::Screen,
+    };
+    let view = match call_tool(names::DESCRIBE_INSTRUMENT_SURFACE, &args, channel) {
+        Ok(answer) => serde_json::from_value::<SurfaceView>(answer.output),
+        Err(refusal) => return unusable(format!("could not be read: {}", refusal.message)),
+    };
+    match view {
+        Err(e) => unusable(format!("could not be read: {e}")),
+        Ok(view) if !view.exists => Ok(Loaded {
             panel: Panel::generated(&boundary),
             from_surface: false,
         }),
-        Ok(Some(text)) => match surface::SurfaceDoc::parse(&text) {
+        Ok(SurfaceView { error: Some(e), .. }) => unusable(e),
+        Ok(view) => {
             // The server answers for the instrument it has open, which an attached engine can
             // change between the two reads.
-            Ok(doc) if doc.instrument != boundary.instrument => unusable(format!(
-                "is for instrument `{}`, not `{}`",
-                doc.instrument, boundary.instrument
-            )),
-            Ok(doc) => Ok(Loaded {
+            let instrument = view.instrument.unwrap_or_default();
+            if instrument != boundary.instrument {
+                return unusable(format!(
+                    "is for instrument `{instrument}`, not `{}`",
+                    boundary.instrument
+                ));
+            }
+            let doc = SurfaceDoc {
+                instrument,
+                cols: view.cols,
+                controls: view.controls.into_iter().map(|c| c.control).collect(),
+            };
+            Ok(Loaded {
                 panel: Panel::from_surface(&doc, &boundary),
                 from_surface: true,
-            }),
-            Err(e) => unusable(e.to_string()),
-        },
-        Err(e) => unusable(format!("could not be read: {e}")),
+            })
+        }
     }
 }
 
@@ -179,6 +195,8 @@ pub struct Controls {
     /// Controls whose setting a reload changed while the engine kept its own value: sent at the
     /// next draw with an engine to send to.
     resend: Vec<usize>,
+    /// The surface doc changed under the panel, so what it was built from is out of date.
+    stale: bool,
 }
 
 /// The live values the engine replaced with the document's since the panel was built, as its
@@ -232,6 +250,7 @@ impl Controls {
             replies: Replies::default(),
             replaced: Replaced::default(),
             resend: Vec::new(),
+            stale: false,
         }
     }
 
@@ -244,8 +263,18 @@ impl Controls {
             } => self.replaced.these(reset),
             Event::Changed { reset: None, .. } => self.replaced.every(),
             Event::Opened { name, .. } if name == top => self.replaced.every(),
+            Event::SurfaceChanged {
+                surface: SurfaceKind::Screen,
+                ..
+            } => self.stale = true,
             _ => {}
         }
+    }
+
+    /// Whether a surface doc change was [`hear`](Self::hear)d since the last call, which means the
+    /// panel is to be [`reload`](Self::reload)ed.
+    pub fn take_stale(&mut self) -> bool {
+        std::mem::take(&mut self.stale)
     }
 
     /// [`open`](Self::open) again after the engine swapped: each control keeps what it was set to
@@ -319,12 +348,13 @@ impl Controls {
     }
 
     /// Draw the panel along the bottom of `ui`, with `beside` down its right edge, and send what
-    /// the player did to `engine`. Draws nothing when no instrument is open, and returns whether it
-    /// drew.
+    /// the player did to `engine`. Its header toggles `map_shown`. Draws nothing when no instrument
+    /// is open, and returns whether it drew.
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
         engine: &Engine,
+        map_shown: &mut bool,
         beside: impl FnOnce(&mut egui::Ui),
     ) -> bool {
         self.heard();
@@ -350,7 +380,7 @@ impl Controls {
                         return;
                     }
                 };
-                view::header(ui, loaded.from_surface, live.is_some());
+                view::header(ui, loaded.from_surface, live.is_some(), map_shown);
                 if let Some(e) = &self.send_error {
                     ui.colored_label(ui.visuals().error_fg_color, format!("send failed: {e}"));
                 }
@@ -746,8 +776,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The server's surface doc is the open instrument's: read for another instrument, it is not
-    /// that one's panel.
+    /// The server reads surface docs of the open instrument only: asked for another's, it refuses
+    /// and the panel is the generated one.
     #[test]
     fn a_surface_doc_for_another_instrument_is_not_used() {
         let dir = scratch("other_surface");
@@ -768,7 +798,7 @@ mod tests {
             assert!(!loaded.from_surface);
             assert_eq!(loaded.panel.controls.len(), 2, "the generated panel");
             let warning = &loaded.panel.warnings[0];
-            assert!(warning.contains("`probe`, not `other`"), "{warning}");
+            assert!(warning.contains("only the open instrument"), "{warning}");
             assert!(warning.contains("generated panel"), "{warning}");
             engine.shutdown();
         });
@@ -856,6 +886,7 @@ mod reload_tests {
             replies: Replies::default(),
             replaced: Replaced::default(),
             resend: Vec::new(),
+            stale: false,
         }
     }
 
@@ -961,6 +992,20 @@ mod reload_tests {
         controls.replace_keeping_settings(panel(vec![other, toggle]));
         assert_eq!(controls.settings[1], Setting::On(false));
         assert_eq!(controls.resend, vec![1]);
+    }
+
+    #[test]
+    fn a_screen_surface_change_reloads_the_panel() {
+        let change = |surface| Event::SurfaceChanged {
+            surface,
+            hash: "h".to_string(),
+        };
+        let mut controls = moved(&["cutoff"]);
+        controls.hear(&change(SurfaceKind::Midi), "t.json");
+        assert!(!controls.take_stale(), "a MIDI map is not drawn here");
+        controls.hear(&change(SurfaceKind::Screen), "t.json");
+        assert!(controls.take_stale());
+        assert!(!controls.take_stale(), "taken once");
     }
 
     #[test]

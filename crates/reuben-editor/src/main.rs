@@ -18,6 +18,7 @@ mod held_swap;
 mod inspector;
 mod link;
 mod meter_strip;
+mod midi_map;
 mod names;
 mod pick;
 #[cfg(test)]
@@ -49,6 +50,7 @@ use crate::follow::Follow;
 use crate::held_swap::HeldSwaps;
 use crate::inspector::Inspector;
 use crate::meter_strip::MeterStrip;
+use crate::midi_map::MidiMap;
 use crate::session::{Session, Status, TrailAsk};
 use crate::start::{Choice, Start};
 
@@ -145,6 +147,7 @@ fn main() -> eframe::Result {
             let mut inspector = Inspector::default();
             let top = session.as_ref().map(Session::top);
             let controls = Controls::open(top, &|| engine.channel());
+            let midi_map = MidiMap::open(top, &|| engine.channel());
             if let Some(session) = &session {
                 start_screen.opened(session.top());
                 view(&mut canvas, &mut inspector, session);
@@ -154,6 +157,8 @@ fn main() -> eframe::Result {
                 engine,
                 audio,
                 controls,
+                midi_map,
+                midi_map_shown: false,
                 canvas,
                 inspector,
                 session,
@@ -241,6 +246,9 @@ struct Editor {
     engine: Engine,
     audio: AudioSettings,
     controls: Controls,
+    midi_map: MidiMap,
+    /// Whether the MIDI map table is shown, as the controls panel's header toggles it.
+    midi_map_shown: bool,
     canvas: Canvas,
     inspector: Inspector,
     session: Option<Session>,
@@ -292,6 +300,7 @@ impl Editor {
         self.inspector = Inspector::default();
         view(&mut self.canvas, &mut self.inspector, &session);
         self.controls = Controls::open(Some(session.top()), &|| self.engine.channel());
+        self.midi_map = MidiMap::open(Some(session.top()), &|| self.engine.channel());
         self.start.opened(session.top());
         self.session = Some(session);
     }
@@ -374,15 +383,52 @@ impl Editor {
         // not load still knows what an open in between replaced.
         for event in &events {
             self.controls.hear(event, session.top());
+            self.midi_map.hear(event);
         }
+        if self.midi_map.take_stale() {
+            self.midi_map
+                .reload(Some(session.top()), &|| self.engine.channel());
+        }
+        let surface_changed = self.controls.take_stale();
         let reopened = (events.iter()).any(
             |event| matches!(event, Event::Opened { name, .. } if name.as_str() == session.top()),
         );
         // A tree that does not load keeps the panel of the instrument still playing.
-        if (poll.reloaded || reopened) && !matches!(session.status(), Status::Held(_)) {
+        if (poll.reloaded || reopened || surface_changed)
+            && !matches!(session.status(), Status::Held(_))
+        {
             self.controls
                 .reload(Some(session.top()), &|| self.engine.channel());
         }
+    }
+
+    /// Draw the MIDI map table down the right of `ui`, and write the edit asked of it to the map
+    /// of the open instrument.
+    fn midi_map_table(&mut self, ui: &mut egui::Ui) {
+        let asked = egui::Panel::right("midi_map")
+            .resizable(true)
+            .default_size(520.0)
+            .show(ui, |ui| self.midi_map.show(ui))
+            .inner;
+        let (Some(action), Some(session)) = (asked, &mut self.session) else {
+            return;
+        };
+        let Some(map) = self.midi_map.view() else {
+            return;
+        };
+        let (source, expect) = (map.source.clone(), map.hash.clone());
+        let top = session.top().to_string();
+        let channel = || self.engine.channel();
+        let result = edit::write_to(
+            session,
+            &channel,
+            &source,
+            expect,
+            midi_map::verb(&top, &action),
+        );
+        self.midi_map.answered(&action, &result);
+        self.midi_map.reload(Some(&top), &channel);
+        ui.ctx().request_repaint();
     }
 }
 
@@ -425,9 +471,14 @@ impl eframe::App for Editor {
         let meters = &mut self.meters;
         if !self
             .controls
-            .show(ui, &self.engine, |ui| meter_strip::show(ui, meters))
+            .show(ui, &self.engine, &mut self.midi_map_shown, |ui| {
+                meter_strip::show(ui, meters)
+            })
         {
             egui::Panel::bottom("meters").show(ui, |ui| meter_strip::show(ui, meters));
+        }
+        if self.midi_map_shown {
+            self.midi_map_table(ui);
         }
         if let Some(session) = &mut self.session {
             let channel = || self.engine.channel();

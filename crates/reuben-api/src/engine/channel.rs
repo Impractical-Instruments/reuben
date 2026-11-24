@@ -312,15 +312,6 @@ impl Channel {
         }
     }
 
-    /// The open instrument's surface document text, if it has one.
-    pub fn surface(&self) -> Result<Option<String>, ChannelError> {
-        match self.exchange_with(&Request::Surface, self.work_read_timeout)? {
-            Response::Surface { text } => Ok(text),
-            Response::Error { message } => Err(ChannelError::Channel(message)),
-            other => Err(unexpected("surface", "surface", &other)),
-        }
-    }
-
     /// Read what plays, by source and content hash. Never the document itself.
     pub fn get_document(&self) -> Result<DocumentSnapshot, ChannelError> {
         match self.exchange(&Request::GetDocument)? {
@@ -656,7 +647,7 @@ mod tests {
     }
 
     #[test]
-    fn library_and_surface_decode_their_answers() {
+    fn library_decodes_its_answer() {
         let (channel, asked) = answering(
             r#"{"reply":"library","instruments":[{"name":"a.json","reads":["a.json"]}],"dirs":["x/"]}"#,
         );
@@ -666,13 +657,6 @@ mod tests {
         assert_eq!(
             asked.lock().unwrap().as_slice(),
             [Request::Library.to_ndjson()]
-        );
-
-        let (channel, asked) = answering(r#"{"reply":"surface","text":"{}"}"#);
-        assert_eq!(channel.surface().unwrap().as_deref(), Some("{}"));
-        assert_eq!(
-            asked.lock().unwrap().as_slice(),
-            [Request::Surface.to_ndjson()]
         );
     }
 }

@@ -10,7 +10,7 @@ A playable surface is three layers owned by three files:
 | Layer | File | Carries | Lifecycle |
 |---|---|---|---|
 | **Contract** | the instrument's `interface.inputs` pipes | the *quantity*: `type` / `default` / `min` / `max` / `curve` / `unit` — engine-enforced against every consumer wire | edited by the **`patcher`** skill, never this one |
-| **Presentation** | `surfaces/<name>.json` (schema: `surfaces/surface.schema.json`) | `bind` / `label` / `widget` / `group`, selection + order, optional **narrower** `min`/`max` | **durable, editable** — this skill's source of truth |
+| **Presentation** | `surfaces/<name>.json` (schema: `surfaces/surface.schema.json`) | `bind` / `label` / `widget` / `group`, selection + order, optional **narrower** `min`/`max` | **durable, editable** — edited through the surface verbs |
 | **Projection** | `control-surfaces/<name>.tosc` | the TouchOSC rendering | **disposable** (one-shot framing, now scoped to the `.tosc` only) — regenerate, never hand-edit |
 
 Interface input pipes are the **one boundary**: a control bound to pipe `name`
@@ -168,26 +168,35 @@ python3 <skilldir>/gen_surface.py boundary instruments/patches/space.json
 
 ### 2. Scaffold a new `surfaces/<name>.json`
 
-Start from the derivation, not a blank file:
+Start from the derivation, not a blank file. Print the derived controls (this writes nothing):
 
 ```
-python3 - <<'EOF' > surfaces/<name>.json
+python3 - <<'EOF'
 import json, sys
 sys.path.insert(0, ".claude/skills/control-surface")
 import gen_surface as g
 inst = json.load(open("instruments/<name>.json"))
 doc, warnings = g.derive_surface(inst, inst.get("instrument"))
 for w in warnings: print("warning:", w, file=sys.stderr)
-print(json.dumps(doc, indent=2))
+print(json.dumps(doc["controls"], indent=2))
 EOF
 ```
+
+Then apply each control with `set_instrument_surface_control` (`surface: "screen"`, `index`
+omitted to append); the first set creates `surfaces/<name>.json`.
 
 The warnings are your curation worklist: each skipped message pipe is a candidate for an explicit
 `note-toggle`/`chord-button` entry with its payload.
 
 ### 3. Edit — the round-trip
 
-The doc is the durable source: edit it with Edit and re-emit. The moves, all plain JSON edits:
+The doc is the durable source. Read it with `describe_instrument_surface` and change it with
+`set_instrument_surface_control` (replace the control at `index`, or append),
+`remove_instrument_surface_control` and `move_instrument_surface_control`, passing
+`surface: "screen"` for `surfaces/<stem>.json` and `surface: "midi"` for the MIDI map
+`surfaces/<stem>.midi.json`. Never hand-edit either file: the engine writes it, refuses a control
+that cannot drive its input, and commits without a Swap. Re-emit the `.tosc` afterwards; it reads
+the file. The moves:
 
 - **relabel** — set `label`;
 - **reorder / curate** — reorder or delete `controls` entries (order is render order);
@@ -196,7 +205,7 @@ The doc is the durable source: edit it with Edit and re-emit. The moves, all pla
 - **narrow a range** — set `min`/`max` inside the pipe range (outside clamps, loudly);
 - **switch widgets** — e.g. `"widget": "radial"` for knobs (ask the user fader vs knob for the
   continuous controls; the choice is per control now, not global);
-- **per-target variant** — copy the doc to `surfaces/<stem>.touchosc.json` and diverge; `emit`
+- **per-target variant** — the verbs edit only `<stem>.json` and the MIDI map; copy the doc to `surfaces/<stem>.touchosc.json` and diverge; `emit`
   prefers it for the TouchOSC target while the web target keeps reading `<stem>.json`
   (its own variant is `<stem>.web.json`).
 
@@ -242,7 +251,7 @@ presentation is the doc quoted above: four faders, two of them relabelled (`octa
 
 A round-trip relabel:
 
-1. Edit `surfaces/strum-harp.json`: `"label": "Range"` → `"label": "Octaves"`.
+1. `set_instrument_surface_control` on `strum-harp` (`surface: "screen"`, `index` 1) with `label` "Octaves" in place of "Range".
 2. `python3 <skilldir>/gen_surface.py emit instruments/strum-harp.json`
    → `wrote control-surfaces/strum-harp.tosc — 4 control(s) from surfaces/strum-harp.json`.
 3. The new label is in the projection (the `.tosc` is zlib-compressed XML:
@@ -299,8 +308,9 @@ letting the boundary path rot silently. It skips (loudly) if `cargo` isn't on `P
 
 | Thing | Action |
 |---|---|
-| `surfaces/*.json` surface docs (+ per-target variants) | **author / edit** — the durable presentation source |
-| `surfaces/<stem>.midi.json` MIDI maps | **author / edit** — read by `reuben play`, not emitted |
+| `surfaces/<stem>.json` surface docs | **author / edit** through the surface verbs — the durable presentation source |
+| per-target variants (`<stem>.touchosc.json`) | **author / edit** as files — the verbs do not reach them |
+| `surfaces/<stem>.midi.json` MIDI maps | **author / edit** through the surface verbs — read by `reuben play`, not emitted |
 | `control-surfaces/*.tosc` | **emit** via `gen_surface.py` — disposable projection; regenerate, never hand-edit |
 | instrument `interface` input pipes | **read** only — the contract this skill binds to |
 | instrument graph — promote a control to a pipe, rename, rewire, change a pipe's contract | **never** — delegate to the `patcher` skill |

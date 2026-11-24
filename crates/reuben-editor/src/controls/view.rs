@@ -27,9 +27,11 @@ const KNOB_SWEEP: f32 = 1.5 * std::f32::consts::PI;
 /// Pointer travel, in points, that takes a knob across its whole range.
 const KNOB_TRAVEL: f32 = 160.0;
 
-pub fn header(ui: &mut egui::Ui, from_surface: bool, running: bool) {
+/// The panel's title row, with the toggle that shows the MIDI map table in `map_shown`.
+pub fn header(ui: &mut egui::Ui, from_surface: bool, running: bool, map_shown: &mut bool) {
     ui.horizontal(|ui| {
         theme::section(ui, "Controls");
+        ui.toggle_value(map_shown, "MIDI map");
         ui.weak(match from_surface {
             true => "from the instrument's surface doc",
             false => "generated from the instrument's interface",
