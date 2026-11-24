@@ -64,7 +64,7 @@ impl Router {
         let mut sends = Vec::new();
         let mut matched = false;
         for route in &self.table.routes {
-            if !route.pattern.matches(&t.address) {
+            if !route.matches(t.kind, t.channel, t.controller) {
                 continue;
             }
             matched = true;
@@ -110,11 +110,8 @@ impl Router {
     /// would otherwise go nowhere, or go unmatched, and the note would sound until `play` stops.
     pub fn install(&mut self, table: RouteTable) {
         let reachable = |(target, channel, _): &(String, u8, u8)| {
-            let address = format!("/midi/{channel}/note");
-            table.routes.iter().any(|route| {
-                route.kind == MidiKind::Note
-                    && route.target == *target
-                    && route.pattern.matches(&address)
+            (table.routes.iter()).any(|route| {
+                route.target == *target && route.matches(MidiKind::Note, *channel, None)
             })
         };
         let (keep, release): (BTreeSet<_>, BTreeSet<_>) = std::mem::take(&mut self.held)
@@ -166,19 +163,31 @@ mod tests {
     use crate::control::{ring_pair, ControlDrain};
     use crate::diagnostics::Snapshot;
     use crate::midi::routes::{Route, RouteTable, Scale};
-    use reuben_api::surface::OscPattern;
+    use reuben_api::surface::{NumberPattern, NumberSet};
 
-    fn route(pattern: &str, kind: MidiKind, bind: &str, scale: Scale) -> Route {
+    fn numbers(pattern: &str, bounds: std::ops::RangeInclusive<u8>) -> NumberSet {
+        NumberSet::parse(&NumberPattern::from_text(pattern), bounds).unwrap()
+    }
+
+    /// A route from controller `cc` on `channels` to `bind`.
+    fn cc_route(channels: &str, cc: &str, bind: &str, scale: Scale) -> Route {
         Route {
-            pattern: OscPattern::parse(pattern).unwrap(),
-            kind,
+            kind: MidiKind::Cc,
+            channels: numbers(channels, 1..=16),
+            controllers: Some(numbers(cc, 0..=127)),
             target: format!("/{bind}/in"),
             scale,
         }
     }
 
-    fn note_route(pattern: &str, bind: &str) -> Route {
-        route(pattern, MidiKind::Note, bind, Scale::None)
+    fn note_route(channels: &str, bind: &str) -> Route {
+        Route {
+            kind: MidiKind::Note,
+            channels: numbers(channels, 1..=16),
+            controllers: None,
+            target: format!("/{bind}/in"),
+            scale: Scale::None,
+        }
     }
 
     fn table(routes: Vec<Route>) -> RouteTable {
@@ -238,9 +247,9 @@ mod tests {
     #[test]
     fn routes_a_cc_to_every_matching_input() {
         let mut rig = Rig::new(vec![
-            route(
-                "/midi/1/cc/74",
-                MidiKind::Cc,
+            cc_route(
+                "1",
+                "74",
                 "a",
                 Scale::Linear {
                     min: 0.0,
@@ -248,9 +257,9 @@ mod tests {
                     int: false,
                 },
             ),
-            route(
-                "/midi/[1-2]/cc/74",
-                MidiKind::Cc,
+            cc_route(
+                "1-2",
+                "74",
                 "b",
                 Scale::Linear {
                     min: 0.0,
@@ -258,9 +267,9 @@ mod tests {
                     int: true,
                 },
             ),
-            route(
-                "/midi/3/cc/74",
-                MidiKind::Cc,
+            cc_route(
+                "3",
+                "74",
                 "c",
                 Scale::Linear {
                     min: 0.0,
@@ -278,6 +287,29 @@ mod tests {
             ]]
         );
         assert_eq!(rig.counters(), (1, 0, 1, 0));
+    }
+
+    #[test]
+    fn a_route_matches_by_channel_and_controller_number_not_by_digit() {
+        let level = Scale::Linear {
+            min: 0.0,
+            max: 1.0,
+            int: false,
+        };
+        let mut rig = Rig::new(vec![cc_route("10-16", "70-79", "a", level)]);
+        rig.router.bytes(&[0xBF, 74, 127]);
+        rig.router.bytes(&[0xB9, 79, 127]);
+        rig.router.bytes(&[0xBF, 80, 127]);
+        rig.router.bytes(&[0xB0, 74, 127]);
+        rig.router.bytes(&[0xDF, 127]);
+        assert_eq!(
+            rig.batches(),
+            vec![
+                vec![("/a/in".to_string(), vec![Arg::F32(1.0)])],
+                vec![("/a/in".to_string(), vec![Arg::F32(1.0)])],
+            ]
+        );
+        assert_eq!(rig.counters(), (5, 0, 2, 3));
     }
 
     #[test]
@@ -301,12 +333,11 @@ mod tests {
 
     #[test]
     fn install_releases_notes_whose_route_is_gone() {
-        let mut rig = Rig::new(vec![note_route("/midi/1/note", "keys")]);
+        let mut rig = Rig::new(vec![note_route("1", "keys")]);
         rig.router.bytes(&[0x90, 60, 100]);
         rig.router.bytes(&[0x90, 64, 100]);
         rig.batches();
-        rig.router
-            .install(table(vec![note_route("/midi/1/note", "other")]));
+        rig.router.install(table(vec![note_route("1", "other")]));
         assert_eq!(
             rig.batches(),
             vec![vec![off("/keys/in", 60.0), off("/keys/in", 64.0)]]
@@ -318,11 +349,10 @@ mod tests {
 
     #[test]
     fn install_keeps_notes_whose_route_survives() {
-        let mut rig = Rig::new(vec![note_route("/midi/1/note", "keys")]);
+        let mut rig = Rig::new(vec![note_route("1", "keys")]);
         rig.router.bytes(&[0x90, 60, 100]);
         rig.batches();
-        rig.router
-            .install(table(vec![note_route("/midi/[1-4]/note", "keys")]));
+        rig.router.install(table(vec![note_route("1-4", "keys")]));
         assert!(rig.batches().is_empty());
         rig.router.bytes(&[0x80, 60, 0]);
         assert_eq!(rig.batches(), vec![vec![off("/keys/in", 60.0)]]);
@@ -330,20 +360,16 @@ mod tests {
 
     #[test]
     fn install_releases_notes_whose_channel_no_longer_reaches_their_target() {
-        let mut rig = Rig::new(vec![note_route("/midi/1/note", "keys")]);
+        let mut rig = Rig::new(vec![note_route("1", "keys")]);
         rig.router.bytes(&[0x90, 60, 100]);
         rig.batches();
-        rig.router
-            .install(table(vec![note_route("/midi/2/note", "keys")]));
+        rig.router.install(table(vec![note_route("2", "keys")]));
         assert_eq!(rig.batches(), vec![vec![off("/keys/in", 60.0)]]);
     }
 
     #[test]
     fn two_routes_to_one_target_send_a_note_once() {
-        let mut rig = Rig::new(vec![
-            note_route("/midi/1/note", "keys"),
-            note_route("/midi/[1-2]/note", "keys"),
-        ]);
+        let mut rig = Rig::new(vec![note_route("1", "keys"), note_route("1-2", "keys")]);
         rig.router.bytes(&[0x90, 60, 100]);
         rig.router.bytes(&[0x80, 60, 0]);
         assert_eq!(
@@ -360,7 +386,7 @@ mod tests {
 
     #[test]
     fn retriggered_note_is_held_once() {
-        let mut rig = Rig::new(vec![note_route("/midi/1/note", "keys")]);
+        let mut rig = Rig::new(vec![note_route("1", "keys")]);
         rig.router.bytes(&[0x90, 60, 100]);
         rig.router.bytes(&[0x90, 60, 90]);
         rig.router.bytes(&[0x80, 60, 0]);
@@ -371,7 +397,7 @@ mod tests {
 
     #[test]
     fn a_note_on_one_channel_is_not_released_by_another() {
-        let mut rig = Rig::new(vec![note_route("/midi/*/note", "keys")]);
+        let mut rig = Rig::new(vec![note_route("*", "keys")]);
         rig.router.bytes(&[0x90, 60, 100]);
         rig.router.bytes(&[0x81, 60, 0]);
         assert_eq!(rig.batches().len(), 1);
@@ -381,10 +407,7 @@ mod tests {
 
     #[test]
     fn a_lost_device_releases_each_held_note() {
-        let mut rig = Rig::new(vec![
-            note_route("/midi/1/note", "keys"),
-            note_route("/midi/2/note", "bass"),
-        ]);
+        let mut rig = Rig::new(vec![note_route("1", "keys"), note_route("2", "bass")]);
         rig.router.bytes(&[0x90, 60, 100]);
         rig.router.bytes(&[0x91, 40, 100]);
         rig.batches();
@@ -407,7 +430,7 @@ mod tests {
 
     #[test]
     fn injected_messages_route_like_device_ones() {
-        let mut rig = Rig::new(vec![note_route("/midi/1/note", "keys")]);
+        let mut rig = Rig::new(vec![note_route("1", "keys")]);
         let Decoded::Message(t) = crate::midi::translate::translate(&[0x90, 60, 127]) else {
             unreachable!()
         };

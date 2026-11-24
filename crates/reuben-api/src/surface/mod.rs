@@ -19,8 +19,8 @@ use reuben_document::text_hash;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-pub use midi::{check_midi_control, MidiKind, MidiRoute, Scale};
-pub use pattern::{OscPattern, PatternError};
+pub use midi::{check_midi_control, MidiKind, MidiRoute, MidiSource, Scale};
+pub use pattern::{NumberPattern, NumberSet, PatternError};
 pub use screen::{check_screen_control, clamp, default_label, takes_a_value, ScreenControl};
 
 /// The one `surface_version` this reader knows.
@@ -87,10 +87,34 @@ pub struct SurfaceControl {
     /// The scale degree a `chord-button` plays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub degree: Option<i64>,
-    /// The address pattern over translated MIDI messages that drives this input, such as
-    /// `/midi/1/cc/74`; read only from a MIDI map.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub midi: Option<String>,
+    /// The MIDI messages that drive this input, such as `{"kind": "cc", "channel": 1, "cc": 74}`;
+    /// read only from a MIDI map.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "midi_source"
+    )]
+    pub midi: Option<MidiSource>,
+}
+
+/// The message a `midi` written as an address string, the shape before `{kind, channel, cc}`, is
+/// refused with.
+pub const MIDI_IS_AN_OBJECT: &str = "`midi` is now an object: `{kind, channel, cc}`";
+
+/// A control's `midi`, refusing the address string it once was by naming the shape that replaced
+/// it, rather than serde's generic "invalid type".
+fn midi_source<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<MidiSource>, D::Error> {
+    use serde::de::Error;
+
+    match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::String(_) => Err(D::Error::custom(MIDI_IS_AN_OBJECT)),
+        value => serde_json::from_value(value)
+            .map(Some)
+            .map_err(D::Error::custom),
+    }
 }
 
 /// Why a surface doc could not be used.
@@ -164,11 +188,10 @@ pub fn render_surface(doc: &SurfaceDoc, surface: SurfaceKind) -> String {
     let mut lines = Vec::with_capacity(doc.controls.len());
     for (index, control) in doc.controls.iter().enumerate() {
         let mut line = match surface {
-            SurfaceKind::Midi => format!(
-                "{index} {} \u{2190} {}",
-                control.bind,
-                control.midi.as_deref().unwrap_or("?")
-            ),
+            SurfaceKind::Midi => match &control.midi {
+                Some(midi) => format!("{index} {} \u{2190} {midi}", control.bind),
+                None => format!("{index} {} \u{2190} ?", control.bind),
+            },
             SurfaceKind::Screen => format!(
                 "{index} {} {} {}",
                 control.bind,
@@ -237,11 +260,40 @@ mod tests {
     fn parses_a_midi_control() {
         let doc = SurfaceDoc::parse(
             r#"{"surface_version":1,"instrument":"x","controls":[
-                {"bind":"cutoff","midi":"/midi/1/cc/74","min":200,"max":8000}]}"#,
+                {"bind":"cutoff","midi":{"kind":"cc","channel":1,"cc":74},"min":200,"max":8000}]}"#,
         )
         .expect("parses");
-        assert_eq!(doc.controls[0].midi.as_deref(), Some("/midi/1/cc/74"));
+        assert_eq!(
+            doc.controls[0].midi,
+            Some(MidiSource {
+                kind: MidiKind::Cc,
+                channel: NumberPattern::Number(1),
+                cc: Some(NumberPattern::Number(74)),
+            })
+        );
         assert_eq!(doc.controls[0].min, Some(200.0));
+    }
+
+    #[test]
+    fn a_midi_address_string_is_refused_naming_the_object_it_became() {
+        let error = SurfaceDoc::parse(
+            r#"{"surface_version":1,"instrument":"x","controls":[
+                {"bind":"cutoff","midi":"/midi/1/cc/74"}]}"#,
+        )
+        .expect_err("a string `midi`");
+        assert!(matches!(error, SurfaceError::Parse(_)), "{error}");
+        assert!(error.to_string().contains(MIDI_IS_AN_OBJECT), "{error}");
+        assert_eq!(
+            MIDI_IS_AN_OBJECT,
+            "`midi` is now an object: `{kind, channel, cc}`"
+        );
+        // Inside the object, serde's own message is kept.
+        let error = SurfaceDoc::parse(
+            r#"{"surface_version":1,"instrument":"x","controls":[
+                {"bind":"cutoff","midi":{"kind":"cc"}}]}"#,
+        )
+        .expect_err("no channel");
+        assert!(error.to_string().contains("`channel`"), "{error}");
     }
 
     #[test]
@@ -279,7 +331,7 @@ mod tests {
     fn to_json_pretty_round_trips() {
         let doc = SurfaceDoc::parse(
             r#"{"surface_version":1,"instrument":"toy","cols":3,"controls":[
-                {"bind":"cutoff","midi":"/midi/1/cc/74","min":200,"max":8000},
+                {"bind":"cutoff","midi":{"kind":"cc","channel":"1-4","cc":74},"min":200,"max":8000},
                 {"bind":"n","label":"C","widget":"note-toggle","note":60}]}"#,
         )
         .expect("parses");
@@ -326,13 +378,18 @@ mod tests {
     fn render_surface_lists_each_control_by_index() {
         let midi = SurfaceDoc::parse(
             r#"{"surface_version":1,"instrument":"t","controls":[
-                {"bind":"cutoff","midi":"/midi/1/cc/74","min":200,"max":8000},
-                {"bind":"level","midi":"/midi/1/cc/7"}]}"#,
+                {"bind":"cutoff","midi":{"kind":"cc","channel":1,"cc":74},"min":200,"max":8000},
+                {"bind":"level","midi":{"kind":"cc","channel":"*","cc":7}},
+                {"bind":"keys","midi":{"kind":"note","channel":"1-4"}},
+                {"bind":"none"}]}"#,
         )
         .unwrap();
         assert_eq!(
             render_surface(&midi, SurfaceKind::Midi),
-            "0 cutoff \u{2190} /midi/1/cc/74 200..8000\n1 level \u{2190} /midi/1/cc/7"
+            "0 cutoff \u{2190} cc 74 on channel 1 200..8000\n\
+             1 level \u{2190} cc 7 on channel *\n\
+             2 keys \u{2190} note on channel 1-4\n\
+             3 none \u{2190} ?"
         );
         let screen = SurfaceDoc::parse(
             r#"{"surface_version":1,"instrument":"t","controls":[

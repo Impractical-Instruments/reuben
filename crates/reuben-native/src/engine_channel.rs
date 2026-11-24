@@ -1605,8 +1605,7 @@ mod tests {
         use crate::control::ControlDrain;
         use crate::midi::router::Router;
         use crate::midi::routes::{Route, RouteTable, Scale};
-        use reuben_api::surface::MidiKind;
-        use reuben_api::surface::OscPattern;
+        use reuben_api::surface::{MidiKind, NumberPattern, NumberSet};
 
         let diagnostics = Diagnostics::new();
         let (tx, _rx) = ring_pair(Arc::clone(&diagnostics));
@@ -1614,8 +1613,9 @@ mod tests {
         let mut router = Router::new(midi_tx, Arc::clone(&diagnostics), false);
         router.install(RouteTable {
             routes: vec![Route {
-                pattern: OscPattern::parse("/midi/1/cc/74").unwrap(),
                 kind: MidiKind::Cc,
+                channels: NumberSet::parse(&NumberPattern::Number(1), 1..=16).unwrap(),
+                controllers: Some(NumberSet::parse(&NumberPattern::Number(74), 0..=127).unwrap()),
                 target: "/cutoff/in".to_string(),
                 scale: Scale::Linear {
                     min: 0.0,

@@ -1,5 +1,6 @@
 //! The route table: each usable control of a MIDI map, checked against the played instrument's
-//! interface inputs and compiled to a pattern, a target address and the scaling the target needs.
+//! interface inputs and compiled to the messages it matches, a target address and the scaling the
+//! target needs.
 
 use reuben_api::authoring::Boundary;
 use reuben_api::render::Arg;
@@ -96,7 +97,7 @@ mod tests {
     #[test]
     fn a_skipped_control_warns_naming_it() {
         let (table, warnings) = build_routes(
-            &doc(json!([{"bind": "gone", "midi": "/midi/1/cc/1"}])),
+            &doc(json!([{"bind": "gone", "midi": {"kind": "cc", "channel": 1, "cc": 1}}])),
             &boundary(),
         );
         assert!(table.routes.is_empty());
@@ -108,7 +109,9 @@ mod tests {
     #[test]
     fn an_adjusted_control_keeps_its_route_and_warns() {
         let (table, warnings) = build_routes(
-            &doc(json!([{"bind": "level", "midi": "/midi/1/cc/7", "min": -1}])),
+            &doc(
+                json!([{"bind": "level", "midi": {"kind": "cc", "channel": 1, "cc": 7}, "min": -1}]),
+            ),
             &boundary(),
         );
         assert_eq!(table.routes.len(), 1);
@@ -119,7 +122,7 @@ mod tests {
     fn another_instruments_map_is_used_with_a_warning() {
         let doc = SurfaceDoc::parse(
             &json!({"surface_version": 1, "instrument": "other",
-                    "controls": [{"bind": "level", "midi": "/midi/1/cc/7"}]})
+                    "controls": [{"bind": "level", "midi": {"kind": "cc", "channel": 1, "cc": 7}}]})
             .to_string(),
         )
         .unwrap();

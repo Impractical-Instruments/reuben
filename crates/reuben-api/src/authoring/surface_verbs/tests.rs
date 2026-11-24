@@ -124,7 +124,10 @@ fn set_appends_a_midi_control_and_creates_the_map() {
     let store = store();
     let called = call(
         names::SET_INSTRUMENT_SURFACE_CONTROL,
-        set(json!({"bind": "cutoff", "midi": "/midi/1/cc/74"}), None),
+        set(
+            json!({"bind": "cutoff", "midi": {"kind": "cc", "channel": 1, "cc": 74}}),
+            None,
+        ),
         &store,
     )
     .expect("an edit");
@@ -142,34 +145,48 @@ fn set_appends_a_midi_control_and_creates_the_map() {
     assert_eq!(binds(&written), ["cutoff"]);
     assert_eq!(result.hash, surface_hash(&written));
     assert_eq!(text(&store, MAP).unwrap(), written.to_file_text());
-    assert_eq!(result.zoom, "0 cutoff \u{2190} /midi/1/cc/74");
+    assert_eq!(result.zoom, "0 cutoff \u{2190} cc 74 on channel 1");
 }
 
 #[test]
 fn set_replaces_at_index() {
     let store = with_map(json!([
-        {"bind": "cutoff", "midi": "/midi/1/cc/74"},
-        {"bind": "cutoff", "midi": "/midi/1/cc/1"}
+        {"bind": "cutoff", "midi": {"kind": "cc", "channel": 1, "cc": 74}},
+        {"bind": "cutoff", "midi": {"kind": "cc", "channel": 1, "cc": 1}}
     ]));
     let result = edit(
         &store,
         names::SET_INSTRUMENT_SURFACE_CONTROL,
-        set(json!({"bind": "notes", "midi": "/midi/1/note"}), Some(1)),
+        set(
+            json!({"bind": "notes", "midi": {"kind": "note", "channel": 1}}),
+            Some(1),
+        ),
     );
     assert!(result.written, "{result:?}");
     let written = map(&store);
     assert_eq!(binds(&written), ["cutoff", "notes"]);
-    assert_eq!(written.controls[1].midi.as_deref(), Some("/midi/1/note"));
+    assert_eq!(
+        written.controls[1]
+            .midi
+            .as_ref()
+            .map(ToString::to_string)
+            .as_deref(),
+        Some("note on channel 1")
+    );
 }
 
 #[test]
 fn set_refuses_a_control_that_would_not_route() {
-    let store = with_map(json!([{"bind": "cutoff", "midi": "/midi/1/cc/74"}]));
+    let store =
+        with_map(json!([{"bind": "cutoff", "midi": {"kind": "cc", "channel": 1, "cc": 74}}]));
     let before = text(&store, MAP);
     let result = edit(
         &store,
         names::SET_INSTRUMENT_SURFACE_CONTROL,
-        set(json!({"bind": "mode", "midi": "/midi/1/cc/74"}), None),
+        set(
+            json!({"bind": "mode", "midi": {"kind": "cc", "channel": 1, "cc": 74}}),
+            None,
+        ),
     );
     assert!(!result.written);
     assert!(!result.report.ok);
@@ -186,15 +203,18 @@ fn set_refuses_a_control_that_would_not_route() {
 #[test]
 fn a_stale_expect_writes_nothing() {
     let store = with_map(json!([
-        {"bind": "cutoff", "midi": "/midi/1/cc/74"},
-        {"bind": "notes", "midi": "/midi/1/note"}
+        {"bind": "cutoff", "midi": {"kind": "cc", "channel": 1, "cc": 74}},
+        {"bind": "notes", "midi": {"kind": "note", "channel": 1}}
     ]));
     let before = text(&store, MAP);
     let current = surface_hash(&map(&store));
     for (tool, mut args) in [
         (
             names::SET_INSTRUMENT_SURFACE_CONTROL,
-            set(json!({"bind": "cutoff", "midi": "/midi/2/cc/74"}), None),
+            set(
+                json!({"bind": "cutoff", "midi": {"kind": "cc", "channel": 2, "cc": 74}}),
+                None,
+            ),
         ),
         (
             names::REMOVE_INSTRUMENT_SURFACE_CONTROL,
@@ -215,7 +235,10 @@ fn a_stale_expect_writes_nothing() {
         );
         assert_eq!(text(&store, MAP), before, "{tool}");
     }
-    let mut args = set(json!({"bind": "cutoff", "midi": "/midi/2/cc/74"}), None);
+    let mut args = set(
+        json!({"bind": "cutoff", "midi": {"kind": "cc", "channel": 2, "cc": 74}}),
+        None,
+    );
     args["expect"] = json!(current);
     assert!(edit(&store, names::SET_INSTRUMENT_SURFACE_CONTROL, args).written);
 }
@@ -223,7 +246,10 @@ fn a_stale_expect_writes_nothing() {
 #[test]
 fn an_expect_on_a_missing_doc_says_it_does_not_exist() {
     let store = store();
-    let mut args = set(json!({"bind": "cutoff", "midi": "/midi/1/cc/74"}), None);
+    let mut args = set(
+        json!({"bind": "cutoff", "midi": {"kind": "cc", "channel": 1, "cc": 74}}),
+        None,
+    );
     args["expect"] = json!("0000000000000000");
     let result = edit(&store, names::SET_INSTRUMENT_SURFACE_CONTROL, args);
     assert!(!result.written);
@@ -236,7 +262,10 @@ fn an_expect_on_a_missing_doc_says_it_does_not_exist() {
     );
     assert_eq!(text(&store, MAP), None);
     // An absent doc's hash is empty, so `""` expects the doc to be absent.
-    let mut args = set(json!({"bind": "cutoff", "midi": "/midi/1/cc/74"}), None);
+    let mut args = set(
+        json!({"bind": "cutoff", "midi": {"kind": "cc", "channel": 1, "cc": 74}}),
+        None,
+    );
     args["expect"] = json!("");
     assert!(edit(&store, names::SET_INSTRUMENT_SURFACE_CONTROL, args).written);
 }
@@ -255,7 +284,10 @@ fn a_map_that_does_not_parse_is_never_overwritten() {
         for (tool, args) in [
             (
                 names::SET_INSTRUMENT_SURFACE_CONTROL,
-                set(json!({"bind": "cutoff", "midi": "/midi/1/cc/74"}), None),
+                set(
+                    json!({"bind": "cutoff", "midi": {"kind": "cc", "channel": 1, "cc": 74}}),
+                    None,
+                ),
             ),
             (
                 names::REMOVE_INSTRUMENT_SURFACE_CONTROL,
@@ -288,9 +320,9 @@ fn a_map_that_does_not_parse_is_never_overwritten() {
 #[test]
 fn remove_and_move_reorder_and_out_of_range_is_a_refusal() {
     let store = with_map(json!([
-        {"bind": "cutoff", "midi": "/midi/1/cc/74"},
-        {"bind": "notes", "midi": "/midi/1/note"},
-        {"bind": "cutoff", "midi": "/midi/1/cc/1"}
+        {"bind": "cutoff", "midi": {"kind": "cc", "channel": 1, "cc": 74}},
+        {"bind": "notes", "midi": {"kind": "note", "channel": 1}},
+        {"bind": "cutoff", "midi": {"kind": "cc", "channel": 1, "cc": 1}}
     ]));
     let moved = edit(
         &store,
@@ -303,9 +335,13 @@ fn remove_and_move_reorder_and_out_of_range_is_a_refusal() {
         written
             .controls
             .iter()
-            .map(|c| c.midi.as_deref().unwrap())
+            .map(|c| c.midi.as_ref().unwrap().to_string())
             .collect::<Vec<_>>(),
-        ["/midi/1/note", "/midi/1/cc/1", "/midi/1/cc/74"]
+        [
+            "note on channel 1",
+            "cc 1 on channel 1",
+            "cc 74 on channel 1"
+        ]
     );
     assert_eq!(moved.hash, surface_hash(&written));
 
@@ -333,7 +369,10 @@ fn remove_and_move_reorder_and_out_of_range_is_a_refusal() {
         ),
         (
             names::SET_INSTRUMENT_SURFACE_CONTROL,
-            set(json!({"bind": "cutoff", "midi": "/midi/1/cc/7"}), Some(5)),
+            set(
+                json!({"bind": "cutoff", "midi": {"kind": "cc", "channel": 1, "cc": 7}}),
+                Some(5),
+            ),
         ),
     ] {
         let why = refused(&store, tool, args);
@@ -379,8 +418,8 @@ fn describe_reports_per_control_status_and_doc_warnings() {
         &store,
         "other",
         json!([
-            {"bind": "cutoff", "midi": "/midi/1/cc/74", "min": 10},
-            {"bind": "mode", "midi": "/midi/1/cc/1"}
+            {"bind": "cutoff", "midi": {"kind": "cc", "channel": 1, "cc": 74}, "min": 10},
+            {"bind": "mode", "midi": {"kind": "cc", "channel": 1, "cc": 1}}
         ]),
     );
     let view = describe(&store, "midi");
@@ -474,7 +513,10 @@ fn a_store_that_keeps_no_surface_docs_refuses_every_verb() {
         ),
         (
             names::SET_INSTRUMENT_SURFACE_CONTROL,
-            set(json!({"bind": "cutoff", "midi": "/midi/1/cc/74"}), None),
+            set(
+                json!({"bind": "cutoff", "midi": {"kind": "cc", "channel": 1, "cc": 74}}),
+                None,
+            ),
         ),
         (
             names::REMOVE_INSTRUMENT_SURFACE_CONTROL,
@@ -492,7 +534,8 @@ fn a_store_that_keeps_no_surface_docs_refuses_every_verb() {
 
 #[test]
 fn an_instrument_that_does_not_load_leaves_its_map_unchecked_and_unwritten() {
-    let store = with_map(json!([{"bind": "cutoff", "midi": "/midi/1/cc/74"}]));
+    let store =
+        with_map(json!([{"bind": "cutoff", "midi": {"kind": "cc", "channel": 1, "cc": 74}}]));
     store
         .inner()
         .write_text(
@@ -505,7 +548,10 @@ fn an_instrument_that_does_not_load_leaves_its_map_unchecked_and_unwritten() {
     let result = edit(
         &store,
         names::SET_INSTRUMENT_SURFACE_CONTROL,
-        set(json!({"bind": "cutoff", "midi": "/midi/1/cc/7"}), None),
+        set(
+            json!({"bind": "cutoff", "midi": {"kind": "cc", "channel": 1, "cc": 7}}),
+            None,
+        ),
     );
     assert!(!result.written);
     assert!(

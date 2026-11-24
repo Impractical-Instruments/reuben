@@ -2386,7 +2386,7 @@ mod tests {
             surface: reuben_api::surface::SurfaceKind::Midi,
             index: None,
             control: serde_json::from_value(serde_json::json!({
-                "bind": "cutoff", "midi": "/midi/1/cc/74"
+                "bind": "cutoff", "midi": {"kind": "cc", "channel": 1, "cc": 74}
             }))
             .expect("a MIDI control"),
             expect: Some("00c0ffee".to_string()),

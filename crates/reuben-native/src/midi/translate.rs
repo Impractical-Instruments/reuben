@@ -1,4 +1,5 @@
-//! Decoding one MIDI message into the translated `/midi/<ch>/…` form the router matches against.
+//! Decoding one MIDI message into the translated form the router matches against: its kind,
+//! channel and controller, and the `/midi/<ch>/…` address a log line and `send_midi` spell it as.
 //!
 //! | MIDI message | Address | Args |
 //! | --- | --- | --- |
@@ -20,6 +21,8 @@ pub struct Translated {
     pub kind: MidiKind,
     /// 1..=16.
     pub channel: u8,
+    /// A control change's controller number; `None` for every other kind.
+    pub controller: Option<u8>,
     pub address: String,
     pub args: Vec<Arg>,
 }
@@ -95,6 +98,7 @@ pub fn translate(bytes: &[u8]) -> Decoded {
     Decoded::Message(Translated {
         kind,
         channel,
+        controller: (kind == MidiKind::Cc).then_some(data[0]),
         address,
         args,
     })
@@ -124,14 +128,19 @@ pub fn parse_translated(address: &str, args: &[Arg]) -> Option<Translated> {
     let channel = channel as u8;
     let kind = MidiKind::ALL
         .into_iter()
-        .find(|k| Some(&k.segment()) == segments.get(1))?;
+        .find(|k| Some(&k.name()) == segments.get(1))?;
     let segment_count = if kind == MidiKind::Cc { 3 } else { 2 };
     if segments.len() != segment_count {
         return None;
     }
-    if kind == MidiKind::Cc && data_number(segments[2])? > 127 {
-        return None;
-    }
+    let controller = match kind {
+        MidiKind::Cc => Some(
+            u8::try_from(data_number(segments[2])?)
+                .ok()
+                .filter(|n| *n <= 127)?,
+        ),
+        _ => None,
+    };
     let args = match (kind, args) {
         (MidiKind::Note, [pitch, velocity]) => {
             let pitch = number(pitch)?;
@@ -150,13 +159,14 @@ pub fn parse_translated(address: &str, args: &[Arg]) -> Option<Translated> {
     Some(Translated {
         kind,
         channel,
+        controller,
         address: address.to_string(),
         args,
     })
 }
 
-/// A decimal in canonical spelling (no sign, no leading zero), so each translated address has one
-/// spelling and a pattern written against it matches every injected copy.
+/// A decimal in canonical spelling (no sign, no leading zero), so each translated message has one
+/// address, which a log line prints.
 fn data_number(text: &str) -> Option<u32> {
     let canonical = !text.is_empty()
         && text.bytes().all(|b| b.is_ascii_digit())
@@ -267,6 +277,8 @@ mod tests {
             assert_eq!(t.args, args, "{bytes:02X?}");
             assert_eq!(t.kind, kind, "{bytes:02X?}");
             assert_eq!(t.channel, channel, "{bytes:02X?}");
+            let controller = (kind == MidiKind::Cc).then_some(bytes[1]);
+            assert_eq!(t.controller, controller, "{bytes:02X?}");
         }
     }
 
