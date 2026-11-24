@@ -89,6 +89,13 @@ impl<R: Resources> DocumentHistory<R> {
             .any(|h| h.source == source && h.hash == hash)
     }
 
+    /// Whether the state `hash` held for `source` is a surface doc, so a restore to it writes no
+    /// Instrument.
+    pub(crate) fn holds_surface_doc(&self, source: &str, hash: &str) -> bool {
+        self.text_at(source, hash)
+            .is_some_and(|text| SurfaceDoc::parse(&text).is_ok())
+    }
+
     fn held(&self) -> MutexGuard<'_, VecDeque<Held>> {
         // Every critical section leaves the queue whole, so a panic elsewhere while it was held
         // poisons nothing worth refusing over.

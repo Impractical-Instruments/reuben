@@ -128,12 +128,15 @@ fn surface_file_name(instrument: &Path, surface: SurfaceKind) -> Option<String> 
 }
 
 /// The surface doc of the instrument at `instrument` that exists: `surfaces/<stem><suffix>.json`
-/// in the first of the instrument's own directory and its two ancestors that has one.
+/// in the first of the instrument's own directory and its two ancestors that has one. The
+/// instrument itself is never its own surface doc, though an instrument kept in a `surfaces/`
+/// directory is where its search looks.
 pub fn find_surface(instrument: &Path, surface: SurfaceKind) -> Option<PathBuf> {
     let name = surface_file_name(instrument, surface)?;
+    let itself = absolute(instrument.to_path_buf());
     surface_search_dirs(instrument)
         .map(|dir| dir.join("surfaces").join(&name))
-        .find(|candidate| candidate.is_file())
+        .find(|candidate| *candidate != itself && candidate.is_file())
 }
 
 /// Make `p` absolute against the current directory and lexically normalize it (collapse
@@ -302,17 +305,20 @@ impl Resources for FsResolver {
             SurfaceKind::Screen => SurfaceKind::Midi,
             SurfaceKind::Midi => SurfaceKind::Screen,
         };
+        let itself = absolute(instrument.clone());
+        let not_itself = |path: PathBuf| (path != itself).then_some(path);
         let path = find_surface(&instrument, surface)
             .or_else(|| {
                 let beside = find_surface(&instrument, other)?;
-                Some(beside.parent()?.join(&name))
+                not_itself(beside.parent()?.join(&name))
             })
             .or_else(|| {
                 surface_search_dirs(&instrument)
                     .map(|dir| dir.join("surfaces"))
-                    .find(|dir| dir.is_dir())
-                    .map(|dir| dir.join(&name))
+                    .filter(|dir| dir.is_dir())
+                    .find_map(|dir| not_itself(dir.join(&name)))
             })
+            // Never the instrument: its parent would have to be its own `surfaces/`.
             .or_else(|| Some(instrument.parent()?.join("surfaces").join(&name)))?;
         Some(path.display().to_string())
     }
@@ -892,6 +898,30 @@ mod tests {
         assert_eq!(
             surface_source(&tree, "x.midi.json", SurfaceKind::Midi),
             Some(tree.path("surfaces/x.midi.midi.json"))
+        );
+    }
+
+    #[test]
+    fn an_instrument_under_a_surfaces_dir_is_never_its_own_surface_doc() {
+        let tree = Tree::new("surface_itself");
+        tree.touch("lib/surfaces/a.json");
+        tree.touch("lib/surfaces/x.midi.json");
+        let instrument = tree.path("lib/surfaces/a.json");
+        assert_eq!(
+            find_surface(Path::new(&instrument), SurfaceKind::Screen),
+            None
+        );
+        assert_eq!(
+            surface_source(&tree, "lib/surfaces/a.json", SurfaceKind::Screen),
+            Some(tree.path("lib/surfaces/surfaces/a.json"))
+        );
+        assert_eq!(
+            surface_source(&tree, "lib/surfaces/a.json", SurfaceKind::Midi),
+            Some(tree.path("lib/surfaces/a.midi.json"))
+        );
+        assert_eq!(
+            surface_source(&tree, "lib/surfaces/x.midi.json", SurfaceKind::Screen),
+            Some(tree.path("lib/surfaces/surfaces/x.midi.json"))
         );
     }
 

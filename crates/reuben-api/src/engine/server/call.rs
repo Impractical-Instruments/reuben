@@ -147,7 +147,9 @@ pub(super) fn handle_call(state: &ChannelState, tool: &str, args: Value) -> Resp
         Ok(open) => open,
         Err(poisoned) => return poisoned.into(),
     };
-    match unoffered_name(state, &named, open.as_ref()) {
+    let reaches_surfaces = reaches_surfaces(tool);
+    let writes_a_surface = writes_a_surface(state, tool, &args);
+    match unoffered_name(state, &named, open.as_ref().filter(|_| reaches_surfaces)) {
         Ok(None) => {}
         Ok(Some(name)) => {
             return Response::Refused {
@@ -210,11 +212,46 @@ pub(super) fn handle_call(state: &ChannelState, tool: &str, args: Value) -> Resp
         },
         CallKind::Edit { source } => {
             let canonical = state.store.canonical(&source, None);
-            match open.as_ref().and_then(|open| open.kind_of(&canonical)) {
+            let surface = open
+                .as_ref()
+                .filter(|_| writes_a_surface)
+                .and_then(|open| open.kind_of(&canonical));
+            match surface {
                 Some(surface) => commit_surface(state, output, summary, surface, &canonical),
                 None => edit_or_refuse(state, &mut coordinator, output, summary, &source),
             }
         }
+    }
+}
+
+/// Whether `tool` may name one of the open instrument's surface docs: the surface verbs, and a
+/// restore, which is how a surface edit is undone. Every other verb names instruments only.
+fn reaches_surfaces(tool: &str) -> bool {
+    matches!(
+        tool,
+        names::DESCRIBE_INSTRUMENT_SURFACE
+            | names::SET_INSTRUMENT_SURFACE_CONTROL
+            | names::REMOVE_INSTRUMENT_SURFACE_CONTROL
+            | names::MOVE_INSTRUMENT_SURFACE_CONTROL
+            | names::RESTORE_INSTRUMENT
+    )
+}
+
+/// Whether `tool`'s edit, when it lands on one of the open instrument's surface docs, is a surface
+/// edit and commits without a Swap. A restore is one only when the state it restores is a surface
+/// doc: a path alone cannot say, since a store may name an instrument where it keeps surface docs.
+fn writes_a_surface(state: &ChannelState, tool: &str, args: &Value) -> bool {
+    match tool {
+        names::SET_INSTRUMENT_SURFACE_CONTROL
+        | names::REMOVE_INSTRUMENT_SURFACE_CONTROL
+        | names::MOVE_INSTRUMENT_SURFACE_CONTROL => true,
+        names::RESTORE_INSTRUMENT => {
+            let field = |key: &str| args.get(key).and_then(Value::as_str);
+            field("source")
+                .zip(field("to"))
+                .is_some_and(|(source, to)| state.store.holds_surface_doc(source, to))
+        }
+        _ => false,
     }
 }
 
@@ -370,7 +407,8 @@ fn resolved_names(state: &ChannelState, tool: &str, args: &Value) -> Vec<(String
 }
 
 /// The first of `named` that the host does not offer and neither the open instrument's tree nor
-/// its surface docs already reach, as the client spelled it. An edit's own target is checked
+/// `surfaces` (its surface docs, for a verb that may name them) already reach, as the client
+/// spelled it. An edit's own target is checked
 /// against the tree again in [`edit_or_refuse`]; this keeps a read, a create, or a reference an
 /// edit writes from naming what the client may not.
 fn unoffered_name(
@@ -770,8 +808,13 @@ mod tests {
             }
         }
 
-        /// `<stem>.json` keeps its surface docs at `surfaces/<stem><suffix>.json`.
+        /// `<stem>.json` keeps its surface docs at `surfaces/<stem><suffix>.json`, except that an
+        /// instrument already under `surfaces/` is its own screen doc: a store whose search reaches
+        /// the instrument's own directory can answer that.
         fn surface_source(&self, instrument: &str, surface: SurfaceKind) -> Option<String> {
+            if instrument.starts_with("surfaces/") && surface == SurfaceKind::Screen {
+                return Some(instrument.to_string());
+            }
             let stem = instrument.strip_suffix(".json")?;
             Some(format!("surfaces/{stem}{}.json", surface.suffix()))
         }
@@ -2391,6 +2434,70 @@ mod tests {
         assert_eq!(s.files.get(SYN_MAP), before);
         assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
         assert_eq!(written.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn an_instrument_verb_on_an_instrument_that_is_its_own_surface_doc_swaps() {
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let s = serving_with(Host {
+            written: Arc::clone(&written),
+            ..Host::default()
+        });
+        let top = "surfaces/s.json";
+        s.files.write_text(top, &synth("s")).unwrap();
+        opened(&s, top);
+        let playing = installed_hash(&s.state);
+        let events = s.state.subscribe();
+        let (renamed, _) = call(
+            &s,
+            "set_instrument_name",
+            json!({"source": top, "name": "renamed"}),
+        );
+        assert_eq!(renamed["written"], true, "{renamed}");
+        let swapped = installed_hash(&s.state);
+        assert_ne!(swapped, playing);
+        assert!(
+            matches!(events.try_recv(), Ok(Event::Changed { ref hash, by: ChangedBy::Client, .. }) if *hash == swapped),
+        );
+
+        let (undone, _) = call(
+            &s,
+            "restore_instrument",
+            restore(top, &json!(playing), &renamed["hash"]),
+        );
+        assert_eq!(undone["written"], true, "{undone}");
+        assert_eq!(installed_hash(&s.state), playing);
+        assert!(matches!(
+            events.try_recv(),
+            Ok(Event::Changed {
+                by: ChangedBy::Client,
+                ..
+            })
+        ));
+        assert!(written.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_create_at_the_open_instruments_surface_doc_is_not_offered() {
+        let s = serving_with(Host {
+            only: Some("syn"),
+            ..Host::default()
+        });
+        opened(&s, "syn.json");
+        let new = json!({"source": SYN_MAP, "name": "x"});
+        assert_eq!(
+            refusal(&s.state, "new_instrument", new),
+            super::super::not_offered(SYN_MAP)
+        );
+        let copy = json!({"from": "syn.json", "to": SYN_MAP});
+        assert_eq!(
+            refusal(&s.state, "copy_instrument", copy),
+            super::super::not_offered(SYN_MAP)
+        );
+        assert_eq!(s.files.get(SYN_MAP), None);
+        // The surface verbs still reach it.
+        let (output, _) = call(&s, "set_instrument_surface_control", set_cc("syn.json", 74));
+        assert_eq!(output["written"], true, "{output}");
     }
 
     #[test]
