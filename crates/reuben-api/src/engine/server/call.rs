@@ -2233,7 +2233,7 @@ mod tests {
 
     fn set_cc(source: &str, cc: u8) -> Value {
         json!({"source": source, "surface": "midi",
-               "control": {"bind": "cutoff", "midi": format!("/midi/1/cc/{cc}")}})
+               "control": {"bind": "cutoff", "midi": {"kind": "cc", "channel": 1, "cc": cc}}})
     }
 
     fn restore(source: &str, to: &Value, expect: &Value) -> Value {
@@ -2265,7 +2265,14 @@ mod tests {
         assert_eq!(output["written"], true, "{output}");
         let map = s.files.get(SYN_MAP).expect("the map is written");
         let doc = SurfaceDoc::parse(&map).expect("a map");
-        assert_eq!(doc.controls[0].midi.as_deref(), Some("/midi/1/cc/74"));
+        assert_eq!(
+            doc.controls[0]
+                .midi
+                .as_ref()
+                .map(ToString::to_string)
+                .as_deref(),
+            Some("cc 74 on channel 1")
+        );
         assert_eq!(
             events.try_recv(),
             Ok(surface_changed(SurfaceKind::Midi, &output["hash"]))

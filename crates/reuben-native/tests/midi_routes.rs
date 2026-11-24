@@ -37,8 +37,8 @@ fn instrument(name: &str) -> String {
 fn map(name: &str, channel: u8) -> String {
     format!(
         r#"{{"surface_version":1,"instrument":"{name}","controls":[
-            {{"bind":"cutoff","midi":"/midi/{channel}/cc/74","min":200,"max":8000}},
-            {{"bind":"notes","midi":"/midi/1/note"}}
+            {{"bind":"cutoff","midi":{{"kind":"cc","channel":{channel},"cc":74}},"min":200,"max":8000}},
+            {{"bind":"notes","midi":{{"kind":"note","channel":1}}}}
         ]}}"#
     )
 }
@@ -143,6 +143,17 @@ fn invalid_map_keeps_previous_routes() {
     write_map(&dir.0, "inst", "{ not json");
     std::thread::sleep(QUIET);
     assert!(routes(&channel, 2, Duration::ZERO));
+    // A route still spelled as an address, the shape `midi` had before, is a map that does not
+    // parse either.
+    write_map(
+        &dir.0,
+        "inst",
+        r#"{"surface_version":1,"instrument":"inst","controls":[
+            {"bind":"cutoff","midi":"/midi/3/cc/74","min":200,"max":8000}]}"#,
+    );
+    std::thread::sleep(QUIET);
+    assert!(routes(&channel, 2, Duration::ZERO));
+    assert!(!routes(&channel, 3, Duration::ZERO));
 }
 
 #[test]
@@ -287,7 +298,7 @@ fn a_map_edit_routes_with_file_following_off() {
                 "source": dir.0.join("inst.json").display().to_string(),
                 "surface": "midi",
                 "index": 0,
-                "control": {"bind": "cutoff", "midi": "/midi/3/cc/74"},
+                "control": {"bind": "cutoff", "midi": {"kind": "cc", "channel": 3, "cc": 74}},
             }),
         )
         .expect("set");

@@ -943,7 +943,7 @@ mod tests {
         assert!(err.to_string().contains("`widgte`"), "{err}");
         let every_key = json!({ "source": "i.json", "surface": "midi", "control": {
             "bind": "cutoff", "label": "Cut", "widget": "fader", "group": "g", "min": 0.0,
-            "max": 1.0, "note": 60, "velocity": 1.0, "degree": 1, "midi": "/midi/1/cc/74"
+            "max": 1.0, "note": 60, "velocity": 1.0, "degree": 1, "midi": {"kind": "cc", "channel": 1, "cc": 74}
         }});
         assert!(serde_json::from_value::<SetInstrumentSurfaceControl>(every_key).is_ok());
     }
@@ -955,5 +955,26 @@ mod tests {
         let control = &schema["properties"]["control"];
         assert_eq!(control["additionalProperties"], json!(false), "{control}");
         assert!(control["properties"]["bind"].is_object(), "{control}");
+        let midi = &schema["$defs"]["MidiSource"];
+        assert_eq!(midi["required"], json!(["kind", "channel"]), "{midi}");
+        assert_eq!(midi["additionalProperties"], json!(false), "{midi}");
+        assert_eq!(
+            schema["$defs"]["MidiKind"]["enum"],
+            json!(["note", "cc", "bend", "pressure", "program"])
+        );
+    }
+
+    #[test]
+    fn a_midi_address_string_is_refused_naming_the_object_it_became() {
+        let err = serde_json::from_value::<SetInstrumentSurfaceControl>(json!({
+            "source": "i.json", "surface": "midi",
+            "control": { "bind": "cutoff", "midi": "/midi/1/cc/74" }
+        }))
+        .expect_err("a string `midi`");
+        assert!(
+            err.to_string()
+                .contains("`midi` is now an object: `{kind, channel, cc}`"),
+            "{err}"
+        );
     }
 }

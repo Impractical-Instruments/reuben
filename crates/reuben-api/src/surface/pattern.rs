@@ -1,306 +1,380 @@
-//! OSC 1.0 address patterns, matched one `/`-separated segment at a time: `?` is one character,
-//! `*` any run of characters, `[a-z]` / `[!a-z]` one character in (or not in) a set, and `{a,b}`
-//! one of several literal strings. No token matches a `/`.
+//! The numeric pattern a MIDI route's `channel` and `cc` take: `*` is every number, `a-b` an
+//! inclusive range, and `a,b,c` a list of either, so `1-4,10` is five numbers. Not OSC's address
+//! pattern grammar, whose `[1-16]` is a class of the characters `1` and `6`.
 
-use alloc::format;
+use alloc::borrow::Cow;
 use alloc::string::{String, ToString};
-use alloc::vec::Vec;
+use core::fmt;
+use core::ops::RangeInclusive;
 
-use super::midi::MidiKind;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
-/// A compiled address pattern.
-#[derive(Debug, Clone, PartialEq)]
-pub struct OscPattern {
-    segments: Vec<Vec<Token>>,
+/// A MIDI route's `channel` or `cc` as written: a JSON integer for one number, a string for a
+/// pattern over numbers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NumberPattern {
+    Number(i64),
+    Pattern(String),
 }
 
-#[derive(Debug, Clone, PartialEq)]
-enum Token {
-    Literal(char),
-    One,
-    Any,
-    Class {
-        negated: bool,
-        ranges: Vec<(char, char)>,
-    },
-    Choice(Vec<String>),
+impl NumberPattern {
+    /// What a text field holding `text` writes: a number when it is one, else the pattern.
+    pub fn from_text(text: &str) -> Self {
+        let text = text.trim();
+        let digits = !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
+        match text.parse() {
+            Ok(number) if digits => Self::Number(number),
+            _ => Self::Pattern(text.to_string()),
+        }
+    }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum PatternError {
-    Malformed(String),
-    /// The pattern's first segment is not the literal `midi`.
-    NotMidi,
-    /// The pattern can match more than one message kind.
-    MixedKinds,
-    /// The pattern can match no translated MIDI address.
-    NoKind,
-}
-
-impl core::fmt::Display for PatternError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for NumberPattern {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Malformed(why) => write!(f, "is not an OSC address pattern: {why}"),
-            Self::NotMidi => f.write_str("does not start with /midi/"),
-            Self::MixedKinds => f.write_str(
-                "can match more than one message kind (note, cc, bend, pressure, program)",
+            Self::Number(n) => write!(f, "{n}"),
+            Self::Pattern(text) => f.write_str(text),
+        }
+    }
+}
+
+impl Serialize for NumberPattern {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Number(n) => serializer.serialize_i64(*n),
+            Self::Pattern(text) => serializer.serialize_str(text),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for NumberPattern {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl serde::de::Visitor<'_> for Visitor {
+            type Value = NumberPattern;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("an integer, or a pattern string such as \"1-4\" or \"*\"")
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, n: i64) -> Result<Self::Value, E> {
+                Ok(NumberPattern::Number(n))
+            }
+
+            // An integer past `i64` is kept as its digits, so the check skips the one control
+            // as out of bounds rather than the whole map failing to parse.
+            fn visit_u64<E: serde::de::Error>(self, n: u64) -> Result<Self::Value, E> {
+                Ok(i64::try_from(n).map_or_else(
+                    |_| NumberPattern::Pattern(n.to_string()),
+                    NumberPattern::Number,
+                ))
+            }
+
+            fn visit_str<E: serde::de::Error>(self, text: &str) -> Result<Self::Value, E> {
+                Ok(NumberPattern::Pattern(text.to_string()))
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+impl JsonSchema for NumberPattern {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        "NumberPattern".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        // The fields that hold one describe the grammar; repeating it here would put it in the
+        // advertised schema once per field.
+        schemars::json_schema!({"anyOf": [{"type": "integer"}, {"type": "string"}]})
+    }
+}
+
+/// The numbers a [`NumberPattern`] matches, all within 0–127.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NumberSet(u128);
+
+/// Why a [`NumberPattern`] matches no number, or one outside its bounds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PatternError {
+    /// The pattern string, and what is wrong with it.
+    Malformed(String, &'static str),
+    /// A number outside `bounds`, as it was written.
+    OutOfBounds {
+        number: String,
+        bounds: RangeInclusive<u8>,
+    },
+    /// A range whose low end is above its high end, which matches nothing.
+    Reversed(u8, u8),
+}
+
+impl fmt::Display for PatternError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Malformed(text, why) => write!(
+                f,
+                "{text:?} is not a number pattern: {why}; write a number, `*`, a range `a-b` or a \
+                 list `a,b`"
             ),
-            Self::NoKind => f.write_str("can match no MIDI message"),
+            Self::OutOfBounds { number, bounds } => {
+                write!(f, "{number} is outside {}-{}", bounds.start(), bounds.end())
+            }
+            Self::Reversed(low, high) => {
+                write!(
+                    f,
+                    "\"{low}-{high}\" is a reversed range, which matches nothing"
+                )
+            }
         }
     }
 }
 
-impl OscPattern {
-    pub fn parse(pattern: &str) -> Result<Self, PatternError> {
-        let malformed = |why: &str| PatternError::Malformed(format!("{pattern:?} {why}"));
-        let rest = pattern
-            .strip_prefix('/')
-            .ok_or_else(|| malformed("does not start with '/'"))?;
-        let segments = rest
-            .split('/')
-            .map(|segment| {
-                if segment.is_empty() {
-                    return Err(malformed("has an empty segment"));
-                }
-                parse_segment(segment).map_err(&malformed)
-            })
-            .collect::<Result<_, _>>()?;
-        Ok(Self { segments })
-    }
-
-    pub fn matches(&self, address: &str) -> bool {
-        let Some(rest) = address.strip_prefix('/') else {
-            return false;
-        };
-        let parts: Vec<&str> = rest.split('/').collect();
-        parts.len() == self.segments.len()
-            && self
-                .segments
-                .iter()
-                .zip(parts)
-                .all(|(tokens, part)| matches_segment(tokens, &part.chars().collect::<Vec<_>>()))
-    }
-
-    /// The one kind of translated message this pattern can match, read from its third segment
-    /// tested against each kind's name. A segment that could name two kinds is refused even where
-    /// the segment count would rule one out (`/midi/1/{note,cc}`), so a pattern names its kind
-    /// plainly; a pattern whose segment count fits no address of its kind matches nothing.
-    pub fn midi_kind(&self) -> Result<MidiKind, PatternError> {
-        let first_is_midi = self.segments.first().is_some_and(|tokens| {
-            tokens
-                .iter()
-                .map(|t| match t {
-                    Token::Literal(c) => Some(*c),
-                    _ => None,
+impl NumberSet {
+    /// The numbers `pattern` matches, each of which must lie in `bounds`. `bounds` ends at 127 at
+    /// most, the widest a MIDI data byte is.
+    pub fn parse(
+        pattern: &NumberPattern,
+        bounds: RangeInclusive<u8>,
+    ) -> Result<Self, PatternError> {
+        debug_assert!(*bounds.end() <= 127);
+        // `written` is the number as the author spelled it, so an error quotes it even where it
+        // does not fit an `i64`.
+        let within = |number: Option<i64>, written: &dyn Fn() -> String| {
+            number
+                .and_then(|n| u8::try_from(n).ok())
+                .filter(|n| bounds.contains(n))
+                .ok_or_else(|| PatternError::OutOfBounds {
+                    number: written(),
+                    bounds: bounds.clone(),
                 })
-                .collect::<Option<String>>()
-                .as_deref()
-                == Some("midi")
-        });
-        if !first_is_midi {
-            return Err(PatternError::NotMidi);
-        }
-        let Some(kind_tokens) = self.segments.get(2) else {
-            return Err(PatternError::NoKind);
         };
-        let mut kinds = MidiKind::ALL.into_iter().filter(|kind| {
-            matches_segment(kind_tokens, &kind.segment().chars().collect::<Vec<_>>())
-        });
-        let kind = match (kinds.next(), kinds.next()) {
-            (Some(kind), None) => kind,
-            (Some(_), Some(_)) => return Err(PatternError::MixedKinds),
-            (None, _) => return Err(PatternError::NoKind),
+        let text = match pattern {
+            NumberPattern::Number(number) => {
+                let n = within(Some(*number), &|| number.to_string())?;
+                return Ok(Self::span(n, n));
+            }
+            NumberPattern::Pattern(text) => text,
         };
-        let segment_count = if kind == MidiKind::Cc { 4 } else { 3 };
-        if self.segments.len() != segment_count {
-            return Err(PatternError::NoKind);
-        }
-        Ok(kind)
-    }
-}
-
-fn parse_segment(segment: &str) -> Result<Vec<Token>, &'static str> {
-    let mut tokens = Vec::new();
-    let mut chars = segment.chars().peekable();
-    while let Some(c) = chars.next() {
-        tokens.push(match c {
-            '?' => Token::One,
-            '*' => Token::Any,
-            '[' => {
-                let negated = chars.next_if_eq(&'!').is_some();
-                let mut members = Vec::new();
-                loop {
-                    match chars.next() {
-                        None => return Err("has an unclosed '['"),
-                        Some(']') => break,
-                        Some(c) => members.push(c),
-                    }
-                }
-                if members.is_empty() {
-                    return Err("has an empty '[]'");
-                }
-                // A '-' between two characters makes a range; at either end it is itself.
-                let mut ranges = Vec::new();
-                let mut i = 0;
-                while i < members.len() {
-                    if i + 2 < members.len() && members[i + 1] == '-' {
-                        if members[i] > members[i + 2] {
-                            return Err("has a reversed range, which matches nothing");
-                        }
-                        ranges.push((members[i], members[i + 2]));
-                        i += 3;
-                    } else {
-                        ranges.push((members[i], members[i]));
-                        i += 1;
-                    }
-                }
-                Token::Class { negated, ranges }
+        let malformed = |why| PatternError::Malformed(text.clone(), why);
+        let number = |part: &str| -> Result<u8, PatternError> {
+            let part = part.trim();
+            if part.is_empty() {
+                return Err(malformed("a range needs a number at each end"));
             }
-            '{' => {
-                let mut body = String::new();
-                loop {
-                    match chars.next() {
-                        None => return Err("has an unclosed '{'"),
-                        Some('}') => break,
-                        Some('{') => return Err("nests '{'"),
-                        Some(c) => body.push(c),
-                    }
-                }
-                if body.is_empty() {
-                    return Err("has an empty '{}', which matches nothing");
-                }
-                Token::Choice(body.split(',').map(str::to_string).collect())
+            if part.contains('*') {
+                return Err(malformed(
+                    "`*` stands alone, never as part of a number or a range",
+                ));
             }
-            ']' => return Err("has a ']' with no '['"),
-            '}' => return Err("has a '}' with no '{'"),
-            c => Token::Literal(c),
-        });
-    }
-    Ok(tokens)
-}
-
-/// Backtracking match of one segment; segments are a few characters long, so the worst case of
-/// several `*` stays small.
-fn matches_segment(tokens: &[Token], text: &[char]) -> bool {
-    let Some((token, rest)) = tokens.split_first() else {
-        return text.is_empty();
-    };
-    match token {
-        Token::Literal(c) => text.first() == Some(c) && matches_segment(rest, &text[1..]),
-        Token::One => !text.is_empty() && matches_segment(rest, &text[1..]),
-        Token::Any => (0..=text.len()).any(|skip| matches_segment(rest, &text[skip..])),
-        Token::Class { negated, ranges } => {
-            text.first().is_some_and(|c| {
-                ranges.iter().any(|(low, high)| (low..=high).contains(&c)) != *negated
-            }) && matches_segment(rest, &text[1..])
+            if part.contains('-') {
+                return Err(malformed("a range has one `-`, between two numbers"));
+            }
+            if !part.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(malformed(
+                    "it holds something other than digits, `*`, `-` and `,`",
+                ));
+            }
+            within(part.parse().ok(), &|| part.to_string())
+        };
+        let mut set = Self::default();
+        for item in text.split(',') {
+            let item = item.trim();
+            let (low, high) = match item.split_once('-') {
+                _ if item.is_empty() => return Err(malformed("it has an empty list item")),
+                _ if item == "*" => (*bounds.start(), *bounds.end()),
+                Some((low, high)) => (number(low)?, number(high)?),
+                None => {
+                    let n = number(item)?;
+                    (n, n)
+                }
+            };
+            if low > high {
+                return Err(PatternError::Reversed(low, high));
+            }
+            set.0 |= Self::span(low, high).0;
         }
-        Token::Choice(options) => options.iter().any(|option| {
-            let option: Vec<char> = option.chars().collect();
-            text.starts_with(&option) && matches_segment(rest, &text[option.len()..])
-        }),
+        Ok(set)
+    }
+
+    pub fn contains(self, number: u8) -> bool {
+        number < 128 && self.0 & (1 << number) != 0
+    }
+
+    /// `low..=high`, both at most 127.
+    fn span(low: u8, high: u8) -> Self {
+        Self((u128::MAX >> (127 - high)) & (u128::MAX << low))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::format;
+    use alloc::vec::Vec;
 
-    fn pattern(text: &str) -> OscPattern {
-        OscPattern::parse(text).unwrap_or_else(|e| panic!("{text}: {e:?}"))
+    const CHANNEL: RangeInclusive<u8> = 1..=16;
+    const CC: RangeInclusive<u8> = 0..=127;
+
+    fn pattern(text: &str) -> NumberPattern {
+        NumberPattern::Pattern(text.to_string())
+    }
+
+    fn members(set: NumberSet) -> Vec<u8> {
+        (0..=127).filter(|n| set.contains(*n)).collect()
+    }
+
+    fn parsed(text: &str, bounds: RangeInclusive<u8>) -> Vec<u8> {
+        members(NumberSet::parse(&pattern(text), bounds).unwrap_or_else(|e| panic!("{text}: {e}")))
     }
 
     #[test]
-    fn alternatives_pick_channels() {
-        let p = pattern("/midi/{1,2,5,9}/cc/*");
-        assert!(p.matches("/midi/5/cc/74"));
-        assert!(!p.matches("/midi/3/cc/74"));
+    fn a_number_is_itself() {
+        let set = NumberSet::parse(&NumberPattern::Number(74), CC).unwrap();
+        assert_eq!(members(set), [74]);
+        assert_eq!(parsed("10", CHANNEL), [10]);
     }
 
     #[test]
-    fn a_range_is_one_character() {
-        let p = pattern("/midi/[4-8]/note");
-        assert!(p.matches("/midi/6/note"));
-        assert!(!p.matches("/midi/9/note"));
-        assert!(!p.matches("/midi/16/note"));
+    fn star_is_every_number_in_bounds() {
+        assert_eq!(parsed("*", CHANNEL), (1..=16).collect::<Vec<_>>());
+        assert_eq!(parsed("*", CC), (0..=127).collect::<Vec<_>>());
     }
 
     #[test]
-    fn question_mark_is_one_character() {
-        let p = pattern("/midi/1?/note");
-        assert!(p.matches("/midi/12/note"));
-        assert!(!p.matches("/midi/1/note"));
+    fn a_range_is_inclusive_and_more_than_one_digit_wide() {
+        assert_eq!(parsed("1-4", CHANNEL), [1, 2, 3, 4]);
+        assert_eq!(parsed("1-16", CHANNEL), (1..=16).collect::<Vec<_>>());
+        assert_eq!(parsed("70-79", CC), (70..=79).collect::<Vec<_>>());
+        assert_eq!(parsed("5-5", CHANNEL), [5]);
     }
 
     #[test]
-    fn a_class_can_be_negated() {
-        let p = pattern("/midi/[!1]/note");
-        assert!(p.matches("/midi/2/note"));
-        assert!(!p.matches("/midi/1/note"));
+    fn lists_and_ranges_combine() {
+        assert_eq!(parsed("1,3,5", CHANNEL), [1, 3, 5]);
+        assert_eq!(parsed("1-4,10", CHANNEL), [1, 2, 3, 4, 10]);
+        assert_eq!(parsed(" 1 - 2 , 9 ", CHANNEL), [1, 2, 9]);
+        assert_eq!(parsed("3,1-4", CHANNEL), [1, 2, 3, 4]);
     }
 
     #[test]
-    fn star_never_crosses_a_slash() {
-        let p = pattern("/midi/*/note");
-        assert!(p.matches("/midi/12/note"));
-        assert!(!p.matches("/midi/1/cc/note"));
-        assert!(pattern("/midi/1/cc/*").matches("/midi/1/cc/7"));
-        assert!(!pattern("/midi/1/*").matches("/midi/1/cc/7"));
-    }
-
-    #[test]
-    fn literals_match_only_themselves() {
-        let p = pattern("/midi/1/cc/74");
-        assert!(p.matches("/midi/1/cc/74"));
-        assert!(!p.matches("/midi/1/cc/7"));
-        assert!(!p.matches("/midi/1/cc/740"));
-    }
-
-    #[test]
-    fn midi_kind_is_the_one_kind_a_pattern_can_match() {
-        for (text, kind) in [
-            ("/midi/1/cc/74", Ok(MidiKind::Cc)),
-            ("/midi/[4-8]/note", Ok(MidiKind::Note)),
-            ("/midi/1/no*", Ok(MidiKind::Note)),
-            ("/midi/*/bend", Ok(MidiKind::Bend)),
-            ("/midi/1/*/74", Err(PatternError::MixedKinds)),
-            ("/midi/1/*", Err(PatternError::MixedKinds)),
-            ("/midi/1/{note,cc}", Err(PatternError::MixedKinds)),
-            ("/fader1", Err(PatternError::NotMidi)),
-            ("/m*/1/note", Err(PatternError::NotMidi)),
-            ("/midi/1/clock", Err(PatternError::NoKind)),
-            ("/midi/1/note/2", Err(PatternError::NoKind)),
-            ("/midi/1/cc", Err(PatternError::NoKind)),
+    fn a_number_outside_the_bounds_is_refused() {
+        for (field, bounds, number) in [
+            (NumberPattern::Number(0), CHANNEL, 0),
+            (NumberPattern::Number(17), CHANNEL, 17),
+            (NumberPattern::Number(-1), CC, -1),
+            (NumberPattern::Number(128), CC, 128),
+            (pattern("0"), CHANNEL, 0),
+            (pattern("1-17"), CHANNEL, 17),
+            (pattern("120-200"), CC, 200),
         ] {
-            assert_eq!(pattern(text).midi_kind(), kind, "{text}");
-        }
-    }
-
-    #[test]
-    fn a_pattern_that_can_match_nothing_is_malformed() {
-        for text in ["/midi/[8-4]/note", "/midi/1/{}", "/midi/[]/note"] {
-            assert!(
-                matches!(OscPattern::parse(text), Err(PatternError::Malformed(_))),
-                "{text}"
+            let error = NumberSet::parse(&field, bounds.clone()).expect_err("out of bounds");
+            assert_eq!(
+                error,
+                PatternError::OutOfBounds {
+                    number: number.to_string(),
+                    bounds: bounds.clone()
+                },
+                "{field}"
+            );
+            assert_eq!(
+                error.to_string(),
+                format!("{number} is outside {}-{}", bounds.start(), bounds.end())
             );
         }
-        // An empty alternative beside others matches the empty string, and is kept.
-        assert!(pattern("/midi/1/cc/7{4,}").matches("/midi/1/cc/7"));
     }
 
     #[test]
-    fn malformed_patterns_are_refused() {
+    fn a_number_too_large_for_any_integer_is_quoted_as_written() {
+        let digits = "99999999999999999999999";
+        for text in [digits.to_string(), format!("1-{digits}")] {
+            let error = NumberSet::parse(&pattern(&text), CHANNEL).expect_err(&text);
+            assert_eq!(error.to_string(), format!("{digits} is outside 1-16"));
+        }
+        let json: NumberPattern = serde_json::from_str("18446744073709551615").unwrap();
+        let error = NumberSet::parse(&json, CC).expect_err("past i64");
+        assert_eq!(error.to_string(), "18446744073709551615 is outside 0-127");
+    }
+
+    #[test]
+    fn a_malformed_pattern_says_what_is_wrong_with_it() {
+        for (text, why) in [
+            ("*-4", "`*` stands alone"),
+            ("1-*", "`*` stands alone"),
+            ("*1", "`*` stands alone"),
+            ("1--2", "a range has one `-`"),
+            ("1-2-3", "a range has one `-`"),
+            ("1-", "a range needs a number at each end"),
+            ("-4", "a range needs a number at each end"),
+            ("1,,2", "an empty list item"),
+            ("x", "something other than digits"),
+            ("1.5", "something other than digits"),
+        ] {
+            let error = NumberSet::parse(&pattern(text), CHANNEL).expect_err(text);
+            assert!(error.to_string().contains(why), "{text}: {error}");
+        }
+    }
+
+    #[test]
+    fn a_reversed_range_is_refused() {
+        let error = NumberSet::parse(&pattern("8-4"), CHANNEL).expect_err("reversed");
+        assert_eq!(error, PatternError::Reversed(8, 4));
+        assert!(error.to_string().contains("reversed range"), "{error}");
+    }
+
+    #[test]
+    fn a_malformed_pattern_is_refused() {
         for text in [
-            "/midi/[1-/note",
-            "midi/1/note",
-            "/midi/{1,2/note",
-            "/midi//note",
-            "/midi/1/note/",
-            "",
+            "", " ", "1-", "-4", "1,", ",1", "1,,2", "[1-4]", "{1,2}", "1?", "x", "1-2-3", "+1",
+            "*1", "1.5",
         ] {
+            let error = NumberSet::parse(&pattern(text), CHANNEL).expect_err(text);
             assert!(
-                matches!(OscPattern::parse(text), Err(PatternError::Malformed(_))),
-                "{text}"
+                matches!(error, PatternError::Malformed(..)),
+                "{text}: {error:?}"
+            );
+            assert!(
+                error.to_string().contains("is not a number pattern"),
+                "{text}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn a_field_reads_a_json_integer_or_string_and_writes_it_back() {
+        for (json, field) in [
+            (serde_json::json!(1), NumberPattern::Number(1)),
+            (serde_json::json!("1-4"), pattern("1-4")),
+            (serde_json::json!("*"), pattern("*")),
+        ] {
+            let read: NumberPattern = serde_json::from_value(json.clone()).unwrap();
+            assert_eq!(read, field);
+            assert_eq!(serde_json::to_value(&read).unwrap(), json);
+        }
+        for json in [
+            serde_json::json!(1.5),
+            serde_json::json!(true),
+            serde_json::json!([1]),
+        ] {
+            let error = serde_json::from_value::<NumberPattern>(json.clone()).expect_err("refused");
+            assert!(
+                error.to_string().contains("an integer, or a pattern"),
+                "{json}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn from_text_is_a_number_only_when_the_text_is_one() {
+        assert_eq!(NumberPattern::from_text(" 7 "), NumberPattern::Number(7));
+        assert_eq!(NumberPattern::from_text("1-4"), pattern("1-4"));
+        assert_eq!(NumberPattern::from_text("-1"), pattern("-1"));
+        assert_eq!(NumberPattern::from_text(""), pattern(""));
     }
 }

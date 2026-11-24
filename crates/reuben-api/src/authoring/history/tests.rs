@@ -719,12 +719,16 @@ fn a_create_goes_to_the_wrapped_store_and_what_it_created_is_held() {
 const MAP: &str = "inst.midi.json";
 
 fn surface_text(bind: &str) -> String {
-    use crate::surface::{SurfaceControl, SurfaceDoc};
+    use crate::surface::{MidiKind, MidiSource, NumberPattern, SurfaceControl, SurfaceDoc};
     let doc = SurfaceDoc {
         instrument: "inst".to_string(),
         controls: vec![SurfaceControl {
             bind: bind.to_string(),
-            midi: Some("cc1".to_string()),
+            midi: Some(MidiSource {
+                kind: MidiKind::Cc,
+                channel: NumberPattern::Number(1),
+                cc: Some(NumberPattern::Number(1)),
+            }),
             ..SurfaceControl::default()
         }],
         ..SurfaceDoc::default()
