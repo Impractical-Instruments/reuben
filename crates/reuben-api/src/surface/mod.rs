@@ -60,26 +60,35 @@ pub struct SurfaceDoc {
 pub struct SurfaceControl {
     /// The interface input's name.
     pub bind: String,
+    /// The name shown; defaults to the input's name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    /// Kept as written: a kind this reader does not know is a skipped control, not a doc that
-    /// fails to parse.
+    // A string, not an enum: a kind this reader does not know is a skipped control, not a doc
+    // that fails to parse.
+    /// The widget: `fader`, `radial`, `param-toggle`, `note-toggle`, `chord-button`, `xy-pad`,
+    /// `grid`, `visualizer` or `keyboard`. Omit for a value input's default fader.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub widget: Option<String>,
+    /// Adjacent controls sharing a group are drawn on one row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    /// A narrower minimum than the input's own, clamped into its range.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min: Option<f64>,
+    /// A narrower maximum than the input's own, clamped into its range.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max: Option<f64>,
+    /// The MIDI note a `note-toggle` holds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<i64>,
+    /// The velocity a `note-toggle` plays at, 0 to 1; defaults to 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub velocity: Option<f64>,
+    /// The scale degree a `chord-button` plays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub degree: Option<i64>,
-    /// The OSC address pattern over translated MIDI addresses that drives this input; read only
-    /// from a MIDI map (`<stem>.midi.json`).
+    /// The address pattern over translated MIDI messages that drives this input, such as
+    /// `/midi/1/cc/74`; read only from a MIDI map.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub midi: Option<String>,
 }
@@ -132,6 +141,14 @@ impl SurfaceDoc {
         })
         .expect("a surface doc is plain data")
     }
+
+    /// The whole text a write puts on disk: [`to_json_pretty`](Self::to_json_pretty) and its
+    /// trailing newline.
+    pub fn to_file_text(&self) -> String {
+        let mut text = self.to_json_pretty();
+        text.push('\n');
+        text
+    }
 }
 
 /// The identity of a surface doc: a hash over its [`SurfaceDoc::to_json_pretty`] bytes, so two
@@ -175,6 +192,8 @@ pub fn render_surface(doc: &SurfaceDoc, surface: SurfaceKind) -> String {
 mod tests {
     use super::*;
     use alloc::string::ToString;
+    use alloc::vec;
+
     #[test]
     fn a_doc_parses_with_only_its_required_keys() {
         let doc = SurfaceDoc::parse(
@@ -267,6 +286,27 @@ mod tests {
         let text = doc.to_json_pretty();
         assert!(text.starts_with("{\n  \"surface_version\": 1"), "{text}");
         assert_eq!(SurfaceDoc::parse(&text).expect("reparses"), doc);
+    }
+
+    #[test]
+    fn to_json_pretty_leaves_unset_fields_out() {
+        let doc = SurfaceDoc {
+            instrument: "toy".to_string(),
+            cols: None,
+            controls: vec![SurfaceControl {
+                bind: "level".to_string(),
+                ..SurfaceControl::default()
+            }],
+        };
+        let value: serde_json::Value = serde_json::from_str(&doc.to_json_pretty()).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "surface_version": 1,
+                "instrument": "toy",
+                "controls": [{"bind": "level"}]
+            })
+        );
     }
 
     #[test]

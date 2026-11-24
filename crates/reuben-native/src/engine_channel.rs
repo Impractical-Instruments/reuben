@@ -31,7 +31,7 @@
 use std::io::{BufReader, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -296,6 +296,8 @@ pub struct NativeHost {
     extra_dirs: Mutex<Vec<PathBuf>>,
     /// Where `send_midi` injects; `None` refuses it.
     midi: Option<SharedRouter>,
+    /// Counts the MIDI map writes made through the channel.
+    midi_map_generation: Arc<AtomicU64>,
 }
 
 /// What decides whether a client's open is held for the host's user rather than installed:
@@ -352,7 +354,14 @@ impl NativeHost {
             library_root: None,
             extra_dirs: Mutex::new(Vec::new()),
             midi: None,
+            midi_map_generation: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// What moves each time the open instrument's MIDI map is written through the channel: the
+    /// route watch rebuilds on it, so routing follows such a write without watching the file.
+    pub(crate) fn midi_map_generation(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.midi_map_generation)
     }
 
     /// Route `send_midi` through `router`, the one `play`'s MIDI devices share.
@@ -529,6 +538,14 @@ impl EngineHost for NativeHost {
             collect_with_extension(&dir, extension, deep, &mut found);
         }
         found.into_iter().collect()
+    }
+
+    fn surface_written(&self, surface: SurfaceKind) {
+        if surface == SurfaceKind::Midi {
+            // Bumped after the write committed, so a watch that sees the new count reads the new
+            // map.
+            self.midi_map_generation.fetch_add(1, Ordering::SeqCst);
+        }
     }
 
     /// True iff `name`, made absolute and lexically normalized (`..` resolved), lies under the
@@ -1538,6 +1555,20 @@ mod tests {
             [abs("offered/nested/n.json"), abs("offered/o.json")]
         );
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn surface_written_bumps_the_route_watch_generation() {
+        use reuben_api::surface::SurfaceKind;
+        use std::sync::atomic::Ordering;
+        let (tx, _rx) = ring_pair(Diagnostics::new());
+        let host = NativeHost::new(Diagnostics::new(), tx);
+        let generation = host.midi_map_generation();
+        host.surface_written(SurfaceKind::Screen);
+        assert_eq!(generation.load(Ordering::SeqCst), 0);
+        host.surface_written(SurfaceKind::Midi);
+        host.surface_written(SurfaceKind::Midi);
+        assert_eq!(generation.load(Ordering::SeqCst), 2);
     }
 
     /// "Open file…", the command line and a recent each offer the file's own directory and then

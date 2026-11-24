@@ -811,6 +811,67 @@ impl ReubenServer {
             self.engine.channel(),
         ))
     }
+
+    #[tool(
+        name = "describe_instrument_surface",
+        output_schema = rmcp::handler::server::tool::schema_for_output::<authoring::SurfaceView>()
+            .expect("SurfaceView is an object schema")
+    )]
+    async fn describe_instrument_surface(
+        &self,
+        Parameters(p): Parameters<authoring::DescribeInstrumentSurface>,
+    ) -> Result<CallToolResult, McpError> {
+        answered(engine::call_tool(
+            names::DESCRIBE_INSTRUMENT_SURFACE,
+            &p,
+            self.engine.channel(),
+        ))
+    }
+
+    #[tool(
+        name = "set_instrument_surface_control",
+        output_schema = edit_result_schema()
+    )]
+    async fn set_instrument_surface_control(
+        &self,
+        Parameters(p): Parameters<authoring::SetInstrumentSurfaceControl>,
+    ) -> Result<CallToolResult, McpError> {
+        answered(engine::call_tool(
+            names::SET_INSTRUMENT_SURFACE_CONTROL,
+            &p,
+            self.engine.channel(),
+        ))
+    }
+
+    #[tool(
+        name = "remove_instrument_surface_control",
+        output_schema = edit_result_schema()
+    )]
+    async fn remove_instrument_surface_control(
+        &self,
+        Parameters(p): Parameters<authoring::RemoveInstrumentSurfaceControl>,
+    ) -> Result<CallToolResult, McpError> {
+        answered(engine::call_tool(
+            names::REMOVE_INSTRUMENT_SURFACE_CONTROL,
+            &p,
+            self.engine.channel(),
+        ))
+    }
+
+    #[tool(
+        name = "move_instrument_surface_control",
+        output_schema = edit_result_schema()
+    )]
+    async fn move_instrument_surface_control(
+        &self,
+        Parameters(p): Parameters<authoring::MoveInstrumentSurfaceControl>,
+    ) -> Result<CallToolResult, McpError> {
+        answered(engine::call_tool(
+            names::MOVE_INSTRUMENT_SURFACE_CONTROL,
+            &p,
+            self.engine.channel(),
+        ))
+    }
 }
 
 /// Write the window's sentence onto every tool the router carries.
@@ -2315,6 +2376,49 @@ mod tests {
         assert_ne!(result.is_error, Some(true), "{result:?}");
         assert_eq!(result.structured_content, Some(output));
         assert_eq!(first_text(&result), "renamed to warm pad");
+    }
+
+    /// The four surface verbs relay like any document verb; `set_instrument_surface_control`
+    /// stands for the three edits, and `describe_instrument_surface` for the read.
+    #[test]
+    fn surface_verbs_are_one_call_to_the_server() {
+        let args = authoring::SetInstrumentSurfaceControl {
+            source: "pad.json".to_string(),
+            surface: reuben_api::surface::SurfaceKind::Midi,
+            index: None,
+            control: serde_json::from_value(serde_json::json!({
+                "bind": "cutoff", "midi": "/midi/1/cc/74"
+            }))
+            .expect("a MIDI control"),
+            expect: Some("00c0ffee".to_string()),
+        };
+        let output = serde_json::json!({
+            "written": true,
+            "hash": "0ddba11",
+            "report": { "ok": true, "errors": [], "warnings": [] },
+        });
+        let fake = FakeTransport::reachable().with_call(
+            names::SET_INSTRUMENT_SURFACE_CONTROL,
+            Response::Called {
+                output: output.clone(),
+                summary: "mapped cutoff".to_string(),
+            },
+        );
+        let requests = fake.request_log();
+        let result =
+            block_on(server_with(fake).set_instrument_surface_control(Parameters(args.clone())))
+                .expect("returns a result");
+
+        assert_eq!(
+            *requests.lock().expect("request log"),
+            vec![Request::Call {
+                tool: names::SET_INSTRUMENT_SURFACE_CONTROL.to_string(),
+                args: serde_json::to_value(&args).expect("args as JSON"),
+            }]
+        );
+        assert_ne!(result.is_error, Some(true), "{result:?}");
+        assert_eq!(result.structured_content, Some(output));
+        assert_eq!(first_text(&result), "mapped cutoff");
     }
 
     /// An edit the server refused to write is still the tool working: an ordinary result whose

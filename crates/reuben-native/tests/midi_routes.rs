@@ -10,7 +10,8 @@ mod common;
 use common::{reuben, spawn_play, TempDir};
 
 use reuben_api::engine::{
-    Channel, ControlArg, DiagnosticsReport, SwapOutcome, TcpTransport, DEFAULT_CONNECT_TIMEOUT,
+    CallOutcome, Channel, ControlArg, DiagnosticsReport, SwapOutcome, TcpTransport,
+    DEFAULT_CONNECT_TIMEOUT,
 };
 use reuben_native::engine::{start_headless, EngineConfig, Instrument, RunningEngine, StartError};
 
@@ -264,6 +265,38 @@ fn send_midi_from_the_cli_reaches_the_map() {
     assert!(!refused.status.success());
     let stderr = String::from_utf8_lossy(&refused.stderr);
     assert!(stderr.contains("/midi/17/cc/74"), "{stderr}");
+}
+
+#[test]
+fn a_map_edit_routes_with_file_following_off() {
+    let dir = TempDir::new("midi_verb_edit");
+    seed(&dir.0, "inst", Some(2));
+    let engine = start_headless(EngineConfig {
+        osc_in: None,
+        engine_addr: None,
+        follow_files: false,
+        ..EngineConfig::new(Instrument::Path(dir.0.join("inst.json")))
+    })
+    .expect("start headless");
+    let channel = engine.channel();
+    assert!(routes(&channel, 2, SETTLE));
+    let set = channel
+        .call(
+            "set_instrument_surface_control",
+            serde_json::json!({
+                "source": dir.0.join("inst.json").display().to_string(),
+                "surface": "midi",
+                "index": 0,
+                "control": {"bind": "cutoff", "midi": "/midi/3/cc/74"},
+            }),
+        )
+        .expect("set");
+    let CallOutcome::Called { output, .. } = set else {
+        panic!("{set:?}");
+    };
+    assert_eq!(output["written"], true, "{output}");
+    assert!(routes(&channel, 3, SETTLE), "{:?}", diagnostics(&channel));
+    assert!(!routes(&channel, 2, Duration::ZERO));
 }
 
 #[test]

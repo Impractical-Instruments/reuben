@@ -1,6 +1,7 @@
 //! The `call` request: one roster verb run against the engine's store, under the Coordinator lock.
 //! A read answers directly; an edit is written and swapped in only if the whole open instrument
-//! still loads and plans with it, unless the open instrument did not load to begin with.
+//! still loads and plans with it, unless the open instrument did not load to begin with. An edit
+//! to one of the open instrument's surface docs is written without a Swap.
 
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -16,7 +17,8 @@ use crate::authoring::{
     self, edit_summary, hash_instrument, CallKind, Called, Diag, EditResult, Named, Report, Scope,
 };
 use crate::resources::{Adapter, Anchored, ResolveError, Resources, SampleBuffer};
-use crate::surface::SurfaceKind;
+use crate::surface::{render_surface, surface_hash, SurfaceDoc, SurfaceKind};
+use crate::tools::names;
 
 use super::super::wire::{ChangedBy, Event, Library, LibraryEntry, Response, SwapReport};
 use super::{prepare_recording, went_live, ChannelState, Poisoned, ServerStore, Tree, Went};
@@ -129,6 +131,8 @@ impl Resources for NoSamples<'_> {
 /// - A create writes at once: it never overwrites, so it cannot break what plays, and nothing
 ///   is swapped. Its name must end in `.json`.
 /// - An edit goes live or is refused whole: see [`edit_or_refuse`].
+/// - An edit to one of the open instrument's surface docs is written and nothing is swapped: see
+///   [`commit_surface`]. A surface verb or restore that reaches another instrument's is refused.
 /// - A verb that refuses to run answers [`Response::Refused`].
 ///
 /// [`DocumentHistory`] has already recorded an edit refused here as written. That is harmless: a
@@ -139,7 +143,13 @@ pub(super) fn handle_call(state: &ChannelState, tool: &str, args: Value) -> Resp
         Err(poisoned) => return poisoned.into(),
     };
     let named = resolved_names(state, tool, &args);
-    match unoffered_name(state, &named) {
+    let open = match open_surfaces(state) {
+        Ok(open) => open,
+        Err(poisoned) => return poisoned.into(),
+    };
+    let reaches_surfaces = reaches_surfaces(tool);
+    let writes_a_surface = writes_a_surface(state, tool, &args);
+    match unoffered_name(state, &named, open.as_ref().filter(|_| reaches_surfaces)) {
         Ok(None) => {}
         Ok(Some(name)) => {
             return Response::Refused {
@@ -147,6 +157,9 @@ pub(super) fn handle_call(state: &ChannelState, tool: &str, args: Value) -> Resp
             }
         }
         Err(poisoned) => return poisoned.into(),
+    }
+    if let Some(message) = another_instruments_surface(state, tool, &named, open.as_ref()) {
+        return Response::Refused { message };
     }
     let staged = state.store.inner();
     // The first name a verb takes is the document whose references a load resolves.
@@ -198,8 +211,179 @@ pub(super) fn handle_call(state: &ChannelState, tool: &str, args: Value) -> Resp
             ),
         },
         CallKind::Edit { source } => {
-            edit_or_refuse(state, &mut coordinator, output, summary, &source)
+            let canonical = state.store.canonical(&source, None);
+            let surface = open
+                .as_ref()
+                .filter(|_| writes_a_surface)
+                .and_then(|open| open.kind_of(&canonical));
+            match surface {
+                Some(surface) => commit_surface(state, output, summary, surface, &canonical),
+                None => edit_or_refuse(state, &mut coordinator, output, summary, &source),
+            }
         }
+    }
+}
+
+/// Whether `tool` may name one of the open instrument's surface docs: the surface verbs, and a
+/// restore, which is how a surface edit is undone. Every other verb names instruments only.
+fn reaches_surfaces(tool: &str) -> bool {
+    matches!(
+        tool,
+        names::DESCRIBE_INSTRUMENT_SURFACE
+            | names::SET_INSTRUMENT_SURFACE_CONTROL
+            | names::REMOVE_INSTRUMENT_SURFACE_CONTROL
+            | names::MOVE_INSTRUMENT_SURFACE_CONTROL
+            | names::RESTORE_INSTRUMENT
+    )
+}
+
+/// Whether `tool`'s edit, when it lands on one of the open instrument's surface docs, is a surface
+/// edit and commits without a Swap. A restore is one only when the state it restores is a surface
+/// doc: a path alone cannot say, since a store may name an instrument where it keeps surface docs.
+fn writes_a_surface(state: &ChannelState, tool: &str, args: &Value) -> bool {
+    match tool {
+        names::SET_INSTRUMENT_SURFACE_CONTROL
+        | names::REMOVE_INSTRUMENT_SURFACE_CONTROL
+        | names::MOVE_INSTRUMENT_SURFACE_CONTROL => true,
+        names::RESTORE_INSTRUMENT => {
+            let field = |key: &str| args.get(key).and_then(Value::as_str);
+            field("source")
+                .zip(field("to"))
+                .is_some_and(|(source, to)| state.store.holds_surface_doc(source, to))
+        }
+        _ => false,
+    }
+}
+
+/// The open instrument as the store spells it, and where each of its surface docs is.
+struct OpenSurfaces {
+    top: String,
+    docs: Vec<(SurfaceKind, String)>,
+}
+
+impl OpenSurfaces {
+    /// Which of the open instrument's surface docs `source`, as the store spells it, is.
+    fn kind_of(&self, source: &str) -> Option<SurfaceKind> {
+        self.docs
+            .iter()
+            .find(|(_, doc)| doc == source)
+            .map(|(kind, _)| *kind)
+    }
+}
+
+/// `None` while no instrument is open.
+fn open_surfaces(state: &ChannelState) -> Result<Option<OpenSurfaces>, Poisoned> {
+    let Some(top) = state.installed_source()?.clone() else {
+        return Ok(None);
+    };
+    let top = state
+        .store
+        .canonical(&state.host.document_origin(&top), None);
+    let docs = [SurfaceKind::Screen, SurfaceKind::Midi]
+        .into_iter()
+        .filter_map(|kind| Some((kind, state.store.surface_source(&top, kind)?)))
+        .collect();
+    Ok(Some(OpenSurfaces { top, docs }))
+}
+
+const ONLY_THE_OPEN_SURFACES: &str =
+    "only the open instrument's surface docs can be read or edited";
+
+/// Why `tool` may not run against `named`, when it reaches a surface doc that is not the open
+/// instrument's: a surface verb naming another instrument, or a restore of a surface doc the open
+/// instrument does not have, such as an undo step left from an instrument open before this one.
+fn another_instruments_surface(
+    state: &ChannelState,
+    tool: &str,
+    named: &[(String, String)],
+    open: Option<&OpenSurfaces>,
+) -> Option<String> {
+    let (_, target) = named.first()?;
+    let refused = match tool {
+        names::DESCRIBE_INSTRUMENT_SURFACE
+        | names::SET_INSTRUMENT_SURFACE_CONTROL
+        | names::REMOVE_INSTRUMENT_SURFACE_CONTROL
+        | names::MOVE_INSTRUMENT_SURFACE_CONTROL => open.is_none_or(|open| open.top != *target),
+        // The surface doc's own content is all that says it is one: its name follows no rule a
+        // store must keep.
+        names::RESTORE_INSTRUMENT => {
+            open.is_none_or(|open| open.kind_of(target).is_none())
+                && state
+                    .store
+                    .read_text(target)
+                    .is_ok_and(|text| SurfaceDoc::parse(&text).is_ok())
+        }
+        _ => false,
+    };
+    refused.then(|| ONLY_THE_OPEN_SURFACES.to_string())
+}
+
+/// A surface doc edit the verb has staged, already checked against the open instrument's
+/// interface inputs: write it and tell subscribers and the host. What plays is not touched, so
+/// nothing is loaded, planned or swapped.
+///
+/// The answer's `zoom` is drawn again from what `source` holds once this is done, in `surface`'s
+/// terms: a restore tells a doc's kind only by the source's suffix, which a `.midi` stem misleads.
+fn commit_surface(
+    state: &ChannelState,
+    output: Value,
+    mut summary: String,
+    surface: SurfaceKind,
+    source: &str,
+) -> Response {
+    let staged = state.store.inner();
+    let mut result: EditResult = match serde_json::from_value(output) {
+        Ok(result) => result,
+        Err(e) => {
+            staged.discard();
+            return Response::Error {
+                message: format!("an edit verb answered something other than an edit: {e}"),
+            };
+        }
+    };
+    let committed = if result.written {
+        staged.commit()
+    } else {
+        staged.discard();
+        Ok(())
+    };
+    let held = state
+        .store
+        .read_text(source)
+        .ok()
+        .and_then(|text| SurfaceDoc::parse(&text).ok());
+    match committed {
+        Ok(()) if result.written => {
+            state.events.publish(Event::SurfaceChanged {
+                surface,
+                hash: result.hash.clone(),
+            });
+            state.host.surface_written(surface);
+        }
+        Ok(()) => {}
+        Err(e) => {
+            staged.discard();
+            result = EditResult {
+                report: Report {
+                    ok: false,
+                    errors: vec![diag(e.to_string())],
+                    warnings: Vec::new(),
+                },
+                pre_existing: Vec::new(),
+                written: false,
+                hash: held.as_ref().map(surface_hash).unwrap_or_default(),
+                notes: vec![format!("{source} could not be written")],
+                zoom: String::new(),
+            };
+            summary = edit_summary(&result);
+        }
+    }
+    if let Some(doc) = &held {
+        result.zoom = render_surface(doc, surface);
+    }
+    Response::Called {
+        output: edit_output(&result),
+        summary,
     }
 }
 
@@ -222,18 +406,23 @@ fn resolved_names(state: &ChannelState, tool: &str, args: &Value) -> Vec<(String
         .collect()
 }
 
-/// The first of `named` that the host does not offer and the open instrument's tree does not
-/// already reach, as the client spelled it. An edit's own target is checked against the tree again
-/// in [`edit_or_refuse`]; this keeps a read, a create, or a reference an edit writes from naming
-/// what the client may not.
+/// The first of `named` that the host does not offer and neither the open instrument's tree nor
+/// `surfaces` (its surface docs, for a verb that may name them) already reach, as the client
+/// spelled it. An edit's own target is checked
+/// against the tree again in [`edit_or_refuse`]; this keeps a read, a create, or a reference an
+/// edit writes from naming what the client may not.
 fn unoffered_name(
     state: &ChannelState,
     named: &[(String, String)],
+    surfaces: Option<&OpenSurfaces>,
 ) -> Result<Option<String>, Poisoned> {
     let open = state.installed_source()?.clone();
     let tree = state.tree();
-    let offered =
-        |canonical: &str| tree.contains(canonical) || state.host.within(canonical, open.as_deref());
+    let offered = |canonical: &str| {
+        tree.contains(canonical)
+            || surfaces.is_some_and(|surfaces| surfaces.kind_of(canonical).is_some())
+            || state.host.within(canonical, open.as_deref())
+    };
     Ok(named
         .iter()
         .find(|(_, resolved)| !offered(resolved))
@@ -524,13 +713,17 @@ mod tests {
     use crate::engine::wire::{ChangedBy, DiagnosticsReport, Event, Request};
     use crate::render::RenderSlot;
     use crate::staged::Staged;
+    use crate::surface::{render_surface, SurfaceDoc};
 
     /// Gives up reclaiming at once, so a swap whose retiree the test has not rendered home stays
     /// in flight until a later reclaim finds it. Holds every client open when `hold` is set.
+    #[derive(Default)]
     struct Host {
         hold: bool,
         /// When set, only names starting with it are within what the host offers.
         only: Option<&'static str>,
+        /// Each surface doc the server said it wrote, in order.
+        written: Arc<Mutex<Vec<SurfaceKind>>>,
     }
 
     impl EngineHost for Host {
@@ -552,6 +745,9 @@ mod tests {
         }
         fn surface(&self, open: &str) -> Result<Option<String>, String> {
             Ok(Some(format!("surface of {open}")))
+        }
+        fn surface_written(&self, surface: SurfaceKind) {
+            self.written.lock().unwrap().push(surface);
         }
         fn deliver_control(
             &self,
@@ -610,6 +806,17 @@ mod tests {
                 Some((dir, _)) => format!("{dir}/{source}"),
                 None => source.to_string(),
             }
+        }
+
+        /// `<stem>.json` keeps its surface docs at `surfaces/<stem><suffix>.json`, except that an
+        /// instrument already under `surfaces/` is its own screen doc: a store whose search reaches
+        /// the instrument's own directory can answer that.
+        fn surface_source(&self, instrument: &str, surface: SurfaceKind) -> Option<String> {
+            if instrument.starts_with("surfaces/") && surface == SurfaceKind::Screen {
+                return Some(instrument.to_string());
+            }
+            let stem = instrument.strip_suffix(".json")?;
+            Some(format!("surfaces/{stem}{}.json", surface.suffix()))
         }
     }
 
@@ -679,6 +886,7 @@ mod tests {
         serving_with(Host {
             hold: false,
             only: None,
+            ..Host::default()
         })
     }
 
@@ -693,6 +901,9 @@ mod tests {
             ("nv.json", NESTED_WITHOUT_OUT),
         ] {
             files.write_text(source, text).unwrap();
+        }
+        for (source, name) in [("syn.json", "syn"), ("x.midi.json", "x")] {
+            files.write_text(source, &synth(name)).unwrap();
         }
         let staged: Staged<Box<dyn Resources + Send + Sync>> =
             Staged::new(Box::new(Arc::clone(&files)));
@@ -787,6 +998,7 @@ mod tests {
         let s = serving_with(Host {
             hold: true,
             only: None,
+            ..Host::default()
         });
         let before = installed_hash(&s.state);
         match dispatch(&s.state, &open_line("other.json", None)) {
@@ -800,6 +1012,7 @@ mod tests {
         serving_with(Host {
             hold: false,
             only: Some("nowhere/"),
+            ..Host::default()
         })
     }
 
@@ -883,6 +1096,7 @@ mod tests {
         serving_with(Host {
             hold: false,
             only: Some("k"),
+            ..Host::default()
         })
     }
 
@@ -1631,6 +1845,7 @@ mod tests {
         let s = serving_with(Host {
             hold: true,
             only: None,
+            ..Host::default()
         });
         let before = s.state.try_installed();
         let events = s.state.subscribe();
@@ -1801,6 +2016,7 @@ mod tests {
         let s = serving_with(Host {
             hold: true,
             only: None,
+            ..Host::default()
         });
         let events = s.state.subscribe();
         assert!(matches!(
@@ -1987,5 +2203,334 @@ mod tests {
         // Recovered once: the next read of the same files is quiet.
         assert_eq!(s.state.reload(), None);
         assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    // --- surface docs -----------------------------------------------------------------------------
+
+    /// An `f32` input with a range for a MIDI CC or a fader to scale into, and a `note` input.
+    fn synth(name: &str) -> String {
+        format!(
+            r#"{{"format_version":3,"instrument":"{name}",
+            "interface":{{
+                "inputs":{{
+                    "cutoff":{{"type":"f32","default":1000,"min":20,"max":20000,"curve":"exp"}},
+                    "notes":{{"type":"note"}}
+                }},
+                "outputs":{{"out":{{"from":"/osc.audio"}}}}
+            }},
+            "nodes":[
+                {{"type":"oscillator","address":"/osc","inputs":{{"freq":{{"from":"/cutoff"}}}}}},
+                {{"type":"unpack_note","address":"/unpack","inputs":{{"in":{{"from":"/notes"}}}}}}
+            ]}}"#
+        )
+    }
+
+    const SYN_MAP: &str = "surfaces/syn.midi.json";
+
+    fn opened(s: &Served, name: &str) {
+        match dispatch(&s.state, &open_line(name, None)) {
+            Response::SwapReport(report) => assert!(report.report.ok, "{:?}", report.report.errors),
+            other => panic!("expected a swap report, got {other:?}"),
+        }
+        s.render();
+    }
+
+    /// A state with `syn.json` open, and the surface docs the host was told were written.
+    fn serving_syn() -> (Served, Arc<Mutex<Vec<SurfaceKind>>>) {
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let s = serving_with(Host {
+            written: Arc::clone(&written),
+            ..Host::default()
+        });
+        opened(&s, "syn.json");
+        (s, written)
+    }
+
+    fn refusal(state: &ChannelState, tool: &str, args: Value) -> String {
+        let line = Request::Call {
+            tool: tool.to_string(),
+            args,
+        }
+        .to_ndjson();
+        match dispatch(state, &line) {
+            Response::Refused { message } => message,
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    fn set_cc(source: &str, cc: u8) -> Value {
+        json!({"source": source, "surface": "midi",
+               "control": {"bind": "cutoff", "midi": format!("/midi/1/cc/{cc}")}})
+    }
+
+    fn restore(source: &str, to: &Value, expect: &Value) -> Value {
+        json!({"source": source, "to": to, "expect": expect})
+    }
+
+    /// Two edits to `syn.json`'s map: the hashes of the map after each.
+    fn two_map_edits(s: &Served) -> (Value, Value) {
+        let (first, _) = call(s, "set_instrument_surface_control", set_cc("syn.json", 74));
+        assert_eq!(first["written"], true, "{first}");
+        let (second, _) = call(s, "set_instrument_surface_control", set_cc("syn.json", 1));
+        assert_eq!(second["written"], true, "{second}");
+        (first["hash"].clone(), second["hash"].clone())
+    }
+
+    fn surface_changed(surface: SurfaceKind, hash: &Value) -> Event {
+        Event::SurfaceChanged {
+            surface,
+            hash: hash.as_str().expect("a hash").to_string(),
+        }
+    }
+
+    #[test]
+    fn a_map_edit_is_committed_without_a_swap() {
+        let (s, written) = serving_syn();
+        let playing = installed_hash(&s.state);
+        let events = s.state.subscribe();
+        let (output, _) = call(&s, "set_instrument_surface_control", set_cc("syn.json", 74));
+        assert_eq!(output["written"], true, "{output}");
+        let map = s.files.get(SYN_MAP).expect("the map is written");
+        let doc = SurfaceDoc::parse(&map).expect("a map");
+        assert_eq!(doc.controls[0].midi.as_deref(), Some("/midi/1/cc/74"));
+        assert_eq!(
+            events.try_recv(),
+            Ok(surface_changed(SurfaceKind::Midi, &output["hash"]))
+        );
+        assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
+        assert_eq!(*written.lock().unwrap(), vec![SurfaceKind::Midi]);
+        assert_eq!(installed_hash(&s.state), playing);
+    }
+
+    #[test]
+    fn a_surface_verb_on_another_instrument_is_refused() {
+        let (s, written) = serving_syn();
+        let events = s.state.subscribe();
+        let wanted = "only the open instrument's surface docs can be read or edited";
+        let read = json!({"source": "other.json", "surface": "midi"});
+        assert_eq!(
+            refusal(&s.state, "describe_instrument_surface", read),
+            wanted
+        );
+        assert_eq!(
+            refusal(
+                &s.state,
+                "set_instrument_surface_control",
+                set_cc("other.json", 74)
+            ),
+            wanted
+        );
+        assert_eq!(s.files.get("surfaces/other.midi.json"), None);
+        assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
+        assert!(written.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn undo_of_a_map_edit_lands_through_restore_instrument() {
+        let (s, written) = serving_syn();
+        let playing = installed_hash(&s.state);
+        let (first, second) = two_map_edits(&s);
+        let events = s.state.subscribe();
+        let (undone, _) = call(&s, "restore_instrument", restore(SYN_MAP, &first, &second));
+        assert_eq!(undone["written"], true, "{undone}");
+        assert_eq!(undone["hash"], first);
+        let doc = SurfaceDoc::parse(&s.files.get(SYN_MAP).unwrap()).unwrap();
+        assert_eq!(doc.controls.len(), 1);
+        assert_eq!(
+            events.try_recv(),
+            Ok(surface_changed(SurfaceKind::Midi, &first))
+        );
+        assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
+        assert_eq!(written.lock().unwrap().len(), 3);
+        assert_eq!(installed_hash(&s.state), playing);
+    }
+
+    #[test]
+    fn a_redo_after_a_map_undo_lands() {
+        let (s, _) = serving_syn();
+        let (first, second) = two_map_edits(&s);
+        let (undone, _) = call(&s, "restore_instrument", restore(SYN_MAP, &first, &second));
+        assert_eq!(undone["written"], true, "{undone}");
+        let events = s.state.subscribe();
+        let (redone, _) = call(&s, "restore_instrument", restore(SYN_MAP, &second, &first));
+        assert_eq!(redone["written"], true, "{redone}");
+        assert_eq!(redone["hash"], second);
+        let doc = SurfaceDoc::parse(&s.files.get(SYN_MAP).unwrap()).unwrap();
+        assert_eq!(doc.controls.len(), 2);
+        assert_eq!(
+            events.try_recv(),
+            Ok(surface_changed(SurfaceKind::Midi, &second))
+        );
+    }
+
+    #[test]
+    fn a_restore_over_a_map_that_does_not_parse_is_refused_and_leaves_it() {
+        let (s, written) = serving_syn();
+        let (first, second) = two_map_edits(&s);
+        s.files.write_text(SYN_MAP, "{ hand-broken").unwrap();
+        let events = s.state.subscribe();
+        let why = refusal(
+            &s.state,
+            "restore_instrument",
+            restore(SYN_MAP, &first, &second),
+        );
+        assert!(why.contains("no hash for `expect` to match"), "{why}");
+        assert_eq!(s.files.get(SYN_MAP).as_deref(), Some("{ hand-broken"));
+        assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
+        assert_eq!(written.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_map_edit_while_the_instrument_does_not_load_writes_nothing() {
+        let (s, written) = serving_syn();
+        let (_, second) = two_map_edits(&s);
+        let before = s.files.get(SYN_MAP);
+        s.files.write_text("syn.json", BROKEN_TOP).unwrap();
+        let events = s.state.subscribe();
+        let (output, _) = call(&s, "set_instrument_surface_control", set_cc("syn.json", 7));
+        assert_eq!(output["written"], false, "{output}");
+        assert_eq!(output["hash"], second);
+        let message = output["report"]["errors"][0]["message"].as_str().unwrap();
+        assert!(
+            message.contains("does not load, so its MIDI map cannot be checked"),
+            "{message}"
+        );
+        assert_eq!(s.files.get(SYN_MAP), before);
+        // No reload was tried: it would have published that `syn.json` no longer loads.
+        assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
+        assert_eq!(written.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn its_restore_still_lands() {
+        let (s, _) = serving_syn();
+        let (first, second) = two_map_edits(&s);
+        s.files.write_text("syn.json", BROKEN_TOP).unwrap();
+        let events = s.state.subscribe();
+        let (undone, _) = call(&s, "restore_instrument", restore(SYN_MAP, &first, &second));
+        assert_eq!(undone["written"], true, "{undone}");
+        let doc = SurfaceDoc::parse(&s.files.get(SYN_MAP).unwrap()).unwrap();
+        assert_eq!(doc.controls.len(), 1);
+        assert_eq!(
+            events.try_recv(),
+            Ok(surface_changed(SurfaceKind::Midi, &first))
+        );
+        assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn restoring_another_instruments_map_is_refused() {
+        let (s, written) = serving_syn();
+        let (first, second) = two_map_edits(&s);
+        opened(&s, "other.json");
+        let before = s.files.get(SYN_MAP);
+        let events = s.state.subscribe();
+        let why = refusal(
+            &s.state,
+            "restore_instrument",
+            restore(SYN_MAP, &first, &second),
+        );
+        assert!(why.contains("open instrument"), "{why}");
+        assert_eq!(s.files.get(SYN_MAP), before);
+        assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
+        assert_eq!(written.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn an_instrument_verb_on_an_instrument_that_is_its_own_surface_doc_swaps() {
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let s = serving_with(Host {
+            written: Arc::clone(&written),
+            ..Host::default()
+        });
+        let top = "surfaces/s.json";
+        s.files.write_text(top, &synth("s")).unwrap();
+        opened(&s, top);
+        let playing = installed_hash(&s.state);
+        let events = s.state.subscribe();
+        let (renamed, _) = call(
+            &s,
+            "set_instrument_name",
+            json!({"source": top, "name": "renamed"}),
+        );
+        assert_eq!(renamed["written"], true, "{renamed}");
+        let swapped = installed_hash(&s.state);
+        assert_ne!(swapped, playing);
+        assert!(
+            matches!(events.try_recv(), Ok(Event::Changed { ref hash, by: ChangedBy::Client, .. }) if *hash == swapped),
+        );
+
+        let (undone, _) = call(
+            &s,
+            "restore_instrument",
+            restore(top, &json!(playing), &renamed["hash"]),
+        );
+        assert_eq!(undone["written"], true, "{undone}");
+        assert_eq!(installed_hash(&s.state), playing);
+        assert!(matches!(
+            events.try_recv(),
+            Ok(Event::Changed {
+                by: ChangedBy::Client,
+                ..
+            })
+        ));
+        assert!(written.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_create_at_the_open_instruments_surface_doc_is_not_offered() {
+        let s = serving_with(Host {
+            only: Some("syn"),
+            ..Host::default()
+        });
+        opened(&s, "syn.json");
+        let new = json!({"source": SYN_MAP, "name": "x"});
+        assert_eq!(
+            refusal(&s.state, "new_instrument", new),
+            super::super::not_offered(SYN_MAP)
+        );
+        let copy = json!({"from": "syn.json", "to": SYN_MAP});
+        assert_eq!(
+            refusal(&s.state, "copy_instrument", copy),
+            super::super::not_offered(SYN_MAP)
+        );
+        assert_eq!(s.files.get(SYN_MAP), None);
+        // The surface verbs still reach it.
+        let (output, _) = call(&s, "set_instrument_surface_control", set_cc("syn.json", 74));
+        assert_eq!(output["written"], true, "{output}");
+    }
+
+    #[test]
+    fn a_screen_restore_answers_in_screen_terms_for_a_midi_stem() {
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let s = serving_with(Host {
+            written: Arc::clone(&written),
+            ..Host::default()
+        });
+        opened(&s, "x.midi.json");
+        let screen = "surfaces/x.midi.json";
+        let set = |widget: &str| {
+            json!({"source": "x.midi.json", "surface": "screen",
+                   "control": {"bind": "cutoff", "widget": widget}})
+        };
+        let (first, _) = call(&s, "set_instrument_surface_control", set("fader"));
+        assert_eq!(first["written"], true, "{first}");
+        let (second, _) = call(&s, "set_instrument_surface_control", set("radial"));
+        assert_eq!(second["written"], true, "{second}");
+        assert_eq!(s.files.get("surfaces/x.midi.midi.json"), None);
+        let events = s.state.subscribe();
+        let (undone, _) = call(
+            &s,
+            "restore_instrument",
+            restore(screen, &first["hash"], &second["hash"]),
+        );
+        assert_eq!(undone["written"], true, "{undone}");
+        let doc = SurfaceDoc::parse(&s.files.get(screen).unwrap()).unwrap();
+        assert_eq!(undone["zoom"], render_surface(&doc, SurfaceKind::Screen));
+        assert_eq!(
+            events.try_recv(),
+            Ok(surface_changed(SurfaceKind::Screen, &first["hash"]))
+        );
+        assert_eq!(*written.lock().unwrap(), vec![SurfaceKind::Screen; 3]);
     }
 }

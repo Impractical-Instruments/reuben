@@ -89,6 +89,13 @@ impl<R: Resources> DocumentHistory<R> {
             .any(|h| h.source == source && h.hash == hash)
     }
 
+    /// Whether the state `hash` held for `source` is a surface doc, so a restore to it writes no
+    /// Instrument.
+    pub(crate) fn holds_surface_doc(&self, source: &str, hash: &str) -> bool {
+        self.text_at(source, hash)
+            .is_some_and(|text| SurfaceDoc::parse(&text).is_ok())
+    }
+
     fn held(&self) -> MutexGuard<'_, VecDeque<Held>> {
         // Every critical section leaves the queue whole, so a panic elsewhere while it was held
         // poisons nothing worth refusing over.
@@ -234,7 +241,7 @@ pub(crate) fn restore_instrument_through<R: Resources>(
         ))
     })?;
     if let Ok(held) = SurfaceDoc::parse(&prior) {
-        return restore_surface(args, &prior, &held, resources);
+        return restore_surface(args, &held, resources);
     }
     let registry = Registry::builtin();
     let resolver = Adapter(resources);
@@ -271,7 +278,6 @@ pub(crate) fn restore_instrument_through<R: Resources>(
 /// name controls its Instrument lacks, and refusing the way back to one would strand an undo.
 fn restore_surface(
     args: &RestoreInstrument,
-    prior: &str,
     held: &SurfaceDoc,
     resources: &dyn Resources,
 ) -> Result<Answer<EditResult>, Refusal> {
@@ -297,7 +303,7 @@ fn restore_surface(
         return Ok(expect_miss(actual, &args.expect, zoom));
     }
     resources
-        .write_text(&args.source, &format!("{prior}\n"))
+        .write_text(&args.source, &held.to_file_text())
         .map_err(|e| Refusal::new(format!("could not write `{}`: {e}", args.source)))?;
     let output = EditResult {
         report: Report {

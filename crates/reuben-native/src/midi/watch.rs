@@ -3,7 +3,7 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime};
@@ -22,18 +22,21 @@ use reuben_api::surface::{SurfaceDoc, SurfaceKind};
 /// per directory [`find_surface`] searches.
 const POLL: Duration = Duration::from_millis(250);
 
-/// What a rebuild is a function of: the instrument that plays, by source and content hash, and
-/// the MIDI map file, by path and modification stamp.
+/// What a rebuild is a function of: the instrument that plays, by source and content hash, the
+/// MIDI map file, by path and modification stamp, and the count of map writes made through the
+/// engine channel.
 #[derive(Debug, Clone, PartialEq)]
 struct Inputs {
     source: Option<String>,
     content_hash: String,
     map: Option<(PathBuf, Option<(SystemTime, u64)>)>,
+    generation: u64,
 }
 
-/// A thread that rebuilds the router's table at start, after every swap, and (with
-/// `follow_files`) after every change to the MIDI map file. It polls rather than subscribing, so
-/// it stops promptly without a subscription to wake. Dropping it stops and joins the thread.
+/// A thread that rebuilds the router's table at start, after every swap, after every map write
+/// made through the engine channel (`generation` moves), and (with `follow_files`) after every
+/// change to the MIDI map file. It polls rather than subscribing, so it stops promptly without a
+/// subscription to wake. Dropping it stops and joins the thread.
 pub(crate) struct RouteWatch {
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
@@ -44,6 +47,7 @@ impl RouteWatch {
         channel: Channel,
         router: SharedRouter,
         follow_files: bool,
+        generation: Arc<AtomicU64>,
     ) -> io::Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
@@ -52,7 +56,7 @@ impl RouteWatch {
             .spawn(move || {
                 let mut last: Option<Inputs> = None;
                 while !thread_stop.load(Ordering::SeqCst) {
-                    if let Some(now) = inputs(&channel, follow_files) {
+                    if let Some(now) = inputs(&channel, follow_files, &generation) {
                         if last.as_ref() != Some(&now) {
                             rebuild(&channel, &router, &now, last.as_ref());
                             last = Some(now);
@@ -79,7 +83,9 @@ impl Drop for RouteWatch {
 }
 
 /// `None` when the engine does not answer (it is shutting down): nothing to rebuild against.
-fn inputs(channel: &Channel, follow_files: bool) -> Option<Inputs> {
+fn inputs(channel: &Channel, follow_files: bool, generation: &AtomicU64) -> Option<Inputs> {
+    // Read before the map is: a write counted here is already on disk when `rebuild` reads it.
+    let generation = generation.load(Ordering::SeqCst);
     let document = channel.get_document().ok()?;
     let map = document
         .source
@@ -95,6 +101,7 @@ fn inputs(channel: &Channel, follow_files: bool) -> Option<Inputs> {
         source: document.source,
         content_hash: document.content_hash,
         map,
+        generation,
     })
 }
 

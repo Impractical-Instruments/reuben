@@ -165,6 +165,16 @@ roster! {
     REMOVE_INSTRUMENT_RESOURCE = "remove_instrument_resource", Document,
         authoring_prose::REMOVE_INSTRUMENT_RESOURCE;
 
+    // An instrument's surface docs: its MIDI map and its on-screen surface doc.
+    DESCRIBE_INSTRUMENT_SURFACE = "describe_instrument_surface", Document,
+        authoring_prose::DESCRIBE_INSTRUMENT_SURFACE;
+    SET_INSTRUMENT_SURFACE_CONTROL = "set_instrument_surface_control", Document,
+        authoring_prose::SET_INSTRUMENT_SURFACE_CONTROL;
+    REMOVE_INSTRUMENT_SURFACE_CONTROL = "remove_instrument_surface_control", Document,
+        authoring_prose::REMOVE_INSTRUMENT_SURFACE_CONTROL;
+    MOVE_INSTRUMENT_SURFACE_CONTROL = "move_instrument_surface_control", Document,
+        authoring_prose::MOVE_INSTRUMENT_SURFACE_CONTROL;
+
     // Host-only verbs: served by a host's dispatcher, advertised by no door.
     READ_INSTRUMENT = "read_instrument", Host, authoring_prose::READ_INSTRUMENT;
     READ_INSTRUMENT_TREE = "read_instrument_tree", Host,
@@ -212,6 +222,7 @@ const VERB_PREFIXES: &[&str] = &[
     "describe_",
     "get_",
     "list_",
+    "move_",
     "new_",
     "open_",
     "read_",
