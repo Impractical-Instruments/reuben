@@ -12,6 +12,8 @@
 //! Every struct here is `deny_unknown_fields`, which schemars carries onto the wire as
 //! `additionalProperties: false`.
 
+use alloc::borrow::Cow;
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -740,11 +742,58 @@ pub struct SetInstrumentSurfaceControl {
     pub index: Option<usize>,
     /// The control to write. A MIDI map reads `bind`, `midi`, `min` and `max`; a screen doc reads
     /// `bind`, `label`, `widget`, `group`, `min`, `max`, `note`, `velocity` and `degree`.
+    #[serde(deserialize_with = "closed_control")]
+    #[schemars(with = "ClosedControl")]
     pub control: SurfaceControl,
     /// Optional content-hash write guard: the doc's `hash` as last read. A mismatch rejects the
     /// write.
     #[serde(default)]
     pub expect: Option<String>,
+}
+
+/// The advertised shape of a `control` argument: a surface doc's control, closed.
+struct ClosedControl;
+
+impl schemars::JsonSchema for ClosedControl {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        "ClosedSurfaceControl".into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let mut schema = SurfaceControl::json_schema(generator);
+        schema.insert("additionalProperties".into(), false.into());
+        schema
+    }
+}
+
+/// A `control` argument, refusing a key [`SurfaceControl`] does not declare. The declared keys are
+/// read from its schema, so the two cannot drift. [`SurfaceDoc::parse`](crate::surface::SurfaceDoc)
+/// stays lenient, because a hand-written doc may carry keys another reader of the format uses.
+fn closed_control<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<SurfaceControl, D::Error> {
+    use schemars::JsonSchema;
+    use serde::de::Error;
+
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let schema = ClosedControl::json_schema(&mut schemars::SchemaGenerator::default());
+    let declared = schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object);
+    if let (Some(given), Some(declared)) = (value.as_object(), declared) {
+        if let Some(key) = given.keys().find(|key| !declared.contains_key(*key)) {
+            let expected: Vec<&str> = declared.keys().map(String::as_str).collect();
+            return Err(D::Error::custom(format!(
+                "unknown field `{key}`, expected one of `{}`",
+                expected.join("`, `")
+            )));
+        }
+    }
+    serde_json::from_value(value).map_err(D::Error::custom)
 }
 
 /// Arguments for `remove_instrument_surface_control`.
@@ -880,5 +929,27 @@ mod tests {
             json!({ "source": "i.json", "id": "kick", "cascade": true })
         )
         .is_err());
+        // A nested argument object is closed too, though the doc it is written into is read
+        // leniently.
+        let err = serde_json::from_value::<SetInstrumentSurfaceControl>(json!({
+            "source": "i.json", "surface": "screen",
+            "control": { "bind": "cutoff", "widgte": "radial" }
+        }))
+        .expect_err("a misspelled control key");
+        assert!(err.to_string().contains("`widgte`"), "{err}");
+        let every_key = json!({ "source": "i.json", "surface": "midi", "control": {
+            "bind": "cutoff", "label": "Cut", "widget": "fader", "group": "g", "min": 0.0,
+            "max": 1.0, "note": 60, "velocity": 1.0, "degree": 1, "midi": "/midi/1/cc/74"
+        }});
+        assert!(serde_json::from_value::<SetInstrumentSurfaceControl>(every_key).is_ok());
+    }
+
+    #[test]
+    fn the_advertised_control_is_closed() {
+        let schema = serde_json::to_value(schemars::schema_for!(SetInstrumentSurfaceControl))
+            .expect("schema");
+        let control = &schema["properties"]["control"];
+        assert_eq!(control["additionalProperties"], json!(false), "{control}");
+        assert!(control["properties"]["bind"].is_object(), "{control}");
     }
 }
