@@ -5,13 +5,17 @@ use reuben_api::authoring::{
     Boundary, MoveInstrumentSurfaceControl, RemoveInstrumentSurfaceControl,
     SetInstrumentSurfaceControl, SurfaceView,
 };
-use reuben_api::surface::{SurfaceControl, SurfaceKind};
+use reuben_api::surface::{check_midi_control, SurfaceControl, SurfaceKind};
 use reuben_api::tools::names;
 
 use crate::edit::Verb;
 
-/// The pattern a row added with `+ add` starts with.
+/// The CC route a numeric input is given when its row is added, or rebound to it.
 pub const NEW_PATTERN: &str = "/midi/1/cc/1";
+
+/// The routes a control is given when its own pattern does not fit its input, tried in order
+/// against the engine's check: notes for a message input, then a CC for a bounded numeric one.
+const ROUTES: [&str; 2] = ["/midi/1/note", NEW_PATTERN];
 
 /// What checking a control against the instrument's interface inputs found.
 #[derive(Debug, Clone, PartialEq)]
@@ -45,6 +49,8 @@ pub struct MidiMapModel {
     pub inputs: Vec<String>,
     /// Why there are no rows to show: the map does not parse, or could not be read.
     pub error: Option<String>,
+    /// The instrument's interface, which a route is checked against before it is proposed.
+    pub boundary: Option<Boundary>,
 }
 
 impl MidiMapModel {
@@ -72,6 +78,7 @@ impl MidiMapModel {
             inputs: boundary.inputs.iter().map(|i| i.name.clone()).collect(),
             error: view.error.clone(),
             view: Some(view),
+            boundary: Some(boundary.clone()),
         }
     }
 
@@ -89,17 +96,69 @@ impl MidiMapModel {
         view.controls.get(index).map(|checked| &checked.control)
     }
 
-    /// The control `+ add` appends: the first interface input, on [`NEW_PATTERN`]. `None` for an
-    /// instrument with no input to bind.
-    pub fn added(&self) -> Option<Action> {
-        let bind = self.inputs.first()?.clone();
-        Some(Action::Set {
-            index: None,
-            control: SurfaceControl {
-                bind,
-                midi: Some(NEW_PATTERN.to_string()),
+    /// `control`, kept when the engine's check takes it, else given the first of [`ROUTES`] the
+    /// check takes for its input. `Err` is why the check refuses it: as it is, or, for a control
+    /// with no pattern yet, on the last route tried.
+    fn fitted(&self, control: SurfaceControl) -> Result<SurfaceControl, String> {
+        let boundary = (self.boundary.as_ref()).ok_or("the instrument's inputs are not known")?;
+        let mut why = match check_midi_control(&control, boundary) {
+            Ok(_) => return Ok(control),
+            Err(why) => why,
+        };
+        for route in ROUTES {
+            let routed = SurfaceControl {
+                midi: Some(route.to_string()),
+                ..control.clone()
+            };
+            match check_midi_control(&routed, boundary) {
+                Ok(_) => return Ok(routed),
+                Err(refused) if control.midi.is_none() => why = refused,
+                Err(_) => {}
+            }
+        }
+        Err(why)
+    }
+
+    /// The control `+ add` appends: the first interface input a route fits, on that route. `Err`
+    /// says why no input takes one, so nothing is asked that the server would refuse.
+    pub fn added(&self) -> Result<Action, String> {
+        let mut refused = Vec::new();
+        for bind in &self.inputs {
+            let control = SurfaceControl {
+                bind: bind.clone(),
                 ..SurfaceControl::default()
-            },
+            };
+            match self.fitted(control) {
+                Ok(control) => {
+                    return Ok(Action::Set {
+                        index: None,
+                        control,
+                    })
+                }
+                Err(why) => refused.push(why),
+            }
+        }
+        Err(match refused.is_empty() {
+            true => "The instrument has no interface input to map.".to_string(),
+            false => format!(
+                "No interface input takes a MIDI route: {}.",
+                refused.join("; ")
+            ),
+        })
+    }
+
+    /// The edit binding the row at `index` to `bind`. Its pattern is kept where the new input takes
+    /// it and replaced, in the same edit, with a route that fits where it does not; a row no route
+    /// fits is sent as it is, for the server to say why.
+    pub fn rebound(&self, index: usize, bind: &str) -> Option<Action> {
+        let control = SurfaceControl {
+            bind: bind.to_string(),
+            ..self.control(index)?.clone()
+        };
+        let control = self.fitted(control.clone()).unwrap_or(control);
+        Some(Action::Set {
+            index: Some(index),
+            control,
         })
     }
 }
@@ -300,6 +359,108 @@ mod tests {
         let remove = verb("/lib/synth.json", &Action::Remove(0))(None);
         assert_eq!(remove.tool, names::REMOVE_INSTRUMENT_SURFACE_CONTROL);
         assert_eq!(remove.args["expect"], serde_json::Value::Null);
+    }
+
+    /// A boundary with only `inputs`, each a `{"name", "kind", …}` port.
+    fn inputs(inputs: serde_json::Value) -> Boundary {
+        serde_json::from_value(json!({"instrument": "synth", "inputs": inputs, "outputs": []}))
+            .expect("a boundary")
+    }
+
+    fn missing() -> SurfaceView {
+        SurfaceView {
+            exists: false,
+            hash: None,
+            ..view(json!([]))
+        }
+    }
+
+    fn route(bind: &str, pattern: &str) -> SurfaceControl {
+        SurfaceControl {
+            bind: bind.to_string(),
+            midi: Some(pattern.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn add_on_a_message_only_instrument_proposes_a_note_route() {
+        let notes = inputs(json!([{"name": "notes", "kind": "message"}]));
+        let model = MidiMapModel::from_view(missing(), &notes);
+        assert_eq!(
+            model.added(),
+            Ok(Action::Set {
+                index: None,
+                control: route("notes", "/midi/1/note"),
+            })
+        );
+    }
+
+    #[test]
+    fn add_proposes_the_first_input_a_route_fits() {
+        // `drive` is unbounded, so no CC can scale into it; `cutoff` is bounded.
+        let model = MidiMapModel::from_view(missing(), &boundary());
+        let Ok(Action::Set { control, .. }) = model.added() else {
+            panic!("{:?}", model.added());
+        };
+        assert_eq!(control, route("notes", "/midi/1/note"));
+
+        let numeric = inputs(json!([
+            {"name": "drive", "kind": "value"},
+            {"name": "cutoff", "kind": "value", "min": 20.0, "max": 20000.0}
+        ]));
+        let model = MidiMapModel::from_view(missing(), &numeric);
+        assert_eq!(
+            model.added(),
+            Ok(Action::Set {
+                index: None,
+                control: route("cutoff", NEW_PATTERN),
+            })
+        );
+    }
+
+    #[test]
+    fn add_with_no_input_a_route_fits_says_why_and_asks_nothing() {
+        let unfit = inputs(json!([
+            {"name": "drive", "kind": "value"},
+            {"name": "label", "kind": "string"}
+        ]));
+        let why = MidiMapModel::from_view(missing(), &unfit)
+            .added()
+            .expect_err("nothing to add");
+        assert!(why.contains("drive") && why.contains("label"), "{why}");
+        assert!(why.contains("no range to scale into"), "{why}");
+
+        let none = inputs(json!([]));
+        assert!(MidiMapModel::from_view(missing(), &none).added().is_err());
+    }
+
+    #[test]
+    fn rebinding_a_cc_row_to_a_message_input_is_one_set_with_a_note_pattern() {
+        let both = inputs(json!([
+            {"name": "notes", "kind": "message"},
+            {"name": "cutoff", "kind": "value", "min": 20.0, "max": 20000.0},
+            {"name": "level", "kind": "value", "min": 0.0, "max": 1.0}
+        ]));
+        let model = MidiMapModel::from_view(
+            view(json!([{"control": {"bind": "cutoff", "midi": "/midi/{1,2}/cc/74"}}])),
+            &both,
+        );
+        assert_eq!(
+            model.rebound(0, "notes"),
+            Some(Action::Set {
+                index: Some(0),
+                control: route("notes", "/midi/1/note"),
+            })
+        );
+        // A pattern the new input takes is kept.
+        assert_eq!(
+            model.rebound(0, "level"),
+            Some(Action::Set {
+                index: Some(0),
+                control: route("level", "/midi/{1,2}/cc/74"),
+            })
+        );
     }
 
     #[test]

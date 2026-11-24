@@ -31,6 +31,9 @@ pub struct MidiMap {
     refused: Option<(Option<usize>, String)>,
     /// The map, or the inputs it binds, may have changed since it was read.
     stale: bool,
+    /// The last edit created the map, which records no undo step: there is no earlier state of
+    /// the file for the server to restore.
+    created: bool,
 }
 
 /// Read the MIDI map of the instrument the server names `top`, which it has open.
@@ -148,8 +151,16 @@ impl MidiMap {
         &self.model
     }
 
+    /// What the pattern field of the row at `index` holds.
+    #[cfg(test)]
+    pub(crate) fn drafted(&self, index: usize) -> Option<&str> {
+        self.drafts.get(index).map(|draft| draft.pattern.as_str())
+    }
+
     /// Take in what the server answered `action`.
     pub fn answered(&mut self, action: &Action, result: &Result<EditResult, Refusal>) {
+        let missing = self.view().is_some_and(|view| !view.exists);
+        self.created = missing && matches!(result, Ok(edit) if edit.written);
         self.refuse(not_written(result).map(|why| (action.row(), why)));
     }
 
@@ -176,7 +187,13 @@ impl MidiMap {
         let asked = egui::ScrollArea::vertical()
             .auto_shrink(false)
             .show(ui, |ui| {
-                view::table(ui, &self.model, &mut self.drafts, self.refused.as_ref())
+                view::table(
+                    ui,
+                    &self.model,
+                    &mut self.drafts,
+                    self.refused.as_ref(),
+                    self.created,
+                )
             })
             .inner;
         match asked? {

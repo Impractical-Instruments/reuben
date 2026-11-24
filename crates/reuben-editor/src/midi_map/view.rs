@@ -38,12 +38,14 @@ pub enum Asked {
     Refuse(usize, String),
 }
 
-/// Draw the map. `refused` is the last edit's refusal and the row it was of, `None` for an append.
+/// Draw the map. `refused` is the last edit's refusal and the row it was of, `None` for an append;
+/// `created` is whether the last edit created the map.
 pub fn table(
     ui: &mut egui::Ui,
     model: &MidiMapModel,
     drafts: &mut [Draft],
     refused: Option<&(Option<usize>, String)>,
+    created: bool,
 ) -> Option<Asked> {
     theme::section(ui, "MIDI map");
     let Some(view) = &model.view else {
@@ -57,10 +59,17 @@ pub fn table(
     ui.weak(match view.exists {
         true => file.to_string_lossy().into_owned(),
         false => format!(
-            "{} does not exist yet: the first row creates it",
+            "{} does not exist yet: the first row creates it, which cannot be undone",
             file.to_string_lossy()
         ),
     });
+    if created {
+        ui.colored_label(
+            ui.visuals().warn_fg_color,
+            "The map was just created. Its creation cannot be undone: Undo steps back through the \
+             edits made before it.",
+        );
+    }
     if let Some(e) = &model.error {
         ui.colored_label(
             ui.visuals().error_fg_color,
@@ -98,13 +107,16 @@ pub fn table(
     if model.rows.is_empty() {
         ui.weak("No input is mapped.");
     }
-    let add = model.added();
-    let clicked = ui
-        .add_enabled(add.is_some(), egui::Button::new("+ add"))
-        .on_disabled_hover_text("The instrument has no interface input to map.")
-        .clicked();
-    if clicked {
-        asked = asked.take().or(add.map(Asked::Edit));
+    match model.added() {
+        Ok(add) => {
+            if ui.button("+ add").clicked() {
+                asked = asked.take().or(Some(Asked::Edit(add)));
+            }
+        }
+        Err(why) => {
+            ui.add_enabled(false, egui::Button::new("+ add"));
+            ui.colored_label(ui.visuals().warn_fg_color, why);
+        }
     }
     if let Some(why) = refused_on(None) {
         ui.colored_label(ui.visuals().error_fg_color, why);
@@ -132,25 +144,26 @@ fn row(
             }
         });
     if bind != row.bind {
-        asked = set(model, at, |control| control.bind = bind);
+        asked = model.rebound(at, &bind).map(Asked::Edit);
     }
 
     let pattern = ui
         .add(egui::TextEdit::singleline(&mut draft.pattern).desired_width(PATTERN_WIDTH))
         .labelled_by(number.id);
-    if pattern.lost_focus() && draft.pattern != row.pattern {
+    if committed(ui, &pattern, &mut draft.pattern, &row.pattern) && draft.pattern != row.pattern {
         let midi = draft.pattern.clone();
         asked = asked
             .take()
             .or(set(model, at, |control| control.midi = Some(midi)));
     }
 
-    for (text, current, is_min) in [
-        (&mut draft.min, row.min, true),
-        (&mut draft.max, row.max, false),
+    let shown = Draft::of(row);
+    for (text, current, was, is_min) in [
+        (&mut draft.min, row.min, &shown.min, true),
+        (&mut draft.max, row.max, &shown.max, false),
     ] {
         let field = ui.add(egui::TextEdit::singleline(text).desired_width(BOUND_WIDTH));
-        if !field.lost_focus() {
+        if !committed(ui, &field, text, was) {
             continue;
         }
         let which = if is_min { "min" } else { "max" };
@@ -202,6 +215,19 @@ fn row(
         }
     });
     asked
+}
+
+/// Whether the edit in `field` is committed this frame: Enter, or focus leaving it. Escape leaves
+/// it too, but puts `draft` back to `shown`, what the map holds, and commits nothing.
+fn committed(ui: &egui::Ui, field: &egui::Response, draft: &mut String, shown: &str) -> bool {
+    if !field.lost_focus() {
+        return false;
+    }
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        *draft = shown.to_string();
+        return false;
+    }
+    true
 }
 
 /// The edit writing the control at `at` as the map holds it, changed by `change`.

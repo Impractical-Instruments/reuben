@@ -1273,3 +1273,35 @@ fn editing_a_pattern_and_pressing_enter_emits_one_set() {
     let session = harness.state().session.as_ref().expect("a session");
     assert_eq!(session.feedback(), None);
 }
+
+#[test]
+fn escape_in_a_pattern_field_puts_the_map_back_and_writes_nothing() {
+    use egui::accesskit::Role;
+
+    let scratch = Scratch::new("ui_midi_map_escape");
+    let config = TempConfig::new();
+    let top = instrument(&scratch);
+    let mut harness = harness(editor(&top, &config));
+
+    harness.get_by_label("MIDI map").click();
+    harness.run_steps(2);
+    harness.get_by_label("+ add").click();
+    harness.run_steps(4);
+    assert_eq!(patterns(&harness), ["/midi/1/cc/1"]);
+
+    let written = crate::edit::test_support::writes();
+    harness.get_by_role_and_label(Role::TextInput, "1").focus();
+    harness.run_steps(2);
+    (harness.get_by_role_and_label(Role::TextInput, "1")).type_text("/bogus");
+    harness.run_steps(2);
+    assert_eq!(
+        harness.state().midi_map.drafted(0),
+        Some("/midi/1/cc/1/bogus")
+    );
+    harness.key_press(egui::Key::Escape);
+    harness.run_steps(4);
+
+    assert_eq!(crate::edit::test_support::writes(), written);
+    assert_eq!(patterns(&harness), ["/midi/1/cc/1"]);
+    assert_eq!(harness.state().midi_map.drafted(0), Some("/midi/1/cc/1"));
+}
