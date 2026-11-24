@@ -9,8 +9,17 @@ use reuben_api::surface::SurfaceControl;
 use super::model::{self, Action, MidiMapModel, Row, Status};
 use crate::theme;
 
+// Minimum widths, not desired ones: a Grid cell is only as wide as its column was last frame,
+// which starts at the header's width, and a TextEdit or a wrapped label never grows past it.
 const PATTERN_WIDTH: f32 = 160.0;
 const BOUND_WIDTH: f32 = 56.0;
+const STATUS_WIDTH: f32 = 240.0;
+
+/// The row buttons' labels. Courier Prime draws none of the plain arrows and egui's Proportional
+/// fallbacks draw neither them nor `✕`, so these are glyphs the editor's fonts do draw.
+const UP: &str = "⬆";
+const DOWN: &str = "⬇";
+const REMOVE: &str = "×";
 
 /// What a row's fields hold while they are typed in.
 #[derive(Debug, Clone, PartialEq)]
@@ -95,11 +104,9 @@ pub fn table(
             }
             ui.end_row();
             for (row, draft) in model.rows.iter().zip(drafts.iter_mut()) {
-                let row_asked = ui
-                    .push_id(row.index, |ui| {
-                        self::row(ui, model, row, draft, refused_on(Some(row.index)))
-                    })
-                    .inner;
+                // Not under `push_id`: a Grid counts a child `Ui` as one cell, which would draw the
+                // whole row in the first column.
+                let row_asked = self::row(ui, model, row, draft, refused_on(Some(row.index)));
                 asked = asked.take().or(row_asked);
                 ui.end_row();
             }
@@ -136,7 +143,7 @@ fn row(
     let number = ui.label((at + 1).to_string());
 
     let mut bind = row.bind.clone();
-    egui::ComboBox::from_id_salt("input")
+    egui::ComboBox::from_id_salt(("input", at))
         .selected_text(&bind)
         .show_ui(ui, |ui| {
             for input in &model.inputs {
@@ -148,7 +155,11 @@ fn row(
     }
 
     let pattern = ui
-        .add(egui::TextEdit::singleline(&mut draft.pattern).desired_width(PATTERN_WIDTH))
+        .add(
+            egui::TextEdit::singleline(&mut draft.pattern)
+                .id_salt(("pattern", at))
+                .min_size(egui::vec2(PATTERN_WIDTH, 0.0)),
+        )
         .labelled_by(number.id);
     if committed(ui, &pattern, &mut draft.pattern, &row.pattern) && draft.pattern != row.pattern {
         let midi = draft.pattern.clone();
@@ -162,11 +173,15 @@ fn row(
         (&mut draft.min, row.min, &shown.min, true),
         (&mut draft.max, row.max, &shown.max, false),
     ] {
-        let field = ui.add(egui::TextEdit::singleline(text).desired_width(BOUND_WIDTH));
+        let which = if is_min { "min" } else { "max" };
+        let field = ui.add(
+            egui::TextEdit::singleline(text)
+                .id_salt((which, at))
+                .min_size(egui::vec2(BOUND_WIDTH, 0.0)),
+        );
         if !committed(ui, &field, text, was) {
             continue;
         }
-        let which = if is_min { "min" } else { "max" };
         let bound = match text.trim() {
             "" => None,
             typed => match typed.parse::<f64>() {
@@ -189,6 +204,7 @@ fn row(
     }
 
     ui.vertical(|ui| {
+        ui.set_min_width(STATUS_WIDTH);
         status(ui, &row.status);
         if let Some(why) = refused {
             ui.colored_label(ui.visuals().error_fg_color, why);
@@ -198,8 +214,8 @@ fn row(
     ui.horizontal(|ui| {
         let len = model.rows.len();
         let moved = [
-            ("↑", "Move up", model::up(at)),
-            ("↓", "Move down", model::down(at, len)),
+            (UP, "Move up", model::up(at)),
+            (DOWN, "Move down", model::down(at, len)),
         ];
         for (glyph, hover, action) in moved {
             let clicked = ui
@@ -210,7 +226,7 @@ fn row(
                 asked = asked.take().or(action.map(Asked::Edit));
             }
         }
-        if ui.small_button("✕").on_hover_text("Remove").clicked() {
+        if ui.small_button(REMOVE).on_hover_text("Remove").clicked() {
             asked = asked.take().or(Some(Asked::Edit(Action::Remove(at))));
         }
     });
@@ -253,6 +269,23 @@ fn status(ui: &mut egui::Ui, status: &Status) {
         }
         Status::Skipped(why) => {
             ui.colored_label(ui.visuals().warn_fg_color, format!("skipped: {why}"));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_row_buttons_draw_with_the_editors_fonts() {
+        for style in [egui::TextStyle::Button, egui::TextStyle::Body] {
+            for glyph in [UP, DOWN, REMOVE] {
+                assert!(
+                    theme::draws(&style, glyph),
+                    "no font of {style:?} draws {glyph}"
+                );
+            }
         }
     }
 }

@@ -29,6 +29,7 @@ reuben-mcp = { path = "../reuben-mcp" }
 # The tests seed and read their fixture documents through the reference store directly.
 reuben-api = { path = "../reuben-api", features = ["fs-resolver"] }
 egui_kittest.workspace = true
+skrifa.workspace = true
 
 [[bin]]
 name = "reuben-editor"
