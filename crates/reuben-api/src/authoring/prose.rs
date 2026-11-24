@@ -133,16 +133,17 @@ pub const DESCRIBE_INSTRUMENT_SURFACE: &str =
      (`surface: \"screen\"`): its controls in order, each with why it would be skipped and what \
      was adjusted to use it, warnings about the doc as a whole, and the `hash` to pass as \
      `expect`. `exists` is false when the instrument has none yet. A MIDI map control reads \
-     `bind` (an interface input), `midi` (an address pattern over translated MIDI, such as \
-     `/midi/1/cc/74` or `/midi/{1,2}/note`), and an optional `min`/`max` narrowing; a screen \
-     control reads `bind`, `label`, `widget`, `group`, `min`, `max`, `note`, `velocity` and \
-     `degree`.";
+     `bind` (an interface input), `midi` (`{kind, channel, cc}`: `kind` one of `note`, `cc`, \
+     `bend`, `pressure`, `program`; `channel` 1-16 and `cc`, for kind `cc` only, 0-127, each an \
+     integer or a pattern string of `*`, ranges and lists such as `\"1-4,10\"`), and an optional \
+     `min`/`max` narrowing; a screen control reads `bind`, `label`, `widget`, `group`, `min`, \
+     `max`, `note`, `velocity` and `degree`.";
 
 pub const SET_INSTRUMENT_SURFACE_CONTROL: &str =
     "Replace the control at `index` in an instrument's MIDI map or on-screen surface doc, or \
      append it when `index` is omitted; the first set creates the doc. `control` takes the keys \
      `describe_instrument_surface` lists for that doc. Refused, with nothing written, when the \
-     control could not be used: its `bind` names no interface input, or its pattern or widget \
+     control could not be used: its `bind` names no interface input, or its `midi` route or widget \
      cannot drive that input; and while the instrument does not load, since there is nothing to \
      check it against. Echoes every control, one per line, by index.";
 

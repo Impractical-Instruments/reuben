@@ -91,17 +91,31 @@ and ignored. The ports `play` reads are named in the device profile's `midi.inpu
   "surface_version": 1,
   "instrument": "acid-techno",
   "controls": [
-    { "bind": "notes",  "midi": "/midi/1/note" },
-    { "bind": "bass",   "midi": "/midi/[4-8]/note" },
-    { "bind": "cutoff", "midi": "/midi/{1,2,5,9}/cc/74", "min": 200, "max": 8000 },
-    { "bind": "drive",  "midi": "/midi/1/cc/1" },
-    { "bind": "bend",   "midi": "/midi/1/bend" },
-    { "bind": "patch",  "midi": "/midi/16/program" }
+    { "bind": "notes",  "midi": { "kind": "note", "channel": 1 } },
+    { "bind": "bass",   "midi": { "kind": "note", "channel": "4-8" } },
+    { "bind": "cutoff", "midi": { "kind": "cc", "channel": "1,2,5,9", "cc": 74 }, "min": 200, "max": 8000 },
+    { "bind": "drive",  "midi": { "kind": "cc", "channel": 1, "cc": "1-2" } },
+    { "bind": "bend",   "midi": { "kind": "bend", "channel": 1 } },
+    { "bind": "patch",  "midi": { "kind": "program", "channel": 16 } }
   ]
 }
 ```
 
-Each MIDI message becomes one address, channels 1–16 as printed on hardware:
+`midi` is an object of three fields:
+
+- `kind` — `note`, `cc`, `bend`, `pressure` or `program`: one kind, never a pattern;
+- `channel` — 1–16, as printed on hardware;
+- `cc` — the controller number, 0–127, required for kind `cc` and refused on any other kind.
+
+`channel` and `cc` each take an integer for one number (`"channel": 1`) or a string for a
+pattern over numbers: `*` is every number, `1-4` an inclusive range, `1,3,5` a list, and they
+combine (`"1-4,10"`). This is not an OSC address pattern: `"1-16"` is all sixteen channels. The
+old address string (`"midi": "/midi/1/cc/74"`) is refused: the map does not parse, and the error
+says `` `midi` is now an object: `{kind, channel, cc}` ``.
+
+Each MIDI message is translated as below, channels 1–16. The address is what `send-midi` takes
+and what `REUBEN_LOG_OSC=1` prints; a route matches the message's kind, channel and controller,
+not the address:
 
 | MIDI message | Address | Value |
 | --- | --- | --- |
@@ -115,14 +129,14 @@ Each MIDI message becomes one address, channels 1–16 as printed on hardware:
 Clock, active sensing, SysEx and other system messages are ignored; polyphonic aftertouch is
 counted as unsupported.
 
-`midi` is one OSC 1.0 address pattern (`*`, `?`, `[1-4]`, `[!5]`, `{1,2,5}`). A message goes to
-**every** control whose pattern matches it (a note reaches each note input once, however many of
-its controls match), and several controls may bind one input, so CCs from
+A message goes to **every** control whose route matches it (a note reaches each note input
+once, however many of its controls match), and several controls may bind one input, so CCs from
 several channels or numbers can move one input. **Checks, per control** — a failing control is
 skipped with a `midi map:` warning on `play`'s stderr naming it and why; the rest still route:
 
-- the pattern is well-formed and starts with `/midi/`;
-- it matches only **one message kind** — `/midi/1/*` and `/midi/1/{note,cc}` are refused;
+- `channel` and `cc` are well-formed patterns with no reversed range (`"8-4"`), and every number
+  is in bounds: channel 1–16, `cc` 0–127;
+- kind `cc` has a `cc`; no other kind has one;
 - `bind` names an interface input of the played instrument;
 - the kind fits the input: `note` → `note`; `cc`, `bend`, `pressure` → `f32`, `i32`, or an
   `f32_buffer` with a range; `program` → `i32`. Anything else is refused;
