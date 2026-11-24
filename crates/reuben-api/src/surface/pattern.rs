@@ -89,11 +89,9 @@ impl JsonSchema for NumberPattern {
     }
 
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({
-            "description": "An integer, or a pattern string: `*` any, `1-4` an inclusive range, \
-                            `1,3,5` a list, combined as `1-4,10`.",
-            "anyOf": [{"type": "integer"}, {"type": "string"}]
-        })
+        // The fields that hold one describe the grammar; repeating it here would put it in the
+        // advertised schema once per field.
+        schemars::json_schema!({"anyOf": [{"type": "integer"}, {"type": "string"}]})
     }
 }
 
