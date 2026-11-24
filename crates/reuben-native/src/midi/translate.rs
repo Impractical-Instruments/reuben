@@ -165,8 +165,8 @@ pub fn parse_translated(address: &str, args: &[Arg]) -> Option<Translated> {
     })
 }
 
-/// A decimal in canonical spelling (no sign, no leading zero), so each translated message has one
-/// address, which a log line prints.
+/// A decimal as [`translate`] spells one (no sign, no leading zero): an injected address is taken
+/// only in a form a device's message could have produced.
 fn data_number(text: &str) -> Option<u32> {
     let canonical = !text.is_empty()
         && text.bytes().all(|b| b.is_ascii_digit())
