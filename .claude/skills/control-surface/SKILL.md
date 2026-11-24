@@ -168,20 +168,22 @@ python3 <skilldir>/gen_surface.py boundary instruments/patches/space.json
 
 ### 2. Scaffold a new `surfaces/<name>.json`
 
-Start from the derivation, not a blank file. (The first `set_instrument_surface_control` also
-creates the doc; the script below is for seeding it from the derived default.)
+Start from the derivation, not a blank file. Print the derived controls (this writes nothing):
 
 ```
-python3 - <<'EOF' > surfaces/<name>.json
+python3 - <<'EOF'
 import json, sys
 sys.path.insert(0, ".claude/skills/control-surface")
 import gen_surface as g
 inst = json.load(open("instruments/<name>.json"))
 doc, warnings = g.derive_surface(inst, inst.get("instrument"))
 for w in warnings: print("warning:", w, file=sys.stderr)
-print(json.dumps(doc, indent=2))
+print(json.dumps(doc["controls"], indent=2))
 EOF
 ```
+
+Then apply each control with `set_instrument_surface_control` (`surface: "screen"`, `index`
+omitted to append); the first set creates `surfaces/<name>.json`.
 
 The warnings are your curation worklist: each skipped message pipe is a candidate for an explicit
 `note-toggle`/`chord-button` entry with its payload.
