@@ -63,7 +63,7 @@ pub fn write(
         return not_a_file(session, source);
     };
     let expect = document.hash().map(str::to_string);
-    run(session, channel, source, expect, verb)
+    write_to(session, channel, source, expect, verb)
 }
 
 /// Call `verb` on the running engine's server and read its answer as an edit, recording no undo
@@ -90,7 +90,12 @@ fn not_a_file(session: &mut Session, source: &str) -> Result<EditResult, Refusal
 
 /// Call `verb` on the server, guarded by `expect`, and record a written change as one undo step
 /// from `expect`.
-fn run(
+///
+/// `source` need not be a file of the session's tree: the open instrument's MIDI map is written
+/// here too, `expect` being the hash its own read answered. A write with no `expect` records no
+/// step, which is what keeps the edit that creates a file off the stack: the server holds no
+/// state of a file from before it existed to restore.
+pub fn write_to(
     session: &mut Session,
     channel: &dyn Fn() -> Option<Channel>,
     source: &str,
@@ -262,7 +267,7 @@ pub fn write_against(
     if session.tree().document(source).is_none() {
         return not_a_file(session, source);
     }
-    run(session, channel, source, Some(expect), verb)
+    write_to(session, channel, source, Some(expect), verb)
 }
 
 #[cfg(test)]
@@ -286,18 +291,21 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use reuben_api::authoring::ReadInstrument;
+    use std::path::PathBuf;
+
     use reuben_api::authoring::{
         remove_instrument_interface_input, set_instrument_description, set_instrument_name,
-        AddInstrumentInterfaceInput, RemoveInstrumentInterfacePipe, SetInstrumentDescription,
-        SetInstrumentInput, SetInstrumentName, WireInstrumentInput,
+        AddInstrumentInterfaceInput, DescribeInstrumentSurface, ReadInstrument,
+        RemoveInstrumentInterfacePipe, SetInstrumentDescription, SetInstrumentInput,
+        SetInstrumentName, SetInstrumentSurfaceControl, SurfaceView, WireInstrumentInput,
     };
+    use reuben_api::surface::{SurfaceControl, SurfaceKind};
     use reuben_api::FsResolver;
     use reuben_native::test_support::within;
     use serde_json::json;
 
     use super::*;
-    use crate::session::test_support::Rig;
+    use crate::session::test_support::{Rig, Scratch};
     use crate::session::Status;
 
     const HANG_SECS: u64 = 60;
@@ -1118,6 +1126,126 @@ mod tests {
             assert!(matches!(&refused, Restored::Refused { .. }), "{refused:?}");
             assert_eq!(served(&rig, &voice), after, "nothing written");
             assert!(matches!(undo(&mut rig), Restored::Landed));
+        });
+    }
+
+    // --- a file outside the tree: the open instrument's MIDI map ---------------------------------
+
+    /// A rig on `lib/mapped.json`, whose one interface input `level` is an `f32` in 0..1. No
+    /// `surfaces/` directory exists anywhere its MIDI map is looked for.
+    fn mapped(test: &str) -> Rig {
+        let scratch = Scratch::new(test);
+        let lib = scratch.path("lib");
+        std::fs::create_dir_all(&lib).expect("create the library directory");
+        let top = lib.join("mapped.json");
+        let doc = json!({
+            "format_version": 3,
+            "instrument": "mapped",
+            "interface": {
+                "inputs": {"level": {"type": "f32", "default": 0.5, "min": 0.0, "max": 1.0}},
+                "outputs": {"out": {"from": "/osc.audio"}}
+            },
+            "nodes": [{"type": "oscillator", "address": "/osc"}]
+        });
+        std::fs::write(&top, doc.to_string()).expect("write the instrument");
+        Rig::on(scratch, top)
+    }
+
+    /// The open instrument's MIDI map as the server reads it.
+    fn midi_map(rig: &Rig) -> SurfaceView {
+        let read = call_tool(
+            names::DESCRIBE_INSTRUMENT_SURFACE,
+            &DescribeInstrumentSurface {
+                source: rig.top_source(),
+                surface: SurfaceKind::Midi,
+            },
+            &rig.channel(),
+        )
+        .expect("the server reads the map")
+        .output;
+        serde_json::from_value(read).expect("a surface view")
+    }
+
+    /// Map `level` to `pattern` at `index` of the MIDI map, guarded by the hash the map reads
+    /// with now, as the editor's table writes it.
+    fn map_level(rig: &mut Rig, index: Option<usize>, pattern: &str) -> EditResult {
+        let view = midi_map(rig);
+        let top = rig.top_source();
+        let channel = rig.channel_source();
+        let result = write_to(
+            &mut rig.session,
+            &channel,
+            &view.source,
+            view.hash.clone(),
+            |expect| {
+                Verb::of(
+                    names::SET_INSTRUMENT_SURFACE_CONTROL,
+                    &SetInstrumentSurfaceControl {
+                        source: top,
+                        surface: SurfaceKind::Midi,
+                        index,
+                        control: SurfaceControl {
+                            bind: "level".to_string(),
+                            midi: Some(pattern.to_string()),
+                            ..Default::default()
+                        },
+                        expect,
+                    },
+                )
+            },
+        )
+        .expect("the verb ran");
+        assert!(result.written, "{:?}", result.report);
+        result
+    }
+
+    #[test]
+    fn a_write_that_creates_a_file_outside_the_tree_is_no_step() {
+        within(HANG_SECS, || {
+            let mut rig = mapped("map_create_no_step");
+            assert!(!midi_map(&rig).exists);
+            map_level(&mut rig, None, "/midi/1/cc/1");
+            assert!(midi_map(&rig).exists);
+            assert_eq!(rig.session.undo().next(Direction::Undo), None);
+            assert!(matches!(undo(&mut rig), Restored::Nothing));
+        });
+    }
+
+    #[test]
+    fn write_to_records_an_undo_step_for_a_file_outside_the_tree() {
+        within(HANG_SECS, || {
+            let mut rig = mapped("map_undo");
+            let created = map_level(&mut rig, None, "/midi/1/cc/1");
+            let map = midi_map(&rig);
+            let path = PathBuf::from(&map.source);
+            assert!(
+                path.ends_with("surfaces/mapped.midi.json"),
+                "{}",
+                path.display()
+            );
+            assert_eq!(
+                path.parent().and_then(Path::parent),
+                Some(rig.lib.as_path())
+            );
+            assert!(path.is_file(), "the map is created at {}", path.display());
+            assert_eq!(map.hash.as_deref(), Some(created.hash.as_str()));
+            let first = std::fs::read_to_string(&path).expect("read the map");
+
+            let edited = map_level(&mut rig, Some(0), "/midi/1/cc/74");
+            assert_eq!(
+                rig.session.undo().next(Direction::Undo),
+                Some(&Step {
+                    source: map.source.clone(),
+                    before: created.hash.clone(),
+                    after: edited.hash.clone(),
+                })
+            );
+
+            assert!(matches!(undo(&mut rig), Restored::Landed));
+            assert_eq!(midi_map(&rig).hash, Some(created.hash.clone()));
+            assert_eq!(std::fs::read_to_string(&path).expect("read the map"), first);
+            assert!(matches!(redo(&mut rig), Restored::Landed));
+            assert_eq!(midi_map(&rig).hash, Some(edited.hash));
         });
     }
 }

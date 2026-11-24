@@ -348,12 +348,13 @@ impl Controls {
     }
 
     /// Draw the panel along the bottom of `ui`, with `beside` down its right edge, and send what
-    /// the player did to `engine`. Draws nothing when no instrument is open, and returns whether it
-    /// drew.
+    /// the player did to `engine`. Its header toggles `map_shown`. Draws nothing when no instrument
+    /// is open, and returns whether it drew.
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
         engine: &Engine,
+        map_shown: &mut bool,
         beside: impl FnOnce(&mut egui::Ui),
     ) -> bool {
         self.heard();
@@ -379,7 +380,7 @@ impl Controls {
                         return;
                     }
                 };
-                view::header(ui, loaded.from_surface, live.is_some());
+                view::header(ui, loaded.from_surface, live.is_some(), map_shown);
                 if let Some(e) = &self.send_error {
                     ui.colored_label(ui.visuals().error_fg_color, format!("send failed: {e}"));
                 }

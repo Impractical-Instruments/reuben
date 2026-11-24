@@ -71,10 +71,13 @@ fn editor(top: &Path, config: &TempConfig) -> Editor {
     start.opened(&top.display().to_string());
     let (follow, latest) = follower(engine.channel(), || {});
     let controls = Controls::open(Some(&top.display().to_string()), &|| engine.channel());
+    let midi_map = MidiMap::open(Some(&top.display().to_string()), &|| engine.channel());
     Editor {
         engine,
         audio: AudioSettings::load_with(config.dir(), two_devices),
         controls,
+        midi_map,
+        midi_map_shown: false,
         canvas,
         inspector,
         session: Some(session),
@@ -293,6 +296,8 @@ fn attached_with(
         engine,
         audio: AudioSettings::load_with(config.dir(), two_devices),
         controls: Controls::open(None, &|| None),
+        midi_map: MidiMap::default(),
+        midi_map_shown: false,
         canvas: Canvas::empty(),
         inspector: Inspector::default(),
         session,
@@ -1220,4 +1225,51 @@ fn a_control_follows_the_engine_through_a_range_edit_and_a_failed_open() {
         });
         harness.state_mut().engine.shutdown();
     });
+}
+
+/// The patterns of the MIDI map's rows, as the table last read them.
+fn patterns(harness: &Harness<'_, Editor>) -> Vec<String> {
+    (harness.state().midi_map.model().rows.iter())
+        .map(|row| row.pattern.clone())
+        .collect()
+}
+
+#[test]
+fn editing_a_pattern_and_pressing_enter_emits_one_set() {
+    use egui::accesskit::Role;
+
+    let scratch = Scratch::new("ui_midi_map_pattern");
+    let config = TempConfig::new();
+    let top = instrument(&scratch);
+    let mut harness = harness(editor(&top, &config));
+
+    harness.get_by_label("MIDI map").click();
+    harness.run_steps(2);
+    harness.get_by_label("+ add").click();
+    harness.run_steps(4);
+    assert_eq!(patterns(&harness), ["/midi/1/cc/1"]);
+    assert!(
+        scratch.path("lib/surfaces/ui.midi.json").is_file(),
+        "the map is created beside the instrument"
+    );
+
+    let written = crate::edit::test_support::writes();
+    harness.get_by_role_and_label(Role::TextInput, "1").focus();
+    harness.run_steps(2);
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    harness.run_steps(1);
+    (harness.get_by_role_and_label(Role::TextInput, "1")).type_text("/midi/1/cc/74");
+    harness.run_steps(2);
+    assert_eq!(
+        crate::edit::test_support::writes(),
+        written,
+        "nothing is written while typing"
+    );
+    harness.key_press(egui::Key::Enter);
+    harness.run_steps(4);
+
+    assert_eq!(crate::edit::test_support::writes(), written + 1);
+    assert_eq!(patterns(&harness), ["/midi/1/cc/74"]);
+    let session = harness.state().session.as_ref().expect("a session");
+    assert_eq!(session.feedback(), None);
 }
