@@ -375,11 +375,14 @@ impl Editor {
         for event in &events {
             self.controls.hear(event, session.top());
         }
+        let surface_changed = self.controls.take_stale();
         let reopened = (events.iter()).any(
             |event| matches!(event, Event::Opened { name, .. } if name.as_str() == session.top()),
         );
         // A tree that does not load keeps the panel of the instrument still playing.
-        if (poll.reloaded || reopened) && !matches!(session.status(), Status::Held(_)) {
+        if (poll.reloaded || reopened || surface_changed)
+            && !matches!(session.status(), Status::Held(_))
+        {
             self.controls
                 .reload(Some(session.top()), &|| self.engine.channel());
         }

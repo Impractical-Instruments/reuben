@@ -321,9 +321,6 @@ pub enum Request {
     /// Ask for the start screen's whole view of the library: every instrument the engine offers,
     /// read, and the directories a new one may be created in.
     Library,
-    /// Ask for the open instrument's surface document: the text of a JSON file beside the
-    /// instrument that is not itself an instrument document.
-    Surface,
     /// Turn this connection into a stream of [`Event`]s: answered with [`Response::Subscribed`],
     /// then one event per line, one per change, for as long as the connection stays open. The
     /// connection answers no further requests.
@@ -588,9 +585,6 @@ pub enum Response {
     Listed { names: Vec<String> },
     /// `Library`'s answer.
     Library(Library),
-    /// `Surface`'s answer: the open instrument's surface text, or `None` when nothing is open or
-    /// it has no surface.
-    Surface { text: Option<String> },
     /// `Call`'s answer when the verb refused to run: an unknown name, an engine verb, or arguments
     /// that do not fit it.
     Refused { message: String },
@@ -1410,7 +1404,6 @@ mod tests {
                 }],
                 dirs: vec!["".to_string()],
             }),
-            Response::Surface { text: None },
             Response::Error {
                 message: "unreadable request".to_string(),
             },

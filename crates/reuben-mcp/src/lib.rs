@@ -1160,7 +1160,6 @@ mod tests {
                 Request::SetProbes { .. }
                 | Request::List { .. }
                 | Request::Library
-                | Request::Surface
                 | Request::SendMidi { .. }
                 | Request::Subscribe => {
                     unreachable!("no tool sends it")

@@ -743,9 +743,6 @@ mod tests {
         fn creatable(&self, _open: Option<&str>) -> Vec<String> {
             vec!["lib/".to_string()]
         }
-        fn surface(&self, open: &str) -> Result<Option<String>, String> {
-            Ok(Some(format!("surface of {open}")))
-        }
         fn surface_written(&self, surface: SurfaceKind) {
             self.written.lock().unwrap().push(surface);
         }
@@ -1268,32 +1265,8 @@ mod tests {
     }
 
     #[test]
-    fn surface_with_nothing_open_is_none() {
-        let s = serving();
-        let state = s.state.clone().with_installed_source(None);
-        assert_eq!(
-            dispatch(&state, &Request::Surface.to_ndjson()),
-            Response::Surface { text: None }
-        );
-    }
-
-    #[test]
-    fn surface_answers_the_hosts_text() {
-        let s = serving();
-        assert_eq!(
-            dispatch(&s.state, &Request::Surface.to_ndjson()),
-            Response::Surface {
-                text: Some("surface of top.json".to_string())
-            }
-        );
-    }
-
-    #[test]
-    fn library_and_surface_round_trip_ndjson() {
+    fn library_round_trips_ndjson() {
         assert_eq!(Request::Library.to_ndjson(), "{\"verb\":\"library\"}\n");
-        assert_eq!(Request::Surface.to_ndjson(), "{\"verb\":\"surface\"}\n");
-        let line = serde_json::to_string(&Response::Surface { text: None }).unwrap();
-        assert_eq!(line, r#"{"reply":"surface","text":null}"#);
         let library = Response::Library(crate::engine::Library {
             instruments: vec![crate::engine::LibraryEntry {
                 name: "a.json".to_string(),
