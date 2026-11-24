@@ -203,6 +203,9 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: 0 # faster, smaller cache on CI's cold builds
+      # Full debuginfo is most of a dev-profile `target/`, and CI reads none of it; line tables keep
+      # backtraces' file:line.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -214,9 +217,15 @@ jobs:
       # installs + caches the pinned channel. No version hardcoded here.
       - name: Setup pinned Rust toolchain
         uses: ./.github/actions/setup-rust
+        with:
+          save: ${{ github.ref == 'refs/heads/dev' }} # same rule as the cargo cache
 
       - name: Cache cargo registry + build
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        # Only `dev` saves. A cache saved on a PR ref is readable only by that PR, yet it counts
+        # against the repo's 10 GB cap and evicts `dev`'s, which every PR restores from.
+        with:
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
 
       - name: Format
         run: cargo fmt --all --check
@@ -303,6 +312,7 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only # same reason as `check`
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -315,9 +325,13 @@ jobs:
       # time, so the build links none of them.
       - name: Setup pinned Rust toolchain
         uses: ./.github/actions/setup-rust
+        with:
+          save: ${{ github.ref == 'refs/heads/dev' }} # same rule as the cargo cache
 
       - name: Cache cargo registry + build
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/dev' }} # same rule as `check`
 
       - name: Format
         run: cargo fmt -p reuben-editor --check
@@ -353,6 +367,8 @@ jobs:
       # Both tools read the graph through `cargo metadata`, which resolves the pinned toolchain.
       - name: Setup pinned Rust toolchain
         uses: ./.github/actions/setup-rust
+        with:
+          save: ${{ github.ref == 'refs/heads/dev' }} # same rule as the cargo cache
 
       # The same versions release.yml installs.
       - name: Install cargo-deny and cargo-about
@@ -387,6 +403,7 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only # same reason as `check`
       RUSTFLAGS: -D warnings # catch platform-gated warnings the Linux build can't see
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -394,9 +411,13 @@ jobs:
       # Same pinned toolchain as `check`, via the shared composite.
       - name: Setup pinned Rust toolchain
         uses: ./.github/actions/setup-rust
+        with:
+          save: ${{ github.ref == 'refs/heads/dev' }} # same rule as the cargo cache
 
       - name: Cache cargo registry + build
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/dev' }} # same rule as `check`
 
       - name: Build
         run: cargo build
@@ -450,9 +471,13 @@ jobs:
       # and in a contributor's clone alike.
       - name: Setup pinned Rust toolchain
         uses: ./.github/actions/setup-rust
+        with:
+          save: ${{ github.ref == 'refs/heads/dev' }} # same rule as the cargo cache
 
       - name: Cache cargo registry + build
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/dev' }} # same rule as `check`
 
       # Before the build, so it is on the summary page even when the compile dies in the first
       # seconds. It names what is cross-built; the limits below stay true whatever that is.
@@ -632,9 +657,13 @@ jobs:
       # Same pinned toolchain as `check`, via the shared composite.
       - name: Setup pinned Rust toolchain
         uses: ./.github/actions/setup-rust
+        with:
+          save: ${{ github.ref == 'refs/heads/dev' }} # same rule as the cargo cache
 
       - name: Cache cargo registry + build
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/dev' }} # same rule as `check`
 
       # The runner binary must be the exact version of the locked gungraun library: the bench binary
       # refuses to run under any other. Read from Cargo.lock so a dependency bump cannot leave the
@@ -702,6 +731,7 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only # same reason as `check`
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -713,9 +743,13 @@ jobs:
 
       - name: Setup pinned Rust toolchain
         uses: ./.github/actions/setup-rust
+        with:
+          save: ${{ github.ref == 'refs/heads/dev' }} # same rule as the cargo cache
 
       - name: Cache cargo registry + build
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/dev' }} # same rule as `check`
 
       # Same baseline resolution as the perf gate, so the two trends line up commit for commit.
       - name: Resolve baseline ref

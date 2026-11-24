@@ -7,11 +7,19 @@
 # hash, so a bump (channel/profile/components) busts it automatically.
 name: Setup pinned Rust toolchain
 description: Install and cache the toolchain pinned in rust-toolchain.toml.
+inputs:
+  save:
+    # A cache saved on a tag or PR ref is readable only by runs on that same ref, yet each entry
+    # (~0.5 GB) counts against the repo's 10 GB cap and can evict the default branch's, which
+    # every ref restores from.
+    description: Save the toolchain cache on a miss. Pass 'false' except on the default branch.
+    default: 'true'
 runs:
   using: composite
   steps:
-    - name: Cache pinned toolchain (~/.rustup)
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+    - name: Restore pinned toolchain (~/.rustup)
+      id: restore
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/.rustup/toolchains
         key: rustup-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}
@@ -19,3 +27,10 @@ runs:
     - name: Provision pinned toolchain (rust-toolchain.toml)
       shell: bash
       run: rustup toolchain install
+
+    - name: Save pinned toolchain (~/.rustup)
+      if: inputs.save == 'true' && steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.rustup/toolchains
+        key: ${{ steps.restore.outputs.cache-primary-key }}

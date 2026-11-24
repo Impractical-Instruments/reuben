@@ -111,9 +111,14 @@ jobs:
       # Single source of truth = rust-toolchain.toml.
       - name: Setup pinned Rust toolchain
         uses: ./.github/actions/setup-rust
+        # A tag's cache is readable only by re-runs on that tag; restoring `dev`'s still works
+        # (Linux, Windows — CI has no macOS job, so that leg always downloads).
+        with:
+          save: 'false'
 
-      - name: Cache cargo registry + build
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # No cargo cache. CI saves none under this job's key, so a tag run could only restore one a
+      # dev dry run or an earlier attempt on the same tag left behind, and a cache restored into a
+      # build that publishes release binaries is a cache-poisoning path. A cold build is the price.
 
       # The tag names the archives; a dry run on a branch has none, and a branch name can hold a
       # `/`, so it is named for the commit instead.
