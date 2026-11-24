@@ -22,6 +22,17 @@ fn route(kind: MidiKind, had: Option<&MidiSource>) -> MidiSource {
     MidiSource { kind, channel, cc }
 }
 
+/// The kinds a rebound row moves to when its own does not fit the new input, in preference
+/// order: a position before a note, and a program number, an identity rather than a position,
+/// only for an input that takes nothing else.
+const REKIND_ORDER: [MidiKind; 5] = [
+    MidiKind::Cc,
+    MidiKind::Bend,
+    MidiKind::Pressure,
+    MidiKind::Note,
+    MidiKind::Program,
+];
+
 /// What checking a control against the instrument's interface inputs found.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Status {
@@ -115,49 +126,28 @@ impl MidiMapModel {
             .collect()
     }
 
-    /// `control`, kept when the engine's check takes it, else routed on the first kind its input
-    /// takes that the check takes too. `Err` is why the check refuses it: as it is, or, for a
-    /// control with no route yet, on the last kind tried.
-    fn fitted(&self, control: SurfaceControl) -> Result<SurfaceControl, String> {
-        let boundary = (self.boundary.as_ref()).ok_or("the instrument's inputs are not known")?;
-        let mut why = match check_midi_control(&control, boundary) {
-            Ok(_) => return Ok(control),
-            Err(why) => why,
-        };
-        let kinds = self.kinds(&control.bind);
-        if kinds.is_empty() && control.midi.is_none() {
-            if let Some(input) = boundary.inputs.iter().find(|i| i.name == control.bind) {
-                why = format!(
-                    "control \"{}\": a {} input takes no MIDI message",
-                    control.bind, input.kind
-                );
-            }
-        }
-        for kind in kinds {
-            let routed = SurfaceControl {
-                midi: Some(route(kind, control.midi.as_ref())),
-                ..control.clone()
-            };
-            match check_midi_control(&routed, boundary) {
-                Ok(_) => return Ok(routed),
-                Err(refused) if control.midi.is_none() => why = refused,
-                Err(_) => {}
-            }
-        }
-        Err(why)
-    }
-
-    /// The control `+ add` appends: the first interface input a route fits, on that route. `Err`
-    /// says why no input takes one, so nothing is asked that the server would refuse.
+    /// The control `+ add` appends: the first interface input a note or CC route on channel 1
+    /// fits, on that route. `Err` says why no input takes one, so nothing is asked that the server
+    /// would refuse.
     pub fn added(&self) -> Result<Action, String> {
+        let boundary = (self.boundary.as_ref()).ok_or("the instrument's inputs are not known")?;
         let mut refused = Vec::new();
-        for bind in &self.inputs {
+        for input in &boundary.inputs {
+            let kinds = [MidiKind::Note, MidiKind::Cc];
+            let Some(kind) = kinds.into_iter().find(|kind| kind.fits(&input.kind)) else {
+                refused.push(format!(
+                    "control \"{}\": a {} input takes neither a note nor a CC",
+                    input.name, input.kind
+                ));
+                continue;
+            };
             let control = SurfaceControl {
-                bind: bind.clone(),
+                bind: input.name.clone(),
+                midi: Some(route(kind, None)),
                 ..SurfaceControl::default()
             };
-            match self.fitted(control) {
-                Ok(control) => {
+            match check_midi_control(&control, boundary) {
+                Ok(_) => {
                     return Ok(Action::Set {
                         index: None,
                         control: Box::new(control),
@@ -175,15 +165,24 @@ impl MidiMapModel {
         })
     }
 
-    /// The edit binding the row at `index` to `bind`. Its route is kept where the new input takes
-    /// it and moved, in the same edit, to a kind the input takes where it does not, keeping its
-    /// channel; a row no route fits is sent as it is, for the server to say why.
+    /// The edit binding the row at `index` to `bind`. The row's route is kept whenever its kind
+    /// fits the input's type, even where the server will refuse it for another reason (a range to
+    /// set), since that refusal says what to fix. Otherwise it moves, in the same edit, to
+    /// [`REKIND_ORDER`]'s first kind the input takes, keeping its channel. A row no kind fits is
+    /// sent as it is, for the server to say why.
     pub fn rebound(&self, index: usize, bind: &str) -> Option<Action> {
-        let control = SurfaceControl {
+        let mut control = SurfaceControl {
             bind: bind.to_string(),
             ..self.control(index)?.clone()
         };
-        let control = self.fitted(control.clone()).unwrap_or(control);
+        let kinds = self.kinds(bind);
+        let kept = (control.midi.as_ref()).is_some_and(|midi| kinds.contains(&midi.kind));
+        if !kept {
+            let fits = REKIND_ORDER.into_iter().find(|kind| kinds.contains(kind));
+            if let Some(kind) = fits {
+                control.midi = Some(route(kind, control.midi.as_ref()));
+            }
+        }
         Some(Action::Set {
             index: Some(index),
             control: Box::new(control),
@@ -478,7 +477,7 @@ mod tests {
         assert!(why.contains("drive") && why.contains("label"), "{why}");
         assert!(why.contains("no range to scale into"), "{why}");
         assert!(
-            why.contains("a string input takes no MIDI message"),
+            why.contains("a string input takes neither a note nor a CC"),
             "{why}"
         );
 
@@ -513,6 +512,94 @@ mod tests {
                 control: routed("level", cc),
             })
         );
+    }
+
+    #[test]
+    fn add_never_proposes_a_program_route() {
+        // An unbounded int takes `program` and passes the check on it, but a CC cannot scale into
+        // it: nothing is proposed, and the refusal says to set a range.
+        let unbounded = inputs(json!([{"name": "count", "kind": "int"}]));
+        let why = MidiMapModel::from_view(missing(), &unbounded)
+            .added()
+            .expect_err("no note or CC fits");
+        assert!(why.contains("no range to scale into"), "{why}");
+
+        let both = inputs(json!([
+            {"name": "count", "kind": "int"},
+            {"name": "steps", "kind": "int", "min": 0.0, "max": 16.0}
+        ]));
+        assert_eq!(
+            MidiMapModel::from_view(missing(), &both).added(),
+            Ok(Action::Set {
+                index: None,
+                control: routed("steps", json!({"kind": "cc", "channel": 1, "cc": 1})),
+            })
+        );
+    }
+
+    /// A model over one row routed on `midi`, bound to `from`, and every input a row is rebound to.
+    fn rebinding(from: &str, midi: serde_json::Value) -> MidiMapModel {
+        MidiMapModel::from_view(
+            view(json!([{"control": {"bind": from, "midi": midi}}])),
+            &inputs(json!([
+                {"name": "notes", "kind": "message"},
+                {"name": "cutoff", "kind": "value", "min": 20.0, "max": 20000.0},
+                {"name": "count", "kind": "int"},
+                {"name": "steps", "kind": "int", "min": 0.0, "max": 16.0},
+                {"name": "mode", "kind": "enum", "variants": ["a", "b"]}
+            ])),
+        )
+    }
+
+    fn rebound_to(model: &MidiMapModel, bind: &str, midi: serde_json::Value) {
+        assert_eq!(
+            model.rebound(0, bind),
+            Some(Action::Set {
+                index: Some(0),
+                control: routed(bind, midi),
+            }),
+            "rebound to {bind}"
+        );
+    }
+
+    #[test]
+    fn rebinding_keeps_a_route_whose_kind_fits_even_where_the_check_refuses_it() {
+        let cc = json!({"kind": "cc", "channel": 3, "cc": 74});
+        let model = rebinding("cutoff", cc.clone());
+        // `count` is unbounded, so the server refuses the CC with "set min and max"; the route is
+        // still kept, not swapped for the program route the check would take.
+        rebound_to(&model, "count", cc.clone());
+        rebound_to(&model, "steps", cc);
+
+        let bend = json!({"kind": "bend", "channel": 2});
+        rebound_to(&rebinding("cutoff", bend.clone()), "count", bend);
+    }
+
+    #[test]
+    fn rebinding_a_route_whose_kind_does_not_fit_moves_it_keeping_its_channel() {
+        let model = rebinding("notes", json!({"kind": "note", "channel": "1-4"}));
+        // A position before a program number, though an int takes both.
+        rebound_to(
+            &model,
+            "steps",
+            json!({"kind": "cc", "channel": "1-4", "cc": 1}),
+        );
+        rebound_to(
+            &model,
+            "count",
+            json!({"kind": "cc", "channel": "1-4", "cc": 1}),
+        );
+        rebound_to(
+            &model,
+            "cutoff",
+            json!({"kind": "cc", "channel": "1-4", "cc": 1}),
+        );
+
+        let model = rebinding("cutoff", json!({"kind": "pressure", "channel": 5}));
+        rebound_to(&model, "notes", json!({"kind": "note", "channel": 5}));
+
+        // No kind fits an enum: sent as it is, for the server to say why.
+        rebound_to(&model, "mode", json!({"kind": "pressure", "channel": 5}));
     }
 
     #[test]

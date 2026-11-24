@@ -1346,3 +1346,47 @@ fn a_midi_map_row_lines_up_under_the_table_header() {
         header.left()
     );
 }
+
+#[test]
+fn only_a_cc_row_has_a_cc_field() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::NodeT;
+    use reuben_api::engine::call_tool;
+
+    let scratch = Scratch::new("ui_midi_map_cc");
+    let config = TempConfig::new();
+    let top = instrument(&scratch);
+    let mut harness = harness(editor(&top, &config));
+
+    harness.get_by_label("MIDI map").click();
+    harness.run_steps(2);
+    harness.get_by_label("+ add").click();
+    harness.run_steps(4);
+    assert_eq!(routes(&harness), ["cc 1 on channel 1"]);
+    let cc = harness.get_by_role_and_label(Role::TextInput, "CC");
+    assert!(
+        !cc.accesskit_node().is_disabled(),
+        "the cc row's CC field takes typing"
+    );
+
+    // The same row on a kind that has no controller, as the Kind picker would write it.
+    let channel = harness.state().engine.channel().expect("the engine runs");
+    let args = json!({
+        "source": top.display().to_string(), "surface": "midi", "index": 0,
+        "control": {"bind": "gain", "midi": {"kind": "pressure", "channel": 1}}
+    });
+    let set = call_tool("set_instrument_surface_control", &args, &channel).expect("the edit ran");
+    assert_eq!(set.output["written"], true, "{}", set.output);
+    step_until(&mut harness, "reload the pressure row", |editor| {
+        let rows = &editor.midi_map.model().rows;
+        rows.len() == 1 && rows[0].midi.as_ref().map(|m| m.cc.is_none()) == Some(true)
+    });
+    harness.run_steps(2);
+    assert!(
+        harness
+            .query_by_role_and_label(Role::TextInput, "CC")
+            .is_none(),
+        "a pressure row has no CC field to type in"
+    );
+    harness.state_mut().engine.shutdown();
+}

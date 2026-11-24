@@ -105,16 +105,21 @@ pub fn table(
         .striped(true)
         .num_columns(9)
         .show(ui, |ui| {
+            let mut cc_header = ui.id();
             for title in [
                 "#", "Input", "Kind", "Channel", "CC", "Min", "Max", "Status", "",
             ] {
-                ui.strong(title);
+                let header = ui.strong(title);
+                if title == "CC" {
+                    cc_header = header.id;
+                }
             }
             ui.end_row();
             for (row, draft) in model.rows.iter().zip(drafts.iter_mut()) {
                 // Not under `push_id`: a Grid counts a child `Ui` as one cell, which would draw the
                 // whole row in the first column.
-                let row_asked = self::row(ui, model, row, draft, refused_on(Some(row.index)));
+                let refused = refused_on(Some(row.index));
+                let row_asked = self::row(ui, model, row, draft, refused, cc_header);
                 asked = asked.take().or(row_asked);
                 ui.end_row();
             }
@@ -145,6 +150,7 @@ fn row(
     row: &Row,
     draft: &mut Draft,
     refused: Option<&str>,
+    cc_header: egui::Id,
 ) -> Option<Asked> {
     let at = row.index;
     let mut asked = None;
@@ -192,11 +198,13 @@ fn row(
     }
 
     if kind == Some(MidiKind::Cc) {
-        let cc = ui.add(
-            egui::TextEdit::singleline(&mut draft.cc)
-                .id_salt(("cc", at))
-                .min_size(egui::vec2(NUMBERS_WIDTH, 0.0)),
-        );
+        let cc = ui
+            .add(
+                egui::TextEdit::singleline(&mut draft.cc)
+                    .id_salt(("cc", at))
+                    .min_size(egui::vec2(NUMBERS_WIDTH, 0.0)),
+            )
+            .labelled_by(cc_header);
         if committed(ui, &cc, &mut draft.cc, &shown.cc) && draft.cc != shown.cc {
             let typed = NumberPattern::from_text(&draft.cc);
             asked = asked
