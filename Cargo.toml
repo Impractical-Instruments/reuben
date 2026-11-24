@@ -101,6 +101,9 @@ eframe = { version = "0.36", default-features = false, features = ["accesskit", 
 # The editor's UI tests: they run the editor's frames headless and find widgets by their AccessKit
 # labels. Tracks `eframe`'s version. No `snapshot`/`wgpu` features: nothing renders to pixels.
 egui_kittest = { version = "0.36", default-features = false, features = ["eframe"] }
+# The editor's font test reads each bundled face's charmap. Tracks the version `eframe`'s epaint
+# already builds, so it adds nothing to the tree.
+skrifa = { version = "0.44", default-features = false, features = ["std"] }
 # The editor's watch over the open instrument's files, so a write by anything — the editor itself,
 # `reuben-mcp`, a text editor — is seen without polling. A filesystem-event thread, not an async
 # runtime: the tokio fence is untouched.

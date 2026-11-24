@@ -1305,3 +1305,32 @@ fn escape_in_a_pattern_field_puts_the_map_back_and_writes_nothing() {
     assert_eq!(patterns(&harness), ["/midi/1/cc/1"]);
     assert_eq!(harness.state().midi_map.drafted(0), Some("/midi/1/cc/1"));
 }
+
+#[test]
+fn a_midi_map_row_lines_up_under_the_table_header() {
+    use egui::accesskit::Role;
+
+    let scratch = Scratch::new("ui_midi_map_columns");
+    let config = TempConfig::new();
+    let top = instrument(&scratch);
+    let mut harness = harness(editor(&top, &config));
+
+    harness.get_by_label("MIDI map").click();
+    harness.run_steps(2);
+    harness.get_by_label("+ add").click();
+    harness.run_steps(4);
+
+    let header = harness.get_by_label("Pattern").rect();
+    let field = harness.get_by_role_and_label(Role::TextInput, "1").rect();
+    assert!(
+        (header.left() - field.left()).abs() < 1.0,
+        "the pattern field starts at x {} but its header at x {}",
+        field.left(),
+        header.left()
+    );
+    assert!(
+        field.width() >= 160.0,
+        "the pattern field is {} wide, too narrow for a whole address",
+        field.width()
+    );
+}

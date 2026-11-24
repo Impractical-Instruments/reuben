@@ -3506,6 +3506,7 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "skrifa",
 ]
 
 [[package]]

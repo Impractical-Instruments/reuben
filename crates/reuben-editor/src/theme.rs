@@ -250,6 +250,23 @@ pub fn choice(ui: &mut egui::Ui, enabled: bool, label: &str) -> egui::Response {
     ui.add_enabled(enabled, button)
 }
 
+/// Whether a face of the family `text_style` resolves to has a glyph for every char of `text`. Not
+/// egui's `has_glyphs`, which calls a char missing when the face holding its replacement glyph
+/// (NotoEmoji) is the one that draws it.
+#[cfg(test)]
+pub fn draws(text_style: &egui::TextStyle, text: &str) -> bool {
+    use skrifa::{FontRef, MetadataProvider};
+
+    let fonts = fonts();
+    let family = &style().text_styles[text_style].family;
+    let faces: Vec<_> = (fonts.families[family].iter())
+        .map(|name| &fonts.font_data[name])
+        .filter_map(|data| FontRef::from_index(&data.font, data.index).ok())
+        .collect();
+    text.chars()
+        .all(|c| faces.iter().any(|face| face.charmap().map(c).is_some()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
