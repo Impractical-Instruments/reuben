@@ -299,7 +299,7 @@ mod tests {
         RemoveInstrumentInterfacePipe, SetInstrumentDescription, SetInstrumentInput,
         SetInstrumentName, SetInstrumentSurfaceControl, SurfaceView, WireInstrumentInput,
     };
-    use reuben_api::surface::{SurfaceControl, SurfaceKind};
+    use reuben_api::surface::{MidiKind, MidiSource, NumberPattern, SurfaceControl, SurfaceKind};
     use reuben_api::FsResolver;
     use reuben_native::test_support::within;
     use serde_json::json;
@@ -1166,9 +1166,9 @@ mod tests {
         serde_json::from_value(read).expect("a surface view")
     }
 
-    /// Map `level` to `pattern` at `index` of the MIDI map, guarded by the hash the map reads
+    /// Map `level` to controller `cc` on channel 1 at `index` of the MIDI map, guarded by the hash the map reads
     /// with now, as the editor's table writes it.
-    fn map_level(rig: &mut Rig, index: Option<usize>, pattern: &str) -> EditResult {
+    fn map_level(rig: &mut Rig, index: Option<usize>, cc: i64) -> EditResult {
         let view = midi_map(rig);
         let top = rig.top_source();
         let channel = rig.channel_source();
@@ -1186,7 +1186,11 @@ mod tests {
                         index,
                         control: SurfaceControl {
                             bind: "level".to_string(),
-                            midi: Some(pattern.to_string()),
+                            midi: Some(MidiSource {
+                                kind: MidiKind::Cc,
+                                channel: NumberPattern::Number(1),
+                                cc: Some(NumberPattern::Number(cc)),
+                            }),
                             ..Default::default()
                         },
                         expect,
@@ -1204,7 +1208,7 @@ mod tests {
         within(HANG_SECS, || {
             let mut rig = mapped("map_create_no_step");
             assert!(!midi_map(&rig).exists);
-            map_level(&mut rig, None, "/midi/1/cc/1");
+            map_level(&mut rig, None, 1);
             assert!(midi_map(&rig).exists);
             assert_eq!(rig.session.undo().next(Direction::Undo), None);
             assert!(matches!(undo(&mut rig), Restored::Nothing));
@@ -1215,7 +1219,7 @@ mod tests {
     fn write_to_records_an_undo_step_for_a_file_outside_the_tree() {
         within(HANG_SECS, || {
             let mut rig = mapped("map_undo");
-            let created = map_level(&mut rig, None, "/midi/1/cc/1");
+            let created = map_level(&mut rig, None, 1);
             let map = midi_map(&rig);
             let path = PathBuf::from(&map.source);
             assert!(
@@ -1231,7 +1235,7 @@ mod tests {
             assert_eq!(map.hash.as_deref(), Some(created.hash.as_str()));
             let first = std::fs::read_to_string(&path).expect("read the map");
 
-            let edited = map_level(&mut rig, Some(0), "/midi/1/cc/74");
+            let edited = map_level(&mut rig, Some(0), 74);
             assert_eq!(
                 rig.session.undo().next(Direction::Undo),
                 Some(&Step {

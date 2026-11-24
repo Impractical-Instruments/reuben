@@ -4,14 +4,15 @@
 use std::path::Path;
 
 use eframe::egui;
-use reuben_api::surface::SurfaceControl;
+use reuben_api::surface::{MidiKind, MidiSource, NumberPattern, SurfaceControl};
 
 use super::model::{self, Action, MidiMapModel, Row, Status};
 use crate::theme;
 
 // Minimum widths, not desired ones: a Grid cell is only as wide as its column was last frame,
 // which starts at the header's width, and a TextEdit or a wrapped label never grows past it.
-const PATTERN_WIDTH: f32 = 160.0;
+// Wide enough for a channel or controller pattern such as `1-4,10`.
+const NUMBERS_WIDTH: f32 = 72.0;
 const BOUND_WIDTH: f32 = 56.0;
 const STATUS_WIDTH: f32 = 240.0;
 
@@ -24,7 +25,8 @@ const REMOVE: &str = "×";
 /// What a row's fields hold while they are typed in.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Draft {
-    pub pattern: String,
+    pub channel: String,
+    pub cc: String,
     pub min: String,
     pub max: String,
 }
@@ -32,8 +34,12 @@ pub struct Draft {
 impl Draft {
     pub fn of(row: &Row) -> Self {
         let bound = |b: Option<f64>| b.map(|b| b.to_string()).unwrap_or_default();
+        let midi = row.midi.as_ref();
         Self {
-            pattern: row.pattern.clone(),
+            channel: midi.map(|m| m.channel.to_string()).unwrap_or_default(),
+            cc: (midi.and_then(|m| m.cc.as_ref()))
+                .map(ToString::to_string)
+                .unwrap_or_default(),
             min: bound(row.min),
             max: bound(row.max),
         }
@@ -97,9 +103,11 @@ pub fn table(
     let mut asked = None;
     egui::Grid::new("midi_map")
         .striped(true)
-        .num_columns(7)
+        .num_columns(9)
         .show(ui, |ui| {
-            for title in ["#", "Input", "Pattern", "Min", "Max", "Status", ""] {
+            for title in [
+                "#", "Input", "Kind", "Channel", "CC", "Min", "Max", "Status", "",
+            ] {
                 ui.strong(title);
             }
             ui.end_row();
@@ -154,21 +162,57 @@ fn row(
         asked = model.rebound(at, &bind).map(Asked::Edit);
     }
 
-    let pattern = ui
-        .add(
-            egui::TextEdit::singleline(&mut draft.pattern)
-                .id_salt(("pattern", at))
-                .min_size(egui::vec2(PATTERN_WIDTH, 0.0)),
-        )
-        .labelled_by(number.id);
-    if committed(ui, &pattern, &mut draft.pattern, &row.pattern) && draft.pattern != row.pattern {
-        let midi = draft.pattern.clone();
-        asked = asked
-            .take()
-            .or(set(model, at, |control| control.midi = Some(midi)));
+    let kind = row.midi.as_ref().map(|midi| midi.kind);
+    let mut picked = kind;
+    egui::ComboBox::from_id_salt(("kind", at))
+        .selected_text(kind.map_or("?", MidiKind::name))
+        .show_ui(ui, |ui| {
+            for offered in model.kinds(&row.bind) {
+                ui.selectable_value(&mut picked, Some(offered), offered.name());
+            }
+        });
+    if let Some(picked) = picked.filter(|picked| Some(*picked) != kind) {
+        asked = asked.take().or(model.rekinded(at, picked).map(Asked::Edit));
     }
 
     let shown = Draft::of(row);
+    let channel = ui
+        .add(
+            egui::TextEdit::singleline(&mut draft.channel)
+                .id_salt(("channel", at))
+                .min_size(egui::vec2(NUMBERS_WIDTH, 0.0)),
+        )
+        .labelled_by(number.id);
+    if committed(ui, &channel, &mut draft.channel, &shown.channel) && draft.channel != shown.channel
+    {
+        let typed = NumberPattern::from_text(&draft.channel);
+        asked = asked
+            .take()
+            .or(set_route(model, at, |midi| midi.channel = typed));
+    }
+
+    if kind == Some(MidiKind::Cc) {
+        let cc = ui.add(
+            egui::TextEdit::singleline(&mut draft.cc)
+                .id_salt(("cc", at))
+                .min_size(egui::vec2(NUMBERS_WIDTH, 0.0)),
+        );
+        if committed(ui, &cc, &mut draft.cc, &shown.cc) && draft.cc != shown.cc {
+            let typed = NumberPattern::from_text(&draft.cc);
+            asked = asked
+                .take()
+                .or(set_route(model, at, |midi| midi.cc = Some(typed)));
+        }
+    } else {
+        // Only a `cc` route has a controller; the empty cell keeps the column's width.
+        ui.add_enabled(
+            false,
+            egui::TextEdit::singleline(&mut String::new())
+                .id_salt(("cc", at))
+                .min_size(egui::vec2(NUMBERS_WIDTH, 0.0)),
+        );
+    }
+
     for (text, current, was, is_min) in [
         (&mut draft.min, row.min, &shown.min, true),
         (&mut draft.max, row.max, &shown.max, false),
@@ -246,13 +290,30 @@ fn committed(ui: &egui::Ui, field: &egui::Response, draft: &mut String, shown: &
     true
 }
 
+/// The edit writing the control at `at` with its route changed by `change`; a refusal for a row
+/// that has no route yet, whose kind is to be picked first.
+fn set_route(
+    model: &MidiMapModel,
+    at: usize,
+    change: impl FnOnce(&mut MidiSource),
+) -> Option<Asked> {
+    let Some(midi) = model.control(at)?.midi.clone() else {
+        return Some(Asked::Refuse(at, "pick a Kind first".to_string()));
+    };
+    set(model, at, |control| {
+        let mut midi = midi;
+        change(&mut midi);
+        control.midi = Some(midi);
+    })
+}
+
 /// The edit writing the control at `at` as the map holds it, changed by `change`.
 fn set(model: &MidiMapModel, at: usize, change: impl FnOnce(&mut SurfaceControl)) -> Option<Asked> {
     let mut control = model.control(at)?.clone();
     change(&mut control);
     Some(Asked::Edit(Action::Set {
         index: Some(at),
-        control,
+        control: Box::new(control),
     }))
 }
 

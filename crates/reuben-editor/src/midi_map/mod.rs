@@ -110,7 +110,7 @@ impl MidiMap {
         let unchanged = |new: &Row| {
             let old = self.model.rows.get(new.index)?;
             let same = (old.bind == new.bind)
-                && (old.pattern == new.pattern)
+                && (old.midi == new.midi)
                 && (old.min == new.min)
                 && (old.max == new.max);
             same.then(|| self.drafts.get(new.index).cloned()).flatten()
@@ -151,10 +151,10 @@ impl MidiMap {
         &self.model
     }
 
-    /// What the pattern field of the row at `index` holds.
+    /// What the channel field of the row at `index` holds.
     #[cfg(test)]
     pub(crate) fn drafted(&self, index: usize) -> Option<&str> {
-        self.drafts.get(index).map(|draft| draft.pattern.as_str())
+        self.drafts.get(index).map(|draft| draft.channel.as_str())
     }
 
     /// Take in what the server answered `action`.
@@ -249,8 +249,8 @@ mod tests {
             "hash": "h",
             "instrument": "synth",
             "controls": [
-                {"control": {"bind": "cutoff", "midi": "/midi/1/cc/1"}},
-                {"control": {"bind": "cutoff", "midi": "/midi/1/cc/2"}}
+                {"control": {"bind": "cutoff", "midi": {"kind": "cc", "channel": 1, "cc": 1}}},
+                {"control": {"bind": "cutoff", "midi": {"kind": "cc", "channel": 1, "cc": 2}}}
             ]
         }))
         .expect("a surface view");
@@ -266,23 +266,23 @@ mod tests {
             model,
             ..MidiMap::default()
         };
-        let typed = |map: &MidiMap| map.drafts[0].pattern.clone();
+        let typed = |map: &MidiMap| map.drafts[0].channel.clone();
         let edit = |index| Action::Set {
             index: Some(index),
             control: Default::default(),
         };
 
-        map.drafts[0].pattern = "/midi/1/cc/bogus".to_string();
+        map.drafts[0].channel = "bogus".to_string();
         let refusal = Err(Refusal {
             message: "a bad pattern".to_string(),
         });
         map.answered(&edit(0), &refusal);
-        assert_eq!(typed(&map), "/midi/1/cc/bogus", "kept while it is refused");
+        assert_eq!(typed(&map), "bogus", "kept while it is refused");
         map.answered(&edit(0), &refusal);
-        assert_eq!(typed(&map), "/midi/1/cc/bogus", "refused again, still kept");
+        assert_eq!(typed(&map), "bogus", "refused again, still kept");
 
         map.answered(&edit(1), &Ok(written(true)));
         assert_eq!(map.refused, None);
-        assert_eq!(typed(&map), "/midi/1/cc/1", "the row shows the map again");
+        assert_eq!(typed(&map), "1", "the row shows the map again");
     }
 }

@@ -1227,18 +1227,23 @@ fn a_control_follows_the_engine_through_a_range_edit_and_a_failed_open() {
     });
 }
 
-/// The patterns of the MIDI map's rows, as the table last read them.
-fn patterns(harness: &Harness<'_, Editor>) -> Vec<String> {
+/// The routes of the MIDI map's rows, as the table last read them.
+fn routes(harness: &Harness<'_, Editor>) -> Vec<String> {
     (harness.state().midi_map.model().rows.iter())
-        .map(|row| row.pattern.clone())
+        .map(|row| {
+            row.midi
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_default()
+        })
         .collect()
 }
 
 #[test]
-fn editing_a_pattern_and_pressing_enter_emits_one_set() {
+fn editing_a_channel_and_pressing_enter_emits_one_set() {
     use egui::accesskit::Role;
 
-    let scratch = Scratch::new("ui_midi_map_pattern");
+    let scratch = Scratch::new("ui_midi_map_channel");
     let config = TempConfig::new();
     let top = instrument(&scratch);
     let mut harness = harness(editor(&top, &config));
@@ -1247,7 +1252,7 @@ fn editing_a_pattern_and_pressing_enter_emits_one_set() {
     harness.run_steps(2);
     harness.get_by_label("+ add").click();
     harness.run_steps(4);
-    assert_eq!(patterns(&harness), ["/midi/1/cc/1"]);
+    assert_eq!(routes(&harness), ["cc 1 on channel 1"]);
     assert!(
         scratch.path("lib/surfaces/ui.midi.json").is_file(),
         "the map is created beside the instrument"
@@ -1258,7 +1263,7 @@ fn editing_a_pattern_and_pressing_enter_emits_one_set() {
     harness.run_steps(2);
     harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
     harness.run_steps(1);
-    (harness.get_by_role_and_label(Role::TextInput, "1")).type_text("/midi/1/cc/74");
+    (harness.get_by_role_and_label(Role::TextInput, "1")).type_text("1-4,10");
     harness.run_steps(2);
     assert_eq!(
         crate::edit::test_support::writes(),
@@ -1269,13 +1274,13 @@ fn editing_a_pattern_and_pressing_enter_emits_one_set() {
     harness.run_steps(4);
 
     assert_eq!(crate::edit::test_support::writes(), written + 1);
-    assert_eq!(patterns(&harness), ["/midi/1/cc/74"]);
+    assert_eq!(routes(&harness), ["cc 1 on channel 1-4,10"]);
     let session = harness.state().session.as_ref().expect("a session");
     assert_eq!(session.feedback(), None);
 }
 
 #[test]
-fn escape_in_a_pattern_field_puts_the_map_back_and_writes_nothing() {
+fn escape_in_a_channel_field_puts_the_map_back_and_writes_nothing() {
     use egui::accesskit::Role;
 
     let scratch = Scratch::new("ui_midi_map_escape");
@@ -1287,23 +1292,20 @@ fn escape_in_a_pattern_field_puts_the_map_back_and_writes_nothing() {
     harness.run_steps(2);
     harness.get_by_label("+ add").click();
     harness.run_steps(4);
-    assert_eq!(patterns(&harness), ["/midi/1/cc/1"]);
+    assert_eq!(routes(&harness), ["cc 1 on channel 1"]);
 
     let written = crate::edit::test_support::writes();
     harness.get_by_role_and_label(Role::TextInput, "1").focus();
     harness.run_steps(2);
-    (harness.get_by_role_and_label(Role::TextInput, "1")).type_text("/bogus");
+    (harness.get_by_role_and_label(Role::TextInput, "1")).type_text("-4");
     harness.run_steps(2);
-    assert_eq!(
-        harness.state().midi_map.drafted(0),
-        Some("/midi/1/cc/1/bogus")
-    );
+    assert_eq!(harness.state().midi_map.drafted(0), Some("1-4"));
     harness.key_press(egui::Key::Escape);
     harness.run_steps(4);
 
     assert_eq!(crate::edit::test_support::writes(), written);
-    assert_eq!(patterns(&harness), ["/midi/1/cc/1"]);
-    assert_eq!(harness.state().midi_map.drafted(0), Some("/midi/1/cc/1"));
+    assert_eq!(routes(&harness), ["cc 1 on channel 1"]);
+    assert_eq!(harness.state().midi_map.drafted(0), Some("1"));
 }
 
 #[test]
@@ -1320,17 +1322,27 @@ fn a_midi_map_row_lines_up_under_the_table_header() {
     harness.get_by_label("+ add").click();
     harness.run_steps(4);
 
-    let header = harness.get_by_label("Pattern").rect();
+    let header = harness.get_by_label("Channel").rect();
     let field = harness.get_by_role_and_label(Role::TextInput, "1").rect();
     assert!(
         (header.left() - field.left()).abs() < 1.0,
-        "the pattern field starts at x {} but its header at x {}",
+        "the channel field starts at x {} but its header at x {}",
         field.left(),
         header.left()
     );
     assert!(
-        field.width() >= 160.0,
-        "the pattern field is {} wide, too narrow for a whole address",
+        field.width() >= 72.0,
+        "the channel field is {} wide, too narrow for a pattern such as 1-4,10",
         field.width()
+    );
+    let header = harness.get_by_label("Kind").rect();
+    let kind = harness
+        .get_by(|node| node.role() == Role::ComboBox && node.value().as_deref() == Some("cc"))
+        .rect();
+    assert!(
+        (header.left() - kind.left()).abs() < 1.0,
+        "the kind picker starts at x {} but its header at x {}",
+        kind.left(),
+        header.left()
     );
 }

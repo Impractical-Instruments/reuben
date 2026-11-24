@@ -5,17 +5,22 @@ use reuben_api::authoring::{
     Boundary, MoveInstrumentSurfaceControl, RemoveInstrumentSurfaceControl,
     SetInstrumentSurfaceControl, SurfaceView,
 };
-use reuben_api::surface::{check_midi_control, SurfaceControl, SurfaceKind};
+use reuben_api::surface::{
+    check_midi_control, MidiKind, MidiSource, NumberPattern, SurfaceControl, SurfaceKind,
+};
 use reuben_api::tools::names;
 
 use crate::edit::Verb;
 
-/// The CC route a numeric input is given when its row is added, or rebound to it.
-pub const NEW_PATTERN: &str = "/midi/1/cc/1";
-
-/// The routes a control is given when its own pattern does not fit its input, tried in order
-/// against the engine's check: notes for a message input, then a CC for a bounded numeric one.
-const ROUTES: [&str; 2] = ["/midi/1/note", NEW_PATTERN];
+/// The route a control is given on `kind`: on the channel and controller of the route it had,
+/// else channel 1 and, for `cc`, controller 1.
+fn route(kind: MidiKind, had: Option<&MidiSource>) -> MidiSource {
+    let channel = had.map_or(NumberPattern::Number(1), |had| had.channel.clone());
+    let cc = (kind == MidiKind::Cc)
+        .then(|| had.and_then(|had| had.cc.clone()))
+        .map(|cc| cc.unwrap_or(NumberPattern::Number(1)));
+    MidiSource { kind, channel, cc }
+}
 
 /// What checking a control against the instrument's interface inputs found.
 #[derive(Debug, Clone, PartialEq)]
@@ -33,7 +38,7 @@ pub struct Row {
     /// Its position in the map's `controls`: what an edit's `index` names.
     pub index: usize,
     pub bind: String,
-    pub pattern: String,
+    pub midi: Option<MidiSource>,
     pub min: Option<f64>,
     pub max: Option<f64>,
     pub status: Status,
@@ -62,7 +67,7 @@ impl MidiMapModel {
                 .map(|(index, checked)| Row {
                     index,
                     bind: checked.control.bind.clone(),
-                    pattern: checked.control.midi.clone().unwrap_or_default(),
+                    midi: checked.control.midi.clone(),
                     min: checked.control.min,
                     max: checked.control.max,
                     status: match (&checked.skipped, checked.warnings.is_empty()) {
@@ -96,18 +101,41 @@ impl MidiMapModel {
         view.controls.get(index).map(|checked| &checked.control)
     }
 
-    /// `control`, kept when the engine's check takes it, else given the first of [`ROUTES`] the
-    /// check takes for its input. `Err` is why the check refuses it: as it is, or, for a control
-    /// with no pattern yet, on the last route tried.
+    /// The kinds the interface input `bind` can take, in [`MidiKind::ALL`] order; none for a
+    /// name that is no input.
+    pub fn kinds(&self, bind: &str) -> Vec<MidiKind> {
+        let input = (self.boundary.iter())
+            .flat_map(|boundary| &boundary.inputs)
+            .find(|input| input.name == bind);
+        let Some(input) = input else {
+            return Vec::new();
+        };
+        (MidiKind::ALL.into_iter())
+            .filter(|kind| kind.fits(&input.kind))
+            .collect()
+    }
+
+    /// `control`, kept when the engine's check takes it, else routed on the first kind its input
+    /// takes that the check takes too. `Err` is why the check refuses it: as it is, or, for a
+    /// control with no route yet, on the last kind tried.
     fn fitted(&self, control: SurfaceControl) -> Result<SurfaceControl, String> {
         let boundary = (self.boundary.as_ref()).ok_or("the instrument's inputs are not known")?;
         let mut why = match check_midi_control(&control, boundary) {
             Ok(_) => return Ok(control),
             Err(why) => why,
         };
-        for route in ROUTES {
+        let kinds = self.kinds(&control.bind);
+        if kinds.is_empty() && control.midi.is_none() {
+            if let Some(input) = boundary.inputs.iter().find(|i| i.name == control.bind) {
+                why = format!(
+                    "control \"{}\": a {} input takes no MIDI message",
+                    control.bind, input.kind
+                );
+            }
+        }
+        for kind in kinds {
             let routed = SurfaceControl {
-                midi: Some(route.to_string()),
+                midi: Some(route(kind, control.midi.as_ref())),
                 ..control.clone()
             };
             match check_midi_control(&routed, boundary) {
@@ -132,7 +160,7 @@ impl MidiMapModel {
                 Ok(control) => {
                     return Ok(Action::Set {
                         index: None,
-                        control,
+                        control: Box::new(control),
                     })
                 }
                 Err(why) => refused.push(why),
@@ -147,9 +175,9 @@ impl MidiMapModel {
         })
     }
 
-    /// The edit binding the row at `index` to `bind`. Its pattern is kept where the new input takes
-    /// it and replaced, in the same edit, with a route that fits where it does not; a row no route
-    /// fits is sent as it is, for the server to say why.
+    /// The edit binding the row at `index` to `bind`. Its route is kept where the new input takes
+    /// it and moved, in the same edit, to a kind the input takes where it does not, keeping its
+    /// channel; a row no route fits is sent as it is, for the server to say why.
     pub fn rebound(&self, index: usize, bind: &str) -> Option<Action> {
         let control = SurfaceControl {
             bind: bind.to_string(),
@@ -158,7 +186,18 @@ impl MidiMapModel {
         let control = self.fitted(control.clone()).unwrap_or(control);
         Some(Action::Set {
             index: Some(index),
-            control,
+            control: Box::new(control),
+        })
+    }
+
+    /// The edit routing the row at `index` on `kind`, keeping its channel, and its controller
+    /// while the kind stays `cc`.
+    pub fn rekinded(&self, index: usize, kind: MidiKind) -> Option<Action> {
+        let mut control = self.control(index)?.clone();
+        control.midi = Some(route(kind, control.midi.as_ref()));
+        Some(Action::Set {
+            index: Some(index),
+            control: Box::new(control),
         })
     }
 }
@@ -169,7 +208,8 @@ pub enum Action {
     /// Write `control` at `index`, or append it.
     Set {
         index: Option<usize>,
-        control: SurfaceControl,
+        // Boxed: a control is many times the size of the other variants.
+        control: Box<SurfaceControl>,
     },
     Remove(usize),
     Move {
@@ -212,7 +252,7 @@ pub fn verb(top: &str, action: &Action) -> impl FnOnce(Option<String>) -> Verb {
                 source,
                 surface: SurfaceKind::Midi,
                 index,
-                control,
+                control: *control,
                 expect,
             },
         ),
@@ -268,15 +308,19 @@ mod tests {
         .expect("a surface view")
     }
 
+    fn source(midi: serde_json::Value) -> MidiSource {
+        serde_json::from_value(midi).expect("a midi route")
+    }
+
     #[test]
     fn rows_carry_each_controls_status() {
         let model = MidiMapModel::from_view(
             view(json!([
-                {"control": {"bind": "notes", "midi": "/midi/1/note"}},
-                {"control": {"bind": "cutoff", "midi": "/midi/{1,2}/cc/74", "min": 10.0,
-                             "max": 8000.0},
+                {"control": {"bind": "notes", "midi": {"kind": "note", "channel": 1}}},
+                {"control": {"bind": "cutoff", "midi": {"kind": "cc", "channel": "1,2", "cc": 74},
+                             "min": 10.0, "max": 8000.0},
                  "warnings": ["min 10 is clamped into cutoff's range"]},
-                {"control": {"bind": "drive", "midi": "/midi/1/cc/1"},
+                {"control": {"bind": "drive", "midi": {"kind": "cc", "channel": 1, "cc": 1}},
                  "skipped": "no range to scale into"}
             ])),
             &boundary(),
@@ -289,7 +333,7 @@ mod tests {
                 Row {
                     index: 0,
                     bind: "notes".to_string(),
-                    pattern: "/midi/1/note".to_string(),
+                    midi: Some(source(json!({"kind": "note", "channel": 1}))),
                     min: None,
                     max: None,
                     status: Status::Ok,
@@ -297,7 +341,7 @@ mod tests {
                 Row {
                     index: 1,
                     bind: "cutoff".to_string(),
-                    pattern: "/midi/{1,2}/cc/74".to_string(),
+                    midi: Some(source(json!({"kind": "cc", "channel": "1,2", "cc": 74}))),
                     min: Some(10.0),
                     max: Some(8000.0),
                     status: Status::Warned(vec![
@@ -307,7 +351,7 @@ mod tests {
                 Row {
                     index: 2,
                     bind: "drive".to_string(),
-                    pattern: "/midi/1/cc/1".to_string(),
+                    midi: Some(source(json!({"kind": "cc", "channel": 1, "cc": 1}))),
                     min: None,
                     max: None,
                     status: Status::Skipped("no range to scale into".to_string()),
@@ -336,12 +380,12 @@ mod tests {
     fn verb_for_set_names_the_tool_and_passes_expect() {
         let control = SurfaceControl {
             bind: "cutoff".to_string(),
-            midi: Some("/midi/1/cc/74".to_string()),
+            midi: Some(source(json!({"kind": "cc", "channel": 1, "cc": 74}))),
             ..Default::default()
         };
         let action = Action::Set {
             index: Some(1),
-            control,
+            control: Box::new(control),
         };
         let set = verb("/lib/synth.json", &action)(Some("h1".to_string()));
         assert_eq!(set.tool, names::SET_INSTRUMENT_SURFACE_CONTROL);
@@ -351,7 +395,7 @@ mod tests {
                 "source": "/lib/synth.json",
                 "surface": "midi",
                 "index": 1,
-                "control": {"bind": "cutoff", "midi": "/midi/1/cc/74"},
+                "control": {"bind": "cutoff", "midi": {"kind": "cc", "channel": 1, "cc": 74}},
                 "expect": "h1"
             })
         );
@@ -375,12 +419,12 @@ mod tests {
         }
     }
 
-    fn route(bind: &str, pattern: &str) -> SurfaceControl {
-        SurfaceControl {
+    fn routed(bind: &str, midi: serde_json::Value) -> Box<SurfaceControl> {
+        Box::new(SurfaceControl {
             bind: bind.to_string(),
-            midi: Some(pattern.to_string()),
+            midi: Some(source(midi)),
             ..Default::default()
-        }
+        })
     }
 
     #[test]
@@ -391,7 +435,7 @@ mod tests {
             model.added(),
             Ok(Action::Set {
                 index: None,
-                control: route("notes", "/midi/1/note"),
+                control: routed("notes", json!({"kind": "note", "channel": 1})),
             })
         );
     }
@@ -403,7 +447,10 @@ mod tests {
         let Ok(Action::Set { control, .. }) = model.added() else {
             panic!("{:?}", model.added());
         };
-        assert_eq!(control, route("notes", "/midi/1/note"));
+        assert_eq!(
+            control,
+            routed("notes", json!({"kind": "note", "channel": 1}))
+        );
 
         let numeric = inputs(json!([
             {"name": "drive", "kind": "value"},
@@ -414,7 +461,7 @@ mod tests {
             model.added(),
             Ok(Action::Set {
                 index: None,
-                control: route("cutoff", NEW_PATTERN),
+                control: routed("cutoff", json!({"kind": "cc", "channel": 1, "cc": 1})),
             })
         );
     }
@@ -430,37 +477,97 @@ mod tests {
             .expect_err("nothing to add");
         assert!(why.contains("drive") && why.contains("label"), "{why}");
         assert!(why.contains("no range to scale into"), "{why}");
+        assert!(
+            why.contains("a string input takes no MIDI message"),
+            "{why}"
+        );
 
         let none = inputs(json!([]));
         assert!(MidiMapModel::from_view(missing(), &none).added().is_err());
     }
 
     #[test]
-    fn rebinding_a_cc_row_to_a_message_input_is_one_set_with_a_note_pattern() {
+    fn rebinding_a_cc_row_to_a_message_input_is_one_set_on_a_note_route() {
         let both = inputs(json!([
             {"name": "notes", "kind": "message"},
             {"name": "cutoff", "kind": "value", "min": 20.0, "max": 20000.0},
             {"name": "level", "kind": "value", "min": 0.0, "max": 1.0}
         ]));
+        let cc = json!({"kind": "cc", "channel": "1,2", "cc": 74});
         let model = MidiMapModel::from_view(
-            view(json!([{"control": {"bind": "cutoff", "midi": "/midi/{1,2}/cc/74"}}])),
+            view(json!([{"control": {"bind": "cutoff", "midi": cc}}])),
             &both,
         );
         assert_eq!(
             model.rebound(0, "notes"),
             Some(Action::Set {
                 index: Some(0),
-                control: route("notes", "/midi/1/note"),
+                control: routed("notes", json!({"kind": "note", "channel": "1,2"})),
             })
         );
-        // A pattern the new input takes is kept.
+        // A route the new input takes is kept.
         assert_eq!(
             model.rebound(0, "level"),
             Some(Action::Set {
                 index: Some(0),
-                control: route("level", "/midi/{1,2}/cc/74"),
+                control: routed("level", cc),
             })
         );
+    }
+
+    #[test]
+    fn the_kinds_offered_are_those_the_rows_input_takes() {
+        let model = MidiMapModel::from_view(
+            missing(),
+            &inputs(json!([
+                {"name": "notes", "kind": "message"},
+                {"name": "steps", "kind": "int", "min": 0.0, "max": 16.0},
+                {"name": "cutoff", "kind": "value", "min": 20.0, "max": 20000.0},
+                {"name": "mode", "kind": "enum", "variants": ["a", "b"]}
+            ])),
+        );
+        assert_eq!(model.kinds("notes"), [MidiKind::Note]);
+        assert_eq!(
+            model.kinds("steps"),
+            [
+                MidiKind::Cc,
+                MidiKind::Bend,
+                MidiKind::Pressure,
+                MidiKind::Program
+            ]
+        );
+        assert_eq!(
+            model.kinds("cutoff"),
+            [MidiKind::Cc, MidiKind::Bend, MidiKind::Pressure]
+        );
+        assert_eq!(model.kinds("mode"), []);
+        assert_eq!(model.kinds("gone"), []);
+    }
+
+    #[test]
+    fn a_new_kind_keeps_the_channel_and_takes_or_drops_the_controller() {
+        let model = MidiMapModel::from_view(
+            view(json!([
+                {"control": {"bind": "cutoff", "midi": {"kind": "cc", "channel": "3-4", "cc": 74}}},
+                {"control": {"bind": "cutoff", "midi": {"kind": "bend", "channel": 2}}}
+            ])),
+            &boundary(),
+        );
+        let set = |index, midi| {
+            Some(Action::Set {
+                index: Some(index),
+                control: routed("cutoff", midi),
+            })
+        };
+        assert_eq!(
+            model.rekinded(0, MidiKind::Pressure),
+            set(0, json!({"kind": "pressure", "channel": "3-4"}))
+        );
+        assert_eq!(
+            model.rekinded(1, MidiKind::Cc),
+            set(1, json!({"kind": "cc", "channel": 2, "cc": 1}))
+        );
+        assert_eq!(model.rekinded(2, MidiKind::Cc), None);
     }
 
     #[test]
