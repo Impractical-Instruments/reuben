@@ -1275,18 +1275,11 @@ mod tests {
         assert!(!line.contains("->"), "no arrow on a sink: {line}");
     }
 
-    // IGNORED for its absolute 6,000-char arm, which is a flat ~122-chars-per-operator tax that
-    // fails after roughly five more operators regardless of what they carry.
-    //
-    // While this is ignored, NOTHING watches the size of the compact listing.
     #[test]
-    #[ignore = "issue #563: flat per-operator budget blocks library growth; needs a scaling guard"]
-    fn compact_full_registry_fits_the_grounding_budget() {
-        // Full-registry describe measured ~9.9k tokens at ≈ chars/2.0–2.2, so ≤6,000 chars keeps
-        // the compact listing ≤ ~3k tok at the conservative end of a 2–3k token target
-        // (5,399 chars ≈ 2.5–2.7k tok when this landed). The relative gate scales with the
-        // registry: compact must stay under a third of the full minified view, or it no longer
-        // earns the name.
+    fn compact_full_registry_stays_under_a_third_of_the_full_view() {
+        // Relative so it scales with the registry: a flat per-operator budget fails a few
+        // operators after any re-baseline. Past a third of the full minified view, the compact
+        // listing no longer saves enough to earn a separate view.
         let reg = Registry::builtin();
         let compact = describe_compact(&reg, None)
             .expect("compact all")
@@ -1295,11 +1288,6 @@ mod tests {
             .expect("serialize full describe");
 
         let compact_chars = compact.chars().count();
-        assert!(
-            compact_chars <= 6_000,
-            "compact full-registry listing must stay ≤ ~3k tok (≤6,000 chars at chars/2.0); \
-             measured {compact_chars} chars"
-        );
         assert!(
             compact_chars * 3 <= full.chars().count(),
             "compact must stay under a third of the full minified view: {compact_chars} vs {}",
