@@ -88,8 +88,7 @@
       "section": "timbral",
       "moves": [
         { "op": "reverb", "input": "mix", "direction": "up", "magnitude": "slightly" },
-        { "op": "reverb", "input": "damp", "direction": "down" },
-        { "op": "filter", "input": "cutoff", "direction": "up", "description": "opens the top only where the filter is lowpass" }
+        { "op": "reverb", "input": "damp", "direction": "down" }
       ]
     },
     {

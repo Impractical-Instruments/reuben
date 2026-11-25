@@ -16,7 +16,7 @@ Unsatisfiable ask → apply the nearest achievable move and state the gap plainl
 - **harsher** — saturator.drive up; filter.cutoff up; filter.resonance up. ↔ softer
 - **softer** — envelope.attack up; saturator.drive down; filter.cutoff down (slightly). ↔ harsher, punchier
 - **punchier** — envelope.attack down; envelope.sustain down (slightly); saturator.drive up (slightly) [synth-land punch — the registry has no compressor]. ↔ softer
-- **airier** — reverb.mix up (slightly); reverb.damp down; filter.cutoff up [opens the top only where the filter is lowpass].
+- **airier** — reverb.mix up (slightly); reverb.damp down.
 - **wetter** — reverb.mix up; delay.mix up [a delay is the space in the voice]. ↔ drier
 - **drier** — reverb.mix down; delay.mix down. ↔ wetter
 - **bigger** — reverb.room up; delay.time up (slightly); saturator.warmth up (slightly).
