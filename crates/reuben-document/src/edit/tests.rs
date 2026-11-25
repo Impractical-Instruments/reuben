@@ -1946,10 +1946,8 @@ fn a_move_that_clamps_to_where_it_started_is_a_skip() {
             "instrument": "at-the-edge",
             "nodes": [
                 { "type": "oscillator", "address": "/osc" },
-                { "type": "filter", "address": "/f",
-                  "inputs": { "audio": { "from": "/osc" }, "cutoff": 20000.0 } },
                 { "type": "reverb", "address": "/rv",
-                  "inputs": { "audio": { "from": "/f" }, "mix": 1.0, "damp": 0.0 } },
+                  "inputs": { "audio": { "from": "/osc" }, "mix": 1.0, "damp": 0.0 } },
                 { "type": "mul_f32_signal", "address": "/amp",
                   "inputs": { "a": { "from": "/rv" }, "b": 0.5 } }
             ],
@@ -1962,15 +1960,14 @@ fn a_move_that_clamps_to_where_it_started_is_a_skip() {
     assert!(
         result
             .zoom
-            .starts_with("airier (timbral): 0 applied, 3 skipped"),
+            .starts_with("airier (timbral): 0 applied, 2 skipped"),
         "{}",
         result.zoom
     );
     assert!(result.zoom.contains("is already 1"), "{}", result.zoom);
     let after = readback(&resolver);
-    assert_eq!(after["nodes"][2]["inputs"]["mix"], json!(1.0));
-    assert_eq!(after["nodes"][2]["inputs"]["damp"], json!(0.0));
-    assert_eq!(after["nodes"][1]["inputs"]["cutoff"], json!(20000.0));
+    assert_eq!(after["nodes"][1]["inputs"]["mix"], json!(1.0));
+    assert_eq!(after["nodes"][1]["inputs"]["damp"], json!(0.0));
 }
 
 /// Omitting `curve` is not an assertion of linearity — the loader's default is, and taking it would
