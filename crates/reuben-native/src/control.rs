@@ -194,9 +194,9 @@ impl ControlDrain {
     }
 
     /// Apply every waiting batch, whole and in its producer's order, then return it to that
-    /// producer. Rings are drained in the order they were given, so between two producers the
-    /// first's batches of a block come first. `apply` answers `false` to decline a batch: that
-    /// ring stops there and offers the same batch first on the next drain.
+    /// producer. Rings are drained in the order they were given, unless one declined last drain.
+    /// `apply` answers `false` to decline a batch: that ring stops there and offers the same batch
+    /// first on the next drain.
     ///
     /// The next drain then starts at that ring, the rest following in order, so a batch declined
     /// for want of room in the Engine's queue meets the queue first once a block has emptied it,

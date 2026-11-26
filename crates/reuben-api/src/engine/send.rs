@@ -76,8 +76,8 @@ pub enum ControlFate {
 /// and a burst spreads over blocks rather than splitting a batch. On an empty queue a batch is
 /// queued whatever its size: past the queue's capacity (no fewer than
 /// [`MAX_SEND_BATCH`](super::MAX_SEND_BATCH)) the Engine drops and counts the rest. A host draining
-/// several producers offers the one that waited first next block, when the queue is empty, or a
-/// producer that queues every block can starve it.
+/// several producers must offer a batch that waited ahead of the others on its next drain;
+/// otherwise a producer that queues on every drain keeps the queue from ever being empty for it.
 ///
 /// Call [`RenderSlot::latch_install`] once before the drain, and fill after it: the waiting
 /// answer is then the one the fill acts on, so a batch this queues renders on the Engine it was
