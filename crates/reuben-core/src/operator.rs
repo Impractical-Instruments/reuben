@@ -704,9 +704,9 @@ pub trait Operator: Send {
 
     /// Receive this node's address within the Instrument (`/melody`, or `/a/melody` inside a
     /// subpatch), once per Plan build, just before [`Operator::on_instantiate`] and off the hot
-    /// path. For state an operator derives deterministically from which node it is, so it is the
-    /// same on every load and only a rename changes it; the `pattern` Operator's random seed is the
-    /// one user. Default no-op.
+    /// path. For anything an operator derives from which node it is: state that must be the same
+    /// on every load and change only on a rename (a deterministic seed), or the node's name in an
+    /// [`Operator::on_instantiate`] error. Default no-op.
     fn bind_address(&mut self, _address: &str) {}
 
     /// Construct any config-dependent runtime state, after the engine fixes the [`AudioConfig`].

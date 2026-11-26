@@ -40,8 +40,9 @@ pub trait Operator: Send {
 
 Three optional lifecycle hooks, all default no-ops: `bind_voices(Vec<Graph>)` receives the Voicer's
 N built voice sub-patches at load, `bind_address(&str)` receives the node's address within the
-Instrument once per Plan build, just before `on_instantiate` and off the render thread (the
-`pattern` Operator derives its random seed from it), and `on_instantiate(&AudioConfig) -> Result<(), PlanError>` runs
+Instrument once per Plan build, just before `on_instantiate` and off the render thread (for state
+derived from which node it is, such as a deterministic seed, or to name the node in an
+`on_instantiate` error), and `on_instantiate(&AudioConfig) -> Result<(), PlanError>` runs
 per node from `Plan::instantiate` (the one place with the audio config) so config-dependent state is
 built off the hot path — the Voicer's per-voice sub-`Plan` + arena, the Delay's line.
 

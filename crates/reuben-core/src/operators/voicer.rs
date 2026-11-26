@@ -38,7 +38,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::config::AudioConfig;
-use crate::descriptor::Descriptor;
+use crate::descriptor::{Descriptor, PortType};
 use crate::graph::Graph;
 use crate::coordinator::retire::retire_to;
 use crate::message::{Arg, Message};
@@ -215,6 +215,8 @@ pub struct Voicer {
     /// (`/<node>/<port>`), empty if the patch declares no such interface input.
     freq_addr: String,
     gate_addr: String,
+    /// This node's address, bound before `on_instantiate` so a refused voice patch names its host.
+    address: String,
 }
 
 impl Voicer {
@@ -256,10 +258,33 @@ impl Operator for Voicer {
         self.graphs = voices;
     }
 
+    fn bind_address(&mut self, address: &str) {
+        self.address = address.into();
+    }
+
     fn on_instantiate(&mut self, config: &AudioConfig) -> Result<(), PlanError> {
         let graphs = core::mem::take(&mut self.graphs);
         if graphs.is_empty() {
             return Ok(());
+        }
+        // The same rule as the loader's, for a graph that never went through it. A Signal `active`
+        // gets no captured slot, so liveness falls back to the gate; any held type but a number
+        // would read 0 — idle — and cut every release tail. A key or port the graph does not hold
+        // is left for `Plan::instantiate` to refuse with its own error.
+        if let Some(&(key, port)) = graphs[0].interface.outputs.get("active") {
+            if let Some(out) = graphs[0]
+                .nodes
+                .get(key)
+                .and_then(|n| n.descriptor.outputs.get(port))
+            {
+                let ty = &out.ty;
+                if !(ty.is_buffer() || matches!(ty, PortType::F32 | PortType::I32 { .. })) {
+                    return Err(PlanError::NonNumericActive {
+                        voicer: self.address.clone(),
+                        ty: format!("{ty}"),
+                    });
+                }
+            }
         }
         // All voice graphs are copies of one patch — resolve the interface addresses once.
         self.freq_addr = iface_input_addr(&graphs[0], "freq").unwrap_or_default();
@@ -597,7 +622,14 @@ mod tests {
         use crate::message::Arg;
         use crate::operators::envelope::{self, Envelope};
         use crate::operators::mul::mul_f32_signal::{self, MulF32Signal};
+        use crate::descriptor::Port;
+        use crate::graph::NodeKey;
+        use crate::operators::chord::{self, Chord};
+        use crate::operators::filter::Filter;
+        use crate::operators::harmony::{self, HarmonyOp};
         use crate::operators::oscillator::{self, Oscillator};
+        use crate::operators::pipe::Pipe;
+        use crate::plan::PortKind;
         use crate::probe::ProbeSlots;
         use crate::render::Renderer;
         use crate::vocab::pitch::Note;
@@ -773,6 +805,72 @@ mod tests {
             render(&mut r, &mut plan, &[note("/a", 1.0)], 0.5);
             assert!(peak(&a, "/osc") > 0.9);
             assert_eq!(b.find("/osc").unwrap().ports[0].read(), (0.0, 0.0));
+        }
+
+        /// `voice_patch` with its `active` output fed from `port` of a node `add` puts in it.
+        fn active_from(add: impl FnOnce(&mut Graph) -> (NodeKey, usize)) -> Graph {
+            let mut g = voice_patch(false);
+            let active = add(&mut g);
+            g.interface.outputs.insert("active".into(), active);
+            g
+        }
+
+        fn instantiate(patch: &Graph) -> Result<Plan, PlanError> {
+            let mut g = Graph::new();
+            let v = g.add("/v", voicer(patch, 2));
+            g.tap_output(v, OUT_AUDIO);
+            Plan::instantiate(g, AudioConfig::new(RATE, BLOCK))
+        }
+
+        /// A graph built without the document loader still meets the loader's rule: a held
+        /// `active` that is not a number would read as idle and cut every release tail, so the
+        /// Voicer refuses it at Instantiate.
+        #[test]
+        fn a_non_numeric_held_active_is_refused_at_instantiate() {
+            let note = active_from(|g| {
+                let ch = g.add("/ch", Chord::new());
+                (ch, chord::OUT_DEGREES.index())
+            });
+            let enumerated = active_from(|g| {
+                let mode = Filter::descriptor()
+                    .inputs
+                    .into_iter()
+                    .find(|p| p.name == "mode")
+                    .expect("the filter's mode port");
+                let mut desc = Pipe::descriptor();
+                desc.inputs = vec![Port { name: "in", ..mode.clone() }];
+                desc.outputs = vec![Port { name: "out", ..mode }];
+                let pipe = Box::new(Pipe::new(PortKind::Value));
+                (g.add_boxed("/mode", pipe, Arc::new(desc)), 0)
+            });
+            let harmony = active_from(|g| {
+                let h = g.add("/h", HarmonyOp::default());
+                (h, harmony::OUT_HARMONY.index())
+            });
+            for (label, patch) in [("note", note), ("enum", enumerated), ("harmony", harmony)] {
+                match instantiate(&patch) {
+                    Err(PlanError::NonNumericActive { voicer, .. }) => {
+                        assert_eq!(voicer, "/v", "{label}")
+                    }
+                    Err(e) => panic!("{label}: refused for another reason: {e:?}"),
+                    Ok(_) => panic!("{label}: a non-numeric `active` must not instantiate"),
+                }
+            }
+        }
+
+        /// A Signal `active` has no captured slot, so liveness keys on the gate: it instantiates.
+        #[test]
+        fn a_signal_active_instantiates() {
+            let patch = active_from(|g| {
+                let vca = g
+                    .interface
+                    .outputs
+                    .get("audio")
+                    .expect("the voice's audio")
+                    .0;
+                (vca, mul_f32_signal::OUT_OUT.index())
+            });
+            instantiate(&patch).expect("a Signal `active` instantiates");
         }
     }
 }
