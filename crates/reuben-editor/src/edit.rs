@@ -856,28 +856,25 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_restore_that_cannot_be_written_keeps_every_step() {
-        use std::os::unix::fs::PermissionsExt;
-
         within(HANG_SECS, || {
             let (mut rig, top, strip) = drums("undo_unwritable");
             set_trim(&mut rig, &top, 0.5);
             let original = hash(&rig, &strip);
             rename(&mut rig, &strip, "renamed-strip");
             let renamed = hash(&rig, &strip);
-            let dir = rig
-                .session
-                .tree()
-                .document(&strip)
-                .map(|d| Path::new(&d.source))
-                .unwrap()
-                .parent()
-                .unwrap()
-                .to_path_buf();
-            let mode = |bits| std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(bits));
+            let path = Path::new(&strip);
+            // The in-process server stages every write in this sibling before renaming it over
+            // the file. A directory there fails that write for any user, root included, where a
+            // read-only parent does not; the file itself still reads, so the hash guard passes.
+            let staging = path.with_file_name(format!(
+                ".{}.{}.tmp",
+                path.file_name().unwrap().to_string_lossy(),
+                std::process::id()
+            ));
 
-            mode(0o555).unwrap();
+            std::fs::create_dir(&staging).unwrap();
             let refused = undo(&mut rig);
-            mode(0o755).unwrap();
+            std::fs::remove_dir(&staging).unwrap();
             assert!(matches!(&refused, Restored::Rejected { .. }), "{refused:?}");
             assert_eq!(hash(&rig, &strip), renamed);
             let note = rig.session.undo().note().expect("a note");
