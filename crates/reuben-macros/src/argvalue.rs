@@ -3,7 +3,7 @@
 //! A **struct** (`Note`, `Harmony`) gets its own named [`Arg`] variant: `From<T> for Arg` +
 //! `TryFrom<&Arg> for T`. A **payload-carrying enum** (`Pitch`) takes the same path, as an opaque
 //! `Copy` leaf. An **all-unit enum** (`SnapTarget`, `GateMode`) instead type-erases to the single
-//! `Arg::Enum(index)` variant — plus the Enum-over-OSC table (`VARIANTS` / `DEFAULT_INDEX` /
+//! `Arg::Enum(index)` variant — plus the Enum-over-OSC table (`VARIANTS` / `DEFAULT` /
 //! `from_index` / `to_index` / `from_symbol` / `resolve_arg`) and an `enum_meta()` built from the
 //! same tokens.
 //!
@@ -146,8 +146,6 @@ fn expand_enum(ast: &DeriveInput, data: &syn::DataEnum) -> TokenStream {
         impl #name {
             /// The variant **symbols**, index-aligned with the enum — the Enum-over-OSC table.
             pub const VARIANTS: &'static [&'static str] = &[ #(#symbols),* ];
-            /// Index of the unwired default variant (`#[default]` if marked, else the first).
-            pub const DEFAULT_INDEX: usize = #default_index_lit;
             /// The unwired default variant.
             pub const DEFAULT: #name = #name::#default_ident;
 
@@ -158,10 +156,6 @@ fn expand_enum(ast: &DeriveInput, data: &syn::DataEnum) -> TokenStream {
             /// This variant's index — its on-wire integer form.
             pub fn to_index(self) -> usize {
                 match self { #(#to_index_arms),* }
-            }
-            /// This variant's **symbol** — its on-wire string form (`VARIANTS[to_index()]`).
-            pub fn symbol(self) -> &'static str {
-                Self::VARIANTS[self.to_index()]
             }
             /// The variant whose symbol is `s`, or `None`.
             pub fn from_symbol(s: &str) -> ::core::option::Option<Self> {
@@ -178,7 +172,7 @@ fn expand_enum(ast: &DeriveInput, data: &syn::DataEnum) -> TokenStream {
                     name,
                     type_name: ::core::stringify!(#name),
                     variants: Self::VARIANTS,
-                    default: Self::DEFAULT_INDEX,
+                    default: #default_index_lit,
                     resolve: |arg| Self::resolve_arg(arg).map(::reuben_core::message::Arg::from),
                 }
             }
@@ -230,7 +224,7 @@ mod tests {
     fn unit_enum_gets_table_and_conversions() {
         let out = render("enum SnapTarget { Scale, Chord, ChordThenScale }");
         assert!(out.contains("VARIANTS : & 'static [& 'static str] = & [\"Scale\" , \"Chord\" , \"ChordThenScale\"]"), "{out}");
-        assert!(out.contains("DEFAULT_INDEX : usize = 0"), "{out}");
+        assert!(out.contains("default : 0"), "{out}");
         assert!(
             out.contains("DEFAULT : SnapTarget = SnapTarget :: Scale"),
             "{out}"
@@ -253,7 +247,7 @@ mod tests {
     #[test]
     fn honors_default_attribute() {
         let out = render("enum SnapDir { Nearest, #[default] Up, Down }");
-        assert!(out.contains("DEFAULT_INDEX : usize = 1"), "{out}");
+        assert!(out.contains("default : 1"), "{out}");
         assert!(out.contains("DEFAULT : SnapDir = SnapDir :: Up"), "{out}");
     }
 
