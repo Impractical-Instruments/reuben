@@ -12,7 +12,7 @@ use crate::format::{
 };
 use crate::resources::ResourceResolver;
 use reuben_core::descriptor::{Curve, Descriptor, Port, PortType};
-use reuben_core::plan::{Plan, PlanError, PortPosition};
+use reuben_core::plan::{InputChannelReason, Plan, PlanError, PortPosition};
 use reuben_core::registry::Registry;
 use reuben_core::AudioConfig;
 
@@ -811,6 +811,21 @@ pub fn plan_error_diags(e: PlanError) -> Vec<Diag> {
                     "{role} names port {port} on {node}, which declares {declared} {side}"
                 ),
                 node: Some(node),
+                port: None,
+            }]
+        }
+        // Unreachable from a document: the loader binds a channel only to an interface input it
+        // declared as an unwired signal. `node` stays `None`: the binding names an interface
+        // input, not a node address.
+        PlanError::InputChannel { name, reason } => {
+            let why = match reason {
+                InputChannelReason::NoInterfaceInput => "no interface input has that name",
+                InputChannelReason::Wired => "its input is wired",
+                InputChannelReason::NotSignal => "its input is not a signal",
+            };
+            vec![Diag {
+                message: format!("input channel binding {name:?} cannot be fed: {why}"),
+                node: None,
                 port: None,
             }]
         }

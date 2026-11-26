@@ -101,7 +101,7 @@ pub use engine::Engine;
 pub use graph::{Graph, Interface, NodeKey};
 pub use message::{Arg, Message};
 pub use operator::{Io, Operator};
-pub use plan::{Plan, PlanError, PortPosition};
+pub use plan::{InputChannelReason, Plan, PlanError, PortPosition};
 pub use vocab::{Chord, ChordTag, Harmony, ScaleField, SnapDir, SnapPolicy, SnapTarget};
 pub use wavetable::Wavetable;
 // The single-source operator contract macro. Re-exported at the crate root so operator
