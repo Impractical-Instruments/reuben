@@ -290,3 +290,40 @@ fn a_batch_waits_for_room_unless_the_queue_is_empty() {
     assert_eq!(fate(&slot, PENDING_CAP - 1), ControlFate::Queue, "fits");
     assert_eq!(fate(&slot, PENDING_CAP), ControlFate::Wait, "one short");
 }
+
+/// A full `send` batch on a later ring is not starved by an earlier ring that queues a little
+/// every callback: it waits at most one callback, then goes first and lands whole.
+#[test]
+fn a_full_batch_behind_a_steady_trickle_on_an_earlier_ring_still_lands() {
+    let cfg = AudioConfig::new(48_000.0, 64);
+    let (_coordinator, side, _) =
+        reuben_api::engine::install_initial(WIRED, no_store(), cfg).expect("install");
+    let mut slot = RenderSlot::new(side);
+    let mut out = vec![0.0f32; cfg.block_size * slot.channels()];
+    let diagnostics = Diagnostics::new();
+    let (mut udp, udp_ring) = ring_pair(Diagnostics::new());
+    let (mut send, send_ring) = ring_pair(Diagnostics::new());
+    let mut control = ControlDrain::new(vec![udp_ring, send_ring]);
+
+    let mut batch = send.batch();
+    batch.extend(
+        (0..reuben_api::engine::MAX_SEND_BATCH)
+            .map(|i| OscIn::new("/fed/x".to_string(), vec![Arg::I32(i as i32)])),
+    );
+    send.push(batch).unwrap();
+    for i in 0..4 {
+        let mut trickle = udp.batch();
+        trickle.push(OscIn::new("/abs/x".to_string(), vec![Arg::I32(i)]));
+        udp.push(trickle).unwrap();
+        drain_control(&mut control, &mut slot, &diagnostics);
+        slot.fill(&mut out);
+    }
+    let _ = send.batch();
+    assert_eq!(send.outstanding(), 0, "the send batch was taken");
+    assert_eq!(
+        slot.take_dropped_wired_writes(),
+        reuben_api::engine::MAX_SEND_BATCH as u64,
+        "and landed whole"
+    );
+    assert_eq!(slot.take_dropped_queue_full(), 0);
+}

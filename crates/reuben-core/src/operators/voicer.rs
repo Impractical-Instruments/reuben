@@ -10,9 +10,10 @@
 //!    [`Degree`](crate::vocab::pitch::Pitch::Degree) pitches through the `harmony` context — the
 //!    musical brain, kept from the old Lane-fan-out Voicer;
 //! 2. drives each voice's `freq`/`gate` interface inputs with a sparse change-list of control at
-//!    their exact frames, resolved against the voice plans once at instantiate (the sub-render block-slices at those frames, so note-ons stay
-//!    sample-accurate);
-//! 3. renders every voice re-entrantly, as [`render_plan`](crate::render::render_plan) does, over that voice's own arena;
+//!    their exact frames, resolved against the voice plans once at instantiate (the sub-render
+//!    block-slices at those frames, so note-ons stay sample-accurate);
+//! 3. renders every voice re-entrantly, as [`render_plan`](crate::render::render_plan) does, over
+//!    that voice's own arena;
 //! 4. sums the voices' `audio` into its single audio output, in fixed voice-index order.
 //!
 //! There is no Lane fan-out: the Voicer is an ordinary operator whose polyphony lives in the hosted
@@ -41,11 +42,11 @@ use crate::config::AudioConfig;
 use crate::descriptor::{Descriptor, PortType};
 use crate::graph::Graph;
 use crate::coordinator::retire::retire_to;
+use crate::engine::PENDING_CAP;
 use crate::message::{Arg, Message};
 use crate::operator::{Io, Operator};
 use crate::plan::{Plan, PlanError};
 use crate::probe::ProbeSlots;
-use crate::engine::PENDING_CAP;
 use crate::render::{render_plan_resolved, RenderScratch, Resolved, SerialExecutor, Target};
 use crate::vocab::pitch::Pitch;
 
@@ -191,11 +192,13 @@ pub struct Voicer {
     /// Shared throwaway outbound sink (a voice patch sends nothing past the boundary).
     outbound: Vec<Message>,
     executor: SerialExecutor,
-    /// Reusable per-voice render control (`freq`/`gate` edges), cleared per voice. Holds a full
-    /// control queue's worth of notes landing on one voice, so external control never grows it.
+    /// Reusable per-voice render control (`freq`/`gate` edges), cleared per voice.
     msg_buf: Vec<Resolved>,
-    /// Reusable allocation change-list `(voice, frame, freq, gate)`. Cleared per block.
+    /// Reusable allocation change-list `(voice, frame, freq, gate)`, at most one per voice and
+    /// frame. Cleared per block.
     changes: Vec<(usize, usize, f32, bool)>,
+    /// Each voice's latest entry in `changes` this block (parallel to `pool.voices`).
+    last_change: Vec<usize>,
     /// Reusable note-event snapshot `(frame, delivery index, on, pitch)`. Cleared per block.
     events: Vec<(usize, usize, bool, Pitch)>,
     /// Per-voice "got an event this block" flag (parallel to `pool.voices`), so a voice toggled
@@ -235,7 +238,6 @@ fn iface_input_addr(g: &Graph, name: &str) -> Option<String> {
     let pname = node.descriptor.inputs.get(port)?.name;
     Some(format!("{}/{}", node.address, pname))
 }
-
 
 impl Operator for Voicer {
     fn descriptor() -> Descriptor {
@@ -309,10 +311,13 @@ impl Operator for Voicer {
             .map(|_| vec![0.0; block])
             .collect();
         self.outbound = Vec::with_capacity(64);
-        // One voice's control is its frame-0 baseline plus one change per note it takes, each a
-        // `freq` and a `gate`; a block's notes are at most a control queue's worth.
-        self.msg_buf = Vec::with_capacity(2 * (1 + PENDING_CAP));
-        self.changes = Vec::with_capacity(slots.len() + PENDING_CAP);
+        // A voice's changes coalesce per frame, and external notes all arrive at frame 0, so
+        // external control keeps each voice to its baseline. Only notes emitted at distinct frames
+        // reach past these, and grow them once.
+        self.msg_buf = Vec::with_capacity(4);
+        self.changes = Vec::with_capacity(slots.len() * 4);
+        self.last_change = vec![0; slots.len()];
+        // Notes are not coalesced: a block's external notes are at most a control queue's worth.
         self.events = Vec::with_capacity(PENDING_CAP);
         let target = |addr: &Option<String>, plan: &Plan| {
             addr.as_deref()
@@ -393,6 +398,7 @@ impl Operator for Voicer {
         self.changes.clear();
         self.touched.iter_mut().for_each(|t| *t = false);
         for (i, v) in self.pool.voices.iter().enumerate() {
+            self.last_change[i] = self.changes.len();
             self.changes.push((i, 0, harmony.hz(v.pitch), v.on));
         }
         for k in 0..self.events.len() {
@@ -407,7 +413,17 @@ impl Operator for Voicer {
             };
             self.touched[idx] = true;
             let v = self.pool.voices[idx];
-            self.changes.push((idx, frame, harmony.hz(v.pitch), v.on));
+            let change = (idx, frame, harmony.hz(v.pitch), v.on);
+            // Events arrive in frame order, so a voice's latest change is the only one this frame
+            // can repeat. A voice plan applies one input's changes at one frame last-write-wins,
+            // so keeping only the last is what it would have rendered.
+            let last = self.last_change[idx];
+            if self.changes[last].1 == frame {
+                self.changes[last] = change;
+            } else {
+                self.last_change[idx] = self.changes.len();
+                self.changes.push(change);
+            }
         }
 
         // Render each voice into its own arena and sum its audio (fixed index order — determinism).

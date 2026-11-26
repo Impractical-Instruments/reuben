@@ -73,9 +73,11 @@ pub enum ControlFate {
 /// `slot`. Every compiled message of one `send` names the same Plan, so the first stamp decides.
 ///
 /// A batch larger than [`RenderSlot::pending_room`] waits, so the Engine's queue never overflows
-/// and a burst spreads over blocks rather than splitting a batch. Once the queue is empty a batch
-/// is queued whatever its size, so none waits forever: past the queue's capacity (no fewer than
-/// [`MAX_SEND_BATCH`](super::MAX_SEND_BATCH)) the Engine drops and counts the rest.
+/// and a burst spreads over blocks rather than splitting a batch. On an empty queue a batch is
+/// queued whatever its size: past the queue's capacity (no fewer than
+/// [`MAX_SEND_BATCH`](super::MAX_SEND_BATCH)) the Engine drops and counts the rest. A host draining
+/// several producers offers the one that waited first next block, when the queue is empty, or a
+/// producer that queues every block can starve it.
 ///
 /// Call [`RenderSlot::latch_install`] once before the drain, and fill after it: the waiting
 /// answer is then the one the fill acts on, so a batch this queues renders on the Engine it was

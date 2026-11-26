@@ -287,7 +287,8 @@ pub fn log_snapshot(s: &Snapshot) {
     eprintln!(
         "diagnostics: output_xruns={} input_ring_underruns={} input_ring_overruns={} \
          input_ring_producer_drops={} control_batches_dropped_full={} \
-         control_messages_dropped_full={} wired_writes_dropped={} retire_queue_dropped_full={} unprepared_writes_dropped={} stale_sends_dropped={} \
+         control_messages_dropped_full={} wired_writes_dropped={} retire_queue_dropped_full={} \
+         unprepared_writes_dropped={} stale_sends_dropped={} \
          pattern_queries_truncated={} pattern_atoms_skipped={} pattern_notes_evicted={} \
          midi_received={} midi_unsupported={} midi_routed={} midi_unmatched={} midi_devices_lost={}",
         s.output_xruns,

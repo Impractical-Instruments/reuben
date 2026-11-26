@@ -20,8 +20,8 @@
 //! nothing in a queued entry owns an allocation unless its payload does, and that payload goes to
 //! the retire queue ([`Engine::set_retire_queue`]) rather than being dropped here. A message past
 //! the queue's capacity is dropped and counted ([`Engine::take_dropped_queue_full`]); a host that
-//! queues no more than [`Engine::pending_room`] per block never reaches that. [`Engine::queue`] takes an already-built [`Message`] and drops its
-//! address there.
+//! queues no more than [`Engine::pending_room`] per block never reaches that. [`Engine::queue`]
+//! takes an already-built [`Message`] and drops its address there.
 //!
 //! The queue belongs to this Engine and indexes this Engine's Plan. An install replaces the whole
 //! Engine, so control still pending at that moment leaves with the retiring Engine and is never

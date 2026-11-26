@@ -470,3 +470,21 @@ fn control_addressed_to_a_fed_input_is_dropped_and_counted_across_an_install() {
     assert_eq!(slot.take_dropped_wired_writes(), 2);
     assert_eq!(slot.take_dropped_wired_writes(), 0);
 }
+
+#[test]
+fn control_past_the_queue_is_dropped_and_counted_across_an_install() {
+    // Overflow counted on the live Engine and still uncollected at an install is carried onto the
+    // installed one.
+    use reuben_core::engine::PENDING_CAP;
+    let (mut coord, mut slot) = setup(&level_doc());
+    let (block, edge) = (slot.block_size(), slot.ramp_edge_frames());
+    for _ in 0..PENDING_CAP + 3 {
+        slot.queue_osc("/lvl/in", &[reuben_core::Arg::F32(0.5)]);
+    }
+    render(&mut slot, block);
+    assert!(coord.swap_document(&level_doc()).report.ok);
+    render(&mut slot, 2 * edge + 4 * block);
+    assert!(!slot.is_ramping(), "the swap completed");
+    assert_eq!(slot.take_dropped_queue_full(), 3);
+    assert_eq!(slot.take_dropped_queue_full(), 0);
+}

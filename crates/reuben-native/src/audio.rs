@@ -535,9 +535,10 @@ where
 ///
 /// Each batch's fate is [`control_fate`]'s. While a swap installs, batches wait on their rings for
 /// the Engine that installs, so none is queued on an Engine about to retire. A batch the Engine's
-/// queue has no room for whole waits for the next callback, so a burst spreads over blocks. Whether one installs
-/// is read once, by [`RenderSlot::latch_install`], and the callback's fill must follow the drain:
-/// a swap the drain did not see begins its ramp on the next callback. A batch whose strings
+/// queue has no room for whole waits, and its ring is drained first next callback (see
+/// [`ControlDrain::drain`]), so a burst spreads over blocks and no ring starves. Whether one
+/// installs is read once, by [`RenderSlot::latch_install`], and the callback's fill must follow the
+/// drain: a swap the drain did not see begins its ramp on the next callback. A batch whose strings
 /// a `send` compiled for a Plan no longer live is queued not at all: every message is marked
 /// [`dropped`](crate::osc::OscIn::dropped) for its producer to name, and counted into
 /// `diagnostics` once every batch is back, so whoever sees the count move finds them there.

@@ -67,6 +67,9 @@ impl Executor for SerialExecutor {
 /// grows the Vec once (allocation), which steady-state graphs do not reach.
 const EMIT_POOL_CAP: usize = 256;
 
+// `seg_events` starts at EMIT_POOL_CAP and must hold a full control queue's events to one node.
+const _: () = assert!(EMIT_POOL_CAP >= PENDING_CAP);
+
 /// Reusable per-block render scratch: everything the render path needs
 /// *besides* the edge-buffer arena. Preallocated once (sized to a plan) and reused, so the render
 /// path is allocation-free in steady state. Kept separate from the arena so [`render_plan`] is a
@@ -100,7 +103,11 @@ pub struct RenderScratch {
 impl RenderScratch {
     /// Preallocate scratch sized to `plan` so the steady-state render path never grows it.
     pub fn new(plan: &Plan) -> Self {
-        let routes = plan.nodes().iter().map(NodeRoute::presized).collect();
+        let routes = plan
+            .nodes()
+            .iter()
+            .map(|n| NodeRoute::presized(n, plan.hosted))
+            .collect();
         let max_out_bufs = plan
             .nodes()
             .iter()
@@ -729,12 +736,15 @@ impl NodeRoute {
     /// Buckets sized so a Plan's first block allocates nothing: one routed change per input port of
     /// their kind, and never fewer than [`ROUTED_CHANGES_MIN`] for a kind the node has at all. One
     /// per port is what a send or a pipe's forward delivers, and a pipe forwards only on change, so
-    /// its first block (each consumer's first held change) is the case this exists for. External
-    /// control fits whatever a block queues: its held and materialized changes coalesce per port
-    /// and frame, and an event bucket takes a full control queue. Emissions are not bounded — an
-    /// upstream node may emit at every frame — so past this a bucket grows once on the render
-    /// thread and keeps the capacity, the policy `EMIT_POOL_CAP` states for the emit pool.
-    fn presized(node: &PlanNode) -> Self {
+    /// its first block (each consumer's first held change) is the case this exists for.
+    ///
+    /// External control through `queue_osc` fits whatever a block queues: it all lands at frame
+    /// 0, its held and materialized changes coalesce per port and frame, and in a Plan an Engine
+    /// owns (not `hosted`) an event bucket takes a full control queue. A hosted Plan takes only
+    /// its host's control. Changes at many distinct frames — emissions, or `Engine::queue` with
+    /// framed Messages — are not bounded, so past this a bucket grows once on the render thread
+    /// and keeps the capacity, the policy `EMIT_POOL_CAP` states for the emit pool.
+    fn presized(node: &PlanNode, hosted: bool) -> Self {
         let capacity =
             |kind: PortKind| match node.input_kinds.iter().filter(|&&k| k == kind).count() {
                 0 => 0,
@@ -743,6 +753,7 @@ impl NodeRoute {
         // Stream events are never coalesced, so an event bucket takes a full control queue.
         let events = match capacity(PortKind::Event) {
             0 => 0,
+            n if hosted => n,
             n => n.max(PENDING_CAP),
         };
         Self {
