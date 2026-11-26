@@ -829,6 +829,16 @@ pub fn plan_error_diags(e: PlanError) -> Vec<Diag> {
                 port: None,
             }]
         }
+        // Unreachable from a document: the loader refuses a non-numeric hosted `active` first,
+        // with its own author-facing message. Localized to the hosting Voicer.
+        PlanError::NonNumericActive { voicer, ty } => vec![Diag {
+            message: format!(
+                "the voice patch's `active` output is read as a number (its release tail is \
+                 over at 0); this one carries {ty}"
+            ),
+            node: Some(voicer),
+            port: None,
+        }],
     }
 }
 

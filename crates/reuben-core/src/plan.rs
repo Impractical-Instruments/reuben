@@ -662,6 +662,12 @@ pub enum PlanError {
         name: String,
         reason: InputChannelReason,
     },
+    /// The voice patch the Voicer at `voicer` hosts has a held `active` interface output that is
+    /// not a number: `ty` is its type. The Voicer reads `active` as a number to know when a voice's
+    /// release tail is over, so any other held type would read idle and cut every tail. A Signal,
+    /// `f32` or `i32` `active` passes. The loader refuses such a patch first, so only a hand-built
+    /// graph reaches this.
+    NonNumericActive { voicer: String, ty: String },
 }
 
 /// Why an input channel binding was refused ([`PlanError::InputChannel`]).
