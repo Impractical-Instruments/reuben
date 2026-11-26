@@ -223,6 +223,7 @@ fn get_diagnostics_round_trips_every_counter() {
         input_ring_overruns: 0,
         input_ring_producer_drops: 96,
         control_batches_dropped_full: 5,
+        control_messages_dropped_full: 15,
         wired_writes_dropped: 3,
         retire_queue_dropped_full: 1,
         unprepared_writes_dropped: 4,

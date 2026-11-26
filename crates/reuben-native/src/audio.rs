@@ -456,6 +456,8 @@ where
                 };
                 slot.fill_duplex(input, &mut buf[..frames * logical]);
                 diag_for_callback.record_wired_writes_dropped(slot.take_dropped_wired_writes());
+                diag_for_callback
+                    .record_control_messages_dropped_full(slot.take_dropped_queue_full());
                 diag_for_callback.record_unprepared_writes_dropped(slot.take_dropped_unprepared());
                 diag_for_callback.record_operator_counts(slot.take_operator_counts());
 
@@ -532,7 +534,8 @@ where
 /// [`ControlDrain::drain`].
 ///
 /// Each batch's fate is [`control_fate`]'s. While a swap installs, batches wait on their rings for
-/// the Engine that installs, so none is queued on an Engine about to retire. Whether one installs
+/// the Engine that installs, so none is queued on an Engine about to retire. A batch the Engine's
+/// queue has no room for whole waits for the next callback, so a burst spreads over blocks. Whether one installs
 /// is read once, by [`RenderSlot::latch_install`], and the callback's fill must follow the drain:
 /// a swap the drain did not see begins its ramp on the next callback. A batch whose strings
 /// a `send` compiled for a Plan no longer live is queued not at all: every message is marked
@@ -555,7 +558,7 @@ pub(crate) fn drain_control_each(
     slot.latch_install();
     let mut stale = 0;
     control.drain(|batch| {
-        match control_fate(slot, batch.iter().map(|m| m.against.as_ref())) {
+        match control_fate(slot, batch.len(), batch.iter().map(|m| m.against.as_ref())) {
             ControlFate::Wait => return false,
             ControlFate::Drop => {
                 for m in batch.iter_mut() {

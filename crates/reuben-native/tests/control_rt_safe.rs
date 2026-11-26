@@ -212,3 +212,81 @@ fn a_batch_drained_while_a_swap_installs_waits_then_lands_on_the_installed_engin
     assert_eq!(producer.outstanding(), 0, "handed back once queued");
     assert_eq!(diagnostics.snapshot().stale_sends_dropped, 0);
 }
+
+/// A burst far past what one block's control queue holds, from the first block after a fresh
+/// install: the drain spreads it over blocks rather than growing the queue on the render thread,
+/// and every message still reaches the Engine. Every message addresses a wired input, so routing
+/// counts and drops it before any per-node route stores it: this covers the queue, not the routes.
+#[test]
+fn a_burst_past_the_control_queue_neither_allocates_nor_frees_on_the_render_thread() {
+    let cfg = AudioConfig::new(48_000.0, 64);
+    let (_coordinator, side, _) =
+        reuben_api::engine::install_initial(WIRED, no_store(), cfg).expect("install");
+    let mut slot = RenderSlot::new(side);
+    let mut out = vec![0.0f32; cfg.block_size * slot.channels()];
+    let diagnostics = Diagnostics::new();
+    let (mut producer, ring) = ring_pair(Diagnostics::new());
+    let mut control = ControlDrain::new(vec![ring]);
+    slot.fill(&mut out);
+
+    // Full `send` batches, each to a wired input so every routed message is counted.
+    const BATCHES: usize = 8;
+    let per_batch = reuben_api::engine::MAX_SEND_BATCH;
+    for _ in 0..BATCHES {
+        let mut batch = producer.batch();
+        batch.extend(
+            (0..per_batch).map(|i| OscIn::new("/fed/x".to_string(), vec![Arg::I32(i as i32)])),
+        );
+        producer.push(batch).unwrap();
+    }
+
+    assert_counter_is_live();
+    let mut total = rt_alloc::Counts {
+        allocs: 0,
+        frees: 0,
+    };
+    let (mut routed, mut overflowed) = (0, 0);
+    for _ in 0..4 * BATCHES {
+        let c = measure(|| {
+            drain_control(&mut control, &mut slot, &diagnostics);
+            slot.fill(&mut out);
+        });
+        total.allocs += c.allocs;
+        total.frees += c.frees;
+        routed += slot.take_dropped_wired_writes();
+        overflowed += slot.take_dropped_queue_full();
+    }
+    assert_eq!(
+        (total.allocs, total.frees),
+        (0, 0),
+        "a burst of {} messages touched the heap on the render thread",
+        BATCHES * per_batch
+    );
+    assert_eq!(
+        routed,
+        (BATCHES * per_batch) as u64,
+        "every message reached the Engine"
+    );
+    assert_eq!(overflowed, 0, "no batch was queued past the queue's room");
+    let _ = producer.batch();
+    assert_eq!(producer.outstanding(), 0, "every batch went back");
+}
+
+/// A batch waits while the queue lacks room for it whole, and is taken once the queue is empty,
+/// even when larger than the queue, so no batch waits forever.
+#[test]
+fn a_batch_waits_for_room_unless_the_queue_is_empty() {
+    use reuben_api::engine::{control_fate, ControlFate};
+    use reuben_api::render::PENDING_CAP;
+
+    let cfg = AudioConfig::new(48_000.0, 64);
+    let (_coordinator, side, _) =
+        reuben_api::engine::install_initial(WIRED, no_store(), cfg).expect("install");
+    let mut slot = RenderSlot::new(side);
+    let fate = |slot: &RenderSlot, len| control_fate(slot, len, std::iter::empty());
+
+    assert_eq!(fate(&slot, PENDING_CAP + 1), ControlFate::Queue, "empty");
+    slot.queue_osc("/abs/x", &[Arg::I32(1)]);
+    assert_eq!(fate(&slot, PENDING_CAP - 1), ControlFate::Queue, "fits");
+    assert_eq!(fate(&slot, PENDING_CAP), ControlFate::Wait, "one short");
+}

@@ -1183,3 +1183,41 @@ fn a_long_pattern_run_with_replacements_touches_no_heap_on_the_render_thread() {
     );
     assert_eq!(retired.dropped_full(), 0);
 }
+
+/// A caller that queues past the Engine's control queue without waiting for room: the overflow is
+/// dropped and counted, never grown into. One full block warms the per-node routes first: a node
+/// taking a queue's worth of messages in one block grows those on first use, which this does not
+/// cover.
+#[test]
+fn engine_queue_osc_past_its_capacity_drops_and_counts_without_the_heap() {
+    use reuben_core::engine::PENDING_CAP;
+
+    const DOC: &str = r#"{ "format_version": 3, "instrument": "overflow",
+        "interface": { "outputs": { "out": { "from": "/osc.audio" } } },
+        "nodes": [
+          { "type": "oscillator", "address": "/osc" },
+          { "type": "abs_i32_value", "address": "/abs" } ] }"#;
+    const OVER: usize = 10;
+    let cfg = AudioConfig::new(48_000.0, 64);
+    let graph = load_instrument(DOC, &Registry::builtin(), &InstrumentsDir)
+        .expect("load")
+        .graph;
+    let mut e = Engine::new(Plan::instantiate(graph, cfg).expect("instantiate"));
+    let mut out = vec![0.0f32; cfg.block_size * e.channels()];
+    for i in 0..PENDING_CAP {
+        e.queue_osc("/abs/x", &[Arg::I32(i as i32)]);
+    }
+    e.fill(&mut out);
+    assert_eq!(e.take_dropped_queue_full(), 0);
+
+    assert_counter_is_live();
+    let q = measure(|| {
+        for i in 0..PENDING_CAP + OVER {
+            e.queue_osc("/abs/x", &[Arg::I32(i as i32)]);
+        }
+    });
+    let f = measure(|| e.fill(&mut out));
+    assert_eq!(((q.allocs, q.frees), (f.allocs, f.frees)), ((0, 0), (0, 0)));
+    assert_eq!(e.take_dropped_queue_full(), OVER as u64);
+    assert_eq!(e.pending_room(), PENDING_CAP, "the next block starts empty");
+}

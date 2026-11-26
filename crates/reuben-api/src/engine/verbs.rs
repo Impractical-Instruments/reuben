@@ -263,7 +263,8 @@ pub fn get_engine_diagnostics(channel: &Channel) -> Result<Answer<DiagnosticsRep
         .map_err(|why| refuse("could not read the engine diagnostics", why))?;
     let summary = format!(
         "output_xruns={} input_ring_underruns={} input_ring_overruns={} \
-         input_ring_producer_drops={} control_batches_dropped_full={} wired_writes_dropped={} \
+         input_ring_producer_drops={} control_batches_dropped_full={} \
+         control_messages_dropped_full={} wired_writes_dropped={} \
          retire_queue_dropped_full={} unprepared_writes_dropped={} \
          pattern_queries_truncated={} pattern_atoms_skipped={} pattern_notes_evicted={} \
          midi_received={} midi_unsupported={} midi_routed={} midi_unmatched={} midi_devices_lost={}",
@@ -272,6 +273,7 @@ pub fn get_engine_diagnostics(channel: &Channel) -> Result<Answer<DiagnosticsRep
         report.input_ring_overruns,
         report.input_ring_producer_drops,
         report.control_batches_dropped_full,
+        report.control_messages_dropped_full,
         report.wired_writes_dropped,
         report.retire_queue_dropped_full,
         report.unprepared_writes_dropped,

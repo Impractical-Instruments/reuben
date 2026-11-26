@@ -33,6 +33,9 @@ pub use reuben_core::coordinator::RenderSlot;
 /// **primitive** it is: a host with its own RT-side payload (the native door's device output map)
 /// builds a parallel channel out of it rather than inventing a second lock-free mailbox.
 pub use reuben_core::coordinator::{swap_pair, CoordinatorMailbox, RenderMailbox, SwapInFlight};
+/// How many messages an Engine queues for one block; past it, [`RenderSlot::queue_osc`] drops and
+/// counts. A host that waits on [`RenderSlot::pending_room`] never reaches it.
+pub use reuben_core::engine::PENDING_CAP;
 /// The graph a host builds in Rust, and the handle each `add` hands back. [`install_graph`]
 /// consumes one; [`mod@operators`] is what it is built out of.
 pub use reuben_core::graph::{Graph, NodeKey};

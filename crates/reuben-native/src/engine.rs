@@ -515,6 +515,8 @@ impl HeadlessDriver {
                     }
                     slot.fill(&mut buf);
                     diagnostics.record_wired_writes_dropped(slot.take_dropped_wired_writes());
+                    diagnostics
+                        .record_control_messages_dropped_full(slot.take_dropped_queue_full());
                     diagnostics.record_unprepared_writes_dropped(slot.take_dropped_unprepared());
                     diagnostics.record_operator_counts(slot.take_operator_counts());
                     for m in slot.drain_outbound() {

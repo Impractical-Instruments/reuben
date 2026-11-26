@@ -2044,6 +2044,7 @@ mod tests {
             input_ring_overruns: 0,
             input_ring_producer_drops: 96,
             control_batches_dropped_full: 5,
+            control_messages_dropped_full: 15,
             wired_writes_dropped: 3,
             retire_queue_dropped_full: 1,
             unprepared_writes_dropped: 4,
@@ -2071,6 +2072,7 @@ mod tests {
         assert_eq!(s["input_ring_underruns"], serde_json::json!(480));
         assert_eq!(s["input_ring_producer_drops"], serde_json::json!(96));
         assert_eq!(s["control_batches_dropped_full"], serde_json::json!(5));
+        assert_eq!(s["control_messages_dropped_full"], serde_json::json!(15));
         assert_eq!(s["wired_writes_dropped"], serde_json::json!(3));
         assert_eq!(s["retire_queue_dropped_full"], serde_json::json!(1));
         assert_eq!(s["unprepared_writes_dropped"], serde_json::json!(4));
