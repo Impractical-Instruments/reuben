@@ -2361,6 +2361,24 @@ mod tests {
     }
 
     #[test]
+    fn describe_and_an_edit_agree_a_map_that_does_not_parse_has_no_hash() {
+        let (s, written) = serving_syn();
+        two_map_edits(&s);
+        s.files.write_text(SYN_MAP, "{ hand-broken").unwrap();
+        let events = s.state.subscribe();
+        let read = json!({"source": "syn.json", "surface": "midi"});
+        let (described, _) = call(&s, "describe_instrument_surface", read);
+        assert_eq!(described["exists"], true, "{described}");
+        assert_eq!(described.get("hash"), None, "{described}");
+        let (edited, _) = call(&s, "set_instrument_surface_control", set_cc("syn.json", 7));
+        assert_eq!(edited["written"], false, "{edited}");
+        assert_eq!(edited["hash"], "", "{edited}");
+        assert_eq!(s.files.get(SYN_MAP).as_deref(), Some("{ hand-broken"));
+        assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
+        assert_eq!(written.lock().unwrap().len(), 2);
+    }
+
+    #[test]
     fn a_map_edit_while_the_instrument_does_not_load_writes_nothing() {
         let (s, written) = serving_syn();
         let (_, second) = two_map_edits(&s);

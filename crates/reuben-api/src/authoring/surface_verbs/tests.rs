@@ -300,6 +300,7 @@ fn a_map_that_does_not_parse_is_never_overwritten() {
         ] {
             let result = edit(&store, tool, args);
             assert!(!result.written, "{tool}");
+            assert_eq!(result.hash, "", "{tool}");
             assert!(
                 result.report.errors[0].message.contains(says),
                 "{tool}: {result:?}"

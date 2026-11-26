@@ -11,8 +11,6 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use reuben_document::text_hash;
-
 use super::args::{
     DescribeBoundary, DescribeInstrumentSurface, MoveInstrumentSurfaceControl,
     RemoveInstrumentSurfaceControl, SetInstrumentSurfaceControl,
@@ -49,7 +47,7 @@ pub fn describe_instrument_surface(
     let name = doc_name(args.surface);
     let summary = match read(&at, resources)? {
         Stored::Missing => format!("`{}` has no {name}", args.source),
-        Stored::Unparsed { error, .. } => {
+        Stored::Unparsed { error } => {
             let summary = format!("the {name} {error}");
             view.exists = true;
             view.error = Some(error);
@@ -182,9 +180,9 @@ pub fn move_instrument_surface_control(
 /// What a surface doc's source holds.
 enum Stored {
     Missing,
-    /// Text that is not a doc this reader knows, with the hash of its bytes as its identity.
+    /// Text that is not a doc this reader knows. Like a missing doc it has no hash, since no
+    /// verb would accept one as `expect`.
     Unparsed {
-        hash: String,
         error: String,
     },
     Parsed(SurfaceDoc),
@@ -205,9 +203,13 @@ fn edit_surface(
     let at = locate(source, surface, resources)?;
     let current = match read(&at, resources)? {
         Stored::Missing => None,
-        Stored::Unparsed { hash, error } => {
+        Stored::Unparsed { error } => {
             let message = format!("the {} {error}; it is left as it is", doc_name(surface));
-            return Ok(not_written(hash, diag(None, message), String::new()));
+            return Ok(not_written(
+                String::new(),
+                diag(None, message),
+                String::new(),
+            ));
         }
         Stored::Parsed(doc) => Some(doc),
     };
@@ -287,7 +289,6 @@ fn read(at: &str, resources: &dyn Resources) -> Result<Stored, Refusal> {
         Ok(text) => Ok(match SurfaceDoc::parse(&text) {
             Ok(doc) => Stored::Parsed(doc),
             Err(e) => Stored::Unparsed {
-                hash: text_hash(text.as_bytes()),
                 error: format!("at `{at}` {e}"),
             },
         }),
