@@ -60,6 +60,13 @@ pub const GET_ENGINE_DIAGNOSTICS: &str =
      mode. \
      pattern_notes_evicted (notes): sounding pattern notes cut short because too many were held \
      at once; shorten the notes or thin the overlap. \
+     midi_received (messages): MIDI messages read from a device or injected by a client, \
+     unsupported ones included and clock, active sensing and SysEx excepted; a throughput count, not a fault, expected to rise \
+     while MIDI is played, and zero while playing means the engine hears no MIDI input, so check \
+     the device. \
+     midi_unsupported (messages): received MIDI messages of a kind no MIDI map can bind \
+     (polyphonic aftertouch) or bytes that are not one well-formed message, dropped; set the \
+     controller to send channel pressure instead of polyphonic aftertouch. \
      Fails fast if no engine is reachable.";
 
 pub const GET_ENGINE_METERS: &str =
