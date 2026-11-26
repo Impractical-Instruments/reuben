@@ -9,10 +9,10 @@
 //! 1. runs note allocation (assign / steal-oldest / release) over the incoming `notes`, resolving
 //!    [`Degree`](crate::vocab::pitch::Pitch::Degree) pitches through the `harmony` context — the
 //!    musical brain, kept from the old Lane-fan-out Voicer;
-//! 2. drives each voice's `freq`/`gate` interface inputs with a sparse change-list of [`Message`]s at
-//!    their exact frames (the sub-render block-slices at those frames, so note-ons stay
+//! 2. drives each voice's `freq`/`gate` interface inputs with a sparse change-list of control at
+//!    their exact frames, resolved against the voice plans once at instantiate (the sub-render block-slices at those frames, so note-ons stay
 //!    sample-accurate);
-//! 3. renders every voice with the re-entrant [`render_plan`] over that voice's own arena;
+//! 3. renders every voice re-entrantly, as [`render_plan`](crate::render::render_plan) does, over that voice's own arena;
 //! 4. sums the voices' `audio` into its single audio output, in fixed voice-index order.
 //!
 //! There is no Lane fan-out: the Voicer is an ordinary operator whose polyphony lives in the hosted
@@ -45,7 +45,8 @@ use crate::message::{Arg, Message};
 use crate::operator::{Io, Operator};
 use crate::plan::{Plan, PlanError};
 use crate::probe::ProbeSlots;
-use crate::render::{render_plan, RenderScratch, SerialExecutor};
+use crate::engine::PENDING_CAP;
+use crate::render::{render_plan_resolved, RenderScratch, Resolved, SerialExecutor, Target};
 use crate::vocab::pitch::Pitch;
 
 // Single-source contract: `notes` is a `Note` event port, `harmony` a held
@@ -190,9 +191,9 @@ pub struct Voicer {
     /// Shared throwaway outbound sink (a voice patch sends nothing past the boundary).
     outbound: Vec<Message>,
     executor: SerialExecutor,
-    /// Reusable per-voice render-message buffer (`freq`/`gate` edges). Grown only during warmup;
-    /// reused (clear + rewrite addresses in place) so steady-state `process` never allocates.
-    msg_buf: Vec<Message>,
+    /// Reusable per-voice render control (`freq`/`gate` edges), cleared per voice. Holds a full
+    /// control queue's worth of notes landing on one voice, so external control never grows it.
+    msg_buf: Vec<Resolved>,
     /// Reusable allocation change-list `(voice, frame, freq, gate)`. Cleared per block.
     changes: Vec<(usize, usize, f32, bool)>,
     /// Reusable note-event snapshot `(frame, delivery index, on, pitch)`. Cleared per block.
@@ -211,10 +212,11 @@ pub struct Voicer {
     /// output. `None` ⇒ the patch declares no `active`; liveness then falls back to gate (`on`), and
     /// idle-voice skipping is disabled (we cannot know the release tail).
     active_cap: Option<usize>,
-    /// Resolved interface message addresses for the voice patch's `freq`/`gate` inputs
-    /// (`/<node>/<port>`), empty if the patch declares no such interface input.
-    freq_addr: String,
-    gate_addr: String,
+    /// Where the voice patch's `freq`/`gate` interface inputs land in each voice plan, resolved
+    /// once from voice 0 (sound for the reason `audio_buf` is); `None` if the patch declares no
+    /// such input.
+    freq: Option<Target>,
+    gate: Option<Target>,
     /// This node's address, bound before `on_instantiate` so a refused voice patch names its host.
     address: String,
 }
@@ -226,7 +228,7 @@ impl Voicer {
 }
 
 /// The `/<node>/<port>` message address of a voice patch's named `interface` **input**, used to
-/// drive it via routed [`Message`]s. `None` if the patch declares no such interface input.
+/// resolve once against the voice plans. `None` if the patch declares no such interface input.
 fn iface_input_addr(g: &Graph, name: &str) -> Option<String> {
     let (key, port) = g.interface.inputs.get(name).copied()?;
     let node = g.nodes.get(key)?;
@@ -234,20 +236,6 @@ fn iface_input_addr(g: &Graph, name: &str) -> Option<String> {
     Some(format!("{}/{}", node.address, pname))
 }
 
-/// Append/overwrite reusable message slot `*i` with `(addr, value, frame)` — reusing the slot's
-/// `String` capacity (no allocation once the buffer is warm), growing only on the first blocks.
-fn push_msg(buf: &mut Vec<Message>, i: &mut usize, addr: &str, v: f32, frame: usize) {
-    if *i < buf.len() {
-        let m = &mut buf[*i];
-        m.address.clear();
-        m.address.push_str(addr);
-        m.frame = frame;
-        m.arg = Arg::F32(v);
-    } else {
-        buf.push(Message::new(addr, Arg::F32(v), frame));
-    }
-    *i += 1;
-}
 
 impl Operator for Voicer {
     fn descriptor() -> Descriptor {
@@ -286,9 +274,9 @@ impl Operator for Voicer {
                 }
             }
         }
-        // All voice graphs are copies of one patch — resolve the interface addresses once.
-        self.freq_addr = iface_input_addr(&graphs[0], "freq").unwrap_or_default();
-        self.gate_addr = iface_input_addr(&graphs[0], "gate").unwrap_or_default();
+        // All voice graphs are copies of one patch — find the interface addresses once.
+        let freq_addr = iface_input_addr(&graphs[0], "freq");
+        let gate_addr = iface_input_addr(&graphs[0], "gate");
 
         let block = config.block_size;
         let mut slots = Vec::with_capacity(graphs.len());
@@ -321,9 +309,18 @@ impl Operator for Voicer {
             .map(|_| vec![0.0; block])
             .collect();
         self.outbound = Vec::with_capacity(64);
-        self.msg_buf = Vec::with_capacity(slots.len() * 4);
-        self.changes = Vec::with_capacity(slots.len() * 4);
-        self.events = Vec::with_capacity(16);
+        // One voice's control is its frame-0 baseline plus one change per note it takes, each a
+        // `freq` and a `gate`; a block's notes are at most a control queue's worth.
+        self.msg_buf = Vec::with_capacity(2 * (1 + PENDING_CAP));
+        self.changes = Vec::with_capacity(slots.len() + PENDING_CAP);
+        self.events = Vec::with_capacity(PENDING_CAP);
+        let target = |addr: &Option<String>, plan: &Plan| {
+            addr.as_deref()
+                .and_then(|a| plan.resolve(a))
+                .map(|(t, _)| t)
+        };
+        self.freq = target(&freq_addr, &slots[0].plan);
+        self.gate = target(&gate_addr, &slots[0].plan);
         self.touched = vec![false; slots.len()];
         // All voice plans are copies of one patch — resolve the output boundary indices once.
         self.audio_buf = slots[0].plan.interface_signal_buf("audio");
@@ -336,7 +333,9 @@ impl Operator for Voicer {
             slots
                 .iter()
                 .all(|s| s.plan.interface_signal_buf("audio") == self.audio_buf
-                    && s.plan.interface_value_slot("active") == self.active_cap),
+                    && s.plan.interface_value_slot("active") == self.active_cap
+                    && target(&freq_addr, &s.plan) == self.freq
+                    && target(&gate_addr, &s.plan) == self.gate),
             "voice plans disagree on their boundary slots — one patch must instantiate identically"
         );
         self.pool = VoicePool::new(slots.len());
@@ -425,8 +424,8 @@ impl Operator for Voicer {
             msg_buf,
             changes,
             touched,
-            freq_addr,
-            gate_addr,
+            freq,
+            gate,
             audio_buf,
             active_cap,
             probes,
@@ -447,22 +446,20 @@ impl Operator for Voicer {
             if can_skip && !v.on && !v.active && !touched[i] {
                 continue;
             }
-            let mut count = 0usize;
-            for &(vi, frame, freq, gate) in changes.iter() {
+            msg_buf.clear();
+            for &(vi, frame, hz, on) in changes.iter() {
                 if vi != i {
                     continue;
                 }
-                if !freq_addr.is_empty() {
-                    push_msg(msg_buf, &mut count, freq_addr, freq, frame);
-                }
-                if !gate_addr.is_empty() {
-                    push_msg(
-                        msg_buf,
-                        &mut count,
-                        gate_addr,
-                        if gate { 1.0 } else { 0.0 },
-                        frame,
-                    );
+                let gate_value = if on { 1.0 } else { 0.0 };
+                for (target, v) in [(*freq, hz), (*gate, gate_value)] {
+                    if let Some(target) = target {
+                        msg_buf.push(Resolved {
+                            target,
+                            frame,
+                            arg: Arg::F32(v),
+                        });
+                    }
                 }
             }
             // A voice's `osc_out` sends go nowhere past the boundary. Their args are retired; each
@@ -470,16 +467,15 @@ impl Operator for Voicer {
             for m in outbound.drain(..) {
                 retire_to(retire, m.arg);
             }
-            render_plan(
+            // No input master for a hosted plan — and none exists: the voice graph's channel
+            // bindings were cleared at `on_instantiate`.
+            render_plan_resolved(
                 &mut slot.plan,
                 &mut slot.arena,
                 scratch,
                 executor,
-                &msg_buf[..count],
+                msg_buf,
                 n,
-                // No input master for a hosted plan — and none exists: the
-                // voice graph's channel bindings were cleared at `on_instantiate`.
-                &[],
                 master,
                 outbound,
                 retire,

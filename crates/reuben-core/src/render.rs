@@ -27,6 +27,7 @@ use smallvec::SmallVec;
 
 use crate::coordinator::retire::{retire_to, RetireQueue};
 use crate::descriptor::{Port, PortType};
+use crate::engine::PENDING_CAP;
 use crate::message::{Arg, Emit, Event, Message};
 use crate::meter::Block;
 use crate::operator::{Io, OperatorCounts};
@@ -328,6 +329,34 @@ pub fn render_plan<E: Executor>(
         Inbound::Addressed(messages),
         frames,
         inputs,
+        master,
+        outbound,
+        retire,
+    );
+}
+
+/// [`render_plan`] with control already resolved against `plan`, so routing it matches no
+/// address. A hosting operator resolves its sub-plans' inputs once and drives them through this.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn render_plan_resolved<E: Executor>(
+    plan: &mut Plan,
+    arena: &mut [Vec<AudioSample>],
+    scratch: &mut RenderScratch,
+    executor: &E,
+    messages: &[Resolved],
+    frames: usize,
+    master: &mut [Vec<AudioSample>],
+    outbound: &mut Vec<Message>,
+    retire: Option<&RetireQueue>,
+) {
+    render_inbound(
+        plan,
+        arena,
+        scratch,
+        executor,
+        Inbound::Resolved(messages),
+        frames,
+        &[],
         master,
         outbound,
         retire,
@@ -700,26 +729,57 @@ impl NodeRoute {
     /// Buckets sized so a Plan's first block allocates nothing: one routed change per input port of
     /// their kind, and never fewer than [`ROUTED_CHANGES_MIN`] for a kind the node has at all. One
     /// per port is what a send or a pipe's forward delivers, and a pipe forwards only on change, so
-    /// its first block (each consumer's first held change) is the case this exists for. Nothing
-    /// bounds a block's changes to one port — an upstream node may emit at every frame, and a batch
-    /// may address one port many times — so past this a bucket grows once on the render thread and
-    /// keeps the capacity, the policy `EMIT_POOL_CAP` states for the emit pool.
+    /// its first block (each consumer's first held change) is the case this exists for. External
+    /// control fits whatever a block queues: its held and materialized changes coalesce per port
+    /// and frame, and an event bucket takes a full control queue. Emissions are not bounded — an
+    /// upstream node may emit at every frame — so past this a bucket grows once on the render
+    /// thread and keeps the capacity, the policy `EMIT_POOL_CAP` states for the emit pool.
     fn presized(node: &PlanNode) -> Self {
         let capacity =
             |kind: PortKind| match node.input_kinds.iter().filter(|&&k| k == kind).count() {
                 0 => 0,
                 n => n.max(ROUTED_CHANGES_MIN),
             };
+        // Stream events are never coalesced, so an event bucket takes a full control queue.
+        let events = match capacity(PortKind::Event) {
+            0 => 0,
+            n => n.max(PENDING_CAP),
+        };
         Self {
             materialize_writes: Vec::with_capacity(capacity(PortKind::Signal)),
             held: Vec::with_capacity(capacity(PortKind::Value)),
-            events: Vec::with_capacity(capacity(PortKind::Event)),
+            events: Vec::with_capacity(events),
         }
     }
 
     fn push_materialize(&mut self, frame: usize, port: usize, value: f32) {
         let seq = self.materialize_writes.len();
         self.materialize_writes.push((frame, seq, port, value));
+    }
+
+    /// [`push_materialize`](Self::push_materialize), overwriting a write already routed to `port`
+    /// at `frame`: the last of them is the only one materialize applies. External control routes
+    /// before any node emits, so what this overwrites is never an emission. Bounds the bucket by
+    /// the node's ports times the distinct frames external control names (one, through
+    /// `queue_osc`), however many messages a block queues.
+    fn set_materialize(&mut self, frame: usize, port: usize, value: f32) {
+        match self
+            .materialize_writes
+            .iter_mut()
+            .find(|w| w.0 == frame && w.2 == port)
+        {
+            Some(w) => w.3 = value,
+            None => self.push_materialize(frame, port, value),
+        }
+    }
+
+    /// The held-change dual of [`set_materialize`](Self::set_materialize): the last change to
+    /// `port` at `frame` is the one its segment latches. The value it displaces is retired.
+    fn set_held(&mut self, frame: usize, port: usize, arg: Arg, retire: Option<&RetireQueue>) {
+        match self.held.iter_mut().find(|h| h.0 == frame && h.1 == port) {
+            Some(h) => retire_to(retire, core::mem::replace(&mut h.2, arg)),
+            None => self.held.push((frame, port, arg)),
+        }
     }
 }
 
@@ -834,7 +894,7 @@ fn route_messages(
                     // same.
                     PortKind::Signal => {
                         if let Some(v) = arg.as_f32().map(|v| clamp_to(&alias.port, v)) {
-                            routes[n].push_materialize(frame, port, v);
+                            routes[n].set_materialize(frame, port, v);
                             held = Some(Arg::F32(v));
                         }
                     }
@@ -850,13 +910,13 @@ fn route_messages(
                         match plan.nodes[n].input_kinds[port] {
                             PortKind::Signal => {
                                 if let Some(v) = a.as_f32() {
-                                    routes[n].push_materialize(frame, port, v);
+                                    routes[n].set_materialize(frame, port, v);
                                 }
                             }
                             PortKind::Value => {
                                 let p = &plan.nodes[n].descriptor.inputs[port];
                                 match held_arg(p, &a) {
-                                    Some(a2) => routes[n].held.push((frame, port, a2)),
+                                    Some(a2) => routes[n].set_held(frame, port, a2, retire),
                                     None if is_unprepared(p, &a) => plan.dropped_unprepared += 1,
                                     None => {}
                                 }
@@ -896,13 +956,13 @@ fn route_messages(
                     PortKind::Signal => {
                         let p = &plan.nodes[i].descriptor.inputs[port];
                         if let Some(v) = arg.as_f32().map(|v| clamp_to(p, v)) {
-                            routes[i].push_materialize(frame, port, v);
+                            routes[i].set_materialize(frame, port, v);
                         }
                     }
                     PortKind::Value => {
                         let p = &plan.nodes[i].descriptor.inputs[port];
                         match held_arg(p, arg) {
-                            Some(a) => routes[i].held.push((frame, port, a)),
+                            Some(a) => routes[i].set_held(frame, port, a, retire),
                             None if is_unprepared(p, arg) => plan.dropped_unprepared += 1,
                             None => {}
                         }

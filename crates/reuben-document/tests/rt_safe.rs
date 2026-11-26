@@ -1185,9 +1185,7 @@ fn a_long_pattern_run_with_replacements_touches_no_heap_on_the_render_thread() {
 }
 
 /// A caller that queues past the Engine's control queue without waiting for room: the overflow is
-/// dropped and counted, never grown into. One full block warms the per-node routes first: a node
-/// taking a queue's worth of messages in one block grows those on first use, which this does not
-/// cover.
+/// dropped and counted, never grown into, from a fresh Engine's first block.
 #[test]
 fn engine_queue_osc_past_its_capacity_drops_and_counts_without_the_heap() {
     use reuben_core::engine::PENDING_CAP;
@@ -1204,11 +1202,7 @@ fn engine_queue_osc_past_its_capacity_drops_and_counts_without_the_heap() {
         .graph;
     let mut e = Engine::new(Plan::instantiate(graph, cfg).expect("instantiate"));
     let mut out = vec![0.0f32; cfg.block_size * e.channels()];
-    for i in 0..PENDING_CAP {
-        e.queue_osc("/abs/x", &[Arg::I32(i as i32)]);
-    }
     e.fill(&mut out);
-    assert_eq!(e.take_dropped_queue_full(), 0);
 
     assert_counter_is_live();
     let q = measure(|| {
@@ -1220,4 +1214,53 @@ fn engine_queue_osc_past_its_capacity_drops_and_counts_without_the_heap() {
     assert_eq!(((q.allocs, q.frees), (f.allocs, f.frees)), ((0, 0), (0, 0)));
     assert_eq!(e.take_dropped_queue_full(), OVER as u64);
     assert_eq!(e.pending_room(), PENDING_CAP, "the next block starts empty");
+}
+
+/// A full control queue's worth of messages to one node in a fresh Engine's first block, for each
+/// kind of input routing stores: a held value, a materialized signal, and Stream events into a
+/// Voicer. Routing and rendering them touches no heap.
+#[test]
+fn a_full_queue_to_one_node_routes_without_the_heap_from_the_first_block() {
+    use reuben_core::engine::PENDING_CAP;
+
+    const DOC: &str = r#"{ "format_version": 3, "instrument": "dense",
+        "interface": { "outputs": { "out": { "from": "/filt.audio" } } },
+        "nodes": [
+          { "type": "oscillator", "address": "/osc" },
+          { "type": "filter", "address": "/filt", "inputs": { "audio": { "from": "/osc.audio" } } },
+          { "type": "abs_i32_value", "address": "/abs" } ] }"#;
+    let fresh = |doc: &str| {
+        let cfg = AudioConfig::new(48_000.0, 64);
+        let graph = load_instrument(doc, &Registry::builtin(), &InstrumentsDir)
+            .expect("load")
+            .graph;
+        Engine::new(Plan::instantiate(graph, cfg).expect("instantiate"))
+    };
+    type Args = fn(usize) -> Vec<Arg>;
+    let cases: [(&str, &str, Args); 3] = [
+        (DOC, "/abs/x", |i| vec![Arg::I32(i as i32)]),
+        (DOC, "/filt/cutoff", |i| vec![Arg::F32(200.0 + i as f32)]),
+        // Alternating note-on and note-off, so the pool both assigns and releases.
+        (DEFAULT_JSON, "/notes/in", |i| {
+            vec![Arg::F32(48.0 + (i % 24) as f32), Arg::F32((i % 2) as f32)]
+        }),
+    ];
+    for (doc, address, args) in cases {
+        let mut e = fresh(doc);
+        let mut out = vec![0.0f32; e.block_size() * e.channels()];
+        let msgs: Vec<Vec<Arg>> = (0..PENDING_CAP).map(args).collect();
+        e.fill(&mut out);
+        assert_counter_is_live();
+        let c = measure(|| {
+            for m in &msgs {
+                e.queue_osc(address, m);
+            }
+            e.fill(&mut out);
+        });
+        assert_eq!(
+            (c.allocs, c.frees),
+            (0, 0),
+            "{PENDING_CAP} messages to {address}"
+        );
+    }
 }
