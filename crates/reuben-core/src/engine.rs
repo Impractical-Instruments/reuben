@@ -16,11 +16,12 @@
 //!
 //! RT-safety: queueing resolves the address against the Engine's Plan once, so the `pending` queue
 //! holds each message's target index and payload, never its address. Queue + render of flat-arg
-//! control does no heap work: the queue is preallocated and cleared, never replaced (a burst past
-//! its high-water mark grows it once), and nothing in a queued entry owns an allocation unless its
-//! payload does, and that payload goes to the retire queue ([`Engine::set_retire_queue`]) rather
-//! than being dropped here. [`Engine::queue`] takes an already-built [`Message`] and drops its
-//! address there.
+//! control does no heap work: the queue is preallocated and cleared, never replaced or grown, and
+//! nothing in a queued entry owns an allocation unless its payload does, and that payload goes to
+//! the retire queue ([`Engine::set_retire_queue`]) rather than being dropped here. A message past
+//! the queue's capacity is dropped and counted ([`Engine::take_dropped_queue_full`]); a host that
+//! queues no more than [`Engine::pending_room`] per block never reaches that. [`Engine::queue`]
+//! takes an already-built [`Message`] and drops its address there.
 //!
 //! The queue belongs to this Engine and indexes this Engine's Plan. An install replaces the whole
 //! Engine, so control still pending at that moment leaves with the retiring Engine and is never
@@ -34,10 +35,10 @@ use crate::message::{Arg, Message};
 use crate::plan::Plan;
 use crate::render::{Renderer, Resolved};
 
-/// Preallocated capacity of the inbound queue. Sized well past a block's worth of live control
-/// traffic (a played chord plus a few knob moves), so steady state never grows it on the audio
-/// thread.
-const PENDING_CAP: usize = 64;
+/// Capacity of the inbound queue, fixed: it never grows on the render thread. At least one whole
+/// `send` batch (`MAX_SEND_BATCH` in `reuben-api`, pinned to this there), so a host that waits for
+/// room before queueing a batch always has room once the queue is empty.
+pub const PENDING_CAP: usize = 256;
 
 /// Owns a Plan + Renderer and serves **interleaved logical** audio one block at a time into
 /// arbitrary buffers. "Logical" = the instrument's master channels; mapping those
@@ -48,6 +49,8 @@ pub struct Engine {
     renderer: Renderer,
     /// Control to apply at the start of the next rendered block, resolved against `plan`.
     pending: Vec<Resolved>,
+    /// Messages dropped for arriving with `pending` full, since the last take.
+    dropped_queue_full: u64,
     /// Outbound Messages an `osc_out` sink sent, accumulated across the block(s) one
     /// [`Engine::fill`] renders and drained by the caller after fill (native encodes + UDP-sends
     /// them). Cleared at the top of each `fill`.
@@ -83,6 +86,7 @@ impl Engine {
             plan,
             renderer,
             pending: Vec::with_capacity(PENDING_CAP),
+            dropped_queue_full: 0,
             outbound: Vec::new(),
             channels,
             in_channels,
@@ -105,6 +109,36 @@ impl Engine {
     /// this is zero at every block boundary in steady state.
     pub fn pending_len(&self) -> usize {
         self.pending.len()
+    }
+
+    /// How many more messages the queue takes before the next block. A host draining whole
+    /// batches waits on one larger than this, unless the queue is empty and so can never make
+    /// more room; what then overflows is dropped and counted. RT-safe.
+    pub fn pending_room(&self) -> usize {
+        PENDING_CAP - self.pending.len()
+    }
+
+    /// Take the count of messages dropped for arriving with the queue full, leaving zero.
+    /// RT-safe: a field read and write.
+    pub fn take_dropped_queue_full(&mut self) -> u64 {
+        core::mem::take(&mut self.dropped_queue_full)
+    }
+
+    /// Add `n` to the count [`take_dropped_queue_full`](Self::take_dropped_queue_full) returns: an
+    /// install credits the fresh Engine with what the retiring one had not handed on.
+    pub fn credit_dropped_queue_full(&mut self, n: u64) {
+        self.dropped_queue_full += n;
+    }
+
+    /// Push onto `pending` if it has room; otherwise drop and count, its payload to the retire
+    /// queue, so the render thread neither grows the queue nor frees a payload.
+    fn push_pending(&mut self, entry: Resolved) {
+        if self.pending.len() < PENDING_CAP {
+            self.pending.push(entry);
+        } else {
+            self.dropped_queue_full += 1;
+            retire_to(self.renderer.retire_queue(), entry.arg);
+        }
     }
 
     /// The core block size this engine renders in.
@@ -135,7 +169,7 @@ impl Engine {
     /// block routes it.
     pub fn queue(&mut self, msg: Message) {
         if let Some((target, _)) = self.plan.resolve(&msg.address) {
-            self.pending.push(Resolved {
+            self.push_pending(Resolved {
                 target,
                 frame: msg.frame,
                 arg: msg.arg,
@@ -152,7 +186,7 @@ impl Engine {
     /// lives here rather than in the address-blind decode layers.
     pub fn queue_osc(&mut self, address: &str, args: &[Arg]) {
         if let Some((target, arg)) = self.plan.osc_in(address, args) {
-            self.pending.push(Resolved {
+            self.push_pending(Resolved {
                 target,
                 frame: 0,
                 arg,

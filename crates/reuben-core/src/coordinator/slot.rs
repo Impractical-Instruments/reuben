@@ -160,6 +160,23 @@ impl RenderSlot {
         self.engine.queue(msg);
     }
 
+    /// How many more messages the live Engine's queue takes before its next block; see
+    /// [`Engine::pending_room`]. RT-safe.
+    pub fn pending_room(&self) -> usize {
+        self.engine.pending_room()
+    }
+
+    /// How many messages the live Engine has queued for its next block. RT-safe.
+    pub fn pending_len(&self) -> usize {
+        self.engine.pending_len()
+    }
+
+    /// Take the count of inbound messages dropped for arriving with the live Engine's queue full,
+    /// since the last take, leaving zero. RT-safe: a field read and write.
+    pub fn take_dropped_queue_full(&mut self) -> u64 {
+        self.engine.take_dropped_queue_full()
+    }
+
     /// Take the count of inbound messages dropped for addressing an input a wire or an interface
     /// pipe feeds, since the last take, leaving zero. RT-safe: a field read and write.
     pub fn take_dropped_wired_writes(&mut self) -> u64 {
@@ -384,6 +401,8 @@ impl RenderSlot {
         bundle.engine.credit_dropped_wired_writes(dropped);
         let dropped = self.engine.take_dropped_unprepared();
         bundle.engine.credit_dropped_unprepared(dropped);
+        let dropped = self.engine.take_dropped_queue_full();
+        bundle.engine.credit_dropped_queue_full(dropped);
         let counted = self.engine.take_operator_counts();
         bundle.engine.credit_operator_counts(counted);
         // Swap the fresh Engine live; `bundle.engine` now holds the retiring one. Reusing the box's

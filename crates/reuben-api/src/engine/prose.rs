@@ -41,7 +41,9 @@ pub const GET_CURRENT_INSTRUMENT: &str =
 pub const GET_ENGINE_DIAGNOSTICS: &str =
     "Return the engine's running diagnostics counters since start: output_xruns (events), \
      input_ring underruns/overruns/producer_drops (frames), control_batches_dropped_full \
-     (batches), and wired_writes_dropped (control messages dropped for addressing an input a \
+     (batches), control_messages_dropped_full (messages dropped for arriving with the engine's \
+     per-block queue full: only one OSC bundle larger than the queue does this), and \
+     wired_writes_dropped (control messages dropped for addressing an input a \
      wire or an interface input feeds: a node input, or a subpatch boundary input such as \
      /a/level/in that the host feeds). \
      retire_queue_dropped_full (values): replaced strings the audio thread freed itself because \

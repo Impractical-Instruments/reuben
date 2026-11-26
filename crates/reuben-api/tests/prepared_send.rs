@@ -81,7 +81,7 @@ struct Host {
 /// What native's drain does with one batch, without recording addresses: queue it, or count it
 /// dropped, or leave it. Allocation-free.
 fn take(slot: &mut RenderSlot, batch: &[PreparedMessage], stale: &AtomicU64) -> ControlFate {
-    let fate = control_fate(slot, batch.iter().map(|m| m.against.as_ref()));
+    let fate = control_fate(slot, batch.len(), batch.iter().map(|m| m.against.as_ref()));
     match fate {
         ControlFate::Queue => {
             for m in batch {

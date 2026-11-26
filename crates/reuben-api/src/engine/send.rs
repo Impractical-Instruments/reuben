@@ -59,8 +59,9 @@ pub enum ControlFate {
     /// Queue every message at the live Engine.
     Queue,
     /// Leave the batch where it is and come back to it: a swap is installing, so the live Engine
-    /// is about to retire and anything queued on it may never render. The Engine that installs
-    /// takes it.
+    /// is about to retire and anything queued on it may never render, and the Engine that
+    /// installs takes it; or the live Engine's queue has no room for it whole this block, and the
+    /// next block's does.
     Wait,
     /// Queue none of it: its strings were compiled for a Plan a swap has since replaced. The
     /// drain counts every message and hands every address back off the render thread, so the
@@ -68,8 +69,15 @@ pub enum ControlFate {
     Drop,
 }
 
-/// Decide [`ControlFate`] for a batch whose messages carry `stamps` (their `against`), at `slot`.
-/// Every compiled message of one `send` names the same Plan, so the first stamp decides.
+/// Decide [`ControlFate`] for a batch of `len` messages carrying `stamps` (their `against`), at
+/// `slot`. Every compiled message of one `send` names the same Plan, so the first stamp decides.
+///
+/// A batch larger than [`RenderSlot::pending_room`] waits, so the Engine's queue never overflows
+/// and a burst spreads over blocks rather than splitting a batch. On an empty queue a batch is
+/// queued whatever its size: past the queue's capacity (no fewer than
+/// [`MAX_SEND_BATCH`](super::MAX_SEND_BATCH)) the Engine drops and counts the rest. A host draining
+/// several producers must offer a batch that waited ahead of the others on its next drain;
+/// otherwise a producer that queues on every drain keeps the queue from ever being empty for it.
 ///
 /// Call [`RenderSlot::latch_install`] once before the drain, and fill after it: the waiting
 /// answer is then the one the fill acts on, so a batch this queues renders on the Engine it was
@@ -77,9 +85,10 @@ pub enum ControlFate {
 ///
 /// A stamp naming a Plan that is not live normally drops the batch. But if a swap was committed
 /// after the latch, the batch was compiled for the Plan that swap installs, so it waits for it.
-/// RT-safe: at most two `Acquire` loads and one pointer compare.
+/// RT-safe: at most two `Acquire` loads, one pointer compare and two field reads.
 pub fn control_fate<'a>(
     slot: &RenderSlot,
+    len: usize,
     stamps: impl IntoIterator<Item = Option<&'a PreparedAgainst>>,
 ) -> ControlFate {
     if slot.install_pending() {
@@ -93,6 +102,7 @@ pub fn control_fate<'a>(
                 ControlFate::Drop
             }
         }
+        _ if len > slot.pending_room() && slot.pending_len() > 0 => ControlFate::Wait,
         _ => ControlFate::Queue,
     }
 }

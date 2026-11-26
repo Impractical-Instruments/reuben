@@ -706,6 +706,7 @@ pub fn diagnostics_report(snapshot: &Snapshot) -> DiagnosticsReport {
         input_ring_overruns,
         input_ring_producer_drops,
         control_batches_dropped_full,
+        control_messages_dropped_full,
         wired_writes_dropped,
         retire_queue_dropped_full,
         unprepared_writes_dropped,
@@ -725,6 +726,7 @@ pub fn diagnostics_report(snapshot: &Snapshot) -> DiagnosticsReport {
         input_ring_overruns,
         input_ring_producer_drops,
         control_batches_dropped_full,
+        control_messages_dropped_full,
         wired_writes_dropped,
         retire_queue_dropped_full,
         unprepared_writes_dropped,
@@ -1300,6 +1302,8 @@ mod tests {
         }
         d.record_wired_writes_dropped(5);
         d.record_wired_writes_dropped(0);
+        d.record_control_messages_dropped_full(17);
+        d.record_control_messages_dropped_full(0);
         d.record_unprepared_writes_dropped(6);
         d.record_unprepared_writes_dropped(0);
         d.record_stale_sends_dropped(7);
@@ -1331,6 +1335,7 @@ mod tests {
         assert_eq!(report.input_ring_overruns, 22);
         assert_eq!(report.input_ring_producer_drops, 33);
         assert_eq!(report.control_batches_dropped_full, 4);
+        assert_eq!(report.control_messages_dropped_full, 17);
         assert_eq!(report.wired_writes_dropped, 5);
         assert_eq!(report.unprepared_writes_dropped, 6);
         assert_eq!(report.stale_sends_dropped, 7);

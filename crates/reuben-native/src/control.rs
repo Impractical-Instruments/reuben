@@ -147,12 +147,12 @@ impl ControlRing {
     /// Offer the held batch, then each batch waiting on the forward ring, to `apply`, and hand
     /// back each it took. Takes only what was waiting when it started, so a producer pushing as
     /// fast as it is drained cannot hold the callback here. A batch `apply` declines is held and
-    /// the drain stops, so batches keep their order.
-    fn drain(&mut self, apply: &mut impl FnMut(&mut ControlBatch) -> bool) {
+    /// the drain stops, so batches keep their order. Answers whether every batch offered was taken.
+    fn drain(&mut self, apply: &mut impl FnMut(&mut ControlBatch) -> bool) -> bool {
         if let Some(mut batch) = self.held.take() {
             if !apply(&mut batch) {
                 self.held = Some(batch);
-                return;
+                return false;
             }
             self.return_batch(batch);
         }
@@ -162,10 +162,11 @@ impl ControlRing {
             };
             if !apply(&mut batch) {
                 self.held = Some(batch);
-                return;
+                return false;
             }
             self.return_batch(batch);
         }
+        true
     }
 
     fn return_batch(&mut self, batch: ControlBatch) {
@@ -183,22 +184,34 @@ impl ControlRing {
 /// Every ring pair the render callback drains, fixed when the session starts.
 pub struct ControlDrain {
     rings: Vec<ControlRing>,
+    /// The ring the next drain starts from: the first that declined a batch last drain, else 0.
+    first: usize,
 }
 
 impl ControlDrain {
     pub fn new(rings: Vec<ControlRing>) -> Self {
-        Self { rings }
+        Self { rings, first: 0 }
     }
 
     /// Apply every waiting batch, whole and in its producer's order, then return it to that
-    /// producer. Rings are drained in the order they were given, so between two producers the
-    /// first's batches of a block come first. `apply` answers `false` to decline a batch: that
-    /// ring stops there and offers the same batch first on the next drain. RT-safe: atomic loads
-    /// and stores and moves of the batches, nothing else.
+    /// producer. Rings are drained in the order they were given, unless one declined last drain.
+    /// `apply` answers `false` to decline a batch: that ring stops there and offers the same batch
+    /// first on the next drain.
+    ///
+    /// The next drain then starts at that ring, the rest following in order, so a batch declined
+    /// for want of room in the Engine's queue meets the queue first once a block has emptied it,
+    /// rather than behind a ring that refills it every callback. RT-safe: atomic loads and stores
+    /// and moves of the batches, nothing else.
     pub fn drain(&mut self, mut apply: impl FnMut(&mut ControlBatch) -> bool) {
-        for ring in &mut self.rings {
-            ring.drain(&mut apply);
+        let n = self.rings.len();
+        let mut declined = None;
+        for k in 0..n {
+            let i = (self.first + k) % n;
+            if !self.rings[i].drain(&mut apply) && declined.is_none() {
+                declined = Some(i);
+            }
         }
+        self.first = declined.unwrap_or(0);
     }
 }
 

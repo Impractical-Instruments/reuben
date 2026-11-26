@@ -50,6 +50,9 @@ pub const MAX_PROBES: usize = 512;
 /// batch. Shared here so the door advertising a `maxItems` and the engine enforcing it cannot drift.
 pub const MAX_SEND_BATCH: usize = 256;
 
+// A whole batch must fit the Engine's empty control queue, or its tail is dropped on arrival.
+const _: () = assert!(MAX_SEND_BATCH <= reuben_core::engine::PENDING_CAP);
+
 /// Why an empty batch is refused. Stated once because both ends check it — the client so a bad
 /// batch never reaches the wire, the server because it cannot trust that a client did — and a
 /// caller reading two wordings for one condition has to work out whether they mean the same thing.
@@ -692,6 +695,11 @@ pub struct DiagnosticsReport {
     /// predates it, and then zero.
     #[serde(default)]
     pub control_batches_dropped_full: u64,
+    /// Control messages dropped because the engine's per-block queue was full: only a single batch
+    /// larger than the queue reaches this (messages). Absent from a report by an engine that
+    /// predates it, and then zero.
+    #[serde(default)]
+    pub control_messages_dropped_full: u64,
     /// Control messages dropped for addressing an input a wire or an interface pipe feeds
     /// (messages). Absent from a report by an engine that predates it, and then zero.
     #[serde(default)]
@@ -1003,6 +1011,7 @@ mod tests {
             input_ring_overruns: 0,
             input_ring_producer_drops: 96,
             control_batches_dropped_full: 7,
+            control_messages_dropped_full: 9,
             wired_writes_dropped: 3,
             retire_queue_dropped_full: 3,
             unprepared_writes_dropped: 2,
@@ -1525,6 +1534,7 @@ mod tests {
                 "input_ring_overruns": 0,
                 "input_ring_producer_drops": 96,
                 "control_batches_dropped_full": 7,
+                "control_messages_dropped_full": 9,
                 "wired_writes_dropped": 3,
                 "retire_queue_dropped_full": 3,
                 "unprepared_writes_dropped": 2,
@@ -1551,6 +1561,7 @@ mod tests {
         }))
         .expect("an older engine's report still reads");
         assert_eq!(report.control_batches_dropped_full, 0);
+        assert_eq!(report.control_messages_dropped_full, 0);
         assert_eq!(report.wired_writes_dropped, 0);
         assert_eq!(report.retire_queue_dropped_full, 0);
         assert_eq!(report.unprepared_writes_dropped, 0);
