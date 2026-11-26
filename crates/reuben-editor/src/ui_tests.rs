@@ -745,6 +745,51 @@ fn the_meters_ride_the_right_edge_of_the_controls_panel() {
     );
 }
 
+/// Write an instrument at `lib/shared.json` whose one resource, `take`, is read by thirteen
+/// granulators.
+fn shared(scratch: &Scratch) -> PathBuf {
+    let lib = scratch.path("lib");
+    std::fs::create_dir_all(&lib).expect("create the library directory");
+    let top = lib.join("shared.json");
+    let nodes: Vec<_> = (1..=13)
+        .map(|n| json!({"type": "granulator", "address": format!("/loop{n}"), "sample": "take"}))
+        .collect();
+    let text = json!({
+        "format_version": 3,
+        "instrument": "shared",
+        "resources": {"take": "samples/take.wav"},
+        "nodes": nodes
+    })
+    .to_string();
+    std::fs::write(&top, text).expect("write the instrument");
+    top
+}
+
+#[test]
+fn a_resource_read_by_many_nodes_leaves_the_inspector_its_default_width() {
+    let scratch = Scratch::new("ui_resource_readers");
+    let config = TempConfig::new();
+    let top = shared(&scratch);
+    let mut harness = harness(editor(&top, &config));
+    harness.run_steps(2);
+
+    // The inspector is the rightmost panel, so its width is the window's right edge less its
+    // heading's left, give or take the panel's margin.
+    let heading = harness.get_by_label("RESOURCES").rect();
+    let width = 1280.0 - heading.left();
+    assert!(
+        width <= 320.0,
+        "the inspector is {width} wide, past its default of 320"
+    );
+    for button in ["Repoint…", "Remove"] {
+        let rect = harness.get_by_label(button).rect();
+        assert!(
+            rect.right() <= 1280.0,
+            "{button} at {rect:?} is off the window"
+        );
+    }
+}
+
 /// Write an instrument at `lib/metered.json`: an oscillator `/osc` into an output `/out`, and an
 /// `osc_out` `/echo` of its `level` input, which has no Signal output.
 fn metered(scratch: &Scratch) -> PathBuf {

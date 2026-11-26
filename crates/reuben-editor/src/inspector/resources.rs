@@ -272,6 +272,9 @@ fn readers<'a>(top: &'a InstrumentStructure, id: &str) -> Vec<&'a str> {
         .collect()
 }
 
+/// The most readers an entry names in full; past it the entry counts them, and names them on hover.
+const LISTED_READERS: usize = 3;
+
 /// What a button in the table asked to pick a file for.
 #[derive(Debug, Hash)]
 enum Want {
@@ -307,13 +310,17 @@ pub fn list(
             ui.strong(&entry.id);
             ui.weak(&entry.source).on_hover_text(&entry.canonical);
         });
-        ui.horizontal(|ui| {
-            let readers = readers(top, &entry.id);
-            if readers.is_empty() {
-                ui.weak("read by no node");
-            } else {
-                ui.weak(format!("read by {}", readers.join(", ")));
+        // On a line of its own, where it wraps: a row that cannot wrap holds the panel at least
+        // as wide as itself.
+        let readers = readers(top, &entry.id);
+        match readers.len() {
+            0 => ui.weak("read by no node"),
+            n if n > LISTED_READERS => {
+                (ui.weak(format!("read by {n} nodes"))).on_hover_text(readers.join(", "))
             }
+            _ => ui.weak(format!("read by {}", readers.join(", "))),
+        };
+        ui.horizontal(|ui| {
             if ui.button("Repoint…").clicked() {
                 want = Some(Want::Repoint(entry.id.clone(), Kind::of(&entry.source)));
             }
