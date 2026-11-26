@@ -654,6 +654,25 @@ pub enum PlanError {
         pipe: String,
         kinds: (&'static str, &'static str),
     },
+    /// The [`Interface::input_channels`](crate::graph::Interface::input_channels) binding for
+    /// `name` cannot be fed from its logical input channel: the input master needs an unwired
+    /// Signal input to write the caller's audio into. The loader binds only such inputs, so only a
+    /// hand-built graph reaches this.
+    InputChannel {
+        name: String,
+        reason: InputChannelReason,
+    },
+}
+
+/// Why an input channel binding was refused ([`PlanError::InputChannel`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputChannelReason {
+    /// [`Interface::inputs`](crate::graph::Interface::inputs) has no entry with the binding's name.
+    NoInterfaceInput,
+    /// The bound input is wired, so it reads its feeder rather than the channel.
+    Wired,
+    /// The bound input is not a Signal port, so it has no buffer for the channel's audio.
+    NotSignal,
 }
 
 /// One `str` value its preparer refused. `node` and `port` name the input holding it, an
@@ -772,6 +791,7 @@ impl Plan {
         // pass-through interface pipes out of the schedule (the pipe is a format
         // concept, not a mandatory rendered node) before ordering what actually executes.
         check_endpoints(&graph)?;
+        check_input_channels(&graph)?;
         check_wire_forms(&graph)?;
         assign_pipe_preparers(&mut graph)?;
         prepare_seeds(&mut graph)?;
@@ -1067,10 +1087,10 @@ impl Plan {
         // so the ZOH fill yields; an **unsupplied** channel leaves the ordinary materialize
         // fill in charge, so the pipe's declared default (and routed messages) drive it — a
         // `channel` + `default` pipe degrades to the control it advertises, not to zeros.
-        // Both loader invariants (a channel binding names a real pipe; a pipe's `in` is
-        // unwired at top level, hence materialized) are asserted loudly in dev and skipped
-        // dark in release — a broken invariant must not become a silent dead mic. BTreeMap
-        // iteration makes tap order (and so behavior) deterministic.
+        // `check_input_channels` refused every binding that names no interface input or whose
+        // input is wired or non-signal, so both asserts below are invariants of this function,
+        // not of the caller's graph. BTreeMap iteration makes tap order (and so behavior)
+        // deterministic.
         let mut input_taps: Vec<InputTap> = Vec::new();
         for (name, &channel) in &graph.interface.input_channels {
             let entry = graph.interface.inputs.get(name);
@@ -1086,8 +1106,8 @@ impl Plan {
                 .position(|(p, _)| *p == port);
             debug_assert!(
                 mat_index.is_some(),
-                "channel-bound pipe {name:?} has no materialized `in` scratch — wired or \
-                 non-signal, which the loader forbids"
+                "channel-bound pipe {name:?} has no materialized `in` scratch, which \
+                 `check_input_channels` should have refused"
             );
             let Some(mat_index) = mat_index else { continue };
             let (_, buffer) = nodes[node_idx].materialize[mat_index];
@@ -1942,6 +1962,35 @@ fn check_endpoints(graph: &Graph) -> Result<(), PlanError> {
     }
     for (name, &(key, port)) in &graph.interface.outputs {
         check(key, port, &|| PortPosition::InterfaceOutput(name.clone()))?;
+    }
+    Ok(())
+}
+
+/// Refuse an input channel binding the input master could not feed: one naming no interface input,
+/// or one whose input is not an unwired Signal port. Only those get the materialized scratch the
+/// input master writes into. Read from the authored graph, in binding-name order, after
+/// [`check_endpoints`] has proved every interface input's node and port exist.
+fn check_input_channels(graph: &Graph) -> Result<(), PlanError> {
+    for name in graph.interface.input_channels.keys() {
+        let refuse = |reason| {
+            Err(PlanError::InputChannel {
+                name: name.clone(),
+                reason,
+            })
+        };
+        let Some(&(key, port)) = graph.interface.inputs.get(name) else {
+            return refuse(InputChannelReason::NoInterfaceInput);
+        };
+        if port_kind(&graph.nodes[key].descriptor.inputs[port]) != PortKind::Signal {
+            return refuse(InputChannelReason::NotSignal);
+        }
+        if graph
+            .connections
+            .iter()
+            .any(|c| c.dst == key && c.dst_port == port)
+        {
+            return refuse(InputChannelReason::Wired);
+        }
     }
     Ok(())
 }

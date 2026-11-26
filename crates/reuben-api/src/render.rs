@@ -50,8 +50,9 @@ pub use reuben_core::operator::{InPort, OutPort};
 /// The operator set: constructors and port-index consts, for a host with no document to name a
 /// type by string.
 pub use reuben_core::operators;
-/// Why [`install_graph`] refused a graph, and where it named an undeclared port or a missing node.
-pub use reuben_core::plan::{PlanError, PortPosition, PrepareFailure};
+/// Why [`install_graph`] refused a graph: where it named an undeclared port or a missing node, and
+/// why an input channel binding cannot be fed.
+pub use reuben_core::plan::{InputChannelReason, PlanError, PortPosition, PrepareFailure};
 /// The sample rate and block size a Plan is instantiated against — a host's device geometry,
 /// which is why it is a parameter rather than a policy.
 pub use reuben_core::AudioConfig;
@@ -75,7 +76,9 @@ pub use reuben_core::boundary::osc_out_args;
 /// tap, or an `interface` entry — is refused as [`PlanError::PortOutOfRange`]; a typed handle in
 /// the wrong position does not compile. A wire, tap or `interface` entry naming a [`NodeKey`] the
 /// graph does not hold (left over from a removed node) is refused as [`PlanError::UnknownNode`]. A
-/// key minted by another `Graph` is refused only if it names no node here; see [`NodeKey`].
+/// key minted by another `Graph` is refused only if it names no node here; see [`NodeKey`]. An
+/// `interface.input_channels` binding naming no `interface.inputs` entry, or one whose input is
+/// wired or not a Signal port, is refused as [`PlanError::InputChannel`].
 ///
 /// Allocates; the Instantiate phase, not the audio thread.
 pub fn install_graph(graph: Graph, config: AudioConfig) -> Result<RenderSide, PlanError> {
@@ -315,5 +318,73 @@ mod tests {
             g.interface.outputs.insert("audio".into(), (gone, 0));
         });
         assert_unknown_node(refusal, PortPosition::InterfaceOutput("audio".into()));
+    }
+
+    /// A channel binding is keyed by interface input name, so it can name one that was never
+    /// declared.
+    #[test]
+    fn a_channel_binding_naming_no_interface_input_is_refused_as_a_plan_error() {
+        let refusal = patched(|g, osc, out| {
+            g.connect(osc, oscillator::OUT_AUDIO, out, output::IN_AUDIO);
+            g.tap_output(out, output::OUT_AUDIO);
+            g.interface.input_channels.insert("mic".into(), 0);
+        });
+        match refusal {
+            Err(e) => assert_eq!(
+                e,
+                PlanError::InputChannel {
+                    name: "mic".into(),
+                    reason: InputChannelReason::NoInterfaceInput,
+                }
+            ),
+            Ok(_) => panic!("a channel binding naming no interface input instantiated"),
+        }
+    }
+
+    /// The input master writes the caller's channel over the bound port's own scratch, which a
+    /// wired port does not have.
+    #[test]
+    fn a_channel_binding_on_a_wired_input_is_refused_as_a_plan_error() {
+        let refusal = patched(|g, osc, out| {
+            g.connect(osc, oscillator::OUT_AUDIO, out, output::IN_AUDIO);
+            g.tap_output(out, output::OUT_AUDIO);
+            g.interface
+                .inputs
+                .insert("mic".into(), (out, output::IN_AUDIO.index()));
+            g.interface.input_channels.insert("mic".into(), 0);
+        });
+        match refusal {
+            Err(e) => assert_eq!(
+                e,
+                PlanError::InputChannel {
+                    name: "mic".into(),
+                    reason: InputChannelReason::Wired,
+                }
+            ),
+            Ok(_) => panic!("a channel binding on a wired input instantiated"),
+        }
+    }
+
+    /// Device audio is a signal; a held Value port has no buffer to carry it.
+    #[test]
+    fn a_channel_binding_on_a_non_signal_input_is_refused_as_a_plan_error() {
+        let refusal = patched(|g, osc, out| {
+            g.connect(osc, oscillator::OUT_AUDIO, out, output::IN_AUDIO);
+            g.tap_output(out, output::OUT_AUDIO);
+            g.interface
+                .inputs
+                .insert("mic".into(), (osc, oscillator::IN_WAVEFORM.index()));
+            g.interface.input_channels.insert("mic".into(), 0);
+        });
+        match refusal {
+            Err(e) => assert_eq!(
+                e,
+                PlanError::InputChannel {
+                    name: "mic".into(),
+                    reason: InputChannelReason::NotSignal,
+                }
+            ),
+            Ok(_) => panic!("a channel binding on a non-signal input instantiated"),
+        }
     }
 }
