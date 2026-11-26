@@ -2,7 +2,7 @@
 
 Deterministic CI performance trend: callgrind **instruction counts (Ir)** for rendering **1 s of audio** (375 × 128-frame blocks @ 48 kHz), recorded on every direct push to `dev`. Instruction counts don't jitter — every visible move is a real code change (or a toolchain bump).
 
-**244 commits** · 2026-07-12 → 2026-11-26 · 20730 data points · last: `519f1ee` (2026-11-26T14:40:43-05:00)
+**245 commits** · 2026-07-12 → 2026-11-26 · 20828 data points · last: `e04f1c9` (2026-11-26T14:40:09-05:00)
 
 *Companion trend: the **main** series lives on the [`bench-history`](https://github.com/Impractical-Instruments/reuben/tree/bench-history) branch.*
 
@@ -43,15 +43,15 @@ Cost paid **once per Swap**, on the caller's thread — which in the browser is 
 
 | Case | Latest Ir | vs prev | vs first | since |
 |---|---:|---:|---:|---|
-| `deep_n2048` | 66.1M | +1.1% | +0.3% | 2026-07-30 |
-| `deep_n4096` | 133.6M | +1.1% | +0.6% | 2026-07-30 |
-| `deep_n8192` | 268.0M | +1.1% | -2.9% | 2026-07-30 |
-| `nest_n2048` | 47.2M | +0.8% | **-16.2%** | 2026-07-30 |
-| `nest_n4096` | 96.6M | +0.7% | **-15.9%** | 2026-07-30 |
-| `nest_n8192` | 194.9M | +0.7% | **-15.4%** | 2026-07-30 |
-| `wide_n2048` | 56.3M | +1.3% | +2.4% | 2026-07-30 |
-| `wide_n4096` | 114.2M | +1.3% | -1.7% | 2026-07-30 |
-| `wide_n8192` | 230.1M | +1.3% | -1.8% | 2026-07-30 |
+| `deep_n2048` | 66.1M | ±0.0% | +0.3% | 2026-07-30 |
+| `deep_n4096` | 133.6M | ±0.0% | +0.6% | 2026-07-30 |
+| `deep_n8192` | 268.0M | ±0.0% | -2.9% | 2026-07-30 |
+| `nest_n2048` | 47.2M | ±0.0% | **-16.2%** | 2026-07-30 |
+| `nest_n4096` | 96.6M | ±0.0% | **-15.9%** | 2026-07-30 |
+| `nest_n8192` | 194.9M | ±0.0% | **-15.4%** | 2026-07-30 |
+| `wide_n2048` | 56.3M | ±0.0% | +2.4% | 2026-07-30 |
+| `wide_n4096` | 114.2M | ±0.0% | -1.7% | 2026-07-30 |
+| `wide_n8192` | 230.1M | ±0.0% | -1.8% | 2026-07-30 |
 
 | Shape | Nodes | Latest growth |
 |---|---:|---:|
@@ -80,15 +80,15 @@ Cost paid **once per Swap**, on the caller's thread — which in the browser is 
 | `macro/echo` | 36.6M | ±0.0% | **-15.4%** | 2026-07-12 |
 | `macro/reverb` | 43.9M | ±0.0% | **-13.2%** | 2026-07-12 |
 | `macro/sampler-arp` | 13.9M | ±0.0% | **-12.4%** | 2026-07-12 |
-| `construct/deep_n2048` | 66.1M | +1.1% | +0.3% | 2026-07-30 |
-| `construct/deep_n4096` | 133.6M | +1.1% | +0.6% | 2026-07-30 |
-| `construct/deep_n8192` | 268.0M | +1.1% | -2.9% | 2026-07-30 |
-| `construct/nest_n2048` | 47.2M | +0.8% | **-16.2%** | 2026-07-30 |
-| `construct/nest_n4096` | 96.6M | +0.7% | **-15.9%** | 2026-07-30 |
-| `construct/nest_n8192` | 194.9M | +0.7% | **-15.4%** | 2026-07-30 |
-| `construct/wide_n2048` | 56.3M | +1.3% | +2.4% | 2026-07-30 |
-| `construct/wide_n4096` | 114.2M | +1.3% | -1.7% | 2026-07-30 |
-| `construct/wide_n8192` | 230.1M | +1.3% | -1.8% | 2026-07-30 |
+| `construct/deep_n2048` | 66.1M | ±0.0% | +0.3% | 2026-07-30 |
+| `construct/deep_n4096` | 133.6M | ±0.0% | +0.6% | 2026-07-30 |
+| `construct/deep_n8192` | 268.0M | ±0.0% | -2.9% | 2026-07-30 |
+| `construct/nest_n2048` | 47.2M | ±0.0% | **-16.2%** | 2026-07-30 |
+| `construct/nest_n4096` | 96.6M | ±0.0% | **-15.9%** | 2026-07-30 |
+| `construct/nest_n8192` | 194.9M | ±0.0% | **-15.4%** | 2026-07-30 |
+| `construct/wide_n2048` | 56.3M | ±0.0% | +2.4% | 2026-07-30 |
+| `construct/wide_n4096` | 114.2M | ±0.0% | -1.7% | 2026-07-30 |
+| `construct/wide_n8192` | 230.1M | ±0.0% | -1.8% | 2026-07-30 |
 | `granulator` | 27.6M | ±0.0% | +0.4% | 2026-07-12 |
 | `resonator` | 15.2M | ±0.0% | **-18.0%** | 2026-07-12 |
 | `reverb` | 10.9M | ±0.0% | -1.0% | 2026-07-12 |
@@ -200,7 +200,7 @@ The deterministic tier of the eval harness: each task's **reference solution** (
 | `intent_word` | fixed grounding | 28,364 | ±0.0% | **+51.1%** | 2026-07-28 |
 | `nudge` | grounding tokens | 19,324 | ±0.0% | **+207.6%** | 2026-07-22 |
 | `nudge` | fixed grounding | 17,808 | ±0.0% | **+273.6%** | 2026-07-22 |
-| `repair` | grounding tokens | 28,715 | ±0.0% | **+495.5%** | 2026-07-22 |
+| `repair` | grounding tokens | 28,717 | ±0.0% | **+495.5%** | 2026-07-22 |
 | `repair` | fixed grounding | 28,364 | ±0.0% | **+495.0%** | 2026-07-22 |
 | `repair_and_note` | grounding tokens | 28,792 | ±0.0% | **+34.3%** | 2026-11-19 |
 | `repair_and_note` | fixed grounding | 28,364 | ±0.0% | **+34.2%** | 2026-11-19 |
