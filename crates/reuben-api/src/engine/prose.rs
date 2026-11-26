@@ -43,7 +43,24 @@ pub const GET_ENGINE_DIAGNOSTICS: &str =
      input_ring underruns/overruns/producer_drops (frames), control_batches_dropped_full \
      (batches), and wired_writes_dropped (control messages dropped for addressing an input a \
      wire or an interface input feeds: a node input, or a subpatch boundary input such as \
-     /a/level/in that the host feeds). Fails fast if no engine is reachable.";
+     /a/level/in that the host feeds). \
+     retire_queue_dropped_full (values): replaced strings the audio thread freed itself because \
+     the queue that frees them elsewhere was full; nothing is lost, but each one risks a click, \
+     so a rising count means strings are changing faster than they are cleared. \
+     unprepared_writes_dropped (messages): strings dropped at a str input because they were not \
+     compiled for it, usually raw text arriving over OSC; the input keeps its old value, so send \
+     the text with send_live_controls instead. \
+     stale_sends_dropped (messages): send_live_controls messages in batches carrying compiled \
+     strings that reached the engine after an edit or open had replaced what they were compiled \
+     for, dropped whole; resend the batch. \
+     pattern_queries_truncated (queries): pattern cycles that had more notes than a pattern node \
+     can hold, so some of that cycle's notes never played; thin the pattern. \
+     pattern_atoms_skipped (atoms): pattern steps the node's mode cannot read (a note name outside \
+     Midi mode, a degree that is not a whole number), which stay silent; fix the text or the \
+     mode. \
+     pattern_notes_evicted (notes): sounding pattern notes cut short because too many were held \
+     at once; shorten the notes or thin the overlap. \
+     Fails fast if no engine is reachable.";
 
 pub const GET_ENGINE_METERS: &str =
     "Return the engine's levels at the audio device, one entry per output and input channel, as \
