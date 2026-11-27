@@ -14,7 +14,7 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 
 use crate::descriptor::Descriptor;
-use crate::operator::Operator;
+use crate::operator::{Operator, MAX_INPUTS, MAX_SIGNAL_OUTPUTS};
 
 /// One operator's entry in the built-in census: how to build it, and how to ask it to describe
 /// itself. A plain `const`-constructible value, so a census is an ordinary array the compiler
@@ -159,11 +159,26 @@ impl Registry {
     /// (`NormalizedDoc::from_graph`) identifies pipe nodes by that type name — a registered
     /// `"pipe"` operator's nodes would silently vanish on save. Fail loudly at registration
     /// (a programming error in the embedder, not a document error).
+    ///
+    /// Panics, too, on an Operator wider than [`MAX_INPUTS`] inputs or [`MAX_SIGNAL_OUTPUTS`]
+    /// buffer outputs: rendering one would allocate on the render thread every block.
     pub fn register(&mut self, make: fn() -> Box<dyn Operator>, descriptor: Descriptor) {
         assert_ne!(
             descriptor.type_name, "pipe",
             "operator type name \"pipe\" is reserved: interface pipes are loader-built \
              and save identifies their nodes by this name"
+        );
+        let buffer_outputs = descriptor
+            .outputs
+            .iter()
+            .filter(|p| p.ty.is_buffer())
+            .count();
+        assert!(
+            descriptor.inputs.len() <= MAX_INPUTS && buffer_outputs <= MAX_SIGNAL_OUTPUTS,
+            "operator \"{}\" declares {} inputs and {buffer_outputs} buffer outputs; the render \
+             path holds at most {MAX_INPUTS} and {MAX_SIGNAL_OUTPUTS} without allocating",
+            descriptor.type_name,
+            descriptor.inputs.len(),
         );
         self.entries.insert(
             descriptor.type_name,
@@ -196,6 +211,16 @@ mod tests {
 
     // Churn-free invariants over whatever the census names, so adding an operator does not edit
     // a test.
+
+    #[test]
+    #[should_panic(expected = "without allocating")]
+    fn registering_an_operator_wider_than_the_render_path_panics() {
+        use crate::operator::Operator;
+        let mut wide = crate::operators::Mix::descriptor();
+        wide.type_name = "wider_mix";
+        wide.inputs.push(wide.inputs[0].clone());
+        Registry::new().register(|| Box::new(crate::operators::Mix::new()), wide);
+    }
 
     #[test]
     #[should_panic(expected = "reserved")]

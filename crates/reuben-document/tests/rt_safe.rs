@@ -1264,3 +1264,34 @@ fn a_full_queue_to_one_node_routes_without_the_heap_from_the_first_block() {
         );
     }
 }
+
+/// A node as wide as the widest built-in Operator (`mix`: 16 audio inputs, all wired, and 16
+/// gains) renders without spilling its per-segment port lists to the heap.
+#[test]
+fn the_widest_operator_renders_without_the_heap() {
+    let wired: Vec<String> = (1..=16)
+        .map(|i| format!(r#""in{i}": {{ "from": "/osc.audio" }}"#))
+        .collect();
+    let doc = format!(
+        r#"{{ "format_version": 3, "instrument": "wide",
+        "interface": {{ "outputs": {{ "out": {{ "from": "/mix.out" }} }} }},
+        "nodes": [
+          {{ "type": "oscillator", "address": "/osc" }},
+          {{ "type": "mix", "address": "/mix", "inputs": {{ {} }} }} ] }}"#,
+        wired.join(", ")
+    );
+    let cfg = AudioConfig::new(48_000.0, 64);
+    let graph = load_instrument(&doc, &Registry::builtin(), &InstrumentsDir)
+        .expect("load")
+        .graph;
+    let mut e = Engine::new(Plan::instantiate(graph, cfg).expect("instantiate"));
+    let mut out = vec![0.0f32; cfg.block_size * e.channels()];
+    e.fill(&mut out);
+    assert_counter_is_live();
+    let c = measure(|| {
+        for _ in 0..16 {
+            e.fill(&mut out);
+        }
+    });
+    assert_eq!((c.allocs, c.frees), (0, 0));
+}

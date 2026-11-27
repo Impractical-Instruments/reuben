@@ -30,7 +30,7 @@ use crate::descriptor::{Port, PortType};
 use crate::engine::PENDING_CAP;
 use crate::message::{Arg, Emit, Event, Message};
 use crate::meter::Block;
-use crate::operator::{Io, OperatorCounts};
+use crate::operator::{Io, OperatorCounts, MAX_INPUTS};
 use crate::plan::{InterfaceOutput, Plan, PlanNode, PortKind};
 use crate::signal::{AudioSample, BlockMut};
 
@@ -1227,7 +1227,7 @@ fn process_node(
                 }
             }
         }
-        let stream_refs: SmallVec<[&[Event]; 24]> = seg_starts
+        let stream_refs: SmallVec<[&[Event]; MAX_INPUTS]> = seg_starts
             .windows(2)
             .map(|w| &seg_events[w[0]..w[1]])
             .collect();

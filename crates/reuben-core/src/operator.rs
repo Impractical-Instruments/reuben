@@ -66,22 +66,29 @@ impl core::ops::AddAssign for OperatorCounts {
     }
 }
 
+/// The most input ports an Operator may declare. [`Io`] and the render loop hold one entry per
+/// input inline, and a wider Operator would spill them to the heap on the render thread every
+/// segment; [`Registry::register`](crate::registry::Registry::register) refuses one. The widest
+/// built-in, `mix`, declares 32.
+pub const MAX_INPUTS: usize = 32;
+
+/// The most [buffer](crate::descriptor::PortType::is_buffer) outputs an Operator may declare, for
+/// the reason [`MAX_INPUTS`] bounds its inputs.
+pub const MAX_SIGNAL_OUTPUTS: usize = 2;
+
 /// The per-call I/O view handed to [`Operator::process`] for one (sub)block.
 ///
 /// All dense slices are exactly [`Io::frames`] samples long; held values are constant for the
-/// call. The port reference lists are collected into inline [`SmallVec`]s, so building an `Io`
-/// allocates nothing for the common low-port-count case. The inline input capacity is sized for
-/// the widest operator once its former params became inputs — the sequencer is `clock`, `length`,
-/// 16 × `step`, `gate_mode`, `pitch` = 20 — because RT-safety (`rt_safe`) depends on not
-/// spilling here on the audio thread.
+/// call. The port reference lists are collected into inline [`SmallVec`]s sized by [`MAX_INPUTS`]
+/// and [`MAX_SIGNAL_OUTPUTS`], so building an `Io` never allocates.
 pub struct Io<'a> {
     sample_rate: f32,
     frames: usize,
     /// Dense per-sample buffer per **input** port (a wired [`Buffer`](Arg::F32Buffer) source or a
     /// materialized [`F32`](crate::descriptor::PortType::F32) control), or `None` for a port with
     /// no buffer form. Read per-sample via [`Io::read`] on a Signal handle.
-    inputs: SmallVec<[Option<BlockView<'a>>; 20]>,
-    outputs: SmallVec<[BlockMut<'a>; 2]>,
+    inputs: SmallVec<[Option<BlockView<'a>>; MAX_INPUTS]>,
+    outputs: SmallVec<[BlockMut<'a>; MAX_SIGNAL_OUTPUTS]>,
     /// The held (ZOH) [`Arg`] per **input** port — the unified per-port latch,
     /// collapsing the former Harmony / enum / param lanes. In input-port order; `Copy`-normalized
     /// and constant for this (sub)block (the engine block-slices at held-value changes). Touched
