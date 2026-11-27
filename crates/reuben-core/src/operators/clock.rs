@@ -78,7 +78,6 @@ crate::operator_contract!(Clock {
                beat: i32 { 0..=2147483647, default 0 } },
 });
 
-#[derive(Default)]
 pub struct Clock {
     /// Beat phase in [0, 1), advanced per sample. Continuous across blocks/slices.
     /// Held in f64 so the beat grid doesn't drift off the sample timeline over a long
@@ -103,6 +102,21 @@ pub struct Clock {
     replay: bool,
 }
 
+impl Default for Clock {
+    fn default() -> Self {
+        Self {
+            phase: 0.0,
+            gate_high: false,
+            resets: Vec::with_capacity(PENDING_CAP),
+            beat: 0,
+            beat_pending: false,
+            announced: false,
+            #[cfg(test)]
+            replay: false,
+        }
+    }
+}
+
 /// How many wraps one call records for `beat`. A call of `n` frames wraps at most `1 + n·dt`
 /// times, and `dt` is at most 999/60/sample_rate: 16 covers a 43000-frame block at 48 kHz. A call
 /// that wraps more falls back to [`Clock::replay_beat`], so the cap bounds only the fast path.
@@ -122,10 +136,7 @@ fn next_beat(beat: i32) -> i32 {
 
 impl Clock {
     pub fn new() -> Self {
-        Self {
-            resets: Vec::with_capacity(PENDING_CAP),
-            ..Self::default()
-        }
+        Self::default()
     }
 
     /// Emit `beat` for one call from the sorted `resets` and the `phase` pass's `wraps` (each the

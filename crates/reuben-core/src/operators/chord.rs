@@ -14,7 +14,8 @@
 //!
 //! It tracks the **set of held roots** so overlapping chords sound and release independently, and
 //! captures each root's tone count at press time, so a mid-hold `size` change can't orphan a
-//! note-off. Past twelve held roots, a press first releases the oldest held root's tones, so
+//! note-off. Past twelve held roots, a press first releases the least recently pressed root's
+//! tones, so
 //! no tone hangs and nothing grows on the render thread. Emits one note stream, upstream of the
 //! Voicer that fans it out to voices.
 //!
@@ -61,22 +62,27 @@ struct Held {
     count: usize,
 }
 
-#[derive(Default)]
 pub struct Chord {
-    /// Roots currently pressed (note-on, not yet released), oldest first, with their emitted tone
-    /// sets. Never longer than [`MAX_HELD`], so it never spills.
+    /// Roots currently pressed (note-on, not yet released), least recently pressed first, with
+    /// their emitted tone sets. Never longer than [`MAX_HELD`], so it never spills.
     held: SmallVec<[Held; MAX_HELD]>,
     /// This (sub)block's `set` events `(frame, delivery index, root, on?)`, cleared per call. Holds
     /// a full control queue of them; a denser emitted burst grows it once and the capacity is kept.
     events: Vec<(usize, usize, i32, bool)>,
 }
 
-impl Chord {
-    pub fn new() -> Self {
+impl Default for Chord {
+    fn default() -> Self {
         Self {
             held: SmallVec::new(),
             events: Vec::with_capacity(PENDING_CAP),
         }
+    }
+}
+
+impl Chord {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Emit a note-off for each of `h`'s tones at `frame`.
@@ -128,8 +134,8 @@ impl Operator for Chord {
         for k in 0..self.events.len() {
             let (frame, _, root, on) = self.events[k];
             if on {
-                // Press past the held roots: release the oldest first, so its tones are off before
-                // this chord's sound.
+                // Press past the held roots: release the least recently pressed first, so its tones
+                // are off before this chord's sound.
                 let held = self.held.iter().any(|h| h.root == root);
                 if !held && self.held.len() == MAX_HELD {
                     let oldest = self.held.remove(0);
@@ -141,12 +147,12 @@ impl Operator for Chord {
                     io.write(OUT_DEGREES)
                         .emit(frame, Note::new(Pitch::Degree(t), 1.0));
                 }
-                // Re-press of an already-held root: replace its record (it re-sounds).
-                if let Some(h) = self.held.iter_mut().find(|h| h.root == root) {
-                    *h = Held { root, tones, count };
-                } else {
-                    self.held.push(Held { root, tones, count });
+                // A re-press re-sounds the root: it drops its old record and goes last, as the most
+                // recently pressed.
+                if let Some(idx) = self.held.iter().position(|h| h.root == root) {
+                    self.held.remove(idx);
                 }
+                self.held.push(Held { root, tones, count });
             } else {
                 // Release: emit a note-off for each tone of the matching held root, if any.
                 if let Some(idx) = self.held.iter().position(|h| h.root == root) {
@@ -221,6 +227,22 @@ mod tests {
         events.push(set(0, 0.0, 110));
         let emits = run(128, 3.0, &events);
         assert!(emits.iter().all(|e| e.frame != 110));
+    }
+
+    #[test]
+    fn a_re_press_makes_a_root_the_last_to_be_released() {
+        // Twelve roots held, root 0 re-pressed, then a thirteenth: root 10, now the least recently
+        // pressed, releases, not root 0.
+        let mut events: Vec<_> = (0..MAX_HELD as i32).map(|r| set(10 * r, 1.0, r as usize)).collect();
+        events.push(set(0, 1.0, 50));
+        events.push(set(500, 1.0, 100));
+        let emits = run(128, 3.0, &events);
+        let released: Vec<i32> = emits
+            .iter()
+            .filter(|e| e.frame == 100 && vel(e) == 0.0)
+            .map(deg)
+            .collect();
+        assert_eq!(released, vec![10, 12, 14]);
     }
 
     #[test]
