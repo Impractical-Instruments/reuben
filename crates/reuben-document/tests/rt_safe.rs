@@ -1107,9 +1107,9 @@ fn pattern_arg(text: &str) -> Arg {
 
 /// The densest pattern there is (a full cycle query of stacked notes, overflowing the held-notes
 /// list) at the Clock's top tempo and one beat per cycle, into a Voicer, from a fresh install's
-/// first block at both host block sizes: nothing on the render thread touches the heap. A block
-/// that crosses more than one cycle start (thousands of frames at this tempo) is past what the
-/// pools hold, and grows them once.
+/// first block at both host block sizes: nothing on the render thread touches the heap. Past one
+/// such re-seek per block — two dense patterns in one Plan, a Clock `sync` in the same block as a
+/// cycle start, a block spanning several cycles — the pools grow once.
 #[test]
 fn the_densest_pattern_touches_no_heap_from_a_cold_start() {
     let doc = include_str!("../../../instruments/pattern-melody.json")
@@ -1139,6 +1139,7 @@ fn the_densest_pattern_touches_no_heap_from_a_cold_start() {
         let tempo = [Arg::F32(999.0)];
         assert_counter_is_live();
         let mut peak = 0.0f32;
+        let mut evicted = 0;
         // Four seconds: about 66 cycles of the full stack.
         let c = measure(|| {
             slot.queue_osc("/tempo/in", &tempo);
@@ -1146,10 +1147,15 @@ fn the_densest_pattern_touches_no_heap_from_a_cold_start() {
             for _ in 0..(4 * 48_000 / block) {
                 slot.fill(&mut out);
                 peak = out.iter().fold(peak, |p, s| p.max(s.abs()));
+                evicted += slot.take_operator_counts().pattern_notes_evicted;
             }
         });
         assert_eq!((c.allocs, c.frees), (0, 0), "block {block}");
         assert!(peak > 0.0, "block {block}: the pattern played");
+        assert!(
+            evicted > 0,
+            "block {block}: the stack overflowed the held list"
+        );
     }
 }
 

@@ -68,7 +68,7 @@ impl core::ops::AddAssign for OperatorCounts {
 
 /// The most input ports an Operator may declare. [`Io`] and the render loop hold one entry per
 /// input inline, and a wider Operator would spill them to the heap on the render thread every
-/// segment; [`Registry::register`](crate::registry::Registry::register) refuses one. The widest
+/// segment, so [`Plan::instantiate`](crate::plan::Plan::instantiate) refuses one. The widest
 /// built-in, `mix`, declares 32.
 pub const MAX_INPUTS: usize = 32;
 
