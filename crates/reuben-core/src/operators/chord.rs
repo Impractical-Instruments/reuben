@@ -14,9 +14,10 @@
 //!
 //! It tracks the **set of held roots** so overlapping chords sound and release independently, and
 //! captures each root's tone count at press time, so a mid-hold `size` change can't orphan a
-//! note-off; a re-press of a held root releases any old tone its new chord drops. Past twelve held roots, a press first releases the least recently pressed root's
-//! tones, so
-//! no tone hangs and nothing grows on the render thread. Emits one note stream, upstream of the
+//! note-off. A re-press of a held root releases its old chord before sounding the new one, so
+//! every note-on is paired with exactly one note-off. Past twelve held roots, a press first
+//! releases the least recently pressed root's tones, so no tone hangs and nothing grows on the
+//! render thread. Emits one note stream, upstream of the
 //! Voicer that fans it out to voices.
 //!
 //! - input 0: `set` (`Note`) — a degree note; velocity > 0 = note-on, else note-off. The degree
@@ -141,20 +142,17 @@ impl Operator for Chord {
                     let oldest = self.held.remove(0);
                     Self::release(io, frame, &oldest);
                 }
-                let (tones, count) = chord_tones(root, size);
-                let new = &tones[..count];
-                // A re-press re-sounds the root: it drops its old record and goes last, as the most
-                // recently pressed. A tone the old set held but the new one lacks (`size` shrank
-                // mid-hold) gets its note-off here — no later release would send it.
+                // A re-press re-sounds the root: it releases its whole old chord and goes last, as the
+                // most recently pressed. Every old tone needs its note-off here, shared or not: the
+                // Voicer gives each note-on its own voice, and the eventual release sends one
+                // note-off per tone of the new record only.
                 if let Some(idx) = self.held.iter().position(|h| h.root == root) {
                     let old = self.held.remove(idx);
-                    for &t in old.tones[..old.count].iter().filter(|t| !new.contains(t)) {
-                        io.write(OUT_DEGREES)
-                            .emit(frame, Note::new(Pitch::Degree(t), 0.0));
-                    }
+                    Self::release(io, frame, &old);
                 }
                 // Emit a note-on per chord tone, and remember the tone set for release.
-                for &t in new {
+                let (tones, count) = chord_tones(root, size);
+                for &t in tones.iter().take(count) {
                     io.write(OUT_DEGREES)
                         .emit(frame, Note::new(Pitch::Degree(t), 1.0));
                 }
@@ -377,38 +375,57 @@ mod tests {
         assert_eq!(degs, vec![0, 2, 4, 6]);
     }
 
-    #[test]
-    fn a_re_press_at_a_smaller_size_releases_the_dropped_tones() {
-        // Seventh pressed, re-pressed as a triad, then released: every degree that got a note-on
-        // also gets a note-off. Three `run_io` blocks for the same reason as the test above.
-        let mut c = Chord::new();
-        let mut emits = run_io(&mut c, 128, 4.0, &[set(0, 1.0, 0)]);
-        let re = run_io(&mut c, 128, 3.0, &[set(0, 1.0, 0)]);
-        // The dropped seventh goes off before the re-sounded triad.
-        let re_pairs: Vec<(i32, f32)> = re.iter().map(|e| (deg(e), vel(e))).collect();
-        assert_eq!(re_pairs, vec![(6, 0.0), (0, 1.0), (2, 1.0), (4, 1.0)]);
-        emits.extend(re);
-        emits.extend(run_io(&mut c, 128, 3.0, &[set(0, 0.0, 0)]));
+    /// Sorted note-on degrees and sorted note-off degrees, duplicates kept: equal means every
+    /// note-on has exactly one note-off, which is what the Voicer (one voice per note-on, one voice
+    /// freed per note-off) needs for no voice to hang.
+    fn ons_offs(emits: &[Emit]) -> (Vec<i32>, Vec<i32>) {
         let mut ons: Vec<i32> = emits.iter().filter(|e| vel(e) > 0.5).map(deg).collect();
         let mut offs: Vec<i32> = emits.iter().filter(|e| vel(e) < 0.5).map(deg).collect();
         ons.sort_unstable();
-        ons.dedup();
         offs.sort_unstable();
-        assert_eq!(ons, offs, "every sounded degree is released exactly once");
+        (ons, offs)
     }
 
     #[test]
-    fn an_unchanged_re_press_sends_no_note_offs() {
-        // Same size on re-press: nothing dropped, so only the re-sounded note-ons.
-        let emits = run(128, 3.0, &[set(0, 1.0, 0), set(0, 1.0, 64)]);
-        assert!(emits.iter().all(|e| vel(e) > 0.5));
-        assert_eq!(emits.len(), 6);
+    fn a_re_press_at_a_smaller_size_releases_the_old_chord() {
+        // Seventh pressed, re-pressed as a triad, then released. Three `run_io` blocks for the same
+        // reason as the test above.
+        let mut c = Chord::new();
+        let mut emits = run_io(&mut c, 128, 4.0, &[set(0, 1.0, 0)]);
+        let re = run_io(&mut c, 128, 3.0, &[set(0, 1.0, 0)]);
+        // The whole old seventh goes off before the triad re-sounds.
+        let re_pairs: Vec<(i32, f32)> = re.iter().map(|e| (deg(e), vel(e))).collect();
+        assert_eq!(
+            re_pairs,
+            vec![(0, 0.0), (2, 0.0), (4, 0.0), (6, 0.0), (0, 1.0), (2, 1.0), (4, 1.0)]
+        );
+        emits.extend(re);
+        emits.extend(run_io(&mut c, 128, 3.0, &[set(0, 0.0, 0)]));
+        let (ons, offs) = ons_offs(&emits);
+        assert_eq!(ons, offs, "every note-on has exactly one note-off");
     }
 
-    /// Hand-rolled single-block runner, retained only for
-    /// `release_matches_press_size_even_if_size_changed_mid_hold` (see its note): it threads the
-    /// same `Chord` instance across two calls with a held-`size` change and no re-press, which the
-    /// `OpDriver` push model can't express.
+    #[test]
+    fn an_unchanged_re_press_pairs_every_note_on_with_a_note_off() {
+        // Press, re-press at the same size, release: the re-press releases the first triad, so the
+        // release leaves no second voice per tone sounding.
+        let emits = run(128, 3.0, &[set(0, 1.0, 0), set(0, 1.0, 64), set(0, 0.0, 96)]);
+        let at_64: Vec<(i32, f32)> = emits
+            .iter()
+            .filter(|e| e.frame == 64)
+            .map(|e| (deg(e), vel(e)))
+            .collect();
+        assert_eq!(
+            at_64,
+            vec![(0, 0.0), (2, 0.0), (4, 0.0), (0, 1.0), (2, 1.0), (4, 1.0)]
+        );
+        let (ons, offs) = ons_offs(&emits);
+        assert_eq!(ons, offs, "every note-on has exactly one note-off");
+    }
+
+    /// Hand-rolled single-block runner for the tests that change the held `size` between blocks
+    /// (see `release_matches_press_size_even_if_size_changed_mid_hold`): it threads the same `Chord`
+    /// instance across calls with no re-fired events, which the `OpDriver` push model can't express.
     fn run_io(chord: &mut Chord, n: usize, size: f32, events: &[(usize, Note)]) -> Vec<Emit> {
         let args: Vec<Arg> = events.iter().map(|(_, nt)| Arg::Note(*nt)).collect();
         let evs: Vec<Event> = events
