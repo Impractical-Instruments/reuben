@@ -1982,10 +1982,6 @@ fn check_endpoints(graph: &Graph) -> Result<(), PlanError> {
     Ok(())
 }
 
-/// Refuse an input channel binding the input master could not feed: one naming no interface input,
-/// or one whose input is not an unwired Signal port. Only those get the materialized scratch the
-/// input master writes into. Read from the authored graph, in binding-name order, after
-/// [`check_endpoints`] has proved every interface input's node and port exist.
 fn check_widths(graph: &Graph) -> Result<(), PlanError> {
     use crate::operator::{MAX_INPUTS, MAX_SIGNAL_OUTPUTS};
     for node in graph.nodes.values() {
@@ -2002,6 +1998,10 @@ fn check_widths(graph: &Graph) -> Result<(), PlanError> {
     Ok(())
 }
 
+/// Refuse an input channel binding the input master could not feed: one naming no interface input,
+/// or one whose input is not an unwired Signal port. Only those get the materialized scratch the
+/// input master writes into. Read from the authored graph, in binding-name order, after
+/// [`check_endpoints`] has proved every interface input's node and port exist.
 fn check_input_channels(graph: &Graph) -> Result<(), PlanError> {
     for name in graph.interface.input_channels.keys() {
         let refuse = |reason| {
@@ -2249,19 +2249,30 @@ mod wire_forms {
 
     #[test]
     fn a_node_wider_than_the_render_path_is_refused() {
-        use crate::operator::MAX_INPUTS;
+        use crate::operator::{MAX_INPUTS, MAX_SIGNAL_OUTPUTS};
         use crate::operators::Mix;
-        let mut wide = Mix::descriptor();
-        wide.inputs.push(wide.inputs[0].clone());
-        let mut g = Graph::new();
-        g.add_boxed("/wide", alloc::boxed::Box::new(Mix::new()), Arc::new(wide));
-        match Plan::instantiate(g, AudioConfig::new(48_000.0, 64)) {
-            Err(PlanError::TooWide { node, inputs, .. }) => {
-                assert_eq!((node.as_str(), inputs), ("/wide", MAX_INPUTS + 1));
+        let refusal = |widen: fn(&mut Descriptor)| {
+            let mut wide = Mix::descriptor();
+            widen(&mut wide);
+            let mut g = Graph::new();
+            g.add_boxed("/wide", alloc::boxed::Box::new(Mix::new()), Arc::new(wide));
+            match Plan::instantiate(g, AudioConfig::new(48_000.0, 64)) {
+                Err(PlanError::TooWide {
+                    node,
+                    inputs,
+                    buffer_outputs,
+                }) => (node, inputs, buffer_outputs),
+                Err(other) => panic!("refused for {other:?}"),
+                Ok(_) => panic!("instantiated an Operator wider than the render path holds"),
             }
-            Err(other) => panic!("refused for {other:?}"),
-            Ok(_) => panic!("instantiated an Operator wider than the render path holds"),
-        }
+        };
+        let (node, inputs, _) = refusal(|d| d.inputs.push(d.inputs[0].clone()));
+        assert_eq!((node.as_str(), inputs), ("/wide", MAX_INPUTS + 1));
+        let (_, _, outputs) = refusal(|d| {
+            let out = d.outputs[0].clone();
+            d.outputs.extend([out.clone(), out]);
+        });
+        assert_eq!(outputs, MAX_SIGNAL_OUTPUTS + 1);
     }
 
     // ------------------------------------------------------------------------------------------

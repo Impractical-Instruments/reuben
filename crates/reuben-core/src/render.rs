@@ -67,9 +67,10 @@ impl Executor for SerialExecutor {
 /// full cycle query fired, and each note past the held list evicting one, 128 events. At host
 /// block sizes that is one cycle start per block even at the Clock's top tempo and one beat per
 /// cycle. Two such patterns in one Plan, or one re-seeking twice in a block (a cycle start and a
-/// Clock `sync`, a `mode` change, or a block spanning several cycles), emit more. What an Operator
-/// emits has no static bound — `pattern` reads any `phase`, however fast it wraps — so a block
-/// that emits more grows the pool on the render thread once, and the capacity is kept.
+/// Clock `sync`, a `mode` or `beats_per_cycle` change, or a block spanning several cycles), emit
+/// more. What an Operator emits has no static bound — `pattern` reads any `phase`, however fast it
+/// wraps — so a block that emits more grows this pool, and the buffers downstream of it that take
+/// its events, on the render thread once, and the capacity is kept.
 const EMIT_POOL_CAP: usize = 256;
 
 // `seg_events` starts at EMIT_POOL_CAP and must hold a full control queue's events to one node.
