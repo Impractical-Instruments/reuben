@@ -62,9 +62,12 @@ impl Executor for SerialExecutor {
     }
 }
 
-/// Preallocated capacity for the per-block emit pool and scratch. Sized to absorb a
-/// typical block's emissions without reallocating on the audio thread; emitting beyond it
-/// grows the Vec once (allocation), which steady-state graphs do not reach.
+/// Preallocated capacity for the per-block emit pool and scratch: a full control queue's worth,
+/// and the densest `pattern` crossing one cycle start in a block (its held notes released, a full
+/// cycle query fired, each overflowing the held list evicting one), which is every block at host
+/// sizes even at the Clock's top tempo and one beat per cycle. What an Operator emits has no
+/// static bound — `pattern` reads any `phase`, however fast it wraps — so a block that emits more
+/// grows the pool on the render thread once, and the capacity is kept.
 const EMIT_POOL_CAP: usize = 256;
 
 // `seg_events` starts at EMIT_POOL_CAP and must hold a full control queue's events to one node.

@@ -1105,6 +1105,54 @@ fn pattern_arg(text: &str) -> Arg {
     Arg::Prepared(pat.prepare(&Arc::from(text)).expect("the pattern compiles"))
 }
 
+/// The densest pattern there is (a full cycle query of stacked notes, overflowing the held-notes
+/// list) at the Clock's top tempo and one beat per cycle, into a Voicer, from a fresh install's
+/// first block at both host block sizes: nothing on the render thread touches the heap. A block
+/// that crosses more than one cycle start (thousands of frames at this tempo) is past what the
+/// pools hold, and grows them once.
+#[test]
+fn the_densest_pattern_touches_no_heap_from_a_cold_start() {
+    let doc = include_str!("../../../instruments/pattern-melody.json")
+        .replace(r#""max": 240.0"#, r#""max": 999.0"#)
+        .replace(
+            r#""phase": {
+          "from": "/clock.phase"
+        }"#,
+            r#""phase": { "from": "/clock.phase" }, "beats_per_cycle": 1"#,
+        );
+    assert!(
+        doc.contains("beats_per_cycle"),
+        "the library instrument's layout moved"
+    );
+    let stack: Vec<String> = (0..64).map(|d| d.to_string()).collect();
+    for block in [128, 256] {
+        let (_coord, side, _) = reuben_document::coordinator::Coordinator::install_initial(
+            &doc,
+            Registry::builtin(),
+            Box::new(LibraryDir),
+            AudioConfig::new(48_000.0, block),
+        )
+        .expect("the library instrument installs");
+        let mut slot = reuben_core::coordinator::RenderSlot::new(side);
+        let mut out = vec![0.0f32; block * slot.channels()];
+        let pattern = [pattern_arg(&stack.join(", "))];
+        let tempo = [Arg::F32(999.0)];
+        assert_counter_is_live();
+        let mut peak = 0.0f32;
+        // Four seconds: about 66 cycles of the full stack.
+        let c = measure(|| {
+            slot.queue_osc("/tempo/in", &tempo);
+            slot.queue_osc("/pattern/in", &pattern);
+            for _ in 0..(4 * 48_000 / block) {
+                slot.fill(&mut out);
+                peak = out.iter().fold(peak, |p, s| p.max(s.abs()));
+            }
+        });
+        assert_eq!((c.allocs, c.frees), (0, 0), "block {block}");
+        assert!(peak > 0.0, "block {block}: the pattern played");
+    }
+}
+
 /// The `pattern` Operator over a long run: cycle queries, note-ons and note-offs, evictions from
 /// a full held-notes list, and new patterns sent mid-cycle that swap in at the next cycle start.
 /// None of it allocates or frees on the render thread; every pattern let go of is freed off it.
@@ -1135,15 +1183,6 @@ fn a_long_pattern_run_with_replacements_touches_no_heap_on_the_render_thread() {
         "0/1.5 [1 2]*4".to_string(),
         "0*32 ~ 4?".to_string(),
     ];
-    // Warm up: two cycles of each, so the engine's per-node event scratch and the Voicer's grow to
-    // the densest block's size. The Operator's own buffers are sized at construction.
-    for text in &texts {
-        slot.queue_osc("/pattern/in", &[pattern_arg(text)]);
-        for _ in 0..750 {
-            slot.fill(&mut out);
-        }
-    }
-    retired.drain();
     const SENDS: usize = 24;
     let mut values: Vec<Arg> = (0..SENDS)
         .map(|i| pattern_arg(&texts[i % texts.len()]))
