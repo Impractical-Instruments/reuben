@@ -65,6 +65,7 @@ use alloc::vec::Vec;
 use num_traits::Float;
 
 use crate::descriptor::Descriptor;
+use crate::engine::PENDING_CAP;
 use crate::operator::{Io, Operator};
 
 // Single-source contract: one declaration -> IN_/OUT_ consts + Descriptor, no drift.
@@ -77,7 +78,6 @@ crate::operator_contract!(Clock {
                beat: i32 { 0..=2147483647, default 0 } },
 });
 
-#[derive(Default)]
 pub struct Clock {
     /// Beat phase in [0, 1), advanced per sample. Continuous across blocks/slices.
     /// Held in f64 so the beat grid doesn't drift off the sample timeline over a long
@@ -85,8 +85,8 @@ pub struct Clock {
     phase: f64,
     /// The `gate` level at the end of the previous call; edges within a call are found against it.
     gate_high: bool,
-    /// This (sub)block's `sync` frames, cleared per call and kept so a burst's capacity survives
-    /// into the next block.
+    /// This (sub)block's `sync` frames, cleared per call. Holds a full control queue of syncs; a
+    /// denser emitted burst grows it once and the capacity is kept.
     resets: Vec<usize>,
     /// Whole beats since the last `sync`, as of the next call's frame 0 (a wrap after the previous
     /// call's last frame included).
@@ -100,6 +100,21 @@ pub struct Clock {
     /// Forces [`Clock::replay_beat`], so tests can hold the fast path against it.
     #[cfg(test)]
     replay: bool,
+}
+
+impl Default for Clock {
+    fn default() -> Self {
+        Self {
+            phase: 0.0,
+            gate_high: false,
+            resets: Vec::with_capacity(PENDING_CAP),
+            beat: 0,
+            beat_pending: false,
+            announced: false,
+            #[cfg(test)]
+            replay: false,
+        }
+    }
 }
 
 /// How many wraps one call records for `beat`. A call of `n` frames wraps at most `1 + n·dt`

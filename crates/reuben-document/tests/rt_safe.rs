@@ -1105,6 +1105,60 @@ fn pattern_arg(text: &str) -> Arg {
     Arg::Prepared(pat.prepare(&Arc::from(text)).expect("the pattern compiles"))
 }
 
+/// The densest pattern there is (a full cycle query of stacked notes, overflowing the held-notes
+/// list) at the Clock's top tempo and one beat per cycle, into a Voicer, from a fresh install's
+/// first block at both host block sizes: nothing on the render thread touches the heap. Past one
+/// such re-seek per block — two dense patterns in one Plan, a Clock `sync` in the same block as a
+/// cycle start, a block spanning several cycles — the pools grow once.
+#[test]
+fn the_densest_pattern_touches_no_heap_from_a_cold_start() {
+    let doc = include_str!("../../../instruments/pattern-melody.json")
+        .replace(r#""max": 240.0"#, r#""max": 999.0"#)
+        .replace(
+            r#""phase": {
+          "from": "/clock.phase"
+        }"#,
+            r#""phase": { "from": "/clock.phase" }, "beats_per_cycle": 1"#,
+        );
+    assert!(
+        doc.contains("beats_per_cycle"),
+        "the library instrument's layout moved"
+    );
+    let stack: Vec<String> = (0..64).map(|d| d.to_string()).collect();
+    for block in [128, 256] {
+        let (_coord, side, _) = reuben_document::coordinator::Coordinator::install_initial(
+            &doc,
+            Registry::builtin(),
+            Box::new(LibraryDir),
+            AudioConfig::new(48_000.0, block),
+        )
+        .expect("the library instrument installs");
+        let mut slot = reuben_core::coordinator::RenderSlot::new(side);
+        let mut out = vec![0.0f32; block * slot.channels()];
+        let pattern = [pattern_arg(&stack.join(", "))];
+        let tempo = [Arg::F32(999.0)];
+        assert_counter_is_live();
+        let mut peak = 0.0f32;
+        let mut evicted = 0;
+        // Four seconds: about 66 cycles of the full stack.
+        let c = measure(|| {
+            slot.queue_osc("/tempo/in", &tempo);
+            slot.queue_osc("/pattern/in", &pattern);
+            for _ in 0..(4 * 48_000 / block) {
+                slot.fill(&mut out);
+                peak = out.iter().fold(peak, |p, s| p.max(s.abs()));
+                evicted += slot.take_operator_counts().pattern_notes_evicted;
+            }
+        });
+        assert_eq!((c.allocs, c.frees), (0, 0), "block {block}");
+        assert!(peak > 0.0, "block {block}: the pattern played");
+        assert!(
+            evicted > 0,
+            "block {block}: the stack overflowed the held list"
+        );
+    }
+}
+
 /// The `pattern` Operator over a long run: cycle queries, note-ons and note-offs, evictions from
 /// a full held-notes list, and new patterns sent mid-cycle that swap in at the next cycle start.
 /// None of it allocates or frees on the render thread; every pattern let go of is freed off it.
@@ -1135,15 +1189,6 @@ fn a_long_pattern_run_with_replacements_touches_no_heap_on_the_render_thread() {
         "0/1.5 [1 2]*4".to_string(),
         "0*32 ~ 4?".to_string(),
     ];
-    // Warm up: two cycles of each, so the engine's per-node event scratch and the Voicer's grow to
-    // the densest block's size. The Operator's own buffers are sized at construction.
-    for text in &texts {
-        slot.queue_osc("/pattern/in", &[pattern_arg(text)]);
-        for _ in 0..750 {
-            slot.fill(&mut out);
-        }
-    }
-    retired.drain();
     const SENDS: usize = 24;
     let mut values: Vec<Arg> = (0..SENDS)
         .map(|i| pattern_arg(&texts[i % texts.len()]))
@@ -1263,4 +1308,128 @@ fn a_full_queue_to_one_node_routes_without_the_heap_from_the_first_block() {
             "{PENDING_CAP} messages to {address}"
         );
     }
+}
+
+/// A node as wide as the widest built-in Operator (`mix`: 16 audio inputs, all wired, and 16
+/// gains) renders without spilling its per-segment port lists to the heap.
+#[test]
+fn the_widest_operator_renders_without_the_heap() {
+    let wired: Vec<String> = (1..=16)
+        .map(|i| format!(r#""in{i}": {{ "from": "/osc.audio" }}"#))
+        .collect();
+    let doc = format!(
+        r#"{{ "format_version": 3, "instrument": "wide",
+        "interface": {{ "outputs": {{ "out": {{ "from": "/mix.out" }} }} }},
+        "nodes": [
+          {{ "type": "oscillator", "address": "/osc" }},
+          {{ "type": "mix", "address": "/mix", "inputs": {{ {} }} }} ] }}"#,
+        wired.join(", ")
+    );
+    let cfg = AudioConfig::new(48_000.0, 64);
+    let graph = load_instrument(&doc, &Registry::builtin(), &InstrumentsDir)
+        .expect("load")
+        .graph;
+    let mut e = Engine::new(Plan::instantiate(graph, cfg).expect("instantiate"));
+    let mut out = vec![0.0f32; cfg.block_size * e.channels()];
+    e.fill(&mut out);
+    assert_counter_is_live();
+    let c = measure(|| {
+        for _ in 0..16 {
+            e.fill(&mut out);
+        }
+    });
+    assert_eq!((c.allocs, c.frees), (0, 0));
+}
+
+/// A Clock's first `sync`, from a fresh Engine's first block, touches no heap.
+#[test]
+fn a_clocks_first_sync_touches_no_heap() {
+    const DOC: &str = r#"{ "format_version": 3, "instrument": "sync",
+        "interface": { "outputs": { "out": { "from": "/osc.audio" } } },
+        "nodes": [
+          { "type": "clock", "address": "/clock" },
+          { "type": "oscillator", "address": "/osc",
+            "inputs": { "freq": { "from": "/clock.phase" } } } ] }"#;
+    let cfg = AudioConfig::new(48_000.0, 64);
+    let graph = load_instrument(DOC, &Registry::builtin(), &InstrumentsDir)
+        .expect("load")
+        .graph;
+    let mut e = Engine::new(Plan::instantiate(graph, cfg).expect("instantiate"));
+    let mut out = vec![0.0f32; cfg.block_size * e.channels()];
+    let mut syncs: Vec<Message> = [0, 10, 20]
+        .map(|f| Message::new("/clock/sync", Note::new(Pitch::Absolute(60.0), 1.0), f))
+        .into();
+    assert_counter_is_live();
+    let c = measure(|| {
+        for m in syncs.drain(..) {
+            e.queue(m);
+        }
+        e.fill(&mut out);
+    });
+    // `queue` drops each Message's address `String` once it resolves it: the caller's allocation.
+    assert_eq!((c.allocs, c.frees), (0, 3));
+}
+
+/// `chord` from a fresh install: its first chord, and more roots held at once than it tracks,
+/// touch no heap. The roots past what it tracks evict the oldest, so none of them hangs.
+#[test]
+fn chord_holds_and_overflows_its_roots_without_the_heap() {
+    let doc = include_str!("../../../instruments/chord-player.json");
+    let (_coord, side, _) = reuben_document::coordinator::Coordinator::install_initial(
+        doc,
+        Registry::builtin(),
+        Box::new(LibraryDir),
+        AudioConfig::new(48_000.0, 128),
+    )
+    .expect("the library instrument installs");
+    let mut slot = reuben_core::coordinator::RenderSlot::new(side);
+    let mut out = vec![0.0f32; 128 * slot.channels()];
+    // Degree roots: `chord` skips any other pitch.
+    let press = |d: i32| Message::new("/chord/in", Note::new(Pitch::Degree(d), 1.0), 0);
+    let mut presses: Vec<Message> = (0..20).map(press).collect();
+    let mut peak = 0.0f32;
+    assert_counter_is_live();
+    let c = measure(|| {
+        for m in presses.drain(..) {
+            slot.queue(m);
+            slot.fill(&mut out);
+            peak = out.iter().fold(peak, |p, s| p.max(s.abs()));
+        }
+    });
+    // `queue` drops each Message's address `String` once it resolves it: the caller's allocation.
+    assert_eq!((c.allocs, c.frees), (0, 20));
+    assert!(peak > 0.0, "the chords played");
+}
+
+/// Held changes at many distinct frames to one node in one block, each to its own port so the
+/// node's routed-change bucket holds them: slicing the block at every frame touches no heap.
+#[test]
+fn slicing_a_block_at_many_held_change_frames_touches_no_heap() {
+    const DOC: &str = r#"{ "format_version": 3, "instrument": "slices",
+        "interface": { "outputs": { "out": { "from": "/osc.audio" } } },
+        "nodes": [
+          { "type": "oscillator", "address": "/osc" },
+          { "type": "sequencer", "address": "/seq" } ] }"#;
+    let cfg = AudioConfig::new(48_000.0, 64);
+    let graph = load_instrument(DOC, &Registry::builtin(), &InstrumentsDir)
+        .expect("load")
+        .graph;
+    let mut e = Engine::new(Plan::instantiate(graph, cfg).expect("instantiate"));
+    let mut out = vec![0.0f32; cfg.block_size * e.channels()];
+    e.fill(&mut out);
+    let mut steps: Vec<Message> = (1..=16)
+        .map(|s| Message::new(format!("/seq/step{s}"), Arg::F32(s as f32), 3 * s as usize))
+        .collect();
+    assert_counter_is_live();
+    let c = measure(|| {
+        for m in steps.drain(..) {
+            e.queue(m);
+        }
+        e.fill(&mut out);
+    });
+    assert_eq!(
+        (c.allocs, c.frees),
+        (0, 16),
+        "only the 16 address Strings come back"
+    );
 }

@@ -30,7 +30,7 @@ use crate::descriptor::{Port, PortType};
 use crate::engine::PENDING_CAP;
 use crate::message::{Arg, Emit, Event, Message};
 use crate::meter::Block;
-use crate::operator::{Io, OperatorCounts};
+use crate::operator::{Io, OperatorCounts, MAX_INPUTS};
 use crate::plan::{InterfaceOutput, Plan, PlanNode, PortKind};
 use crate::signal::{AudioSample, BlockMut};
 
@@ -62,9 +62,15 @@ impl Executor for SerialExecutor {
     }
 }
 
-/// Preallocated capacity for the per-block emit pool and scratch. Sized to absorb a
-/// typical block's emissions without reallocating on the audio thread; emitting beyond it
-/// grows the Vec once (allocation), which steady-state graphs do not reach.
+/// Preallocated capacity for the per-block emit pool and scratch. It holds a full control queue's
+/// worth, or one `pattern` re-seeking once in a block at its densest: its held notes released, a
+/// full cycle query fired, and each note past the held list evicting one, 128 events. At host
+/// block sizes that is one cycle start per block even at the Clock's top tempo and one beat per
+/// cycle. Two such patterns in one Plan, or one re-seeking twice in a block (a cycle start and a
+/// Clock `sync`, a `mode` or `beats_per_cycle` change, or a block spanning several cycles), emit
+/// more. What an Operator emits has no static bound — `pattern` reads any `phase`, however fast it
+/// wraps — so a block that emits more grows this pool, and the buffers downstream of it that take
+/// its events, on the render thread once, and the capacity is kept.
 const EMIT_POOL_CAP: usize = 256;
 
 // `seg_events` starts at EMIT_POOL_CAP and must hold a full control queue's events to one node.
@@ -125,7 +131,8 @@ impl RenderScratch {
             routes,
             emitted: Vec::with_capacity(EMIT_POOL_CAP),
             emit_scratch: Vec::with_capacity(EMIT_POOL_CAP),
-            bounds: Vec::with_capacity(8),
+            // Every frame of a block, and its end: the most distinct segment boundaries there are.
+            bounds: Vec::with_capacity(plan.config.block_size + 1),
             order: Vec::with_capacity(plan.nodes.len()),
             seg_events: Vec::with_capacity(EMIT_POOL_CAP),
             seg_starts: Vec::with_capacity(max_inputs + 1),
@@ -1130,17 +1137,18 @@ fn process_node(
     }
 
     // Segment boundaries: 0, block_size, every interior Held-change frame (a held value is constant
-    // per `process` call). Sort + dedup since change frames interleave.
+    // per `process` call), kept sorted and distinct as they go in. Distinct frames of one block are
+    // what bound `bounds`' capacity, however many changes share a frame.
     bounds.clear();
     bounds.push(0);
     bounds.push(block_size);
     for &(f, _, _) in &route.held {
         if f > 0 && f < block_size {
-            bounds.push(f);
+            if let Err(at) = bounds.binary_search(&f) {
+                bounds.insert(at, f);
+            }
         }
     }
-    bounds.sort_unstable();
-    bounds.dedup();
 
     // Re-zero the output slots an earlier producer in this block already wrote. The per-block
     // edge clear ran before any node did, so it left the block's *first* producer of each
@@ -1227,7 +1235,7 @@ fn process_node(
                 }
             }
         }
-        let stream_refs: SmallVec<[&[Event]; 24]> = seg_starts
+        let stream_refs: SmallVec<[&[Event]; MAX_INPUTS]> = seg_starts
             .windows(2)
             .map(|w| &seg_events[w[0]..w[1]])
             .collect();

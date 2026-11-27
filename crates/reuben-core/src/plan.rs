@@ -668,6 +668,15 @@ pub enum PlanError {
     /// `f32` or `i32` `active` passes. The loader refuses such a patch first, so only a hand-built
     /// graph reaches this.
     NonNumericActive { voicer: String, ty: String },
+    /// The node at `node` declares more input or buffer-output ports than the render path holds
+    /// without allocating ([`MAX_INPUTS`](crate::operator::MAX_INPUTS),
+    /// [`MAX_SIGNAL_OUTPUTS`](crate::operator::MAX_SIGNAL_OUTPUTS)): rendering it would spill to
+    /// the heap every block. No built-in Operator is that wide, so only an embedder's reaches this.
+    TooWide {
+        node: String,
+        inputs: usize,
+        buffer_outputs: usize,
+    },
 }
 
 /// Why an input channel binding was refused ([`PlanError::InputChannel`]).
@@ -797,6 +806,7 @@ impl Plan {
         // pass-through interface pipes out of the schedule (the pipe is a format
         // concept, not a mandatory rendered node) before ordering what actually executes.
         check_endpoints(&graph)?;
+        check_widths(&graph)?;
         check_input_channels(&graph)?;
         check_wire_forms(&graph)?;
         assign_pipe_preparers(&mut graph)?;
@@ -1972,6 +1982,22 @@ fn check_endpoints(graph: &Graph) -> Result<(), PlanError> {
     Ok(())
 }
 
+fn check_widths(graph: &Graph) -> Result<(), PlanError> {
+    use crate::operator::{MAX_INPUTS, MAX_SIGNAL_OUTPUTS};
+    for node in graph.nodes.values() {
+        let d = &node.descriptor;
+        let buffer_outputs = d.outputs.iter().filter(|p| p.ty.is_buffer()).count();
+        if d.inputs.len() > MAX_INPUTS || buffer_outputs > MAX_SIGNAL_OUTPUTS {
+            return Err(PlanError::TooWide {
+                node: node.address.to_string(),
+                inputs: d.inputs.len(),
+                buffer_outputs,
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Refuse an input channel binding the input master could not feed: one naming no interface input,
 /// or one whose input is not an unwired Signal port. Only those get the materialized scratch the
 /// input master writes into. Read from the authored graph, in binding-name order, after
@@ -2220,6 +2246,34 @@ mod wire_forms {
     use crate::graph::Graph;
     use crate::operator::{Io, Operator};
     use crate::vocab::FilterMode;
+
+    #[test]
+    fn a_node_wider_than_the_render_path_is_refused() {
+        use crate::operator::{MAX_INPUTS, MAX_SIGNAL_OUTPUTS};
+        use crate::operators::Mix;
+        let refusal = |widen: fn(&mut Descriptor)| {
+            let mut wide = Mix::descriptor();
+            widen(&mut wide);
+            let mut g = Graph::new();
+            g.add_boxed("/wide", alloc::boxed::Box::new(Mix::new()), Arc::new(wide));
+            match Plan::instantiate(g, AudioConfig::new(48_000.0, 64)) {
+                Err(PlanError::TooWide {
+                    node,
+                    inputs,
+                    buffer_outputs,
+                }) => (node, inputs, buffer_outputs),
+                Err(other) => panic!("refused for {other:?}"),
+                Ok(_) => panic!("instantiated an Operator wider than the render path holds"),
+            }
+        };
+        let (node, inputs, _) = refusal(|d| d.inputs.push(d.inputs[0].clone()));
+        assert_eq!((node.as_str(), inputs), ("/wide", MAX_INPUTS + 1));
+        let (_, _, outputs) = refusal(|d| {
+            let out = d.outputs[0].clone();
+            d.outputs.extend([out.clone(), out]);
+        });
+        assert_eq!(outputs, MAX_SIGNAL_OUTPUTS + 1);
+    }
 
     // ------------------------------------------------------------------------------------------
     // Synthetic single-port operators. `add_boxed` takes the descriptor explicitly, so one no-op

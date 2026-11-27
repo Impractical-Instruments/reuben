@@ -198,6 +198,31 @@ mod tests {
     // a test.
 
     #[test]
+    fn every_built_in_fits_the_render_path_and_mix_is_the_widest() {
+        use crate::operator::{MAX_INPUTS, MAX_SIGNAL_OUTPUTS};
+        let r = Registry::builtin();
+        let widest = r.entries().map(|e| e.descriptor.inputs.len()).max();
+        assert_eq!(
+            widest,
+            Some(MAX_INPUTS),
+            "MAX_INPUTS is the widest built-in's width"
+        );
+        assert_eq!(
+            r.get("mix").map(|e| e.descriptor.inputs.len()),
+            Some(MAX_INPUTS)
+        );
+        for e in r.entries() {
+            let buffers = e
+                .descriptor
+                .outputs
+                .iter()
+                .filter(|p| p.ty.is_buffer())
+                .count();
+            assert!(buffers <= MAX_SIGNAL_OUTPUTS, "{}", e.descriptor.type_name);
+        }
+    }
+
+    #[test]
     #[should_panic(expected = "reserved")]
     fn registering_the_reserved_pipe_name_panics() {
         // Pipes are loader-built; an embedder-registered "pipe" operator's nodes

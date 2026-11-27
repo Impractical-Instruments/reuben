@@ -839,6 +839,20 @@ pub fn plan_error_diags(e: PlanError) -> Vec<Diag> {
             node: Some(voicer),
             port: None,
         }],
+        PlanError::TooWide {
+            node,
+            inputs,
+            buffer_outputs,
+        } => vec![Diag {
+            message: format!(
+                "this operator declares {inputs} inputs and {buffer_outputs} signal outputs; \
+                 the engine renders at most {} and {} without allocating on the audio thread",
+                reuben_core::operator::MAX_INPUTS,
+                reuben_core::operator::MAX_SIGNAL_OUTPUTS,
+            ),
+            node: Some(node),
+            port: None,
+        }],
     }
 }
 
