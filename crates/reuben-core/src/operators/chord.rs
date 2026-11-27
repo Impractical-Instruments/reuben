@@ -14,7 +14,9 @@
 //!
 //! It tracks the **set of held roots** so overlapping chords sound and release independently, and
 //! captures each root's tone count at press time, so a mid-hold `size` change can't orphan a
-//! note-off. Emits one note stream, upstream of the Voicer that fans it out to voices.
+//! note-off. Past twelve held roots, a press first releases the oldest held root's tones, so
+//! no tone hangs and nothing grows on the render thread. Emits one note stream, upstream of the
+//! Voicer that fans it out to voices.
 //!
 //! - input 0: `set` (`Note`) — a degree note; velocity > 0 = note-on, else note-off. The degree
 //!   is the chord root.
@@ -30,6 +32,7 @@ use alloc::vec::Vec;
 use smallvec::SmallVec;
 
 use crate::descriptor::Descriptor;
+use crate::engine::PENDING_CAP;
 use crate::operator::{Io, Operator};
 use crate::vocab::pitch::{Note, Pitch};
 
@@ -60,17 +63,28 @@ struct Held {
 
 #[derive(Default)]
 pub struct Chord {
-    /// Roots currently pressed (note-on, not yet released), with their emitted tone sets.
-    /// A SmallVec so the steady-state hold path touches no allocator.
+    /// Roots currently pressed (note-on, not yet released), oldest first, with their emitted tone
+    /// sets. Never longer than [`MAX_HELD`], so it never spills.
     held: SmallVec<[Held; MAX_HELD]>,
-    /// This (sub)block's `set` events `(frame, delivery index, root, on?)`, cleared per call and
-    /// kept so a burst's capacity survives into the next block.
+    /// This (sub)block's `set` events `(frame, delivery index, root, on?)`, cleared per call. Holds
+    /// a full control queue of them; a denser emitted burst grows it once and the capacity is kept.
     events: Vec<(usize, usize, i32, bool)>,
 }
 
 impl Chord {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            held: SmallVec::new(),
+            events: Vec::with_capacity(PENDING_CAP),
+        }
+    }
+
+    /// Emit a note-off for each of `h`'s tones at `frame`.
+    fn release(io: &mut Io, frame: usize, h: &Held) {
+        for &t in h.tones.iter().take(h.count) {
+            io.write(OUT_DEGREES)
+                .emit(frame, Note::new(Pitch::Degree(t), 0.0));
+        }
     }
 }
 
@@ -114,7 +128,14 @@ impl Operator for Chord {
         for k in 0..self.events.len() {
             let (frame, _, root, on) = self.events[k];
             if on {
-                // Press: emit a note-on per chord tone, and remember the tone set for release.
+                // Press past the held roots: release the oldest first, so its tones are off before
+                // this chord's sound.
+                let held = self.held.iter().any(|h| h.root == root);
+                if !held && self.held.len() == MAX_HELD {
+                    let oldest = self.held.remove(0);
+                    Self::release(io, frame, &oldest);
+                }
+                // Emit a note-on per chord tone, and remember the tone set for release.
                 let (tones, count) = chord_tones(root, size);
                 for &t in tones.iter().take(count) {
                     io.write(OUT_DEGREES)
@@ -129,12 +150,8 @@ impl Operator for Chord {
             } else {
                 // Release: emit a note-off for each tone of the matching held root, if any.
                 if let Some(idx) = self.held.iter().position(|h| h.root == root) {
-                    let h = self.held[idx];
-                    for &t in h.tones.iter().take(h.count) {
-                        io.write(OUT_DEGREES)
-                            .emit(frame, Note::new(Pitch::Degree(t), 0.0));
-                    }
-                    self.held.swap_remove(idx);
+                    let h = self.held.remove(idx);
+                    Self::release(io, frame, &h);
                 }
             }
         }
@@ -182,6 +199,28 @@ mod tests {
             Arg::Note(n) => n.velocity,
             other => panic!("expected a Note, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_press_past_the_held_roots_releases_the_oldest_first() {
+        // MAX_HELD roots pressed at frames 0.., then one more at frame 100: the oldest root (0)
+        // releases its triad at that frame, before the new root's note-ons.
+        let mut events: Vec<_> = (0..MAX_HELD as i32).map(|r| set(10 * r, 1.0, r as usize)).collect();
+        events.push(set(500, 1.0, 100));
+        let emits = run(128, 3.0, &events);
+        let at_100: Vec<(i32, f32)> = emits
+            .iter()
+            .filter(|e| e.frame == 100)
+            .map(|e| (deg(e), vel(e)))
+            .collect();
+        assert_eq!(
+            at_100,
+            vec![(0, 0.0), (2, 0.0), (4, 0.0), (500, 1.0), (502, 1.0), (504, 1.0)]
+        );
+        // Releasing the evicted root later emits nothing: it is no longer held.
+        events.push(set(0, 0.0, 110));
+        let emits = run(128, 3.0, &events);
+        assert!(emits.iter().all(|e| e.frame != 110));
     }
 
     #[test]

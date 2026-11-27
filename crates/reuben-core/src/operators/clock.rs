@@ -65,6 +65,7 @@ use alloc::vec::Vec;
 use num_traits::Float;
 
 use crate::descriptor::Descriptor;
+use crate::engine::PENDING_CAP;
 use crate::operator::{Io, Operator};
 
 // Single-source contract: one declaration -> IN_/OUT_ consts + Descriptor, no drift.
@@ -85,8 +86,8 @@ pub struct Clock {
     phase: f64,
     /// The `gate` level at the end of the previous call; edges within a call are found against it.
     gate_high: bool,
-    /// This (sub)block's `sync` frames, cleared per call and kept so a burst's capacity survives
-    /// into the next block.
+    /// This (sub)block's `sync` frames, cleared per call. Holds a full control queue of syncs; a
+    /// denser emitted burst grows it once and the capacity is kept.
     resets: Vec<usize>,
     /// Whole beats since the last `sync`, as of the next call's frame 0 (a wrap after the previous
     /// call's last frame included).
@@ -121,7 +122,10 @@ fn next_beat(beat: i32) -> i32 {
 
 impl Clock {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            resets: Vec::with_capacity(PENDING_CAP),
+            ..Self::default()
+        }
     }
 
     /// Emit `beat` for one call from the sorted `resets` and the `phase` pass's `wraps` (each the

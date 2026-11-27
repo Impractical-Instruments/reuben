@@ -1340,3 +1340,96 @@ fn the_widest_operator_renders_without_the_heap() {
     });
     assert_eq!((c.allocs, c.frees), (0, 0));
 }
+
+/// A Clock's first `sync`, from a fresh Engine's first block, touches no heap.
+#[test]
+fn a_clocks_first_sync_touches_no_heap() {
+    const DOC: &str = r#"{ "format_version": 3, "instrument": "sync",
+        "interface": { "outputs": { "out": { "from": "/osc.audio" } } },
+        "nodes": [
+          { "type": "clock", "address": "/clock" },
+          { "type": "oscillator", "address": "/osc",
+            "inputs": { "freq": { "from": "/clock.phase" } } } ] }"#;
+    let cfg = AudioConfig::new(48_000.0, 64);
+    let graph = load_instrument(DOC, &Registry::builtin(), &InstrumentsDir)
+        .expect("load")
+        .graph;
+    let mut e = Engine::new(Plan::instantiate(graph, cfg).expect("instantiate"));
+    let mut out = vec![0.0f32; cfg.block_size * e.channels()];
+    let mut syncs: Vec<Message> = [0, 10, 20]
+        .map(|f| Message::new("/clock/sync", Note::new(Pitch::Absolute(60.0), 1.0), f))
+        .into();
+    assert_counter_is_live();
+    let c = measure(|| {
+        for m in syncs.drain(..) {
+            e.queue(m);
+        }
+        e.fill(&mut out);
+    });
+    // `queue` drops each Message's address `String` once it resolves it: the caller's allocation.
+    assert_eq!((c.allocs, c.frees), (0, 3));
+}
+
+/// `chord` from a fresh install: its first chord, and more roots held at once than it tracks,
+/// touch no heap. The roots past what it tracks evict the oldest, so none of them hangs.
+#[test]
+fn chord_holds_and_overflows_its_roots_without_the_heap() {
+    let doc = include_str!("../../../instruments/chord-player.json");
+    let (_coord, side, _) = reuben_document::coordinator::Coordinator::install_initial(
+        doc,
+        Registry::builtin(),
+        Box::new(LibraryDir),
+        AudioConfig::new(48_000.0, 128),
+    )
+    .expect("the library instrument installs");
+    let mut slot = reuben_core::coordinator::RenderSlot::new(side);
+    let mut out = vec![0.0f32; 128 * slot.channels()];
+    // Degree roots: `chord` skips any other pitch.
+    let press = |d: i32| Message::new("/chord/in", Note::new(Pitch::Degree(d), 1.0), 0);
+    let mut presses: Vec<Message> = (0..20).map(press).collect();
+    let mut peak = 0.0f32;
+    assert_counter_is_live();
+    let c = measure(|| {
+        for m in presses.drain(..) {
+            slot.queue(m);
+            slot.fill(&mut out);
+            peak = out.iter().fold(peak, |p, s| p.max(s.abs()));
+        }
+    });
+    // `queue` drops each Message's address `String` once it resolves it: the caller's allocation.
+    assert_eq!((c.allocs, c.frees), (0, 20));
+    assert!(peak > 0.0, "the chords played");
+}
+
+/// Held changes at many distinct frames to one node in one block, each to its own port so the
+/// node's routed-change bucket holds them: slicing the block at every frame touches no heap.
+#[test]
+fn slicing_a_block_at_many_held_change_frames_touches_no_heap() {
+    const DOC: &str = r#"{ "format_version": 3, "instrument": "slices",
+        "interface": { "outputs": { "out": { "from": "/osc.audio" } } },
+        "nodes": [
+          { "type": "oscillator", "address": "/osc" },
+          { "type": "sequencer", "address": "/seq" } ] }"#;
+    let cfg = AudioConfig::new(48_000.0, 64);
+    let graph = load_instrument(DOC, &Registry::builtin(), &InstrumentsDir)
+        .expect("load")
+        .graph;
+    let mut e = Engine::new(Plan::instantiate(graph, cfg).expect("instantiate"));
+    let mut out = vec![0.0f32; cfg.block_size * e.channels()];
+    e.fill(&mut out);
+    let mut steps: Vec<Message> = (1..=16)
+        .map(|s| Message::new(format!("/seq/step{s}"), Arg::F32(s as f32), 3 * s as usize))
+        .collect();
+    assert_counter_is_live();
+    let c = measure(|| {
+        for m in steps.drain(..) {
+            e.queue(m);
+        }
+        e.fill(&mut out);
+    });
+    assert_eq!(
+        (c.allocs, c.frees),
+        (0, 16),
+        "only the 16 address Strings come back"
+    );
+}

@@ -131,7 +131,8 @@ impl RenderScratch {
             routes,
             emitted: Vec::with_capacity(EMIT_POOL_CAP),
             emit_scratch: Vec::with_capacity(EMIT_POOL_CAP),
-            bounds: Vec::with_capacity(8),
+            // Every frame of a block, and its end: the most distinct segment boundaries there are.
+            bounds: Vec::with_capacity(plan.config.block_size + 1),
             order: Vec::with_capacity(plan.nodes.len()),
             seg_events: Vec::with_capacity(EMIT_POOL_CAP),
             seg_starts: Vec::with_capacity(max_inputs + 1),
@@ -1136,17 +1137,18 @@ fn process_node(
     }
 
     // Segment boundaries: 0, block_size, every interior Held-change frame (a held value is constant
-    // per `process` call). Sort + dedup since change frames interleave.
+    // per `process` call), kept sorted and distinct as they go in. Distinct frames of one block are
+    // what bound `bounds`' capacity, however many changes share a frame.
     bounds.clear();
     bounds.push(0);
     bounds.push(block_size);
     for &(f, _, _) in &route.held {
         if f > 0 && f < block_size {
-            bounds.push(f);
+            if let Err(at) = bounds.binary_search(&f) {
+                bounds.insert(at, f);
+            }
         }
     }
-    bounds.sort_unstable();
-    bounds.dedup();
 
     // Re-zero the output slots an earlier producer in this block already wrote. The per-block
     // edge clear ran before any node did, so it left the block's *first* producer of each
