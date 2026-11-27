@@ -14,7 +14,7 @@
 //!
 //! It tracks the **set of held roots** so overlapping chords sound and release independently, and
 //! captures each root's tone count at press time, so a mid-hold `size` change can't orphan a
-//! note-off. Past twelve held roots, a press first releases the least recently pressed root's
+//! note-off; a re-press of a held root releases any old tone its new chord drops. Past twelve held roots, a press first releases the least recently pressed root's
 //! tones, so
 //! no tone hangs and nothing grows on the render thread. Emits one note stream, upstream of the
 //! Voicer that fans it out to voices.
@@ -141,16 +141,22 @@ impl Operator for Chord {
                     let oldest = self.held.remove(0);
                     Self::release(io, frame, &oldest);
                 }
-                // Emit a note-on per chord tone, and remember the tone set for release.
                 let (tones, count) = chord_tones(root, size);
-                for &t in tones.iter().take(count) {
+                let new = &tones[..count];
+                // A re-press re-sounds the root: it drops its old record and goes last, as the most
+                // recently pressed. A tone the old set held but the new one lacks (`size` shrank
+                // mid-hold) gets its note-off here — no later release would send it.
+                if let Some(idx) = self.held.iter().position(|h| h.root == root) {
+                    let old = self.held.remove(idx);
+                    for &t in old.tones[..old.count].iter().filter(|t| !new.contains(t)) {
+                        io.write(OUT_DEGREES)
+                            .emit(frame, Note::new(Pitch::Degree(t), 0.0));
+                    }
+                }
+                // Emit a note-on per chord tone, and remember the tone set for release.
+                for &t in new {
                     io.write(OUT_DEGREES)
                         .emit(frame, Note::new(Pitch::Degree(t), 1.0));
-                }
-                // A re-press re-sounds the root: it drops its old record and goes last, as the most
-                // recently pressed.
-                if let Some(idx) = self.held.iter().position(|h| h.root == root) {
-                    self.held.remove(idx);
                 }
                 self.held.push(Held { root, tones, count });
             } else {
@@ -369,6 +375,34 @@ mod tests {
         assert_eq!(off.len(), 4, "release covers all originally-pressed tones");
         let degs: Vec<i32> = off.iter().map(deg).collect();
         assert_eq!(degs, vec![0, 2, 4, 6]);
+    }
+
+    #[test]
+    fn a_re_press_at_a_smaller_size_releases_the_dropped_tones() {
+        // Seventh pressed, re-pressed as a triad, then released: every degree that got a note-on
+        // also gets a note-off. Three `run_io` blocks for the same reason as the test above.
+        let mut c = Chord::new();
+        let mut emits = run_io(&mut c, 128, 4.0, &[set(0, 1.0, 0)]);
+        let re = run_io(&mut c, 128, 3.0, &[set(0, 1.0, 0)]);
+        // The dropped seventh goes off before the re-sounded triad.
+        let re_pairs: Vec<(i32, f32)> = re.iter().map(|e| (deg(e), vel(e))).collect();
+        assert_eq!(re_pairs, vec![(6, 0.0), (0, 1.0), (2, 1.0), (4, 1.0)]);
+        emits.extend(re);
+        emits.extend(run_io(&mut c, 128, 3.0, &[set(0, 0.0, 0)]));
+        let mut ons: Vec<i32> = emits.iter().filter(|e| vel(e) > 0.5).map(deg).collect();
+        let mut offs: Vec<i32> = emits.iter().filter(|e| vel(e) < 0.5).map(deg).collect();
+        ons.sort_unstable();
+        ons.dedup();
+        offs.sort_unstable();
+        assert_eq!(ons, offs, "every sounded degree is released exactly once");
+    }
+
+    #[test]
+    fn an_unchanged_re_press_sends_no_note_offs() {
+        // Same size on re-press: nothing dropped, so only the re-sounded note-ons.
+        let emits = run(128, 3.0, &[set(0, 1.0, 0), set(0, 1.0, 64)]);
+        assert!(emits.iter().all(|e| vel(e) > 0.5));
+        assert_eq!(emits.len(), 6);
     }
 
     /// Hand-rolled single-block runner, retained only for
