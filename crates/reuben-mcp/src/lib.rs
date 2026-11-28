@@ -122,8 +122,9 @@ const INSTRUCTIONS: &str = "reuben authoring sidecar. The instrument document is
      `send_live_controls` auditions a value without committing it. One sent to an interface \
      input (`/<name>/in`) lasts through edits, clamped into a new range, until an edit changes \
      its type or default or renames or removes it; one sent to a node input nothing feeds lasts \
-     while the node survives and its document value is unchanged; a message to an input a wire \
-     or an interface input feeds is dropped. `open_instrument` replaces them all, and nothing \
+     while the node survives and its document value is unchanged; a batch with a message to an \
+     input a wire or an interface input feeds, to an address that reaches no input, or with \
+     args that don't fit is refused whole. `open_instrument` replaces them all, and nothing \
      is saved, so fold a keeper into the document with an edit. Read \
      `reuben://guide/authoring` for the type system, wiring rules, instrument format, and the \
      authoring loop. Read \
@@ -1064,6 +1065,8 @@ mod tests {
         /// Every [`ControlMessage`] that crossed the wire, in order. Shared, so a test can read it
         /// after the transport has been moved into the client.
         sent: Arc<Mutex<Vec<ControlMessage>>>,
+        /// What `send` answers instead of acking, when set.
+        send_refusal: Option<engine::SendRefusal>,
     }
 
     impl FakeTransport {
@@ -1137,6 +1140,9 @@ mod tests {
             // Answered from the batch that actually arrived, parsed back off the wire — so the ack
             // can only be right if the serialization was.
             if let Request::Send { messages } = request {
+                if let Some(refusal) = &self.send_refusal {
+                    return Ok(Response::SendRefused(refusal.clone()).to_ndjson());
+                }
                 if self.serves_send {
                     self.sent.lock().expect("sent log").extend(messages);
                     return Ok(Response::Sent.to_ndjson());
@@ -1862,6 +1868,35 @@ mod tests {
             ],
             "every message crosses in order, each arg as the atom its JSON spelling names"
         );
+    }
+
+    #[test]
+    fn send_live_controls_returns_the_engines_refusal_naming_the_address() {
+        let error = "no input has the address /voice1/cutof".to_string();
+        let transport = FakeTransport {
+            send_refusal: Some(engine::SendRefusal {
+                message: 0,
+                address: "/voice1/cutof".to_string(),
+                text: String::new(),
+                offset: 0,
+                start: 0,
+                end: 0,
+                error: error.clone(),
+            }),
+            ..FakeTransport::reachable()
+        };
+        let params = engine::SendLiveControls {
+            messages: vec![engine::ControlSendMessage {
+                address: "/voice1/cutof".to_string(),
+                args: vec![serde_json::json!(1200.0)],
+            }],
+        };
+        let result = block_on(server_with(transport).send_live_controls(Parameters(params)))
+            .expect("result");
+        assert_eq!(result.is_error, Some(true), "{result:?}");
+        let text = first_text(&result);
+        assert!(text.contains(&error), "{text}");
+        assert!(!text.contains("queued"), "{text}");
     }
 
     #[test]

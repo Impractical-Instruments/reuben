@@ -123,16 +123,18 @@ impl From<ControlArg> for Arg {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ControlMessage {
     /// The full address, e.g. `/filt/cutoff`. Routed by the engine exactly as an address arriving
-    /// on the foreign OSC edge is; an address matching no node/port is dropped silently.
+    /// on the foreign OSC edge is, once the `send` has checked that it reaches an input it can
+    /// apply these args to.
     pub address: String,
     /// The message's atoms, in order.
     #[serde(default)]
     pub args: Vec<ControlArg>,
 }
 
-/// Why a `send` was refused: the first message in the batch, aimed at an input that compiles its
-/// text, that was not one string or whose string its compiler refused. Nothing in the batch was
-/// applied.
+/// Why a `send` was refused: the first message in the batch the engine would not apply. Its
+/// address reaches no input, a wire or an interface input feeds that input, or its args don't fit
+/// the input; or the input compiles its text and the message was not one string, or its compiler
+/// refused the string. Nothing in the batch was applied.
 ///
 /// It carries the text itself, so a client can print the span under it without having kept what
 /// it sent: the whole text, or a window of at most a kilobyte around the span when the text is
@@ -144,7 +146,7 @@ pub struct SendRefusal {
     /// The refused message's address.
     pub address: String,
     /// The text that did not compile, or the window of it around the fault; empty when the
-    /// message was not one string.
+    /// message as a whole was refused.
     pub text: String,
     /// Byte offset of `text` in the string sent: 0 unless it was trimmed to a window.
     #[serde(default)]
@@ -556,8 +558,10 @@ pub enum Response {
     /// `Send`'s ack: the engine **received** the whole batch and queued it for the next rendered
     /// block.
     ///
-    /// Not "applied": an address routing to no node/port is dropped silently at the engine's
-    /// ingress, exactly as an external OSC datagram naming a stale address is.
+    /// Not "applied": every message reached an input of the Plan the batch was checked against,
+    /// but a Swap between the check and the next block can remove it, and the message is then
+    /// dropped at the engine's ingress, exactly as an external OSC datagram naming a stale address
+    /// is.
     ///
     /// A **unit** ack, deliberately. It once carried a `count`, which could only ever equal the
     /// request's own `messages.len()`: the batch is queued as one unit, so there is no partial

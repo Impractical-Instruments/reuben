@@ -2279,8 +2279,8 @@ mod tests {
                     args: vec![ControlArg::F32(440.5)],
                 },
                 ControlMessage {
-                    address: "/osc/shape".to_string(),
-                    args: vec![ControlArg::Str("Up".to_string()), ControlArg::I32(3)],
+                    address: "/osc/waveform".to_string(),
+                    args: vec![ControlArg::Str("Saw".to_string()), ControlArg::I32(3)],
                 },
             ],
         };
@@ -2296,8 +2296,8 @@ mod tests {
             vec![
                 OscIn::new("/osc/freq".to_string(), vec![Arg::F32(440.5)]),
                 OscIn::new(
-                    "/osc/shape".to_string(),
-                    vec![Arg::Str("Up".into()), Arg::I32(3)]
+                    "/osc/waveform".to_string(),
+                    vec![Arg::Str("Saw".into()), Arg::I32(3)]
                 ),
             ],
             "both messages arrive in order, each atom as its primitive Arg"
@@ -2305,21 +2305,73 @@ mod tests {
         cb.stop();
     }
 
-    #[test]
-    fn send_acks_an_unroutable_address_because_the_engine_drops_it_silently() {
-        // The ack is "queued", never "applied": an address matching no node/port is dropped at the
-        // engine's ingress exactly as a stale external datagram is, and the channel does not
-        // pre-judge it — this door has no routing table and must not grow one.
-        let (state, cb, _) = swap_fixture(BASE_DOC, 0);
-        let request = Request::Send {
-            messages: vec![ControlMessage {
-                address: "/nowhere/at/all".to_string(),
-                args: vec![ControlArg::F32(1.0)],
-            }],
+    /// `/osc` with its `freq` fed by `/lfo`.
+    const WIRED_DOC: &str = r#"{"format_version":3,"instrument":"t",
+        "interface":{"outputs":{"out":{"from":"/osc.audio"}}},
+        "nodes":[{"type":"oscillator","address":"/lfo"},
+                 {"type":"oscillator","address":"/osc",
+                  "inputs":{"freq":{"from":"/lfo.audio"}}}]}"#;
+
+    /// Send `refused` through the real handler, expect it refused at message 1 (`/osc/freq`, the
+    /// good message ahead of it, rides along unapplied), then prove nothing reached the callback:
+    /// a later good send is the first and only thing queued.
+    fn assert_refused_whole(doc: &str, refused: ControlMessage, says: &str) {
+        let (state, cb, _) = swap_fixture(doc, 0);
+        let address = refused.address.clone();
+        let good = ControlMessage {
+            address: "/osc/waveform".to_string(),
+            args: vec![ControlArg::Str("Saw".to_string())],
         };
-        assert_eq!(dispatch(&state, &request.to_ndjson()), Response::Sent);
-        assert_eq!(cb.await_queued(1).len(), 1, "it still reached queue_osc");
+        let request = Request::Send {
+            messages: vec![good.clone(), refused],
+        };
+        match dispatch(&state, &request.to_ndjson()) {
+            Response::SendRefused(r) => {
+                assert_eq!((r.message, r.address.as_str()), (1, address.as_str()));
+                assert!(r.error.contains(&address), "names the address: {}", r.error);
+                assert!(r.error.contains(says), "says what is wrong: {}", r.error);
+            }
+            other => panic!("expected SendRefused, got {other:?}"),
+        }
+        let sentinel = Request::Send {
+            messages: vec![good],
+        };
+        assert_eq!(dispatch(&state, &sentinel.to_ndjson()), Response::Sent);
+        let queued = cb.await_queued(1);
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(
+            cb.drained_batch_sizes(),
+            vec![1],
+            "only the sentinel: {queued:?}"
+        );
         cb.stop();
+    }
+
+    #[test]
+    fn send_refuses_a_mistyped_address() {
+        let refused = ControlMessage {
+            address: "/osc/frq".to_string(),
+            args: vec![ControlArg::F32(220.0)],
+        };
+        assert_refused_whole(BASE_DOC, refused, "no input");
+    }
+
+    #[test]
+    fn send_refuses_args_that_do_not_fit_the_input() {
+        let refused = ControlMessage {
+            address: "/osc/freq".to_string(),
+            args: vec![ControlArg::Str("loud".to_string())],
+        };
+        assert_refused_whole(BASE_DOC, refused, "one number");
+    }
+
+    #[test]
+    fn send_refuses_a_wired_input() {
+        let refused = ControlMessage {
+            address: "/osc/freq".to_string(),
+            args: vec![ControlArg::F32(220.0)],
+        };
+        assert_refused_whole(WIRED_DOC, refused, "fed");
     }
 
     #[test]
@@ -2332,7 +2384,7 @@ mod tests {
         let request = Request::Send {
             messages: (0..3)
                 .map(|i| ControlMessage {
-                    address: format!("/osc/p{i}"),
+                    address: "/osc/freq".to_string(),
                     args: vec![ControlArg::I32(i)],
                 })
                 .collect(),
@@ -2374,8 +2426,8 @@ mod tests {
         let (state, cb, _) = swap_fixture(BASE_DOC, 0);
         let request = Request::Send {
             messages: (0..MAX_SEND_BATCH + 1)
-                .map(|i| ControlMessage {
-                    address: format!("/osc/p{i}"),
+                .map(|_| ControlMessage {
+                    address: "/osc/freq".to_string(),
                     args: vec![ControlArg::I32(0)],
                 })
                 .collect(),
@@ -2394,8 +2446,8 @@ mod tests {
         // The limit itself is servable — the boundary is inclusive.
         let ok = Request::Send {
             messages: (0..MAX_SEND_BATCH)
-                .map(|i| ControlMessage {
-                    address: format!("/osc/p{i}"),
+                .map(|_| ControlMessage {
+                    address: "/osc/freq".to_string(),
                     args: vec![ControlArg::I32(0)],
                 })
                 .collect(),

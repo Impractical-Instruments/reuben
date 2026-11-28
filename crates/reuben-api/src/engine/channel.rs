@@ -118,7 +118,8 @@ pub enum SwapOutcome {
 pub enum SendOutcome {
     /// The engine queued the whole batch for its next block.
     Queued,
-    /// A string did not compile for the input it was sent to: nothing was queued.
+    /// A message the engine would not apply, or a string that did not compile for the input it was
+    /// sent to: nothing was queued.
     Refused(SendRefusal),
 }
 
@@ -323,9 +324,10 @@ impl Channel {
 
     /// Audition a batch of control values on the running engine.
     ///
-    /// [`SendOutcome::Queued`] means "received and queued", NOT "applied": a message whose address
-    /// routes nowhere is dropped at the engine's ingress. [`SendOutcome::Refused`] is text aimed at
-    /// an input that compiles it that did not compile, and nothing was queued. An empty or
+    /// [`SendOutcome::Queued`] means "received and queued", NOT "applied": a Swap before the next
+    /// block can remove an address, and the message is then dropped at the engine's ingress.
+    /// [`SendOutcome::Refused`] is the first message the engine would not apply, and nothing was
+    /// queued. An empty or
     /// over-long batch is refused by the engine as a [`Channel`](ChannelError::Channel) error
     /// rather than acked.
     pub fn send(&self, messages: Vec<ControlMessage>) -> Result<SendOutcome, ChannelError> {

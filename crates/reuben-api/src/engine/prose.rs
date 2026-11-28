@@ -15,16 +15,14 @@ pub const SEND_LIVE_CONTROLS: &str =
      These values live in render state only, never in the instrument document. A value sent to \
      an interface input (/<name>/in) lasts through edits, clamped into a new range, until an \
      edit changes its type or default or renames or removes it; one sent to a node input \
-     nothing feeds lasts while the node survives and its document value is unchanged. A message \
-     to an input a wire or an interface input feeds is dropped and counted \
-     (wired_writes_dropped); send to the interface input instead. Opening an instrument, even \
-     the one playing, replaces them all. Fold any you want to keep into the instrument \
-     document with an edit. A message to a str input must be one string, compiled first: anything \
-     else, or text that does not compile, refuses the whole batch, naming the message and the \
-     bytes at fault, and nothing in it is applied. The ack means the engine received \
-     the batch and queued it for the next rendered block — not that it took effect: an address \
-     matching no node/port is dropped silently, exactly as it would be arriving from an external \
-     controller. \
+     nothing feeds lasts while the node survives and its document value is unchanged. Opening an \
+     instrument, even the one playing, replaces them all. Fold any you want to keep into the \
+     instrument document with an edit. The whole batch is refused, naming the first message at \
+     fault and its address, and nothing in it is applied, when a message's address reaches no \
+     input, its args don't fit the input, or a wire or an interface input feeds the input (send \
+     to the interface input instead). A message to a str input must be one string, compiled \
+     first: anything else, or text that does not compile, refuses the batch the same way, with \
+     the bytes at fault. An accepted batch is queued for the next rendered block. \
      Fails fast if no engine is reachable.";
 
 pub const GET_ENGINE_STATUS: &str =

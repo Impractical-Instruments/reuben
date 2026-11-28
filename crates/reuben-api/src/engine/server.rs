@@ -761,10 +761,11 @@ pub const IN_PROCESS_ENDPOINT: &str = "in-process";
 /// unit** and ack it.
 ///
 /// The one routing step here is [`prepare_send`]'s: a lone string at an address the installed
-/// Plan compiles is compiled now, and text that does not compile refuses the whole batch. The
-/// engine types and routes each message against its destination port exactly as it would an
-/// external datagram, and an address matching no node/port is dropped there, silently, which is
-/// why the ack is "queued", never "applied".
+/// Plan compiles is compiled now, every other message is checked against the installed Plan's
+/// inputs, and anything the engine would not apply refuses the whole batch. The engine types and
+/// routes each message against its destination port exactly as it would an external datagram. A
+/// Swap after the check can still remove an address, and the engine drops the message there,
+/// which is why the ack is "queued", never "applied".
 ///
 /// The Coordinator is untouched: control is not structure, so a `send` never contends for the
 /// single-writer lock and cannot be starved by an in-flight swap's bounded reclaim poll.
@@ -1323,7 +1324,8 @@ mod tests {
 
         const ECHO: &str = r#"{"format_version":3,"instrument":"echo",
             "interface":{"inputs":{"pat":{"type":"str","default":"seed"}}},
-            "nodes":[{"type":"osc_out","address":"/o","inputs":{"in":{"from":"/pat"}}}]}"#;
+            "nodes":[{"type":"osc_out","address":"/o","inputs":{"in":{"from":"/pat"}}},
+                     {"type":"osc_out","address":"/free"}]}"#;
         let (coordinator, side, _) =
             crate::engine::install_initial(ECHO, NoStore, reuben_core::AudioConfig::new(48e3, 128))
                 .expect("install");
@@ -1350,7 +1352,7 @@ mod tests {
 
         let send = Request::Send {
             messages: vec![ControlMessage {
-                address: "/pat/in".to_string(),
+                address: "/free/in".to_string(),
                 args: vec![crate::engine::ControlArg::Str("next".to_string())],
             }],
         };

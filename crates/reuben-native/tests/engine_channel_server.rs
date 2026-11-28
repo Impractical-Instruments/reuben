@@ -527,8 +527,8 @@ fn send_over_the_wire_reaches_the_engines_queue_osc() {
                     args: vec![ControlArg::F32(440.5)],
                 },
                 ControlMessage {
-                    address: "/osc/shape".to_string(),
-                    args: vec![ControlArg::Str("Up".to_string()), ControlArg::I32(3)],
+                    address: "/osc/waveform".to_string(),
+                    args: vec![ControlArg::Str("Saw".to_string()), ControlArg::I32(3)],
                 },
             ],
         },
@@ -540,8 +540,8 @@ fn send_over_the_wire_reaches_the_engines_queue_osc() {
         vec![
             OscIn::new("/osc/freq".to_string(), vec![Arg::F32(440.5)]),
             OscIn::new(
-                "/osc/shape".to_string(),
-                vec![Arg::Str("Up".into()), Arg::I32(3)]
+                "/osc/waveform".to_string(),
+                vec![Arg::Str("Saw".into()), Arg::I32(3)]
             ),
         ],
         "both messages crossed the wire in order, each atom as its primitive Arg"
@@ -563,7 +563,12 @@ fn concurrent_sends_never_interleave_into_each_others_gestures() {
     // concurrently. Pushing message-by-message would let their gestures interleave on the shared
     // ingress (A1, B1, A2, …) — the multi-client workflow is explicitly supported, so this is not a
     // hypothetical. Handing each batch over as ONE unit is what prevents it.
-    let (state, cb, _) = wired(BASE_DOC, 0);
+    // One oscillator per client, so each client's messages reach an input of its own.
+    const TRIO_DOC: &str = r#"{"format_version":3,"instrument":"t",
+        "interface":{"outputs":{"out":{"from":"/a.audio"}}},
+        "nodes":[{"type":"oscillator","address":"/a"},{"type":"oscillator","address":"/b"},
+                 {"type":"oscillator","address":"/c"}]}"#;
+    let (state, cb, _) = wired(TRIO_DOC, 0);
     let server = ChannelServer::bind("127.0.0.1:0", state).expect("bind");
     let addr = server.local_addr();
 
@@ -585,7 +590,7 @@ fn concurrent_sends_never_interleave_into_each_others_gestures() {
                             .map(|i| ControlMessage {
                                 // The address's leading letter tags which client owns the message,
                                 // so a mixed batch is detectable below.
-                                address: format!("/{who}/p{i}"),
+                                address: format!("/{who}/freq"),
                                 args: vec![ControlArg::I32(i as i32)],
                             })
                             .collect(),

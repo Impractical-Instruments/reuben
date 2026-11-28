@@ -141,6 +141,25 @@ fn a_bad_pattern_through_send_exits_non_zero_with_the_span_and_nothing_changes()
 }
 
 #[test]
+fn a_send_to_no_input_exits_non_zero_naming_the_address_and_nothing_changes() {
+    let server = serve();
+    let refused = send(&server.addr, &["/a/pt", "1 2"], "");
+    assert!(!refused.status.success(), "a refusal exits non-zero");
+    assert_eq!(
+        stderr(&refused),
+        "<arg>:1:1: error: no input has the address /a/pt\n"
+    );
+
+    let queued = send(&server.addr, &["/a/pat", "4 5"], "");
+    assert!(queued.status.success(), "{}", stderr(&queued));
+    assert_eq!(
+        server.queued(1),
+        vec![("/a/pat".to_string(), "4 5".to_string())],
+        "only the send that reached an input reached the render thread"
+    );
+}
+
+#[test]
 fn send_reads_the_pattern_from_stdin_when_it_is_left_out() {
     let server = serve();
     let output = send(&server.addr, &["/b/pat"], "7 8\n");
@@ -382,6 +401,40 @@ fn send_line_reports_a_bad_line_at_its_file_line_and_column() {
         format!(
             "{shown}:2:11: error: unknown word 'x'; atoms are numbers and note names\n3 x\n  ^\n"
         )
+    );
+}
+
+#[test]
+fn a_line_whose_address_reaches_no_input_is_reported_at_the_address() {
+    let server = serve();
+    let dir = Dir::new("noinput");
+    let file = dir.0.join("a.rpat");
+    std::fs::write(&file, "/a/pat 1\n  /a/pt  2\n").expect("write the pattern file");
+    let shown = file.display().to_string();
+    let report = format!("{shown}:2:3: error: no input has the address /a/pt");
+
+    let output = send_line(&server.addr, &file, 2);
+    assert!(!output.status.success());
+    assert_eq!(stderr(&output), format!("{report}\n"));
+
+    let live = Live::start(&server.addr, &file);
+    assert_eq!(
+        live.batch(),
+        vec![
+            format!("reuben live: sending {shown}"),
+            "reuben live: queued /a/pat (line 1)".to_string(),
+            report,
+            "reuben live: done (1 queued, 1 error)".to_string(),
+        ]
+    );
+    assert_eq!(
+        server.queued(1),
+        vec![("/a/pat".to_string(), "1".to_string())]
+    );
+    assert_eq!(
+        server.queued(2).len(),
+        1,
+        "the refused line reached nothing"
     );
 }
 

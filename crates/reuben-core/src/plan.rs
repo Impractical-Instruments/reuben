@@ -506,11 +506,12 @@ pub struct PreparedInput {
     pub port: &'static str,
 }
 
-/// A Plan's [`PreparedRoute`]s, by address.
-#[derive(Debug, Default, PartialEq)]
+/// A Plan's [`PreparedRoute`]s, by address, and its [`InputTable`].
+#[derive(Debug, Default)]
 pub struct PreparedRoutes {
     /// Sorted by address, one route per address.
     routes: Vec<PreparedRoute>,
+    inputs: InputTable,
 }
 
 impl PreparedRoutes {
@@ -532,6 +533,11 @@ impl PreparedRoutes {
 
     pub fn is_empty(&self) -> bool {
         self.routes.is_empty()
+    }
+
+    /// Every input a send to this Plan can reach.
+    pub fn inputs(&self) -> &InputTable {
+        &self.inputs
     }
 
     /// Every unwired address in `nodes` and `aliases` whose input prepares its text. A kept pipe's
@@ -583,7 +589,96 @@ impl PreparedRoutes {
         }
         routes.sort_by(|a, b| a.address.cmp(&b.address));
         routes.dedup_by(|a, b| a.address == b.address);
-        Self { routes }
+        Self {
+            routes,
+            inputs: InputTable::build(nodes, aliases),
+        }
+    }
+}
+
+/// Every input a send can reach in a Plan, and whether a wire or a pipe feeds it: the addresses
+/// [`Plan::osc_in_message`] resolves, by the same rule, held where a producer thread can read it
+/// while the Plan renders.
+#[derive(Debug, Default)]
+pub struct InputTable {
+    /// Each dissolved pipe's minted address and synthesized port, in alias order, and whether the
+    /// pipe was fed.
+    aliases: Vec<(Arc<str>, Port, bool)>,
+    /// Each node's address and descriptor, in execution order, and where its inputs' flags start
+    /// in `wired`.
+    nodes: Vec<(Arc<str>, Arc<Descriptor>, usize)>,
+    /// Every node's [`PlanNode::wired`], end to end.
+    wired: Vec<bool>,
+}
+
+/// Why a message sent to an address would not be applied there.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Unapplied<'a> {
+    /// The address reaches no input.
+    NoInput,
+    /// A wire or an interface input feeds the input, so its value is its feeder's.
+    Wired,
+    /// The args don't fit the input's port.
+    DoesNotFit(&'a Port),
+    /// Raw text at a `str` input: routing applies only a value the input's own preparer built.
+    Uncompiled,
+}
+
+impl InputTable {
+    fn build(nodes: &[PlanNode], aliases: &[InputAlias]) -> Self {
+        let mut wired = Vec::with_capacity(nodes.iter().map(|n| n.wired.len()).sum());
+        let nodes = nodes
+            .iter()
+            .map(|n| {
+                let at = wired.len();
+                wired.extend_from_slice(&n.wired);
+                (n.address.clone(), Arc::clone(&n.descriptor), at)
+            })
+            .collect();
+        let aliases = aliases
+            .iter()
+            .map(|a| (a.address.clone(), a.port.clone(), a.seed.is_none()))
+            .collect();
+        Self {
+            aliases,
+            nodes,
+            wired,
+        }
+    }
+
+    /// What `address` reaches, its port, and whether that input is fed.
+    pub(crate) fn find(&self, address: &str) -> Option<(Target, &Port, bool)> {
+        let (target, port) = crate::render::resolve_in(
+            self.aliases.iter().map(|(a, p, _)| (&**a, p)),
+            self.nodes
+                .iter()
+                .map(|(a, d, _)| (&**a, d.inputs.as_slice())),
+            address,
+        )?;
+        let fed = match target {
+            Target::Alias(i) => self.aliases[i].2,
+            Target::Port { node, port } => self.wired[self.nodes[node].2 + port],
+        };
+        Some((target, port, fed))
+    }
+
+    /// Whether `args` sent to `address` would be applied as they are: the address reaches an
+    /// input, nothing feeds it, and the args fit its port by
+    /// [`osc_in_arg`](crate::boundary::osc_in_arg), the conversion queueing them runs. Text at a
+    /// `str` input is applied only once its preparer has compiled it, which is not this check's to
+    /// do. Cold: a vocab port's conversion may allocate.
+    pub fn check(&self, address: &str, args: &[Arg]) -> Result<(), Unapplied<'_>> {
+        let (_, port, fed) = self.find(address).ok_or(Unapplied::NoInput)?;
+        if fed {
+            return Err(Unapplied::Wired);
+        }
+        match crate::boundary::osc_in_arg(port, args) {
+            None => Err(Unapplied::DoesNotFit(port)),
+            Some(Arg::Str(_)) if matches!(port.ty, PortType::Str { .. }) => {
+                Err(Unapplied::Uncompiled)
+            }
+            Some(_) => Ok(()),
+        }
     }
 }
 
@@ -757,19 +852,17 @@ impl Plan {
     }
 
     /// Resolve an inbound address to the [`Target`] it reaches in this Plan, and the [`Port`] that
-    /// types it. A dissolved pipe's minted address is checked first: it belonged to a node the
-    /// pipe's dissolve removed, so it can never shadow a live port, and it stays live by typing
-    /// args with the pipe's own synthesized port. A linear scan over aliases, then nodes × ports.
+    /// types it, by [`resolve_in`](crate::render::resolve_in). A dissolved pipe's minted address
+    /// stays live by typing args with the pipe's own synthesized port. A linear scan over aliases,
+    /// then nodes × ports.
     pub(crate) fn resolve(&self, address: &str) -> Option<(Target, &Port)> {
-        if let Some((i, a)) =
-            self.input_aliases.iter().enumerate().find(|(_, a)| {
-                crate::render::local_address(address, &a.address) == Some(a.port.name)
-            })
-        {
-            return Some((Target::Alias(i), &a.port));
-        }
-        crate::render::resolve_port(&self.nodes, address)
-            .map(|(node, port, p)| (Target::Port { node, port }, p))
+        crate::render::resolve_in(
+            self.input_aliases.iter().map(|a| (&*a.address, &a.port)),
+            self.nodes
+                .iter()
+                .map(|n| (&*n.address, n.descriptor.inputs.as_slice())),
+            address,
+        )
     }
 
     /// Instantiate a Graph into an executable Plan (the construction sub-step of a Swap).
@@ -3434,5 +3527,241 @@ mod carry_kind {
         let mut new = piped(WORDS);
         new.carry_live_values(&mut old, &[LiveCarry::Interface { from: at, to: at }]);
         assert_eq!(kind(&new), WORDS.kind);
+    }
+}
+
+#[cfg(test)]
+mod input_table {
+    use alloc::string::{String, ToString};
+    use alloc::sync::Arc;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    use super::{AudioConfig, Descriptor, Graph, Plan, Port, PortKind, Unapplied};
+    use crate::message::Arg;
+    use crate::operator::{Io, Operator};
+    use crate::operators::pipe::Pipe;
+    use crate::operators::{delay, oscillator, Delay, Oscillator};
+    use crate::prepare::testing::STEPS;
+
+    struct Sink;
+    impl Operator for Sink {
+        fn descriptor() -> Descriptor {
+            pipe_desc(Port::str_prepared("in", STEPS), "hand_built")
+        }
+        fn process(&mut self, _io: &mut Io) {}
+        fn spawn(&self) -> Box<dyn Operator> {
+            Box::new(Sink)
+        }
+    }
+
+    fn pipe_desc(input: Port, type_name: &'static str) -> Descriptor {
+        let outputs = if type_name == "pipe" {
+            vec![Port {
+                name: "out",
+                ..input.clone()
+            }]
+        } else {
+            vec![]
+        };
+        Descriptor {
+            type_name,
+            inputs: vec![input],
+            outputs,
+            constants: vec![],
+            resources: vec![],
+        }
+    }
+
+    fn renamed(port: &Port, name: &'static str) -> Port {
+        Port {
+            name,
+            ..port.clone()
+        }
+    }
+
+    /// Every way a send can reach an input: a portless ancestor `/fx` scanned before the nested
+    /// `/fx/verb/delay` it prefix-matches; a seeded pipe (`/level`) and a fed one (`/fed`), both
+    /// dissolved into aliases; a pipe with two consumers (`/both`) kept as a rendered node; a text
+    /// pipe (`/pat`) dissolved into a prepared input; and wired node inputs.
+    fn every_shape() -> Plan {
+        let delay = Delay::descriptor();
+        let osc = Oscillator::descriptor();
+        let mut g = Graph::new();
+        let fx = g.add("/fx", Oscillator::new());
+        let deep = g.add("/fx/verb/delay", Delay::new());
+        let d2 = g.add("/d2", Delay::new());
+        let lfo = g.add("/lfo", Oscillator::new());
+        g.connect(fx, oscillator::OUT_AUDIO, deep, delay::IN_AUDIO);
+        g.tap_output(deep, delay::OUT_AUDIO);
+        g.tap_output(d2, delay::OUT_AUDIO);
+
+        let level = g.add_boxed(
+            "/level",
+            Box::new(Pipe::new(PortKind::Value)),
+            Arc::new(pipe_desc(
+                renamed(&delay.inputs[delay::IN_MIX.index()], "in"),
+                "pipe",
+            )),
+        );
+        g.connect(level, 0usize, deep, delay::IN_MIX);
+
+        let fed = g.add_boxed(
+            "/fed",
+            Box::new(Pipe::new(PortKind::Signal)),
+            Arc::new(pipe_desc(
+                renamed(&osc.inputs[oscillator::IN_FREQ.index()], "in"),
+                "pipe",
+            )),
+        );
+        g.connect(lfo, oscillator::OUT_AUDIO, fed, 0usize);
+        g.connect(fed, 0usize, fx, oscillator::IN_FREQ);
+
+        let both = g.add_boxed(
+            "/both",
+            Box::new(Pipe::new(PortKind::Value)),
+            Arc::new(pipe_desc(
+                renamed(&delay.inputs[delay::IN_TIME.index()], "in"),
+                "pipe",
+            )),
+        );
+        g.connect(both, 0usize, deep, delay::IN_TIME);
+        g.connect(both, 0usize, d2, delay::IN_TIME);
+
+        let pat = g.add_boxed(
+            "/pat",
+            Box::new(Pipe::text()),
+            Arc::new(pipe_desc(Port::str("in"), "pipe")),
+        );
+        let n = g.add_boxed("/n", Box::new(Sink), Arc::new(Sink::descriptor()));
+        g.connect(pat, 0usize, n, 0usize);
+
+        Plan::instantiate(g, AudioConfig::new(48_000.0, 64)).expect("instantiate")
+    }
+
+    /// Every address made of a node's or an alias's address and any port name the Plan has, with
+    /// a few that are near misses of one.
+    fn candidates(plan: &Plan) -> Vec<String> {
+        let mut bases: Vec<&str> = plan.nodes.iter().map(|n| &*n.address).collect();
+        bases.extend(plan.input_aliases.iter().map(|a| &*a.address));
+        bases.extend(["", "/fx/verb", "/fx/verb/delay/x", "/nope"]);
+        let mut names: Vec<&str> = plan
+            .nodes
+            .iter()
+            .flat_map(|n| n.descriptor.inputs.iter().map(|p| p.name))
+            .collect();
+        names.extend(plan.input_aliases.iter().map(|a| a.port.name));
+        names.extend(["", "out", "verb/delay/time", "tim"]);
+        let mut out: Vec<String> = bases
+            .iter()
+            .flat_map(|b| names.iter().map(move |n| alloc::format!("{b}/{n}")))
+            .collect();
+        out.extend(bases.iter().map(|b| b.to_string()));
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    #[test]
+    fn the_table_agrees_with_resolve_on_every_address() {
+        let plan = every_shape();
+        assert!(
+            plan.input_aliases.len() == 3,
+            "precondition: /level, /fed and /pat dissolve; got {:?}",
+            plan.input_aliases
+                .iter()
+                .map(|a| &*a.address)
+                .collect::<Vec<_>>()
+        );
+        let fx = plan.nodes.iter().position(|n| &*n.address == "/fx");
+        let deep = plan
+            .nodes
+            .iter()
+            .position(|n| &*n.address == "/fx/verb/delay");
+        assert!(
+            fx < deep,
+            "precondition: /fx is scanned before /fx/verb/delay"
+        );
+        assert!(
+            plan.nodes.iter().any(|n| &*n.address == "/both"),
+            "precondition: /both is kept"
+        );
+
+        let table = plan.prepared_routes().inputs();
+        let (mut hits, mut misses) = (0, 0);
+        for address in candidates(&plan) {
+            let want = plan.resolve(&address).map(|(target, port)| {
+                let fed = match target {
+                    super::Target::Alias(i) => plan.input_aliases[i].seed.is_none(),
+                    super::Target::Port { node, port } => plan.nodes[node].wired[port],
+                };
+                (target, port.clone(), fed)
+            });
+            let got = table
+                .find(&address)
+                .map(|(target, port, fed)| (target, port.clone(), fed));
+            assert_eq!(got, want, "{address}");
+            match want {
+                Some(_) => hits += 1,
+                None => {
+                    misses += 1;
+                    assert_eq!(
+                        table.check(&address, &[Arg::F32(0.5)]),
+                        Err(Unapplied::NoInput),
+                        "{address}"
+                    );
+                }
+            }
+        }
+        assert!(hits > 10 && misses > 10, "{hits} hits, {misses} misses");
+    }
+
+    #[test]
+    fn check_judges_each_shape() {
+        let plan = every_shape();
+        let table = plan.prepared_routes().inputs();
+        let f = [Arg::F32(0.5)];
+        // Behind a prefix-matching ancestor, through a seeded alias, and at a kept pipe.
+        assert_eq!(table.check("/fx/verb/delay/feedback", &f), Ok(()));
+        assert_eq!(table.check("/level/in", &f), Ok(()));
+        assert_eq!(table.check("/both/in", &f), Ok(()));
+        // Nothing there.
+        assert_eq!(
+            table.check("/fx/verb/delay/tim", &f),
+            Err(Unapplied::NoInput)
+        );
+        assert_eq!(table.check("/fx/time", &f), Err(Unapplied::NoInput));
+        // Fed: by a wire, through a fed alias, and a node input a pipe feeds.
+        assert_eq!(
+            table.check("/fx/verb/delay/audio", &f),
+            Err(Unapplied::Wired)
+        );
+        assert_eq!(table.check("/fed/in", &f), Err(Unapplied::Wired));
+        assert_eq!(table.check("/fx/freq", &f), Err(Unapplied::Wired));
+        assert_eq!(table.check("/fx/verb/delay/mix", &f), Err(Unapplied::Wired));
+        // Args that don't fit: a string at a number, nothing at all, a bogus waveform.
+        let Err(Unapplied::DoesNotFit(port)) =
+            table.check("/fx/verb/delay/feedback", &[Arg::Str("hi".into())])
+        else {
+            panic!("a string at an f32 input fits");
+        };
+        assert_eq!(port.name, "feedback");
+        assert!(matches!(
+            table.check("/level/in", &[]),
+            Err(Unapplied::DoesNotFit(_))
+        ));
+        assert!(matches!(
+            table.check("/lfo/waveform", &[Arg::Str("kazoo".into())]),
+            Err(Unapplied::DoesNotFit(_))
+        ));
+        assert_eq!(
+            table.check("/lfo/waveform", &[Arg::Str("Saw".into())]),
+            Ok(())
+        );
+        // Raw text where a preparer must compile it first.
+        assert_eq!(
+            table.check("/pat/in", &[Arg::Str("0 1".into())]),
+            Err(Unapplied::Uncompiled)
+        );
     }
 }
