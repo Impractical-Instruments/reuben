@@ -16,7 +16,8 @@ use reuben_document::coordinator::Coordinator;
 use crate::rt_alloc::measure;
 
 /// Block-fills spanning the whole ramp: `16 × 128 = 2048` frames comfortably exceeds the full
-/// `2 × ramp_edge_frames()` (≈960) master-gain ramp, so a full down → install-at-zero → up ramp —
+/// master-gain ramp — `2 × ramp_edge_frames()` (≈960) plus the hold at zero for the retiring
+/// Engine's block boundary (under one block) — so a full down → install-at-zero → up ramp —
 /// transplant + retiree post included — lands inside the measured window. Checked against the live
 /// ramp width in [`assert_install_step_heap_neutral`], so the ">2×ramp" claim can't silently rot.
 pub const RAMP_SPAN_BLOCKS: usize = 16;
@@ -29,7 +30,7 @@ pub use crate::rt_alloc::assert_counter_is_live;
 ///
 /// Call after a swap has been posted to `coord` (via [`Coordinator::swap_document`]) and `slot` has
 /// been warmed to steady-state capacity off the measured path. The window is `RAMP_SPAN_BLOCKS ×
-/// block` frames, asserted here to exceed the full `2 × ramp_edge_frames()` ramp so the
+/// block` frames, asserted here to exceed the full `2 × ramp_edge_frames() + block` ramp so the
 /// install-at-zero transplant + retiree post land strictly inside it. Consumes the retiree.
 pub fn assert_install_step_heap_neutral(
     coord: &mut Coordinator,
@@ -38,10 +39,10 @@ pub fn assert_install_step_heap_neutral(
 ) {
     let ch = slot.channels();
     let window = RAMP_SPAN_BLOCKS * block;
-    let ramp = 2 * slot.ramp_edge_frames();
+    let ramp = 2 * slot.ramp_edge_frames() + block;
     assert!(
         window > ramp,
-        "measured window ({window} frames) must exceed the full down+up ramp ({ramp} frames) so \
+        "measured window ({window} frames) must exceed the full down+hold+up ramp ({ramp} frames) so \
          the transplant + retiree post land inside it"
     );
 

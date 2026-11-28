@@ -146,6 +146,12 @@ impl Engine {
         self.plan.config.block_size
     }
 
+    /// Frames of the last rendered block not yet delivered by a fill: every Operator's state is
+    /// already this far ahead of the delivered timeline. Zero on a block boundary.
+    pub(crate) fn undelivered_frames(&self) -> usize {
+        self.block_size().saturating_sub(self.pos)
+    }
+
     /// Logical master channel count. `fill` interleaves this many channels.
     pub fn channels(&self) -> usize {
         self.channels
