@@ -132,8 +132,8 @@ fn steady_state_is_transparent_no_ramp_no_dip() {
 fn master_dips_to_zero_and_recovers_while_survivor_rings_through() {
     // The heart of the install cut. Warm to sustain, swap to the identical document (both nodes survive
     // — address + type + fingerprint all match), then read the ramp envelope off the rendered
-    // buffer: it starts at full gain, hits exactly zero at the install frame (`ramp_edge_frames`),
-    // and recovers to the survivor's held sustain over the up-ramp — a ~2× ramp duck, not a click.
+    // buffer: it starts at full gain, hits exactly zero at the ramp's zero frame
+    // (`ramp_edge_frames`), holds there until the install, and recovers to the survivor's held sustain over the up-ramp — a ~2× ramp duck, not a click.
     let (mut coord, mut slot) = setup(&envelope_doc("/env"));
     let ch = slot.channels();
     let sustain = warm_to_sustain(&mut slot);
@@ -157,21 +157,21 @@ fn master_dips_to_zero_and_recovers_while_survivor_rings_through() {
         "the ramp opens at full gain: {}",
         frame_mag(&buf, ch, 0)
     );
-    // Exactly zero at the install frame (install-at-zero): this is where a non-survivor's
-    // hard cut would land — masked to silence.
+    // Exactly zero at the ramp's zero frame, and silent from there through the install: this is
+    // where a non-survivor's hard cut lands — masked to silence.
     assert!(
         frame_mag(&buf, ch, edge) < 0.02,
-        "the master hits zero at the install frame {edge}: {}",
+        "the master hits zero at the ramp's zero frame {edge}: {}",
         frame_mag(&buf, ch, edge)
     );
-    // The dip's minimum sits at (or adjacent to) the install frame, not elsewhere.
+    // The dip's minimum first reached at (or adjacent to) the ramp's zero frame, not elsewhere.
     let (min_frame, _) = (0..span)
         .map(|f| (f, frame_mag(&buf, ch, f)))
         .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
         .unwrap();
     assert!(
         (min_frame as isize - edge as isize).abs() <= 1,
-        "the dip bottoms out at the install frame: min at {min_frame}, edge {edge}"
+        "the dip bottoms out at the ramp's zero frame: min at {min_frame}, edge {edge}"
     );
     // Recovered to the survivor's held level after 2× the ramp — the held note rang straight through.
     let recovered = frame_mag(&buf, ch, span - 1);
@@ -186,8 +186,8 @@ fn master_dips_to_zero_and_recovers_while_survivor_rings_through() {
 fn a_non_survivor_is_cut_at_master_zero_and_stays_silent() {
     // A non-survivor's fresh box starts cold and its cut lands at master-zero
     // (inaudible). Warm to sustain, then swap to a document that *renames* the envelope: `/env` is
-    // removed (reset) and `/eg` is added cold, while `/out` survives. The ramp still dips to zero at
-    // the install frame (masking the cut), but after the up-ramp the fresh envelope has barely left
+    // removed (reset) and `/eg` is added cold, while `/out` survives. The ramp still dips to zero
+    // and holds there through the install (masking the cut), but after the up-ramp the fresh envelope has barely left
     // zero — a stark contrast to the survivor case, proving the reset node was cut inaudibly.
     let (mut coord, mut slot) = setup(&envelope_doc("/env"));
     let ch = slot.channels();
@@ -206,7 +206,8 @@ fn a_non_survivor_is_cut_at_master_zero_and_stays_silent() {
     let mut buf = vec![0.0f32; span * ch];
     slot.fill(&mut buf);
 
-    // The cut is masked: the master is at zero at the install frame.
+    // The cut is masked: the master reaches zero at the ramp's zero frame and holds it through the
+    // install.
     assert!(
         frame_mag(&buf, ch, edge) < 0.02,
         "the reset node's cut lands at master-zero: {}",
@@ -439,6 +440,7 @@ fn control_queued_after_an_install_reaches_the_installed_engine() {
     assert!(coord.swap_document(&level_doc()).report.ok);
     // The install lands at the outgoing Engine's first block boundary at or past the ramp's zero.
     render(&mut slot, edge + block);
+    assert!(!slot.install_pending(), "the install landed");
     slot.queue_osc("/lvl/in", &[reuben_core::Arg::F32(0.9)]);
     let after = render(&mut slot, 2 * edge + 4 * block);
     let tail = frame_mag(&after, ch, after.len() / ch - 1);
@@ -562,7 +564,8 @@ fn a_surviving_clock_stays_on_the_delivered_beat_grid_across_a_swap() {
     // rendered its block to the next multiple of 128 past D. The first column is the fill size,
     // the second the swap point, the comment D mod 128 — the frames the retiring Engine has
     // rendered and not yet delivered are what a survivor would lead the delivered timeline by
-    // if it went live at D.
+    // if it went live at D. In fills of 32 and 16 the down edge ends on a callback boundary, so
+    // the hold starts a callback of its own: one in fill 32, two in fill 16.
     let cases = [
         (128, 120_064),  // 96: lead 32
         (64, 120_064),   // 96: lead 32
@@ -571,6 +574,8 @@ fn a_surviving_clock_stays_on_the_delivered_beat_grid_across_a_swap() {
         (160, 120_480),  // 0: lead 0
         (480, 120_480),  // 0: lead 0
         (1000, 123_000), // 88: lead 40
+        (32, 120_064),   // 96: lead 32
+        (16, 120_064),   // 96: lead 32
     ];
     let expected: Vec<usize> = (1..=7).map(|beat| beat * BEAT).collect();
     let mut off_grid = Vec::new();

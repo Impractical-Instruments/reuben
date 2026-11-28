@@ -30,8 +30,9 @@ pub use crate::rt_alloc::assert_counter_is_live;
 ///
 /// Call after a swap has been posted to `coord` (via [`Coordinator::swap_document`]) and `slot` has
 /// been warmed to steady-state capacity off the measured path. The window is `RAMP_SPAN_BLOCKS ×
-/// block` frames, asserted here to exceed the full `2 × ramp_edge_frames() + block` ramp so the
-/// install-at-zero transplant + retiree post land strictly inside it. Consumes the retiree.
+/// block` frames, asserted here to exceed the full `2 × ramp_edge_frames()` ramp plus a core
+/// block (the longest hold at zero) so the install-at-zero transplant + retiree post land
+/// strictly inside it. Consumes the retiree.
 pub fn assert_install_step_heap_neutral(
     coord: &mut Coordinator,
     slot: &mut RenderSlot,
@@ -39,7 +40,7 @@ pub fn assert_install_step_heap_neutral(
 ) {
     let ch = slot.channels();
     let window = RAMP_SPAN_BLOCKS * block;
-    let ramp = 2 * slot.ramp_edge_frames() + block;
+    let ramp = 2 * slot.ramp_edge_frames() + slot.block_size();
     assert!(
         window > ramp,
         "measured window ({window} frames) must exceed the full down+hold+up ramp ({ramp} frames) so \
