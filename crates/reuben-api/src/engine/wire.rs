@@ -719,6 +719,16 @@ pub struct DiagnosticsReport {
     /// sends raw text. Absent from a report by an engine that predates it, and then zero.
     #[serde(default)]
     pub unprepared_writes_dropped: u64,
+    /// Control messages dropped because their address reaches no input of the Plan playing
+    /// (messages): over OSC/UDP, a typo or an instrument that does not have it; over the engine
+    /// channel, a `send` checked against one Plan that landed after a swap had removed its
+    /// address. Absent from a report by an engine that predates it, and then zero.
+    #[serde(default)]
+    pub unaddressed_messages_dropped: u64,
+    /// Control messages dropped because their args do not fit the input they address (messages),
+    /// by the same two routes. Absent from a report by an engine that predates it, and then zero.
+    #[serde(default)]
+    pub unfit_args_dropped: u64,
     /// Messages of `send` batches whose strings were compiled for one Plan and that reached the
     /// render thread after a swap had installed another, so the whole batch was dropped rather
     /// than applied (messages). Each drop is also announced to subscribers, naming the addresses.
@@ -1019,6 +1029,8 @@ mod tests {
             wired_writes_dropped: 3,
             retire_queue_dropped_full: 3,
             unprepared_writes_dropped: 2,
+            unaddressed_messages_dropped: 11,
+            unfit_args_dropped: 12,
             stale_sends_dropped: 4,
             pattern_queries_truncated: 5,
             pattern_atoms_skipped: 6,
@@ -1542,6 +1554,8 @@ mod tests {
                 "wired_writes_dropped": 3,
                 "retire_queue_dropped_full": 3,
                 "unprepared_writes_dropped": 2,
+                "unaddressed_messages_dropped": 11,
+                "unfit_args_dropped": 12,
                 "stale_sends_dropped": 4,
                 "pattern_queries_truncated": 5,
                 "pattern_atoms_skipped": 6,
@@ -1569,6 +1583,8 @@ mod tests {
         assert_eq!(report.wired_writes_dropped, 0);
         assert_eq!(report.retire_queue_dropped_full, 0);
         assert_eq!(report.unprepared_writes_dropped, 0);
+        assert_eq!(report.unaddressed_messages_dropped, 0);
+        assert_eq!(report.unfit_args_dropped, 0);
         assert_eq!(report.stale_sends_dropped, 0);
         assert_eq!(report.pattern_queries_truncated, 0);
         assert_eq!(report.pattern_atoms_skipped, 0);

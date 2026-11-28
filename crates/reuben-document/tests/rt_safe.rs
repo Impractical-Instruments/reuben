@@ -1261,6 +1261,41 @@ fn engine_queue_osc_past_its_capacity_drops_and_counts_without_the_heap() {
     assert_eq!(e.pending_room(), PENDING_CAP, "the next block starts empty");
 }
 
+/// Control that reaches no input, or whose args do not fit it, is counted without the heap.
+#[test]
+fn engine_queue_osc_drops_unroutable_and_counts_without_the_heap() {
+    const DOC: &str = r#"{ "format_version": 3, "instrument": "unroutable",
+        "interface": { "outputs": { "out": { "from": "/osc.audio" } } },
+        "nodes": [
+          { "type": "oscillator", "address": "/osc" },
+          { "type": "abs_i32_value", "address": "/abs" } ] }"#;
+    let cfg = AudioConfig::new(48_000.0, 64);
+    let graph = load_instrument(DOC, &Registry::builtin(), &InstrumentsDir)
+        .expect("load")
+        .graph;
+    let mut e = Engine::new(Plan::instantiate(graph, cfg).expect("instantiate"));
+    let mut out = vec![0.0f32; cfg.block_size * e.channels()];
+    e.fill(&mut out);
+
+    // Built outside the measured region: the caller owns these, the engine only counts.
+    let text = [Arg::Str("text".into())];
+    assert_counter_is_live();
+    let q = measure(|| {
+        e.queue_osc("/missing/x", &[Arg::I32(1)]);
+        e.queue_osc("/missing/y", &[Arg::I32(1)]);
+        e.queue_osc("/abs/x", &text);
+    });
+    let f = measure(|| e.fill(&mut out));
+    assert_eq!(((q.allocs, q.frees), (f.allocs, f.frees)), ((0, 0), (0, 0)));
+    // A built Message owns its address, which the engine frees on dropping it, so it is counted
+    // outside the measured region.
+    e.queue(reuben_core::Message::new("/missing/z", Arg::I32(1), 0));
+    assert_eq!(e.take_dropped_unaddressed(), 3);
+    assert_eq!(e.take_dropped_unaddressed(), 0, "the take leaves zero");
+    assert_eq!(e.take_dropped_unfit_args(), 1);
+    assert_eq!(e.take_dropped_unfit_args(), 0);
+}
+
 /// A full control queue's worth of messages to one node in a fresh Engine's first block, for each
 /// kind of input routing stores: a held value, a materialized signal, and Stream events into a
 /// Voicer. Routing and rendering them touches no heap.

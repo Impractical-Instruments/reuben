@@ -710,6 +710,8 @@ pub fn diagnostics_report(snapshot: &Snapshot) -> DiagnosticsReport {
         wired_writes_dropped,
         retire_queue_dropped_full,
         unprepared_writes_dropped,
+        unaddressed_messages_dropped,
+        unfit_args_dropped,
         stale_sends_dropped,
         pattern_queries_truncated,
         pattern_atoms_skipped,
@@ -730,6 +732,8 @@ pub fn diagnostics_report(snapshot: &Snapshot) -> DiagnosticsReport {
         wired_writes_dropped,
         retire_queue_dropped_full,
         unprepared_writes_dropped,
+        unaddressed_messages_dropped,
+        unfit_args_dropped,
         stale_sends_dropped,
         pattern_queries_truncated,
         pattern_atoms_skipped,
@@ -1306,6 +1310,10 @@ mod tests {
         d.record_control_messages_dropped_full(0);
         d.record_unprepared_writes_dropped(6);
         d.record_unprepared_writes_dropped(0);
+        d.record_unaddressed_messages_dropped(18);
+        d.record_unaddressed_messages_dropped(0);
+        d.record_unfit_args_dropped(19);
+        d.record_unfit_args_dropped(0);
         d.record_stale_sends_dropped(7);
         d.record_stale_sends_dropped(0);
         d.record_operator_counts(reuben_api::render::OperatorCounts {
@@ -1338,6 +1346,8 @@ mod tests {
         assert_eq!(report.control_messages_dropped_full, 17);
         assert_eq!(report.wired_writes_dropped, 5);
         assert_eq!(report.unprepared_writes_dropped, 6);
+        assert_eq!(report.unaddressed_messages_dropped, 18);
+        assert_eq!(report.unfit_args_dropped, 19);
         assert_eq!(report.stale_sends_dropped, 7);
         assert_eq!(report.pattern_queries_truncated, 8);
         assert_eq!(report.pattern_atoms_skipped, 9);

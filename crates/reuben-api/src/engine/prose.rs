@@ -50,6 +50,10 @@ pub const GET_ENGINE_DIAGNOSTICS: &str =
      unprepared_writes_dropped (messages): strings dropped at a str input because they were not \
      compiled for it, usually raw text arriving over OSC; the input keeps its old value, so send \
      the text with send_live_controls instead. \
+     unaddressed_messages_dropped (messages): control dropped because its address reaches no \
+     input of the playing instrument, a typo over OSC or an address an edit removed after \
+     send_live_controls checked it; unfit_args_dropped (messages): control dropped because its \
+     args do not fit the input it addresses. \
      stale_sends_dropped (messages): send_live_controls messages in batches carrying compiled \
      strings that reached the engine after an edit or open had replaced what they were compiled \
      for, dropped whole; resend the batch. \

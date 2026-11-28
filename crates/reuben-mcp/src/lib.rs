@@ -2083,6 +2083,8 @@ mod tests {
             wired_writes_dropped: 3,
             retire_queue_dropped_full: 1,
             unprepared_writes_dropped: 4,
+            unaddressed_messages_dropped: 15,
+            unfit_args_dropped: 16,
             stale_sends_dropped: 6,
             pattern_queries_truncated: 7,
             pattern_atoms_skipped: 8,
@@ -2111,6 +2113,8 @@ mod tests {
         assert_eq!(s["wired_writes_dropped"], serde_json::json!(3));
         assert_eq!(s["retire_queue_dropped_full"], serde_json::json!(1));
         assert_eq!(s["unprepared_writes_dropped"], serde_json::json!(4));
+        assert_eq!(s["unaddressed_messages_dropped"], serde_json::json!(15));
+        assert_eq!(s["unfit_args_dropped"], serde_json::json!(16));
         assert_eq!(s["stale_sends_dropped"], serde_json::json!(6));
         assert_eq!(s["pattern_queries_truncated"], serde_json::json!(7));
         assert_eq!(s["pattern_atoms_skipped"], serde_json::json!(8));
