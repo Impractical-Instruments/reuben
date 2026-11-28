@@ -178,6 +178,18 @@ impl RenderSlot {
         self.engine.take_dropped_queue_full()
     }
 
+    /// Take the count of inbound messages dropped for addressing no input of the live Engine's
+    /// Plan, since the last take, leaving zero. RT-safe: a field read and write.
+    pub fn take_dropped_unaddressed(&mut self) -> u64 {
+        self.engine.take_dropped_unaddressed()
+    }
+
+    /// Take the count of inbound messages dropped because their args do not fit the input they
+    /// address, since the last take, leaving zero. RT-safe: a field read and write.
+    pub fn take_dropped_unfit_args(&mut self) -> u64 {
+        self.engine.take_dropped_unfit_args()
+    }
+
     /// Take the count of inbound messages dropped for addressing an input a wire or an interface
     /// pipe feeds, since the last take, leaving zero. RT-safe: a field read and write.
     pub fn take_dropped_wired_writes(&mut self) -> u64 {
@@ -419,6 +431,10 @@ impl RenderSlot {
         bundle.engine.credit_dropped_unprepared(dropped);
         let dropped = self.engine.take_dropped_queue_full();
         bundle.engine.credit_dropped_queue_full(dropped);
+        let dropped = self.engine.take_dropped_unaddressed();
+        bundle.engine.credit_dropped_unaddressed(dropped);
+        let dropped = self.engine.take_dropped_unfit_args();
+        bundle.engine.credit_dropped_unfit_args(dropped);
         let counted = self.engine.take_operator_counts();
         bundle.engine.credit_operator_counts(counted);
         // Swap the fresh Engine live; `bundle.engine` now holds the retiring one. Reusing the box's

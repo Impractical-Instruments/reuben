@@ -72,6 +72,13 @@ pub struct Diagnostics {
     /// compiles a string before it is queued; OSC over UDP carries raw text, so a string sent that
     /// way counts here. Diagnosis: send it through the engine channel instead.
     pub unprepared_writes_dropped: AtomicU64,
+    /// Inbound control messages the engine dropped, counted in **messages**, because their
+    /// address reaches no input of the playing Plan. Diagnosis: a mistyped address over OSC, or an
+    /// instrument that lacks it; over the engine channel, a `send` that raced a swap removing it.
+    pub unaddressed_messages_dropped: AtomicU64,
+    /// Inbound control messages the engine dropped, counted in **messages**, because their args do
+    /// not fit the input they address. Diagnosis: a controller sends the wrong kind of value.
+    pub unfit_args_dropped: AtomicU64,
     /// Messages of `send` batches whose strings were compiled for one Plan, dropped whole by the
     /// callback because a swap had installed another before it drained them, counted in
     /// **messages**. Their addresses are named to the engine channel's subscribers, so a client
@@ -167,6 +174,23 @@ impl Diagnostics {
         }
     }
 
+    /// Count `n` control messages the engine dropped for addressing no input. A single atomic
+    /// add, skipped for zero.
+    pub fn record_unaddressed_messages_dropped(&self, n: u64) {
+        if n > 0 {
+            self.unaddressed_messages_dropped
+                .fetch_add(n, Ordering::Relaxed);
+        }
+    }
+
+    /// Count `n` control messages the engine dropped for args that do not fit their input. A
+    /// single atomic add, skipped for zero.
+    pub fn record_unfit_args_dropped(&self, n: u64) {
+        if n > 0 {
+            self.unfit_args_dropped.fetch_add(n, Ordering::Relaxed);
+        }
+    }
+
     /// Count `n` strings the engine dropped at a `str` input for not being prepared for it. A
     /// single atomic add, skipped for zero.
     pub fn record_unprepared_writes_dropped(&self, n: u64) {
@@ -233,6 +257,8 @@ impl Diagnostics {
             wired_writes_dropped: self.wired_writes_dropped.load(Ordering::Relaxed),
             retire_queue_dropped_full: self.retired.get().map_or(0, RetireDrain::dropped_full),
             unprepared_writes_dropped: self.unprepared_writes_dropped.load(Ordering::Relaxed),
+            unaddressed_messages_dropped: self.unaddressed_messages_dropped.load(Ordering::Relaxed),
+            unfit_args_dropped: self.unfit_args_dropped.load(Ordering::Relaxed),
             stale_sends_dropped: self.stale_sends_dropped.load(Ordering::Relaxed),
             pattern_queries_truncated: self.pattern_queries_truncated.load(Ordering::Relaxed),
             pattern_atoms_skipped: self.pattern_atoms_skipped.load(Ordering::Relaxed),
@@ -262,6 +288,8 @@ pub struct Snapshot {
     /// is not drained between batches.
     pub retire_queue_dropped_full: u64,
     pub unprepared_writes_dropped: u64,
+    pub unaddressed_messages_dropped: u64,
+    pub unfit_args_dropped: u64,
     pub stale_sends_dropped: u64,
     pub pattern_queries_truncated: u64,
     pub pattern_atoms_skipped: u64,
@@ -288,7 +316,8 @@ pub fn log_snapshot(s: &Snapshot) {
         "diagnostics: output_xruns={} input_ring_underruns={} input_ring_overruns={} \
          input_ring_producer_drops={} control_batches_dropped_full={} \
          control_messages_dropped_full={} wired_writes_dropped={} retire_queue_dropped_full={} \
-         unprepared_writes_dropped={} stale_sends_dropped={} \
+         unprepared_writes_dropped={} unaddressed_messages_dropped={} unfit_args_dropped={} \
+         stale_sends_dropped={} \
          pattern_queries_truncated={} pattern_atoms_skipped={} pattern_notes_evicted={} \
          midi_received={} midi_unsupported={} midi_routed={} midi_unmatched={} midi_devices_lost={}",
         s.output_xruns,
@@ -300,6 +329,8 @@ pub fn log_snapshot(s: &Snapshot) {
         s.wired_writes_dropped,
         s.retire_queue_dropped_full,
         s.unprepared_writes_dropped,
+        s.unaddressed_messages_dropped,
+        s.unfit_args_dropped,
         s.stale_sends_dropped,
         s.pattern_queries_truncated,
         s.pattern_atoms_skipped,

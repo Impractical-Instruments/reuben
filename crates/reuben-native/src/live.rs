@@ -55,14 +55,20 @@ fn locate(text: &str, at: usize) -> (usize, usize) {
 }
 
 /// The report of `refusal` of `text`, whose first character sits at 1-based `line` and `column` of
-/// `file`: the location line, then the refused text with its span marked.
+/// `file`, and whose address starts at `address_column` of that line: the location line, then the
+/// refused text with its span marked. A refusal of the message as a whole, which marks no span of
+/// its text, is located at the address.
 pub fn refusal_report(
     file: &str,
     line: usize,
+    address_column: usize,
     column: usize,
     text: &str,
     refusal: &SendRefusal,
 ) -> String {
+    if refusal.text.is_empty() && refusal.start == refusal.end {
+        return format!("{file}:{line}:{address_column}: error: {}", refusal.error);
+    }
     let (down, across) = locate(text, refusal.offset + refusal.start);
     let column = if down == 0 {
         column + across
@@ -82,6 +88,8 @@ pub fn refusal_report(
 pub struct PatternLine {
     /// 1-based.
     pub line: usize,
+    /// 1-based, in characters: where the address starts.
+    pub address_column: usize,
     /// 1-based, in characters: where the text starts.
     pub column: usize,
     pub address: String,
@@ -144,6 +152,7 @@ fn parse_line(line: usize, raw: &str) -> Option<Entry> {
     }
     Some(Entry::Send(PatternLine {
         line,
+        address_column: column_at(lead),
         column: column_at(text_start),
         address: address.to_string(),
         text: text.to_string(),
@@ -286,7 +295,7 @@ impl Live {
                     writeln!(
                         out,
                         "{}",
-                        refusal_report(file, l.line, l.column, &l.text, &refusal)
+                        refusal_report(file, l.line, l.address_column, l.column, &l.text, &refusal)
                     )?;
                     self.failing.insert(l.address);
                 }
@@ -525,12 +534,14 @@ mod tests {
             vec![
                 Entry::Send(PatternLine {
                     line: 4,
+                    address_column: 1,
                     column: 5,
                     address: "/a".to_string(),
                     text: "bd ~ [sd sd] ~".to_string(),
                 }),
                 Entry::Send(PatternLine {
                     line: 5,
+                    address_column: 2,
                     column: 5,
                     address: "/b".to_string(),
                     text: "x".to_string(),
@@ -556,6 +567,7 @@ mod tests {
                 },
                 Entry::Send(PatternLine {
                     line: 3,
+                    address_column: 1,
                     column: 4,
                     address: "/b".to_string(),
                     text: "x".to_string(),
@@ -572,11 +584,11 @@ mod tests {
     #[test]
     fn a_report_locates_the_span_in_characters_from_where_the_text_starts() {
         assert_eq!(
-            refusal_report("f.rpat", 7, 10, "é x", &refusal("é x", 3, 4)),
+            refusal_report("f.rpat", 7, 1, 10, "é x", &refusal("é x", 3, 4)),
             "f.rpat:7:12: error: bad\né x\n  ^"
         );
         assert_eq!(
-            refusal_report("<stdin>", 1, 1, "a\nbc d", &refusal("a\nbc d", 5, 6)),
+            refusal_report("<stdin>", 1, 1, 1, "a\nbc d", &refusal("a\nbc d", 5, 6)),
             "<stdin>:2:4: error: bad\na\nbc d\n   ^"
         );
         let windowed = SendRefusal {
@@ -584,13 +596,18 @@ mod tests {
             ..refusal("cd", 1, 2)
         };
         assert_eq!(
-            refusal_report("<arg>", 1, 1, "abcd", &windowed),
+            refusal_report("<arg>", 1, 1, 1, "abcd", &windowed),
             "<arg>:1:4: error: bad\ncd\n ^"
         );
         let not_text = refusal("", 0, 0);
         assert_eq!(
-            refusal_report("<arg>", 1, 1, "x", &not_text),
+            refusal_report("<arg>", 1, 1, 1, "x", &not_text),
             "<arg>:1:1: error: bad"
+        );
+        assert_eq!(
+            refusal_report("f.rpat", 3, 2, 9, "1 2", &not_text),
+            "f.rpat:3:2: error: bad",
+            "a refusal of the whole message is located at its address"
         );
     }
 

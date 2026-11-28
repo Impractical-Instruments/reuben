@@ -632,6 +632,10 @@ mod tests {
                 bundle.engine.credit_dropped_wired_writes(dropped);
                 let dropped = self.engine.take_dropped_unprepared();
                 bundle.engine.credit_dropped_unprepared(dropped);
+                let dropped = self.engine.take_dropped_unaddressed();
+                bundle.engine.credit_dropped_unaddressed(dropped);
+                let dropped = self.engine.take_dropped_unfit_args();
+                bundle.engine.credit_dropped_unfit_args(dropped);
                 let counted = self.engine.take_operator_counts();
                 bundle.engine.credit_operator_counts(counted);
                 let retiring = std::mem::replace(&mut self.engine, bundle.engine);

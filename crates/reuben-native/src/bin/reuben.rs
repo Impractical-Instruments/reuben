@@ -360,7 +360,7 @@ fn cmd_send(address: &str, pattern: Option<String>, server: &RunningServerFlags)
     match live::send_text(reached.channel(), address, text) {
         Ok(reuben_api::engine::SendOutcome::Queued) => ExitCode::SUCCESS,
         Ok(reuben_api::engine::SendOutcome::Refused(refusal)) => {
-            eprintln!("{}", live::refusal_report(file, 1, 1, text, &refusal));
+            eprintln!("{}", live::refusal_report(file, 1, 1, 1, text, &refusal));
             ExitCode::FAILURE
         }
         Err(e) => {
@@ -427,6 +427,7 @@ fn cmd_send_line(file: &Path, line: usize, server: &RunningServerFlags) -> ExitC
                 live::refusal_report(
                     &shown,
                     line,
+                    pattern_line.address_column,
                     pattern_line.column,
                     &pattern_line.text,
                     &refusal

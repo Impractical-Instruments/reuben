@@ -342,8 +342,7 @@ fn a_bad_value_refuses_the_whole_batch_with_its_span() {
 }
 
 /// What prepare leaves alone reaches the host exactly as it did before: a number at a number
-/// input, a string at an address with no route (an enum symbol), several atoms at one, an address
-/// that names nothing.
+/// input, and several atoms at one, of which the input reads the first.
 #[test]
 fn sends_that_compile_nothing_pass_through_unchanged() {
     let r = rig(RIG);
@@ -352,10 +351,9 @@ fn sends_that_compile_nothing_pass_through_unchanged() {
             address: "/abs/x".to_string(),
             args: vec![ControlArg::I32(-5)],
         },
-        str_message("/nowhere/at", "1 x"),
         ControlMessage {
             address: "/abs/x".to_string(),
-            args: vec![ControlArg::Str("1".into()), ControlArg::I32(2)],
+            args: vec![ControlArg::F32(1.0), ControlArg::Str("1".into())],
         },
     ];
     let expected: Vec<Vec<Arg>> = messages
@@ -369,6 +367,59 @@ fn sends_that_compile_nothing_pass_through_unchanged() {
         expected
     );
     assert!(batch.iter().all(|m| m.against.is_none()));
+}
+
+/// A message the render thread would drop unapplied refuses the whole batch, compiled strings
+/// before it included, naming its address: one at no input, one whose args don't fit, one at an
+/// input a wire feeds, and raw text at an input that compiles none.
+#[test]
+fn an_unroutable_message_refuses_the_whole_batch() {
+    let r = rig(RIG);
+    let cases = [
+        (
+            str_message("/nowhere/at", "1 x"),
+            "no input has the address /nowhere/at",
+        ),
+        (
+            ControlMessage {
+                address: "/abs/x".to_string(),
+                args: vec![ControlArg::Str("1".into()), ControlArg::I32(2)],
+            },
+            "the args don't fit the input at /abs/x, which takes one number",
+        ),
+        (
+            ControlMessage {
+                address: "/a/steps".to_string(),
+                args: vec![ControlArg::Str("1".into())],
+            },
+            "the input at /a/steps is fed by a wire or an interface input",
+        ),
+        (
+            ControlMessage {
+                address: "/a_sum/in".to_string(),
+                args: vec![ControlArg::F32(1.0)],
+            },
+            "the input at /a_sum/in is fed",
+        ),
+    ];
+    for (bad, says) in cases {
+        let address = bad.address.clone();
+        let answer = r.send(vec![str_message("/direct/steps", "7"), bad]);
+        let Response::SendRefused(refusal) = answer else {
+            panic!("{address}: expected a refusal, got {answer:?}");
+        };
+        assert_eq!(
+            (refusal.message, refusal.address.as_str()),
+            (1, address.as_str())
+        );
+        assert!(
+            refusal.error.starts_with(says),
+            "{address}: {}",
+            refusal.error
+        );
+        assert_eq!(refusal.text, "");
+    }
+    assert_eq!(r.host.delivered(), 0, "nothing was delivered");
 }
 
 /// Raw text that reaches a preparing input without passing through `send` (an OSC datagram, which

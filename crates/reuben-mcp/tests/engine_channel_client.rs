@@ -227,6 +227,8 @@ fn get_diagnostics_round_trips_every_counter() {
         wired_writes_dropped: 3,
         retire_queue_dropped_full: 1,
         unprepared_writes_dropped: 4,
+        unaddressed_messages_dropped: 15,
+        unfit_args_dropped: 16,
         stale_sends_dropped: 6,
         pattern_queries_truncated: 7,
         pattern_atoms_skipped: 8,

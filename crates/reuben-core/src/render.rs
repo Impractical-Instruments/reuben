@@ -1002,33 +1002,38 @@ fn clamp_to(p: &Port, v: f32) -> f32 {
     p.meta.as_ref().map(|m| m.clamp(v)).unwrap_or(v)
 }
 
-/// Resolve an inbound address to its destination — `(node index, input port index, port)` —
-/// by matching a node address prefix ([`local_address`]) and then an input port by name. The
-/// **single** "address → node + port" rule, reached only through [`Plan::resolve`], so routing
-/// an addressed [`Message`] and queueing inbound OSC cannot diverge — a diverged copy would
-/// silently drop messages to nested nodes.
+/// Resolve an inbound address to the [`Target`] it reaches and the [`Port`] that types it, given
+/// a Plan's dissolved-pipe aliases (`(minted address, synthesized port)`, in alias order) and its
+/// nodes (`(address, inputs)`, in execution order). The **single** "address → target" rule:
+/// [`Plan::resolve`] calls it with the Plan itself, and the send thread's
+/// [`InputTable`](crate::plan::InputTable) with its copy of the same lists, so routing an
+/// addressed [`Message`], queueing inbound OSC and judging a send cannot diverge — a diverged
+/// copy would silently drop messages to nested nodes.
 ///
+/// An alias is checked first: it belonged to a node the pipe's dissolve removed, so it can never
+/// shadow a live port. Then a node address prefix ([`local_address`]) and an input port by name.
 /// A node whose address prefix-matches but has **no** matching port does not decide the
 /// outcome — keep scanning. Node addresses may be ancestors of one another (`/fx` beside an
 /// inlined `/fx/verb/delay`, inlining manufactures these systematically), and
 /// `/fx/verb/delay/time` must reach the deeper node even though `/fx` prefix-matches it
 /// first in plan order.
-pub(crate) fn resolve_port<'p>(
-    nodes: &'p [PlanNode],
+pub(crate) fn resolve_in<'p>(
+    aliases: impl IntoIterator<Item = (&'p str, &'p Port)>,
+    nodes: impl IntoIterator<Item = (&'p str, &'p [Port])>,
     address: &str,
-) -> Option<(usize, usize, &'p Port)> {
-    for (i, node) in nodes.iter().enumerate() {
-        let Some(local) = local_address(address, &node.address) else {
+) -> Option<(Target, &'p Port)> {
+    for (i, (alias, port)) in aliases.into_iter().enumerate() {
+        if local_address(address, alias) == Some(port.name) {
+            return Some((Target::Alias(i), port));
+        }
+    }
+    for (i, (node, inputs)) in nodes.into_iter().enumerate() {
+        let Some(local) = local_address(address, node) else {
             continue;
         };
-        if let Some((pi, port)) = node
-            .descriptor
-            .inputs
-            .iter()
-            .enumerate()
-            .find(|(_, p)| p.name == local)
-        {
-            return Some((i, pi, port)); // a message targets exactly one port
+        if let Some((pi, port)) = inputs.iter().enumerate().find(|(_, p)| p.name == local) {
+            // A message targets exactly one port.
+            return Some((Target::Port { node: i, port: pi }, port));
         }
     }
     None

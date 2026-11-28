@@ -1,18 +1,22 @@
-//! The one step a `send` takes before its batch reaches a host's ingress: compiling every string
-//! aimed at an input that compiles its text, against the Plan installed.
+//! The one step a `send` takes before its batch reaches a host's ingress: judging every message
+//! against the Plan installed (its address, its fit, its wiring) and compiling every string aimed
+//! at an input that compiles its text.
 //!
 //! The render thread never compiles. It takes a compiled value only at an input whose compiler
 //! built it, and only while the Plan the value was compiled against is still the live one: a
 //! [`PreparedAgainst`] names that Plan, and a host's control drain asks [`control_fate`] before
 //! queueing a batch.
 
+use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+use reuben_core::boundary::has_osc_form;
 use reuben_core::coordinator::RenderSlot;
+use reuben_core::descriptor::{Port, PortType};
 use reuben_core::message::Arg;
-use reuben_core::plan::PreparedRoutes;
+use reuben_core::plan::{PreparedRoutes, Unapplied};
 
 use super::wire::{ControlArg, ControlMessage, SendRefusal};
 
@@ -131,12 +135,14 @@ const REFUSAL_ERROR_BYTES: usize = 512;
 pub const NOT_ONE_STRING: &str = "a str input takes one string";
 
 /// Compile the string of every message aimed at an address in `routes`, the installed Plan's
-/// table, with that address's preparer.
+/// table, with that address's preparer, and judge every other message against the Plan's
+/// [`InputTable`](reuben_core::plan::InputTable).
 ///
-/// A message at such an address must be exactly one string: anything else would be dropped
-/// unapplied at the input, so it refuses the batch instead. Every other message passes through as
-/// its flat atoms. The first message refused refuses the batch, so no part of it is applied. Cold:
-/// a preparer may allocate.
+/// A message at a compiling address must be exactly one string. Any other message must reach an
+/// input nothing feeds, with args that fit its port; it then passes through as its flat atoms.
+/// Anything else would be dropped unapplied on the render thread, so it refuses the batch instead.
+/// The first message refused refuses the batch, so no part of it is applied. Cold: a preparer may
+/// allocate.
 pub fn prepare_send(
     routes: &Arc<PreparedRoutes>,
     messages: Vec<ControlMessage>,
@@ -145,9 +151,22 @@ pub fn prepare_send(
     for (i, message) in messages.into_iter().enumerate() {
         let ControlMessage { address, args } = message;
         let Some(route) = routes.get(&address) else {
+            let args: Vec<Arg> = args.into_iter().map(Into::into).collect();
+            if let Err(why) = routes.inputs().check(&address, &args) {
+                let error = unapplied(&address, why);
+                return Err(SendRefusal {
+                    message: i,
+                    address,
+                    text: String::new(),
+                    offset: 0,
+                    start: 0,
+                    end: 0,
+                    error,
+                });
+            }
             out.push(PreparedMessage {
                 address,
-                args: args.into_iter().map(Into::into).collect(),
+                args,
                 against: None,
             });
             continue;
@@ -174,6 +193,44 @@ pub fn prepare_send(
         }
     }
     Ok(out)
+}
+
+/// What a refusal says of a message at `address` that `why` would leave unapplied.
+fn unapplied(address: &str, why: Unapplied<'_>) -> String {
+    match why {
+        Unapplied::NoInput => format!("no input has the address {address}"),
+        Unapplied::Wired => format!(
+            "the input at {address} is fed by a wire or an interface input, so a value sent \
+             there is never applied"
+        ),
+        Unapplied::DoesNotFit(port) => match takes(port) {
+            Some(what) => format!("the args don't fit the input at {address}, which takes {what}"),
+            None => format!("the input at {address} takes no sent value"),
+        },
+        Unapplied::Uncompiled => {
+            format!("the input at {address} compiles no text, so a string sent there never plays")
+        }
+    }
+}
+
+/// What args a message at `port` must carry, in a refusal's words; `None` for an input that takes none (audio, or a type with no OSC form).
+fn takes(port: &Port) -> Option<String> {
+    Some(match &port.ty {
+        PortType::F32 | PortType::I32 { .. } => "one number".to_string(),
+        PortType::F32Buffer if port.meta.is_some() => "one number".to_string(),
+        PortType::F32Buffer => return None,
+        PortType::Str { .. } => "one string".to_string(),
+        PortType::Vocab {
+            name,
+            enum_meta: Some(e),
+            ..
+        } => format!("one {name}: {}, by name or index", e.variants.join(", ")),
+        PortType::Vocab { name, .. } if has_osc_form(&port.ty) => {
+            format!("a {name} in its flat form")
+        }
+        PortType::Vocab { .. } => return None,
+        PortType::Arg => "one number or string".to_string(),
+    })
 }
 
 /// A refusal of `text` at `span`, the text trimmed to at most [`REFUSAL_TEXT_WINDOW`] bytes around

@@ -123,16 +123,18 @@ impl From<ControlArg> for Arg {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ControlMessage {
     /// The full address, e.g. `/filt/cutoff`. Routed by the engine exactly as an address arriving
-    /// on the foreign OSC edge is; an address matching no node/port is dropped silently.
+    /// on the foreign OSC edge is, once the `send` has checked that it reaches an input it can
+    /// apply these args to.
     pub address: String,
     /// The message's atoms, in order.
     #[serde(default)]
     pub args: Vec<ControlArg>,
 }
 
-/// Why a `send` was refused: the first message in the batch, aimed at an input that compiles its
-/// text, that was not one string or whose string its compiler refused. Nothing in the batch was
-/// applied.
+/// Why a `send` was refused: the first message in the batch the engine would not apply. Its
+/// address reaches no input, a wire or an interface input feeds that input, or its args don't fit
+/// the input; or the input compiles its text and the message was not one string, or its compiler
+/// refused the string. Nothing in the batch was applied.
 ///
 /// It carries the text itself, so a client can print the span under it without having kept what
 /// it sent: the whole text, or a window of at most a kilobyte around the span when the text is
@@ -144,7 +146,7 @@ pub struct SendRefusal {
     /// The refused message's address.
     pub address: String,
     /// The text that did not compile, or the window of it around the fault; empty when the
-    /// message was not one string.
+    /// message as a whole was refused.
     pub text: String,
     /// Byte offset of `text` in the string sent: 0 unless it was trimmed to a window.
     #[serde(default)]
@@ -556,8 +558,10 @@ pub enum Response {
     /// `Send`'s ack: the engine **received** the whole batch and queued it for the next rendered
     /// block.
     ///
-    /// Not "applied": an address routing to no node/port is dropped silently at the engine's
-    /// ingress, exactly as an external OSC datagram naming a stale address is.
+    /// Not "applied": every message reached an input of the Plan the batch was checked against,
+    /// but a Swap between the check and the next block can remove it, and the message is then
+    /// dropped at the engine's ingress, exactly as an external OSC datagram naming a stale address
+    /// is.
     ///
     /// A **unit** ack, deliberately. It once carried a `count`, which could only ever equal the
     /// request's own `messages.len()`: the batch is queued as one unit, so there is no partial
@@ -566,9 +570,10 @@ pub enum Response {
     /// read `count < len` as "some were rejected", a signal that can never arrive. (Contrast
     /// [`Conflict`], whose two hashes earn their place precisely because they can disagree.)
     Sent,
-    /// `Send`'s answer when a message aimed at an input that compiles its text was not one string,
-    /// or its string did not compile: nothing in the batch was queued. Flat next to the `reply`
-    /// tag.
+    /// `Send`'s answer when a message would not be applied: its address reaches no input, its args
+    /// do not fit, a wire or an interface input feeds it, or it is aimed at an input that compiles
+    /// its text and was not one string or did not compile. Nothing in the batch was queued. Flat
+    /// next to the `reply` tag.
     SendRefused(SendRefusal),
     /// A channel-level failure: an unreadable request, or an engine-side fault that
     /// produced no domain-shaped answer. Distinct from a `SwapReport` with `ok: false`,
@@ -715,6 +720,16 @@ pub struct DiagnosticsReport {
     /// sends raw text. Absent from a report by an engine that predates it, and then zero.
     #[serde(default)]
     pub unprepared_writes_dropped: u64,
+    /// Control messages dropped because their address reaches no input of the Plan playing
+    /// (messages): over OSC/UDP, a typo or an instrument that does not have it; over the engine
+    /// channel, a `send` checked against one Plan that landed after a swap had removed its
+    /// address. Absent from a report by an engine that predates it, and then zero.
+    #[serde(default)]
+    pub unaddressed_messages_dropped: u64,
+    /// Control messages dropped because their args do not fit the input they address (messages),
+    /// by the same two routes. Absent from a report by an engine that predates it, and then zero.
+    #[serde(default)]
+    pub unfit_args_dropped: u64,
     /// Messages of `send` batches whose strings were compiled for one Plan and that reached the
     /// render thread after a swap had installed another, so the whole batch was dropped rather
     /// than applied (messages). Each drop is also announced to subscribers, naming the addresses.
@@ -1015,6 +1030,8 @@ mod tests {
             wired_writes_dropped: 3,
             retire_queue_dropped_full: 3,
             unprepared_writes_dropped: 2,
+            unaddressed_messages_dropped: 11,
+            unfit_args_dropped: 12,
             stale_sends_dropped: 4,
             pattern_queries_truncated: 5,
             pattern_atoms_skipped: 6,
@@ -1538,6 +1555,8 @@ mod tests {
                 "wired_writes_dropped": 3,
                 "retire_queue_dropped_full": 3,
                 "unprepared_writes_dropped": 2,
+                "unaddressed_messages_dropped": 11,
+                "unfit_args_dropped": 12,
                 "stale_sends_dropped": 4,
                 "pattern_queries_truncated": 5,
                 "pattern_atoms_skipped": 6,
@@ -1565,6 +1584,8 @@ mod tests {
         assert_eq!(report.wired_writes_dropped, 0);
         assert_eq!(report.retire_queue_dropped_full, 0);
         assert_eq!(report.unprepared_writes_dropped, 0);
+        assert_eq!(report.unaddressed_messages_dropped, 0);
+        assert_eq!(report.unfit_args_dropped, 0);
         assert_eq!(report.stale_sends_dropped, 0);
         assert_eq!(report.pattern_queries_truncated, 0);
         assert_eq!(report.pattern_atoms_skipped, 0);

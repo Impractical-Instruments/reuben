@@ -266,6 +266,7 @@ pub fn get_engine_diagnostics(channel: &Channel) -> Result<Answer<DiagnosticsRep
          input_ring_producer_drops={} control_batches_dropped_full={} \
          control_messages_dropped_full={} wired_writes_dropped={} \
          retire_queue_dropped_full={} unprepared_writes_dropped={} \
+         unaddressed_messages_dropped={} unfit_args_dropped={} \
          pattern_queries_truncated={} pattern_atoms_skipped={} pattern_notes_evicted={} \
          midi_received={} midi_unsupported={} midi_routed={} midi_unmatched={} midi_devices_lost={}",
         report.output_xruns,
@@ -277,6 +278,8 @@ pub fn get_engine_diagnostics(channel: &Channel) -> Result<Answer<DiagnosticsRep
         report.wired_writes_dropped,
         report.retire_queue_dropped_full,
         report.unprepared_writes_dropped,
+        report.unaddressed_messages_dropped,
+        report.unfit_args_dropped,
         report.pattern_queries_truncated,
         report.pattern_atoms_skipped,
         report.pattern_notes_evicted,

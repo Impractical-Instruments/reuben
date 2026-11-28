@@ -94,9 +94,12 @@ Why the steps are what they are:
     keeps its value while the node survives (same address and type, see below) and its value in
     the document is unchanged.
 
-  Writing an input a wire or an interface input feeds is unsupported: the message is dropped and
-  counted in `get_engine_diagnostics` as `wired_writes_dropped`. Send to the interface input
-  instead. `open_instrument`, of another instrument or again of the one playing, starts every
+  Writing an input a wire or an interface input feeds is unsupported: the send is refused, naming
+  the address, and nothing in it is applied (over OSC/UDP the message is dropped and counted in
+  `get_engine_diagnostics` as `wired_writes_dropped`; one to an address that reaches no input, or
+  with args the input does not take, is counted as `unaddressed_messages_dropped` or
+  `unfit_args_dropped`). Send to the interface input instead.
+  `open_instrument`, of another instrument or again of the one playing, starts every
   input from the document. Nothing live is saved. A send made while an edit or open is being
   swapped in waits for the new instrument (one audio block plus ~10 ms) and lands there. (The MCP
   tool is `send_live_controls`; the name says which half of the loop it is on.)
@@ -192,9 +195,9 @@ reachable they exit at once and say so. `--engine-addr` and `--token` (or `REUBE
 - **`reuben send <address> [pattern]`** sends one string. With no `pattern` it reads stdin, minus
   trailing whitespace. Quote a `pattern` argument: a shell expands `~` and splits on spaces. Text
   that does not compile prints as `<file>:<line>:<col>: error: <message>` (`<file>` is `<arg>` or
-  `<stdin>`), followed by the text with the span marked. The command exits non-zero and nothing is
-  applied. A send that compiles is only *queued*: an address that routes nowhere is dropped
-  silently, as any `send` is.
+  `<stdin>`), followed by the text with the span marked. An address that reaches no input, or an
+  input a wire or an interface input feeds, is refused the same way, with no span marked. The
+  command exits non-zero and nothing is applied.
 - **`reuben send --file <file> --line <n>`** sends one line of a pattern file (1-based), read from disk
   and parsed as `reuben live` parses it: the line's own address and text, so there is no address
   argument. Errors use the same `<file>:<line>:<col>: error:` report, with the column found by the
@@ -206,7 +209,8 @@ reachable they exit at once and say so. `--engine-addr` and `--token` (or `REUBE
   whitespace, then the text to the end of the line (`/pattern/in  0 2 4 <7 5> [4 2] 0 ~`). Blank lines and
   `#` comment lines are skipped, and an address may appear once. A line is sent when its text
   changed since it was last queued, or when its last send was refused. A refused line prints with
-  its file, line and column, and its address keeps playing what it last played. A queued line
+  its file, line and column (the address's column when the address is what was refused), and its
+  address keeps playing what it last played. A queued line
   prints `reuben live: queued <address> (line <n>)`, with no location prefix, so an error list
   holds only errors and warnings. Each save's report sits between `reuben live: sending <file>` and `reuben live: done (…)`. A send that a Swap made
   stale prints `<file>:<line>:<col>: warning: dropped: instrument changed, resend <address>`. The
@@ -708,16 +712,19 @@ engine-channel sends and OSC over UDP alike, from the moment it commits until th
 installs (one audio block plus the ~10 ms crossfade), then delivers it to the new instrument: a knob
 moved during an edit lands slightly late rather than being lost. A `Note` input takes its args
 (`/notes/in [69.0, 1.0]` on a `notes` interface input, or `/voicer/notes [69.0, 1.0]` on a voicer
-nothing feeds). An input a wire or an interface input feeds takes no message: one sent to it is
-dropped and counted (`wired_writes_dropped`), so a `notes` interface input feeding
-`/voicer.notes` is played at `/notes/in`, not `/voicer/notes`.
+nothing feeds). An input a wire or an interface input feeds takes no message, so a `notes`
+interface input feeding `/voicer.notes` is played at `/notes/in`, not `/voicer/notes`. A send to a
+fed input, to an address that reaches no input, or with args the input does not take is refused
+whole, naming the address, and nothing in it is applied; over OSC/UDP such a message is dropped
+(counted in `get_engine_diagnostics`: a fed input as `wired_writes_dropped`, an address that
+reaches no input as `unaddressed_messages_dropped`, args that do not fit as `unfit_args_dropped`).
 Full wildcard dispatch (`/drums/*/decay`) is designed but not built — today a Message targets at
 most one node.
 
 A pattern reaches the engine as such a string. Send the `pattern` Operator's mini-notation text
 to its `pat` input when nothing feeds it, or to the `str` interface input that feeds it (in
 `pattern-melody`, `/pattern/in "0 2 <4 7> ~"`; `/melody/pat` is wired there, so a send to it is
-dropped), with the engine channel's `send` (`send_live_controls`). A pattern that does not
+refused), with the engine channel's `send` (`send_live_controls`). A pattern that does not
 compile comes back in the `send` reply with its byte span, and the old pattern plays on. The same
 text sent as OSC over UDP is never compiled, so it is dropped. An accepted pattern takes over at
 the next cycle start, or at once when nothing is playing yet.

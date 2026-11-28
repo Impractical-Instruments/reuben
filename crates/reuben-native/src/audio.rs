@@ -459,6 +459,9 @@ where
                 diag_for_callback
                     .record_control_messages_dropped_full(slot.take_dropped_queue_full());
                 diag_for_callback.record_unprepared_writes_dropped(slot.take_dropped_unprepared());
+                diag_for_callback
+                    .record_unaddressed_messages_dropped(slot.take_dropped_unaddressed());
+                diag_for_callback.record_unfit_args_dropped(slot.take_dropped_unfit_args());
                 diag_for_callback.record_operator_counts(slot.take_operator_counts());
 
                 // Forward this callback's outbound Messages. The sender thread does the

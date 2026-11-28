@@ -51,6 +51,11 @@ pub struct Engine {
     pending: Vec<Resolved>,
     /// Messages dropped for arriving with `pending` full, since the last take.
     dropped_queue_full: u64,
+    /// Messages dropped because their address reaches no input of `plan`, since the last take.
+    dropped_unaddressed: u64,
+    /// Flat-arg messages dropped because their args do not fit the input they address, since the
+    /// last take.
+    dropped_unfit_args: u64,
     /// Outbound Messages an `osc_out` sink sent, accumulated across the block(s) one
     /// [`Engine::fill`] renders and drained by the caller after fill (native encodes + UDP-sends
     /// them). Cleared at the top of each `fill`.
@@ -87,6 +92,8 @@ impl Engine {
             renderer,
             pending: Vec::with_capacity(PENDING_CAP),
             dropped_queue_full: 0,
+            dropped_unaddressed: 0,
+            dropped_unfit_args: 0,
             outbound: Vec::new(),
             channels,
             in_channels,
@@ -128,6 +135,30 @@ impl Engine {
     /// install credits the fresh Engine with what the retiring one had not handed on.
     pub fn credit_dropped_queue_full(&mut self, n: u64) {
         self.dropped_queue_full += n;
+    }
+
+    /// Take the count of messages dropped for addressing no input of the Plan, leaving zero.
+    /// RT-safe: a field read and write.
+    pub fn take_dropped_unaddressed(&mut self) -> u64 {
+        core::mem::take(&mut self.dropped_unaddressed)
+    }
+
+    /// Add `n` to the count [`take_dropped_unaddressed`](Self::take_dropped_unaddressed) returns:
+    /// an install credits the fresh Engine with what the retiring one had not handed on.
+    pub fn credit_dropped_unaddressed(&mut self, n: u64) {
+        self.dropped_unaddressed += n;
+    }
+
+    /// Take the count of messages dropped because their args do not fit the input they address,
+    /// leaving zero. RT-safe: a field read and write.
+    pub fn take_dropped_unfit_args(&mut self) -> u64 {
+        core::mem::take(&mut self.dropped_unfit_args)
+    }
+
+    /// Add `n` to the count [`take_dropped_unfit_args`](Self::take_dropped_unfit_args) returns: an
+    /// install credits the fresh Engine with what the retiring one had not handed on.
+    pub fn credit_dropped_unfit_args(&mut self, n: u64) {
+        self.dropped_unfit_args += n;
     }
 
     /// Push onto `pending` if it has room; otherwise drop and count, its payload to the retire
@@ -174,12 +205,13 @@ impl Engine {
     /// as [`Engine::queue_osc`] drops one. The payload is not checked against the port until the
     /// block routes it.
     pub fn queue(&mut self, msg: Message) {
-        if let Some((target, _)) = self.plan.resolve(&msg.address) {
-            self.push_pending(Resolved {
+        match self.plan.resolve(&msg.address) {
+            Some((target, _)) => self.push_pending(Resolved {
                 target,
                 frame: msg.frame,
                 arg: msg.arg,
-            });
+            }),
+            None => self.dropped_unaddressed += 1,
         }
     }
 
@@ -187,16 +219,22 @@ impl Engine {
     /// the flat `F32`/`I32`/`Str` args, however the shell decoded them (a UDP/OSC datagram, a
     /// worklet control buffer). Resolves the address to its destination port once and converts
     /// the args into the single typed [`Arg`] that port carries, then queues the pair. Dropped
-    /// silently if the address routes to no node/port or the args don't fit — an authoring error
-    /// the boundary already tolerates. The conversion needs the Plan, which the engine owns, so it
-    /// lives here rather than in the address-blind decode layers.
+    /// if the address routes to no node/port or the args don't fit — an authoring error the
+    /// boundary tolerates, counted ([`Engine::take_dropped_unaddressed`],
+    /// [`Engine::take_dropped_unfit_args`]). The conversion needs the Plan, which the engine
+    /// owns, so it lives here rather than in the address-blind decode layers.
     pub fn queue_osc(&mut self, address: &str, args: &[Arg]) {
-        if let Some((target, arg)) = self.plan.osc_in(address, args) {
-            self.push_pending(Resolved {
+        let Some((target, port)) = self.plan.resolve(address) else {
+            self.dropped_unaddressed += 1;
+            return;
+        };
+        match crate::boundary::osc_in_arg(port, args) {
+            Some(arg) => self.push_pending(Resolved {
                 target,
                 frame: 0,
                 arg,
-            });
+            }),
+            None => self.dropped_unfit_args += 1,
         }
     }
 

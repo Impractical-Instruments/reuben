@@ -603,3 +603,28 @@ fn consecutive_swaps_accumulate_no_lead() {
     let expected: Vec<usize> = (1..=7).map(|beat| beat * BEAT).collect();
     assert_eq!(wraps, expected, "the beat grid holds across every swap");
 }
+
+#[test]
+fn unroutable_control_is_counted_across_an_install() {
+    // An address no input answers to, and args that do not fit the input, are each counted on the
+    // live Engine; a count uncollected at an install is carried onto the installed one.
+    let (mut coord, mut slot) = setup(&level_doc());
+    let (block, edge) = (slot.block_size(), slot.ramp_edge_frames());
+    slot.queue_osc("/nope/in", &[reuben_core::Arg::F32(0.5)]);
+    slot.queue_osc("/nope/in", &[reuben_core::Arg::F32(0.5)]);
+    slot.queue(reuben_core::Message::new(
+        "/nope/in",
+        reuben_core::Arg::F32(0.5),
+        0,
+    ));
+    slot.queue_osc("/lvl/in", &[reuben_core::Arg::Str("loud".into())]);
+    render(&mut slot, block);
+    assert!(coord.swap_document(&level_doc()).report.ok);
+    render(&mut slot, 2 * edge + 4 * block);
+    assert!(!slot.is_ramping(), "the swap completed");
+    assert_eq!(slot.take_dropped_unaddressed(), 3);
+    assert_eq!(slot.take_dropped_unaddressed(), 0);
+    assert_eq!(slot.take_dropped_unfit_args(), 1);
+    assert_eq!(slot.take_dropped_unfit_args(), 0);
+    assert_eq!(slot.take_dropped_wired_writes(), 0, "not counted twice");
+}

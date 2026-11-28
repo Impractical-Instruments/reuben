@@ -518,6 +518,9 @@ impl HeadlessDriver {
                     diagnostics
                         .record_control_messages_dropped_full(slot.take_dropped_queue_full());
                     diagnostics.record_unprepared_writes_dropped(slot.take_dropped_unprepared());
+                    diagnostics
+                        .record_unaddressed_messages_dropped(slot.take_dropped_unaddressed());
+                    diagnostics.record_unfit_args_dropped(slot.take_dropped_unfit_args());
                     diagnostics.record_operator_counts(slot.take_operator_counts());
                     for m in slot.drain_outbound() {
                         if let Some(tx) = &outbound {
