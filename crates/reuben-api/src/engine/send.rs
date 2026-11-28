@@ -1,5 +1,6 @@
-//! The one step a `send` takes before its batch reaches a host's ingress: compiling every string
-//! aimed at an input that compiles its text, against the Plan installed.
+//! The one step a `send` takes before its batch reaches a host's ingress: judging every message
+//! against the Plan installed (its address, its fit, its wiring) and compiling every string aimed
+//! at an input that compiles its text.
 //!
 //! The render thread never compiles. It takes a compiled value only at an input whose compiler
 //! built it, and only while the Plan the value was compiled against is still the live one: a
@@ -11,6 +12,7 @@ use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+use reuben_core::boundary::has_osc_form;
 use reuben_core::coordinator::RenderSlot;
 use reuben_core::descriptor::{Port, PortType};
 use reuben_core::message::Arg;
@@ -203,7 +205,7 @@ fn unapplied(address: &str, why: Unapplied<'_>) -> String {
         ),
         Unapplied::DoesNotFit(port) => match takes(port) {
             Some(what) => format!("the args don't fit the input at {address}, which takes {what}"),
-            None => format!("the input at {address} carries audio, so it takes no sent value"),
+            None => format!("the input at {address} takes no sent value"),
         },
         Unapplied::Uncompiled => {
             format!("the input at {address} compiles no text, so a string sent there never plays")
@@ -211,7 +213,7 @@ fn unapplied(address: &str, why: Unapplied<'_>) -> String {
     }
 }
 
-/// What args a message at `port` must carry, in a refusal's words; `None` for audio.
+/// What args a message at `port` must carry, in a refusal's words; `None` for an input that takes none (audio, or a type with no OSC form).
 fn takes(port: &Port) -> Option<String> {
     Some(match &port.ty {
         PortType::F32 | PortType::I32 { .. } => "one number".to_string(),
@@ -223,7 +225,10 @@ fn takes(port: &Port) -> Option<String> {
             enum_meta: Some(e),
             ..
         } => format!("one {name}: {}, by name or index", e.variants.join(", ")),
-        PortType::Vocab { name, .. } => format!("a {name} in its flat form"),
+        PortType::Vocab { name, .. } if has_osc_form(&port.ty) => {
+            format!("a {name} in its flat form")
+        }
+        PortType::Vocab { .. } => return None,
         PortType::Arg => "one number or string".to_string(),
     })
 }

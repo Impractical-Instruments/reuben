@@ -325,11 +325,10 @@ impl Channel {
     /// Audition a batch of control values on the running engine.
     ///
     /// [`SendOutcome::Queued`] means "received and queued", NOT "applied": a Swap before the next
-    /// block can remove an address, and the message is then dropped at the engine's ingress.
+    /// block can remove an address, and the message is then dropped and counted.
     /// [`SendOutcome::Refused`] is the first message the engine would not apply, and nothing was
-    /// queued. An empty or
-    /// over-long batch is refused by the engine as a [`Channel`](ChannelError::Channel) error
-    /// rather than acked.
+    /// queued. An empty or over-long batch is refused by the engine as a
+    /// [`Channel`](ChannelError::Channel) error rather than acked.
     pub fn send(&self, messages: Vec<ControlMessage>) -> Result<SendOutcome, ChannelError> {
         match self.exchange(&Request::Send { messages })? {
             Response::Sent => Ok(SendOutcome::Queued),

@@ -2322,7 +2322,7 @@ mod tests {
                  {"type":"oscillator","address":"/osc",
                   "inputs":{"freq":{"from":"/lfo.audio"}}}]}"#;
 
-    /// Send `refused` through the real handler, expect it refused at message 1 (`/osc/freq`, the
+    /// Send `refused` through the real handler, expect it refused at message 1 (`/osc/waveform`, the
     /// good message ahead of it, rides along unapplied), then prove nothing reached the callback:
     /// a later good send is the first and only thing queued.
     fn assert_refused_whole(doc: &str, refused: ControlMessage, says: &str) {

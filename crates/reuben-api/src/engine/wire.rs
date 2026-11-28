@@ -570,9 +570,10 @@ pub enum Response {
     /// read `count < len` as "some were rejected", a signal that can never arrive. (Contrast
     /// [`Conflict`], whose two hashes earn their place precisely because they can disagree.)
     Sent,
-    /// `Send`'s answer when a message aimed at an input that compiles its text was not one string,
-    /// or its string did not compile: nothing in the batch was queued. Flat next to the `reply`
-    /// tag.
+    /// `Send`'s answer when a message would not be applied: its address reaches no input, its args
+    /// do not fit, a wire or an interface input feeds it, or it is aimed at an input that compiles
+    /// its text and was not one string or did not compile. Nothing in the batch was queued. Flat
+    /// next to the `reply` tag.
     SendRefused(SendRefusal),
     /// A channel-level failure: an unreadable request, or an engine-side fault that
     /// produced no domain-shaped answer. Distinct from a `SwapReport` with `ok: false`,

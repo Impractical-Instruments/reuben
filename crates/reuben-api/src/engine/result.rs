@@ -17,8 +17,8 @@ use super::wire::{Conflict, HeldSwap, SwapReport};
 ///
 /// The engine acks the batch as a unit, so this is the batch's own size — there is no partial
 /// outcome to report, which is why the wire's ack carries no count of its own. "Queued for the next
-/// block", not "applied": an address matching no node/port is dropped at the engine's ingress,
-/// exactly as an external OSC datagram naming a stale address is.
+/// block", not "applied": a Swap before the next block can remove an address, and the message is
+/// then dropped and counted.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SendOutput {
     /// The number of control messages the engine queued.

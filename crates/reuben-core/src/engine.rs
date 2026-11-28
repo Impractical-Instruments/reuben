@@ -221,8 +221,8 @@ impl Engine {
     /// the args into the single typed [`Arg`] that port carries, then queues the pair. Dropped
     /// if the address routes to no node/port or the args don't fit — an authoring error the
     /// boundary tolerates, counted ([`Engine::take_dropped_unaddressed`],
-    /// [`Engine::take_dropped_unfit_args`]). The conversion needs the Plan, which the engine owns, so it
-    /// lives here rather than in the address-blind decode layers.
+    /// [`Engine::take_dropped_unfit_args`]). The conversion needs the Plan, which the engine
+    /// owns, so it lives here rather than in the address-blind decode layers.
     pub fn queue_osc(&mut self, address: &str, args: &[Arg]) {
         let Some((target, port)) = self.plan.resolve(address) else {
             self.dropped_unaddressed += 1;

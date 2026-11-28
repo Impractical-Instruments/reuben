@@ -96,7 +96,10 @@ Why the steps are what they are:
 
   Writing an input a wire or an interface input feeds is unsupported: the send is refused, naming
   the address, and nothing in it is applied (over OSC/UDP the message is dropped and counted in
-  `get_engine_diagnostics` as `wired_writes_dropped`). Send to the interface input instead. `open_instrument`, of another instrument or again of the one playing, starts every
+  `get_engine_diagnostics` as `wired_writes_dropped`; one to an address that reaches no input, or
+  with args the input does not take, is counted as `unaddressed_messages_dropped` or
+  `unfit_args_dropped`). Send to the interface input instead.
+  `open_instrument`, of another instrument or again of the one playing, starts every
   input from the document. Nothing live is saved. A send made while an edit or open is being
   swapped in waits for the new instrument (one audio block plus ~10 ms) and lands there. (The MCP
   tool is `send_live_controls`; the name says which half of the loop it is on.)
@@ -713,7 +716,8 @@ nothing feeds). An input a wire or an interface input feeds takes no message, so
 interface input feeding `/voicer.notes` is played at `/notes/in`, not `/voicer/notes`. A send to a
 fed input, to an address that reaches no input, or with args the input does not take is refused
 whole, naming the address, and nothing in it is applied; over OSC/UDP such a message is dropped
-(one to a fed input counted as `wired_writes_dropped`).
+(counted in `get_engine_diagnostics`: a fed input as `wired_writes_dropped`, an address that
+reaches no input as `unaddressed_messages_dropped`, args that do not fit as `unfit_args_dropped`).
 Full wildcard dispatch (`/drums/*/decay`) is designed but not built — today a Message targets at
 most one node.
 
