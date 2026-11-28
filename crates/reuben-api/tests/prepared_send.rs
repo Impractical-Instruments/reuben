@@ -616,8 +616,9 @@ fn a_send_drained_during_the_install_ramp_waits_then_is_dropped_and_named() {
     r.slot.fill(&mut ramp);
     assert!(r.slot.install_pending());
     assert!(r.host.drain(&mut r.slot).is_empty(), "the batch waits");
-    let mut one = vec![0.0; channels];
-    r.slot.fill(&mut one);
+    // The rest of the old Engine's block: the install waits at zero for its boundary.
+    let mut rest = vec![0.0; (edge.next_multiple_of(BLOCK) - (edge - 1)) * channels];
+    r.slot.fill(&mut rest);
     assert!(!r.slot.install_pending(), "installed");
     drop(r.slot.drain_outbound());
 

@@ -26,7 +26,8 @@ const RAMP_MS_PER_EDGE: f32 = 10.0;
 enum Phase {
     /// Gain is a flat 1.0 — no ramp. The fast path: no per-sample multiply, only a mailbox peek.
     Steady,
-    /// Fading the master to zero ahead of the install (fade-down).
+    /// Fading the master to zero ahead of the install (fade-down), then holding it at zero until
+    /// the retiring Engine reaches a block boundary, where the install lands.
     Down,
     /// Fading the master back up after the install-at-zero (fade-up).
     Up,
@@ -244,8 +245,9 @@ impl RenderSlot {
         self.ramp.is_active()
     }
 
-    /// Samples per ramp edge (the fixed ~10ms). A full swap ducks over `2 ×` this many
-    /// frames, with the master hitting exactly zero at frame `ramp_edge_frames()` of the ramp.
+    /// Samples per ramp edge (the fixed ~10ms). The master hits exactly zero at frame
+    /// `ramp_edge_frames()` of the ramp and holds there until the retiring Engine's block
+    /// boundary, so a full swap ducks over `2 ×` this many frames plus fewer than one block.
     pub fn ramp_edge_frames(&self) -> usize {
         self.ramp.edge
     }
@@ -257,6 +259,8 @@ impl RenderSlot {
     }
 
     /// The per-callback contract (module docs): peek → (ramp) → install-at-zero → (ramp) → render.
+    /// The install waits at zero for the retiring Engine's block boundary, so a survivor never
+    /// runs ahead of the frames this slot has delivered.
     ///
     /// `input` is the interleaved logical input master, one input frame per output
     /// frame, or empty for the no-input path — identical to [`Engine::fill_duplex`].
@@ -298,8 +302,9 @@ impl RenderSlot {
     }
 
     /// The ramp path: render the buffer in phase-bounded segments (one Engine per segment), applying
-    /// the raised-cosine gain per frame, installing at the zero crossing. Split because the install
-    /// (Engine swap) must land at the exact frame the master is silent, which may fall mid-buffer.
+    /// the raised-cosine gain per frame, installing at the first block boundary of the retiring
+    /// Engine at or past the zero crossing. Split because the install (Engine swap) must land at
+    /// that exact frame, which may fall mid-buffer.
     ///
     /// `ch`/`in_ch` below are the geometry `out` and `input` were sized against, read before the
     /// install. The Engine installed mid-buffer need not share it, so they are re-read against the
@@ -321,16 +326,27 @@ impl RenderSlot {
         while f < frames {
             match self.ramp.phase {
                 Phase::Down => {
-                    // Down edge runs positions `pos..edge`; cap at the buffer end.
-                    let seg = (frames - f).min(edge - self.ramp.pos);
-                    render_segment(&mut self.engine, input, out, in_ch, ch, f, seg);
-                    for k in 0..seg {
-                        let g = self.ramp.curve[self.ramp.pos + k];
-                        scale_frame(out, ch, f + k, g);
+                    if self.ramp.pos < edge {
+                        // Down edge runs positions `pos..edge`; cap at the buffer end.
+                        let seg = (frames - f).min(edge - self.ramp.pos);
+                        render_segment(&mut self.engine, input, out, in_ch, ch, f, seg);
+                        for k in 0..seg {
+                            let g = self.ramp.curve[self.ramp.pos + k];
+                            scale_frame(out, ch, f + k, g);
+                        }
+                        self.ramp.pos += seg;
+                        f += seg;
+                    } else {
+                        // At zero, the retiring Engine's survivors are already at the end of its
+                        // last rendered block. Installing now would put them that many frames
+                        // ahead of the delivered timeline, so deliver the rest of the block,
+                        // silenced, first: fewer than one block, and no new block is rendered.
+                        let seg = (frames - f).min(self.engine.undelivered_frames());
+                        render_segment(&mut self.engine, input, out, in_ch, ch, f, seg);
+                        out[f * ch..(f + seg) * ch].fill(0.0);
+                        f += seg;
                     }
-                    self.ramp.pos += seg;
-                    f += seg;
-                    if self.ramp.pos == edge {
+                    if self.ramp.pos == edge && self.engine.undelivered_frames() == 0 {
                         self.install_at_zero();
                         self.ramp.phase = Phase::Up;
                         // The Engine that just went live need not share the geometry this buffer

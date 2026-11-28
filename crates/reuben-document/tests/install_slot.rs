@@ -132,8 +132,8 @@ fn steady_state_is_transparent_no_ramp_no_dip() {
 fn master_dips_to_zero_and_recovers_while_survivor_rings_through() {
     // The heart of the install cut. Warm to sustain, swap to the identical document (both nodes survive
     // — address + type + fingerprint all match), then read the ramp envelope off the rendered
-    // buffer: it starts at full gain, hits exactly zero at the install frame (`ramp_edge_frames`),
-    // and recovers to the survivor's held sustain over the up-ramp — a ~2× ramp duck, not a click.
+    // buffer: it starts at full gain, hits exactly zero at the ramp's zero frame
+    // (`ramp_edge_frames`), holds there until the install, and recovers to the survivor's held sustain over the up-ramp — a ~2× ramp duck, not a click.
     let (mut coord, mut slot) = setup(&envelope_doc("/env"));
     let ch = slot.channels();
     let sustain = warm_to_sustain(&mut slot);
@@ -157,21 +157,21 @@ fn master_dips_to_zero_and_recovers_while_survivor_rings_through() {
         "the ramp opens at full gain: {}",
         frame_mag(&buf, ch, 0)
     );
-    // Exactly zero at the install frame (install-at-zero): this is where a non-survivor's
-    // hard cut would land — masked to silence.
+    // Exactly zero at the ramp's zero frame, and silent from there through the install: this is
+    // where a non-survivor's hard cut lands — masked to silence.
     assert!(
         frame_mag(&buf, ch, edge) < 0.02,
-        "the master hits zero at the install frame {edge}: {}",
+        "the master hits zero at the ramp's zero frame {edge}: {}",
         frame_mag(&buf, ch, edge)
     );
-    // The dip's minimum sits at (or adjacent to) the install frame, not elsewhere.
+    // The dip's minimum first reached at (or adjacent to) the ramp's zero frame, not elsewhere.
     let (min_frame, _) = (0..span)
         .map(|f| (f, frame_mag(&buf, ch, f)))
         .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
         .unwrap();
     assert!(
         (min_frame as isize - edge as isize).abs() <= 1,
-        "the dip bottoms out at the install frame: min at {min_frame}, edge {edge}"
+        "the dip bottoms out at the ramp's zero frame: min at {min_frame}, edge {edge}"
     );
     // Recovered to the survivor's held level after 2× the ramp — the held note rang straight through.
     let recovered = frame_mag(&buf, ch, span - 1);
@@ -186,8 +186,8 @@ fn master_dips_to_zero_and_recovers_while_survivor_rings_through() {
 fn a_non_survivor_is_cut_at_master_zero_and_stays_silent() {
     // A non-survivor's fresh box starts cold and its cut lands at master-zero
     // (inaudible). Warm to sustain, then swap to a document that *renames* the envelope: `/env` is
-    // removed (reset) and `/eg` is added cold, while `/out` survives. The ramp still dips to zero at
-    // the install frame (masking the cut), but after the up-ramp the fresh envelope has barely left
+    // removed (reset) and `/eg` is added cold, while `/out` survives. The ramp still dips to zero
+    // and holds there through the install (masking the cut), but after the up-ramp the fresh envelope has barely left
     // zero — a stark contrast to the survivor case, proving the reset node was cut inaudibly.
     let (mut coord, mut slot) = setup(&envelope_doc("/env"));
     let ch = slot.channels();
@@ -206,7 +206,8 @@ fn a_non_survivor_is_cut_at_master_zero_and_stays_silent() {
     let mut buf = vec![0.0f32; span * ch];
     slot.fill(&mut buf);
 
-    // The cut is masked: the master is at zero at the install frame.
+    // The cut is masked: the master reaches zero at the ramp's zero frame and holds it through the
+    // install.
     assert!(
         frame_mag(&buf, ch, edge) < 0.02,
         "the reset node's cut lands at master-zero: {}",
@@ -243,15 +244,16 @@ fn an_install_that_changes_the_master_width_does_not_render_a_malformed_quantum(
         "the swapped-in rig taps channel 3, so master width derives to 4"
     );
 
-    // SPAN, and why it is not `edge + 1`: the curve pins `curve[edge] == 0.0`, so frame `edge` —
-    // the install frame — reads silent whatever was rendered into it. A buffer ending there cannot
-    // tell a silenced remainder from a malformed one. The remainder must be several frames long to
+    // SPAN, and why it is not `edge + 1`: the master is silent from frame `edge` until the install,
+    // which lands at the retiring Engine's first block boundary at or past `edge` — 32 frames on
+    // here, after a 48000-frame warm-up. A buffer ending there cannot tell a silenced remainder
+    // from a malformed one. The remainder past the install must be several frames long to
     // discriminate, and an ODD frame count keeps the old-width sample count (2 per frame) off a
     // whole number of new-width frames (4 per frame), which is what trips Engine's multiple-of-
     // channels assert in a debug build. The buffer is pre-filled with a nonzero sentinel so an
     // *unwritten* remainder reads as loudly as a mis-rendered one.
     let edge = slot.ramp_edge_frames();
-    let span = edge + 17;
+    let span = edge + slot.block_size() + 17;
     let mut buf = vec![0.123f32; span * ch];
     slot.fill(&mut buf);
 
@@ -309,9 +311,10 @@ fn an_install_that_changes_the_input_width_does_not_smear_the_callers_input() {
     // core block ahead of the block that consumes it. A remainder shorter than `block_size` renders
     // the fresh Engine's first (input-less) block and reads silent either way, which cannot
     // discriminate. Past that boundary the smeared stride reaches the output and the remainder is
-    // audibly not silent unless the install actually stopped rendering into this buffer.
+    // audibly not silent unless the install actually stopped rendering into this buffer. The
+    // install itself lands up to one block past `edge`, at the retiring Engine's block boundary.
     let edge = slot.ramp_edge_frames();
-    let span = edge + slot.block_size() + 17;
+    let span = edge + 2 * slot.block_size() + 17;
     let mut out = vec![0.456f32; span * ch];
     let input: Vec<f32> = (0..span * in_ch)
         .map(|i| ((i % 89) as f32 / 89.0) - 0.5)
@@ -435,7 +438,9 @@ fn control_queued_after_an_install_reaches_the_installed_engine() {
     let (ch, block, edge) = (slot.channels(), slot.block_size(), slot.ramp_edge_frames());
     render(&mut slot, 4 * block);
     assert!(coord.swap_document(&level_doc()).report.ok);
-    render(&mut slot, edge + 1);
+    // The install lands at the outgoing Engine's first block boundary at or past the ramp's zero.
+    render(&mut slot, edge + block);
+    assert!(!slot.install_pending(), "the install landed");
     slot.queue_osc("/lvl/in", &[reuben_core::Arg::F32(0.9)]);
     let after = render(&mut slot, 2 * edge + 4 * block);
     let tail = frame_mag(&after, ch, after.len() / ch - 1);
@@ -487,4 +492,114 @@ fn control_past_the_queue_is_dropped_and_counted_across_an_install() {
     assert!(!slot.is_ramping(), "the swap completed");
     assert_eq!(slot.take_dropped_queue_full(), 3);
     assert_eq!(slot.take_dropped_queue_full(), 0);
+}
+
+/// A Clock at 120 BPM whose `phase` is the master: at 48 kHz the delivered audio is a sawtooth
+/// that wraps every 24000 frames, so a wrap's frame is the Clock's position on the delivered
+/// timeline.
+fn clock_doc() -> String {
+    r#"{ "format_version": 3, "instrument": "clk",
+         "interface": { "outputs": { "main": { "from": "/out.audio" } } },
+         "nodes": [
+           { "type": "clock", "address": "/clk", "inputs": { "tempo": 120.0 } },
+           { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/clk.phase" } } } ] }"#
+        .to_string()
+}
+
+/// Frames per beat at 120 BPM and 48 kHz.
+const BEAT: usize = 24_000;
+
+/// Drive [`clock_doc`] for `total` frames in host fills of `fill`, swapping to the same document
+/// (the Clock survives) when the delivered frame count first reaches each of `swaps_at`. Returns
+/// every frame where the delivered phase wraps, after checking each swap silenced the master for
+/// at most one block: the ramp's zero frame plus a hold shorter than a block.
+fn clock_wraps(fill: usize, swaps_at: &[usize], total: usize) -> Vec<usize> {
+    let (mut coord, mut slot) = setup(&clock_doc());
+    let ch = slot.channels();
+    let mut buf = vec![0.0f32; fill * ch];
+    let mut swaps = swaps_at.iter().peekable();
+    let mut wraps = Vec::new();
+    let mut prev = 0.0f32;
+    let mut silent = 0;
+    let mut delivered = 0;
+    while delivered < total {
+        if swaps.next_if(|&&at| delivered >= at).is_some() {
+            let report = coord.swap_document(&clock_doc());
+            assert!(report.report.ok, "swap should succeed: {:?}", report.report);
+            assert_eq!(
+                report.diff.as_ref().unwrap().survived,
+                2,
+                "the Clock survives"
+            );
+        }
+        slot.fill(&mut buf);
+        for f in 0..fill {
+            let s = buf[f * ch];
+            // A wrap drops the phase from just under 1 to just over 0; the ramp only ever scales
+            // the master down toward 0, so it never makes a drop of half a beat.
+            if prev - s > 0.5 {
+                wraps.push(delivered + f);
+            }
+            if s == 0.0 {
+                silent += 1;
+            }
+            prev = s;
+        }
+        delivered += fill;
+    }
+    assert_eq!(swaps.next(), None, "every swap was performed");
+    // The Clock's own phase is exactly zero only at frame 0.
+    assert!(
+        silent <= 1 + swaps_at.len() * slot.block_size(),
+        "fill {fill}: {silent} silent frames across {} swaps",
+        swaps_at.len()
+    );
+    wraps
+}
+
+#[test]
+fn a_surviving_clock_stays_on_the_delivered_beat_grid_across_a_swap() {
+    // Each swap is committed between fills, at `start`, so its down-ramp begins there and reaches
+    // zero `ramp_edge_frames()` (480) later, at delivered frame D. The retiring Engine has then
+    // rendered its block to the next multiple of 128 past D. The first column is the fill size,
+    // the second the swap point, the comment D mod 128 — the frames the retiring Engine has
+    // rendered and not yet delivered are what a survivor would lead the delivered timeline by
+    // if it went live at D. In fills of 32 and 16 the down edge ends on a callback boundary, so
+    // the hold starts a callback of its own: one in fill 32, two in fill 16.
+    let cases = [
+        (128, 120_064),  // 96: lead 32
+        (64, 120_064),   // 96: lead 32
+        (512, 120_320),  // 96: lead 32
+        (96, 120_096),   // 0: lead 0
+        (160, 120_480),  // 0: lead 0
+        (480, 120_480),  // 0: lead 0
+        (1000, 123_000), // 88: lead 40
+        (32, 120_064),   // 96: lead 32
+        (16, 120_064),   // 96: lead 32
+    ];
+    let expected: Vec<usize> = (1..=7).map(|beat| beat * BEAT).collect();
+    let mut off_grid = Vec::new();
+    for (fill, start) in cases {
+        assert_eq!(start % fill, 0, "fill {fill}: the swap lands between fills");
+        let wraps = clock_wraps(fill, &[start], 7 * BEAT + 1000);
+        if wraps != expected {
+            off_grid.push((fill, start, wraps));
+        }
+    }
+    assert!(
+        off_grid.is_empty(),
+        "the Clock's wraps must stay on the beat grid {expected:?} across the swap; \
+         (fill, swap at, wraps) off it: {off_grid:?}"
+    );
+}
+
+#[test]
+fn consecutive_swaps_accumulate_no_lead() {
+    // Five swaps in fills of 64, alternating between starts that are 0 and 64 frames into a
+    // block, so each install lands off the block grid of the Engine it retires: a survivor that
+    // went live at the ramp's zero would gain 32 frames at the first swap and 64 at each after.
+    let swaps = [24_576, 48_704, 72_704, 96_832, 120_832];
+    let wraps = clock_wraps(64, &swaps, 7 * BEAT + 1000);
+    let expected: Vec<usize> = (1..=7).map(|beat| beat * BEAT).collect();
+    assert_eq!(wraps, expected, "the beat grid holds across every swap");
 }
